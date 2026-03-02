@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--once", action="store_true", help="Execute one cycle and exit")
     run.add_argument("--loop", action="store_true", help="Run forever")
     run.add_argument("--interval", type=int, default=60, help="Loop interval in seconds")
+    run.add_argument("--reset-watermark", default=None, help="Reset watermark for dataset before running")
 
     backfill = sub.add_parser("backfill", help="Run backfill for one dataset")
     backfill.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
@@ -35,6 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     check = sub.add_parser("check", help="Check SQL Server + API + ingest credentials")
     check.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
+
+    reset = sub.add_parser("reset", help="Reset watermark for a dataset")
+    reset.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
+    reset.add_argument("--dataset", required=True)
 
     return parser
 
@@ -63,6 +68,8 @@ def main() -> None:
             return
 
         if args.command == "run":
+            if args.reset_watermark:
+                runner.reset_watermark(args.reset_watermark)
             if args.once or not args.loop:
                 runner.run_once()
                 return
@@ -75,6 +82,10 @@ def main() -> None:
             if dt_to < dt_from:
                 raise ValueError("--to must be >= --from")
             runner.backfill(dataset=args.dataset, from_date=dt_from, to_date=dt_to)
+            return
+
+        if args.command == "reset":
+            runner.reset_watermark(args.dataset)
             return
     except Exception as exc:  # noqa: PERF203
         logger.error("command=%s status=failed error=%s", args.command, str(exc))

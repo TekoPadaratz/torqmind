@@ -34,7 +34,7 @@ class WatermarkStore:
             return watermarks[scope]
         if "watermark" in data:
             # compatibility with initial state shape
-            return data.get("watermark")
+            return self.normalize_watermark(data.get("watermark"))
         return None
 
     def set(self, dataset: str, watermark: Optional[str], scope: str = "default") -> None:
@@ -49,7 +49,7 @@ class WatermarkStore:
 
         data.setdefault("dataset", dataset.lower())
         data.setdefault("watermarks", {})
-        data["watermarks"][scope] = watermark
+        data["watermarks"][scope] = self.normalize_watermark(watermark)
         data["updated_at"] = now_iso
 
         tmp = path.with_suffix(".json.tmp")
@@ -68,6 +68,36 @@ class WatermarkStore:
             if not value:
                 continue
             ds = dataset.lower()
-            target_store.set(ds, str(value), scope=scope)
+            target_store.set(ds, target_store.normalize_watermark(str(value)), scope=scope)
             migrated += 1
         return migrated
+
+    @staticmethod
+    def parse_watermark_dt(value: Optional[str]) -> Optional[datetime]:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        # Preferred format: ISO 8601
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            pass
+
+        # Common legacy format seen in old state
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+
+        return None
+
+    @staticmethod
+    def normalize_watermark(value: Optional[str]) -> Optional[str]:
+        dt = WatermarkStore.parse_watermark_dt(value)
+        if dt is None:
+            return None if value is None else str(value)
+        return dt.isoformat(timespec="microseconds")

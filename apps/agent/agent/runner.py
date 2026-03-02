@@ -59,11 +59,12 @@ class AgentRunner:
                 scope = f"db:{self.cfg.id_db or 1}"
                 watermark = None if ignore_watermark else self.state.get(dataset, scope=scope)
                 self.logger.info(
-                    "dataset=%s phase=start watermark=%s from=%s to=%s",
+                    "dataset=%s phase=start watermark=%s from=%s to=%s ignore_watermark=%s",
                     dataset,
                     watermark,
                     dt_from,
                     dt_to,
+                    ignore_watermark,
                 )
 
                 max_watermark_seen = watermark
@@ -125,3 +126,8 @@ class AgentRunner:
             dt_to=to_exclusive,
             ignore_watermark=True,
         )
+
+    def reset_watermark(self, dataset: str) -> None:
+        scope = f"db:{self.cfg.id_db or 1}"
+        self.state.set(dataset, None, scope=scope)
+        self.logger.info("dataset=%s phase=watermark_reset scope=%s", dataset, scope)
