@@ -26,11 +26,11 @@ body::before {
   inset: 0;
   background-image: url(/brand/Logo.png);
   background-repeat: no-repeat;
-  background-position: center center;
-  background-size: min(68vw, 960px);
-  opacity: 0.055;
+  background-position: center 52%;
+  background-size: max(140vw, 1800px) auto;
+  opacity: 0.065;
   pointer-events: none;
-  filter: grayscale(35%) contrast(0.9);
+  filter: grayscale(30%) contrast(0.92);
   z-index: 0;
 }
 

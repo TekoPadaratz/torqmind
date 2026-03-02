@@ -75,7 +75,6 @@ export default function AppNav({
     <div className="nav">
       <div className="brand">
         <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={28} height={28} priority />
-        <Image src="/brand/Logo.png" alt="TorqMind" width={126} height={28} priority className="brandWordmark" />
         <span className="pill">{title}</span>
         {userLabel ? <span className="pill">{userLabel}</span> : null}
       </div>
