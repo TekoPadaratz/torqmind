@@ -57,7 +57,12 @@ class WatermarkStore:
         tmp.replace(path)
 
     @staticmethod
-    def migrate_legacy_state(legacy_state_path: str, target_store: "WatermarkStore", scope: str = "default") -> int:
+    def migrate_legacy_state(
+        legacy_state_path: str,
+        target_store: "WatermarkStore",
+        scope: str = "default",
+        overwrite_existing: bool = False,
+    ) -> int:
         legacy_path = Path(legacy_state_path)
         if not legacy_path.exists():
             return 0
@@ -68,6 +73,8 @@ class WatermarkStore:
             if not value:
                 continue
             ds = dataset.lower()
+            if not overwrite_existing and target_store.get(ds, scope=scope):
+                continue
             target_store.set(ds, target_store.normalize_watermark(str(value)), scope=scope)
             migrated += 1
         return migrated
