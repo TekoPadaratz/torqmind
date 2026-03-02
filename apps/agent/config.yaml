@@ -1,0 +1,63 @@
+# TorqMind Extractor Agent config
+# Supports env override (TORQMIND_*)
+
+sqlserver:
+  # Option A: DSN (recommended on Windows/ODBC preconfigured)
+  # dsn: XPERT_DSN
+
+  # Option B: explicit connection fields
+  driver: ODBC Driver 17 for SQL Server
+  server: TEKO-PC
+  database: atxdados
+  user: BI_Torq
+  password: "1234"
+
+api:
+  base_url: http://localhost:8000
+  # Production: prefer ingest_key
+  ingest_key: ""
+  # Dev-only fallback when ingest_key is not configured
+  empresa_id: 1
+
+# Legacy compatibility fields (still supported)
+id_empresa: 1
+id_db: 1
+
+batch_size: 5000
+fetch_size: 2000
+max_retries: 5
+timeout_seconds: 30
+gzip_enabled: true
+state_dir: state
+
+# Enabled datasets and extraction settings
+# Query is optional; if omitted, agent runs:
+# SELECT * FROM <table> WHERE <watermark_column> > ? ORDER BY <watermark_column>
+datasets:
+  comprovantes:
+    enabled: true
+    table: dbo.COMPROVANTES
+    watermark_column: DATAREPL
+
+  movprodutos:
+    enabled: true
+    table: dbo.MOVPRODUTOS
+    watermark_column: DATAREPL
+
+  itensmovprodutos:
+    enabled: true
+    table: dbo.ITENSMOVPRODUTOS
+    watermark_column: DATAREPL
+
+  # Optional datasets (disabled by default)
+  filiais: { enabled: false, table: dbo.FILIAIS, watermark_column: DATAREPL }
+  funcionarios: { enabled: false, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
+  entidades: { enabled: false, table: dbo.ENTIDADES, watermark_column: DATAREPL }
+  clientes: { enabled: false, table: dbo.ENTIDADES, watermark_column: DATAREPL }
+  grupoprodutos: { enabled: false, table: dbo.GRUPOPRODUTOS, watermark_column: DATAREPL }
+  localvendas: { enabled: false, table: dbo.LOCALVENDAS, watermark_column: DATAREPL }
+  produtos: { enabled: false, table: dbo.PRODUTOS, watermark_column: DATAREPL }
+  turnos: { enabled: false, table: dbo.TURNOS, watermark_column: DATAREPL }
+  contaspagar: { enabled: false, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
+  contasreceber: { enabled: false, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
+  financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }
