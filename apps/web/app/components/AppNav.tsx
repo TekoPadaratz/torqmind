@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useSearchParams, useRouter } from 'next/navigation';
+import Image from 'next/image';
+import { usePathname, useRouter } from 'next/navigation';
 import { clearAuth } from '../lib/auth';
 
 function buildHref(path: string, params: URLSearchParams) {
@@ -46,7 +47,9 @@ export default function AppNav({
   userLabel?: string;
 }) {
   const router = useRouter();
-  const params = useSearchParams();
+  const params = new URLSearchParams(
+    typeof window === 'undefined' ? '' : window.location.search
+  );
 
   const onLogout = () => {
     clearAuth();
@@ -64,14 +67,15 @@ export default function AppNav({
 
   const hrefs = links.map((l) => ({
     path: l.path,
-    href: buildHref(l.path, new URLSearchParams(params.toString())),
+    href: buildHref(l.path, params),
     label: l.label,
   }));
 
   return (
     <div className="nav">
       <div className="brand">
-        <span>⚡ TorqMind</span>
+        <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={28} height={28} priority />
+        <Image src="/brand/Logo.png" alt="TorqMind" width={126} height={28} priority className="brandWordmark" />
         <span className="pill">{title}</span>
         {userLabel ? <span className="pill">{userLabel}</span> : null}
       </div>
@@ -86,7 +90,7 @@ export default function AppNav({
           <Link className="btn" href="/scope">
             Escopo
           </Link>
-          <button className="btn" onClick={onLogout}>
+          <button className="btn" onClick={onLogout} aria-label="Sair da conta">
             Sair
           </button>
         </div>
