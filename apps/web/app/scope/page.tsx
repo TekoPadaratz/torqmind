@@ -1,0 +1,191 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+import AppNav from '../components/AppNav';
+import { apiGet } from '../lib/api';
+import { requireAuth } from '../lib/auth';
+
+function todayISO() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+function daysAgoISO(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+export default function ScopePage() {
+  const router = useRouter();
+
+  const [claims, setClaims] = useState<any>(null);
+  const [dtIni, setDtIni] = useState(daysAgoISO(30));
+  const [dtFim, setDtFim] = useState(todayISO());
+
+  const [idEmpresa, setIdEmpresa] = useState<string>('1');
+  const [filiais, setFiliais] = useState<any[]>([]);
+  const [idFilial, setIdFilial] = useState<string>(''); // empty = all
+  const [loading, setLoading] = useState<boolean>(true);
+  const [err, setErr] = useState<string>('');
+
+  const userLabel = useMemo(() => {
+    if (!claims) return undefined;
+    const role = claims.role;
+    const emp = claims.id_empresa ? `E${claims.id_empresa}` : '';
+    const fil = claims.id_filial ? `F${claims.id_filial}` : '';
+    const parts = [role, emp, fil].filter(Boolean);
+    return parts.join(' · ');
+  }, [claims]);
+
+  useEffect(() => {
+    if (!requireAuth()) {
+      router.push('/');
+      return;
+    }
+
+    const load = async () => {
+      setLoading(true);
+      setErr('');
+      try {
+        const me = await apiGet('/auth/me');
+        setClaims(me);
+
+        if (me.role === 'MASTER') {
+          setIdEmpresa(String(me.id_empresa || 1));
+        } else {
+          setIdEmpresa(String(me.id_empresa));
+        }
+
+        // Managers are fixed
+        if (me.role === 'MANAGER' && me.id_filial) {
+          setIdFilial(String(me.id_filial));
+        }
+      } catch (e: any) {
+        setErr(e?.message || 'Falha ao carregar /auth/me');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
+  }, [router]);
+
+  // Load filiais when tenant changes
+  useEffect(() => {
+    const loadFiliais = async () => {
+      if (!claims) return;
+      try {
+        const qs = new URLSearchParams();
+        if (claims.role === 'MASTER') qs.set('id_empresa', idEmpresa);
+        const res = await apiGet(`/bi/filiais?${qs.toString()}`);
+        setFiliais(res.items || []);
+      } catch (e) {
+        console.error(e);
+        setFiliais([]);
+      }
+    };
+    loadFiliais();
+  }, [claims, idEmpresa]);
+
+  const apply = () => {
+    const qs = new URLSearchParams({ dt_ini: dtIni, dt_fim: dtFim });
+
+    // id_filial empty means "all" for MASTER/OWNER
+    if (idFilial) qs.set('id_filial', idFilial);
+
+    // MASTER can navigate across tenants
+    if (claims?.role === 'MASTER') qs.set('id_empresa', idEmpresa || '1');
+
+    router.push(`/dashboard?${qs.toString()}`);
+  };
+
+  const canPickEmpresa = claims?.role === 'MASTER';
+  const canPickFilial = claims?.role !== 'MANAGER';
+
+  return (
+    <div>
+      <AppNav title="Definir Escopo" userLabel={userLabel} />
+
+      <div className="container">
+        <div className="card" style={{ maxWidth: 720, margin: '30px auto' }}>
+          <h1>Escopo do BI</h1>
+          <div className="muted">
+            Selecione período, empresa e (opcionalmente) filial. O mesmo escopo é mantido quando você navega entre os dashboards.
+          </div>
+
+          <div style={{ height: 16 }} />
+
+          {loading ? <p>Carregando...</p> : null}
+          {err ? <p style={{ color: '#fb7185' }}>{err}</p> : null}
+
+          <div className="row" style={{ gap: 12, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <div className="label">Data inicial</div>
+              <input className="input" type="date" value={dtIni} onChange={(e) => setDtIni(e.target.value)} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div className="label">Data final</div>
+              <input className="input" type="date" value={dtFim} onChange={(e) => setDtFim(e.target.value)} />
+            </div>
+          </div>
+
+          <div style={{ height: 12 }} />
+
+          <div className="row" style={{ gap: 12, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <div className="label">Empresa</div>
+              <input
+                className="input"
+                value={idEmpresa}
+                onChange={(e) => setIdEmpresa(e.target.value)}
+                disabled={!canPickEmpresa}
+                placeholder="id_empresa"
+              />
+              {!canPickEmpresa ? (
+                <div className="muted">Fixado pelo seu login</div>
+              ) : (
+                <div className="muted">MASTER pode alternar tenant via id_empresa</div>
+              )}
+            </div>
+
+            <div style={{ flex: 1 }}>
+              <div className="label">Filial</div>
+              <select
+                className="input"
+                value={idFilial}
+                onChange={(e) => setIdFilial(e.target.value)}
+                disabled={!canPickFilial}
+              >
+                {canPickFilial ? <option value="">Todas</option> : null}
+                {filiais.map((f) => (
+                  <option key={f.id_filial} value={String(f.id_filial)}>
+                    {f.id_filial} — {f.nome}
+                  </option>
+                ))}
+              </select>
+              {claims?.role === 'MANAGER' ? (
+                <div className="muted">Fixado pelo seu login</div>
+              ) : (
+                <div className="muted">Dica: comece com “Todas” para ver o consolidado</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ height: 16 }} />
+
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <button className="btn" onClick={apply}>
+              Aplicar escopo
+            </button>
+            <div className="muted">
+              Se precisar de dados demo: <code>docker compose exec api python -m app.cli.demo_load</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
