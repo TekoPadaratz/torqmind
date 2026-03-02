@@ -79,18 +79,26 @@ class AgentRunner:
                     metric.batches += 1
                     metric.extracted += len(batch.rows)
 
-                    self.sink.send(dataset=dataset, rows=batch.rows)
-                    metric.sent += len(batch.rows)
+                    ingest_result = self.sink.send(dataset=dataset, rows=batch.rows)
+                    inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
+                    rejected = int(ingest_result.get("rejected", 0) or 0)
+                    metric.sent += inserted
+                    if metric.extracted > 0 and inserted == 0:
+                        raise RuntimeError(
+                            f"Batch extracted but nothing inserted for dataset={dataset}. "
+                            f"rejected={rejected}. Verify base_url, ingest key and PK fields."
+                        )
 
                     if batch.max_watermark:
                         max_watermark_seen = batch.max_watermark
 
                     self.logger.info(
-                        "dataset=%s phase=batch batches=%s extracted=%s sent=%s watermark=%s",
+                        "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s watermark=%s",
                         dataset,
                         metric.batches,
                         metric.extracted,
                         metric.sent,
+                        rejected,
                         max_watermark_seen,
                     )
 

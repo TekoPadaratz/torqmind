@@ -32,6 +32,7 @@ class TorqMindSink:
 
     def check_api(self) -> None:
         url = self.api.base_url.rstrip("/") + "/health"
+        self.logger.info("phase=api_health_check url=%s", url)
         resp = self.session.get(url, timeout=self.runtime.timeout_seconds)
         resp.raise_for_status()
 
@@ -47,6 +48,13 @@ class TorqMindSink:
             headers["Content-Encoding"] = "gzip"
 
         url = self.api.base_url.rstrip("/") + f"/ingest/{dataset}"
+        self.logger.info(
+            "dataset=%s phase=send_start url=%s gzip=%s timeout_s=%s",
+            dataset,
+            url,
+            self.runtime.gzip_enabled,
+            self.runtime.timeout_seconds,
+        )
 
         def _call():
             resp = self.session.post(url, data=payload, headers=headers, timeout=self.runtime.timeout_seconds)
@@ -65,4 +73,12 @@ class TorqMindSink:
         if dry_run:
             return {"ok": True, "status_code": resp.status_code}
 
-        return resp.json()
+        body = resp.json()
+        self.logger.info(
+            "dataset=%s phase=send_done status=%s inserted_or_updated=%s rejected=%s",
+            dataset,
+            resp.status_code,
+            body.get("inserted_or_updated"),
+            body.get("rejected"),
+        )
+        return body
