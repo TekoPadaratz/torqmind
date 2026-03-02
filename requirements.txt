@@ -1,0 +1,3 @@
+# TorqMind monorepo usa Docker + pyproject.toml (API) e package.json (WEB).
+# Este requirements.txt é apenas para quem quiser rodar utilitários Python fora do Docker.
+python-dotenv==1.0.1
