@@ -14,6 +14,7 @@ router = APIRouter(prefix="/etl", tags=["etl"])
 @router.post("/run")
 def run_etl(
     refresh_mart: bool = Query(True),
+    force_full: bool = Query(False),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
@@ -33,7 +34,11 @@ def run_etl(
     # Managers typically should not run ETL in production, but for dev we allow.
     with get_conn(role=role, tenant_id=tenant, branch_id=None) as conn:
         try:
-            row = conn.execute("SELECT etl.run_all(%s, %s) AS result", (tenant, refresh_mart)).fetchone()
+            row = conn.execute(
+                "SELECT etl.run_all(%s, %s, %s) AS result",
+                (tenant, force_full, refresh_mart),
+            ).fetchone()
+            conn.commit()
             return row["result"]
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"ETL failed: {e}")

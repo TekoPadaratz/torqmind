@@ -319,7 +319,9 @@ async def ingest_dataset(
     # Execute batch
     with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
         with conn.transaction():
-            conn.executemany(sql, values)
+            with conn.cursor() as cur:
+                cur.executemany(sql, values)
+        conn.commit()
 
     # Optional: send telegram notifications when there are cancelled comprovantes
     if dataset_key == "comprovantes":
@@ -333,8 +335,10 @@ async def ingest_dataset(
     if run_etl:
         with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
             etl_result = conn.execute(
-                "SELECT etl.run_all(%s, %s) AS result", (id_empresa, refresh_mart)
+                "SELECT etl.run_all(%s, %s, %s) AS result",
+                (id_empresa, False, refresh_mart),
             ).fetchone()["result"]
+            conn.commit()
 
     return {
         "ok": True,
