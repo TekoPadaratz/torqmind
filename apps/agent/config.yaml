@@ -38,16 +38,20 @@ datasets:
     enabled: true
     table: dbo.COMPROVANTES
     watermark_column: DATAREPL
+    # Optional for text columns: 121 (ISO) or 103 (dd/mm/yyyy)
+    # watermark_style: 121
 
   movprodutos:
     enabled: true
     table: dbo.MOVPRODUTOS
     watermark_column: DATAREPL
+    # watermark_style: 121
 
   itensmovprodutos:
     enabled: true
     table: dbo.ITENSMOVPRODUTOS
     watermark_column: DATAREPL
+    # watermark_style: 121
 
   # Optional datasets (disabled by default)
   filiais: { enabled: false, table: dbo.FILIAIS, watermark_column: DATAREPL }

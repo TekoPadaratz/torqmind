@@ -39,7 +39,7 @@ Campos principais:
 - `api.ingest_key` (produção)
 - `api.empresa_id` (somente dev)
 - `batch_size`, `fetch_size`, `max_retries`, `timeout_seconds`, `gzip_enabled`
-- `datasets.<dataset>.enabled/table/watermark_column/query`
+- `datasets.<dataset>.enabled/table/watermark_column/query/watermark_style`
 
 ### Env overrides
 
@@ -80,6 +80,12 @@ Valida:
 python -m agent run --once --config config.yaml
 ```
 
+Resetando watermark de um dataset antes do ciclo:
+
+```bash
+python -m agent run --once --reset-watermark comprovantes --config config.yaml
+```
+
 ### Daemon
 
 ```bash
@@ -92,6 +98,12 @@ python -m agent run --loop --interval 60 --config config.yaml
 python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-01 --config config.yaml
 ```
 
+### Reset de watermark (comando dedicado)
+
+```bash
+python -m agent reset --dataset comprovantes --config config.yaml
+```
+
 ## Watermarks/State
 
 - Novo formato por dataset:
@@ -99,10 +111,27 @@ python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-0
 - Escopo interno por db/filial (chave `db:<id_db>`).
 - Gravação atômica (`tmp + rename`).
 - Compatibilidade: se houver `state.json` legado, ele é migrado automaticamente na inicialização.
+- Watermark é persistido em ISO 8601 (`datetime.fromisoformat`).
 
 ## Datasets suportados
 
 `filiais`, `funcionarios`, `entidades`/`clientes`, `grupoprodutos`, `localvendas`, `produtos`, `turnos`, `comprovantes`, `movprodutos`, `itensmovprodutos`, `contaspagar`, `contasreceber`, `financeiro`.
+
+## Watermark em coluna texto (SQL Server)
+
+Se a coluna de watermark for `varchar/nvarchar`, o agent aplica:
+
+1. `TRY_CONVERT(datetime2, <col>, 121)` (ISO)
+2. fallback para `TRY_CONVERT(datetime2, <col>, 103)` quando houver watermark e a primeira estratégia retornar 0 linhas.
+
+Você também pode fixar por dataset:
+
+```yaml
+datasets:
+  comprovantes:
+    watermark_column: DATAREPL
+    watermark_style: 103
+```
 
 ## Testes
 
