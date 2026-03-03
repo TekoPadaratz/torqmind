@@ -1,20 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import AppNav from '../components/AppNav';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
-
-function useScope() {
-  const params = useSearchParams();
-  const dt_ini = params.get('dt_ini') || '';
-  const dt_fim = params.get('dt_fim') || '';
-  const id_filial = params.get('id_filial');
-  const id_empresa = params.get('id_empresa');
-  return { dt_ini, dt_fim, id_filial, id_empresa };
-}
+import { extractApiError } from '../lib/errors';
+import { useScopeQuery } from '../lib/scope';
 
 function fmtMoney(v: any) {
   const n = Number(v || 0);
@@ -23,11 +17,12 @@ function fmtMoney(v: any) {
 
 export default function CustomersPage() {
   const router = useRouter();
-  const scope = useScope();
+  const scope = useScopeQuery();
 
   const [claims, setClaims] = useState<any>(null);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
     if (!claims) return undefined;
@@ -37,6 +32,8 @@ export default function CustomersPage() {
   }, [claims]);
 
   useEffect(() => {
+    if (!scope.ready) return;
+
     if (!requireAuth()) {
       router.push('/');
       return;
@@ -48,6 +45,7 @@ export default function CustomersPage() {
 
     const load = async () => {
       setLoading(true);
+      setError('');
       try {
         const me = await apiGet('/auth/me');
         setClaims(me);
@@ -58,8 +56,8 @@ export default function CustomersPage() {
 
         const res = await apiGet(`/bi/customers/overview?${qs.toString()}`);
         setData(res);
-      } catch (e) {
-        console.error(e);
+      } catch (err: any) {
+        setError(extractApiError(err, 'Falha ao carregar clientes'));
       } finally {
         setLoading(false);
       }
@@ -68,86 +66,86 @@ export default function CustomersPage() {
     load();
   }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa]);
 
+  const topChart = useMemo(
+    () =>
+      (data?.top_customers || []).slice(0, 10).map((c: any) => ({
+        cliente: `${c.id_cliente}`,
+        faturamento: Number(c.faturamento || 0),
+      })),
+    [data]
+  );
+
   return (
     <div>
-      <AppNav title="Análise de Clientes" userLabel={userLabel} />
-
+      <AppNav title="Analise de Clientes" userLabel={userLabel} />
       <div className="container">
-        <div className="card">
-          <h2>Escopo</h2>
-          <div className="row">
-            <div className="kpi">
-              <div className="label">Período</div>
-              <div className="value">
-                {scope.dt_ini} → {scope.dt_fim}
-              </div>
-            </div>
-            <div className="kpi">
-              <div className="label">Filial</div>
-              <div className="value">{scope.id_filial || 'Todas'}</div>
-            </div>
-          </div>
-        </div>
+        {error ? <div className="card errorCard">{error}</div> : null}
 
-        <div className="card">
-          <h2>Snapshot (RFM simplificado)</h2>
-          {loading ? (
-            <p>Carregando...</p>
-          ) : (
-            <div className="row">
-              <div className="kpi">
-                <div className="label">Clientes identificados</div>
-                <div className="value">{data?.rfm?.clientes_identificados ?? 0}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Ativos (7d)</div>
-                <div className="value">{data?.rfm?.ativos_7d ?? 0}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Em risco (30d)</div>
-                <div className="value">{data?.rfm?.em_risco_30d ?? 0}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Faturamento (90d)</div>
-                <div className="value">{fmtMoney(data?.rfm?.faturamento_90d)}</div>
-              </div>
-            </div>
-          )}
-          <div className="muted">
-            Este RFM é rule-based (sem ML). A base DW já está pronta para evoluir para cohort, churn e LTV.
-          </div>
-        </div>
+        <div className="bi-grid" style={{ marginTop: 12 }}>
+          <div className="card kpi col-3"><div className="label">Clientes identificados</div><div className="value">{loading ? '...' : data?.rfm?.clientes_identificados ?? 0}</div></div>
+          <div className="card kpi col-3"><div className="label">Ativos 7d</div><div className="value">{loading ? '...' : data?.rfm?.ativos_7d ?? 0}</div></div>
+          <div className="card kpi col-3"><div className="label">Em risco 30d</div><div className="value">{loading ? '...' : data?.rfm?.em_risco_30d ?? 0}</div></div>
+          <div className="card kpi col-3"><div className="label">Fat. 90d</div><div className="value">{loading ? '...' : fmtMoney(data?.rfm?.faturamento_90d)}</div></div>
 
-        <div className="card">
-          <h2>Top clientes (por faturamento)</h2>
-          {loading ? (
-            <p>Carregando...</p>
-          ) : (
-            <table className="table">
+          <div className="card col-12">
+            <h2>Risco de churn (top 10)</h2>
+            {!loading && !(data?.churn_top || []).length ? <p className="muted">Sem clientes com risco alto no período.</p> : null}
+            <table className="table compact">
               <thead>
                 <tr>
                   <th>Cliente</th>
-                  <th>Compras</th>
+                  <th>Score churn</th>
                   <th>Última compra</th>
-                  <th>Ticket médio</th>
-                  <th>Faturamento</th>
+                  <th>Compras 30d</th>
+                  <th>Compras 60-30d</th>
+                  <th>Fat. 30d</th>
+                  <th>Fat. 60-30d</th>
                 </tr>
               </thead>
               <tbody>
-                {(data?.top_customers || []).map((c: any) => (
+                {(data?.churn_top || []).map((c: any) => (
                   <tr key={c.id_cliente}>
+                    <td>{c.cliente_nome}</td>
                     <td>
-                      #{c.id_cliente} — {c.cliente_nome}
+                      <span className={`badge ${Number(c.churn_score || 0) >= 80 ? 'warn' : 'ok'}`}>{c.churn_score}</span>
                     </td>
-                    <td>{c.compras}</td>
-                    <td>{c.ultima_compra || '-'}</td>
-                    <td>{fmtMoney(c.ticket_medio)}</td>
-                    <td>{fmtMoney(c.faturamento)}</td>
+                    <td>{c.last_purchase ? String(c.last_purchase).slice(0, 10) : '-'}</td>
+                    <td>{c.compras_30d}</td>
+                    <td>{c.compras_60_30}</td>
+                    <td>{fmtMoney(c.faturamento_30d)}</td>
+                    <td>{fmtMoney(c.faturamento_60_30)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
+          </div>
+
+          <div className="card col-7 chartCard">
+            <h2>Top clientes por faturamento</h2>
+            <div className="chartWrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topChart}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
+                  <XAxis dataKey="cliente" stroke="#9fb0d0" />
+                  <YAxis stroke="#9fb0d0" />
+                  <Tooltip />
+                  <Bar dataKey="faturamento" fill="#818cf8" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="card col-5">
+            <h2>Top clientes</h2>
+            <table className="table compact">
+              <thead><tr><th>Cliente</th><th>Compras</th><th>Ticket</th></tr></thead>
+              <tbody>
+                {(data?.top_customers || []).slice(0, 10).map((c: any) => (
+                  <tr key={c.id_cliente}><td>{c.cliente_nome}</td><td>{c.compras}</td><td>{fmtMoney(c.ticket_medio)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

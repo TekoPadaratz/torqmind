@@ -258,6 +258,240 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
 
 
 # ========================
+# Risk Scoring / Insights
+# ========================
+
+def risk_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+
+    sql = f"""
+      SELECT
+        COALESCE(SUM(eventos_risco_total),0)::int AS total_eventos,
+        COALESCE(SUM(eventos_alto_risco),0)::int AS eventos_alto_risco,
+        COALESCE(SUM(impacto_estimado_total),0)::numeric(18,2) AS impacto_total,
+        COALESCE(AVG(score_medio),0)::numeric(10,2) AS score_medio
+      FROM mart.agg_risco_diaria
+      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      {where_filial}
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return row or {"total_eventos": 0, "eventos_alto_risco": 0, "impacto_total": 0, "score_medio": 0}
+
+
+def risk_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+
+    sql = f"""
+      SELECT
+        data_key,
+        id_filial,
+        eventos_risco_total,
+        eventos_alto_risco,
+        impacto_estimado_total,
+        score_medio,
+        p95_score
+      FROM mart.agg_risco_diaria
+      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      {where_filial}
+      ORDER BY data_key, id_filial
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def risk_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+
+    sql = f"""
+      SELECT
+        id_funcionario,
+        MAX(funcionario_nome) AS funcionario_nome,
+        SUM(eventos)::int AS eventos,
+        SUM(alto_risco)::int AS alto_risco,
+        SUM(impacto_estimado)::numeric(18,2) AS impacto_estimado,
+        AVG(score_medio)::numeric(10,2) AS score_medio
+      FROM mart.risco_top_funcionarios_diaria
+      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      {where_filial}
+      GROUP BY id_funcionario
+      ORDER BY impacto_estimado DESC, score_medio DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit: int = 30) -> List[Dict[str, Any]]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
+
+    sql = f"""
+      SELECT
+        id,
+        id_filial,
+        data_key,
+        data,
+        event_type,
+        id_db,
+        id_comprovante,
+        id_movprodutos,
+        id_usuario,
+        id_funcionario,
+        funcionario_nome,
+        id_turno,
+        valor_total,
+        impacto_estimado,
+        score_risco,
+        score_level,
+        reasons
+      FROM mart.risco_eventos_recentes
+      WHERE id_empresa = %s
+      {where_filial}
+      ORDER BY data DESC NULLS LAST, id DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def risk_insights(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    status: Optional[str] = None,
+    limit: int = 30,
+) -> List[Dict[str, Any]]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_status = "" if not status else "AND status = %s"
+    params = [id_empresa, dt_ini, dt_fim] + ([] if id_filial is None else [id_filial]) + ([] if not status else [status]) + [limit]
+
+    sql = f"""
+      SELECT
+        id,
+        created_at,
+        id_filial,
+        insight_type,
+        severity,
+        dt_ref,
+        impacto_estimado,
+        title,
+        message,
+        recommendation,
+        status,
+        meta
+      FROM app.insights_gerados
+      WHERE id_empresa = %s
+        AND dt_ref BETWEEN %s AND %s
+        {where_filial}
+        {where_status}
+      ORDER BY dt_ref DESC, created_at DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def risk_by_turn_local(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+
+    sql = f"""
+      SELECT
+        id_turno,
+        id_local_venda,
+        SUM(eventos)::int AS eventos,
+        SUM(alto_risco)::int AS alto_risco,
+        SUM(impacto_estimado)::numeric(18,2) AS impacto_estimado,
+        AVG(score_medio)::numeric(10,2) AS score_medio
+      FROM mart.risco_turno_local_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      GROUP BY id_turno, id_local_venda
+      ORDER BY impacto_estimado DESC, score_medio DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params_sales = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    params_risk = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+
+    sql_sales = f"""
+      SELECT
+        COALESCE(SUM(faturamento),0)::numeric(18,2) AS faturamento,
+        COALESCE(SUM(margem),0)::numeric(18,2) AS margem,
+        COALESCE(AVG(ticket_medio),0)::numeric(18,2) AS ticket_medio
+      FROM mart.agg_vendas_diaria
+      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      {where_filial}
+    """
+    sql_risk = f"""
+      SELECT
+        COALESCE(SUM(eventos_alto_risco),0)::int AS eventos_alto_risco,
+        COALESCE(SUM(eventos_risco_total),0)::int AS eventos_risco_total,
+        COALESCE(SUM(impacto_estimado_total),0)::numeric(18,2) AS impacto_estimado_total
+      FROM mart.agg_risco_diaria
+      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      {where_filial}
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        sales = conn.execute(sql_sales, params_sales).fetchone() or {}
+        risk = conn.execute(sql_risk, params_risk).fetchone() or {}
+
+    faturamento = float(sales.get("faturamento", 0) or 0)
+    margem = float(sales.get("margem", 0) or 0)
+    ticket = float(sales.get("ticket_medio", 0) or 0)
+    eventos_alto = int(risk.get("eventos_alto_risco", 0) or 0)
+    eventos_total = int(risk.get("eventos_risco_total", 0) or 0)
+    impacto = float(risk.get("impacto_estimado_total", 0) or 0)
+
+    margem_ratio = (margem / faturamento) if faturamento > 0 else 0.0
+    margem_score = min(100.0, max(0.0, (margem_ratio / 0.15) * 100))
+    risk_density = (eventos_alto / eventos_total) if eventos_total > 0 else 0.0
+    risk_score = max(0.0, 100.0 - min(100.0, risk_density * 120.0 + (impacto / max(faturamento, 1.0)) * 100.0))
+    ticket_score = min(100.0, max(0.0, (ticket / 120.0) * 100.0))
+
+    score = round((margem_score * 0.45) + (risk_score * 0.40) + (ticket_score * 0.15), 2)
+
+    return {
+        "score": max(0, min(100, score)),
+        "components": {
+            "margem_score": round(margem_score, 2),
+            "risk_score": round(risk_score, 2),
+            "ticket_score": round(ticket_score, 2),
+        },
+    }
+
+
+# ========================
 # Clientes
 # ========================
 
@@ -344,6 +578,39 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int],
             "em_risco_30d": 0,
             "faturamento_90d": 0,
         }
+
+
+def customers_churn_risk(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    min_score: int = 60,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [limit]
+
+    sql = f"""
+      SELECT
+        id_cliente,
+        COALESCE(cliente_nome, '(Sem cliente)') AS cliente_nome,
+        churn_score,
+        last_purchase,
+        compras_30d,
+        compras_60_30,
+        faturamento_30d,
+        faturamento_60_30,
+        reasons
+      FROM mart.clientes_churn_risco
+      WHERE id_empresa = %s
+        AND id_cliente <> -1
+        AND churn_score >= %s
+        {where_filial}
+      ORDER BY churn_score DESC, faturamento_60_30 DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
 
 
 # ========================

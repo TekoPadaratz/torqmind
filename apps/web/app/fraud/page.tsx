@@ -1,33 +1,34 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, LineChart } from 'recharts';
 
 import AppNav from '../components/AppNav';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
-
-function useScope() {
-  const params = useSearchParams();
-  const dt_ini = params.get('dt_ini') || '';
-  const dt_fim = params.get('dt_fim') || '';
-  const id_filial = params.get('id_filial');
-  const id_empresa = params.get('id_empresa');
-  return { dt_ini, dt_fim, id_filial, id_empresa };
-}
+import { extractApiError } from '../lib/errors';
+import { useScopeQuery } from '../lib/scope';
 
 function fmtMoney(v: any) {
   const n = Number(v || 0);
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function shortDateKey(key: number) {
+  const s = String(key || '');
+  if (s.length !== 8) return s;
+  return `${s.slice(6, 8)}/${s.slice(4, 6)}`;
+}
+
 export default function FraudPage() {
   const router = useRouter();
-  const scope = useScope();
+  const scope = useScopeQuery();
 
   const [claims, setClaims] = useState<any>(null);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
     if (!claims) return undefined;
@@ -37,6 +38,8 @@ export default function FraudPage() {
   }, [claims]);
 
   useEffect(() => {
+    if (!scope.ready) return;
+
     if (!requireAuth()) {
       router.push('/');
       return;
@@ -48,6 +51,7 @@ export default function FraudPage() {
 
     const load = async () => {
       setLoading(true);
+      setError('');
       try {
         const me = await apiGet('/auth/me');
         setClaims(me);
@@ -58,8 +62,8 @@ export default function FraudPage() {
 
         const res = await apiGet(`/bi/fraud/overview?${qs.toString()}`);
         setData(res);
-      } catch (e) {
-        console.error(e);
+      } catch (err: any) {
+        setError(extractApiError(err, 'Falha ao carregar fraude'));
       } finally {
         setLoading(false);
       }
@@ -68,136 +72,122 @@ export default function FraudPage() {
     load();
   }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa]);
 
+  const byDay = useMemo(
+    () => (data?.by_day || []).map((r: any) => ({ ...r, data: shortDateKey(r.data_key), cancelamentos: Number(r.cancelamentos || 0) })),
+    [data]
+  );
+  const riskByDay = useMemo(
+    () =>
+      (data?.risk_by_day || []).map((r: any) => ({
+        ...r,
+        data: shortDateKey(r.data_key),
+        eventos_alto_risco: Number(r.eventos_alto_risco || 0),
+        impacto_estimado_total: Number(r.impacto_estimado_total || 0),
+      })),
+    [data]
+  );
+
   return (
     <div>
       <AppNav title="Sistema Anti-Fraude" userLabel={userLabel} />
-
       <div className="container">
-        <div className="card">
-          <h2>Escopo</h2>
-          <div className="row">
-            <div className="kpi">
-              <div className="label">Período</div>
-              <div className="value">
-                {scope.dt_ini} → {scope.dt_fim}
-              </div>
-            </div>
-            <div className="kpi">
-              <div className="label">Filial</div>
-              <div className="value">{scope.id_filial || 'Todas'}</div>
+        {error ? <div className="card errorCard">{error}</div> : null}
+
+        <div className="bi-grid" style={{ marginTop: 12 }}>
+          <div className="card kpi col-6"><div className="label">Cancelamentos</div><div className="value">{loading ? '...' : Number(data?.kpis?.cancelamentos || 0)}</div></div>
+          <div className="card kpi col-6"><div className="label">Valor cancelado</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.valor_cancelado)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Impacto de risco (R$)</div><div className="value">{loading ? '...' : fmtMoney(data?.risk_kpis?.impacto_total)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Eventos alto risco</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.eventos_alto_risco || 0)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Score medio</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.score_medio || 0).toFixed(1)}</div></div>
+
+          <div className="card col-8 chartCard">
+            <h2>Cancelamentos por dia</h2>
+            <div className="chartWrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={byDay}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
+                  <XAxis dataKey="data" stroke="#9fb0d0" />
+                  <YAxis stroke="#9fb0d0" />
+                  <Tooltip />
+                  <Bar dataKey="cancelamentos" fill="#f97316" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
             </div>
           </div>
-        </div>
 
-        <div className="card">
-          <h2>KPIs de cancelamentos</h2>
-          {loading ? (
-            <p>Carregando...</p>
-          ) : (
-            <div className="row">
-              <div className="kpi">
-                <div className="label">Cancelamentos</div>
-                <div className="value">{Number(data?.kpis?.cancelamentos || 0)}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Valor cancelado</div>
-                <div className="value">{fmtMoney(data?.kpis?.valor_cancelado)}</div>
-              </div>
-            </div>
-          )}
-          <div className="muted">
-            Dica: configure o Telegram para receber alerta em tempo real (tabela <code>app.user_notification_settings</code>).
-          </div>
-        </div>
-
-        <div className="card">
-          <h2>Cancelamentos por dia</h2>
-          {loading ? (
-            <p>Carregando...</p>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Data</th>
-                  <th>Filial</th>
-                  <th>Cancelamentos</th>
-                  <th>Valor</th>
-                </tr>
-              </thead>
+          <div className="card col-4">
+            <h2>Top funcionarios por risco</h2>
+            <table className="table compact">
+              <thead><tr><th>Funcionario</th><th>Score</th><th>Impacto</th></tr></thead>
               <tbody>
-                {(data?.by_day || []).map((r: any) => (
-                  <tr key={`${r.data_key}-${r.id_filial}`}
-                    >
-                    <td>{String(r.data_key)}</td>
-                    <td>{r.id_filial}</td>
-                    <td>{r.cancelamentos}</td>
-                    <td>{fmtMoney(r.valor_cancelado)}</td>
+                {(data?.risk_top_employees || []).slice(0, 10).map((u: any) => (
+                  <tr key={u.id_funcionario}>
+                    <td>{u.funcionario_nome || u.id_funcionario}</td>
+                    <td>{Number(u.score_medio || 0).toFixed(1)}</td>
+                    <td>{fmtMoney(u.impacto_estimado)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
 
-        <div className="card">
-          <h2>Top usuários por cancelamento</h2>
-          {loading ? (
-            <p>Carregando...</p>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Usuário</th>
-                  <th>Cancelamentos</th>
-                  <th>Valor cancelado</th>
-                </tr>
-              </thead>
+          <div className="card col-12">
+            <h2>Risco por turno e local</h2>
+            <table className="table compact">
+              <thead><tr><th>Turno</th><th>Local</th><th>Eventos</th><th>Alto risco</th><th>Impacto</th><th>Score medio</th></tr></thead>
               <tbody>
-                {(data?.top_users || []).map((u: any) => (
-                  <tr key={u.id_usuario}>
-                    <td>{u.id_usuario ?? '(Sem usuário)'}</td>
-                    <td>{u.cancelamentos}</td>
-                    <td>{fmtMoney(u.valor_cancelado)}</td>
+                {(data?.risk_by_turn_local || []).slice(0, 10).map((r: any, idx: number) => (
+                  <tr key={`${r.id_turno}-${r.id_local_venda}-${idx}`}>
+                    <td>{r.id_turno ?? '-'}</td>
+                    <td>{r.id_local_venda ?? '-'}</td>
+                    <td>{r.eventos}</td>
+                    <td>{r.alto_risco}</td>
+                    <td>{fmtMoney(r.impacto_estimado)}</td>
+                    <td>{Number(r.score_medio || 0).toFixed(1)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
 
-        <div className="card">
-          <h2>Últimos eventos cancelados</h2>
-          {loading ? (
-            <p>Carregando...</p>
-          ) : (
-            <table className="table">
+          <div className="card col-12">
+            <h2>Ultimos eventos de risco</h2>
+            <table className="table compact">
               <thead>
-                <tr>
-                  <th>Data/hora</th>
-                  <th>Filial</th>
-                  <th>DB</th>
-                  <th>Comprovante</th>
-                  <th>Usuário</th>
-                  <th>Turno</th>
-                  <th>Valor</th>
-                </tr>
+                <tr><th>Data</th><th>Filial</th><th>Evento</th><th>Funcionario</th><th>Score</th><th>Valor</th><th>Impacto</th><th>Reasons</th></tr>
               </thead>
               <tbody>
-                {(data?.last_events || []).map((e: any) => (
-                  <tr key={`${e.id_db}-${e.id_comprovante}`}
-                    >
-                    <td>{e.data || '(sem data)'}</td>
+                {(data?.risk_last_events || []).slice(0, 20).map((e: any) => (
+                  <tr key={e.id}>
+                    <td>{e.data || '-'}</td>
                     <td>{e.id_filial}</td>
-                    <td>{e.id_db}</td>
-                    <td>{e.id_comprovante}</td>
-                    <td>{e.id_usuario ?? '?'}</td>
-                    <td>{e.id_turno ?? '?'}</td>
+                    <td>{e.event_type}</td>
+                    <td>{e.funcionario_nome || e.id_funcionario || '-'}</td>
+                    <td>{e.score_risco}</td>
                     <td>{fmtMoney(e.valor_total)}</td>
+                    <td>{fmtMoney(e.impacto_estimado)}</td>
+                    <td>{Object.keys(e.reasons || {}).slice(0, 3).join(', ') || '-'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
+          </div>
+
+          <div className="card col-12 chartCard">
+            <h2>Serie temporal de alto risco</h2>
+            <div className="chartWrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={riskByDay}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
+                  <XAxis dataKey="data" stroke="#9fb0d0" />
+                  <YAxis stroke="#9fb0d0" />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="eventos_alto_risco" stroke="#ef4444" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="impacto_estimado_total" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </div>
       </div>
     </div>
