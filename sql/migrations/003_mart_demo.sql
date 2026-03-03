@@ -67,7 +67,14 @@ CREATE TABLE auth.user_tenants (
   role              text NOT NULL CHECK (role IN ('MASTER','OWNER','MANAGER')),
   id_empresa        integer NULL,
   id_filial         integer NULL,
-  PRIMARY KEY (user_id, role, id_empresa, id_filial)
+  id_empresa_pk     integer GENERATED ALWAYS AS (COALESCE(id_empresa, -1)) STORED,
+  id_filial_pk      integer GENERATED ALWAYS AS (COALESCE(id_filial, -1)) STORED,
+  PRIMARY KEY (user_id, role, id_empresa_pk, id_filial_pk),
+  CONSTRAINT ck_auth_user_tenants_role_scope CHECK (
+    (role = 'MASTER'  AND id_empresa IS NULL AND id_filial IS NULL) OR
+    (role = 'OWNER'   AND id_empresa IS NOT NULL AND id_filial IS NULL) OR
+    (role = 'MANAGER' AND id_empresa IS NOT NULL AND id_filial IS NOT NULL)
+  )
 );
 
 CREATE TABLE auth.audit_log (
@@ -1332,29 +1339,43 @@ CREATE INDEX ix_mart_fin_venc_lookup ON mart.financeiro_vencimentos_diaria (id_e
 
 CREATE OR REPLACE FUNCTION etl.refresh_marts()
 RETURNS void AS $$
+DECLARE
+  v_mv record;
 BEGIN
-  -- NOTE: These refreshes rebuild the whole MV. For large tenants, we can evolve to incremental MART tables.
-  REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria;
-  REFRESH MATERIALIZED VIEW mart.insights_base_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_vendas_hora;
-  REFRESH MATERIALIZED VIEW mart.agg_produtos_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_grupos_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_funcionarios_diaria;
-  REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_diaria;
-  REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_eventos;
-  REFRESH MATERIALIZED VIEW mart.financeiro_vencimentos_diaria;
+  -- PT-BR: Atualiza todas as MVs existentes no schema mart sem hardcode.
+  -- EN: Refresh every MV currently present in mart schema (no static list).
+  FOR v_mv IN
+    SELECT schemaname, matviewname
+    FROM pg_matviews
+    WHERE schemaname = 'mart'
+    ORDER BY matviewname
+  LOOP
+    EXECUTE format('REFRESH MATERIALIZED VIEW %I.%I', v_mv.schemaname, v_mv.matviewname);
+  END LOOP;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION etl.run_all(p_id_empresa int, p_refresh_mart boolean DEFAULT true)
+CREATE OR REPLACE FUNCTION etl.run_all(
+  p_id_empresa int,
+  p_force_full boolean DEFAULT false,
+  p_refresh_mart boolean DEFAULT true
+)
 RETURNS jsonb AS $$
 DECLARE
   v_started timestamptz := now();
   v_meta jsonb := '{}'::jsonb;
   v_id bigint;
 BEGIN
-  INSERT INTO etl.run_log (id_empresa, meta) VALUES (p_id_empresa, jsonb_build_object('status','running'))
+  INSERT INTO etl.run_log (id_empresa, meta) VALUES (
+    p_id_empresa,
+    jsonb_build_object('status','running', 'force_full', p_force_full)
+  )
   RETURNING id INTO v_id;
+
+  IF p_force_full THEN
+    DELETE FROM etl.watermark WHERE id_empresa = p_id_empresa;
+    v_meta := v_meta || jsonb_build_object('watermark_reset', true);
+  END IF;
 
   v_meta := v_meta || jsonb_build_object('dim_filial', etl.load_dim_filial(p_id_empresa));
   v_meta := v_meta || jsonb_build_object('dim_grupos', etl.load_dim_grupos(p_id_empresa));
@@ -1382,10 +1403,22 @@ BEGIN
   RETURN jsonb_build_object(
     'ok', true,
     'id_empresa', p_id_empresa,
+    'force_full', p_force_full,
     'started_at', v_started,
     'finished_at', now(),
     'meta', v_meta
   );
+EXCEPTION WHEN OTHERS THEN
+  UPDATE etl.run_log
+  SET
+    finished_at = now(),
+    meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object(
+      'status', 'failed',
+      'error', SQLERRM,
+      'meta_partial', v_meta
+    )
+  WHERE id = v_id;
+  RAISE;
 END;
 $$ LANGUAGE plpgsql;
 

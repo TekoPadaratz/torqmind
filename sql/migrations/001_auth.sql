@@ -14,7 +14,14 @@ CREATE TABLE IF NOT EXISTS auth.user_tenants (
   role              text NOT NULL CHECK (role IN ('MASTER','OWNER','MANAGER')),
   id_empresa        integer NULL,
   id_filial         integer NULL,
-  PRIMARY KEY (user_id, role, id_empresa, id_filial)
+  id_empresa_pk     integer GENERATED ALWAYS AS (COALESCE(id_empresa, -1)) STORED,
+  id_filial_pk      integer GENERATED ALWAYS AS (COALESCE(id_filial, -1)) STORED,
+  PRIMARY KEY (user_id, role, id_empresa_pk, id_filial_pk),
+  CONSTRAINT ck_auth_user_tenants_role_scope CHECK (
+    (role = 'MASTER'  AND id_empresa IS NULL AND id_filial IS NULL) OR
+    (role = 'OWNER'   AND id_empresa IS NOT NULL AND id_filial IS NULL) OR
+    (role = 'MANAGER' AND id_empresa IS NOT NULL AND id_filial IS NOT NULL)
+  )
 );
 
 CREATE TABLE IF NOT EXISTS auth.password_reset_tokens (

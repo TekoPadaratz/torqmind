@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import logging
+import json
+from pathlib import Path
 
 from agent.config import load_config
 from agent.runner import AgentRunner
@@ -45,6 +47,19 @@ def build_parser() -> argparse.ArgumentParser:
     reset = sub.add_parser("reset", help="Reset watermark for a dataset")
     reset.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
     reset.add_argument("--dataset", required=True)
+
+    reset2 = sub.add_parser("reset-watermark", help="Reset watermark for a dataset")
+    reset2.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
+    reset2.add_argument("--dataset", required=True)
+
+    scan = sub.add_parser("schema-scan", help="Scan SQL Server schema candidates for AR/AP datasets")
+    scan.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
+    scan.add_argument(
+        "--keywords",
+        default="PAGAR,RECEBER,TITULO,DUPLICATA,FINANC",
+        help="Comma separated keywords",
+    )
+    scan.add_argument("--output", default="docs/xpert_schema_report.json", help="Output JSON report path")
 
     return parser
 
@@ -89,8 +104,17 @@ def main() -> None:
             runner.backfill(dataset=args.dataset, from_date=dt_from, to_date=dt_to)
             return
 
-        if args.command == "reset":
+        if args.command in {"reset", "reset-watermark"}:
             runner.reset_watermark(args.dataset)
+            return
+
+        if args.command == "schema-scan":
+            keywords = [k.strip() for k in str(args.keywords).split(",") if k.strip()]
+            report = runner.schema_scan(keywords=keywords)
+            out = Path(args.output)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("action=schema_scan result=ok output=%s tables=%s", str(out), len(report.get("candidates", [])))
             return
     except Exception as exc:  # noqa: PERF203
         logger.error("command=%s status=failed error=%s", args.command, str(exc))

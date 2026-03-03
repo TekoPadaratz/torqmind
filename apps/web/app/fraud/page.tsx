@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, LineChart } from 'recharts';
 
 import AppNav from '../components/AppNav';
@@ -19,6 +20,12 @@ function shortDateKey(key: number) {
   const s = String(key || '');
   if (s.length !== 8) return s;
   return `${s.slice(6, 8)}/${s.slice(4, 6)}`;
+}
+
+function dataKeyToISO(key: any) {
+  const s = String(key || '');
+  if (s.length !== 8) return '';
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
 }
 
 export default function FraudPage() {
@@ -86,12 +93,24 @@ export default function FraudPage() {
       })),
     [data]
   );
+  const maxRiskDate = dataKeyToISO(data?.risk_window?.max_data_key);
+  const scopeOutdatedForRisk =
+    !!maxRiskDate &&
+    !!scope.dt_fim &&
+    scope.dt_fim < maxRiskDate &&
+    Number(data?.risk_kpis?.total_eventos || 0) === 0;
 
   return (
     <div>
       <AppNav title="Sistema Anti-Fraude" userLabel={userLabel} />
       <div className="container">
         {error ? <div className="card errorCard">{error}</div> : null}
+        {scopeOutdatedForRisk ? (
+          <div className="card" style={{ marginTop: 12, borderColor: '#f59e0b' }}>
+            <strong>Escopo fora da janela de risco.</strong> O antifraude tem dados ate <strong>{maxRiskDate}</strong>. Ajuste em{' '}
+            <Link href="/scope">Definir Escopo</Link>.
+          </div>
+        ) : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
           <div className="card kpi col-6"><div className="label">Cancelamentos</div><div className="value">{loading ? '...' : Number(data?.kpis?.cancelamentos || 0)}</div></div>

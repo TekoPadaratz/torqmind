@@ -4,7 +4,7 @@ COMPOSE ?= docker compose
 ENV_FILE ?= .env
 ENV_EXAMPLE ?= .envexemple
 
-.PHONY: setup up down logs migrate test lint
+.PHONY: setup up down logs migrate test test-agent lint ci
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -38,6 +38,11 @@ migrate:
 test:
 	@$(COMPOSE) exec -T api python -m unittest discover -s app -p 'test*.py'
 
+test-agent:
+	@PYTHONPATH=apps/agent python3 -m unittest discover -s apps/agent/tests -v
+
 lint:
 	@$(COMPOSE) exec -T api python -m compileall -q app
 	@$(COMPOSE) exec -T web npm run build
+
+ci: test test-agent lint

@@ -2,8 +2,10 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
+import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { clearAuth } from '../lib/auth';
+import { apiGet } from '../lib/api';
 
 function buildHref(path: string, params: URLSearchParams) {
   const qp = new URLSearchParams(params.toString());
@@ -47,9 +49,27 @@ export default function AppNav({
   userLabel?: string;
 }) {
   const router = useRouter();
+  const [unread, setUnread] = useState(0);
   const params = new URLSearchParams(
     typeof window === 'undefined' ? '' : window.location.search
   );
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const qs = new URLSearchParams();
+        const idEmpresa = params.get('id_empresa');
+        const idFilial = params.get('id_filial');
+        if (idEmpresa) qs.set('id_empresa', idEmpresa);
+        if (idFilial) qs.set('id_filial', idFilial);
+        const res = await apiGet(`/bi/notifications/unread-count?${qs.toString()}`);
+        setUnread(Number(res?.unread || 0));
+      } catch {
+        setUnread(0);
+      }
+    };
+    load();
+  }, [params]);
 
   const onLogout = () => {
     clearAuth();
@@ -86,6 +106,9 @@ export default function AppNav({
           ))}
         </div>
         <div className="navActions">
+          <Link className="btn" href={buildHref('/dashboard', params)} aria-label="Alertas">
+            Alertas ({unread})
+          </Link>
           <Link className="btn" href="/scope">
             Escopo
           </Link>

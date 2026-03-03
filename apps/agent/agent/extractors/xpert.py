@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 try:
     import pyodbc  # type: ignore
@@ -103,6 +103,103 @@ class SQLServerExtractor(BaseExtractor):
         if data_type in {"datetime", "datetime2", "smalldatetime", "date"}:
             return "datetime"
         return data_type
+
+    @staticmethod
+    def _quote_ident(ident: str) -> str:
+        return f"[{str(ident).replace(']', ']]')}]"
+
+    def _sample_top_rows(self, schema_name: str, table_name: str, top_n: int = 5) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        cur = conn.cursor()
+        sql = (
+            f"SELECT TOP ({int(top_n)}) * "
+            f"FROM {self._quote_ident(schema_name)}.{self._quote_ident(table_name)}"
+        )
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description]
+        samples: List[Dict[str, Any]] = []
+        for row in cur.fetchmany(top_n):
+            item: Dict[str, Any] = {}
+            for idx, col in enumerate(cols):
+                v = row[idx]
+                if isinstance(v, datetime):
+                    item[col] = v.isoformat(timespec="seconds")
+                elif v is None:
+                    item[col] = None
+                else:
+                    text = str(v)
+                    item[col] = text[:200]
+            samples.append(item)
+        return samples
+
+    def schema_scan(self, keywords: List[str], top_n: int = 5) -> Dict[str, Any]:
+        if not keywords:
+            raise ValueError("keywords must not be empty")
+
+        conn = self._connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              s.name AS schema_name,
+              t.name AS table_name,
+              c.name AS column_name,
+              ty.name AS data_type
+            FROM sys.tables t
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            JOIN sys.columns c ON c.object_id = t.object_id
+            JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+            ORDER BY s.name, t.name, c.column_id
+            """
+        )
+
+        table_map: Dict[str, Dict[str, Any]] = {}
+        keys = [k.strip().lower() for k in keywords if k.strip()]
+        for row in cur.fetchall():
+            schema_name = str(row[0])
+            table_name = str(row[1])
+            column_name = str(row[2])
+            data_type = str(row[3])
+            fqtn = f"{schema_name}.{table_name}"
+            rec = table_map.setdefault(
+                fqtn,
+                {
+                    "schema": schema_name,
+                    "table": table_name,
+                    "score": 0,
+                    "matched_keywords": set(),
+                    "columns": [],
+                },
+            )
+            rec["columns"].append({"name": column_name, "type": data_type})
+
+            tname = table_name.lower()
+            cname = column_name.lower()
+            for kw in keys:
+                if kw in tname:
+                    rec["score"] += 4
+                    rec["matched_keywords"].add(kw)
+                if kw in cname:
+                    rec["score"] += 2
+                    rec["matched_keywords"].add(kw)
+
+        candidates = [v for v in table_map.values() if v["score"] > 0]
+        candidates.sort(key=lambda x: (x["score"], len(x["matched_keywords"])), reverse=True)
+
+        top_candidates = candidates[:25]
+        for rec in top_candidates:
+            try:
+                rec["sample_top5"] = self._sample_top_rows(rec["schema"], rec["table"], top_n=top_n)
+            except Exception as exc:  # noqa: PERF203
+                rec["sample_top5"] = []
+                rec["sample_error"] = str(exc)
+            rec["matched_keywords"] = sorted(list(rec["matched_keywords"]))
+
+        return {
+            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "keywords": keys,
+            "candidates": top_candidates,
+        }
 
     def _build_query_plan(
         self,

@@ -2,7 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
-.venv/
+venv/
 env/
 
 # Node
@@ -20,3 +20,17 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Windows alternate streams / archives
+*:Zone.Identifier
+*.zip
+
+# Agent runtime artifacts
+apps/agent/state/
+apps/agent/spool/
+apps/agent/state.json
+apps/agent/.venv/
+apps/agent/.venv-win/
+
+# Local backups with real keys (never commit)
+secrets_backup/

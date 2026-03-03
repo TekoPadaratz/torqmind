@@ -19,6 +19,7 @@ Why NDJSON?
 
 import gzip
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -48,6 +49,64 @@ def _to_int(x: Any) -> Optional[int]:
             return int(str(x).strip())
         except Exception:
             return None
+
+
+def _parse_ts(x: Any) -> Optional[datetime]:
+    if x is None:
+        return None
+    if isinstance(x, datetime):
+        return x if x.tzinfo else x.replace(tzinfo=timezone.utc)
+    raw = str(x).strip()
+    if not raw:
+        return None
+    candidates = [
+        raw,
+        raw.replace(" ", "T"),
+    ]
+    for c in candidates:
+        try:
+            dt = datetime.fromisoformat(c.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+        try:
+            dt = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            continue
+    return None
+
+
+def _infer_dt_evento(obj: Dict[str, Any]) -> Optional[datetime]:
+    keys = [
+        "DATAREPL",
+        "DTALTERACAO",
+        "DTMOV",
+        "DATA",
+        "DATAMOV",
+        "DTCADASTRO",
+        "VENCIMENTO",
+    ]
+    for k in keys:
+        if k in obj:
+            dt = _parse_ts(obj.get(k))
+            if dt is not None:
+                return dt
+    return None
+
+
+def _infer_id_db_shadow(obj: Dict[str, Any]) -> Optional[int]:
+    return _to_int(_get_any(obj, ["ID_DB", "id_db", "ID", "id"]))
+
+
+def _infer_natural_key(obj: Dict[str, Any], pk_values: Dict[str, Any]) -> str:
+    if "ID_CHAVE_NATURAL" in obj and obj["ID_CHAVE_NATURAL"] not in (None, ""):
+        return str(obj["ID_CHAVE_NATURAL"])
+    parts = [f"{k}={pk_values.get(k)}" for k in sorted(pk_values.keys()) if pk_values.get(k) is not None]
+    if parts:
+        return "|".join(parts)
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True)[:1000]
 
 
 class DatasetSpec:
@@ -235,6 +294,77 @@ def _parse_ndjson_body(raw: bytes, is_gzip: bool) -> List[Dict[str, Any]]:
     return out
 
 
+def _bulk_upsert_with_stats(conn, table: str, pk_cols: List[str], rows: List[Tuple[Any, ...]]) -> Tuple[int, int]:
+    if not rows:
+        return 0, 0
+
+    cols = pk_cols + ["id_db_shadow", "id_chave_natural", "dt_evento", "payload"]
+    placeholders_row = "(" + ",".join(["%s"] * (len(cols) - 1) + ["%s::jsonb"]) + ")"
+    values_sql = ",".join([placeholders_row] * len(rows))
+    update_assignments = ",".join(
+        [
+            "id_db_shadow = EXCLUDED.id_db_shadow",
+            "id_chave_natural = EXCLUDED.id_chave_natural",
+            "dt_evento = EXCLUDED.dt_evento",
+            "payload = EXCLUDED.payload",
+            "ingested_at = now()",
+            "received_at = now()",
+        ]
+    )
+    sql = f"""
+      INSERT INTO {table} ({",".join(cols)})
+      VALUES {values_sql}
+      ON CONFLICT ({",".join(pk_cols)})
+      DO UPDATE SET {update_assignments}
+      RETURNING (xmax = 0) AS inserted_flag
+    """
+
+    flat_params: List[Any] = []
+    for row in rows:
+        flat_params.extend(row)
+
+    with conn.cursor() as cur:
+        cur.execute(sql, flat_params)
+        flags = cur.fetchall()
+    inserted = sum(1 for f in flags if f["inserted_flag"])
+    updated = len(flags) - inserted
+    return inserted, updated
+
+
+@router.get("/health")
+def ingest_health(
+    x_ingest_key: Optional[str] = Header(None, alias="X-Ingest-Key"),
+    x_empresa_id: Optional[str] = Header(None, alias="X-Empresa-Id"),
+):
+    id_empresa = _resolve_id_empresa(x_ingest_key=x_ingest_key, x_empresa_id=x_empresa_id)
+    out: List[Dict[str, Any]] = []
+    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+        for dataset, spec in sorted(DATASETS.items()):
+            row = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*)::bigint AS rows_total,
+                  MAX(ingested_at) AS max_ingested_at,
+                  MAX(received_at) AS max_received_at,
+                  MAX(dt_evento) AS max_dt_evento
+                FROM {spec.table}
+                WHERE id_empresa = %s
+                """,
+                (id_empresa,),
+            ).fetchone()
+            out.append(
+                {
+                    "dataset": dataset,
+                    "table": spec.table,
+                    "rows_total": int(row["rows_total"] or 0),
+                    "max_ingested_at": row["max_ingested_at"],
+                    "max_received_at": row["max_received_at"],
+                    "max_dt_evento": row["max_dt_evento"],
+                }
+            )
+    return {"ok": True, "id_empresa": id_empresa, "datasets": out}
+
+
 @router.post("/{dataset}")
 async def ingest_dataset(
     dataset: str,
@@ -288,9 +418,15 @@ async def ingest_dataset(
             continue
 
         payload_json = json.dumps(obj, ensure_ascii=False)
+        dt_evento = _infer_dt_evento(obj)
+        id_db_shadow = _infer_id_db_shadow(obj)
+        natural_key = _infer_natural_key(obj, pk)
 
-        # Compose tuple in table column order: pk_cols + payload
+        # Compose tuple in table column order: pk_cols + shadow + payload
         tuple_values = [pk.get(col) for col in spec.pk_cols]
+        tuple_values.append(id_db_shadow)
+        tuple_values.append(natural_key)
+        tuple_values.append(dt_evento)
         tuple_values.append(payload_json)
         values.append(tuple(tuple_values))
 
@@ -304,23 +440,10 @@ async def ingest_dataset(
             "details": rejected[:5],
         }
 
-    cols_sql = ",".join(spec.pk_cols + ["payload"])
-    placeholders = ",".join(["%s"] * len(spec.pk_cols) + ["%s::jsonb"])
-    conflict_cols = ",".join(spec.pk_cols)
-
-    # Always update payload/ingested_at on conflict
-    sql = f"""
-      INSERT INTO {spec.table} ({cols_sql})
-      VALUES ({placeholders})
-      ON CONFLICT ({conflict_cols})
-      DO UPDATE SET payload = EXCLUDED.payload, ingested_at = now()
-    """
-
-    # Execute batch
+    # Execute batch with inserted/updated stats
     with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
         with conn.transaction():
-            with conn.cursor() as cur:
-                cur.executemany(sql, values)
+            inserted, updated = _bulk_upsert_with_stats(conn, spec.table, spec.pk_cols, values)
         conn.commit()
 
     # Optional: send telegram notifications when there are cancelled comprovantes
@@ -345,6 +468,8 @@ async def ingest_dataset(
         "dataset": dataset_key,
         "id_empresa": id_empresa,
         "inserted_or_updated": len(values),
+        "inserted": inserted,
+        "updated": updated,
         "rejected": len(rejected),
         "etl": etl_result,
         "sample_rejections": rejected[:5],

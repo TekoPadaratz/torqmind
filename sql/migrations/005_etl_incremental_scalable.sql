@@ -69,16 +69,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 DROP FUNCTION IF EXISTS etl.set_watermark(integer, text, timestamptz);
-CREATE OR REPLACE FUNCTION etl.set_watermark(
-  p_id_empresa int,
-  p_dataset text,
-  p_ts timestamptz
-)
-RETURNS void AS $$
-BEGIN
-  PERFORM etl.set_watermark(p_id_empresa, p_dataset, p_ts, NULL::bigint);
-END;
-$$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION etl.log_step(
   p_id_empresa int,
@@ -684,11 +674,21 @@ BEGIN
   v_meta := v_meta || jsonb_build_object('fact_financeiro', v_rows, 'fact_financeiro_ms', v_step_ms);
   PERFORM etl.log_step(p_id_empresa, 'fact_financeiro', v_step_started, now(), 'ok', v_rows, NULL, jsonb_build_object('ms', v_step_ms));
 
-  v_step_started := now();
-  v_rows := etl.compute_risk_events(p_id_empresa, p_force_full, 14);
-  v_step_ms := FLOOR(EXTRACT(epoch FROM (now() - v_step_started)) * 1000)::int;
-  v_meta := v_meta || jsonb_build_object('risk_events', v_rows, 'risk_events_ms', v_step_ms);
-  PERFORM etl.log_step(p_id_empresa, 'risk_events', v_step_started, now(), 'ok', v_rows, NULL, jsonb_build_object('ms', v_step_ms));
+  IF p_force_full
+     OR COALESCE((v_meta->>'fact_comprovante')::int,0) > 0
+     OR COALESCE((v_meta->>'fact_venda')::int,0) > 0
+     OR COALESCE((v_meta->>'fact_venda_item')::int,0) > 0
+  THEN
+    v_step_started := now();
+    v_rows := etl.compute_risk_events(p_id_empresa, p_force_full, 14);
+    v_step_ms := FLOOR(EXTRACT(epoch FROM (now() - v_step_started)) * 1000)::int;
+    v_meta := v_meta || jsonb_build_object('risk_events', v_rows, 'risk_events_ms', v_step_ms);
+    PERFORM etl.log_step(p_id_empresa, 'risk_events', v_step_started, now(), 'ok', v_rows, NULL, jsonb_build_object('ms', v_step_ms));
+  ELSE
+    v_rows := 0;
+    v_meta := v_meta || jsonb_build_object('risk_events', 0, 'risk_events_skipped', true, 'risk_events_skip_reason', 'no_fact_changes');
+    PERFORM etl.log_step(p_id_empresa, 'risk_events', now(), now(), 'ok', 0, NULL, jsonb_build_object('skipped', true, 'reason', 'no_fact_changes'));
+  END IF;
 
   IF p_refresh_mart THEN
     v_step_started := now();

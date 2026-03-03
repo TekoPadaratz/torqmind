@@ -25,37 +25,32 @@ Acesse:
 
 ---
 
-## Fluxo reprodutível no WSL (do zero)
+## Fluxo rápido local (3 comandos)
 
 Pré-requisitos:
 - Docker Desktop com integração WSL habilitada
 - `docker compose` disponível no terminal
 
-Passo a passo:
-
-1) Setup inicial:
-
+1) Subir stack:
 ```bash
-make setup
+docker compose up --build -d
 ```
 
-2) Subir serviços:
-
+2) Seed de usuários + tenant:
 ```bash
-make up
+docker compose exec api python -m app.cli.seed
 ```
 
-3) Rodar migrações (reset/migration local):
-
+3) Carga demo (ingest STG + ETL STG→DW→MART):
 ```bash
-make migrate
+docker compose exec api python -m app.cli.demo_load
 ```
 
-4) Rodar testes:
-
-```bash
-make test
-```
+Depois, acesse:
+- Web: http://localhost:3000
+- API docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
+- Debug DB (dev): http://localhost:8000/debug/db
 
 Comandos úteis:
 
@@ -92,7 +87,7 @@ Se você quiser ver os dashboards funcionando imediatamente (sem integrar SQL Se
 docker compose exec api python -m app.cli.demo_load
 ```
 
-Isso gera dados sintéticos em `stg.*` e executa `etl.run_all(1, true)`.
+Isso gera dados sintéticos em `stg.*` e executa `etl.run_all(1, true, true)`.
 
 ---
 
@@ -118,6 +113,31 @@ Datasets suportados:
 - `contaspagar`
 - `contasreceber`
 - `financeiro`
+
+---
+
+## Jarvis IA (Responses API) com custo controlado
+
+Endpoints:
+- `POST /bi/jarvis/generate?dt_ref=YYYY-MM-DD&id_filial=&id_empresa=&limit=10&force=false`
+- `GET /bi/admin/ai-usage?days=30&id_filial=&id_empresa=`
+
+Política:
+- IA roda apenas nos top N insights por impacto (configurável via `JARVIS_AI_TOP_N`).
+- Cache por hash em `app.insight_ai_cache` para evitar chamadas repetidas.
+- Fallback determinístico automático quando a API de IA falhar ou não estiver configurada.
+
+Variáveis de ambiente relevantes:
+- `OPENAI_API_KEY`
+- `JARVIS_MODEL_FAST` (default `gpt-4.1-mini`)
+- `JARVIS_MODEL_STRONG` (default `gpt-4.1`)
+- `JARVIS_AI_TOP_N` (default `10`)
+- `JARVIS_AI_MAX_OUTPUT_TOKENS` (default `500`)
+
+Pricing:
+- custo é por token e varia por modelo ao longo do tempo; mantenha os coeficientes via env:
+  - `JARVIS_AI_INPUT_COST_PER_1M`
+  - `JARVIS_AI_OUTPUT_COST_PER_1M`
 
 Parâmetros:
 - `run_etl=true` (opcional)
@@ -148,3 +168,29 @@ Você pode rodar o script:
 Ele recria schemas/tabelas/functions/views/materialized views e seeds mínimos.
 
 > **Atenção:** ele faz `DROP SCHEMA ... CASCADE` (não use em produção).
+
+---
+
+## Troubleshooting
+
+### Tabelas vazias no pgAdmin
+Na maioria dos casos, API/CLI e pgAdmin estão apontando para bancos diferentes.
+
+Cheque:
+1) `DATABASE_URL` e `PG_*` no container `api`
+2) `docker compose exec api curl -s http://localhost:8000/debug/db`
+3) conexão do pgAdmin (host/porta/db/usuário)
+
+O endpoint `/debug/db` deve bater com o mesmo banco que você abriu no pgAdmin.
+
+---
+
+## Release e validação final
+
+- Release notes operacionais: `docs/release_notes.md`
+- Proof pack técnico (comandos, tempos ETL, contagens, endpoints): `docs/proof_pack.md`
+
+### Login falhando com 422 / erro estranho no front
+O frontend agora converte erros da API em texto; verifique resposta em:
+- `http://localhost:8000/docs` (endpoint `/auth/login`)
+- senha do seed: `TorqMind@123` (ou `SEED_PASSWORD` no `.env`)

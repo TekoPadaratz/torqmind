@@ -9,6 +9,7 @@ Agent de produção para rodar no servidor do cliente, extrair incrementalmente 
 - Suporte opcional a `Content-Encoding: gzip`.
 - Header preferencial `X-Ingest-Key` (produção), fallback `X-Empresa-Id` (dev).
 - Resiliência: timeout + retry com exponential backoff.
+- Spool offline em disco: se API cair, os lotes são preservados e reenviados no próximo ciclo.
 - Observabilidade: logs por dataset/batch/tempo/erro.
 - Execução contínua (`run --loop`) e pontual (`run --once`) + `backfill` + `check`.
 
@@ -39,6 +40,7 @@ Campos principais:
 - `api.ingest_key` (produção)
 - `api.empresa_id` (somente dev)
 - `batch_size`, `fetch_size`, `max_retries`, `timeout_seconds`, `gzip_enabled`
+- `spool_dir`, `spool_flush_max_files`
 - `datasets.<dataset>.enabled/table/watermark_column/query/watermark_style`
 
 ### Env overrides
@@ -63,6 +65,8 @@ Campos principais:
 - `TORQMIND_ENABLED_DATASETS` (csv, ex: `comprovantes,movprodutos,itensmovprodutos`)
 - `TORQMIND_ID_EMPRESA`, `TORQMIND_ID_DB`
 - `TORQMIND_STATE_DIR`
+- `TORQMIND_SPOOL_DIR`
+- `TORQMIND_SPOOL_FLUSH_MAX_FILES`
 
 ## Comandos
 
@@ -110,8 +114,17 @@ python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-0
 ### Reset de watermark (comando dedicado)
 
 ```bash
-python -m agent reset --dataset comprovantes --config config.yaml
+python -m agent reset-watermark --dataset comprovantes --config config.yaml
 ```
+
+### Schema scan (AR/AP)
+
+```bash
+python -m agent schema-scan --keywords "PAGAR,RECEBER,TITULO,DUPLICATA,FINANC" --config config.yaml
+```
+
+Saída padrão: `docs/xpert_schema_report.json`
+com ranking de tabelas candidatas e amostra `TOP 5`.
 
 ## Watermarks/State
 
@@ -121,6 +134,12 @@ python -m agent reset --dataset comprovantes --config config.yaml
 - Gravação atômica (`tmp + rename`).
 - Compatibilidade: se houver `state.json` legado, ele é migrado automaticamente na inicialização.
 - Watermark é persistido em ISO 8601 (`datetime.fromisoformat`).
+
+## Spool offline
+
+- Quando a API retorna erro/rede indisponível, o lote vai para `spool_dir`.
+- No próximo `run`, o agent tenta reenviar primeiro a fila pendente.
+- A fila é persistente em disco (`*.ndjson` / `*.ndjson.gz`) para evitar perda de dados.
 
 ## Datasets suportados
 

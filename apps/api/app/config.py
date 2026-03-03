@@ -8,7 +8,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # Environment
+    app_env: str = "dev"
+
     # Database
+    database_url: str | None = None
     pg_host: str = "localhost"
     pg_port: int = 5432
     pg_database: str = "TORQMIND"
@@ -26,6 +30,18 @@ class Settings(BaseSettings):
 
     # Telegram (optional)
     telegram_bot_token: str | None = None
+
+    # Jarvis AI (optional; deterministic fallback is always available)
+    openai_api_key: str = ""
+    jarvis_model_fast: str = "gpt-4.1-mini"
+    jarvis_model_strong: str = "gpt-4.1"
+    jarvis_ai_top_n: int = 10
+    jarvis_ai_max_output_tokens: int = 500
+    jarvis_ai_timeout_seconds: int = 30
+    jarvis_ai_rpm_sleep_seconds: int = 2
+    # Pricing is model-dependent and can change over time; keep env-configurable.
+    jarvis_ai_input_cost_per_1m: float = 0.4
+    jarvis_ai_output_cost_per_1m: float = 1.6
 
     class Config:
         env_file = ".env"

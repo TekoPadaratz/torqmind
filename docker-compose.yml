@@ -23,6 +23,12 @@ services:
       - ./.env
     environment:
       PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: ${PG_DATABASE:-TORQMIND}
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
+      DATABASE_URL: postgresql+asyncpg://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@postgres:5432/${PG_DATABASE:-TORQMIND}
+      APP_ENV: ${APP_ENV:-dev}
     ports:
       - "8000:8000"
     depends_on:
@@ -34,6 +40,8 @@ services:
       context: ./apps/web
     env_file:
       - ./.env
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "3000:3000"
     depends_on:

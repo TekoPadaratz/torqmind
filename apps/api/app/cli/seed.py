@@ -20,12 +20,13 @@ NOTE:
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from app.db import get_conn
 from app.security import hash_password
 
-DEFAULT_PASSWORD = "TorqMind@123"
+DEFAULT_PASSWORD = os.getenv("SEED_PASSWORD", "TorqMind@123")
 
 # Use valid-looking domains to avoid any external email validations
 MASTER_EMAIL = "master@torqmind.com"

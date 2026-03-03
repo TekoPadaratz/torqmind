@@ -32,85 +32,98 @@ def main() -> None:
     random.seed(42)
 
     id_empresa = 1
-    id_filial = 1
     id_db = 1
+    filiais_ids = [1, 2, 3]
 
     # --- Dimensions
-    filiais = [
-        (
-            id_empresa,
-            id_filial,
-            _j({"ID_FILIAL": id_filial, "NOMEFILIAL": "Filial Demo", "CNPJ": "00.000.000/0001-00"}),
-        )
-    ]
-
-    grupos = []
-    for g in range(1, 6):
-        grupos.append(
+    filiais = []
+    for id_filial in filiais_ids:
+        filiais.append(
             (
                 id_empresa,
                 id_filial,
-                g,
-                _j({"ID_GRUPOPRODUTOS": g, "ID_FILIAL": id_filial, "NOMEGRUPOPRODUTOS": f"Grupo {g}"}),
-            )
-        )
-
-    locais = []
-    for l in range(1, 4):
-        locais.append(
-            (
-                id_empresa,
-                id_filial,
-                l,
-                _j({"ID_LOCALVENDAS": l, "ID_FILIAL": id_filial, "NOMELOCALVENDAS": f"Local {l}"}),
-            )
-        )
-
-    produtos = []
-    for p in range(1, 21):
-        g = random.randint(1, 5)
-        l = random.randint(1, 3)
-        custo = round(random.uniform(3.0, 20.0), 4)
-        produtos.append(
-            (
-                id_empresa,
-                id_filial,
-                p,
                 _j(
                     {
-                        "ID_PRODUTOS": p,
                         "ID_FILIAL": id_filial,
-                        "NOMEPRODUTO": f"Produto {p}",
-                        "ID_GRUPOPRODUTOS": g,
-                        "ID_LOCALVENDAS": l,
-                        "customedio": custo,
-                        "UNIDADE": "UN",
+                        "NOMEFILIAL": f"Filial Demo {id_filial}",
+                        "CNPJ": f"00.000.000/000{id_filial}-00",
                     }
                 ),
             )
         )
 
-    funcionarios = []
-    for f in range(1, 8):
-        funcionarios.append(
-            (
-                id_empresa,
-                id_filial,
-                f,
-                _j({"ID_FUNCIONARIOS": f, "ID_FILIAL": id_filial, "NOMEFUNCIONARIO": f"Vendedor {f}"}),
+    grupos = []
+    for id_filial in filiais_ids:
+        for g in range(1, 6):
+            grupos.append(
+                (
+                    id_empresa,
+                    id_filial,
+                    g,
+                    _j({"ID_GRUPOPRODUTOS": g, "ID_FILIAL": id_filial, "NOMEGRUPOPRODUTOS": f"Grupo {g}"}),
+                )
             )
-        )
+
+    locais = []
+    for id_filial in filiais_ids:
+        for l in range(1, 4):
+            locais.append(
+                (
+                    id_empresa,
+                    id_filial,
+                    l,
+                    _j({"ID_LOCALVENDAS": l, "ID_FILIAL": id_filial, "NOMELOCALVENDAS": f"Local {l}"}),
+                )
+            )
+
+    produtos = []
+    for id_filial in filiais_ids:
+        for p in range(1, 21):
+            g = random.randint(1, 5)
+            l = random.randint(1, 3)
+            custo = round(random.uniform(3.0, 20.0), 4)
+            produtos.append(
+                (
+                    id_empresa,
+                    id_filial,
+                    p,
+                    _j(
+                        {
+                            "ID_PRODUTOS": p,
+                            "ID_FILIAL": id_filial,
+                            "NOMEPRODUTO": f"Produto {p}",
+                            "ID_GRUPOPRODUTOS": g,
+                            "ID_LOCALVENDAS": l,
+                            "customedio": custo,
+                            "UNIDADE": "UN",
+                        }
+                    ),
+                )
+            )
+
+    funcionarios = []
+    for id_filial in filiais_ids:
+        for f in range(1, 8):
+            funcionarios.append(
+                (
+                    id_empresa,
+                    id_filial,
+                    f,
+                    _j({"ID_FUNCIONARIOS": f, "ID_FILIAL": id_filial, "NOMEFUNCIONARIO": f"Vendedor {f}"}),
+                )
+            )
 
     clientes = []
-    for c in range(1, 41):
-        clientes.append(
-            (
-                id_empresa,
-                id_filial,
-                c,
-                _j({"ID_ENTIDADE": c, "ID_FILIAL": id_filial, "NOMEENTIDADE": f"Cliente {c}", "CNPJCPF": ""}),
+    for id_filial in filiais_ids:
+        for c in range(1, 41):
+            clientes.append(
+                (
+                    id_empresa,
+                    id_filial,
+                    c,
+                    _j({"ID_ENTIDADE": c, "ID_FILIAL": id_filial, "NOMEENTIDADE": f"Cliente {c}", "CNPJCPF": ""}),
+                )
             )
-        )
 
     # --- Facts (movimentos + itens + comprovantes)
     item_rows = []
@@ -121,76 +134,99 @@ def main() -> None:
     id_mov = 1000
     id_item = 1
     id_comp = 5000
+    risky_user = 5
+    risky_employee = 7
 
+    movement_idx = 0
     for d in range(14):
         day = start + timedelta(days=d)
-        for _ in range(80):
-            ts = day.replace(hour=random.randint(6, 21), minute=random.randint(0, 59), second=0, microsecond=0)
+        for filial_idx, id_filial in enumerate(filiais_ids):
+            movements_in_filial = 27 if filial_idx < 2 else 26
+            for _ in range(movements_in_filial):
+                movement_idx += 1
+                is_risky_context = (id_filial == 1) and (random.random() < 0.22)
+                hour = random.randint(18, 22) if is_risky_context else random.randint(6, 21)
+                ts = day.replace(hour=hour, minute=random.randint(0, 59), second=0, microsecond=0)
 
-            id_mov += 1
-            id_comp += 1
+                id_mov += 1
+                id_comp += 1
 
-            id_turno = random.randint(1, 3)
-            id_usuario = random.randint(1, 5)
-            id_cliente = random.randint(1, 40)
-            id_funcionario = random.randint(1, 7)
+                id_turno = random.randint(1, 3)
+                id_usuario = risky_user if is_risky_context else random.randint(1, 5)
+                id_cliente = random.randint(1, 40)
+                id_funcionario = risky_employee if is_risky_context else random.randint(1, 7)
 
-            n_itens = random.randint(1, 4)
-            total_venda = 0.0
+                # 1120 movimentos / 2804 itens:
+                # base 2 itens por movimento + 564 movimentos com 3 itens.
+                # deterministic and reproducible.
+                n_itens = 3 if movement_idx <= 564 else 2
+                total_venda = 0.0
 
-            for _i in range(n_itens):
-                id_item += 1
-                id_prod = random.randint(1, 20)
-                qtd = random.randint(1, 3)
-                preco = round(random.uniform(5.0, 40.0), 2)
-                total = round(qtd * preco, 2)
-                total_venda += total
+                for _i in range(n_itens):
+                    id_item += 1
+                    id_prod = random.randint(1, 20)
+                    qtd = random.randint(1, 3)
+                    preco = round(random.uniform(5.0, 40.0), 2)
+                    desconto = 0.0
+                    if is_risky_context and random.random() < 0.35:
+                        # desconto fora da curva para o usuário/funcionário suspeito
+                        desconto = round(preco * random.uniform(0.18, 0.38), 2)
+                    elif random.random() < 0.05:
+                        desconto = round(preco * random.uniform(0.05, 0.12), 2)
+                    preco_final = max(0.1, preco - desconto)
+                    total = round(qtd * preco_final, 2)
+                    total_venda += total
 
-                item_payload = {
-                    "ID_ITENSMOVPRODUTOS": id_item,
+                    item_payload = {
+                        "ID_ITENSMOVPRODUTOS": id_item,
+                        "ID_MOVPRODUTOS": id_mov,
+                        "ID_FILIAL": id_filial,
+                        "ID_DB": id_db,
+                        "ID_PRODUTOS": id_prod,
+                        "QTDE": qtd,
+                        "VLRUNITARIO": preco_final,
+                        "TOTAL": total,
+                        "VLRDESCONTO": round(desconto * qtd, 2),
+                        # regra do seu mapping: venda boa = CFOP > 4999
+                        "CFOP": 5102,
+                        "ID_FUNCIONARIOS": id_funcionario,
+                    }
+
+                    item_rows.append((id_empresa, id_filial, id_db, id_mov, id_item, _j(item_payload)))
+
+                cancelado = random.random() < (0.18 if is_risky_context else 0.04)
+                if is_risky_context and random.random() < 0.20:
+                    # força alguns cancelamentos com alto valor para o motor de risco
+                    total_venda = round(total_venda * random.uniform(2.0, 3.2), 2)
+                total_venda = round(total_venda, 2)
+
+                mov_payload = {
                     "ID_MOVPRODUTOS": id_mov,
                     "ID_FILIAL": id_filial,
                     "ID_DB": id_db,
-                    "ID_PRODUTOS": id_prod,
-                    "QTDE": qtd,
-                    "VLRUNITARIO": preco,
-                    "TOTAL": total,
-                    # regra do seu mapping: venda boa = CFOP > 4999
-                    "CFOP": 5102,
-                    "ID_FUNCIONARIOS": id_funcionario,
+                    "DATA": ts.isoformat(sep="T", timespec="seconds"),
+                    "ID_USUARIOS": id_usuario,
+                    "ID_ENTIDADE": id_cliente,
+                    "ID_COMPROVANTE": id_comp,
+                    "ID_TURNOS": id_turno,
+                    "SAIDAS_ENTRADAS": 1,
+                    "TOTALVENDA": round(total_venda, 2),
                 }
+                mov_rows.append((id_empresa, id_filial, id_db, id_mov, _j(mov_payload)))
 
-                item_rows.append((id_empresa, id_filial, id_db, id_mov, id_item, _j(item_payload)))
-
-            cancelado = random.random() < 0.03
-
-            mov_payload = {
-                "ID_MOVPRODUTOS": id_mov,
-                "ID_FILIAL": id_filial,
-                "ID_DB": id_db,
-                "DATA": ts.isoformat(sep="T", timespec="seconds"),
-                "ID_USUARIOS": id_usuario,
-                "ID_ENTIDADE": id_cliente,
-                "ID_COMPROVANTE": id_comp,
-                "ID_TURNOS": id_turno,
-                "SAIDAS_ENTRADAS": 1,
-                "TOTALVENDA": round(total_venda, 2),
-            }
-            mov_rows.append((id_empresa, id_filial, id_db, id_mov, _j(mov_payload)))
-
-            comp_payload = {
-                "ID_COMPROVANTE": id_comp,
-                "ID_FILIAL": id_filial,
-                "ID_DB": id_db,
-                "DATA": ts.isoformat(sep="T", timespec="seconds"),
-                "ID_USUARIOS": id_usuario,
-                "ID_ENTIDADE": id_cliente,
-                "ID_TURNOS": id_turno,
-                "VLRTOTAL": round(total_venda, 2),
-                "CANCELADO": cancelado,
-                "SITUACAO": 1,
-            }
-            comp_rows.append((id_empresa, id_filial, id_db, id_comp, _j(comp_payload)))
+                comp_payload = {
+                    "ID_COMPROVANTE": id_comp,
+                    "ID_FILIAL": id_filial,
+                    "ID_DB": id_db,
+                    "DATA": ts.isoformat(sep="T", timespec="seconds"),
+                    "ID_USUARIOS": id_usuario,
+                    "ID_ENTIDADE": id_cliente,
+                    "ID_TURNOS": id_turno,
+                    "VLRTOTAL": round(total_venda, 2),
+                    "CANCELADO": cancelado,
+                    "SITUACAO": 1,
+                }
+                comp_rows.append((id_empresa, id_filial, id_db, id_comp, _j(comp_payload)))
 
     with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
         with conn.transaction():
@@ -285,7 +321,11 @@ def main() -> None:
                     comp_rows,
                 )
 
-        result = conn.execute("SELECT etl.run_all(%s, %s) AS result", (id_empresa, True)).fetchone()["result"]
+        result = conn.execute(
+            "SELECT etl.run_all(%s, %s, %s) AS result",
+            (id_empresa, True, True),
+        ).fetchone()["result"]
+        conn.commit()
 
     print("\n=== Demo load concluído ===")
     print(f"Movimentos: {len(mov_rows)}")

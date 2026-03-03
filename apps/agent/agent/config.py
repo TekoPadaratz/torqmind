@@ -54,6 +54,8 @@ class RuntimeConfig:
     timeout_seconds: int = 30
     gzip_enabled: bool = True
     state_dir: str = "state"
+    spool_dir: str = "spool"
+    spool_flush_max_files: int = 200
 
 
 @dataclass
@@ -134,6 +136,11 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     runtime["timeout_seconds"] = _env_int("TORQMIND_TIMEOUT_SECONDS", int(runtime.get("timeout_seconds", 30)))
     runtime["gzip_enabled"] = _env_bool("TORQMIND_GZIP_ENABLED", bool(runtime.get("gzip_enabled", True)))
     runtime["state_dir"] = os.getenv("TORQMIND_STATE_DIR", runtime.get("state_dir", "state"))
+    runtime["spool_dir"] = os.getenv("TORQMIND_SPOOL_DIR", runtime.get("spool_dir", "spool"))
+    runtime["spool_flush_max_files"] = _env_int(
+        "TORQMIND_SPOOL_FLUSH_MAX_FILES",
+        int(runtime.get("spool_flush_max_files", 200)),
+    )
 
     raw["id_empresa"] = _env_int("TORQMIND_ID_EMPRESA", raw.get("id_empresa"))
     raw["id_db"] = _env_int("TORQMIND_ID_DB", raw.get("id_db"))
@@ -163,6 +170,10 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         timeout_seconds=int(raw.get("timeout_seconds", raw.get("runtime", {}).get("timeout_seconds", 30))),
         gzip_enabled=bool(raw.get("gzip_enabled", raw.get("runtime", {}).get("gzip_enabled", True))),
         state_dir=str(raw.get("state_dir", raw.get("runtime", {}).get("state_dir", "state"))),
+        spool_dir=str(raw.get("spool_dir", raw.get("runtime", {}).get("spool_dir", "spool"))),
+        spool_flush_max_files=int(
+            raw.get("spool_flush_max_files", raw.get("runtime", {}).get("spool_flush_max_files", 200))
+        ),
     )
 
     datasets = _merge_dataset_configs(raw.get("datasets") or {})

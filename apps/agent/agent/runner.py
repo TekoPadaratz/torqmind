@@ -67,21 +67,21 @@ class AgentRunner:
                 metric = RunMetrics(dataset=dataset)
                 metrics.append(metric)
                 scope = f"db:{self.cfg.id_db or 1}"
-                watermark = None if ignore_watermark else self.state.get(dataset, scope=scope)
+                watermark_before = None if ignore_watermark else self.state.get(dataset, scope=scope)
                 self.logger.info(
                     "dataset=%s phase=start watermark=%s from=%s to=%s ignore_watermark=%s",
                     dataset,
-                    watermark,
+                    watermark_before,
                     dt_from,
                     dt_to,
                     ignore_watermark,
                 )
 
-                max_watermark_seen = watermark
+                max_watermark_seen = watermark_before
                 try:
                     for batch in self.extractor.iter_batches(
                         dataset=dataset,
-                        watermark=watermark,
+                        watermark=watermark_before,
                         batch_size=self.cfg.runtime.batch_size,
                         fetch_size=self.cfg.runtime.fetch_size,
                         dt_from=dt_from,
@@ -93,8 +93,9 @@ class AgentRunner:
                         ingest_result = self.sink.send(dataset=dataset, rows=batch.rows)
                         inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
                         rejected = int(ingest_result.get("rejected", 0) or 0)
+                        spooled = bool(ingest_result.get("spooled", False))
                         metric.sent += inserted
-                        if metric.extracted > 0 and inserted == 0:
+                        if metric.extracted > 0 and inserted == 0 and not spooled:
                             raise RuntimeError(
                                 f"Batch extracted but nothing inserted for dataset={dataset}. "
                                 f"rejected={rejected}. Verify base_url, ingest key and PK fields."
@@ -104,25 +105,29 @@ class AgentRunner:
                             max_watermark_seen = batch.max_watermark
 
                         self.logger.info(
-                            "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s watermark=%s",
+                            "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s spooled=%s watermark=%s",
                             dataset,
                             metric.batches,
                             metric.extracted,
                             metric.sent,
                             rejected,
+                            spooled,
                             max_watermark_seen,
                         )
 
                     if max_watermark_seen and not dt_from and not dt_to:
                         self.state.set(dataset, max_watermark_seen, scope=scope)
+                    watermark_after = self.state.get(dataset, scope=scope)
 
                     self.logger.info(
-                        "dataset=%s phase=done extracted=%s sent=%s batches=%s elapsed_s=%.2f",
+                        "dataset=%s phase=done extracted=%s sent=%s batches=%s elapsed_s=%.2f watermark_before=%s watermark_after=%s",
                         dataset,
                         metric.extracted,
                         metric.sent,
                         metric.batches,
                         time.monotonic() - t0,
+                        watermark_before,
+                        watermark_after,
                     )
                 except Exception as exc:  # noqa: PERF203
                     metric.status = "failed"
@@ -174,3 +179,10 @@ class AgentRunner:
         scope = f"db:{self.cfg.id_db or 1}"
         self.state.set(dataset, None, scope=scope)
         self.logger.info("dataset=%s phase=watermark_reset scope=%s", dataset, scope)
+
+    def schema_scan(self, keywords: list[str]) -> dict:
+        self.logger.info("phase=schema_scan_start keywords=%s", keywords)
+        report = self.extractor.schema_scan(keywords=keywords)
+        self.extractor.close()
+        self.logger.info("phase=schema_scan_done candidates=%s", len(report.get("candidates", [])))
+        return report

@@ -84,6 +84,9 @@ class TestExtractorQuery(unittest.TestCase):
         self.assertIn("TrustServerCertificate=yes", conn)
         self.assertIn("LoginTimeout=15", conn)
 
+    def test_quote_ident_escapes_brackets(self):
+        self.assertEqual(SQLServerExtractor._quote_ident("ab]cd"), "[ab]]cd]")
+
 
 if __name__ == "__main__":
     unittest.main()
