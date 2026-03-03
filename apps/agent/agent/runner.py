@@ -34,7 +34,12 @@ class AgentRunner:
                 yield ds
 
     def check(self) -> None:
-        self.logger.info("action=check step=sqlserver")
+        self.logger.info(
+            "action=check step=sqlserver server=%s driver=%s database=%s",
+            self.cfg.sqlserver.server,
+            self.cfg.sqlserver.driver,
+            self.cfg.sqlserver.database,
+        )
         self.extractor.check_connection()
         self.logger.info("action=check step=api_health")
         self.sink.check_api()

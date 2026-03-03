@@ -33,14 +33,22 @@ class SQLServerExtractor(BaseExtractor):
     def _connection_string(self) -> str:
         sql = self.cfg.sqlserver
         if sql.dsn:
-            return f"DSN={sql.dsn};UID={sql.user};PWD={sql.password}"
-        return (
-            f"DRIVER={{{sql.driver}}};"
-            f"SERVER={sql.server};"
-            f"DATABASE={sql.database};"
-            f"UID={sql.user};"
-            f"PWD={sql.password}"
-        )
+            parts = [f"DSN={sql.dsn}", f"UID={sql.user}", f"PWD={sql.password}"]
+        else:
+            parts = [
+                f"DRIVER={{{sql.driver}}}",
+                f"SERVER={sql.server}",
+                f"DATABASE={sql.database}",
+                f"UID={sql.user}",
+                f"PWD={sql.password}",
+            ]
+
+        if sql.encrypt is not None:
+            parts.append(f"Encrypt={'yes' if sql.encrypt else 'no'}")
+        if sql.trust_server_certificate is not None:
+            parts.append(f"TrustServerCertificate={'yes' if sql.trust_server_certificate else 'no'}")
+        parts.append(f"LoginTimeout={int(sql.login_timeout_seconds)}")
+        return ";".join(parts)
 
     def _connect(self) -> pyodbc.Connection:
         if pyodbc is None:  # pragma: no cover

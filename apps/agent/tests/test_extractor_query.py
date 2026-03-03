@@ -66,6 +66,24 @@ class TestExtractorQuery(unittest.TestCase):
         styles = SQLServerExtractor._watermark_styles({})
         self.assertEqual(styles, [121, 103])
 
+    def test_connection_string_includes_security_flags(self):
+        cfg = self._cfg()
+        cfg.sqlserver = SQLServerConfig(
+            driver="ODBC Driver 18 for SQL Server",
+            server="10.0.0.10,1433",
+            database="atxdados",
+            user="u",
+            password="p",
+            encrypt=False,
+            trust_server_certificate=True,
+            login_timeout_seconds=15,
+        )
+        ex = SQLServerExtractor(cfg, _DummyLogger())
+        conn = ex._connection_string()
+        self.assertIn("Encrypt=no", conn)
+        self.assertIn("TrustServerCertificate=yes", conn)
+        self.assertIn("LoginTimeout=15", conn)
+
 
 if __name__ == "__main__":
     unittest.main()

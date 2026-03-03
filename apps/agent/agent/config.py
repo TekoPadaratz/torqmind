@@ -34,6 +34,9 @@ class SQLServerConfig:
     database: str = ""
     user: str = ""
     password: str = ""
+    encrypt: Optional[bool] = None
+    trust_server_certificate: Optional[bool] = None
+    login_timeout_seconds: int = 30
 
 
 @dataclass
@@ -108,6 +111,16 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     sql["database"] = os.getenv("TORQMIND_SQLSERVER_DATABASE", sql.get("database"))
     sql["user"] = os.getenv("TORQMIND_SQLSERVER_USER", sql.get("user"))
     sql["password"] = os.getenv("TORQMIND_SQLSERVER_PASSWORD", sql.get("password"))
+    encrypt_env = os.getenv("TORQMIND_SQLSERVER_ENCRYPT")
+    if encrypt_env is not None:
+        sql["encrypt"] = encrypt_env.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    trust_env = os.getenv("TORQMIND_SQLSERVER_TRUST_SERVER_CERTIFICATE")
+    if trust_env is not None:
+        sql["trust_server_certificate"] = trust_env.strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+    sql["login_timeout_seconds"] = _env_int(
+        "TORQMIND_SQLSERVER_LOGIN_TIMEOUT_SECONDS",
+        int(sql.get("login_timeout_seconds", 30)),
+    )
 
     api["base_url"] = os.getenv("TORQMIND_API_BASE_URL", api.get("base_url", "http://localhost:8000"))
     api["ingest_key"] = os.getenv("TORQMIND_INGEST_KEY", api.get("ingest_key"))
