@@ -1,42 +1,34 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, setAuthToken } from "./lib/api";
-import { getToken, setToken } from "./lib/auth";
-
-function formatApiError(err: any): string {
-  // PT-BR: FastAPI 422 retorna detail = [{type, loc, msg, ...}]
-  // EN: FastAPI 422 returns detail = [{type, loc, msg, ...}]
-  const detail = err?.response?.data?.detail;
-
-  if (!detail) return "Falha no login";
-  if (typeof detail === "string") return detail;
-
-  if (Array.isArray(detail)) {
-    const msgs = detail
-      .map((d) => (typeof d?.msg === "string" ? d.msg : JSON.stringify(d)))
-      .filter(Boolean);
-    return msgs.length ? msgs.join("; ") : "Falha no login";
-  }
-
-  if (typeof detail === "object") {
-    if (typeof detail.msg === "string") return detail.msg;
-    return JSON.stringify(detail);
-  }
-
-  return String(detail);
-}
+import { clearAuth, getToken, setToken } from "./lib/auth";
+import { extractApiError } from "./lib/errors";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("master@torqmind.com");
   const [password, setPassword] = useState("TorqMind@123");
   const [error, setError] = useState<string | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
     const t = getToken();
-    if (t) {
-      setAuthToken(t);
-      window.location.href = "/scope";
+    if (!t) {
+      setCheckingSession(false);
+      return;
     }
+    setAuthToken(t);
+    api
+      .get("/auth/me")
+      .then(() => {
+        window.location.href = "/scope";
+      })
+      .catch(() => {
+        clearAuth();
+        setError("Sessao expirada ou invalida. Faça login novamente.");
+      })
+      .finally(() => {
+        setCheckingSession(false);
+      });
   }, []);
 
   async function onSubmit(e: React.FormEvent) {
@@ -49,7 +41,7 @@ export default function LoginPage() {
       setAuthToken(token);
       window.location.href = "/scope";
     } catch (err: any) {
-      setError(formatApiError(err));
+      setError(extractApiError(err, "Falha no login"));
     }
   }
 
@@ -69,6 +61,7 @@ export default function LoginPage() {
           <h1>Entrar</h1>
           <div className="muted">Acesse com segurança (JWT). Multi-tenant e RLS entram por escopo.</div>
           <div style={{ height: 16 }} />
+          {checkingSession ? <div className="muted">Validando sessao...</div> : null}
           <form onSubmit={onSubmit} className="row" style={{ gap: 12 }}>
             <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
             <input
@@ -83,7 +76,7 @@ export default function LoginPage() {
                 {error}
               </div>
             )}
-            <button className="btn" type="submit">
+            <button className="btn" type="submit" disabled={checkingSession}>
               Entrar
             </button>
           </form>

@@ -306,6 +306,23 @@ def risk_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: da
         return list(conn.execute(sql, params).fetchall())
 
 
+def risk_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT
+        MIN(data_key)::int AS min_data_key,
+        MAX(data_key)::int AS max_data_key,
+        COUNT(*)::int AS rows
+      FROM mart.agg_risco_diaria
+      WHERE id_empresa = %s
+      {where_filial}
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return row or {"min_data_key": None, "max_data_key": None, "rows": 0}
+
+
 def risk_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
@@ -390,7 +407,14 @@ def risk_insights(
         message,
         recommendation,
         status,
-        meta
+        meta,
+        ai_plan,
+        ai_model,
+        ai_prompt_tokens,
+        ai_completion_tokens,
+        ai_generated_at,
+        ai_cache_hit,
+        ai_error
       FROM app.insights_gerados
       WHERE id_empresa = %s
         AND dt_ref BETWEEN %s AND %s
@@ -507,24 +531,27 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
     sql = f"""
       SELECT
         COALESCE(v.id_cliente, -1) AS id_cliente,
-        COALESCE(dc.nome, '(Sem cliente)') AS cliente_nome,
-        COALESCE(SUM(i.total),0)::numeric(18,2) AS faturamento,
+        CASE
+          WHEN v.id_cliente IS NULL THEN '(Sem cliente)'
+          ELSE '#ID ' || v.id_cliente::text
+        END AS cliente_nome,
+        COALESCE(SUM(v.total_venda),0)::numeric(18,2) AS faturamento,
         COALESCE(COUNT(DISTINCT v.id_comprovante),0)::int AS compras,
         MAX(v.data) AS ultima_compra,
         CASE WHEN COUNT(DISTINCT v.id_comprovante)=0 THEN 0
-             ELSE (SUM(i.total)/COUNT(DISTINCT v.id_comprovante))::numeric(18,2)
+             ELSE (SUM(v.total_venda)/COUNT(DISTINCT v.id_comprovante))::numeric(18,2)
         END AS ticket_medio
       FROM dw.fact_venda v
-      JOIN dw.fact_venda_item i
-        ON i.id_empresa=v.id_empresa AND i.id_filial=v.id_filial AND i.id_db=v.id_db AND i.id_movprodutos=v.id_movprodutos
-      LEFT JOIN dw.dim_cliente dc
-        ON dc.id_empresa=v.id_empresa AND dc.id_filial=v.id_filial AND dc.id_cliente=v.id_cliente
       WHERE v.id_empresa = %s
         AND v.data_key BETWEEN %s AND %s
         AND COALESCE(v.cancelado,false) = false
-        AND COALESCE(i.cfop,0) >= 5000
         {where_filial}
-      GROUP BY COALESCE(v.id_cliente,-1), COALESCE(dc.nome,'(Sem cliente)')
+      GROUP BY
+        COALESCE(v.id_cliente,-1),
+        CASE
+          WHEN v.id_cliente IS NULL THEN '(Sem cliente)'
+          ELSE '#ID ' || v.id_cliente::text
+        END
       ORDER BY faturamento DESC
       LIMIT %s
     """
@@ -550,14 +577,11 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int],
           COALESCE(v.id_cliente, -1) AS id_cliente,
           MAX(v.data)::date AS last_purchase,
           COUNT(DISTINCT v.id_comprovante)::int AS freq,
-          SUM(i.total)::numeric(18,2) AS monetary
+          SUM(v.total_venda)::numeric(18,2) AS monetary
         FROM dw.fact_venda v
-        JOIN dw.fact_venda_item i
-          ON i.id_empresa=v.id_empresa AND i.id_filial=v.id_filial AND i.id_db=v.id_db AND i.id_movprodutos=v.id_movprodutos
         WHERE v.id_empresa = %s
           AND v.data_key BETWEEN %s AND %s
           AND COALESCE(v.cancelado,false) = false
-          AND COALESCE(i.cfop,0) >= 5000
           {where_filial}
         GROUP BY COALESCE(v.id_cliente, -1)
       )
@@ -593,7 +617,7 @@ def customers_churn_risk(
     sql = f"""
       SELECT
         id_cliente,
-        COALESCE(cliente_nome, '(Sem cliente)') AS cliente_nome,
+        COALESCE(NULLIF(cliente_nome, ''), '#ID ' || id_cliente::text) AS cliente_nome,
         churn_score,
         last_purchase,
         compras_30d,
@@ -611,6 +635,104 @@ def customers_churn_risk(
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         return list(conn.execute(sql, params).fetchall())
+
+
+def customers_churn_diamond(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    min_score: int = 60,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [limit]
+    sql = f"""
+      SELECT
+        dt_ref,
+        id_cliente,
+        COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+        recency_days,
+        expected_cycle_days,
+        frequency_30,
+        frequency_90,
+        monetary_30,
+        monetary_90,
+        churn_score,
+        revenue_at_risk_30d,
+        recommendation,
+        reasons
+      FROM mart.customer_churn_risk_daily
+      WHERE id_empresa = %s
+        AND churn_score >= %s
+        AND id_cliente <> -1
+        {where_filial}
+      ORDER BY churn_score DESC, revenue_at_risk_30d DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def customer_churn_drilldown(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    id_cliente: int,
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND v.id_filial = %s"
+    params = [id_empresa, id_cliente, ini, fim] + ([] if id_filial is None else [id_filial])
+
+    sql_series = f"""
+      SELECT
+        v.data_key,
+        COALESCE(SUM(i.total),0)::numeric(18,2) AS faturamento,
+        COUNT(DISTINCT v.id_comprovante)::int AS compras
+      FROM dw.fact_venda v
+      JOIN dw.fact_venda_item i
+        ON i.id_empresa=v.id_empresa AND i.id_filial=v.id_filial AND i.id_db=v.id_db AND i.id_movprodutos=v.id_movprodutos
+      WHERE v.id_empresa = %s
+        AND v.id_cliente = %s
+        AND v.data_key BETWEEN %s AND %s
+        AND COALESCE(v.cancelado,false) = false
+        AND COALESCE(i.cfop,0) >= 5000
+        {where_filial}
+      GROUP BY v.data_key
+      ORDER BY v.data_key
+    """
+
+    sql_snapshot = f"""
+      SELECT
+        dt_ref,
+        id_cliente,
+        COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+        recency_days,
+        expected_cycle_days,
+        frequency_30,
+        frequency_90,
+        monetary_30,
+        monetary_90,
+        ticket_30,
+        churn_score,
+        revenue_at_risk_30d,
+        recommendation,
+        reasons
+      FROM mart.customer_churn_risk_daily
+      WHERE id_empresa = %s
+        AND id_cliente = %s
+        {"" if id_filial is None else "AND id_filial = %s"}
+      ORDER BY dt_ref DESC
+      LIMIT 1
+    """
+    params_snapshot = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial])
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        series = list(conn.execute(sql_series, params).fetchall())
+        snap = conn.execute(sql_snapshot, params_snapshot).fetchone()
+    return {"snapshot": snap or {}, "series": series}
 
 
 # ========================
@@ -670,6 +792,96 @@ def finance_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         return list(conn.execute(sql, params).fetchall())
+
+
+def finance_aging_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    if id_filial is None:
+        # Consolidated tenant view: aggregate latest day across branches.
+        sql = f"""
+          WITH latest AS (
+            SELECT MAX(dt_ref) AS dt_ref
+            FROM mart.finance_aging_daily
+            WHERE id_empresa = %s
+          )
+          SELECT
+            l.dt_ref,
+            COALESCE(SUM(f.receber_total_aberto),0)::numeric(18,2) AS receber_total_aberto,
+            COALESCE(SUM(f.receber_total_vencido),0)::numeric(18,2) AS receber_total_vencido,
+            COALESCE(SUM(f.pagar_total_aberto),0)::numeric(18,2) AS pagar_total_aberto,
+            COALESCE(SUM(f.pagar_total_vencido),0)::numeric(18,2) AS pagar_total_vencido,
+            COALESCE(SUM(f.bucket_0_7),0)::numeric(18,2) AS bucket_0_7,
+            COALESCE(SUM(f.bucket_8_15),0)::numeric(18,2) AS bucket_8_15,
+            COALESCE(SUM(f.bucket_16_30),0)::numeric(18,2) AS bucket_16_30,
+            COALESCE(SUM(f.bucket_31_60),0)::numeric(18,2) AS bucket_31_60,
+            COALESCE(SUM(f.bucket_60_plus),0)::numeric(18,2) AS bucket_60_plus,
+            COALESCE(AVG(f.top5_concentration_pct),0)::numeric(10,2) AS top5_concentration_pct,
+            COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps
+          FROM latest l
+          LEFT JOIN mart.finance_aging_daily f
+            ON f.id_empresa = %s
+           AND f.dt_ref = l.dt_ref
+          GROUP BY l.dt_ref
+        """
+        params = [id_empresa, id_empresa]
+    else:
+        sql = f"""
+          SELECT
+            dt_ref,
+            receber_total_aberto,
+            receber_total_vencido,
+            pagar_total_aberto,
+            pagar_total_vencido,
+            bucket_0_7,
+            bucket_8_15,
+            bucket_16_30,
+            bucket_31_60,
+            bucket_60_plus,
+            top5_concentration_pct,
+            data_gaps
+          FROM mart.finance_aging_daily
+          WHERE id_empresa = %s
+          {where_filial}
+          ORDER BY dt_ref DESC
+          LIMIT 1
+        """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return row or {
+            "dt_ref": None,
+            "receber_total_aberto": 0,
+            "receber_total_vencido": 0,
+            "pagar_total_aberto": 0,
+            "pagar_total_vencido": 0,
+            "bucket_0_7": 0,
+            "bucket_8_15": 0,
+            "bucket_16_30": 0,
+            "bucket_31_60": 0,
+            "bucket_60_plus": 0,
+            "top5_concentration_pct": 0,
+            "data_gaps": True,
+        }
+
+
+def health_score_latest(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT
+        dt_ref,
+        score_total,
+        components,
+        reasons
+      FROM mart.health_score_daily
+      WHERE id_empresa = %s
+      {where_filial}
+      ORDER BY dt_ref DESC
+      LIMIT 1
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return row or {"dt_ref": None, "score_total": 0, "components": {}, "reasons": {}}
 
 
 # ========================
@@ -829,3 +1041,67 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
         },
         "bullets": bullets,
     }
+
+
+# ========================
+# Notifications
+# ========================
+
+def notifications_list(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    limit: int = 30,
+    unread_only: bool = False,
+) -> List[Dict[str, Any]]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_unread = "AND read_at IS NULL" if unread_only else ""
+    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
+    sql = f"""
+      SELECT id, id_filial, severity, title, body, url, created_at, read_at
+      FROM app.notifications
+      WHERE id_empresa = %s
+        {where_filial}
+        {where_unread}
+      ORDER BY created_at DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def notifications_unread_count(role: str, id_empresa: int, id_filial: Optional[int]) -> int:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT COALESCE(COUNT(*),0)::int AS total
+      FROM app.notifications
+      WHERE id_empresa = %s
+        {where_filial}
+        AND read_at IS NULL
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone() or {"total": 0}
+    return int(row["total"])
+
+
+def notification_mark_read(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    notification_id: int,
+) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, notification_id] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      UPDATE app.notifications
+      SET read_at = COALESCE(read_at, now())
+      WHERE id_empresa = %s
+        AND id = %s
+        {where_filial}
+      RETURNING id, read_at
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        conn.commit()
+    return row or {"id": notification_id, "read_at": None}

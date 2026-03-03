@@ -35,6 +35,22 @@ export function clearClaims() {
 export function requireAuth(): boolean {
   const t = getToken();
   if (!t) return false;
+  const parts = t.split('.');
+  if (parts.length !== 3) {
+    clearAuth();
+    return false;
+  }
+  try {
+    const payload = JSON.parse(atob(parts[1]));
+    const exp = Number(payload?.exp || 0);
+    if (exp && Date.now() >= exp * 1000) {
+      clearAuth();
+      return false;
+    }
+  } catch {
+    clearAuth();
+    return false;
+  }
   setAuthToken(t);
   return true;
 }
