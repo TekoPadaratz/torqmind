@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--loop", action="store_true", help="Run forever")
     run.add_argument("--interval", type=int, default=60, help="Loop interval in seconds")
     run.add_argument("--reset-watermark", default=None, help="Reset watermark for dataset before running")
+    run.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue processing other datasets when one dataset fails",
+    )
 
     backfill = sub.add_parser("backfill", help="Run backfill for one dataset")
     backfill.add_argument("--config", dest="command_config", default=None, help="Path to config YAML")
@@ -71,7 +76,7 @@ def main() -> None:
             if args.reset_watermark:
                 runner.reset_watermark(args.reset_watermark)
             if args.once or not args.loop:
-                runner.run_once()
+                runner.run_once(continue_on_error=bool(args.continue_on_error))
                 return
             runner.run_loop(interval_seconds=args.interval)
             return

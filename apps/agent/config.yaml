@@ -6,7 +6,7 @@ sqlserver:
   # dsn: XPERT_DSN
 
   # Option B: explicit connection fields
-  driver: ODBC Driver 17 for SQL Server
+  driver: ODBC Driver 18 for SQL Server
   server: TEKO-PC
   database: atxdados
   user: BI_Torq
@@ -53,15 +53,15 @@ datasets:
     watermark_column: DATAREPL
     # watermark_style: 121
 
-  # Optional datasets (disabled by default)
-  filiais: { enabled: false, table: dbo.FILIAIS, watermark_column: DATAREPL }
-  funcionarios: { enabled: false, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
-  entidades: { enabled: false, table: dbo.ENTIDADES, watermark_column: DATAREPL }
-  clientes: { enabled: false, table: dbo.ENTIDADES, watermark_column: DATAREPL }
-  grupoprodutos: { enabled: false, table: dbo.GRUPOPRODUTOS, watermark_column: DATAREPL }
-  localvendas: { enabled: false, table: dbo.LOCALVENDAS, watermark_column: DATAREPL }
-  produtos: { enabled: false, table: dbo.PRODUTOS, watermark_column: DATAREPL }
-  turnos: { enabled: false, table: dbo.TURNOS, watermark_column: DATAREPL }
-  contaspagar: { enabled: false, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
-  contasreceber: { enabled: false, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
-  financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }
+  # Datasets adicionais habilitados para carga completa
+  filiais: { enabled: true, table: dbo.FILIAIS, watermark_column: DATAREPL }
+  funcionarios: { enabled: true, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
+  entidades: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
+  clientes: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
+  grupoprodutos: { enabled: true, table: dbo.GRUPOPRODUTOS, watermark_column: DATAREPL }
+  localvendas: { enabled: true, table: dbo.LOCALVENDAS, watermark_column: DATAREPL }
+  produtos: { enabled: true, table: dbo.PRODUTOS, watermark_column: DATAREPL }
+  turnos: { enabled: true, table: dbo.TURNOS, watermark_column: DATAREPL }
+  contaspagar: { enabled: true, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
+  contasreceber: { enabled: true, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
+  financeiro: { enabled: true, table: dbo.FINANCEIRO, watermark_column: DATAREPL }

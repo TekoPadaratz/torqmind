@@ -89,6 +89,12 @@ Resetando watermark de um dataset antes do ciclo:
 python -m agent run --once --reset-watermark comprovantes --config config.yaml
 ```
 
+Processando todos os datasets habilitados sem abortar no primeiro erro:
+
+```bash
+python -m agent run --once --continue-on-error --config config.yaml
+```
+
 ### Daemon
 
 ```bash

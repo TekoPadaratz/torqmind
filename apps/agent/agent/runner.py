@@ -17,6 +17,8 @@ class RunMetrics:
     extracted: int = 0
     sent: int = 0
     batches: int = 0
+    status: str = "ok"
+    error: Optional[str] = None
 
 
 class AgentRunner:
@@ -53,14 +55,17 @@ class AgentRunner:
         dt_from: Optional[datetime] = None,
         dt_to: Optional[datetime] = None,
         ignore_watermark: bool = False,
+        continue_on_error: bool = False,
     ) -> None:
         started = time.monotonic()
+        metrics: list[RunMetrics] = []
         try:
             datasets = [only_dataset.lower()] if only_dataset else list(self._enabled_datasets())
 
             for dataset in datasets:
                 t0 = time.monotonic()
                 metric = RunMetrics(dataset=dataset)
+                metrics.append(metric)
                 scope = f"db:{self.cfg.id_db or 1}"
                 watermark = None if ignore_watermark else self.state.get(dataset, scope=scope)
                 self.logger.info(
@@ -73,53 +78,78 @@ class AgentRunner:
                 )
 
                 max_watermark_seen = watermark
-                for batch in self.extractor.iter_batches(
-                    dataset=dataset,
-                    watermark=watermark,
-                    batch_size=self.cfg.runtime.batch_size,
-                    fetch_size=self.cfg.runtime.fetch_size,
-                    dt_from=dt_from,
-                    dt_to=dt_to,
-                ):
-                    metric.batches += 1
-                    metric.extracted += len(batch.rows)
+                try:
+                    for batch in self.extractor.iter_batches(
+                        dataset=dataset,
+                        watermark=watermark,
+                        batch_size=self.cfg.runtime.batch_size,
+                        fetch_size=self.cfg.runtime.fetch_size,
+                        dt_from=dt_from,
+                        dt_to=dt_to,
+                    ):
+                        metric.batches += 1
+                        metric.extracted += len(batch.rows)
 
-                    ingest_result = self.sink.send(dataset=dataset, rows=batch.rows)
-                    inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
-                    rejected = int(ingest_result.get("rejected", 0) or 0)
-                    metric.sent += inserted
-                    if metric.extracted > 0 and inserted == 0:
-                        raise RuntimeError(
-                            f"Batch extracted but nothing inserted for dataset={dataset}. "
-                            f"rejected={rejected}. Verify base_url, ingest key and PK fields."
+                        ingest_result = self.sink.send(dataset=dataset, rows=batch.rows)
+                        inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
+                        rejected = int(ingest_result.get("rejected", 0) or 0)
+                        metric.sent += inserted
+                        if metric.extracted > 0 and inserted == 0:
+                            raise RuntimeError(
+                                f"Batch extracted but nothing inserted for dataset={dataset}. "
+                                f"rejected={rejected}. Verify base_url, ingest key and PK fields."
+                            )
+
+                        if batch.max_watermark:
+                            max_watermark_seen = batch.max_watermark
+
+                        self.logger.info(
+                            "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s watermark=%s",
+                            dataset,
+                            metric.batches,
+                            metric.extracted,
+                            metric.sent,
+                            rejected,
+                            max_watermark_seen,
                         )
 
-                    if batch.max_watermark:
-                        max_watermark_seen = batch.max_watermark
+                    if max_watermark_seen and not dt_from and not dt_to:
+                        self.state.set(dataset, max_watermark_seen, scope=scope)
 
                     self.logger.info(
-                        "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s watermark=%s",
+                        "dataset=%s phase=done extracted=%s sent=%s batches=%s elapsed_s=%.2f",
                         dataset,
-                        metric.batches,
                         metric.extracted,
                         metric.sent,
-                        rejected,
-                        max_watermark_seen,
+                        metric.batches,
+                        time.monotonic() - t0,
                     )
-
-                if max_watermark_seen and not dt_from and not dt_to:
-                    self.state.set(dataset, max_watermark_seen, scope=scope)
-
-                self.logger.info(
-                    "dataset=%s phase=done extracted=%s sent=%s batches=%s elapsed_s=%.2f",
-                    dataset,
-                    metric.extracted,
-                    metric.sent,
-                    metric.batches,
-                    time.monotonic() - t0,
-                )
+                except Exception as exc:  # noqa: PERF203
+                    metric.status = "failed"
+                    metric.error = str(exc)
+                    self.logger.exception(
+                        "dataset=%s phase=failed elapsed_s=%.2f error=%s",
+                        dataset,
+                        time.monotonic() - t0,
+                        str(exc),
+                    )
+                    if not continue_on_error:
+                        raise
         finally:
             self.extractor.close()
+            ok = sum(1 for m in metrics if m.status == "ok")
+            failed = sum(1 for m in metrics if m.status == "failed")
+            self.logger.info("phase=summary datasets_total=%s datasets_ok=%s datasets_failed=%s", len(metrics), ok, failed)
+            for m in metrics:
+                self.logger.info(
+                    "phase=summary_dataset dataset=%s status=%s extracted=%s sent=%s batches=%s error=%s",
+                    m.dataset,
+                    m.status,
+                    m.extracted,
+                    m.sent,
+                    m.batches,
+                    m.error,
+                )
             self.logger.info("phase=cycle_done elapsed_s=%.2f", time.monotonic() - started)
 
     def run_loop(self, interval_seconds: int) -> None:
