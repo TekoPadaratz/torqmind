@@ -23,6 +23,11 @@ class SmokeApiTest(unittest.TestCase):
             if not row or not row["ingest_key"]:
                 raise AssertionError("Missing ingest_key for tenant 1")
             cls.ingest_key = str(row["ingest_key"])
+            filial_row = conn.execute(
+                "SELECT id_filial FROM auth.filiais WHERE id_empresa = %s ORDER BY id_filial LIMIT 1",
+                (1,),
+            ).fetchone()
+            cls.filial_id = int(filial_row["id_filial"]) if filial_row and filial_row["id_filial"] is not None else 1
 
     @staticmethod
     def _request(
@@ -200,10 +205,11 @@ class SmokeApiTest(unittest.TestCase):
             conn.commit()
 
         status, body = self._request(
-            "/etl/micro_risk?minutes=5&id_empresa=1",
+            f"/etl/micro_risk?minutes=5&id_empresa=1&id_filial={self.filial_id}",
             method="POST",
             data={},
             headers={"Authorization": f"Bearer {self.token}"},
+            timeout=300,
         )
         self.assertEqual(status, 200)
         self.assertTrue(body.get("ok"))

@@ -788,106 +788,13 @@ def anonymous_retention_overview(
     """
     params_latest = [id_empresa, id_empresa] + ([] if id_filial is None else [id_filial, id_filial])
 
-    # Current period vs previous period for cohort breakdowns
-    days = max(1, (dt_fim - dt_ini).days + 1)
-    prev_ini = dt_ini - timedelta(days=days)
-    prev_fim = dt_ini - timedelta(days=1)
-    where_filial_v = "" if id_filial is None else "AND v.id_filial = %s"
-    sql_dow = f"""
-      SELECT
-        EXTRACT(ISODOW FROM v.data)::int AS dow,
-        COALESCE(SUM(CASE WHEN (v.id_cliente IS NULL OR v.id_cliente = -1) AND v.data::date BETWEEN %s AND %s THEN v.total_venda ELSE 0 END),0)::numeric(18,2) AS anon_current,
-        COALESCE(SUM(CASE WHEN (v.id_cliente IS NULL OR v.id_cliente = -1) AND v.data::date BETWEEN %s AND %s THEN v.total_venda ELSE 0 END),0)::numeric(18,2) AS anon_prev
-      FROM dw.fact_venda v
-      WHERE v.id_empresa = %s
-        AND COALESCE(v.cancelado,false) = false
-        AND v.data::date BETWEEN %s AND %s
-        {where_filial_v}
-      GROUP BY EXTRACT(ISODOW FROM v.data)::int
-      ORDER BY dow
-    """
-    params_dow = [dt_ini, dt_fim, prev_ini, prev_fim, id_empresa, prev_ini, dt_fim] + ([] if id_filial is None else [id_filial])
-
-    sql_hour = f"""
-      SELECT
-        EXTRACT(HOUR FROM v.data)::int AS hour,
-        COALESCE(SUM(CASE WHEN (v.id_cliente IS NULL OR v.id_cliente = -1) AND v.data::date BETWEEN %s AND %s THEN v.total_venda ELSE 0 END),0)::numeric(18,2) AS anon_current,
-        COALESCE(SUM(CASE WHEN (v.id_cliente IS NULL OR v.id_cliente = -1) AND v.data::date BETWEEN %s AND %s THEN v.total_venda ELSE 0 END),0)::numeric(18,2) AS anon_prev
-      FROM dw.fact_venda v
-      WHERE v.id_empresa = %s
-        AND COALESCE(v.cancelado,false) = false
-        AND v.data::date BETWEEN %s AND %s
-        {where_filial_v}
-      GROUP BY EXTRACT(HOUR FROM v.data)::int
-      ORDER BY hour
-    """
-    params_hour = [dt_ini, dt_fim, prev_ini, prev_fim, id_empresa, prev_ini, dt_fim] + ([] if id_filial is None else [id_filial])
-
-    sql_mix = f"""
-      SELECT
-        COALESCE(dp.id_grupo_produto, -1) AS id_grupo_produto,
-        COALESCE(NULLIF(MAX(dp.nome),''), '#ID ' || COALESCE(dp.id_grupo_produto, -1)::text) AS grupo_nome,
-        COALESCE(SUM(CASE WHEN (v.id_cliente IS NULL OR v.id_cliente = -1) AND v.data::date BETWEEN %s AND %s THEN i.total ELSE 0 END),0)::numeric(18,2) AS anon_current,
-        COALESCE(SUM(CASE WHEN (v.id_cliente IS NULL OR v.id_cliente = -1) AND v.data::date BETWEEN %s AND %s THEN i.total ELSE 0 END),0)::numeric(18,2) AS anon_prev
-      FROM dw.fact_venda_item i
-      JOIN dw.fact_venda v
-        ON v.id_empresa=i.id_empresa AND v.id_filial=i.id_filial AND v.id_db=i.id_db AND v.id_movprodutos=i.id_movprodutos
-      LEFT JOIN dw.dim_produto dp
-        ON dp.id_empresa=i.id_empresa AND dp.id_filial=i.id_filial AND dp.id_produto=i.id_produto
-      WHERE v.id_empresa = %s
-        AND COALESCE(v.cancelado,false) = false
-        AND v.data::date BETWEEN %s AND %s
-        {where_filial_v}
-      GROUP BY COALESCE(dp.id_grupo_produto, -1)
-      ORDER BY anon_current DESC
-      LIMIT 8
-    """
-    params_mix = [dt_ini, dt_fim, prev_ini, prev_fim, id_empresa, prev_ini, dt_fim] + ([] if id_filial is None else [id_filial])
-
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         latest_rows = list(conn.execute(sql_latest, params_latest).fetchall())
         series = list(conn.execute(sql_series, params).fetchall())
-        dow_rows = list(conn.execute(sql_dow, params_dow).fetchall())
-        hour_rows = list(conn.execute(sql_hour, params_hour).fetchall())
-        mix_rows = list(conn.execute(sql_mix, params_mix).fetchall())
 
     agg_impact = sum(float(r.get("impact_estimated_7d") or 0) for r in latest_rows)
     avg_trend = (sum(float(r.get("trend_pct") or 0) for r in latest_rows) / len(latest_rows)) if latest_rows else 0.0
     avg_repeat = (sum(float(r.get("repeat_proxy_idx") or 0) for r in latest_rows) / len(latest_rows)) if latest_rows else 0.0
-
-    def _trend(curr: float, prev: float) -> float:
-        if prev == 0:
-            return 0.0
-        return round(((curr - prev) / prev) * 100.0, 2)
-
-    dow = [
-        {
-            "dow": int(r["dow"]),
-            "anon_current": float(r["anon_current"] or 0),
-            "anon_prev": float(r["anon_prev"] or 0),
-            "trend_pct": _trend(float(r["anon_current"] or 0), float(r["anon_prev"] or 0)),
-        }
-        for r in dow_rows
-    ]
-    by_hour = [
-        {
-            "hour": int(r["hour"]),
-            "anon_current": float(r["anon_current"] or 0),
-            "anon_prev": float(r["anon_prev"] or 0),
-            "trend_pct": _trend(float(r["anon_current"] or 0), float(r["anon_prev"] or 0)),
-        }
-        for r in hour_rows
-    ]
-    mix = [
-        {
-            "id_grupo_produto": int(r["id_grupo_produto"]),
-            "grupo_nome": r["grupo_nome"],
-            "anon_current": float(r["anon_current"] or 0),
-            "anon_prev": float(r["anon_prev"] or 0),
-            "trend_pct": _trend(float(r["anon_current"] or 0), float(r["anon_prev"] or 0)),
-        }
-        for r in mix_rows
-    ]
 
     recommendation = (
         "Recorrencia anonima caiu. Ajuste operacao por horario/dia, reveja mix de produtos e acione promocoes de retorno."
@@ -905,9 +812,9 @@ def anonymous_retention_overview(
         },
         "latest": latest_rows,
         "series": series,
-        "breakdown_dow": dow,
-        "breakdown_hour": by_hour,
-        "mix": mix,
+        "breakdown_dow": [],
+        "breakdown_hour": [],
+        "mix": [],
     }
 
 
