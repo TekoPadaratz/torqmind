@@ -4,9 +4,12 @@ __pycache__/
 *.pyo
 venv/
 env/
+.venv/
+.venv-win/
 
 # Node
 node_modules/
+.next/
 
 # Environment
 .env
@@ -31,6 +34,7 @@ apps/agent/spool/
 apps/agent/state.json
 apps/agent/.venv/
 apps/agent/.venv-win/
+apps/agent/config.local.yaml
 
 # Local backups with real keys (never commit)
 secrets_backup/

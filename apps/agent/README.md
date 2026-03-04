@@ -32,7 +32,15 @@ pip install -r requirements.txt
 
 ## Configuração
 
-Arquivo base: `config.yaml`.
+Arquivos:
+- `config.example.yaml`: exemplo sem segredos (versionado)
+- `config.local.yaml`: sua configuração real (não versionada)
+
+Crie o local a partir do exemplo:
+
+```bash
+cp config.example.yaml config.local.yaml
+```
 
 Campos principais:
 - `sqlserver.dsn` **ou** `sqlserver.server/database/user/password/driver`
@@ -73,7 +81,7 @@ Campos principais:
 ### Check completo
 
 ```bash
-python -m agent check --config config.yaml
+python -m agent check --config config.local.yaml
 ```
 
 Valida:
@@ -84,43 +92,43 @@ Valida:
 ### Um ciclo de extração/envio
 
 ```bash
-python -m agent run --once --config config.yaml
+python -m agent run --once --config config.local.yaml
 ```
 
 Resetando watermark de um dataset antes do ciclo:
 
 ```bash
-python -m agent run --once --reset-watermark comprovantes --config config.yaml
+python -m agent run --once --reset-watermark comprovantes --config config.local.yaml
 ```
 
 Processando todos os datasets habilitados sem abortar no primeiro erro:
 
 ```bash
-python -m agent run --once --continue-on-error --config config.yaml
+python -m agent run --once --continue-on-error --config config.local.yaml
 ```
 
 ### Daemon
 
 ```bash
-python -m agent run --loop --interval 60 --config config.yaml
+python -m agent run --loop --interval 60 --config config.local.yaml
 ```
 
 ### Backfill de dataset
 
 ```bash
-python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-01 --config config.yaml
+python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-01 --config config.local.yaml
 ```
 
 ### Reset de watermark (comando dedicado)
 
 ```bash
-python -m agent reset-watermark --dataset comprovantes --config config.yaml
+python -m agent reset-watermark --dataset comprovantes --config config.local.yaml
 ```
 
 ### Schema scan (AR/AP)
 
 ```bash
-python -m agent schema-scan --keywords "PAGAR,RECEBER,TITULO,DUPLICATA,FINANC" --config config.yaml
+python -m agent schema-scan --keywords "PAGAR,RECEBER,TITULO,DUPLICATA,FINANC" --config config.local.yaml
 ```
 
 Saída padrão: `docs/xpert_schema_report.json`
@@ -179,7 +187,7 @@ docker run --rm torqmind-agent
 ## Compatibilidade com legado
 
 - `main.py` continua existindo e chama a nova CLI.
-- `config.yaml` legado (`api_url`, `id_empresa`, `id_db`) continua aceito.
+- `config.local.yaml` legado (`api_url`, `id_empresa`, `id_db`) continua aceito.
 - Mapeamento base dos datasets críticos preservado:
   - `COMPROVANTES`, `MOVPRODUTOS`, `ITENSMOVPRODUTOS`
   - watermark padrão em `DATAREPL`
