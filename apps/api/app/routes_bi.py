@@ -195,9 +195,14 @@ def clients_churn(
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     top = repos_mart.customers_churn_diamond(role, tenant, filial, min_score=min_score, limit=limit)
-    out = {"top_risk": top}
+    total_revenue_at_risk = float(sum(float(row.get("revenue_at_risk_30d") or 0) for row in top))
+    avg_churn_score = (
+        round(sum(float(row.get("churn_score") or 0) for row in top) / len(top), 2) if top else 0.0
+    )
+
+    drilldown = {"snapshot": {}, "series": []}
     if id_cliente is not None:
-        out["drilldown"] = repos_mart.customer_churn_drilldown(
+        drilldown = repos_mart.customer_churn_drilldown(
             role,
             tenant,
             filial,
@@ -205,7 +210,16 @@ def clients_churn(
             dt_ini=dt_ini,
             dt_fim=dt_fim,
         )
-    return out
+
+    return {
+        "top_risk": top,
+        "summary": {
+            "total_top_risk": len(top),
+            "avg_churn_score": avg_churn_score,
+            "revenue_at_risk_30d": round(total_revenue_at_risk, 2),
+        },
+        "drilldown": drilldown,
+    }
 
 
 @router.get("/clients/retention-anonymous")

@@ -143,6 +143,25 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("series", body)
         self.assertIn("breakdown_dow", body)
 
+    def test_churn_endpoint_returns_contract(self) -> None:
+        status, body = self._request(
+            "/bi/clients/churn?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1&min_score=40&limit=5",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("top_risk", body)
+        self.assertIn("summary", body)
+        self.assertIn("drilldown", body)
+
+        summary = body.get("summary") or {}
+        self.assertIn("total_top_risk", summary)
+        self.assertIn("avg_churn_score", summary)
+        self.assertIn("revenue_at_risk_30d", summary)
+
+        drilldown = body.get("drilldown") or {}
+        self.assertIn("snapshot", drilldown)
+        self.assertIn("series", drilldown)
+
     def test_jarvis_ai_generate_and_usage(self) -> None:
         status_gen, body_gen = self._request(
             "/bi/jarvis/generate?dt_ref=2025-08-31&id_empresa=1&limit=3&force=true",
