@@ -10,6 +10,7 @@ from app.deps import get_current_claims
 from app.scope import resolve_scope
 from app import repos_mart
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
+from app.services.telegram import send_telegram_alert
 
 router = APIRouter(prefix="/bi", tags=["bi"])
 
@@ -302,6 +303,31 @@ def admin_ai_usage(
 
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     return ai_usage_summary(role, tenant, filial, days=days)
+
+
+@router.post("/admin/telegram/test")
+def admin_telegram_test(
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    payload = {
+        "severity": "CRITICAL",
+        "id_filial": filial,
+        "event_type": "TELEGRAM_TEST",
+        "event_time": date.today().isoformat(),
+        "impacto_estimado": 0,
+        "title": "Teste de alerta Telegram",
+        "body": "Mensagem de teste enviada pelo endpoint /bi/admin/telegram/test",
+        "url": "/dashboard",
+    }
+    result = send_telegram_alert(id_empresa=tenant, payload=payload, force=True)
+    return {"ok": True, "id_empresa": tenant, "id_filial": filial, "result": result}
 
 
 @router.get("/notifications")

@@ -10,6 +10,7 @@ import httpx
 
 from app.config import settings
 from app.db import get_conn
+from app.services.telegram import send_telegram_alert
 
 
 def _estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
@@ -408,6 +409,21 @@ def _create_notification_for_critical(
                 (id_empresa, id_filial, ins_id, sev, title, body, path),
             )
         conn.commit()
+
+    send_telegram_alert(
+        id_empresa=id_empresa,
+        payload={
+            "severity": "CRITICAL",
+            "insight_id": ins_id,
+            "insight_type": insight.get("insight_type"),
+            "id_filial": id_filial,
+            "event_time": str(insight.get("dt_ref") or ""),
+            "impacto_estimado": float(insight.get("impacto_estimado") or 0),
+            "title": title,
+            "body": body,
+            "url": path,
+        },
+    )
 
 
 def generate_jarvis_ai_plans(
