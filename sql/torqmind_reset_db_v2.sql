@@ -2886,6 +2886,7 @@ BEGIN
     SELECT id_empresa, id_filial, insight_id, severity, title, body, url
     FROM src
     ON CONFLICT (id_empresa, id_filial, insight_id)
+    WHERE insight_id IS NOT NULL
     DO UPDATE SET
       severity = EXCLUDED.severity,
       title = EXCLUDED.title,
