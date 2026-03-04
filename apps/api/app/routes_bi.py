@@ -177,6 +177,7 @@ def customers_overview(
         "top_customers": repos_mart.customers_top(role, tenant, filial, dt_ini, dt_fim, limit=15),
         "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=dt_fim),
         "churn_top": churn_top,
+        "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim),
     }
 
 
@@ -205,6 +206,19 @@ def clients_churn(
             dt_fim=dt_fim,
         )
     return out
+
+
+@router.get("/clients/retention-anonymous")
+def clients_retention_anonymous(
+    dt_ini: date,
+    dt_fim: date,
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    return repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim)
 
 
 # ------------------------

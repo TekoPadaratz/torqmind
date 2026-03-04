@@ -128,6 +128,16 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("by_day", body)
         self.assertIn("risk", body)
 
+    def test_anonymous_retention_endpoint_returns_payload(self) -> None:
+        status, body = self._request(
+            "/bi/clients/retention-anonymous?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("kpis", body)
+        self.assertIn("series", body)
+        self.assertIn("breakdown_dow", body)
+
     def test_jarvis_ai_generate_and_usage(self) -> None:
         status_gen, body_gen = self._request(
             "/bi/jarvis/generate?dt_ref=2025-08-31&id_empresa=1&limit=3&force=true",

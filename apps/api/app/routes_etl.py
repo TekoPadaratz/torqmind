@@ -43,6 +43,8 @@ def run_etl(
                 "SELECT etl.run_all(%s, %s, %s) AS result",
                 (tenant, force_full, refresh_mart),
             ).fetchone()
+            if refresh_mart:
+                conn.execute("SELECT etl.refresh_anonymous_retention()")
             conn.commit()
             return row["result"]
         except Exception as e:

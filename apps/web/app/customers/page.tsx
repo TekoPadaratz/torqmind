@@ -74,6 +74,8 @@ export default function CustomersPage() {
       })),
     [data]
   );
+  const anon = data?.anonymous_retention || {};
+  const anonKpis = anon?.kpis || {};
 
   return (
     <div>
@@ -86,6 +88,9 @@ export default function CustomersPage() {
           <div className="card kpi col-3"><div className="label">Ativos 7d</div><div className="value">{loading ? '...' : data?.rfm?.ativos_7d ?? 0}</div></div>
           <div className="card kpi col-3"><div className="label">Em risco 30d</div><div className="value">{loading ? '...' : data?.rfm?.em_risco_30d ?? 0}</div></div>
           <div className="card kpi col-3"><div className="label">Fat. 90d</div><div className="value">{loading ? '...' : fmtMoney(data?.rfm?.faturamento_90d)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Recorrencia anonima (trend)</div><div className="value">{loading ? '...' : `${Number(anonKpis?.trend_pct || 0).toFixed(1)}%`}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Impacto anonimo estimado (7d)</div><div className="value">{loading ? '...' : fmtMoney(anonKpis?.impact_estimated_7d)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Indice recorrencia anonima</div><div className="value">{loading ? '...' : `${Number(anonKpis?.repeat_proxy_idx || 0).toFixed(1)}%`}</div></div>
 
           <div className="card col-12">
             <h2>Risco de churn (top 10)</h2>
@@ -142,6 +147,26 @@ export default function CustomersPage() {
               <tbody>
                 {(data?.top_customers || []).slice(0, 10).map((c: any) => (
                   <tr key={c.id_cliente}><td>{c.cliente_nome}</td><td>{c.compras}</td><td>{fmtMoney(c.ticket_medio)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="card col-12">
+            <h2>Radar de recorrencia anonima (coortes operacionais)</h2>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              {loading ? '...' : anonKpis?.recommendation || 'Sem recomendacao para o periodo.'}
+            </div>
+            <table className="table compact">
+              <thead><tr><th>Dia Semana</th><th>Atual</th><th>Periodo anterior</th><th>Tendencia</th></tr></thead>
+              <tbody>
+                {(anon?.breakdown_dow || []).map((r: any) => (
+                  <tr key={r.dow}>
+                    <td>{r.dow}</td>
+                    <td>{fmtMoney(r.anon_current)}</td>
+                    <td>{fmtMoney(r.anon_prev)}</td>
+                    <td>{Number(r.trend_pct || 0).toFixed(1)}%</td>
+                  </tr>
                 ))}
               </tbody>
             </table>

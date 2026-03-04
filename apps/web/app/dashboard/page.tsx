@@ -66,6 +66,7 @@ export default function Dashboard() {
   const [claims, setClaims] = useState<any>(null);
   const [overview, setOverview] = useState<any>(null);
   const [churnData, setChurnData] = useState<any>(null);
+  const [anonRetention, setAnonRetention] = useState<any>(null);
   const [financeData, setFinanceData] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,15 +118,17 @@ export default function Dashboard() {
         if (scope.id_filial) qs.set('id_filial', scope.id_filial);
         if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
 
-        const [overviewRes, churnRes, financeRes, notificationsRes] = await Promise.all([
+        const [overviewRes, churnRes, anonRes, financeRes, notificationsRes] = await Promise.all([
           apiGet(`/bi/dashboard/overview?${qs.toString()}`),
           apiGet(`/bi/clients/churn?${qs.toString()}&min_score=40&limit=10`),
+          apiGet(`/bi/clients/retention-anonymous?${qs.toString()}`),
           apiGet(`/bi/finance/overview?${qs.toString()}`),
           apiGet(`/bi/notifications?${qs.toString()}&limit=10`),
         ]);
 
         setOverview(overviewRes);
         setChurnData(churnRes);
+        setAnonRetention(anonRes);
         setFinanceData(financeRes);
         setNotifications(notificationsRes?.items || []);
       } catch (err: any) {
@@ -175,6 +178,7 @@ export default function Dashboard() {
   const generatedInsights = overview?.insights_generated || [];
 
   const churnTop = churnData?.top_risk || [];
+  const anonKpis = anonRetention?.kpis || {};
   const revenueAtRisk = churnTop.reduce((acc: number, c: any) => acc + Number(c.revenue_at_risk_30d || 0), 0);
 
   const financeAging = financeData?.aging || {};
@@ -311,7 +315,7 @@ export default function Dashboard() {
               metrics={[
                 { label: 'Clientes em risco', value: String(churnTop.length) },
                 { label: 'Receita em risco 30d', value: money(revenueAtRisk) },
-                { label: 'Maior score', value: String(Number(churnTop[0]?.churn_score || 0).toFixed(0)) },
+                { label: 'Recorrencia anonima', value: `${Number(anonKpis.repeat_proxy_idx || 0).toFixed(1)}%` },
               ]}
             />
           </div>
@@ -324,6 +328,18 @@ export default function Dashboard() {
                 { label: 'Receber vencido', value: money(financeAging.receber_total_vencido) },
                 { label: 'Pagar vencido', value: money(financeAging.pagar_total_vencido) },
                 { label: 'Concentracao top5', value: `${Number(financeAging.top5_concentration_pct || 0).toFixed(1)}%` },
+              ]}
+            />
+          </div>
+
+          <div className="col-12">
+            <RadarPanel
+              title="Radar Recorrencia Anonima"
+              href={detailsHref('/customers', scope)}
+              metrics={[
+                { label: 'Tendencia', value: `${Number(anonKpis.trend_pct || 0).toFixed(1)}%` },
+                { label: 'Impacto estimado 7d', value: money(anonKpis.impact_estimated_7d) },
+                { label: 'Severidade', value: String(anonKpis.severity || 'OK') },
               ]}
             />
           </div>
