@@ -192,6 +192,31 @@ export default function FraudPage() {
             </table>
           </div>
 
+          <div className="card col-12">
+            <h2>Anomalias de pagamento (top score)</h2>
+            {!loading && !(data?.payments_risk || []).length ? (
+              <p className="muted">Sem anomalias de pagamento no periodo.</p>
+            ) : null}
+            <table className="table compact">
+              <thead>
+                <tr><th>Data</th><th>Filial</th><th>Turno</th><th>Evento</th><th>Severidade</th><th>Score</th><th>Impacto</th></tr>
+              </thead>
+              <tbody>
+                {(data?.payments_risk || []).slice(0, 12).map((e: any, idx: number) => (
+                  <tr key={`${e.insight_id || e.event_type}-${idx}`}>
+                    <td>{shortDateKey(e.data_key)}</td>
+                    <td>{e.id_filial}</td>
+                    <td>{e.id_turno ?? '-'}</td>
+                    <td>{e.event_type}</td>
+                    <td>{e.severity}</td>
+                    <td>{Number(e.score || 0)}</td>
+                    <td>{fmtMoney(e.impacto_estimado)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
           <div className="card col-12 chartCard">
             <h2>Serie temporal de alto risco</h2>
             <div className="chartWrap">

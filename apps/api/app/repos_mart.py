@@ -1203,6 +1203,172 @@ def finance_aging_overview(role: str, id_empresa: int, id_filial: Optional[int])
         }
 
 
+def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    days = max((dt_fim - dt_ini).days + 1, 1)
+    prev_fim = ini - 1
+    prev_ini = _date_key(dt_ini - timedelta(days=days))
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+
+    sql_curr = f"""
+      SELECT
+        COALESCE(SUM(total_valor),0)::numeric(18,2) AS total_valor,
+        COALESCE(SUM(CASE WHEN category = 'DESCONHECIDO' THEN total_valor ELSE 0 END),0)::numeric(18,2) AS unknown_valor,
+        COALESCE(SUM(qtd_comprovantes),0)::int AS qtd_comprovantes
+      FROM mart.agg_pagamentos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+    """
+    sql_prev = f"""
+      SELECT COALESCE(SUM(total_valor),0)::numeric(18,2) AS total_valor
+      FROM mart.agg_pagamentos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+    """
+    sql_mix = f"""
+      SELECT
+        category,
+        COALESCE(SUM(total_valor),0)::numeric(18,2) AS total_valor
+      FROM mart.agg_pagamentos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      GROUP BY category
+      ORDER BY total_valor DESC
+      LIMIT 6
+    """
+    params_curr = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    params_prev = [id_empresa, prev_ini, prev_fim] + ([] if id_filial is None else [id_filial])
+    params_mix = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        curr = conn.execute(sql_curr, params_curr).fetchone() or {}
+        prev = conn.execute(sql_prev, params_prev).fetchone() or {}
+        mix = list(conn.execute(sql_mix, params_mix).fetchall())
+
+    total_curr = float(curr.get("total_valor") or 0)
+    total_prev = float(prev.get("total_valor") or 0)
+    unknown_val = float(curr.get("unknown_valor") or 0)
+    unknown_share = (unknown_val / total_curr * 100.0) if total_curr > 0 else 0.0
+    delta_pct = ((total_curr - total_prev) / total_prev * 100.0) if total_prev > 0 else (100.0 if total_curr > 0 else 0.0)
+
+    return {
+        "total_valor": round(total_curr, 2),
+        "total_valor_prev": round(total_prev, 2),
+        "delta_pct": round(delta_pct, 2),
+        "qtd_comprovantes": int(curr.get("qtd_comprovantes") or 0),
+        "unknown_valor": round(unknown_val, 2),
+        "unknown_share_pct": round(unknown_share, 2),
+        "mix": mix,
+    }
+
+
+def payments_by_day(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT
+        data_key,
+        id_filial,
+        category,
+        label,
+        total_valor,
+        qtd_comprovantes,
+        share_percent
+      FROM mart.agg_pagamentos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      ORDER BY data_key, total_valor DESC
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def payments_by_turno(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT
+        data_key,
+        id_filial,
+        id_turno,
+        category,
+        label,
+        total_valor,
+        qtd_comprovantes
+      FROM mart.agg_pagamentos_turno
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      ORDER BY data_key DESC, total_valor DESC
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def payments_anomalies(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    sql = f"""
+      SELECT
+        data_key,
+        id_filial,
+        id_turno,
+        event_type,
+        severity,
+        score,
+        impacto_estimado,
+        reasons,
+        insight_id,
+        insight_id_hash
+      FROM mart.pagamentos_anomalias_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      ORDER BY score DESC, impacto_estimado DESC, data_key DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return list(conn.execute(sql, params).fetchall())
+
+
+def payments_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    anomaly_limit: int = 20,
+) -> Dict[str, Any]:
+    kpis = payments_overview_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
+    by_day = payments_by_day(role, id_empresa, id_filial, dt_ini, dt_fim)
+    by_turno = payments_by_turno(role, id_empresa, id_filial, dt_ini, dt_fim)
+    anomalies = payments_anomalies(role, id_empresa, id_filial, dt_ini, dt_fim, limit=anomaly_limit)
+    return {
+        "kpis": kpis,
+        "by_day": by_day,
+        "by_turno": by_turno,
+        "anomalies": anomalies,
+    }
+
+
 def health_score_latest(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial])

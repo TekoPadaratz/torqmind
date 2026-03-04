@@ -157,9 +157,16 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
     """
 
     severity = str(payload.get("severity") or "").upper()
-    if severity != "CRITICAL" and not force:
-        logger.info("telegram_suppressed reason=not_critical id_empresa=%s severity=%s", id_empresa, severity)
-        return {"ok": True, "sent": False, "reason": "not_critical"}
+    min_severity = str(settings.notify_min_severity or "CRITICAL").upper()
+    sev_rank = {"INFO": 1, "WARN": 2, "CRITICAL": 3}
+    if not force and sev_rank.get(severity, 0) < sev_rank.get(min_severity, 3):
+        logger.info(
+            "telegram_suppressed reason=below_min_severity id_empresa=%s severity=%s min=%s",
+            id_empresa,
+            severity,
+            min_severity,
+        )
+        return {"ok": True, "sent": False, "reason": "below_min_severity", "min_severity": min_severity}
 
     cfg = _get_telegram_setting(id_empresa)
     if not cfg or not _to_bool(cfg.get("is_enabled")):

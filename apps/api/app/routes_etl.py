@@ -43,10 +43,73 @@ def run_etl(
                 "SELECT etl.run_all(%s, %s, %s) AS result",
                 (tenant, force_full, refresh_mart),
             ).fetchone()
+            payments_telegram_sent = 0
+            payments_telegram_suppressed = 0
+            payments_critical = []
+            if refresh_mart:
+                critical_rows = conn.execute(
+                    """
+                    SELECT
+                      id_filial,
+                      id_turno,
+                      event_type,
+                      score,
+                      impacto_estimado,
+                      data_key,
+                      reasons,
+                      insight_id_hash
+                    FROM mart.pagamentos_anomalias_diaria
+                    WHERE id_empresa = %s
+                      AND severity = 'CRITICAL'
+                      AND data_key >= to_char((current_date - interval '2 day')::date, 'YYYYMMDD')::int
+                    ORDER BY data_key DESC, score DESC, impacto_estimado DESC
+                    LIMIT 5
+                    """,
+                    (tenant,),
+                ).fetchall()
+                for r in critical_rows:
+                    payload = {
+                        "severity": "CRITICAL",
+                        "insight_id": int(r["insight_id_hash"]) if r.get("insight_id_hash") is not None else None,
+                        "insight_type": f"PAYMENT_{r['event_type']}",
+                        "id_filial": int(r["id_filial"]) if r.get("id_filial") is not None else None,
+                        "event_time": str(r.get("data_key") or ""),
+                        "impacto_estimado": float(r.get("impacto_estimado") or 0),
+                        "title": f"Anomalia de pagamento ({r['event_type']})",
+                        "body": (
+                            f"Score {int(r.get('score') or 0)}"
+                            + (f" | Turno {int(r['id_turno'])}" if r.get("id_turno") is not None and int(r["id_turno"]) >= 0 else "")
+                        ),
+                        "url": "/fraud",
+                        "event_type": str(r["event_type"]),
+                    }
+                    tg = send_telegram_alert(id_empresa=tenant, payload=payload)
+                    if tg.get("sent"):
+                        payments_telegram_sent += 1
+                    else:
+                        payments_telegram_suppressed += 1
+                    payments_critical.append(
+                        {
+                            "id_filial": r.get("id_filial"),
+                            "id_turno": r.get("id_turno"),
+                            "event_type": r.get("event_type"),
+                            "score": int(r.get("score") or 0),
+                            "impacto_estimado": float(r.get("impacto_estimado") or 0),
+                            "data_key": r.get("data_key"),
+                        }
+                    )
             if refresh_mart:
                 conn.execute("SELECT etl.refresh_anonymous_retention()")
             conn.commit()
-            return row["result"]
+            result = row["result"] if row else {}
+            if isinstance(result, dict):
+                result["payments_notifications"] = {
+                    "critical_events": len(payments_critical),
+                    "telegram_sent": payments_telegram_sent,
+                    "telegram_suppressed": payments_telegram_suppressed,
+                    "items": payments_critical,
+                }
+            return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"ETL failed: {e}")
 

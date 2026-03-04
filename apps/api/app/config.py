@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Telegram (optional)
     telegram_bot_token: str | None = None
+    notify_min_severity: str = "CRITICAL"
     etl_internal_key: str | None = None
 
     # Jarvis AI (optional; deterministic fallback is always available)

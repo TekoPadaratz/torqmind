@@ -43,6 +43,16 @@ datasets:
     table: dbo.ITENSMOVPRODUTOS
     watermark_column: DATAREPL
 
+  formas_pgto_comprovantes:
+    enabled: true
+    table: dbo.FORMAS_PGTO_COMPROVANTES
+    watermark_column: DATAREPL
+    # Opcional: usar query custom com join em COMPROVANTES para recorte eficiente por periodo.
+    # query: |
+    #   SELECT f.*
+    #   FROM dbo.FORMAS_PGTO_COMPROVANTES f
+    #   JOIN dbo.COMPROVANTES c ON c.REFERENCIA = f.ID_REFERENCIA
+
   filiais: { enabled: true, table: dbo.FILIAIS, watermark_column: DATAREPL }
   funcionarios: { enabled: true, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
   entidades: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }

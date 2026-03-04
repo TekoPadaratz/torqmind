@@ -239,6 +239,17 @@ class SmokeApiTest(unittest.TestCase):
             self.assertEqual(status_read, 200)
             self.assertTrue(body_read.get("ok"))
 
+    def test_payments_overview_endpoint_returns_contract(self) -> None:
+        status, body = self._request(
+            "/bi/payments/overview?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("kpis", body)
+        self.assertIn("by_day", body)
+        self.assertIn("by_turno", body)
+        self.assertIn("anomalies", body)
+
     def test_micro_risk_endpoint(self) -> None:
         # Keep telegram disabled by default in smoke; endpoint must still succeed.
         with get_conn(role="MASTER", tenant_id=1, branch_id=None) as conn:

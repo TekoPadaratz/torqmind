@@ -180,6 +180,14 @@ export default function Dashboard() {
   const churnTop = churnData?.top_risk || [];
   const anonKpis = anonRetention?.kpis || {};
   const revenueAtRisk = churnTop.reduce((acc: number, c: any) => acc + Number(c.revenue_at_risk_30d || 0), 0);
+  const payments = overview?.payments || {};
+  const paymentsKpis = payments?.kpis || {};
+  const paymentsByDay = (payments?.by_day || []).map((r: any) => ({
+    data: shortDateKey(r.data_key),
+    valor: Number(r.total_valor || 0),
+  }));
+  const paymentsAnomalies = (payments?.anomalies || []).slice(0, 8);
+  const canMapPaymentTypes = ['MASTER', 'OWNER'].includes(String(claims?.role || ''));
 
   const financeAging = financeData?.aging || {};
   const caixaRisco = Number(financeAging?.receber_total_vencido || 0) + Number(financeAging?.pagar_total_vencido || 0);
@@ -262,6 +270,54 @@ export default function Dashboard() {
           <div className="card kpi col-4">
             <div className="label">Caixa vencido (AR/AP)</div>
             <div className="value">{loading ? '...' : money(caixaRisco)}</div>
+          </div>
+
+          <div className="card kpi col-4">
+            <div className="label">Mix de pagamentos</div>
+            <div className="value">{loading ? '...' : money(paymentsKpis.total_valor)}</div>
+            {!loading ? (
+              <div className="muted">
+                {Number(paymentsKpis.delta_pct || 0).toFixed(1)}% vs período anterior
+              </div>
+            ) : null}
+          </div>
+          <div className="card kpi col-4">
+            <div className="label">TIPO_FORMA desconhecido</div>
+            <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
+            {!loading && canMapPaymentTypes && Number(paymentsKpis.unknown_share_pct || 0) > 0 ? (
+              <Link className="btn" href={detailsHref('/finance#payment-mapping', scope)}>Mapear tipos</Link>
+            ) : null}
+          </div>
+          <div className="card col-4">
+            <h2>Anomalias de pagamento</h2>
+            {!loading && !paymentsAnomalies.length ? <p className="muted">Sem anomalias de pagamento no período.</p> : null}
+            <table className="table compact">
+              <thead><tr><th>Evento</th><th>Sev</th><th>Score</th></tr></thead>
+              <tbody>
+                {paymentsAnomalies.map((a: any, idx: number) => (
+                  <tr key={`${a.insight_id || a.event_type}-${idx}`}>
+                    <td>{a.event_type}</td>
+                    <td>{a.severity}</td>
+                    <td>{Number(a.score || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="card col-8 chartCard">
+            <h2>Mix de pagamentos por dia</h2>
+            {!loading && !paymentsByDay.length ? <p className="muted">Sem pagamentos recebidos nesse período.</p> : null}
+            <div className="chartWrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={paymentsByDay}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
+                  <XAxis dataKey="data" stroke="#9fb0d0" />
+                  <YAxis stroke="#9fb0d0" />
+                  <Tooltip />
+                  <Bar dataKey="valor" fill="#60a5fa" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
           <div className="card col-12">

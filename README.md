@@ -109,6 +109,7 @@ Datasets suportados:
 - `turnos`
 - `movprodutos`
 - `itensmovprodutos`
+- `formas_pgto_comprovantes`
 - `comprovantes`
 - `contaspagar`
 - `contasreceber`

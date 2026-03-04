@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import AppNav from '../components/AppNav';
 import { apiGet } from '../lib/api';
@@ -83,6 +83,18 @@ export default function FinancePage() {
   );
 
   const hasFinance = useMemo(() => (data?.by_day || []).length > 0, [data]);
+  const paymentsByDay = useMemo(
+    () =>
+      (data?.payments?.by_day || []).map((r: any) => ({
+        data: shortDateKey(r.data_key),
+        valor: Number(r.total_valor || 0),
+        category: r.category,
+      })),
+    [data]
+  );
+  const paymentsByTurno = useMemo(() => data?.payments?.by_turno || [], [data]);
+  const paymentsKpis = data?.payments?.kpis || {};
+  const paymentsAnomalies = data?.payments?.anomalies || [];
 
   return (
     <div>
@@ -111,6 +123,72 @@ export default function FinancePage() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+          </div>
+
+          <div className="card kpi col-4">
+            <div className="label">Pagamentos (período)</div>
+            <div className="value">{loading ? '...' : fmtMoney(paymentsKpis.total_valor)}</div>
+          </div>
+          <div className="card kpi col-4">
+            <div className="label">Variação vs período anterior</div>
+            <div className="value">{loading ? '...' : `${Number(paymentsKpis.delta_pct || 0).toFixed(1)}%`}</div>
+          </div>
+          <div className="card kpi col-4" id="payment-mapping">
+            <div className="label">TIPO_FORMA desconhecido</div>
+            <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
+          </div>
+
+          <div className="card col-12 chartCard">
+            <h2>Mix de pagamentos por dia</h2>
+            {!loading && !paymentsByDay.length ? <p className="muted">Sem pagamentos recebidos nesse período.</p> : null}
+            <div className="chartWrap">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={paymentsByDay}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
+                  <XAxis dataKey="data" stroke="#9fb0d0" />
+                  <YAxis stroke="#9fb0d0" />
+                  <Tooltip />
+                  <Bar dataKey="valor" fill="#60a5fa" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="card col-7">
+            <h2>Ranking por turno (pagamentos)</h2>
+            {!loading && !paymentsByTurno.length ? <p className="muted">Sem dados de turno no período.</p> : null}
+            <table className="table compact">
+              <thead><tr><th>Data</th><th>Turno</th><th>Categoria</th><th>Valor</th><th>Comprovantes</th></tr></thead>
+              <tbody>
+                {paymentsByTurno.slice(0, 15).map((r: any, idx: number) => (
+                  <tr key={`${r.data_key}-${r.id_turno}-${r.category}-${idx}`}>
+                    <td>{shortDateKey(r.data_key)}</td>
+                    <td>{r.id_turno ?? '-'}</td>
+                    <td>{r.category}</td>
+                    <td>{fmtMoney(r.total_valor)}</td>
+                    <td>{Number(r.qtd_comprovantes || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="card col-5">
+            <h2>Anomalias de pagamento</h2>
+            {!loading && !paymentsAnomalies.length ? <p className="muted">Sem anomalias relevantes no período.</p> : null}
+            <table className="table compact">
+              <thead><tr><th>Evento</th><th>Sev</th><th>Score</th><th>Impacto</th></tr></thead>
+              <tbody>
+                {paymentsAnomalies.slice(0, 10).map((a: any, idx: number) => (
+                  <tr key={`${a.insight_id || a.event_type}-${idx}`}>
+                    <td>{a.event_type}</td>
+                    <td>{a.severity}</td>
+                    <td>{Number(a.score || 0)}</td>
+                    <td>{fmtMoney(a.impacto_estimado)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>

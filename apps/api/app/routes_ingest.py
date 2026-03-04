@@ -215,6 +215,15 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_itensmovprodutos", ["ID_ITENSMOVPRODUTOS", "id_itensmovprodutos"]),
         ],
     ),
+    "formas_pgto_comprovantes": DatasetSpec(
+        table="stg.formas_pgto_comprovantes",
+        pk_cols=["id_empresa", "id_filial", "id_referencia", "tipo_forma"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_referencia", ["ID_REFERENCIA", "id_referencia", "REFERENCIA", "referencia"]),
+            ("tipo_forma", ["TIPO_FORMA", "tipo_forma"]),
+        ],
+    ),
 
     # Finance
     "contaspagar": DatasetSpec(

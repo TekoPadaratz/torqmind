@@ -154,7 +154,7 @@ com ranking de tabelas candidatas e amostra `TOP 5`.
 
 ## Datasets suportados
 
-`filiais`, `funcionarios`, `entidades`/`clientes`, `grupoprodutos`, `localvendas`, `produtos`, `turnos`, `comprovantes`, `movprodutos`, `itensmovprodutos`, `contaspagar`, `contasreceber`, `financeiro`.
+`filiais`, `funcionarios`, `entidades`/`clientes`, `grupoprodutos`, `localvendas`, `produtos`, `turnos`, `comprovantes`, `movprodutos`, `itensmovprodutos`, `formas_pgto_comprovantes`, `contaspagar`, `contasreceber`, `financeiro`.
 
 ## Watermark em coluna texto (SQL Server)
 

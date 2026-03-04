@@ -20,6 +20,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
     "comprovantes": {"table": "dbo.COMPROVANTES", "watermark_column": "DATAREPL", "enabled": True},
     "movprodutos": {"table": "dbo.MOVPRODUTOS", "watermark_column": "DATAREPL", "enabled": True},
     "itensmovprodutos": {"table": "dbo.ITENSMOVPRODUTOS", "watermark_column": "DATAREPL", "enabled": True},
+    "formas_pgto_comprovantes": {"table": "dbo.FORMAS_PGTO_COMPROVANTES", "watermark_column": "DATAREPL", "enabled": True},
     "contaspagar": {"table": "dbo.CONTASPAGAR", "watermark_column": "DATAREPL", "enabled": False},
     "contasreceber": {"table": "dbo.CONTASRECEBER", "watermark_column": "DATAREPL", "enabled": False},
     "financeiro": {"table": "dbo.FINANCEIRO", "watermark_column": "DATAREPL", "enabled": False},
