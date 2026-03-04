@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # Telegram (optional)
     telegram_bot_token: str | None = None
+    etl_internal_key: str | None = None
 
     # Jarvis AI (optional; deterministic fallback is always available)
     openai_api_key: str = ""
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
     # Pricing is model-dependent and can change over time; keep env-configurable.
     jarvis_ai_input_cost_per_1m: float = 0.4
     jarvis_ai_output_cost_per_1m: float = 1.6
+
+    # Micro risk (2-minute loop friendly)
+    micro_risk_critical_min_score: int = 85
+    micro_risk_critical_min_impact: float = 150.0
 
     class Config:
         env_file = ".env"

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Header
 
+from app.config import settings
 from app.db import get_conn
 from app.deps import get_current_claims
+from app.security import decode_token
 from app.scope import resolve_scope
+from app.services.telegram import send_telegram_alert
 
 router = APIRouter(prefix="/etl", tags=["etl"])
 
@@ -42,3 +47,261 @@ def run_etl(
             return row["result"]
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"ETL failed: {e}")
+
+
+def _resolve_id_empresa_from_ingest(x_ingest_key: Optional[str]) -> Optional[int]:
+    if not x_ingest_key:
+        return None
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        try:
+            row = conn.execute(
+                "SELECT id_empresa FROM app.tenants WHERE ingest_key = %s AND is_active = true",
+                (x_ingest_key,),
+            ).fetchone()
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
+        return int(row["id_empresa"])
+
+
+def _resolve_micro_scope(
+    id_empresa_q: Optional[int],
+    id_filial_q: Optional[int],
+    authorization: Optional[str],
+    x_ingest_key: Optional[str],
+    x_internal_key: Optional[str],
+) -> tuple[int, Optional[int], str]:
+    if x_internal_key:
+        if not settings.etl_internal_key or x_internal_key != settings.etl_internal_key:
+            raise HTTPException(status_code=401, detail="Invalid X-Internal-Key")
+        return int(id_empresa_q or 1), id_filial_q, "INTERNAL"
+
+    ingest_empresa = _resolve_id_empresa_from_ingest(x_ingest_key)
+    if ingest_empresa is not None:
+        filial = int(id_filial_q) if id_filial_q is not None else None
+        return ingest_empresa, filial, "INGEST_KEY"
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing auth (Bearer or X-Ingest-Key/X-Internal-Key)")
+
+    token = authorization.split(" ", 1)[1].strip()
+    claims = decode_token(token)
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa_q, id_filial_q=id_filial_q)
+    return tenant, filial, "BEARER"
+
+
+def _upsert_notification_critical(
+    id_empresa: int,
+    id_filial: Optional[int],
+    insight_id: int,
+    title: str,
+    body: str,
+    url: str,
+) -> None:
+    sql_update = """
+      UPDATE app.notifications
+      SET
+        severity = 'CRITICAL',
+        title = %s,
+        body = %s,
+        url = %s,
+        created_at = now(),
+        read_at = NULL
+      WHERE id_empresa = %s
+        AND insight_id = %s
+        AND (
+          (id_filial IS NULL AND %s IS NULL)
+          OR id_filial = %s
+        )
+    """
+    sql_insert = """
+      INSERT INTO app.notifications (id_empresa, id_filial, insight_id, severity, title, body, url)
+      VALUES (%s,%s,%s,'CRITICAL',%s,%s,%s)
+    """
+    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=id_filial) as conn:
+        cur = conn.execute(sql_update, (title, body, url, id_empresa, insight_id, id_filial, id_filial))
+        if (cur.rowcount or 0) == 0:
+            conn.execute(sql_insert, (id_empresa, id_filial, insight_id, title, body, url))
+        conn.commit()
+
+
+@router.post("/micro_risk")
+def run_micro_risk(
+    minutes: int = Query(5, ge=1, le=120),
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER or internal key"),
+    x_ingest_key: Optional[str] = Header(None, alias="X-Ingest-Key"),
+    x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    id_emp, filial_scope, auth_mode = _resolve_micro_scope(
+        id_empresa_q=id_empresa,
+        id_filial_q=id_filial,
+        authorization=authorization,
+        x_ingest_key=x_ingest_key,
+        x_internal_key=x_internal_key,
+    )
+
+    critical_min_score = int(settings.micro_risk_critical_min_score)
+    critical_min_impact = float(settings.micro_risk_critical_min_impact)
+    hot_days = 1 if minutes <= 1440 else max(1, int(minutes / 1440))
+
+    with get_conn(role="MASTER", tenant_id=id_emp, branch_id=filial_scope) as conn:
+        risk_rows = conn.execute(
+            "SELECT etl.compute_risk_events(%s, %s, %s) AS rows",
+            (id_emp, False, hot_days),
+        ).fetchone()
+        computed_rows = int((risk_rows or {}).get("rows") or 0)
+
+        where_filial = "" if filial_scope is None else "AND id_filial = %s"
+        params = [id_emp, minutes, critical_min_score, critical_min_impact] + ([] if filial_scope is None else [filial_scope])
+        recent = conn.execute(
+            f"""
+            SELECT
+              id_filial,
+              event_type,
+              COUNT(*)::int AS eventos,
+              COALESCE(SUM(impacto_estimado),0)::numeric(18,2) AS impacto_total,
+              MAX(score_risco)::int AS max_score,
+              MAX(data) AS last_event_at
+            FROM dw.fact_risco_evento
+            WHERE id_empresa = %s
+              AND data >= (now() - make_interval(mins => %s))
+              AND (score_risco >= %s OR impacto_estimado >= %s)
+              {where_filial}
+            GROUP BY id_filial, event_type
+            ORDER BY impacto_total DESC, max_score DESC
+            """,
+            params,
+        ).fetchall()
+
+        created = 0
+        updated = 0
+        notif_upserts = 0
+        telegram_sent = 0
+        telegram_suppressed = 0
+        insight_items = []
+
+        for r in recent:
+            id_fil = int(r["id_filial"])
+            event_type = str(r["event_type"])
+            eventos = int(r["eventos"] or 0)
+            impacto = float(r["impacto_total"] or 0)
+            max_score = int(r["max_score"] or 0)
+            last_event_at = r["last_event_at"]
+            dt_ref = (last_event_at.date() if last_event_at else datetime.now(timezone.utc).date())
+
+            insight_type = f"MICRO_CRITICAL_{event_type}"
+            title = f"Risco critico ({event_type}) na filial {id_fil}"
+            body = (
+                f"{eventos} evento(s) nos ultimos {minutes} min, score max {max_score}, "
+                f"impacto estimado R$ {impacto:,.2f}"
+            )
+            rec = "Investigar imediatamente funcionario/turno/hora e bloquear reincidencia hoje."
+
+            upsert = conn.execute(
+                """
+                INSERT INTO app.insights_gerados (
+                  id_empresa, id_filial, insight_type, severity, dt_ref,
+                  impacto_estimado, title, message, recommendation, status, meta
+                )
+                VALUES (%s,%s,%s,'CRITICAL',%s,%s,%s,%s,%s,'NOVO',%s::jsonb)
+                ON CONFLICT ON CONSTRAINT uq_insights_gerados_nk
+                DO UPDATE SET
+                  impacto_estimado = EXCLUDED.impacto_estimado,
+                  title = EXCLUDED.title,
+                  message = EXCLUDED.message,
+                  recommendation = EXCLUDED.recommendation,
+                  status = 'NOVO',
+                  meta = EXCLUDED.meta
+                RETURNING id, (xmax = 0) AS inserted_flag
+                """,
+                (
+                    id_emp,
+                    id_fil,
+                    insight_type,
+                    dt_ref,
+                    impacto,
+                    title,
+                    body,
+                    rec,
+                    json.dumps(
+                        {
+                            "minutes": minutes,
+                            "event_type": event_type,
+                            "eventos": eventos,
+                            "max_score": max_score,
+                            "last_event_at": str(last_event_at or ""),
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            ).fetchone()
+            insight_id = int(upsert["id"])
+            if upsert["inserted_flag"]:
+                created += 1
+            else:
+                updated += 1
+
+            _upsert_notification_critical(
+                id_empresa=id_emp,
+                id_filial=id_fil,
+                insight_id=insight_id,
+                title=title,
+                body=body,
+                url="/fraud",
+            )
+            notif_upserts += 1
+
+            tg = send_telegram_alert(
+                id_empresa=id_emp,
+                payload={
+                    "severity": "CRITICAL",
+                    "insight_id": insight_id,
+                    "insight_type": insight_type,
+                    "id_filial": id_fil,
+                    "event_time": str(last_event_at or dt_ref),
+                    "impacto_estimado": impacto,
+                    "title": title,
+                    "body": body,
+                    "url": "/fraud",
+                    "event_type": event_type,
+                },
+            )
+            if tg.get("sent"):
+                telegram_sent += 1
+            else:
+                telegram_suppressed += 1
+
+            insight_items.append(
+                {
+                    "insight_id": insight_id,
+                    "id_filial": id_fil,
+                    "event_type": event_type,
+                    "eventos": eventos,
+                    "impacto_estimado": impacto,
+                    "max_score": max_score,
+                    "last_event_at": last_event_at,
+                    "telegram": tg,
+                }
+            )
+
+        conn.commit()
+
+    return {
+        "ok": True,
+        "auth_mode": auth_mode,
+        "id_empresa": id_emp,
+        "id_filial": filial_scope,
+        "minutes": minutes,
+        "critical_thresholds": {"min_score": critical_min_score, "min_impact": critical_min_impact},
+        "risk_events_computed": computed_rows,
+        "critical_groups": len(recent),
+        "insights_created": created,
+        "insights_updated": updated,
+        "notifications_upserted": notif_upserts,
+        "telegram_sent": telegram_sent,
+        "telegram_suppressed": telegram_suppressed,
+        "items": insight_items[:20],
+    }

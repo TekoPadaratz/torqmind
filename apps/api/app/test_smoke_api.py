@@ -175,6 +175,32 @@ class SmokeApiTest(unittest.TestCase):
             self.assertEqual(status_read, 200)
             self.assertTrue(body_read.get("ok"))
 
+    def test_micro_risk_endpoint(self) -> None:
+        # Keep telegram disabled by default in smoke; endpoint must still succeed.
+        with get_conn(role="MASTER", tenant_id=1, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO app.telegram_settings (id_empresa, chat_id, is_enabled)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (id_empresa)
+                DO UPDATE SET chat_id = EXCLUDED.chat_id, is_enabled = EXCLUDED.is_enabled
+                """,
+                (1, "123456789", False),
+            )
+            conn.commit()
+
+        status, body = self._request(
+            "/etl/micro_risk?minutes=5&id_empresa=1",
+            method="POST",
+            data={},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body.get("ok"))
+        self.assertIn("risk_events_computed", body)
+        self.assertIn("notifications_upserted", body)
+        self.assertIn("telegram_sent", body)
+
 
 if __name__ == "__main__":
     unittest.main()
