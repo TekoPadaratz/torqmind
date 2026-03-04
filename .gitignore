@@ -35,6 +35,7 @@ apps/agent/state.json
 apps/agent/.venv/
 apps/agent/.venv-win/
 apps/agent/config.local.yaml
+apps/agent/config.yaml
 
 # Local backups with real keys (never commit)
 secrets_backup/

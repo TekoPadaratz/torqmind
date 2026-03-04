@@ -18,7 +18,7 @@ def _parse_date(s: str) -> datetime:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m agent", description="TorqMind Extractor Agent")
-    parser.add_argument("--config", default="config.yaml", help="Path to config YAML")
+    parser.add_argument("--config", default="config.local.yaml", help="Path to config YAML")
     parser.add_argument("--log-level", default="INFO", help="DEBUG/INFO/WARN/ERROR")
 
     sub = parser.add_subparsers(dest="command", required=True)

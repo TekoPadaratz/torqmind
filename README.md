@@ -114,6 +114,17 @@ Datasets suportados:
 - `contasreceber`
 - `financeiro`
 
+### Configuração segura do Agent
+
+No diretório `apps/agent`, use sempre:
+
+```bash
+cp config.example.yaml config.local.yaml
+```
+
+Preencha segredos apenas em `config.local.yaml` (já ignorado pelo git).  
+Não versione `config.yaml`/`config.local.yaml` com credenciais reais.
+
 ---
 
 ## Jarvis IA (Responses API) com custo controlado

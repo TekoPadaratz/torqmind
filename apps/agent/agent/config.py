@@ -157,7 +157,7 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     return raw
 
 
-def load_config(config_path: str = "config.yaml") -> AppConfig:
+def load_config(config_path: str = "config.local.yaml") -> AppConfig:
     raw = _load_yaml(Path(config_path))
     raw = _apply_env_overrides(raw)
 

@@ -35,12 +35,15 @@ pip install -r requirements.txt
 Arquivos:
 - `config.example.yaml`: exemplo sem segredos (versionado)
 - `config.local.yaml`: sua configuração real (não versionada)
+- `config.yaml`: legado (não versionar; use apenas local se precisar de compatibilidade)
 
 Crie o local a partir do exemplo:
 
 ```bash
 cp config.example.yaml config.local.yaml
 ```
+
+Por padrão, a CLI já usa `config.local.yaml`.
 
 Campos principais:
 - `sqlserver.dsn` **ou** `sqlserver.server/database/user/password/driver`
