@@ -82,6 +82,7 @@ export default function AppNav({
     { path: '/fraud', label: 'Sistema Anti-Fraude' },
     { path: '/customers', label: 'Análise de Clientes' },
     { path: '/finance', label: 'Financeiro' },
+    { path: '/pricing', label: 'Preço Concorrente' },
     { path: '/goals', label: 'Metas & Equipe' },
   ];
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import HTTPException
+from pydantic import BaseModel, Field
 
 from app.deps import get_current_claims
 from app.scope import resolve_scope
@@ -13,6 +14,15 @@ from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
 from app.services.telegram import send_telegram_alert
 
 router = APIRouter(prefix="/bi", tags=["bi"])
+
+
+class CompetitorPriceItem(BaseModel):
+    id_produto: int
+    competitor_price: float = Field(..., gt=0)
+
+
+class CompetitorPriceUpsertRequest(BaseModel):
+    items: List[CompetitorPriceItem] = Field(default_factory=list)
 
 
 @router.get("/filiais")
@@ -255,6 +265,63 @@ def finance_overview(
         "by_day": repos_mart.finance_series(role, tenant, filial, dt_ini, dt_fim),
         "aging": repos_mart.finance_aging_overview(role, tenant, filial),
     }
+
+
+# ------------------------
+# Precificacao Concorrencia
+# ------------------------
+
+@router.get("/pricing/competitor/overview")
+def pricing_competitor_overview(
+    dt_ini: date,
+    dt_fim: date,
+    days_simulation: int = Query(10, ge=1, le=60),
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    if filial is None:
+        raise HTTPException(status_code=400, detail="id_filial is required for competitor pricing simulation")
+
+    return repos_mart.competitor_pricing_overview(
+        role,
+        tenant,
+        filial,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
+        days_simulation=days_simulation,
+    )
+
+
+@router.post("/pricing/competitor/prices")
+def pricing_competitor_prices_upsert(
+    payload: CompetitorPriceUpsertRequest,
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER", "MANAGER"}:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    if filial is None:
+        raise HTTPException(status_code=400, detail="id_filial is required to save competitor prices")
+
+    if not payload.items:
+        return {"ok": True, "saved": 0}
+
+    items = [{"id_produto": it.id_produto, "competitor_price": it.competitor_price} for it in payload.items]
+    result = repos_mart.competitor_pricing_upsert(
+        role,
+        tenant,
+        filial,
+        items=items,
+        updated_by=str(claims.get("sub") or ""),
+    )
+    return {"ok": True, **result}
 
 
 # ------------------------

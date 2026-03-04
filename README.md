@@ -155,6 +155,7 @@ Páginas:
 - `/fraud` → Sistema Anti-Fraude
 - `/customers` → Análise de Clientes
 - `/finance` → Financeiro
+- `/pricing` → Preço da Concorrência (input manual + simulação 10 dias)
 - `/goals` → Metas & Equipe
 
 ---

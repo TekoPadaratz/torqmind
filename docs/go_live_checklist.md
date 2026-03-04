@@ -59,6 +59,7 @@ Critério de saída T-1h:
 - [ ] Login OWNER.
 - [ ] `GET /bi/dashboard/overview` -> 200 com `health_score`.
 - [ ] `GET /bi/clients/churn` -> 200.
+- [ ] `GET /bi/pricing/competitor/overview` -> 200.
 - [ ] `GET /bi/finance/overview` -> 200 com `aging`.
 - [ ] `POST /bi/jarvis/generate` -> 200.
 - [ ] `GET /bi/notifications` -> 200.

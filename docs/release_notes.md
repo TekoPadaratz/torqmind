@@ -32,14 +32,18 @@ Backend/API:
 - `/bi/notifications`
 - `/bi/notifications/{id}/read`
 - `/bi/notifications/unread-count`
+- `/bi/pricing/competitor/overview`
+- `/bi/pricing/competitor/prices`
 
 Tabelas/app:
 - `app.insight_ai_cache`
 - `app.notifications`
+- `app.competitor_fuel_prices`
 - colunas aditivas em `app.insights_gerados` (`ai_plan`, `ai_model`, tokens, cache_hit, erro, timestamps)
 
 Frontend:
 - Dashboard premium com Hero + Top 3 ações + radares + alertas
+- Dashboard de preço da concorrência (`/pricing`) com input manual por combustível e simulação 10 dias
 - Componentes UI reutilizáveis (`HeroMoneyCard`, `ActionCard`, `RadarPanel`, `EvidenceChips`, `RiskBadge`, `Skeleton`)
 
 ## 4) Compatibilidade e contratos

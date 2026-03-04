@@ -177,6 +177,262 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt
 
 
 # ========================
+# Pricing (competitor simulation)
+# ========================
+
+def competitor_pricing_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: int,
+    dt_ini: date,
+    dt_fim: date,
+    days_simulation: int = 10,
+) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    days_window = max((dt_fim - dt_ini).days + 1, 1)
+    days_sim = max(days_simulation, 1)
+
+    sql = """
+      WITH sales AS (
+        SELECT
+          id_produto,
+          COALESCE(SUM(faturamento),0)::numeric(18,2) AS faturamento_periodo,
+          COALESCE(SUM(qtd),0)::numeric(18,3) AS qtd_periodo
+        FROM mart.agg_produtos_diaria
+        WHERE id_empresa = %s
+          AND id_filial = %s
+          AND data_key BETWEEN %s AND %s
+        GROUP BY id_produto
+      ),
+      fuel_products AS (
+        SELECT
+          p.id_produto,
+          COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
+          COALESCE(g.nome, '(Sem grupo)') AS grupo_nome,
+          COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio
+        FROM dw.dim_produto p
+        LEFT JOIN dw.dim_grupo_produto g
+          ON g.id_empresa = p.id_empresa
+         AND g.id_filial = p.id_filial
+         AND g.id_grupo_produto = p.id_grupo_produto
+        WHERE p.id_empresa = %s
+          AND p.id_filial = %s
+          AND (
+            UPPER(COALESCE(p.nome,'')) LIKE '%%GASOL%%'
+            OR UPPER(COALESCE(p.nome,'')) LIKE '%%ETANOL%%'
+            OR UPPER(COALESCE(p.nome,'')) LIKE '%%DIESEL%%'
+            OR UPPER(COALESCE(p.nome,'')) LIKE '%%GNV%%'
+            OR UPPER(COALESCE(p.nome,'')) LIKE '%%COMBUST%%'
+            OR UPPER(COALESCE(g.nome,'')) LIKE '%%COMBUST%%'
+            OR UPPER(COALESCE(g.nome,'')) LIKE '%%GASOL%%'
+            OR UPPER(COALESCE(g.nome,'')) LIKE '%%ETANOL%%'
+            OR UPPER(COALESCE(g.nome,'')) LIKE '%%DIESEL%%'
+            OR UPPER(COALESCE(g.nome,'')) LIKE '%%GNV%%'
+            OR EXISTS (SELECT 1 FROM sales sx WHERE sx.id_produto = p.id_produto)
+          )
+      ),
+      comp AS (
+        SELECT
+          id_produto,
+          competitor_price::numeric(18,4) AS competitor_price,
+          updated_at
+        FROM app.competitor_fuel_prices
+        WHERE id_empresa = %s
+          AND id_filial = %s
+      )
+      SELECT
+        fp.id_produto,
+        fp.produto_nome,
+        fp.grupo_nome,
+        fp.custo_medio,
+        COALESCE(s.qtd_periodo, 0)::numeric(18,3) AS qtd_periodo,
+        COALESCE(s.faturamento_periodo, 0)::numeric(18,2) AS faturamento_periodo,
+        CASE
+          WHEN COALESCE(s.qtd_periodo, 0) > 0 THEN (s.faturamento_periodo / NULLIF(s.qtd_periodo,0))::numeric(18,4)
+          ELSE 0::numeric(18,4)
+        END AS avg_price_current,
+        COALESCE(c.competitor_price, 0)::numeric(18,4) AS competitor_price,
+        c.updated_at AS competitor_updated_at
+      FROM fuel_products fp
+      LEFT JOIN sales s ON s.id_produto = fp.id_produto
+      LEFT JOIN comp c ON c.id_produto = fp.id_produto
+      ORDER BY fp.produto_nome
+    """
+    params = [id_empresa, id_filial, ini, fim, id_empresa, id_filial, id_empresa, id_filial]
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        rows = list(conn.execute(sql, params).fetchall())
+        if not rows:
+            fallback_sql = """
+              SELECT
+                p.id_produto,
+                COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
+                COALESCE(g.nome, '(Sem grupo)') AS grupo_nome,
+                COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio,
+                0::numeric(18,3) AS qtd_periodo,
+                0::numeric(18,2) AS faturamento_periodo,
+                0::numeric(18,4) AS avg_price_current,
+                COALESCE(c.competitor_price, 0)::numeric(18,4) AS competitor_price,
+                c.updated_at AS competitor_updated_at
+              FROM dw.dim_produto p
+              LEFT JOIN dw.dim_grupo_produto g
+                ON g.id_empresa = p.id_empresa
+               AND g.id_filial = p.id_filial
+               AND g.id_grupo_produto = p.id_grupo_produto
+              LEFT JOIN app.competitor_fuel_prices c
+                ON c.id_empresa = p.id_empresa
+               AND c.id_filial = p.id_filial
+               AND c.id_produto = p.id_produto
+              WHERE p.id_empresa = %s
+                AND p.id_filial = %s
+              ORDER BY p.nome
+              LIMIT 200
+            """
+            rows = list(conn.execute(fallback_sql, (id_empresa, id_filial)).fetchall())
+
+    items: List[Dict[str, Any]] = []
+    total_current_revenue_10d = 0.0
+    total_no_change_revenue_10d = 0.0
+    total_match_revenue_10d = 0.0
+    total_lost_if_no_change_10d = 0.0
+    total_match_vs_current_10d = 0.0
+    total_match_vs_no_change_10d = 0.0
+
+    for row in rows:
+        avg_daily_volume = float(row.get("qtd_periodo") or 0) / float(days_window)
+        current_price = float(row.get("avg_price_current") or 0)
+        competitor_price = float(row.get("competitor_price") or 0)
+        custo_medio = float(row.get("custo_medio") or 0)
+
+        baseline_revenue_10d = current_price * avg_daily_volume * days_sim
+        baseline_margin_10d = (current_price - custo_medio) * avg_daily_volume * days_sim
+
+        price_gap = 0.0
+        volume_loss_rate = 0.0
+        if current_price > 0 and competitor_price > 0:
+            price_gap = current_price - competitor_price
+            # Conservative elasticity proxy: bigger positive gap vs competitor => likely lower conversion.
+            if price_gap > 0:
+                volume_loss_rate = min(0.35, max(0.0, (price_gap / current_price) * 1.5))
+
+        no_change_daily_volume = avg_daily_volume * (1.0 - volume_loss_rate)
+        no_change_revenue_10d = current_price * no_change_daily_volume * days_sim
+        no_change_margin_10d = (current_price - custo_medio) * no_change_daily_volume * days_sim
+
+        matched_price = competitor_price if competitor_price > 0 else current_price
+        match_revenue_10d = matched_price * avg_daily_volume * days_sim
+        match_margin_10d = (matched_price - custo_medio) * avg_daily_volume * days_sim
+
+        lost_if_no_change_10d = baseline_revenue_10d - no_change_revenue_10d
+        impact_match_vs_current_10d = match_revenue_10d - baseline_revenue_10d
+        impact_match_vs_no_change_10d = match_revenue_10d - no_change_revenue_10d
+
+        total_current_revenue_10d += baseline_revenue_10d
+        total_no_change_revenue_10d += no_change_revenue_10d
+        total_match_revenue_10d += match_revenue_10d
+        total_lost_if_no_change_10d += lost_if_no_change_10d
+        total_match_vs_current_10d += impact_match_vs_current_10d
+        total_match_vs_no_change_10d += impact_match_vs_no_change_10d
+
+        items.append(
+            {
+                "id_produto": row.get("id_produto"),
+                "produto_nome": row.get("produto_nome"),
+                "grupo_nome": row.get("grupo_nome"),
+                "avg_daily_volume": round(avg_daily_volume, 3),
+                "avg_price_current": round(current_price, 4),
+                "competitor_price": round(competitor_price, 4),
+                "station_price_gap": round(price_gap, 4),
+                "volume_loss_rate_no_change": round(volume_loss_rate, 4),
+                "competitor_updated_at": row.get("competitor_updated_at"),
+                "scenario_current": {
+                    "revenue_10d": round(baseline_revenue_10d, 2),
+                    "margin_10d": round(baseline_margin_10d, 2),
+                },
+                "scenario_no_change": {
+                    "expected_volume_10d": round(no_change_daily_volume * days_sim, 3),
+                    "revenue_10d": round(no_change_revenue_10d, 2),
+                    "margin_10d": round(no_change_margin_10d, 2),
+                    "lost_revenue_10d": round(lost_if_no_change_10d, 2),
+                },
+                "scenario_match_competitor": {
+                    "revenue_10d": round(match_revenue_10d, 2),
+                    "margin_10d": round(match_margin_10d, 2),
+                    "impact_vs_current_10d": round(impact_match_vs_current_10d, 2),
+                    "impact_vs_no_change_10d": round(impact_match_vs_no_change_10d, 2),
+                },
+                "recommendation": (
+                    "Aproximar preço da concorrência"
+                    if competitor_price > 0 and impact_match_vs_no_change_10d > 0
+                    else "Manter preço atual e monitorar"
+                ),
+            }
+        )
+
+    items_sorted = sorted(
+        items,
+        key=lambda x: abs(float((x.get("scenario_match_competitor") or {}).get("impact_vs_no_change_10d") or 0)),
+        reverse=True,
+    )
+
+    return {
+        "meta": {
+            "dt_ini": dt_ini.isoformat(),
+            "dt_fim": dt_fim.isoformat(),
+            "days_window": days_window,
+            "days_simulation": days_sim,
+        },
+        "summary": {
+            "fuel_types": len(items_sorted),
+            "total_current_revenue_10d": round(total_current_revenue_10d, 2),
+            "total_no_change_revenue_10d": round(total_no_change_revenue_10d, 2),
+            "total_match_revenue_10d": round(total_match_revenue_10d, 2),
+            "total_lost_if_no_change_10d": round(total_lost_if_no_change_10d, 2),
+            "total_match_vs_current_10d": round(total_match_vs_current_10d, 2),
+            "total_match_vs_no_change_10d": round(total_match_vs_no_change_10d, 2),
+        },
+        "items": items_sorted,
+    }
+
+
+def competitor_pricing_upsert(
+    role: str,
+    id_empresa: int,
+    id_filial: int,
+    items: List[Dict[str, Any]],
+    updated_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not items:
+        return {"saved": 0}
+
+    sql = """
+      INSERT INTO app.competitor_fuel_prices
+        (id_empresa, id_filial, id_produto, competitor_price, updated_by, updated_at)
+      VALUES (%s, %s, %s, %s, %s, now())
+      ON CONFLICT (id_empresa, id_filial, id_produto)
+      DO UPDATE
+        SET competitor_price = EXCLUDED.competitor_price,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = now()
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        for item in items:
+            conn.execute(
+                sql,
+                (
+                    id_empresa,
+                    id_filial,
+                    int(item["id_produto"]),
+                    float(item["competitor_price"]),
+                    updated_by,
+                ),
+            )
+        conn.commit()
+
+    return {"saved": len(items)}
+
+
+# ========================
 # Anti-fraude
 # ========================
 

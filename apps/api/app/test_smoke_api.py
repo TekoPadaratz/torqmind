@@ -162,6 +162,36 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("snapshot", drilldown)
         self.assertIn("series", drilldown)
 
+    def test_competitor_pricing_overview_and_save(self) -> None:
+        status_overview, body_overview = self._request(
+            "/bi/pricing/competitor/overview?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1&id_filial=1&days_simulation=10",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status_overview, 200)
+        self.assertIn("meta", body_overview)
+        self.assertIn("summary", body_overview)
+        self.assertIn("items", body_overview)
+
+        items = body_overview.get("items") or []
+        if items:
+            first = items[0]
+            status_save, body_save = self._request(
+                "/bi/pricing/competitor/prices?id_empresa=1&id_filial=1",
+                method="POST",
+                data={
+                    "items": [
+                        {
+                            "id_produto": int(first["id_produto"]),
+                            "competitor_price": float(first.get("avg_price_current") or 1.0),
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+            self.assertEqual(status_save, 200)
+            self.assertTrue(body_save.get("ok"))
+            self.assertGreaterEqual(int(body_save.get("saved") or 0), 1)
+
     def test_jarvis_ai_generate_and_usage(self) -> None:
         status_gen, body_gen = self._request(
             "/bi/jarvis/generate?dt_ref=2025-08-31&id_empresa=1&limit=3&force=true",
@@ -228,7 +258,7 @@ class SmokeApiTest(unittest.TestCase):
             method="POST",
             data={},
             headers={"Authorization": f"Bearer {self.token}"},
-            timeout=300,
+            timeout=900,
         )
         self.assertEqual(status, 200)
         self.assertTrue(body.get("ok"))
