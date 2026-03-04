@@ -44,7 +44,7 @@ function dataKeyToISO(key: any) {
 }
 
 function detailsHref(path: string, scope: any) {
-  const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim });
+  const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
   if (scope.id_filial) qs.set('id_filial', scope.id_filial);
   if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
   return `${path}?${qs.toString()}`;
@@ -114,7 +114,7 @@ export default function Dashboard() {
         const me = await apiGet('/auth/me');
         setClaims(me);
 
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim });
+        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
         if (scope.id_filial) qs.set('id_filial', scope.id_filial);
         if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
 
@@ -139,12 +139,12 @@ export default function Dashboard() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const runEtl = async () => {
     try {
       setEtlMsg('Rodando ETL...');
-      const qs = new URLSearchParams({ refresh_mart: 'true', force_full: 'false' });
+      const qs = new URLSearchParams({ refresh_mart: 'true', force_full: 'false', ref_date: scope.dt_ref || scope.dt_fim });
       if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
       const res = await apiPost(`/etl/run?${qs.toString()}`, {});
       setEtlMsg(`ETL OK: ${JSON.stringify(res.meta || {})}`);
@@ -157,7 +157,7 @@ export default function Dashboard() {
   const runJarvis = async () => {
     try {
       setAiMsg('Gerando planos IA...');
-      const qs = new URLSearchParams({ dt_ref: scope.dt_fim, limit: '10', force: 'false' });
+      const qs = new URLSearchParams({ dt_ref: scope.dt_ref || scope.dt_fim, limit: '10', force: 'false' });
       if (scope.id_filial) qs.set('id_filial', scope.id_filial);
       if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
       const res = await apiPost(`/bi/jarvis/generate?${qs.toString()}`, {});
@@ -225,7 +225,8 @@ export default function Dashboard() {
           <div>
             <div className="muted">Escopo ativo</div>
             <div className="scopeLine">
-              <strong>{scope.dt_ini}</strong> ate <strong>{scope.dt_fim}</strong> · Filial{' '}
+              <strong>{scope.dt_ini}</strong> ate <strong>{scope.dt_fim}</strong> · Ref{' '}
+              <strong>{scope.dt_ref || scope.dt_fim}</strong> · Filial{' '}
               <strong>{scope.id_filial || 'Todas'}</strong> · Empresa{' '}
               <strong>{scope.id_empresa || claims?.id_empresa || '1'}</strong>
             </div>

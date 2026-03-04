@@ -25,6 +25,7 @@ export default function ScopePage() {
   const [claims, setClaims] = useState<any>(null);
   const [dtIni, setDtIni] = useState(daysAgoISO(30));
   const [dtFim, setDtFim] = useState(todayISO());
+  const [dtRef, setDtRef] = useState(todayISO());
 
   const [idEmpresa, setIdEmpresa] = useState<string>('1');
   const [filiais, setFiliais] = useState<any[]>([]);
@@ -94,7 +95,7 @@ export default function ScopePage() {
   }, [claims, idEmpresa]);
 
   const apply = () => {
-    const qs = new URLSearchParams({ dt_ini: dtIni, dt_fim: dtFim });
+    const qs = new URLSearchParams({ dt_ini: dtIni, dt_fim: dtFim, dt_ref: dtRef || dtFim });
 
     // id_filial empty means "all" for MASTER/OWNER
     if (idFilial) qs.set('id_filial', idFilial);
@@ -132,6 +133,10 @@ export default function ScopePage() {
             <div style={{ flex: 1 }}>
               <div className="label">Data final</div>
               <input className="input" type="date" value={dtFim} onChange={(e) => setDtFim(e.target.value)} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div className="label">Data de referência (simula hoje)</div>
+              <input className="input" type="date" value={dtRef} onChange={(e) => setDtRef(e.target.value)} />
             </div>
           </div>
 

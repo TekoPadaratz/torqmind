@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Header
@@ -20,6 +20,7 @@ router = APIRouter(prefix="/etl", tags=["etl"])
 def run_etl(
     refresh_mart: bool = Query(True),
     force_full: bool = Query(False),
+    ref_date: Optional[date] = Query(None, description="Reference date used as simulated 'today' (YYYY-MM-DD)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
@@ -40,8 +41,8 @@ def run_etl(
     with get_conn(role=role, tenant_id=tenant, branch_id=None) as conn:
         try:
             row = conn.execute(
-                "SELECT etl.run_all(%s, %s, %s) AS result",
-                (tenant, force_full, refresh_mart),
+                "SELECT etl.run_all(%s, %s, %s, %s) AS result",
+                (tenant, force_full, refresh_mart, ref_date),
             ).fetchone()
             payments_telegram_sent = 0
             payments_telegram_suppressed = 0

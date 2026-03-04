@@ -63,7 +63,7 @@ export default function FraudPage() {
         const me = await apiGet('/auth/me');
         setClaims(me);
 
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim });
+        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
         if (scope.id_filial) qs.set('id_filial', scope.id_filial);
         if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
 
@@ -77,7 +77,7 @@ export default function FraudPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
 
   const byDay = useMemo(
     () => (data?.by_day || []).map((r: any) => ({ ...r, data: shortDateKey(r.data_key), cancelamentos: Number(r.cancelamentos || 0) })),

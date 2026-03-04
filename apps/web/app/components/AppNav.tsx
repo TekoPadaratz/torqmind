@@ -10,7 +10,7 @@ import { apiGet } from '../lib/api';
 function buildHref(path: string, params: URLSearchParams) {
   const qp = new URLSearchParams(params.toString());
   // keep only what matters across pages
-  const keep = ['dt_ini', 'dt_fim', 'id_filial', 'id_empresa'];
+  const keep = ['dt_ini', 'dt_fim', 'dt_ref', 'id_filial', 'id_empresa'];
   const clean = new URLSearchParams();
   for (const k of keep) {
     const v = qp.get(k);

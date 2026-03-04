@@ -897,11 +897,13 @@ def customers_churn_diamond(
     role: str,
     id_empresa: int,
     id_filial: Optional[int],
+    as_of: Optional[date] = None,
     min_score: int = 60,
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_as_of = "AND dt_ref <= %s" if as_of is not None else ""
+    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of]) + [limit]
     sql = f"""
       SELECT
         dt_ref,
@@ -922,7 +924,8 @@ def customers_churn_diamond(
         AND churn_score >= %s
         AND id_cliente <> -1
         {where_filial}
-      ORDER BY churn_score DESC, revenue_at_risk_30d DESC
+        {where_as_of}
+      ORDER BY dt_ref DESC, churn_score DESC, revenue_at_risk_30d DESC
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
@@ -936,6 +939,7 @@ def customer_churn_drilldown(
     id_cliente: int,
     dt_ini: date,
     dt_fim: date,
+    as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
@@ -980,10 +984,11 @@ def customer_churn_drilldown(
       WHERE id_empresa = %s
         AND id_cliente = %s
         {"" if id_filial is None else "AND id_filial = %s"}
+        {"" if as_of is None else "AND dt_ref <= %s"}
       ORDER BY dt_ref DESC
       LIMIT 1
     """
-    params_snapshot = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial])
+    params_snapshot = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of])
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         series = list(conn.execute(sql_series, params).fetchall())
@@ -1037,12 +1042,13 @@ def anonymous_retention_overview(
           SELECT MAX(dt_ref)
           FROM mart.anonymous_retention_daily
           WHERE id_empresa = %s
+            AND dt_ref <= %s
           {where_filial}
         )
         {where_filial}
       ORDER BY id_filial
     """
-    params_latest = [id_empresa, id_empresa] + ([] if id_filial is None else [id_filial, id_filial])
+    params_latest = [id_empresa, id_empresa, dt_fim] + ([] if id_filial is None else [id_filial, id_filial])
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         latest_rows = list(conn.execute(sql_latest, params_latest).fetchall())
@@ -1133,9 +1139,17 @@ def finance_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
         return list(conn.execute(sql, params).fetchall())
 
 
-def finance_aging_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+def finance_aging_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    as_of_sql = ""
+    if as_of is not None:
+        as_of_sql = "AND dt_ref <= %s"
     if id_filial is None:
         # Consolidated tenant view: aggregate latest day across branches.
         sql = f"""
@@ -1143,6 +1157,7 @@ def finance_aging_overview(role: str, id_empresa: int, id_filial: Optional[int])
             SELECT MAX(dt_ref) AS dt_ref
             FROM mart.finance_aging_daily
             WHERE id_empresa = %s
+              {as_of_sql}
           )
           SELECT
             l.dt_ref,
@@ -1163,7 +1178,7 @@ def finance_aging_overview(role: str, id_empresa: int, id_filial: Optional[int])
            AND f.dt_ref = l.dt_ref
           GROUP BY l.dt_ref
         """
-        params = [id_empresa, id_empresa]
+        params = [id_empresa] + ([as_of] if as_of is not None else []) + [id_empresa]
     else:
         sql = f"""
           SELECT
@@ -1182,9 +1197,12 @@ def finance_aging_overview(role: str, id_empresa: int, id_filial: Optional[int])
           FROM mart.finance_aging_daily
           WHERE id_empresa = %s
           {where_filial}
+          {as_of_sql}
           ORDER BY dt_ref DESC
           LIMIT 1
         """
+        if as_of is not None:
+            params = [id_empresa, id_filial, as_of]
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {
@@ -1369,9 +1387,15 @@ def payments_overview(
     }
 
 
-def health_score_latest(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+def health_score_latest(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    where_as_of = "AND dt_ref <= %s" if as_of is not None else ""
+    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of])
     sql = f"""
       SELECT
         dt_ref,
@@ -1381,6 +1405,7 @@ def health_score_latest(role: str, id_empresa: int, id_filial: Optional[int]) ->
       FROM mart.health_score_daily
       WHERE id_empresa = %s
       {where_filial}
+      {where_as_of}
       ORDER BY dt_ref DESC
       LIMIT 1
     """

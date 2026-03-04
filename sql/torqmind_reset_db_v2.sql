@@ -1369,7 +1369,8 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION etl.run_all(
   p_id_empresa int,
   p_force_full boolean DEFAULT false,
-  p_refresh_mart boolean DEFAULT true
+  p_refresh_mart boolean DEFAULT true,
+  p_ref_date date DEFAULT CURRENT_DATE
 )
 RETURNS jsonb AS $$
 DECLARE
@@ -2281,7 +2282,8 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION etl.run_all(
   p_id_empresa int,
   p_force_full boolean DEFAULT false,
-  p_refresh_mart boolean DEFAULT true
+  p_refresh_mart boolean DEFAULT true,
+  p_ref_date date DEFAULT CURRENT_DATE
 )
 RETURNS jsonb AS $$
 DECLARE
@@ -2862,7 +2864,10 @@ CREATE INDEX IF NOT EXISTS ix_mart_pagamentos_anomalias_insight
 -- Notifications from CRITICAL payment anomalies
 -- ==========================================
 
-CREATE OR REPLACE FUNCTION etl.sync_payment_anomaly_notifications(p_id_empresa int)
+CREATE OR REPLACE FUNCTION etl.sync_payment_anomaly_notifications(
+  p_id_empresa int,
+  p_ref_date date DEFAULT CURRENT_DATE
+)
 RETURNS integer AS $$
 DECLARE
   v_rows integer := 0;
@@ -2879,7 +2884,7 @@ BEGIN
     FROM mart.pagamentos_anomalias_diaria p
     WHERE p.id_empresa = p_id_empresa
       AND p.severity = 'CRITICAL'
-      AND p.data_key >= to_char((current_date - interval '2 day')::date, 'YYYYMMDD')::int
+      AND p.data_key >= to_char((p_ref_date - interval '2 day')::date, 'YYYYMMDD')::int
       AND p.insight_id_hash IS NOT NULL
   ), upserted AS (
     INSERT INTO app.notifications (id_empresa, id_filial, insight_id, severity, title, body, url)
@@ -2905,6 +2910,8 @@ $$ LANGUAGE plpgsql;
 -- ==========================================
 -- Integrate with mart refresh + run_all
 -- ==========================================
+
+DROP FUNCTION IF EXISTS etl.run_all(integer, boolean, boolean);
 
 CREATE OR REPLACE FUNCTION etl.refresh_marts(p_changed jsonb DEFAULT '{}'::jsonb)
 RETURNS jsonb AS $$
@@ -2965,7 +2972,8 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION etl.run_all(
   p_id_empresa int,
   p_force_full boolean DEFAULT false,
-  p_refresh_mart boolean DEFAULT true
+  p_refresh_mart boolean DEFAULT true,
+  p_ref_date date DEFAULT CURRENT_DATE
 )
 RETURNS jsonb AS $$
 DECLARE
@@ -3072,7 +3080,7 @@ BEGIN
     PERFORM etl.log_step(p_id_empresa, 'refresh_marts', v_step_started, clock_timestamp(), 'ok', 1, NULL, jsonb_build_object('ms', v_step_ms, 'refresh', v_refresh_meta));
 
     v_step_started := clock_timestamp();
-    v_rows := etl.sync_payment_anomaly_notifications(p_id_empresa);
+    v_rows := etl.sync_payment_anomaly_notifications(p_id_empresa, p_ref_date);
     v_step_ms := FLOOR(EXTRACT(epoch FROM (clock_timestamp() - v_step_started)) * 1000)::int;
     v_meta := v_meta || jsonb_build_object('payment_notifications', v_rows, 'payment_notifications_ms', v_step_ms);
     PERFORM etl.log_step(p_id_empresa, 'payment_notifications', v_step_started, clock_timestamp(), 'ok', v_rows, NULL, jsonb_build_object('ms', v_step_ms));
@@ -3081,7 +3089,7 @@ BEGIN
   END IF;
 
   v_step_started := clock_timestamp();
-  v_rows := etl.generate_insights(p_id_empresa, CURRENT_DATE, 7);
+  v_rows := etl.generate_insights(p_id_empresa, p_ref_date, 7);
   v_step_ms := FLOOR(EXTRACT(epoch FROM (clock_timestamp() - v_step_started)) * 1000)::int;
   v_meta := v_meta || jsonb_build_object('insights_generated', v_rows, 'insights_generated_ms', v_step_ms);
   PERFORM etl.log_step(p_id_empresa, 'insights_generated', v_step_started, clock_timestamp(), 'ok', v_rows, NULL, jsonb_build_object('ms', v_step_ms));
@@ -3101,6 +3109,7 @@ BEGIN
     'ok', true,
     'id_empresa', p_id_empresa,
     'force_full', p_force_full,
+    'ref_date', p_ref_date,
     'hot_window_days', etl.hot_window_days(),
     'started_at', v_started,
     'finished_at', clock_timestamp(),

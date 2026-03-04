@@ -59,6 +59,7 @@ export default function PricingPage() {
       const qs = new URLSearchParams({
         dt_ini: scope.dt_ini,
         dt_fim: scope.dt_fim,
+        dt_ref: scope.dt_ref || scope.dt_fim,
         days_simulation: '10',
         id_filial: String(filial),
       });
@@ -91,7 +92,7 @@ export default function PricingPage() {
       return;
     }
     load();
-  }, [scope.ready, scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial]);
+  }, [scope.ready, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_empresa, scope.id_filial]);
 
   const onSavePrices = async () => {
     if (!data?.items?.length) return;
@@ -137,7 +138,7 @@ export default function PricingPage() {
           <div>
             <div className="muted">Simulação 10 dias</div>
             <div className="scopeLine">
-              Período base: <strong>{scope.dt_ini}</strong> até <strong>{scope.dt_fim}</strong> · Filial{' '}
+              Período base: <strong>{scope.dt_ini}</strong> até <strong>{scope.dt_fim}</strong> · Ref <strong>{scope.dt_ref || scope.dt_fim}</strong> · Filial{' '}
               <strong>{scope.id_filial || claims?.id_filial || '-'}</strong>
             </div>
           </div>

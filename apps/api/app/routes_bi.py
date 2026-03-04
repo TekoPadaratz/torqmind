@@ -43,12 +43,14 @@ def get_filiais(
 def dashboard_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    as_of = dt_ref or dt_fim
 
     return {
         "kpis": repos_mart.dashboard_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -62,8 +64,8 @@ def dashboard_overview(
             "window": repos_mart.risk_data_window(role, tenant, filial),
         },
         "operational_score": repos_mart.operational_score(role, tenant, filial, dt_ini, dt_fim),
-        "health_score": repos_mart.health_score_latest(role, tenant, filial),
-        "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=dt_fim),
+        "health_score": repos_mart.health_score_latest(role, tenant, filial, as_of=as_of),
+        "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
         "notifications_unread": repos_mart.notifications_unread_count(role, tenant, filial),
     }
 
@@ -76,6 +78,7 @@ def dashboard_overview(
 def sales_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -101,6 +104,7 @@ def sales_overview(
 def fraud_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -128,6 +132,7 @@ def fraud_overview(
 def risk_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     status: Optional[str] = Query(None, description="NOVO/LIDO/RESOLVIDO"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
@@ -156,13 +161,15 @@ def risk_overview(
 def customers_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    churn_diamond = repos_mart.customers_churn_diamond(role, tenant, filial, min_score=40, limit=10)
+    as_of = dt_ref or dt_fim
+    churn_diamond = repos_mart.customers_churn_diamond(role, tenant, filial, as_of=as_of, min_score=40, limit=10)
     churn_top = []
     for c in churn_diamond:
         freq_30 = int(c.get("frequency_30") or 0)
@@ -187,7 +194,7 @@ def customers_overview(
 
     return {
         "top_customers": repos_mart.customers_top(role, tenant, filial, dt_ini, dt_fim, limit=15),
-        "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=dt_fim),
+        "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=as_of),
         "churn_top": churn_top,
         "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim),
     }
@@ -197,6 +204,7 @@ def customers_overview(
 def clients_churn(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_cliente: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
     min_score: int = Query(60, ge=0, le=100),
@@ -206,7 +214,8 @@ def clients_churn(
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    top = repos_mart.customers_churn_diamond(role, tenant, filial, min_score=min_score, limit=limit)
+    as_of = dt_ref or dt_fim
+    top = repos_mart.customers_churn_diamond(role, tenant, filial, as_of=as_of, min_score=min_score, limit=limit)
     total_revenue_at_risk = float(sum(float(row.get("revenue_at_risk_30d") or 0) for row in top))
     avg_churn_score = (
         round(sum(float(row.get("churn_score") or 0) for row in top) / len(top), 2) if top else 0.0
@@ -221,6 +230,7 @@ def clients_churn(
             id_cliente=id_cliente,
             dt_ini=dt_ini,
             dt_fim=dt_fim,
+            as_of=as_of,
         )
 
     return {
@@ -238,6 +248,7 @@ def clients_churn(
 def clients_retention_anonymous(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -255,17 +266,19 @@ def clients_retention_anonymous(
 def finance_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    as_of = dt_ref or dt_fim
 
     return {
         "kpis": repos_mart.finance_kpis(role, tenant, filial, dt_ini, dt_fim),
         "by_day": repos_mart.finance_series(role, tenant, filial, dt_ini, dt_fim),
-        "aging": repos_mart.finance_aging_overview(role, tenant, filial),
+        "aging": repos_mart.finance_aging_overview(role, tenant, filial, as_of=as_of),
         "payments": repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=10),
     }
 
@@ -274,6 +287,7 @@ def finance_overview(
 def payments_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -348,19 +362,21 @@ def pricing_competitor_prices_upsert(
 def goals_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    as_of = dt_ref or dt_fim
 
     # For goals, it makes sense to require a branch for now.
     filial_for_goals = filial or 1
 
     return {
         "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, dt_ini, dt_fim, limit=20),
-        "goals_today": repos_mart.goals_today(role, tenant, filial_for_goals, goal_date=dt_fim),
+        "goals_today": repos_mart.goals_today(role, tenant, filial_for_goals, goal_date=as_of),
     }
 
 
@@ -418,6 +434,7 @@ def admin_ai_usage(
 
 @router.post("/admin/telegram/test")
 def admin_telegram_test(
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -431,7 +448,7 @@ def admin_telegram_test(
         "severity": "CRITICAL",
         "id_filial": filial,
         "event_type": "TELEGRAM_TEST",
-        "event_time": date.today().isoformat(),
+        "event_time": (dt_ref or date.today()).isoformat(),
         "impacto_estimado": 0,
         "title": "Teste de alerta Telegram",
         "body": "Mensagem de teste enviada pelo endpoint /bi/admin/telegram/test",
