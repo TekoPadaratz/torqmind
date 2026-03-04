@@ -340,6 +340,25 @@ def _bulk_upsert_with_stats(conn, table: str, pk_cols: List[str], rows: List[Tup
     return inserted, updated
 
 
+def _dedupe_rows_by_pk(pk_cols: List[str], rows: List[Tuple[Any, ...]]) -> Tuple[List[Tuple[Any, ...]], int]:
+    """Deduplicate rows in-memory by PK tuple, preserving the last occurrence.
+
+    This avoids Postgres error:
+    'ON CONFLICT DO UPDATE command cannot affect row a second time'
+    when a single VALUES batch contains duplicate PKs.
+    """
+    if not rows:
+        return rows, 0
+
+    pk_size = len(pk_cols)
+    by_pk: Dict[Tuple[Any, ...], Tuple[Any, ...]] = {}
+    for row in rows:
+        by_pk[tuple(row[:pk_size])] = row
+    deduped = list(by_pk.values())
+    duplicates = len(rows) - len(deduped)
+    return deduped, duplicates
+
+
 @router.get("/health")
 def ingest_health(
     x_ingest_key: Optional[str] = Header(None, alias="X-Ingest-Key"),
@@ -449,6 +468,9 @@ async def ingest_dataset(
             "details": rejected[:5],
         }
 
+    # Deduplicate by PK within the same batch to avoid ON CONFLICT re-hit errors.
+    values, duplicates_in_batch = _dedupe_rows_by_pk(spec.pk_cols, values)
+
     # Execute batch with inserted/updated stats
     with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
         with conn.transaction():
@@ -479,6 +501,7 @@ async def ingest_dataset(
         "inserted_or_updated": len(values),
         "inserted": inserted,
         "updated": updated,
+        "duplicates_in_batch": duplicates_in_batch,
         "rejected": len(rejected),
         "etl": etl_result,
         "sample_rejections": rejected[:5],
