@@ -1146,10 +1146,7 @@ def finance_aging_overview(
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
-    as_of_sql = ""
-    if as_of is not None:
-        as_of_sql = "AND dt_ref <= %s"
+    as_of_sql = "AND dt_ref <= %s" if as_of is not None else ""
     if id_filial is None:
         # Consolidated tenant view: aggregate latest day across branches.
         sql = f"""
@@ -1179,6 +1176,7 @@ def finance_aging_overview(
           GROUP BY l.dt_ref
         """
         params = [id_empresa] + ([as_of] if as_of is not None else []) + [id_empresa]
+        fallback_params = [id_empresa, id_empresa]
     else:
         sql = f"""
           SELECT
@@ -1203,8 +1201,17 @@ def finance_aging_overview(
         """
         if as_of is not None:
             params = [id_empresa, id_filial, as_of]
+            fallback_params = [id_empresa, id_filial]
+        else:
+            params = [id_empresa, id_filial]
+            fallback_params = params
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         row = conn.execute(sql, params).fetchone()
+        # Older reference dates may have no snapshot if marts were built only for CURRENT_DATE.
+        # In this case, fallback to latest available snapshot to avoid returning all zeros.
+        if as_of is not None and (not row or row.get("dt_ref") is None):
+            fallback_sql = sql.replace(as_of_sql, "")
+            row = conn.execute(fallback_sql, fallback_params).fetchone()
         return row or {
             "dt_ref": None,
             "receber_total_aberto": 0,
@@ -1411,6 +1418,22 @@ def health_score_latest(
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         row = conn.execute(sql, params).fetchone()
+        # Fallback to latest snapshot when requested reference date has no row.
+        if as_of is not None and (not row or row.get("dt_ref") is None):
+            fallback_params = [id_empresa] + ([] if id_filial is None else [id_filial])
+            fallback_sql = f"""
+              SELECT
+                dt_ref,
+                score_total,
+                components,
+                reasons
+              FROM mart.health_score_daily
+              WHERE id_empresa = %s
+              {where_filial}
+              ORDER BY dt_ref DESC
+              LIMIT 1
+            """
+            row = conn.execute(fallback_sql, fallback_params).fetchone()
         return row or {"dt_ref": None, "score_total": 0, "components": {}, "reasons": {}}
 
 
