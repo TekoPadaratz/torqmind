@@ -134,6 +134,9 @@ export default function PricingPage() {
     <div>
       <AppNav title="Preço da Concorrência" userLabel={userLabel} />
       <div className="container">
+        <div className="card">
+          <div className="muted">Preços e impacto competitivo por combustível.</div>
+        </div>
         <div className="card toolbar">
           <div>
             <div className="muted">Simulação 10 dias</div>

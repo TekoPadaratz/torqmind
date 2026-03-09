@@ -79,8 +79,11 @@ export default function SalesPage() {
 
   return (
     <div>
-      <AppNav title="Vendas & Stores" userLabel={userLabel} />
+      <AppNav title="Vendas" userLabel={userLabel} />
       <div className="container">
+        <div className="card">
+          <div className="muted">Faturamento, margem e desempenho comercial.</div>
+        </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>

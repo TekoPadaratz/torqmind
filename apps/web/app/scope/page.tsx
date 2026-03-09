@@ -116,9 +116,7 @@ export default function ScopePage() {
       <div className="container">
         <div className="card" style={{ maxWidth: 720, margin: '30px auto' }}>
           <h1>Escopo do BI</h1>
-          <div className="muted">
-            Selecione período, empresa e (opcionalmente) filial. O mesmo escopo é mantido quando você navega entre os dashboards.
-          </div>
+          <div className="muted">Defina o período e a unidade.</div>
 
           <div style={{ height: 16 }} />
 
@@ -135,7 +133,7 @@ export default function ScopePage() {
               <input className="input" type="date" value={dtFim} onChange={(e) => setDtFim(e.target.value)} />
             </div>
             <div style={{ flex: 1 }}>
-              <div className="label">Data de referência (simula hoje)</div>
+              <div className="label">Data de referência</div>
               <input className="input" type="date" value={dtRef} onChange={(e) => setDtRef(e.target.value)} />
             </div>
           </div>
@@ -152,11 +150,7 @@ export default function ScopePage() {
                 disabled={!canPickEmpresa}
                 placeholder="id_empresa"
               />
-              {!canPickEmpresa ? (
-                <div className="muted">Fixado pelo seu login</div>
-              ) : (
-                <div className="muted">MASTER pode alternar tenant via id_empresa</div>
-              )}
+              <div className="muted">{!canPickEmpresa ? 'Fixado pelo seu login' : 'Empresa em análise'}</div>
             </div>
 
             <div style={{ flex: 1 }}>
@@ -174,11 +168,7 @@ export default function ScopePage() {
                   </option>
                 ))}
               </select>
-              {claims?.role === 'MANAGER' ? (
-                <div className="muted">Fixado pelo seu login</div>
-              ) : (
-                <div className="muted">Dica: comece com “Todas” para ver o consolidado</div>
-              )}
+              <div className="muted">{claims?.role === 'MANAGER' ? 'Fixado pelo seu login' : 'Visão por unidade'}</div>
             </div>
           </div>
 
@@ -188,9 +178,7 @@ export default function ScopePage() {
             <button className="btn" onClick={apply}>
               Aplicar escopo
             </button>
-            <div className="muted">
-              Se precisar de dados demo: <code>docker compose exec api python -m app.cli.demo_load</code>
-            </div>
+            <div className="muted">Escopo aplicado em todos os painéis.</div>
           </div>
         </div>
       </div>

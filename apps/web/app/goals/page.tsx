@@ -80,8 +80,11 @@ export default function GoalsPage() {
 
   return (
     <div>
-      <AppNav title="Metas & Equipe" userLabel={userLabel} />
+      <AppNav title="Metas e Equipe" userLabel={userLabel} />
       <div className="container">
+        <div className="card">
+          <div className="muted">Metas, ranking e resultado da equipe.</div>
+        </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>

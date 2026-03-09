@@ -81,6 +81,9 @@ export default function CustomersPage() {
     <div>
       <AppNav title="Analise de Clientes" userLabel={userLabel} />
       <div className="container">
+        <div className="card">
+          <div className="muted">Recorrência, churn e valor da base.</div>
+        </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>

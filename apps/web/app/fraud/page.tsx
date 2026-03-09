@@ -104,6 +104,9 @@ export default function FraudPage() {
     <div>
       <AppNav title="Sistema Anti-Fraude" userLabel={userLabel} />
       <div className="container">
+        <div className="card">
+          <div className="muted">Riscos, alertas e perdas potenciais.</div>
+        </div>
         {error ? <div className="card errorCard">{error}</div> : null}
         {scopeOutdatedForRisk ? (
           <div className="card" style={{ marginTop: 12, borderColor: '#f59e0b' }}>

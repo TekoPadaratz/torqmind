@@ -100,6 +100,9 @@ export default function FinancePage() {
     <div>
       <AppNav title="Financeiro" userLabel={userLabel} />
       <div className="container">
+        <div className="card">
+          <div className="muted">Fluxo, pagamentos e posição financeira.</div>
+        </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
@@ -134,7 +137,7 @@ export default function FinancePage() {
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.delta_pct || 0).toFixed(1)}%`}</div>
           </div>
           <div className="card kpi col-4" id="payment-mapping">
-            <div className="label">TIPO_FORMA desconhecido</div>
+            <div className="label">Pagamentos nao categorizados</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
           </div>
 

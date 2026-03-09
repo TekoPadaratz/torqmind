@@ -59,9 +59,7 @@ export default function LoginPage() {
       <div className="container">
         <div className="card" style={{ maxWidth: 460, margin: "40px auto" }}>
           <h1>Entrar</h1>
-          <div className="muted">Acesse com segurança (JWT). Multi-tenant e RLS entram por escopo.</div>
           <div style={{ height: 16 }} />
-          {checkingSession ? <div className="muted">Validando sessao...</div> : null}
           <form onSubmit={onSubmit} className="row" style={{ gap: 12 }}>
             <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
             <input
@@ -80,10 +78,6 @@ export default function LoginPage() {
               Entrar
             </button>
           </form>
-          <div style={{ height: 18 }} />
-          <div className="muted">
-            Crie usuários com: <code>docker compose exec api python -m app.cli.seed</code>
-          </div>
         </div>
       </div>
     </div>

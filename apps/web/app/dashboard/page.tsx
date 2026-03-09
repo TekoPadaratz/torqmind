@@ -71,8 +71,6 @@ export default function Dashboard() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [etlMsg, setEtlMsg] = useState('');
-  const [aiMsg, setAiMsg] = useState('');
 
   const userLabel = useMemo(() => {
     if (!claims) return undefined;
@@ -141,36 +139,6 @@ export default function Dashboard() {
     load();
   }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa, scope.ready]);
 
-  const runEtl = async () => {
-    try {
-      setEtlMsg('Rodando ETL...');
-      const qs = new URLSearchParams({ refresh_mart: 'true', force_full: 'false', ref_date: scope.dt_ref || scope.dt_fim });
-      if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-      const res = await apiPost(`/etl/run?${qs.toString()}`, {});
-      setEtlMsg(`ETL OK: ${JSON.stringify(res.meta || {})}`);
-      setTimeout(() => window.location.reload(), 700);
-    } catch (err: any) {
-      setEtlMsg(`ETL falhou: ${extractApiError(err, 'erro inesperado')}`);
-    }
-  };
-
-  const runJarvis = async () => {
-    try {
-      setAiMsg('Gerando planos IA...');
-      const qs = new URLSearchParams({ dt_ref: scope.dt_ref || scope.dt_fim, limit: '10', force: 'false' });
-      if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-      if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-      const res = await apiPost(`/bi/jarvis/generate?${qs.toString()}`, {});
-      const stats = res?.stats || {};
-      setAiMsg(
-        `Jarvis OK: ${Number(stats.processed || 0)} processados, ${Number(stats.cache_hits || 0)} cache, custo estimado US$ ${Number(stats.estimated_cost_usd || 0).toFixed(6)}`,
-      );
-      setTimeout(() => window.location.reload(), 700);
-    } catch (err: any) {
-      setAiMsg(`Jarvis falhou: ${extractApiError(err, 'erro inesperado')}`);
-    }
-  };
-
   const kpis = overview?.kpis || {};
   const jarvis = overview?.jarvis;
   const riskKpis = overview?.risk?.kpis || {};
@@ -231,14 +199,11 @@ export default function Dashboard() {
               <strong>{scope.id_empresa || claims?.id_empresa || '1'}</strong>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn" onClick={runEtl}>Atualizar dados (ETL)</button>
-            <button className="btn" onClick={runJarvis}>Gerar planos IA</button>
-          </div>
         </div>
 
-        {etlMsg ? <div className="card" style={{ marginTop: 12 }}>{etlMsg}</div> : null}
-        {aiMsg ? <div className="card" style={{ marginTop: 12 }}>{aiMsg}</div> : null}
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="muted">Resumo de vendas, risco, clientes e caixa.</div>
+        </div>
         {error ? <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div> : null}
         {scopeOutdatedForRisk ? (
           <div className="card" style={{ marginTop: 12, borderColor: '#f59e0b' }}>
@@ -283,7 +248,7 @@ export default function Dashboard() {
             ) : null}
           </div>
           <div className="card kpi col-4">
-            <div className="label">TIPO_FORMA desconhecido</div>
+            <div className="label">Pagamentos nao categorizados</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
             {!loading && canMapPaymentTypes && Number(paymentsKpis.unknown_share_pct || 0) > 0 ? (
               <Link className="btn" href={detailsHref('/finance#payment-mapping', scope)}>Mapear tipos</Link>
@@ -404,10 +369,10 @@ export default function Dashboard() {
           <div className="card col-12">
             <div className="panelHead">
               <h2>Perda Invisivel</h2>
-              <Link className="btn" href={detailsHref('/scope', scope)}>Configurar integracoes</Link>
+              <Link className="btn" href={detailsHref('/scope', scope)}>Ver escopo</Link>
             </div>
             <p className="muted">
-              Modulo disponivel ao integrar tanques, entregas e afericoes. Enquanto isso, foque nas acoes de Fraude, Churn e Caixa.
+              Bloco dedicado a oportunidades adicionais de ganho. Enquanto isso, foque nas acoes de Fraude, Churn e Caixa.
             </p>
           </div>
 
@@ -455,7 +420,7 @@ export default function Dashboard() {
           </div>
 
           <div className="card col-4">
-            <h2>Jarvis briefing</h2>
+            <h2>Resumo IA</h2>
             {loading ? <Skeleton /> : null}
             {!loading && jarvis?.bullets?.length ? (
               <ul className="insightList">
@@ -488,9 +453,9 @@ export default function Dashboard() {
           <div className="card col-12">
             <div className="panelHead">
               <h2>Insights recentes</h2>
-              <span className="muted">Evidencias e plano gerado</span>
+              <span className="muted">Resumo dos pontos mais relevantes</span>
             </div>
-            {!loading && !generatedInsights.length ? <p className="muted">Sem insights persistidos para o periodo.</p> : null}
+            {!loading && !generatedInsights.length ? <p className="muted">Sem insights para o periodo.</p> : null}
             {(generatedInsights || []).slice(0, 6).map((ins: any) => (
               <div className="insightItem" key={ins.id}>
                 <div>
