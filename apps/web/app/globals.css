@@ -269,6 +269,152 @@ h2 { margin: 0; font-size: 18px; }
   color: #e8ddd0;
 }
 
+.dashboardHome {
+  display: grid;
+  gap: 16px;
+}
+
+.homeBlock {
+  margin-top: 0;
+}
+
+.kpiStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.homePrimeGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 12px;
+}
+
+.sectionEyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #f2c08c;
+}
+
+.priorityGrid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.priorityCard {
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 16px;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
+    rgba(10, 14, 16, 0.9);
+  display: grid;
+  gap: 10px;
+}
+
+.priorityCard h3 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.priorityCard p {
+  margin: 0;
+  color: #d0d6df;
+}
+
+.priorityTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.priorityImpact {
+  color: #f2c08c;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.aiSummaryCard {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  min-height: 100%;
+}
+
+.aiSummaryLead {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  color: #f8fafc;
+}
+
+.aiHighlights {
+  display: grid;
+  gap: 10px;
+}
+
+.aiHighlight {
+  border-left: 3px solid rgba(242, 192, 140, 0.7);
+  padding-left: 12px;
+  color: #d6dce6;
+}
+
+.aiSummaryFooter {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding-top: 12px;
+  color: #b7c0cf;
+}
+
+.aiSummaryFooter span {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.focusGrid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.focusCard {
+  display: grid;
+  gap: 10px;
+}
+
+.focusLabel {
+  color: #f2c08c;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.focusValue {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.focusDetail {
+  margin: 0;
+  color: #d0d6df;
+  line-height: 1.5;
+}
+
+.subtleLink {
+  color: #f4cfaa;
+  font-weight: 600;
+}
+
 .panelHead {
   display: flex;
   align-items: center;
@@ -350,6 +496,13 @@ h2 { margin: 0; font-size: 18px; }
 
 @media (max-width: 1100px) {
   .actionsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .homePrimeGrid,
+  .focusGrid,
+  .kpiStrip,
+  .priorityGrid {
     grid-template-columns: 1fr;
   }
 }
