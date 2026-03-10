@@ -21,6 +21,7 @@ import { extractApiError } from '../lib/errors';
 import { useScopeQuery } from '../lib/scope';
 import AppNav from '../components/AppNav';
 import ActionCard from '../components/ui/ActionCard';
+import EmptyState from '../components/ui/EmptyState';
 import HeroMoneyCard from '../components/ui/HeroMoneyCard';
 import RadarPanel from '../components/ui/RadarPanel';
 import RiskBadge from '../components/ui/RiskBadge';
@@ -143,6 +144,7 @@ export default function Dashboard() {
   const jarvis = overview?.jarvis;
   const riskKpis = overview?.risk?.kpis || {};
   const riskWindow = overview?.risk?.window || {};
+  const openCash = overview?.open_cash || {};
   const generatedInsights = overview?.insights_generated || [];
 
   const churnTop = churnData?.top_risk || [];
@@ -236,6 +238,43 @@ export default function Dashboard() {
           <div className="card kpi col-4">
             <div className="label">Caixa vencido (AR/AP)</div>
             <div className="value">{loading ? '...' : money(caixaRisco)}</div>
+          </div>
+          <div className="card col-12">
+            <div className="panelHead">
+              <h2>Caixa em aberto / turnos</h2>
+              <Link className="btn" href={detailsHref('/fraud', scope)}>Ver monitor</Link>
+            </div>
+            {!loading ? (
+              <>
+                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento de turnos indisponivel.'}</div>
+                {openCash.source_status === 'ok' && openCash.items?.length ? (
+                  <table className="table compact">
+                    <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
+                    <tbody>
+                      {openCash.items.map((item: any) => (
+                        <tr key={`${item.id_filial}-${item.id_turno}`}>
+                          <td>{item.id_filial}</td>
+                          <td>{item.id_turno}</td>
+                          <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
+                          <td>{item.severity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <EmptyState
+                    title={
+                      openCash.source_status === 'unavailable'
+                        ? 'Dados de turno indisponiveis.'
+                        : openCash.source_status === 'unmapped'
+                          ? 'Fonte de turnos ainda nao mapeada.'
+                          : 'Nenhum turno em aberto acima do limite esperado.'
+                    }
+                    detail={openCash.summary}
+                  />
+                )}
+              </>
+            ) : null}
           </div>
 
           <div className="card kpi col-4">

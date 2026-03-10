@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Header
@@ -214,14 +214,92 @@ def run_micro_risk(
     hot_days = 1 if minutes <= 1440 else max(1, int(minutes / 1440))
 
     with get_conn(role="MASTER", tenant_id=id_emp, branch_id=filial_scope) as conn:
+        where_filial_source = "" if filial_scope is None else "AND id_filial = %s"
+        source_params = [id_emp] + ([] if filial_scope is None else [filial_scope])
+        source_ref = conn.execute(
+            f"""
+            SELECT MAX(src.data_key) AS latest_data_key
+            FROM (
+              SELECT MAX(data_key) AS data_key
+              FROM dw.fact_comprovante
+              WHERE id_empresa = %s
+                {where_filial_source}
+                AND data_key IS NOT NULL
+              UNION ALL
+              SELECT MAX(data_key) AS data_key
+              FROM dw.fact_venda
+              WHERE id_empresa = %s
+                {where_filial_source}
+                AND data_key IS NOT NULL
+            ) src
+            """,
+            source_params + source_params,
+        ).fetchone()
+        latest_data_key = int(source_ref["latest_data_key"]) if source_ref and source_ref["latest_data_key"] is not None else None
+        latest_data_at = (
+            datetime.strptime(str(latest_data_key), "%Y%m%d").replace(tzinfo=timezone.utc)
+            if latest_data_key is not None
+            else None
+        )
+
+        if latest_data_key is None:
+            return {
+                "ok": True,
+                "auth_mode": auth_mode,
+                "id_empresa": id_emp,
+                "id_filial": filial_scope,
+                "minutes": minutes,
+                "critical_thresholds": {"min_score": critical_min_score, "min_impact": critical_min_impact},
+                "risk_events_computed": 0,
+                "critical_groups": 0,
+                "insights_created": 0,
+                "insights_updated": 0,
+                "notifications_upserted": 0,
+                "telegram_sent": 0,
+                "telegram_suppressed": 0,
+                "reference_time": None,
+                "message": "Sem dados recentes para processar micro-risco nesta filial.",
+                "items": [],
+            }
+
+        freshness_limit_key = int((datetime.now(timezone.utc) - timedelta(days=hot_days)).strftime("%Y%m%d"))
+        if latest_data_key < freshness_limit_key:
+            return {
+                "ok": True,
+                "auth_mode": auth_mode,
+                "id_empresa": id_emp,
+                "id_filial": filial_scope,
+                "minutes": minutes,
+                "critical_thresholds": {"min_score": critical_min_score, "min_impact": critical_min_impact},
+                "risk_events_computed": 0,
+                "critical_groups": 0,
+                "insights_created": 0,
+                "insights_updated": 0,
+                "notifications_upserted": 0,
+                "telegram_sent": 0,
+                "telegram_suppressed": 0,
+                "reference_time": latest_data_at,
+                "message": "Sem movimento recente na janela de micro-risco para esta filial.",
+                "items": [],
+            }
+
         risk_rows = conn.execute(
-            "SELECT etl.compute_risk_events(%s, %s, %s) AS rows",
-            (id_emp, False, hot_days),
+            """
+            SELECT etl.compute_risk_events(
+              %s::int,
+              %s::boolean,
+              %s::int,
+              %s::timestamptz
+            ) AS rows
+            """,
+            (int(id_emp), False, int(hot_days), latest_data_at),
         ).fetchone()
         computed_rows = int((risk_rows or {}).get("rows") or 0)
 
         where_filial = "" if filial_scope is None else "AND id_filial = %s"
-        params = [id_emp, minutes, critical_min_score, critical_min_impact] + ([] if filial_scope is None else [filial_scope])
+        params = [id_emp, latest_data_at, minutes, critical_min_score, critical_min_impact] + (
+            [] if filial_scope is None else [filial_scope]
+        )
         recent = conn.execute(
             f"""
             SELECT
@@ -233,13 +311,14 @@ def run_micro_risk(
               MAX(data) AS last_event_at
             FROM dw.fact_risco_evento
             WHERE id_empresa = %s
-              AND data >= (now() - make_interval(mins => %s))
+              AND data >= (%s::timestamptz - make_interval(mins => %s))
+              AND data <= %s::timestamptz
               AND (score_risco >= %s OR impacto_estimado >= %s)
               {where_filial}
             GROUP BY id_filial, event_type
             ORDER BY impacto_total DESC, max_score DESC
             """,
-            params,
+            [params[0], params[1], params[2], params[1], params[3], params[4]] + ([] if filial_scope is None else [filial_scope]),
         ).fetchall()
 
         created = 0
@@ -362,6 +441,7 @@ def run_micro_risk(
         "id_filial": filial_scope,
         "minutes": minutes,
         "critical_thresholds": {"min_score": critical_min_score, "min_impact": critical_min_impact},
+        "reference_time": latest_data_at,
         "risk_events_computed": computed_rows,
         "critical_groups": len(recent),
         "insights_created": created,

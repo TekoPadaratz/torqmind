@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # Environment
     app_env: str = "dev"
+    app_cors_origins: str = "http://192.168.0.125:3000,http://localhost:3000,http://127.0.0.1:3000"
 
     # Database
     database_url: str | None = None

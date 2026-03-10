@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import AppNav from '../components/AppNav';
+import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
@@ -69,7 +70,7 @@ export default function CustomersPage() {
   const topChart = useMemo(
     () =>
       (data?.top_customers || []).slice(0, 10).map((c: any) => ({
-        cliente: `${c.id_cliente}`,
+        cliente: c.cliente_nome || `#ID ${c.id_cliente}`,
         faturamento: Number(c.faturamento || 0),
       })),
     [data]
@@ -130,6 +131,9 @@ export default function CustomersPage() {
 
           <div className="card col-7 chartCard">
             <h2>Top clientes por faturamento</h2>
+            {!loading && !topChart.length ? (
+              <EmptyState title="Sem clientes identificados com faturamento." detail="A filial nao trouxe clientes nomeados para este recorte." />
+            ) : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={topChart}>
@@ -145,6 +149,9 @@ export default function CustomersPage() {
 
           <div className="card col-5">
             <h2>Top clientes</h2>
+            {!loading && !(data?.top_customers || []).length ? (
+              <EmptyState title="Sem top clientes no periodo." detail="Nao houve base identificada suficiente para ranqueamento." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Cliente</th><th>Compras</th><th>Ticket</th></tr></thead>
               <tbody>
@@ -160,6 +167,9 @@ export default function CustomersPage() {
             <div className="muted" style={{ marginBottom: 8 }}>
               {loading ? '...' : anonKpis?.recommendation || 'Sem recomendacao para o periodo.'}
             </div>
+            {!loading && !(anon?.breakdown_dow || []).length ? (
+              <EmptyState title="Sem coortes anonimas disponiveis." detail="A fonte ainda nao trouxe amostra suficiente para recorrencia anonima." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Dia Semana</th><th>Atual</th><th>Periodo anterior</th><th>Tendencia</th></tr></thead>
               <tbody>

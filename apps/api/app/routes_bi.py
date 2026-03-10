@@ -58,6 +58,7 @@ def dashboard_overview(
         "insights": repos_mart.insights_base(role, tenant, filial, dt_ini, dt_fim),
         "insights_generated": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=20),
         "payments": repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=8),
+        "open_cash": repos_mart.open_cash_monitor(role, tenant, filial),
         "risk": {
             "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
             "by_day": repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim),
@@ -125,6 +126,7 @@ def fraud_overview(
         "risk_last_events": repos_mart.risk_last_events(role, tenant, filial, limit=30),
         "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=15),
         "payments_risk": repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20),
+        "open_cash": repos_mart.open_cash_monitor(role, tenant, filial),
     }
 
 
@@ -280,6 +282,7 @@ def finance_overview(
         "by_day": repos_mart.finance_series(role, tenant, filial, dt_ini, dt_fim),
         "aging": repos_mart.finance_aging_overview(role, tenant, filial, as_of=as_of),
         "payments": repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=10),
+        "open_cash": repos_mart.open_cash_monitor(role, tenant, filial),
     }
 
 

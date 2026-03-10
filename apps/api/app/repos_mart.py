@@ -771,6 +771,206 @@ def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_i
     }
 
 
+def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+
+    sql_totals = f"""
+      SELECT COUNT(*)::int AS total_turnos
+      FROM stg.turnos
+      WHERE id_empresa = %s
+      {where_filial}
+    """
+
+    sql_parsed = f"""
+      WITH turnos_raw AS (
+        SELECT
+          id_empresa,
+          id_filial,
+          id_turno,
+          UPPER(COALESCE(
+            payload->>'STATUS',
+            payload->>'SITUACAO',
+            payload->>'SITUACAO_TURNO',
+            payload->>'ST',
+            ''
+          )) AS status_raw,
+          etl.safe_timestamp(COALESCE(
+            payload->>'DTABERTURA',
+            payload->>'DATAABERTURA',
+            payload->>'DTHRABERTURA',
+            payload->>'DTHR_ABERTURA',
+            payload->>'ABERTURA',
+            payload->>'INICIO',
+            payload->>'DTINICIO',
+            payload->>'DATAINICIO'
+          )) AS abertura_ts,
+          etl.safe_timestamp(COALESCE(
+            payload->>'DTFECHAMENTO',
+            payload->>'DATAFECHAMENTO',
+            payload->>'DTHRFECHAMENTO',
+            payload->>'DTHR_FECHAMENTO',
+            payload->>'FECHAMENTO',
+            payload->>'FIM',
+            payload->>'DTFIM',
+            payload->>'DATAFIM'
+          )) AS fechamento_ts
+        FROM stg.turnos
+        WHERE id_empresa = %s
+        {where_filial}
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE abertura_ts IS NOT NULL)::int AS mapped_rows,
+        COUNT(*) FILTER (
+          WHERE abertura_ts IS NOT NULL
+            AND fechamento_ts IS NULL
+            AND status_raw NOT IN ('FECHADO', 'CLOSED')
+        )::int AS total_open,
+        COUNT(*) FILTER (
+          WHERE abertura_ts IS NOT NULL
+            AND fechamento_ts IS NULL
+            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 24
+        )::int AS critical_count,
+        COUNT(*) FILTER (
+          WHERE abertura_ts IS NOT NULL
+            AND fechamento_ts IS NULL
+            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 12
+            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 < 24
+        )::int AS high_count,
+        COUNT(*) FILTER (
+          WHERE abertura_ts IS NOT NULL
+            AND fechamento_ts IS NULL
+            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 6
+            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 < 12
+        )::int AS warn_count
+      FROM turnos_raw
+    """
+
+    sql_items = f"""
+      WITH turnos_raw AS (
+        SELECT
+          id_filial,
+          id_turno,
+          UPPER(COALESCE(
+            payload->>'STATUS',
+            payload->>'SITUACAO',
+            payload->>'SITUACAO_TURNO',
+            payload->>'ST',
+            ''
+          )) AS status_raw,
+          etl.safe_timestamp(COALESCE(
+            payload->>'DTABERTURA',
+            payload->>'DATAABERTURA',
+            payload->>'DTHRABERTURA',
+            payload->>'DTHR_ABERTURA',
+            payload->>'ABERTURA',
+            payload->>'INICIO',
+            payload->>'DTINICIO',
+            payload->>'DATAINICIO'
+          )) AS abertura_ts,
+          etl.safe_timestamp(COALESCE(
+            payload->>'DTFECHAMENTO',
+            payload->>'DATAFECHAMENTO',
+            payload->>'DTHRFECHAMENTO',
+            payload->>'DTHR_FECHAMENTO',
+            payload->>'FECHAMENTO',
+            payload->>'FIM',
+            payload->>'DTFIM',
+            payload->>'DATAFIM'
+          )) AS fechamento_ts
+        FROM stg.turnos
+        WHERE id_empresa = %s
+        {where_filial}
+      )
+      SELECT
+        id_filial,
+        id_turno,
+        abertura_ts,
+        ROUND(EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0, 2) AS open_hours,
+        CASE
+          WHEN EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 24 THEN 'CRITICAL'
+          WHEN EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 12 THEN 'HIGH'
+          WHEN EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 6 THEN 'WARN'
+          ELSE 'OK'
+        END AS severity
+      FROM turnos_raw
+      WHERE abertura_ts IS NOT NULL
+        AND fechamento_ts IS NULL
+        AND status_raw NOT IN ('FECHADO', 'CLOSED')
+      ORDER BY open_hours DESC NULLS LAST, id_turno DESC
+      LIMIT 10
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        totals = conn.execute(sql_totals, params).fetchone() or {"total_turnos": 0}
+        parsed = conn.execute(sql_parsed, params).fetchone() or {}
+        items = list(conn.execute(sql_items, params).fetchall())
+
+    total_turnos = int(totals.get("total_turnos", 0) or 0)
+    mapped_rows = int(parsed.get("mapped_rows", 0) or 0)
+    total_open = int(parsed.get("total_open", 0) or 0)
+    critical_count = int(parsed.get("critical_count", 0) or 0)
+    high_count = int(parsed.get("high_count", 0) or 0)
+    warn_count = int(parsed.get("warn_count", 0) or 0)
+
+    if total_turnos == 0:
+        return {
+            "source_status": "unavailable",
+            "severity": "UNAVAILABLE",
+            "summary": "Dados de turno indisponiveis. Fonte ainda nao carregada para esta filial.",
+            "total_turnos": 0,
+            "mapped_rows": 0,
+            "total_open": 0,
+            "warn_count": 0,
+            "high_count": 0,
+            "critical_count": 0,
+            "items": [],
+        }
+
+    if mapped_rows == 0:
+        return {
+            "source_status": "unmapped",
+            "severity": "UNAVAILABLE",
+            "summary": "Payload de turnos presente, mas abertura/fechamento ainda nao foi mapeado.",
+            "total_turnos": total_turnos,
+            "mapped_rows": 0,
+            "total_open": 0,
+            "warn_count": 0,
+            "high_count": 0,
+            "critical_count": 0,
+            "items": [],
+        }
+
+    if total_open == 0:
+        summary = "Nenhum turno em aberto acima do limite esperado."
+        severity = "OK"
+    elif critical_count > 0:
+        summary = f"{critical_count} turno(s) aberto(s) em situacao critica."
+        severity = "CRITICAL"
+    elif high_count > 0:
+        summary = f"{high_count} turno(s) aberto(s) em situacao de alto risco."
+        severity = "HIGH"
+    elif warn_count > 0:
+        summary = f"{warn_count} turno(s) aberto(s) acima do limite esperado."
+        severity = "WARN"
+    else:
+        summary = f"{total_open} turno(s) em aberto dentro da janela monitorada."
+        severity = "OK"
+
+    return {
+        "source_status": "ok",
+        "severity": severity,
+        "summary": summary,
+        "total_turnos": total_turnos,
+        "mapped_rows": mapped_rows,
+        "total_open": total_open,
+        "warn_count": warn_count,
+        "high_count": high_count,
+        "critical_count": critical_count,
+        "items": items,
+    }
+
+
 # ========================
 # Clientes
 # ========================
@@ -788,8 +988,8 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
       SELECT
         COALESCE(v.id_cliente, -1) AS id_cliente,
         CASE
-          WHEN v.id_cliente IS NULL THEN '(Sem cliente)'
-          ELSE '#ID ' || v.id_cliente::text
+          WHEN COALESCE(v.id_cliente, -1) = -1 THEN '(Sem cliente)'
+          ELSE COALESCE(NULLIF(MAX(dc.nome), ''), '#ID ' || COALESCE(v.id_cliente, -1)::text)
         END AS cliente_nome,
         COALESCE(SUM(v.total_venda),0)::numeric(18,2) AS faturamento,
         COALESCE(COUNT(DISTINCT v.id_comprovante),0)::int AS compras,
@@ -798,16 +998,16 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
              ELSE (SUM(v.total_venda)/COUNT(DISTINCT v.id_comprovante))::numeric(18,2)
         END AS ticket_medio
       FROM dw.fact_venda v
+      LEFT JOIN dw.dim_cliente dc
+        ON dc.id_empresa = v.id_empresa
+       AND dc.id_filial = v.id_filial
+       AND dc.id_cliente = v.id_cliente
       WHERE v.id_empresa = %s
         AND v.data_key BETWEEN %s AND %s
         AND COALESCE(v.cancelado,false) = false
         {where_filial}
       GROUP BY
-        COALESCE(v.id_cliente,-1),
-        CASE
-          WHEN v.id_cliente IS NULL THEN '(Sem cliente)'
-          ELSE '#ID ' || v.id_cliente::text
-        END
+        COALESCE(v.id_cliente,-1)
       ORDER BY faturamento DESC
       LIMIT %s
     """

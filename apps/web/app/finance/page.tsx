@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import AppNav from '../components/AppNav';
+import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
@@ -95,6 +96,7 @@ export default function FinancePage() {
   const paymentsByTurno = useMemo(() => data?.payments?.by_turno || [], [data]);
   const paymentsKpis = data?.payments?.kpis || {};
   const paymentsAnomalies = data?.payments?.anomalies || [];
+  const openCash = data?.open_cash || {};
 
   return (
     <div>
@@ -141,6 +143,41 @@ export default function FinancePage() {
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
           </div>
 
+          <div className="card col-12">
+            <h2>Monitor de caixa em aberto</h2>
+            {!loading ? (
+              <>
+                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponivel.'}</div>
+                {openCash.source_status === 'ok' && openCash.items?.length ? (
+                  <table className="table compact">
+                    <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
+                    <tbody>
+                      {openCash.items.map((item: any) => (
+                        <tr key={`${item.id_filial}-${item.id_turno}`}>
+                          <td>{item.id_filial}</td>
+                          <td>{item.id_turno}</td>
+                          <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
+                          <td>{item.severity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <EmptyState
+                    title={
+                      openCash.source_status === 'unavailable'
+                        ? 'Dados de turno indisponiveis.'
+                        : openCash.source_status === 'unmapped'
+                          ? 'Fonte de turnos ainda nao mapeada.'
+                          : 'Nenhum turno em aberto acima do limite esperado.'
+                    }
+                    detail={openCash.summary}
+                  />
+                )}
+              </>
+            ) : null}
+          </div>
+
           <div className="card col-12 chartCard">
             <h2>Mix de pagamentos por dia</h2>
             {!loading && !paymentsByDay.length ? <p className="muted">Sem pagamentos recebidos nesse período.</p> : null}
@@ -159,7 +196,9 @@ export default function FinancePage() {
 
           <div className="card col-7">
             <h2>Ranking por turno (pagamentos)</h2>
-            {!loading && !paymentsByTurno.length ? <p className="muted">Sem dados de turno no período.</p> : null}
+            {!loading && !paymentsByTurno.length ? (
+              <EmptyState title="Sem dados de turno no periodo." detail="A fonte de pagamentos por turno nao trouxe registros para o recorte selecionado." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Data</th><th>Turno</th><th>Categoria</th><th>Valor</th><th>Comprovantes</th></tr></thead>
               <tbody>

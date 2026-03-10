@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import AppNav from '../components/AppNav';
+import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
@@ -94,6 +95,9 @@ export default function SalesPage() {
 
           <div className="card col-8 chartCard">
             <h2>Faturamento por hora</h2>
+            {!loading && !hourAgg.some((row) => Number(row.faturamento || 0) > 0) ? (
+              <EmptyState title="Sem vendas por hora no periodo." detail="Nao houve movimento comercial suficiente para distribuir a curva horaria." />
+            ) : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={hourAgg}>
@@ -109,6 +113,9 @@ export default function SalesPage() {
 
           <div className="card col-4">
             <h2>Top vendedores</h2>
+            {!loading && !(data?.top_employees || []).length ? (
+              <EmptyState title="Sem ranking de vendedores." detail="Nenhum funcionario apareceu com vendas no periodo selecionado." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Funcionario</th><th>Fat.</th></tr></thead>
               <tbody>
@@ -124,6 +131,9 @@ export default function SalesPage() {
 
           <div className="card col-6">
             <h2>Top produtos</h2>
+            {!loading && !(data?.top_products || []).length ? (
+              <EmptyState title="Sem produtos ranqueados." detail="A fonte de itens vendidos nao retornou registros para este recorte." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Produto</th><th>Fat.</th><th>Margem</th></tr></thead>
               <tbody>
@@ -136,6 +146,9 @@ export default function SalesPage() {
 
           <div className="card col-6">
             <h2>Top grupos</h2>
+            {!loading && !(data?.top_groups || []).length ? (
+              <EmptyState title="Sem grupos ranqueados." detail="A agregacao por grupo nao trouxe dados para o periodo." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Grupo</th><th>Fat.</th><th>Margem</th></tr></thead>
               <tbody>

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import AppNav from '../components/AppNav';
+import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
@@ -90,6 +91,9 @@ export default function GoalsPage() {
         <div className="bi-grid" style={{ marginTop: 12 }}>
           <div className="card col-7 chartCard">
             <h2>Ranking de faturamento por funcionario</h2>
+            {!loading && !topLeaderboard.length ? (
+              <EmptyState title="Sem ranking de equipe no periodo." detail="Nao houve vendas suficientes para montar o leaderboard." />
+            ) : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={topLeaderboard}>
@@ -123,6 +127,9 @@ export default function GoalsPage() {
 
           <div className="card col-12">
             <h2>Leaderboard detalhado</h2>
+            {!loading && !(data?.leaderboard || []).length ? (
+              <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionario nao retornou registros no periodo." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Funcionario</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Risco medio</th><th>Status risco</th></tr></thead>
               <tbody>

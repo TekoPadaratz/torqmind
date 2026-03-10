@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Line, LineChart } from 'recharts';
 
 import AppNav from '../components/AppNav';
+import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
@@ -99,6 +100,7 @@ export default function FraudPage() {
     !!scope.dt_fim &&
     scope.dt_fim < maxRiskDate &&
     Number(data?.risk_kpis?.total_eventos || 0) === 0;
+  const openCash = data?.open_cash || {};
 
   return (
     <div>
@@ -121,6 +123,40 @@ export default function FraudPage() {
           <div className="card kpi col-4 riskCard"><div className="label">Impacto de risco (R$)</div><div className="value">{loading ? '...' : fmtMoney(data?.risk_kpis?.impacto_total)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Eventos alto risco</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.eventos_alto_risco || 0)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Score medio</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.score_medio || 0).toFixed(1)}</div></div>
+          <div className="card col-12">
+            <h2>Caixa em aberto / turnos</h2>
+            {loading ? null : (
+              <>
+                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponivel.'}</div>
+                {openCash.source_status === 'ok' && openCash.items?.length ? (
+                  <table className="table compact">
+                    <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
+                    <tbody>
+                      {openCash.items.map((item: any) => (
+                        <tr key={`${item.id_filial}-${item.id_turno}`}>
+                          <td>{item.id_filial}</td>
+                          <td>{item.id_turno}</td>
+                          <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
+                          <td>{item.severity}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <EmptyState
+                    title={
+                      openCash.source_status === 'unavailable'
+                        ? 'Dados de turno indisponiveis.'
+                        : openCash.source_status === 'unmapped'
+                          ? 'Fonte de turnos ainda nao mapeada.'
+                          : '0 ocorrencias relevantes.'
+                    }
+                    detail={openCash.summary}
+                  />
+                )}
+              </>
+            )}
+          </div>
 
           <div className="card col-8 chartCard">
             <h2>Cancelamentos por dia</h2>
@@ -139,6 +175,9 @@ export default function FraudPage() {
 
           <div className="card col-4">
             <h2>Top funcionarios por risco</h2>
+            {!loading && !(data?.risk_top_employees || []).length ? (
+              <EmptyState title="Sem funcionarios com risco relevante." detail="Nenhum colaborador ultrapassou o limiar no periodo." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Funcionario</th><th>Score</th><th>Impacto</th></tr></thead>
               <tbody>
@@ -155,6 +194,9 @@ export default function FraudPage() {
 
           <div className="card col-12">
             <h2>Risco por turno e local</h2>
+            {!loading && !(data?.risk_by_turn_local || []).length ? (
+              <EmptyState title="Sem risco concentrado por turno/local." detail="Nenhum agrupamento relevante foi encontrado no periodo." />
+            ) : null}
             <table className="table compact">
               <thead><tr><th>Turno</th><th>Local</th><th>Eventos</th><th>Alto risco</th><th>Impacto</th><th>Score medio</th></tr></thead>
               <tbody>
@@ -174,6 +216,9 @@ export default function FraudPage() {
 
           <div className="card col-12">
             <h2>Ultimos eventos de risco</h2>
+            {!loading && !(data?.risk_last_events || []).length ? (
+              <EmptyState title="Sem eventos recentes de risco." detail="Nao houve ocorrencias registradas na janela analisada." />
+            ) : null}
             <table className="table compact">
               <thead>
                 <tr><th>Data</th><th>Filial</th><th>Evento</th><th>Funcionario</th><th>Score</th><th>Valor</th><th>Impacto</th><th>Reasons</th></tr>

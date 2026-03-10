@@ -162,6 +162,17 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("snapshot", drilldown)
         self.assertIn("series", drilldown)
 
+    def test_customers_overview_returns_customer_names_for_real_branch(self) -> None:
+        status, body = self._request(
+            "/bi/customers/overview?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1&id_filial=10169",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        top_customers = body.get("top_customers") or []
+        self.assertTrue(top_customers)
+        self.assertTrue(str(top_customers[0].get("cliente_nome") or "").strip())
+        self.assertFalse(str(top_customers[0].get("cliente_nome") or "").startswith("#ID "))
+
     def test_competitor_pricing_overview_and_save(self) -> None:
         status_overview, body_overview = self._request(
             "/bi/pricing/competitor/overview?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1&id_filial=1&days_simulation=10",
