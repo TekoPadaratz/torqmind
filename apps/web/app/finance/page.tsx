@@ -97,7 +97,7 @@ export default function FinancePage() {
       <AppNav title="Financeiro" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Fluxo, pagamentos e posição financeira.</div>
+          <div className="muted">Fluxo, pagamentos e exposição financeira com leitura executiva.</div>
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
@@ -109,7 +109,7 @@ export default function FinancePage() {
 
           <div className="card col-12 chartCard">
             <h2>Fluxo por vencimento</h2>
-            {!loading && !hasFinance ? <p className="muted">Sem dados financeiros para o periodo selecionado.</p> : null}
+            {!loading && !hasFinance ? <p className="muted">Sem dados financeiros para o período selecionado.</p> : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData}>
@@ -133,15 +133,15 @@ export default function FinancePage() {
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.delta_pct || 0).toFixed(1)}%`}</div>
           </div>
           <div className="card kpi col-4" id="payment-mapping">
-            <div className="label">Pagamentos nao categorizados</div>
+            <div className="label">Formas em validação</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
           </div>
 
           <div className="card col-12">
-            <h2>Monitor de caixa em aberto</h2>
+            <h2>Monitor de turnos</h2>
             {!loading ? (
               <>
-                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponivel.'}</div>
+                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponível.'}</div>
                 {openCash.source_status === 'ok' && openCash.items?.length ? (
                   <table className="table compact">
                     <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
@@ -160,12 +160,12 @@ export default function FinancePage() {
                   <EmptyState
                     title={
                       openCash.source_status === 'unavailable'
-                        ? 'Dados de turno indisponiveis.'
+                        ? 'Monitor de turnos em integração.'
                         : openCash.source_status === 'unmapped'
-                          ? 'Fonte de turnos ainda nao mapeada.'
+                          ? 'Fonte operacional ainda não mapeada.'
                           : 'Nenhum turno em aberto acima do limite esperado.'
                     }
-                    detail={openCash.summary}
+                    detail={openCash.summary || 'Assim que a base operacional estiver disponível, esta leitura passa a destacar turnos abertos e antigos.'}
                   />
                 )}
               </>
@@ -174,7 +174,9 @@ export default function FinancePage() {
 
           <div className="card col-12 chartCard">
             <h2>Mix de pagamentos por dia</h2>
-            {!loading && !paymentsByDay.length ? <p className="muted">Sem pagamentos recebidos nesse período.</p> : null}
+            {!loading && !paymentsByDay.length ? (
+              <EmptyState title="Sem pagamentos recebidos no período." detail="A consolidação diária de pagamentos ainda não trouxe movimento para este recorte." />
+            ) : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={paymentsByDay}>
@@ -191,16 +193,16 @@ export default function FinancePage() {
           <div className="card col-7">
             <h2>Ranking por turno (pagamentos)</h2>
             {!loading && !paymentsByTurno.length ? (
-              <EmptyState title="Sem dados de turno no periodo." detail="A fonte de pagamentos por turno nao trouxe registros para o recorte selecionado." />
+              <EmptyState title="Sem leitura por turno no período." detail="A fonte de pagamentos por turno ainda não retornou registros para o recorte selecionado." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Data</th><th>Turno</th><th>Categoria</th><th>Valor</th><th>Comprovantes</th></tr></thead>
+              <thead><tr><th>Data</th><th>Turno</th><th>Forma</th><th>Valor</th><th>Comprovantes</th></tr></thead>
               <tbody>
                 {paymentsByTurno.slice(0, 15).map((r: any, idx: number) => (
                   <tr key={`${r.data_key}-${r.id_turno}-${r.category}-${idx}`}>
                     <td>{formatDateKey(r.data_key)}</td>
-                    <td>{formatTurnoLabel(r.id_turno)}</td>
-                    <td>{r.category}</td>
+                    <td>{r.turno_label || formatTurnoLabel(r.id_turno)}</td>
+                    <td>{r.category_label || r.label || r.category}</td>
                     <td>{formatCurrency(r.total_valor)}</td>
                     <td>{Number(r.qtd_comprovantes || 0)}</td>
                   </tr>
@@ -211,9 +213,11 @@ export default function FinancePage() {
 
           <div className="card col-5">
             <h2>Anomalias de pagamento</h2>
-            {!loading && !paymentsAnomalies.length ? <p className="muted">Sem anomalias relevantes no período.</p> : null}
+            {!loading && !paymentsAnomalies.length ? (
+              <EmptyState title="Sem anomalias relevantes no período." detail="A leitura de pagamentos seguiu estável neste recorte." />
+            ) : null}
             <table className="table compact">
-              <thead><tr><th>Evento</th><th>Sev</th><th>Score</th><th>Impacto</th></tr></thead>
+              <thead><tr><th>Evento</th><th>Severidade</th><th>Score</th><th>Impacto</th></tr></thead>
               <tbody>
                 {paymentsAnomalies.slice(0, 10).map((a: any, idx: number) => (
                   <tr key={`${a.insight_id || a.event_type}-${idx}`}>

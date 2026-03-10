@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
+import EmptyState from '../components/ui/EmptyState';
 import { apiGet, apiPost } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
@@ -45,7 +46,7 @@ export default function PricingPage() {
       const filial = scope.id_filial || me?.id_filial;
       const empresa = scope.id_empresa || me?.id_empresa;
       if (!filial) {
-        setError('Selecione uma filial no Escopo para usar o painel de preço da concorrência.');
+        setError('Selecione uma filial no escopo para usar o painel de preço da concorrência.');
         setData(null);
         return;
       }
@@ -132,7 +133,7 @@ export default function PricingPage() {
       <AppNav title="Preço da Concorrência" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Preços e impacto competitivo por combustível.</div>
+          <div className="muted">Simulação competitiva por filial, focada apenas em combustíveis.</div>
         </div>
         <div className="card toolbar">
           <div>
@@ -176,7 +177,10 @@ export default function PricingPage() {
               O gerente informa o preço da concorrência e o sistema simula os impactos para os próximos 10 dias, por combustível.
             </p>
             {!loading && !items.length ? (
-              <p className="muted">Nenhum combustível identificado no período/filial selecionado.</p>
+              <EmptyState
+                title="Nenhum combustível elegível neste recorte."
+                detail="Selecione uma filial com movimento em combustíveis para calcular o impacto competitivo."
+              />
             ) : null}
             <table className="table compact">
               <thead>
@@ -188,7 +192,7 @@ export default function PricingPage() {
                   <th>Gap (posto - concorr.)</th>
                   <th>Perda se não mudar (10d)</th>
                   <th>Impacto igualar vs atual (10d)</th>
-                  <th>Impacto igualar vs não mudar (10d)</th>
+                  <th>Impacto igualar vs. não mudar (10d)</th>
                   <th>Recomendação</th>
                 </tr>
               </thead>

@@ -12,6 +12,12 @@ import { buildUserLabel, formatCurrency } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { useScopeQuery } from '../lib/scope';
 
+function buildRiskStatus(score: number) {
+  if (score >= 80) return { label: 'Atenção operacional', className: 'warn' };
+  if (score >= 60) return { label: 'Monitorar rotina', className: 'info' };
+  return { label: 'Operação estável', className: 'ok' };
+}
+
 export default function GoalsPage() {
   const router = useRouter();
   const scope = useScopeQuery();
@@ -87,7 +93,7 @@ export default function GoalsPage() {
       <AppNav title="Metas e Equipe" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Tela de incentivo comercial com leitura segura para TV, sala de reuniao e acompanhamento diario.</div>
+          <div className="muted">Tela de incentivo comercial com leitura segura para TV, sala de reunião e acompanhamento diário.</div>
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
@@ -103,7 +109,7 @@ export default function GoalsPage() {
             <div className="panelHead">
               <div>
                 <h2 style={{ marginBottom: 4 }}>Top 5 Vendedores</h2>
-                <div className="muted">Ranking por vendas brutas, com leitura competitiva e margem protegida por padrao.</div>
+                <div className="muted">Ranking por vendas brutas, com leitura competitiva e margem protegida por padrão.</div>
               </div>
               <button className="btn" onClick={() => setShowMargin((current) => !current)}>
                 {showMargin ? 'Ocultar margem' : 'Mostrar margem'}
@@ -111,7 +117,7 @@ export default function GoalsPage() {
             </div>
 
             {!loading && !podium.length ? (
-              <EmptyState title="Sem vendedores ranqueados." detail="Nao houve base identificada suficiente para montar o podio da equipe." />
+              <EmptyState title="Sem vendedores ranqueados." detail="Não houve base identificada suficiente para montar o pódio da equipe." />
             ) : null}
 
             {podium.length ? (
@@ -242,13 +248,10 @@ export default function GoalsPage() {
                             {showMargin ? `Margem ${formatCurrency(row.margem)}` : 'Margem protegida'}
                           </div>
                           <div style={{ marginTop: 10 }}>
-                            {row.scoreRisco >= 80 ? (
-                              <span className="badge critical">Risco alto</span>
-                            ) : row.scoreRisco >= 60 ? (
-                              <span className="badge warn">Risco moderado</span>
-                            ) : (
-                              <span className="badge info">Operacao estavel</span>
-                            )}
+                            {(() => {
+                              const riskStatus = buildRiskStatus(Number(row.scoreRisco || 0));
+                              return <span className={`badge ${riskStatus.className}`}>{riskStatus.label}</span>;
+                            })()}
                           </div>
                         </div>
                       </div>
@@ -262,16 +265,17 @@ export default function GoalsPage() {
           <div className="card col-12">
             <div className="panelHead">
               <h2>Leaderboard detalhado</h2>
-              <span className="muted">Ate 15 nomes validos para acompanhar a disputa completa da equipe.</span>
+              <span className="muted">Até 15 nomes válidos para acompanhar a disputa completa da equipe.</span>
             </div>
             {!loading && !detailedLeaderboard.length ? (
-              <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionario nao retornou registros no periodo." />
+              <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionário não retornou registros no período." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Pos.</th><th>Funcionario</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Risco medio</th><th>Status risco</th></tr></thead>
+              <thead><tr><th>Pos.</th><th>Funcionário</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Leitura operacional</th><th>Status</th></tr></thead>
               <tbody>
                 {detailedLeaderboard.map((r: any) => {
                   const badge = getSellerBadge(r, detailedLeaderboard);
+                  const riskStatus = buildRiskStatus(Number(r.scoreRisco || 0));
                   return (
                     <tr key={r.id_funcionario} style={r.rank <= 5 ? { background: 'rgba(251,191,36,0.06)' } : undefined}>
                       <td><strong>{r.rank}º</strong></td>
@@ -298,13 +302,7 @@ export default function GoalsPage() {
                       <td>{showMargin ? formatCurrency(r.margem) : 'Oculta'}</td>
                       <td>{Number(r.scoreRisco || 0).toFixed(1)}</td>
                       <td>
-                        {Number(r.scoreRisco || 0) >= 80 ? (
-                          <span className="badge critical">ALTO</span>
-                        ) : Number(r.scoreRisco || 0) >= 60 ? (
-                          <span className="badge warn">SUSPEITO</span>
-                        ) : (
-                          <span className="badge info">OK</span>
-                        )}
+                        <span className={`badge ${riskStatus.className}`}>{riskStatus.label}</span>
                       </td>
                     </tr>
                   );
@@ -313,7 +311,7 @@ export default function GoalsPage() {
             </table>
             {!loading && detailedLeaderboard.length < 15 ? (
               <div className="muted" style={{ marginTop: 10 }}>
-                Exibindo {detailedLeaderboard.length} vendedor(es) validos neste recorte.
+                Exibindo {detailedLeaderboard.length} vendedor(es) válidos neste recorte.
               </div>
             ) : null}
           </div>

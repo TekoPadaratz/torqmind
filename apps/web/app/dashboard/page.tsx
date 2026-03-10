@@ -153,6 +153,10 @@ export default function Dashboard() {
   }));
   const paymentsAnomalies = (payments?.anomalies || []).slice(0, 8);
   const canMapPaymentTypes = ['MASTER', 'OWNER'].includes(String(claims?.role || ''));
+  const paymentMixPreview = (paymentsKpis?.mix || [])
+    .slice(0, 3)
+    .map((item: any) => `${item.category}: ${formatCurrency(item.total_valor)}`)
+    .join(' · ');
 
   const financeAging = financeData?.aging || {};
   const caixaRisco = Number(financeAging?.receber_total_vencido || 0) + Number(financeAging?.pagar_total_vencido || 0);
@@ -192,7 +196,7 @@ export default function Dashboard() {
           <div>
             <div className="muted">Escopo ativo</div>
             <div className="scopeLine">
-              <strong>{formatDateOnly(scope.dt_ini)}</strong> ate <strong>{formatDateOnly(scope.dt_fim)}</strong> · Ref{' '}
+              <strong>{formatDateOnly(scope.dt_ini)}</strong> até <strong>{formatDateOnly(scope.dt_fim)}</strong> · Ref.{' '}
               <strong>{formatDateOnly(scope.dt_ref || scope.dt_fim)}</strong> · Filial{' '}
               <strong>{filialLabel || formatFilialLabel(scope.id_filial)}</strong> · Empresa{' '}
               <strong>{scope.id_empresa || claims?.id_empresa || '1'}</strong>
@@ -201,13 +205,13 @@ export default function Dashboard() {
         </div>
 
         <div className="card" style={{ marginTop: 12 }}>
-          <div className="muted">Resumo de vendas, risco, clientes e caixa.</div>
+          <div className="muted">Centro de decisão com vendas, risco, clientes e prioridade operacional.</div>
         </div>
         {error ? <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div> : null}
         {scopeOutdatedForRisk ? (
           <div className="card" style={{ marginTop: 12, borderColor: '#f59e0b' }}>
-            <strong>Escopo fora da janela de risco.</strong> Seus dados de risco mais recentes vao ate{' '}
-            <strong>{maxRiskDate}</strong>. Ajuste o periodo em <Link href="/scope">Definir Escopo</Link>.
+            <strong>Escopo fora da janela de risco.</strong> Seus dados de risco mais recentes vão até{' '}
+            <strong>{maxRiskDate}</strong>. Ajuste o período em <Link href="/scope">Definir Escopo</Link>.
           </div>
         ) : null}
 
@@ -219,7 +223,7 @@ export default function Dashboard() {
               <HeroMoneyCard
                 title="HOJE"
                 value={formatCurrency(heroRecoverable)}
-                subtitle="Voce recupera/evita perder ao agir em Fraude + Churn + Caixa"
+                subtitle="Valor potencialmente protegido ao agir em fraude, churn e caixa"
               />
             )}
           </div>
@@ -238,12 +242,12 @@ export default function Dashboard() {
           </div>
           <div className="card col-12">
             <div className="panelHead">
-              <h2>Caixa em aberto / turnos</h2>
+              <h2>Monitor de turnos</h2>
               <Link className="btn" href={detailsHref('/fraud', scope)}>Ver monitor</Link>
             </div>
             {!loading ? (
               <>
-                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento de turnos indisponivel.'}</div>
+                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento de turnos indisponível.'}</div>
                 {openCash.source_status === 'ok' && openCash.items?.length ? (
                   <table className="table compact">
                     <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
@@ -262,12 +266,12 @@ export default function Dashboard() {
                   <EmptyState
                     title={
                       openCash.source_status === 'unavailable'
-                        ? 'Dados de turno indisponiveis.'
+                        ? 'Monitor de turnos em integração.'
                         : openCash.source_status === 'unmapped'
-                          ? 'Fonte de turnos ainda nao mapeada.'
+                          ? 'Fonte operacional ainda não mapeada.'
                           : 'Nenhum turno em aberto acima do limite esperado.'
                     }
-                    detail={openCash.summary}
+                    detail={openCash.summary || 'Assim que a base operacional estiver conectada, esta leitura aparece aqui com prioridade automática.'}
                   />
                 )}
               </>
@@ -279,22 +283,24 @@ export default function Dashboard() {
             <div className="value">{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
             {!loading ? (
               <div className="muted">
-                {Number(paymentsKpis.delta_pct || 0).toFixed(1)}% vs período anterior
+                {paymentMixPreview || `${Number(paymentsKpis.delta_pct || 0).toFixed(1)}% vs. período anterior`}
               </div>
             ) : null}
           </div>
           <div className="card kpi col-4">
-            <div className="label">Pagamentos nao categorizados</div>
+            <div className="label">Formas em validação</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
             {!loading && canMapPaymentTypes && Number(paymentsKpis.unknown_share_pct || 0) > 0 ? (
-              <Link className="btn" href={detailsHref('/finance#payment-mapping', scope)}>Mapear tipos</Link>
+              <Link className="btn" href={detailsHref('/finance#payment-mapping', scope)}>Refinar mapeamento</Link>
             ) : null}
           </div>
           <div className="card col-4">
             <h2>Anomalias de pagamento</h2>
-            {!loading && !paymentsAnomalies.length ? <p className="muted">Sem anomalias de pagamento no período.</p> : null}
+            {!loading && !paymentsAnomalies.length ? (
+              <EmptyState title="Sem anomalias de pagamento no período." detail="A leitura financeira seguiu estável neste recorte." />
+            ) : null}
             <table className="table compact">
-              <thead><tr><th>Evento</th><th>Sev</th><th>Score</th></tr></thead>
+              <thead><tr><th>Evento</th><th>Severidade</th><th>Score</th></tr></thead>
               <tbody>
                 {paymentsAnomalies.map((a: any, idx: number) => (
                   <tr key={`${a.insight_id || a.event_type}-${idx}`}>
@@ -308,7 +314,9 @@ export default function Dashboard() {
           </div>
           <div className="card col-8 chartCard">
             <h2>Mix de pagamentos por dia</h2>
-            {!loading && !paymentsByDay.length ? <p className="muted">Sem pagamentos recebidos nesse período.</p> : null}
+            {!loading && !paymentsByDay.length ? (
+              <EmptyState title="Sem pagamentos recebidos no período." detail="A consolidação diária de pagamentos ainda não retornou movimento neste recorte." />
+            ) : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={paymentsByDay}>
@@ -324,15 +332,17 @@ export default function Dashboard() {
 
           <div className="card col-12">
             <div className="panelHead">
-              <h2>TOP 3 ACOES DE HOJE</h2>
-              <span className="muted">Checklist com impacto e evidencia</span>
+              <h2>Top 3 ações de hoje</h2>
+              <span className="muted">Prioridades com impacto e encaminhamento objetivo</span>
             </div>
-            {!loading && !topActions.length ? <p className="muted">Sem acoes para o periodo selecionado.</p> : null}
+            {!loading && !topActions.length ? (
+              <EmptyState title="Sem ações críticas no período." detail="O painel volta a priorizar automaticamente assim que surgir uma nova frente relevante." />
+            ) : null}
             <div className="actionsGrid">
               {topActions.map((ins: any) => {
                 const checklist = (ins.ai_plan?.actions_today || []).length
                   ? ins.ai_plan.actions_today
-                  : [ins.recommendation || 'Investigar e corrigir hoje'];
+                  : [ins.recommendation || 'Investigar, corrigir e acompanhar ainda hoje'];
                 const evidence = [
                   `Tipo: ${ins.insight_type || 'INSIGHT'}`,
                   `Data: ${formatDateOnly(ins.dt_ref)}`,
@@ -361,7 +371,7 @@ export default function Dashboard() {
               metrics={[
                 { label: 'Impacto estimado', value: formatCurrency(fraudeImpacto) },
                 { label: 'Eventos alto risco', value: String(Number(riskKpis.eventos_alto_risco || 0)) },
-                { label: 'Score medio', value: Number(riskKpis.score_medio || 0).toFixed(1) },
+                { label: 'Score médio', value: Number(riskKpis.score_medio || 0).toFixed(1) },
               ]}
             />
           </div>
@@ -373,7 +383,7 @@ export default function Dashboard() {
               metrics={[
                 { label: 'Clientes em risco', value: String(churnTop.length) },
                 { label: 'Receita em risco 30d', value: formatCurrency(revenueAtRisk) },
-                { label: 'Recorrencia anonima', value: `${Number(anonKpis.repeat_proxy_idx || 0).toFixed(1)}%` },
+                { label: 'Recorrência anônima', value: `${Number(anonKpis.repeat_proxy_idx || 0).toFixed(1)}%` },
               ]}
             />
           </div>
@@ -385,17 +395,17 @@ export default function Dashboard() {
               metrics={[
                 { label: 'Receber vencido', value: formatCurrency(financeAging.receber_total_vencido) },
                 { label: 'Pagar vencido', value: formatCurrency(financeAging.pagar_total_vencido) },
-                { label: 'Concentracao top5', value: `${Number(financeAging.top5_concentration_pct || 0).toFixed(1)}%` },
+                { label: 'Concentração top 5', value: `${Number(financeAging.top5_concentration_pct || 0).toFixed(1)}%` },
               ]}
             />
           </div>
 
           <div className="col-12">
             <RadarPanel
-              title="Radar Recorrencia Anonima"
+              title="Radar Recorrência Anônima"
               href={detailsHref('/customers', scope)}
               metrics={[
-                { label: 'Tendencia', value: `${Number(anonKpis.trend_pct || 0).toFixed(1)}%` },
+                { label: 'Tendência', value: `${Number(anonKpis.trend_pct || 0).toFixed(1)}%` },
                 { label: 'Impacto estimado 7d', value: formatCurrency(anonKpis.impact_estimated_7d) },
                 { label: 'Severidade', value: String(anonKpis.severity || 'OK') },
               ]}
@@ -404,20 +414,20 @@ export default function Dashboard() {
 
           <div className="card col-12">
             <div className="panelHead">
-              <h2>Perda Invisivel</h2>
+              <h2>Perda invisível</h2>
               <Link className="btn" href={detailsHref('/scope', scope)}>Ver escopo</Link>
             </div>
             <p className="muted">
-              Bloco dedicado a oportunidades adicionais de ganho. Enquanto isso, foque nas acoes de Fraude, Churn e Caixa.
+              Bloco reservado para novas alavancas de ganho. Neste momento, priorize fraude, churn e caixa.
             </p>
           </div>
 
           <div className="card col-12" id="alerts">
             <div className="panelHead">
               <h2>Alertas</h2>
-              <span className="muted">Gerados automaticamente para riscos criticos</span>
+              <span className="muted">Gerados automaticamente para riscos críticos</span>
             </div>
-            {!notifications.length ? <p className="muted">Sem alertas para o periodo.</p> : null}
+            {!notifications.length ? <p className="muted">Sem alertas relevantes no período.</p> : null}
             {notifications.map((n) => (
               <div className="insightItem" key={n.id}>
                 <div>
@@ -466,7 +476,7 @@ export default function Dashboard() {
               </ul>
             ) : null}
             {!loading && !jarvis?.bullets?.length ? (
-              <p className="muted">Sem briefing para o periodo selecionado.</p>
+              <p className="muted">Sem briefing executivo para o período selecionado.</p>
             ) : null}
           </div>
 
@@ -491,7 +501,7 @@ export default function Dashboard() {
               <h2>Insights recentes</h2>
               <span className="muted">Resumo dos pontos mais relevantes</span>
             </div>
-            {!loading && !generatedInsights.length ? <p className="muted">Sem insights para o periodo.</p> : null}
+            {!loading && !generatedInsights.length ? <p className="muted">Sem insights para o período.</p> : null}
             {(generatedInsights || []).slice(0, 6).map((ins: any) => (
               <div className="insightItem" key={ins.id}>
                 <div>

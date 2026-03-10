@@ -17,17 +17,17 @@ from app.db import get_conn
 
 
 LOCAL_VENDA_LABELS = {
-    -1: "Canal nao identificado",
+    -1: "Canal não identificado",
     1: "Pista",
-    2: "Loja de conveniencia",
-    3: "Servicos",
+    2: "Loja de conveniência",
+    3: "Serviços",
 }
 
 EVENT_TYPE_LABELS = {
-    "CANCELAMENTO": "Cancelamento fora do padrao",
+    "CANCELAMENTO": "Cancelamento fora do padrão",
     "CANCELAMENTO_SEGUIDO_VENDA": "Cancelamento seguido de nova venda",
-    "DESCONTO_ALTO": "Desconto acima do padrao",
-    "FUNCIONARIO_OUTLIER": "Comportamento fora do padrao",
+    "DESCONTO_ALTO": "Desconto acima do padrão",
+    "FUNCIONARIO_OUTLIER": "Comportamento fora do padrão",
 }
 
 
@@ -45,11 +45,11 @@ def _local_venda_label(id_local_venda: Any, local_nome: Any = None) -> str:
     if nome:
         return nome
     if id_local_venda is None:
-        return "Canal nao informado"
+        return "Canal não informado"
     try:
         return LOCAL_VENDA_LABELS.get(int(id_local_venda), f"Canal #{int(id_local_venda)}")
     except Exception:
-        return "Canal nao informado"
+        return "Canal não informado"
 
 
 def _event_type_label(event_type: Any) -> str:
@@ -62,23 +62,23 @@ def _humanize_risk_reasons(reasons: Any, event_type: Any) -> List[str]:
     items: List[str] = []
 
     if str(payload.get("pattern") or "") == "cancelamento_seguido_venda_rapida":
-        items.append("Nova venda registrada logo apos o cancelamento.")
+        items.append("Nova venda registrada logo após o cancelamento.")
     if float(payload.get("high_value_p90") or 0) > 0:
-        items.append("Valor acima da faixa normal para a operacao.")
+        items.append("Valor acima da faixa normal para a operação.")
     if float(payload.get("quick_resale_lt_2m") or 0) > 0:
-        items.append("Recompra muito proxima apos o cancelamento.")
+        items.append("Recompra muito próxima após o cancelamento.")
     if float(payload.get("user_outlier_ratio") or 0) > 0:
-        items.append("Colaborador acima do padrao historico de cancelamentos.")
+        items.append("Colaborador acima do padrão histórico de cancelamentos.")
     if float(payload.get("risk_hour_bonus") or 0) > 0:
-        items.append("Ocorrencia em horario de maior risco.")
+        items.append("Ocorrência em horário de maior risco.")
     if float(payload.get("discount_p95_bonus") or 0) > 0:
         items.append("Desconto acima da faixa normal do dia.")
     if float(payload.get("unit_price_outlier_bonus") or 0) > 0:
-        items.append("Preco unitario fora da curva recente.")
+        items.append("Preço unitário fora da curva recente.")
     if float(payload.get("base_desconto") or 0) > 0 and not items:
-        items.append("Desconto relevante para a operacao.")
+        items.append("Desconto relevante para a operação.")
     if float(payload.get("base_cancelamento") or 0) > 0 and not items:
-        items.append("Cancelamento acima do padrao operacional.")
+        items.append("Cancelamento acima do padrão operacional.")
 
     metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
     valor_total = float(metrics.get("valor_total") or 0)
@@ -89,7 +89,7 @@ def _humanize_risk_reasons(reasons: Any, event_type: Any) -> List[str]:
         items.append(f"Valor envolvido de R$ {valor_total:,.2f} no cancelamento.".replace(",", "X").replace(".", ",").replace("X", "."))
 
     if not items:
-        items.append(f"{_event_type_label(event_type)} identificado pelo motor de risco.")
+        items.append(f"{_event_type_label(event_type)} identificado pela leitura de risco.")
 
     return items[:3]
 
@@ -103,13 +103,13 @@ def _group_name_expression(group_alias: str, product_alias: str) -> str:
           OR {normalized} LIKE '%%DIESEL%%'
           OR {normalized} LIKE '%%GNV%%'
           OR {normalized} LIKE '%%COMBUST%%'
-          THEN 'Combustiveis'
+          THEN 'Combustíveis'
         WHEN {normalized} LIKE '%%TROCA%%'
           OR {normalized} LIKE '%%LAVAG%%'
           OR {normalized} LIKE '%%DUCHA%%'
           OR {normalized} LIKE '%%SERV%%'
           OR {normalized} LIKE '%%OFIC%%'
-          THEN 'Servicos'
+          THEN 'Serviços'
         WHEN {normalized} LIKE '%%CONVENI%%'
           OR {normalized} LIKE '%%BEBID%%'
           OR {normalized} LIKE '%%ALIMENT%%'
@@ -119,9 +119,66 @@ def _group_name_expression(group_alias: str, product_alias: str) -> str:
           OR {normalized} LIKE '%%MERCE%%'
           THEN 'Conveniência'
         WHEN COALESCE(NULLIF({group_alias}.nome, ''), '') <> '' THEN {group_alias}.nome
-        ELSE 'Grupo nao classificado'
+        ELSE 'Outros da operação'
       END
     """
+
+
+def _fuel_filter_expression(group_alias: str, product_alias: str) -> str:
+    product_name = f"UPPER(COALESCE(NULLIF({product_alias}.nome, ''), ''))"
+    group_name = f"UPPER(COALESCE(NULLIF({group_alias}.nome, ''), ''))"
+    return f"""
+      (
+        (
+          {product_name} LIKE 'GASOL%%'
+          OR {product_name} LIKE 'ETANOL%%'
+          OR {product_name} LIKE 'DIESEL%%'
+          OR {product_name} LIKE 'GNV%%'
+          OR (
+            {group_name} LIKE '%%COMBUST%%'
+            AND {product_name} NOT LIKE '%%BOMBA%%'
+            AND {product_name} NOT LIKE '%%FILTRO%%'
+            AND {product_name} NOT LIKE '%%KIT%%'
+            AND {product_name} NOT LIKE '%%MANGUEIRA%%'
+            AND {product_name} NOT LIKE '%%BICO%%'
+            AND {product_name} NOT LIKE '%%MEDIDORA%%'
+          )
+        )
+        AND {product_name} NOT LIKE 'ADITIVO%%'
+        AND {product_name} NOT LIKE '%% ADITIVO%%'
+        AND {product_name} NOT LIKE '%%BOMBA%%'
+        AND {product_name} NOT LIKE '%%FILTRO%%'
+        AND {product_name} NOT LIKE '%%KIT%%'
+        AND {product_name} NOT LIKE '%%MANGUEIRA%%'
+        AND {product_name} NOT LIKE '%%BICO%%'
+        AND {product_name} NOT LIKE '%%MEDIDORA%%'
+        AND {product_name} NOT LIKE '%%ARLA%%'
+        AND {product_name} NOT LIKE '%%LUB%%'
+        AND {product_name} NOT LIKE '%%ÓLEO%%'
+        AND {product_name} NOT LIKE '%%OLEO%%'
+        AND {product_name} NOT LIKE '%%FLUID%%'
+      )
+    """
+
+
+def _employee_label(funcionario_nome: Any, id_funcionario: Any = None) -> str:
+    nome = str(funcionario_nome or "").strip()
+    if nome and nome.lower() not in {"(sem funcionário)", "sem funcionário", "sem funcionario"}:
+        return nome
+    if id_funcionario is None or int(id_funcionario or -1) < 0:
+        return "Equipe não identificada"
+    return f"Funcionário #{id_funcionario}"
+
+
+def _payment_category_label(category: Any, label: Any = None) -> str:
+    category_value = str(category or "").strip().upper()
+    label_value = str(label or "").strip()
+    if category_value and category_value != "DESCONHECIDO":
+        return label_value or category_value.replace("_", " ").title()
+    if "TIPO_FORMA=" in label_value.upper():
+        raw_code = label_value.upper().split("TIPO_FORMA=", 1)[1].split(")", 1)[0].strip()
+        return f"Outras formas (tipo {raw_code})"
+    return "Forma em validação"
 
 
 def _date_key(d: date) -> int:
@@ -319,8 +376,9 @@ def competitor_pricing_overview(
     fim = _date_key(dt_fim)
     days_window = max((dt_fim - dt_ini).days + 1, 1)
     days_sim = max(days_simulation, 1)
+    fuel_filter = _fuel_filter_expression("g", "p")
 
-    sql = """
+    sql = f"""
       WITH sales AS (
         SELECT
           id_produto,
@@ -336,7 +394,7 @@ def competitor_pricing_overview(
         SELECT
           p.id_produto,
           COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
-          COALESCE(g.nome, '(Sem grupo)') AS grupo_nome,
+          {_group_name_expression("g", "p")} AS grupo_nome,
           COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio
         FROM dw.dim_produto p
         LEFT JOIN dw.dim_grupo_produto g
@@ -345,19 +403,7 @@ def competitor_pricing_overview(
          AND g.id_grupo_produto = p.id_grupo_produto
         WHERE p.id_empresa = %s
           AND p.id_filial = %s
-          AND (
-            UPPER(COALESCE(p.nome,'')) LIKE '%%GASOL%%'
-            OR UPPER(COALESCE(p.nome,'')) LIKE '%%ETANOL%%'
-            OR UPPER(COALESCE(p.nome,'')) LIKE '%%DIESEL%%'
-            OR UPPER(COALESCE(p.nome,'')) LIKE '%%GNV%%'
-            OR UPPER(COALESCE(p.nome,'')) LIKE '%%COMBUST%%'
-            OR UPPER(COALESCE(g.nome,'')) LIKE '%%COMBUST%%'
-            OR UPPER(COALESCE(g.nome,'')) LIKE '%%GASOL%%'
-            OR UPPER(COALESCE(g.nome,'')) LIKE '%%ETANOL%%'
-            OR UPPER(COALESCE(g.nome,'')) LIKE '%%DIESEL%%'
-            OR UPPER(COALESCE(g.nome,'')) LIKE '%%GNV%%'
-            OR EXISTS (SELECT 1 FROM sales sx WHERE sx.id_produto = p.id_produto)
-          )
+          AND {fuel_filter}
       ),
       comp AS (
         SELECT
@@ -390,11 +436,11 @@ def competitor_pricing_overview(
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         rows = list(conn.execute(sql, params).fetchall())
         if not rows:
-            fallback_sql = """
+            fallback_sql = f"""
               SELECT
                 p.id_produto,
                 COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
-                COALESCE(g.nome, '(Sem grupo)') AS grupo_nome,
+                {_group_name_expression("g", "p")} AS grupo_nome,
                 COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio,
                 0::numeric(18,3) AS qtd_periodo,
                 0::numeric(18,2) AS faturamento_periodo,
@@ -412,8 +458,8 @@ def competitor_pricing_overview(
                AND c.id_produto = p.id_produto
               WHERE p.id_empresa = %s
                 AND p.id_filial = %s
+                AND {fuel_filter}
               ORDER BY p.nome
-              LIMIT 200
             """
             rows = list(conn.execute(fallback_sql, (id_empresa, id_filial)).fetchall())
 
@@ -489,9 +535,9 @@ def competitor_pricing_overview(
                     "impact_vs_no_change_10d": round(impact_match_vs_no_change_10d, 2),
                 },
                 "recommendation": (
-                    "Aproximar preço da concorrência"
+                    "Ajustar preço para defender volume"
                     if competitor_price > 0 and impact_match_vs_no_change_10d > 0
-                    else "Manter preço atual e monitorar"
+                    else "Manter preço atual e acompanhar o mercado"
                 ),
             }
         )
@@ -722,6 +768,9 @@ def risk_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_
         AVG(score_medio)::numeric(10,2) AS score_medio
       FROM mart.risco_top_funcionarios_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      AND COALESCE(id_funcionario, -1) <> -1
+      AND COALESCE(NULLIF(funcionario_nome, ''), '') <> ''
+      AND UPPER(COALESCE(funcionario_nome, '')) NOT IN ('(SEM FUNCIONÁRIO)', '(SEM FUNCIONARIO)', 'SEM FUNCIONÁRIO', 'SEM FUNCIONARIO')
       {where_filial}
       GROUP BY id_funcionario
       ORDER BY impacto_estimado DESC, score_medio DESC
@@ -770,6 +819,7 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["event_label"] = _event_type_label(row.get("event_type"))
+        row["funcionario_label"] = _employee_label(row.get("funcionario_nome"), row.get("id_funcionario"))
         row["reasons_humanized"] = _humanize_risk_reasons(row.get("reasons"), row.get("event_type"))
         row["reason_summary"] = " ".join(row["reasons_humanized"])
     return rows
@@ -865,7 +915,7 @@ def risk_by_turn_local(
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["local_label"] = _local_venda_label(row.get("id_local_venda"), row.get("local_nome"))
-        row["turno_label"] = f"Turno {row['id_turno']}" if row.get("id_turno") is not None and int(row.get("id_turno")) >= 0 else "Turno nao informado"
+        row["turno_label"] = f"Turno {row['id_turno']}" if row.get("id_turno") is not None and int(row.get("id_turno")) >= 0 else "Turno não informado"
     return rows
 
 
@@ -1751,7 +1801,12 @@ def payments_by_turno(role: str, id_empresa: int, id_filial: Optional[int], dt_i
       ORDER BY data_key DESC, total_valor DESC
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"))
+        row["category_label"] = _payment_category_label(row.get("category"), row.get("label"))
+        row["turno_label"] = f"Turno {row['id_turno']}" if row.get("id_turno") is not None and int(row.get("id_turno")) >= 0 else "Operação sem turno identificado"
+    return rows
 
 
 def payments_anomalies(
@@ -1794,6 +1849,7 @@ def payments_anomalies(
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["event_label"] = _event_type_label(row.get("event_type"))
+        row["turno_label"] = f"Turno {row['id_turno']}" if row.get("id_turno") is not None and int(row.get("id_turno")) >= 0 else "Operação sem turno identificado"
     return rows
 
 

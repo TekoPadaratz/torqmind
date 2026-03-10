@@ -82,13 +82,13 @@ export default function SalesPage() {
         <div className="bi-grid" style={{ marginTop: 12 }}>
           <div className="card kpi col-3"><div className="label">Faturamento</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.faturamento)}</div></div>
           <div className="card kpi col-3"><div className="label">Margem</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.margem)}</div></div>
-          <div className="card kpi col-3"><div className="label">Ticket medio</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.ticket_medio)}</div></div>
+          <div className="card kpi col-3"><div className="label">Ticket médio</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.ticket_medio)}</div></div>
           <div className="card kpi col-3"><div className="label">Itens</div><div className="value">{loading ? '...' : Number(data?.kpis?.itens || 0)}</div></div>
 
           <div className="card col-8 chartCard">
             <h2>Faturamento por hora</h2>
             {!loading && !hourAgg.some((row) => Number(row.faturamento || 0) > 0) ? (
-              <EmptyState title="Sem vendas por hora no periodo." detail="Nao houve movimento comercial suficiente para distribuir a curva horaria." />
+              <EmptyState title="Sem vendas por hora no período." detail="Não houve movimento comercial suficiente para distribuir a curva horária." />
             ) : null}
             <div className="chartWrap">
               <ResponsiveContainer width="100%" height="100%">
@@ -106,10 +106,10 @@ export default function SalesPage() {
           <div className="card col-4">
             <h2>Top vendedores</h2>
             {!loading && !(data?.top_employees || []).length ? (
-              <EmptyState title="Sem ranking de vendedores." detail="Nenhum funcionario apareceu com vendas no periodo selecionado." />
+              <EmptyState title="Sem ranking de vendedores." detail="Nenhum funcionário apareceu com vendas no período selecionado." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Funcionario</th><th>Fat.</th></tr></thead>
+              <thead><tr><th>Funcionário</th><th>Fat.</th></tr></thead>
               <tbody>
                 {(data?.top_employees || []).slice(0, 8).map((f: any) => (
                   <tr key={f.id_funcionario}>
@@ -124,7 +124,7 @@ export default function SalesPage() {
           <div className="card col-6">
             <h2>Top produtos</h2>
             {!loading && !(data?.top_products || []).length ? (
-              <EmptyState title="Sem produtos ranqueados." detail="A fonte de itens vendidos nao retornou registros para este recorte." />
+              <EmptyState title="Sem produtos ranqueados." detail="A fonte de itens vendidos não retornou registros para este recorte." />
             ) : null}
             <table className="table compact">
               <thead><tr><th>Produto</th><th>Fat.</th><th>Margem</th></tr></thead>
@@ -139,7 +139,7 @@ export default function SalesPage() {
           <div className="card col-6">
             <h2>Top grupos</h2>
             {!loading && !(data?.top_groups || []).length ? (
-              <EmptyState title="Sem grupos ranqueados." detail="A agregacao por grupo nao trouxe dados para o periodo." />
+              <EmptyState title="Sem grupos ranqueados." detail="A agregação por grupo não trouxe dados para o período." />
             ) : null}
             <table className="table compact">
               <thead><tr><th>Grupo</th><th>Fat.</th><th>Margem</th></tr></thead>

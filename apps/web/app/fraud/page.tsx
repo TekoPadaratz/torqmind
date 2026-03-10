@@ -98,12 +98,12 @@ export default function FraudPage() {
       <AppNav title="Sistema Anti-Fraude" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Riscos, alertas e perdas potenciais.</div>
+          <div className="muted">Central de risco operacional com foco em investigação e ação rápida.</div>
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
         {scopeOutdatedForRisk ? (
           <div className="card" style={{ marginTop: 12, borderColor: '#f59e0b' }}>
-            <strong>Escopo fora da janela de risco.</strong> O antifraude tem dados ate <strong>{maxRiskDate}</strong>. Ajuste em{' '}
+            <strong>Escopo fora da janela de risco.</strong> O antifraude tem dados até <strong>{maxRiskDate}</strong>. Ajuste em{' '}
             <Link href="/scope">Definir Escopo</Link>.
           </div>
         ) : null}
@@ -113,12 +113,12 @@ export default function FraudPage() {
           <div className="card kpi col-6"><div className="label">Valor cancelado</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.valor_cancelado)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Impacto de risco (R$)</div><div className="value">{loading ? '...' : formatCurrency(data?.risk_kpis?.impacto_total)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Eventos alto risco</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.eventos_alto_risco || 0)}</div></div>
-          <div className="card kpi col-4 riskCard"><div className="label">Score medio</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.score_medio || 0).toFixed(1)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Score médio</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.score_medio || 0).toFixed(1)}</div></div>
           <div className="card col-12">
-            <h2>Caixa em aberto / turnos</h2>
+            <h2>Monitor de turnos</h2>
             {loading ? null : (
               <>
-                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponivel.'}</div>
+                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponível.'}</div>
                 {openCash.source_status === 'ok' && openCash.items?.length ? (
                   <table className="table compact">
                     <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
@@ -137,12 +137,12 @@ export default function FraudPage() {
                   <EmptyState
                     title={
                       openCash.source_status === 'unavailable'
-                        ? 'Dados de turno indisponiveis.'
+                        ? 'Monitor de turnos em integração.'
                         : openCash.source_status === 'unmapped'
-                          ? 'Fonte de turnos ainda nao mapeada.'
-                          : '0 ocorrencias relevantes.'
+                          ? 'Fonte operacional ainda não mapeada.'
+                          : 'Nenhuma ocorrência relevante.'
                     }
-                    detail={openCash.summary}
+                    detail={openCash.summary || 'Assim que a base operacional estiver pronta, esta leitura passa a destacar turnos abertos e antigos automaticamente.'}
                   />
                 )}
               </>
@@ -165,16 +165,16 @@ export default function FraudPage() {
           </div>
 
           <div className="card col-4">
-            <h2>Top funcionarios por risco</h2>
+            <h2>Colaboradores com maior exposição</h2>
             {!loading && !(data?.risk_top_employees || []).length ? (
-              <EmptyState title="Sem funcionarios com risco relevante." detail="Nenhum colaborador ultrapassou o limiar no periodo." />
+              <EmptyState title="Sem colaboradores com risco relevante." detail="Nenhum colaborador ultrapassou o limiar no período." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Funcionario</th><th>Score</th><th>Impacto</th></tr></thead>
+              <thead><tr><th>Colaborador</th><th>Score</th><th>Impacto</th></tr></thead>
               <tbody>
                 {(data?.risk_top_employees || []).slice(0, 10).map((u: any) => (
                   <tr key={u.id_funcionario}>
-                    <td>{u.funcionario_nome || u.id_funcionario}</td>
+                    <td>{u.funcionario_nome}</td>
                     <td>{Number(u.score_medio || 0).toFixed(1)}</td>
                     <td>{formatCurrency(u.impacto_estimado)}</td>
                   </tr>
@@ -186,16 +186,16 @@ export default function FraudPage() {
           <div className="card col-12">
             <h2>Risco por turno e canal</h2>
             {!loading && !(data?.risk_by_turn_local || []).length ? (
-              <EmptyState title="Sem risco concentrado por turno/canal." detail="Nenhum agrupamento relevante foi encontrado no periodo." />
+              <EmptyState title="Sem risco concentrado por turno e canal." detail="Nenhum agrupamento relevante foi encontrado no período." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Filial</th><th>Turno</th><th>Canal</th><th>Eventos</th><th>Alto risco</th><th>Impacto</th><th>Score medio</th></tr></thead>
+              <thead><tr><th>Filial</th><th>Turno</th><th>Canal</th><th>Eventos</th><th>Alto risco</th><th>Impacto</th><th>Score médio</th></tr></thead>
               <tbody>
                 {(data?.risk_by_turn_local || []).slice(0, 10).map((r: any, idx: number) => (
                   <tr key={`${r.id_turno}-${r.id_local_venda}-${idx}`}>
                     <td>{r.filial_label || formatFilialLabel(r.id_filial, r.filial_nome)}</td>
                     <td>{r.turno_label || formatTurnoLabel(r.id_turno)}</td>
-                    <td>{r.local_label || 'Canal nao informado'}</td>
+                    <td>{r.local_label || 'Canal não informado'}</td>
                     <td>{r.eventos}</td>
                     <td>{r.alto_risco}</td>
                     <td>{formatCurrency(r.impacto_estimado)}</td>
@@ -207,9 +207,9 @@ export default function FraudPage() {
           </div>
 
           <div className="card col-12">
-            <h2>Ultimos eventos de risco</h2>
+            <h2>Últimos eventos de risco</h2>
             {!loading && !(data?.risk_last_events || []).length ? (
-              <EmptyState title="Sem eventos recentes de risco." detail="Nao houve ocorrencias registradas na janela analisada." />
+              <EmptyState title="Sem eventos recentes de risco." detail="Não houve ocorrências registradas na janela analisada." />
             ) : null}
             <table className="table compact">
               <thead>
@@ -221,7 +221,7 @@ export default function FraudPage() {
                     <td>{formatDateTime(e.data)}</td>
                     <td>{e.filial_label || formatFilialLabel(e.id_filial, e.filial_nome)}</td>
                     <td>{e.event_label || e.event_type}</td>
-                    <td>{e.funcionario_nome || e.id_funcionario || '-'}</td>
+                    <td>{e.funcionario_label || '-'}</td>
                     <td>{e.score_risco}</td>
                     <td>{formatCurrency(e.valor_total)}</td>
                     <td>{formatCurrency(e.impacto_estimado)}</td>
@@ -235,7 +235,7 @@ export default function FraudPage() {
           <div className="card col-12">
             <h2>Anomalias de pagamento (top score)</h2>
             {!loading && !(data?.payments_risk || []).length ? (
-              <p className="muted">Sem anomalias de pagamento no periodo.</p>
+              <p className="muted">Sem anomalias de pagamento no período.</p>
             ) : null}
             <table className="table compact">
               <thead>

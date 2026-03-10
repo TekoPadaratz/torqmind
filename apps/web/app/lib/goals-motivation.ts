@@ -30,24 +30,24 @@ export function buildGoalsMotivation(rows: RankedSeller[]) {
   const top5Sales = rows.slice(0, 5).reduce((sum, row) => sum + row.vendas, 0);
   const avgRisk = rows.reduce((sum, row) => sum + row.scoreRisco, 0) / rows.length;
 
-  let headline = 'Consistencia esta decidindo o ranking comercial.';
-  let subheadline = 'Uma boa arrancada agora pode redesenhar o podio antes do fim do turno.';
+  let headline = 'Consistência está decidindo o ranking comercial.';
+  let subheadline = 'Uma boa arrancada agora pode redesenhar o pódio antes do fim do turno.';
 
   if (second && leadGap <= Math.max(300, leader.faturamento * 0.03)) {
-    headline = 'A lideranca esta aberta. Um bom turno muda completamente esse podio.';
-    subheadline = `A diferenca entre ${leader.funcionario_nome} e ${second.funcionario_nome} segue curta.`;
+    headline = 'A liderança está aberta. Um bom turno muda completamente esse pódio.';
+    subheadline = `A diferença entre ${leader.funcionario_nome} e ${second.funcionario_nome} segue curta.`;
   } else if (third && fourth && podiumGap <= Math.max(250, third.faturamento * 0.04)) {
-    headline = 'A disputa pelo top 3 esta viva e qualquer arrancada muda a conversa.';
-    subheadline = 'As posicoes centrais do podio seguem em margem curta de diferenca.';
+    headline = 'A disputa pelo top 3 está viva e qualquer arrancada muda a conversa.';
+    subheadline = 'As posições centrais do pódio seguem em margem curta de diferença.';
   } else if (fourth && fifth && chaseGap <= Math.max(200, fourth.faturamento * 0.04)) {
-    headline = 'O pelotao de reacao segue forte e o top 5 ainda nao esta fechado.';
-    subheadline = 'Pequenos ganhos agora fazem muita diferenca na leitura da reuniao.';
+    headline = 'O pelotão de reação segue forte e o top 5 ainda não está fechado.';
+    subheadline = 'Pequenos ganhos agora fazem muita diferença na leitura da reunião.';
   } else if (avgRisk >= 65) {
-    headline = 'O ranking avanca, mas disciplina operacional ainda separa as melhores posicoes.';
-    subheadline = 'Quem combinar volume com consistencia deve ganhar vantagem nas proximas horas.';
+    headline = 'O ranking avança, mas disciplina operacional ainda separa as melhores posições.';
+    subheadline = 'Quem combinar volume com consistência deve ganhar vantagem nas próximas horas.';
   } else if (top5Sales >= 120) {
     headline = 'O time entrou em ritmo forte e o ranking virou uma vitrine de performance.';
-    subheadline = 'A tendencia e de disputa ate o fim do periodo, com pressao real sobre o podio.';
+    subheadline = 'A tendência é de disputa até o fim do período, com pressão real sobre o pódio.';
   }
 
   return {
@@ -55,8 +55,8 @@ export function buildGoalsMotivation(rows: RankedSeller[]) {
     subheadline,
     indicators: [
       {
-        label: 'Distancia para o lider',
-        value: second ? formatCompactCurrency(leadGap) : 'Lider isolado',
+        label: 'Distância para o líder',
+        value: second ? formatCompactCurrency(leadGap) : 'Líder isolado',
         detail: second ? `${second.funcionario_nome} em 2º` : 'sem 2º colocado',
       },
       {
@@ -67,30 +67,30 @@ export function buildGoalsMotivation(rows: RankedSeller[]) {
       {
         label: 'No ranking hoje',
         value: String(rows.length),
-        detail: 'colaboradores validos',
+        detail: 'colaboradores válidos',
       },
       {
         label: 'Vendas do top 5',
         value: String(top5Sales),
-        detail: 'negocios fechados',
+        detail: 'negócios fechados',
       },
     ],
   };
 }
 
 export function getSellerBadge(row: RankedSeller, rows: RankedSeller[]) {
-  if (row.rank === 1) return { label: 'Lider do dia', tone: '#fbbf24' };
+  if (row.rank === 1) return { label: 'Líder do dia', tone: '#fbbf24' };
 
   const prev = rows[row.rank - 2];
   const next = rows[row.rank];
   const closeToPrev = prev ? Math.abs(prev.faturamento - row.faturamento) <= Math.max(250, prev.faturamento * 0.04) : false;
   const closeToNext = next ? Math.abs(row.faturamento - next.faturamento) <= Math.max(220, row.faturamento * 0.04) : false;
 
-  if (row.scoreRisco >= 70) return { label: 'Atencao operacional', tone: '#fb7185' };
+  if (row.scoreRisco >= 70) return { label: 'Atenção operacional', tone: '#fb7185' };
   if (row.vendas >= 25 || row.faturamento >= rows[0].faturamento * 0.75) return { label: 'Ritmo forte', tone: '#34d399' };
-  if (closeToPrev && row.rank <= 3) return { label: 'Pressionando o podio', tone: '#67e8f9' };
-  if (closeToNext) return { label: 'Posicao ameaçada', tone: '#f59e0b' };
-  return { label: 'Operacao estavel', tone: '#cbd5e1' };
+  if (closeToPrev && row.rank <= 3) return { label: 'Pressionando o pódio', tone: '#67e8f9' };
+  if (closeToNext) return { label: 'Posição ameaçada', tone: '#f59e0b' };
+  return { label: 'Operação estável', tone: '#cbd5e1' };
 }
 
 function formatCompactCurrency(value: number) {

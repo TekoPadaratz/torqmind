@@ -61,8 +61,8 @@ export function formatRoleLabel(role: any) {
   const value = String(role || '').toUpperCase();
   if (value === 'MASTER') return 'Master';
   if (value === 'OWNER') return 'Diretoria';
-  if (value === 'MANAGER') return 'Gerencia';
-  return value || 'Usuario';
+  if (value === 'MANAGER') return 'Gerência';
+  return value || 'Usuário';
 }
 
 export function buildUserLabel(claims: any) {
@@ -71,6 +71,6 @@ export function buildUserLabel(claims: any) {
 }
 
 export function formatTurnoLabel(idTurno: any) {
-  if (idTurno === null || idTurno === undefined || Number(idTurno) < 0) return 'Turno nao informado';
+  if (idTurno === null || idTurno === undefined || Number(idTurno) < 0) return 'Turno não informado';
   return `Turno ${idTurno}`;
 }
