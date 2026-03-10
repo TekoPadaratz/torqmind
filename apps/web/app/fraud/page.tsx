@@ -10,24 +10,16 @@ import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import {
+  buildUserLabel,
+  formatCurrency,
+  formatDateKey,
+  formatDateKeyShort,
+  formatDateTime,
+  formatFilialLabel,
+  formatTurnoLabel,
+} from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
-
-function fmtMoney(v: any) {
-  const n = Number(v || 0);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
-
-function shortDateKey(key: number) {
-  const s = String(key || '');
-  if (s.length !== 8) return s;
-  return `${s.slice(6, 8)}/${s.slice(4, 6)}`;
-}
-
-function dataKeyToISO(key: any) {
-  const s = String(key || '');
-  if (s.length !== 8) return '';
-  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
-}
 
 export default function FraudPage() {
   const router = useRouter();
@@ -39,10 +31,7 @@ export default function FraudPage() {
   const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
-    if (!claims) return undefined;
-    return [claims.role, claims.id_empresa ? `E${claims.id_empresa}` : '', claims.id_filial ? `F${claims.id_filial}` : '']
-      .filter(Boolean)
-      .join(' · ');
+    return buildUserLabel(claims);
   }, [claims]);
 
   useEffect(() => {
@@ -81,24 +70,26 @@ export default function FraudPage() {
   }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
 
   const byDay = useMemo(
-    () => (data?.by_day || []).map((r: any) => ({ ...r, data: shortDateKey(r.data_key), cancelamentos: Number(r.cancelamentos || 0) })),
+    () => (data?.by_day || []).map((r: any) => ({ ...r, data: formatDateKeyShort(r.data_key), cancelamentos: Number(r.cancelamentos || 0) })),
     [data]
   );
   const riskByDay = useMemo(
     () =>
       (data?.risk_by_day || []).map((r: any) => ({
         ...r,
-        data: shortDateKey(r.data_key),
+        data: formatDateKeyShort(r.data_key),
         eventos_alto_risco: Number(r.eventos_alto_risco || 0),
         impacto_estimado_total: Number(r.impacto_estimado_total || 0),
       })),
     [data]
   );
-  const maxRiskDate = dataKeyToISO(data?.risk_window?.max_data_key);
+  const maxRiskDateKey = Number(data?.risk_window?.max_data_key || 0);
+  const maxRiskDate = formatDateKey(maxRiskDateKey);
+  const scopeEndKey = Number(String(scope.dt_fim || '').replaceAll('-', ''));
   const scopeOutdatedForRisk =
-    !!maxRiskDate &&
-    !!scope.dt_fim &&
-    scope.dt_fim < maxRiskDate &&
+    maxRiskDateKey > 0 &&
+    scopeEndKey > 0 &&
+    scopeEndKey < maxRiskDateKey &&
     Number(data?.risk_kpis?.total_eventos || 0) === 0;
   const openCash = data?.open_cash || {};
 
@@ -119,8 +110,8 @@ export default function FraudPage() {
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
           <div className="card kpi col-6"><div className="label">Cancelamentos</div><div className="value">{loading ? '...' : Number(data?.kpis?.cancelamentos || 0)}</div></div>
-          <div className="card kpi col-6"><div className="label">Valor cancelado</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.valor_cancelado)}</div></div>
-          <div className="card kpi col-4 riskCard"><div className="label">Impacto de risco (R$)</div><div className="value">{loading ? '...' : fmtMoney(data?.risk_kpis?.impacto_total)}</div></div>
+          <div className="card kpi col-6"><div className="label">Valor cancelado</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.valor_cancelado)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Impacto de risco (R$)</div><div className="value">{loading ? '...' : formatCurrency(data?.risk_kpis?.impacto_total)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Eventos alto risco</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.eventos_alto_risco || 0)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Score medio</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.score_medio || 0).toFixed(1)}</div></div>
           <div className="card col-12">
@@ -134,8 +125,8 @@ export default function FraudPage() {
                     <tbody>
                       {openCash.items.map((item: any) => (
                         <tr key={`${item.id_filial}-${item.id_turno}`}>
-                          <td>{item.id_filial}</td>
-                          <td>{item.id_turno}</td>
+                          <td>{formatFilialLabel(item.id_filial, item.filial_nome)}</td>
+                          <td>{formatTurnoLabel(item.id_turno)}</td>
                           <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
                           <td>{item.severity}</td>
                         </tr>
@@ -185,7 +176,7 @@ export default function FraudPage() {
                   <tr key={u.id_funcionario}>
                     <td>{u.funcionario_nome || u.id_funcionario}</td>
                     <td>{Number(u.score_medio || 0).toFixed(1)}</td>
-                    <td>{fmtMoney(u.impacto_estimado)}</td>
+                    <td>{formatCurrency(u.impacto_estimado)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -193,20 +184,21 @@ export default function FraudPage() {
           </div>
 
           <div className="card col-12">
-            <h2>Risco por turno e local</h2>
+            <h2>Risco por turno e canal</h2>
             {!loading && !(data?.risk_by_turn_local || []).length ? (
-              <EmptyState title="Sem risco concentrado por turno/local." detail="Nenhum agrupamento relevante foi encontrado no periodo." />
+              <EmptyState title="Sem risco concentrado por turno/canal." detail="Nenhum agrupamento relevante foi encontrado no periodo." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Turno</th><th>Local</th><th>Eventos</th><th>Alto risco</th><th>Impacto</th><th>Score medio</th></tr></thead>
+              <thead><tr><th>Filial</th><th>Turno</th><th>Canal</th><th>Eventos</th><th>Alto risco</th><th>Impacto</th><th>Score medio</th></tr></thead>
               <tbody>
                 {(data?.risk_by_turn_local || []).slice(0, 10).map((r: any, idx: number) => (
                   <tr key={`${r.id_turno}-${r.id_local_venda}-${idx}`}>
-                    <td>{r.id_turno ?? '-'}</td>
-                    <td>{r.id_local_venda ?? '-'}</td>
+                    <td>{r.filial_label || formatFilialLabel(r.id_filial, r.filial_nome)}</td>
+                    <td>{r.turno_label || formatTurnoLabel(r.id_turno)}</td>
+                    <td>{r.local_label || 'Canal nao informado'}</td>
                     <td>{r.eventos}</td>
                     <td>{r.alto_risco}</td>
-                    <td>{fmtMoney(r.impacto_estimado)}</td>
+                    <td>{formatCurrency(r.impacto_estimado)}</td>
                     <td>{Number(r.score_medio || 0).toFixed(1)}</td>
                   </tr>
                 ))}
@@ -221,19 +213,19 @@ export default function FraudPage() {
             ) : null}
             <table className="table compact">
               <thead>
-                <tr><th>Data</th><th>Filial</th><th>Evento</th><th>Funcionario</th><th>Score</th><th>Valor</th><th>Impacto</th><th>Reasons</th></tr>
+                <tr><th>Data</th><th>Filial</th><th>Evento</th><th>Funcionario</th><th>Score</th><th>Valor</th><th>Impacto</th><th>Leitura executiva</th></tr>
               </thead>
               <tbody>
                 {(data?.risk_last_events || []).slice(0, 20).map((e: any) => (
                   <tr key={e.id}>
-                    <td>{e.data || '-'}</td>
-                    <td>{e.id_filial}</td>
-                    <td>{e.event_type}</td>
+                    <td>{formatDateTime(e.data)}</td>
+                    <td>{e.filial_label || formatFilialLabel(e.id_filial, e.filial_nome)}</td>
+                    <td>{e.event_label || e.event_type}</td>
                     <td>{e.funcionario_nome || e.id_funcionario || '-'}</td>
                     <td>{e.score_risco}</td>
-                    <td>{fmtMoney(e.valor_total)}</td>
-                    <td>{fmtMoney(e.impacto_estimado)}</td>
-                    <td>{Object.keys(e.reasons || {}).slice(0, 3).join(', ') || '-'}</td>
+                    <td>{formatCurrency(e.valor_total)}</td>
+                    <td>{formatCurrency(e.impacto_estimado)}</td>
+                    <td>{e.reason_summary || '-'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -252,13 +244,13 @@ export default function FraudPage() {
               <tbody>
                 {(data?.payments_risk || []).slice(0, 12).map((e: any, idx: number) => (
                   <tr key={`${e.insight_id || e.event_type}-${idx}`}>
-                    <td>{shortDateKey(e.data_key)}</td>
-                    <td>{e.id_filial}</td>
-                    <td>{e.id_turno ?? '-'}</td>
-                    <td>{e.event_type}</td>
+                    <td>{formatDateKey(e.data_key)}</td>
+                    <td>{e.filial_label || formatFilialLabel(e.id_filial, e.filial_nome)}</td>
+                    <td>{formatTurnoLabel(e.id_turno)}</td>
+                    <td>{e.event_label || e.event_type}</td>
                     <td>{e.severity}</td>
                     <td>{Number(e.score || 0)}</td>
-                    <td>{fmtMoney(e.impacto_estimado)}</td>
+                    <td>{formatCurrency(e.impacto_estimado)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -9,12 +9,8 @@ import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import { buildUserLabel, formatCurrency } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
-
-function fmtMoney(v: any) {
-  const n = Number(v || 0);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
 
 export default function SalesPage() {
   const router = useRouter();
@@ -26,11 +22,7 @@ export default function SalesPage() {
   const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
-    if (!claims) return undefined;
-    const role = claims.role;
-    const emp = claims.id_empresa ? `E${claims.id_empresa}` : '';
-    const fil = claims.id_filial ? `F${claims.id_filial}` : '';
-    return [role, emp, fil].filter(Boolean).join(' · ');
+    return buildUserLabel(claims);
   }, [claims]);
 
   useEffect(() => {
@@ -88,9 +80,9 @@ export default function SalesPage() {
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
-          <div className="card kpi col-3"><div className="label">Faturamento</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.faturamento)}</div></div>
-          <div className="card kpi col-3"><div className="label">Margem</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.margem)}</div></div>
-          <div className="card kpi col-3"><div className="label">Ticket medio</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.ticket_medio)}</div></div>
+          <div className="card kpi col-3"><div className="label">Faturamento</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.faturamento)}</div></div>
+          <div className="card kpi col-3"><div className="label">Margem</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.margem)}</div></div>
+          <div className="card kpi col-3"><div className="label">Ticket medio</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.ticket_medio)}</div></div>
           <div className="card kpi col-3"><div className="label">Itens</div><div className="value">{loading ? '...' : Number(data?.kpis?.itens || 0)}</div></div>
 
           <div className="card col-8 chartCard">
@@ -122,7 +114,7 @@ export default function SalesPage() {
                 {(data?.top_employees || []).slice(0, 8).map((f: any) => (
                   <tr key={f.id_funcionario}>
                     <td>{f.funcionario_nome}</td>
-                    <td>{fmtMoney(f.faturamento)}</td>
+                    <td>{formatCurrency(f.faturamento)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -138,7 +130,7 @@ export default function SalesPage() {
               <thead><tr><th>Produto</th><th>Fat.</th><th>Margem</th></tr></thead>
               <tbody>
                 {(data?.top_products || []).slice(0, 10).map((p: any) => (
-                  <tr key={p.id_produto}><td>{p.produto_nome}</td><td>{fmtMoney(p.faturamento)}</td><td>{fmtMoney(p.margem)}</td></tr>
+                  <tr key={p.id_produto}><td>{p.produto_nome}</td><td>{formatCurrency(p.faturamento)}</td><td>{formatCurrency(p.margem)}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -153,7 +145,7 @@ export default function SalesPage() {
               <thead><tr><th>Grupo</th><th>Fat.</th><th>Margem</th></tr></thead>
               <tbody>
                 {(data?.top_groups || []).slice(0, 10).map((g: any) => (
-                  <tr key={g.id_grupo_produto}><td>{g.grupo_nome}</td><td>{fmtMoney(g.faturamento)}</td><td>{fmtMoney(g.margem)}</td></tr>
+                  <tr key={`${g.id_grupo_produto}-${g.grupo_nome}`}><td>{g.grupo_nome}</td><td>{formatCurrency(g.faturamento)}</td><td>{formatCurrency(g.margem)}</td></tr>
                 ))}
               </tbody>
             </table>

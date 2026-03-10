@@ -16,6 +16,114 @@ from typing import Optional, List, Dict, Any
 from app.db import get_conn
 
 
+LOCAL_VENDA_LABELS = {
+    -1: "Canal nao identificado",
+    1: "Pista",
+    2: "Loja de conveniencia",
+    3: "Servicos",
+}
+
+EVENT_TYPE_LABELS = {
+    "CANCELAMENTO": "Cancelamento fora do padrao",
+    "CANCELAMENTO_SEGUIDO_VENDA": "Cancelamento seguido de nova venda",
+    "DESCONTO_ALTO": "Desconto acima do padrao",
+    "FUNCIONARIO_OUTLIER": "Comportamento fora do padrao",
+}
+
+
+def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
+    nome = str(filial_nome or "").strip()
+    if nome:
+        return nome
+    if id_filial is None:
+        return "Todas as filiais"
+    return f"Filial #{id_filial}"
+
+
+def _local_venda_label(id_local_venda: Any, local_nome: Any = None) -> str:
+    nome = str(local_nome or "").strip()
+    if nome:
+        return nome
+    if id_local_venda is None:
+        return "Canal nao informado"
+    try:
+        return LOCAL_VENDA_LABELS.get(int(id_local_venda), f"Canal #{int(id_local_venda)}")
+    except Exception:
+        return "Canal nao informado"
+
+
+def _event_type_label(event_type: Any) -> str:
+    key = str(event_type or "").strip().upper()
+    return EVENT_TYPE_LABELS.get(key, key.replace("_", " ").title() or "Evento de risco")
+
+
+def _humanize_risk_reasons(reasons: Any, event_type: Any) -> List[str]:
+    payload = reasons if isinstance(reasons, dict) else {}
+    items: List[str] = []
+
+    if str(payload.get("pattern") or "") == "cancelamento_seguido_venda_rapida":
+        items.append("Nova venda registrada logo apos o cancelamento.")
+    if float(payload.get("high_value_p90") or 0) > 0:
+        items.append("Valor acima da faixa normal para a operacao.")
+    if float(payload.get("quick_resale_lt_2m") or 0) > 0:
+        items.append("Recompra muito proxima apos o cancelamento.")
+    if float(payload.get("user_outlier_ratio") or 0) > 0:
+        items.append("Colaborador acima do padrao historico de cancelamentos.")
+    if float(payload.get("risk_hour_bonus") or 0) > 0:
+        items.append("Ocorrencia em horario de maior risco.")
+    if float(payload.get("discount_p95_bonus") or 0) > 0:
+        items.append("Desconto acima da faixa normal do dia.")
+    if float(payload.get("unit_price_outlier_bonus") or 0) > 0:
+        items.append("Preco unitario fora da curva recente.")
+    if float(payload.get("base_desconto") or 0) > 0 and not items:
+        items.append("Desconto relevante para a operacao.")
+    if float(payload.get("base_cancelamento") or 0) > 0 and not items:
+        items.append("Cancelamento acima do padrao operacional.")
+
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    valor_total = float(metrics.get("valor_total") or 0)
+    desconto_total = float(metrics.get("desconto_total") or 0)
+    if desconto_total > 0 and not any("Desconto" in item for item in items):
+        items.append(f"Desconto total de R$ {desconto_total:,.2f} na operacao.".replace(",", "X").replace(".", ",").replace("X", "."))
+    if valor_total > 0 and not any("Valor acima" in item for item in items) and str(event_type or "").upper() == "CANCELAMENTO":
+        items.append(f"Valor envolvido de R$ {valor_total:,.2f} no cancelamento.".replace(",", "X").replace(".", ",").replace("X", "."))
+
+    if not items:
+        items.append(f"{_event_type_label(event_type)} identificado pelo motor de risco.")
+
+    return items[:3]
+
+
+def _group_name_expression(group_alias: str, product_alias: str) -> str:
+    normalized = f"UPPER(COALESCE(NULLIF({group_alias}.nome, ''), NULLIF({product_alias}.nome, ''), ''))"
+    return f"""
+      CASE
+        WHEN {normalized} LIKE '%%GASOL%%'
+          OR {normalized} LIKE '%%ETANOL%%'
+          OR {normalized} LIKE '%%DIESEL%%'
+          OR {normalized} LIKE '%%GNV%%'
+          OR {normalized} LIKE '%%COMBUST%%'
+          THEN 'Combustiveis'
+        WHEN {normalized} LIKE '%%TROCA%%'
+          OR {normalized} LIKE '%%LAVAG%%'
+          OR {normalized} LIKE '%%DUCHA%%'
+          OR {normalized} LIKE '%%SERV%%'
+          OR {normalized} LIKE '%%OFIC%%'
+          THEN 'Servicos'
+        WHEN {normalized} LIKE '%%CONVENI%%'
+          OR {normalized} LIKE '%%BEBID%%'
+          OR {normalized} LIKE '%%ALIMENT%%'
+          OR {normalized} LIKE '%%SALG%%'
+          OR {normalized} LIKE '%%CIGAR%%'
+          OR {normalized} LIKE '%%LOJA%%'
+          OR {normalized} LIKE '%%MERCE%%'
+          THEN 'Conveniência'
+        WHEN COALESCE(NULLIF({group_alias}.nome, ''), '') <> '' THEN {group_alias}.nome
+        ELSE 'Grupo nao classificado'
+      END
+    """
+
+
 def _date_key(d: date) -> int:
     return int(d.strftime("%Y%m%d"))
 
@@ -134,18 +242,35 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
 def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial = "" if id_filial is None else "AND v.id_filial = %s"
     params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    group_name_expr = _group_name_expression("g", "p")
     sql = f"""
       SELECT
-        id_grupo_produto,
-        MAX(grupo_nome) AS grupo_nome,
-        SUM(faturamento) AS faturamento,
-        SUM(margem) AS margem
-      FROM mart.agg_grupos_diaria
-      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
-      {where_filial}
-      GROUP BY id_grupo_produto
+        MIN(COALESCE(i.id_grupo_produto, p.id_grupo_produto, -1)) AS id_grupo_produto,
+        {group_name_expr} AS grupo_nome,
+        COALESCE(SUM(i.total),0)::numeric(18,2) AS faturamento,
+        COALESCE(SUM(i.margem),0)::numeric(18,2) AS margem
+      FROM dw.fact_venda v
+      JOIN dw.fact_venda_item i
+        ON i.id_empresa = v.id_empresa
+       AND i.id_filial = v.id_filial
+       AND i.id_db = v.id_db
+       AND i.id_movprodutos = v.id_movprodutos
+      LEFT JOIN dw.dim_produto p
+        ON p.id_empresa = i.id_empresa
+       AND p.id_filial = i.id_filial
+       AND p.id_produto = i.id_produto
+      LEFT JOIN dw.dim_grupo_produto g
+        ON g.id_empresa = i.id_empresa
+       AND g.id_filial = i.id_filial
+       AND g.id_grupo_produto = COALESCE(i.id_grupo_produto, p.id_grupo_produto)
+      WHERE v.id_empresa = %s
+        AND v.data_key BETWEEN %s AND %s
+        AND COALESCE(v.cancelado, false) = false
+        AND COALESCE(i.cfop, 0) >= 5000
+        {where_filial}
+      GROUP BY {group_name_expr}
       ORDER BY faturamento DESC
       LIMIT %s
     """
@@ -167,6 +292,8 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt
         SUM(vendas)::int AS vendas
       FROM mart.agg_funcionarios_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      AND COALESCE(id_funcionario, -1) <> -1
+      AND COALESCE(NULLIF(funcionario_nome, ''), '') <> ''
       {where_filial}
       GROUP BY id_funcionario
       ORDER BY faturamento DESC
@@ -605,36 +732,47 @@ def risk_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_
 
 
 def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit: int = 30) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial = "" if id_filial is None else "AND e.id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
 
     sql = f"""
       SELECT
-        id,
-        id_filial,
-        data_key,
-        data,
-        event_type,
-        id_db,
-        id_comprovante,
-        id_movprodutos,
-        id_usuario,
-        id_funcionario,
-        funcionario_nome,
-        id_turno,
-        valor_total,
-        impacto_estimado,
-        score_risco,
-        score_level,
-        reasons
+        e.id,
+        e.id_filial,
+        COALESCE(f.nome, '') AS filial_nome,
+        e.data_key,
+        e.data,
+        e.event_type,
+        e.id_db,
+        e.id_comprovante,
+        e.id_movprodutos,
+        e.id_usuario,
+        e.id_funcionario,
+        e.funcionario_nome,
+        e.id_turno,
+        e.valor_total,
+        e.impacto_estimado,
+        e.score_risco,
+        e.score_level,
+        e.reasons
       FROM mart.risco_eventos_recentes
-      WHERE id_empresa = %s
+      e
+      LEFT JOIN auth.filiais f
+        ON f.id_empresa = %s
+       AND f.id_filial = e.id_filial
+      WHERE e.id_empresa = %s
       {where_filial}
-      ORDER BY data DESC NULLS LAST, id DESC
+      ORDER BY e.data DESC NULLS LAST, e.id DESC
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, [id_empresa] + params).fetchall()]
+    for row in rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["event_label"] = _event_type_label(row.get("event_type"))
+        row["reasons_humanized"] = _humanize_risk_reasons(row.get("reasons"), row.get("event_type"))
+        row["reason_summary"] = " ".join(row["reasons_humanized"])
+    return rows
 
 
 def risk_insights(
@@ -693,27 +831,42 @@ def risk_by_turn_local(
 ) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial = "" if id_filial is None else "AND rtl.id_filial = %s"
     params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
 
     sql = f"""
       SELECT
-        id_turno,
-        id_local_venda,
-        SUM(eventos)::int AS eventos,
-        SUM(alto_risco)::int AS alto_risco,
-        SUM(impacto_estimado)::numeric(18,2) AS impacto_estimado,
-        AVG(score_medio)::numeric(10,2) AS score_medio
-      FROM mart.risco_turno_local_diaria
-      WHERE id_empresa = %s
-        AND data_key BETWEEN %s AND %s
+        rtl.id_filial,
+        COALESCE(f.nome, '') AS filial_nome,
+        rtl.id_turno,
+        rtl.id_local_venda,
+        COALESCE(MAX(lv.nome), '') AS local_nome,
+        SUM(rtl.eventos)::int AS eventos,
+        SUM(rtl.alto_risco)::int AS alto_risco,
+        SUM(rtl.impacto_estimado)::numeric(18,2) AS impacto_estimado,
+        AVG(rtl.score_medio)::numeric(10,2) AS score_medio
+      FROM mart.risco_turno_local_diaria rtl
+      LEFT JOIN auth.filiais f
+        ON f.id_empresa = rtl.id_empresa
+       AND f.id_filial = rtl.id_filial
+      LEFT JOIN dw.dim_local_venda lv
+        ON lv.id_empresa = rtl.id_empresa
+       AND lv.id_filial = rtl.id_filial
+       AND lv.id_local_venda = rtl.id_local_venda
+      WHERE rtl.id_empresa = %s
+        AND rtl.data_key BETWEEN %s AND %s
         {where_filial}
-      GROUP BY id_turno, id_local_venda
+      GROUP BY rtl.id_filial, f.nome, rtl.id_turno, rtl.id_local_venda
       ORDER BY impacto_estimado DESC, score_medio DESC
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["local_label"] = _local_venda_label(row.get("id_local_venda"), row.get("local_nome"))
+        row["turno_label"] = f"Turno {row['id_turno']}" if row.get("id_turno") is not None and int(row.get("id_turno")) >= 0 else "Turno nao informado"
+    return rows
 
 
 def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
@@ -773,6 +926,7 @@ def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_i
 
 def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial_turno = "" if id_filial is None else "AND t.id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial])
 
     sql_totals = f"""
@@ -849,41 +1003,46 @@ def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> D
     sql_items = f"""
       WITH turnos_raw AS (
         SELECT
-          id_filial,
-          id_turno,
+          t.id_filial,
+          COALESCE(f.nome, '') AS filial_nome,
+          t.id_turno,
           UPPER(COALESCE(
-            payload->>'STATUS',
-            payload->>'SITUACAO',
-            payload->>'SITUACAO_TURNO',
-            payload->>'ST',
+            t.payload->>'STATUS',
+            t.payload->>'SITUACAO',
+            t.payload->>'SITUACAO_TURNO',
+            t.payload->>'ST',
             ''
           )) AS status_raw,
           etl.safe_timestamp(COALESCE(
-            payload->>'DTABERTURA',
-            payload->>'DATAABERTURA',
-            payload->>'DTHRABERTURA',
-            payload->>'DTHR_ABERTURA',
-            payload->>'ABERTURA',
-            payload->>'INICIO',
-            payload->>'DTINICIO',
-            payload->>'DATAINICIO'
+            t.payload->>'DTABERTURA',
+            t.payload->>'DATAABERTURA',
+            t.payload->>'DTHRABERTURA',
+            t.payload->>'DTHR_ABERTURA',
+            t.payload->>'ABERTURA',
+            t.payload->>'INICIO',
+            t.payload->>'DTINICIO',
+            t.payload->>'DATAINICIO'
           )) AS abertura_ts,
           etl.safe_timestamp(COALESCE(
-            payload->>'DTFECHAMENTO',
-            payload->>'DATAFECHAMENTO',
-            payload->>'DTHRFECHAMENTO',
-            payload->>'DTHR_FECHAMENTO',
-            payload->>'FECHAMENTO',
-            payload->>'FIM',
-            payload->>'DTFIM',
-            payload->>'DATAFIM'
+            t.payload->>'DTFECHAMENTO',
+            t.payload->>'DATAFECHAMENTO',
+            t.payload->>'DTHRFECHAMENTO',
+            t.payload->>'DTHR_FECHAMENTO',
+            t.payload->>'FECHAMENTO',
+            t.payload->>'FIM',
+            t.payload->>'DTFIM',
+            t.payload->>'DATAFIM'
           )) AS fechamento_ts
-        FROM stg.turnos
-        WHERE id_empresa = %s
-        {where_filial}
+        FROM stg.turnos t
+        LEFT JOIN auth.filiais f
+          ON f.id_empresa = t.id_empresa
+         AND f.id_filial = t.id_filial
+        WHERE t.id_empresa = %s
+        {where_filial_turno}
       )
       SELECT
         id_filial,
+        filial_nome,
         id_turno,
         abertura_ts,
         ROUND(EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0, 2) AS open_hours,
@@ -1109,6 +1268,7 @@ def customers_churn_diamond(
         dt_ref,
         id_cliente,
         COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+        last_purchase,
         recency_days,
         expected_cycle_days,
         frequency_30,
@@ -1129,7 +1289,35 @@ def customers_churn_diamond(
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = list(conn.execute(sql, params).fetchall())
+        if as_of is not None and not rows:
+            fallback_params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [limit]
+            fallback_sql = f"""
+              SELECT
+                dt_ref,
+                id_cliente,
+                COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+                last_purchase,
+                recency_days,
+                expected_cycle_days,
+                frequency_30,
+                frequency_90,
+                monetary_30,
+                monetary_90,
+                churn_score,
+                revenue_at_risk_30d,
+                recommendation,
+                reasons
+              FROM mart.customer_churn_risk_daily
+              WHERE id_empresa = %s
+                AND churn_score >= %s
+                AND id_cliente <> -1
+                {where_filial}
+              ORDER BY dt_ref DESC, churn_score DESC, revenue_at_risk_30d DESC
+              LIMIT %s
+            """
+            rows = list(conn.execute(fallback_sql, fallback_params).fetchall())
+        return rows
 
 
 def customer_churn_drilldown(
@@ -1193,6 +1381,33 @@ def customer_churn_drilldown(
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         series = list(conn.execute(sql_series, params).fetchall())
         snap = conn.execute(sql_snapshot, params_snapshot).fetchone()
+        if as_of is not None and not snap:
+            fallback_sql = f"""
+              SELECT
+                dt_ref,
+                id_cliente,
+                COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+                last_purchase,
+                recency_days,
+                expected_cycle_days,
+                frequency_30,
+                frequency_90,
+                monetary_30,
+                monetary_90,
+                ticket_30,
+                churn_score,
+                revenue_at_risk_30d,
+                recommendation,
+                reasons
+              FROM mart.customer_churn_risk_daily
+              WHERE id_empresa = %s
+                AND id_cliente = %s
+                {"" if id_filial is None else "AND id_filial = %s"}
+              ORDER BY dt_ref DESC
+              LIMIT 1
+            """
+            fallback_params = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial])
+            snap = conn.execute(fallback_sql, fallback_params).fetchone()
     return {"snapshot": snap or {}, "series": series}
 
 
@@ -1549,29 +1764,37 @@ def payments_anomalies(
 ) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial = "" if id_filial is None else "AND p.id_filial = %s"
     params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
     sql = f"""
       SELECT
-        data_key,
-        id_filial,
-        id_turno,
-        event_type,
-        severity,
-        score,
-        impacto_estimado,
-        reasons,
-        insight_id,
-        insight_id_hash
-      FROM mart.pagamentos_anomalias_diaria
-      WHERE id_empresa = %s
-        AND data_key BETWEEN %s AND %s
+        p.data_key,
+        p.id_filial,
+        COALESCE(f.nome, '') AS filial_nome,
+        p.id_turno,
+        p.event_type,
+        p.severity,
+        p.score,
+        p.impacto_estimado,
+        p.reasons,
+        p.insight_id,
+        p.insight_id_hash
+      FROM mart.pagamentos_anomalias_diaria p
+      LEFT JOIN auth.filiais f
+        ON f.id_empresa = p.id_empresa
+       AND f.id_filial = p.id_filial
+      WHERE p.id_empresa = %s
+        AND p.data_key BETWEEN %s AND %s
         {where_filial}
-      ORDER BY score DESC, impacto_estimado DESC, data_key DESC
+      ORDER BY p.score DESC, p.impacto_estimado DESC, p.data_key DESC
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["event_label"] = _event_type_label(row.get("event_type"))
+    return rows
 
 
 def payments_overview(
@@ -1672,6 +1895,8 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
         SUM(vendas)::int AS vendas
       FROM mart.agg_funcionarios_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+        AND COALESCE(id_funcionario, -1) <> -1
+        AND COALESCE(NULLIF(funcionario_nome, ''), '') <> ''
       {where_filial}
       GROUP BY id_funcionario
       ORDER BY faturamento DESC

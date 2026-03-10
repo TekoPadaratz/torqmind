@@ -7,12 +7,8 @@ import AppNav from '../components/AppNav';
 import { apiGet, apiPost } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import { buildUserLabel, formatCurrency, formatDateOnly, formatFilialLabel } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
-
-function fmtMoney(v: any) {
-  const n = Number(v || 0);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
 
 function fmtNum(v: any, digits = 3) {
   return Number(v || 0).toLocaleString('pt-BR', {
@@ -32,12 +28,10 @@ export default function PricingPage() {
   const [error, setError] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
   const [priceInputs, setPriceInputs] = useState<Record<string, string>>({});
+  const [filialLabel, setFilialLabel] = useState('');
 
   const userLabel = useMemo(() => {
-    if (!claims) return undefined;
-    return [claims.role, claims.id_empresa ? `E${claims.id_empresa}` : '', claims.id_filial ? `F${claims.id_filial}` : '']
-      .filter(Boolean)
-      .join(' · ');
+    return buildUserLabel(claims);
   }, [claims]);
 
   const load = async () => {
@@ -67,6 +61,9 @@ export default function PricingPage() {
 
       const res = await apiGet(`/bi/pricing/competitor/overview?${qs.toString()}`);
       setData(res);
+      const branchList = await apiGet(`/bi/filiais${empresa ? `?id_empresa=${empresa}` : ''}`);
+      const selected = (branchList?.items || []).find((item: any) => String(item.id_filial) === String(filial));
+      setFilialLabel(formatFilialLabel(filial, selected?.nome));
 
       const map: Record<string, string> = {};
       for (const row of res?.items || []) {
@@ -141,8 +138,8 @@ export default function PricingPage() {
           <div>
             <div className="muted">Simulação 10 dias</div>
             <div className="scopeLine">
-              Período base: <strong>{scope.dt_ini}</strong> até <strong>{scope.dt_fim}</strong> · Ref <strong>{scope.dt_ref || scope.dt_fim}</strong> · Filial{' '}
-              <strong>{scope.id_filial || claims?.id_filial || '-'}</strong>
+              Período base: <strong>{formatDateOnly(scope.dt_ini)}</strong> até <strong>{formatDateOnly(scope.dt_fim)}</strong> · Ref <strong>{formatDateOnly(scope.dt_ref || scope.dt_fim)}</strong> · Filial{' '}
+              <strong>{filialLabel || formatFilialLabel(scope.id_filial || claims?.id_filial)}</strong>
             </div>
           </div>
           <div>
@@ -162,15 +159,15 @@ export default function PricingPage() {
           </div>
           <div className="card kpi col-3 riskCard">
             <div className="label">Perda se não mudar (10d)</div>
-            <div className="value">{loading ? '...' : fmtMoney(summary.total_lost_if_no_change_10d)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(summary.total_lost_if_no_change_10d)}</div>
           </div>
           <div className="card kpi col-3">
             <div className="label">Impacto ao igualar (10d vs atual)</div>
-            <div className="value">{loading ? '...' : fmtMoney(summary.total_match_vs_current_10d)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(summary.total_match_vs_current_10d)}</div>
           </div>
           <div className="card kpi col-3 scoreCard">
             <div className="label">Ganho vs não mudar (10d)</div>
-            <div className="value">{loading ? '...' : fmtMoney(summary.total_match_vs_no_change_10d)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(summary.total_match_vs_no_change_10d)}</div>
           </div>
 
           <div className="card col-12">
@@ -203,7 +200,7 @@ export default function PricingPage() {
                       <div className="muted">{row.grupo_nome}</div>
                     </td>
                     <td>{fmtNum(row.avg_daily_volume, 3)}</td>
-                    <td>{fmtMoney(row.avg_price_current)}</td>
+                    <td>{formatCurrency(row.avg_price_current)}</td>
                     <td>
                       <input
                         className="input"
@@ -219,10 +216,10 @@ export default function PricingPage() {
                         }
                       />
                     </td>
-                    <td>{fmtMoney(row.station_price_gap)}</td>
-                    <td>{fmtMoney(row.scenario_no_change?.lost_revenue_10d)}</td>
-                    <td>{fmtMoney(row.scenario_match_competitor?.impact_vs_current_10d)}</td>
-                    <td>{fmtMoney(row.scenario_match_competitor?.impact_vs_no_change_10d)}</td>
+                    <td>{formatCurrency(row.station_price_gap)}</td>
+                    <td>{formatCurrency(row.scenario_no_change?.lost_revenue_10d)}</td>
+                    <td>{formatCurrency(row.scenario_match_competitor?.impact_vs_current_10d)}</td>
+                    <td>{formatCurrency(row.scenario_match_competitor?.impact_vs_no_change_10d)}</td>
                     <td>{row.recommendation}</td>
                   </tr>
                 ))}

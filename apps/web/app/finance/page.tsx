@@ -9,18 +9,15 @@ import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import {
+  buildUserLabel,
+  formatCurrency,
+  formatDateKey,
+  formatDateKeyShort,
+  formatFilialLabel,
+  formatTurnoLabel,
+} from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
-
-function fmtMoney(v: any) {
-  const n = Number(v || 0);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
-
-function shortDateKey(key: number) {
-  const s = String(key || '');
-  if (s.length !== 8) return s;
-  return `${s.slice(6, 8)}/${s.slice(4, 6)}`;
-}
 
 export default function FinancePage() {
   const router = useRouter();
@@ -32,10 +29,7 @@ export default function FinancePage() {
   const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
-    if (!claims) return undefined;
-    return [claims.role, claims.id_empresa ? `E${claims.id_empresa}` : '', claims.id_filial ? `F${claims.id_filial}` : '']
-      .filter(Boolean)
-      .join(' · ');
+    return buildUserLabel(claims);
   }, [claims]);
 
   useEffect(() => {
@@ -76,7 +70,7 @@ export default function FinancePage() {
   const chartData = useMemo(
     () =>
       (data?.by_day || []).map((r: any) => ({
-        data: shortDateKey(r.data_key),
+        data: formatDateKeyShort(r.data_key),
         aberto: Number(r.valor_aberto || 0),
         pago: Number(r.valor_pago || 0),
       })),
@@ -87,7 +81,7 @@ export default function FinancePage() {
   const paymentsByDay = useMemo(
     () =>
       (data?.payments?.by_day || []).map((r: any) => ({
-        data: shortDateKey(r.data_key),
+        data: formatDateKeyShort(r.data_key),
         valor: Number(r.total_valor || 0),
         category: r.category,
       })),
@@ -108,10 +102,10 @@ export default function FinancePage() {
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
-          <div className="card kpi col-3"><div className="label">Receber total</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.receber_total)}</div></div>
-          <div className="card kpi col-3"><div className="label">Receber aberto</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.receber_aberto)}</div></div>
-          <div className="card kpi col-3"><div className="label">Pagar total</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.pagar_total)}</div></div>
-          <div className="card kpi col-3"><div className="label">Pagar aberto</div><div className="value">{loading ? '...' : fmtMoney(data?.kpis?.pagar_aberto)}</div></div>
+          <div className="card kpi col-3"><div className="label">Receber total</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.receber_total)}</div></div>
+          <div className="card kpi col-3"><div className="label">Receber aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.receber_aberto)}</div></div>
+          <div className="card kpi col-3"><div className="label">Pagar total</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.pagar_total)}</div></div>
+          <div className="card kpi col-3"><div className="label">Pagar aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.pagar_aberto)}</div></div>
 
           <div className="card col-12 chartCard">
             <h2>Fluxo por vencimento</h2>
@@ -132,7 +126,7 @@ export default function FinancePage() {
 
           <div className="card kpi col-4">
             <div className="label">Pagamentos (período)</div>
-            <div className="value">{loading ? '...' : fmtMoney(paymentsKpis.total_valor)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
           </div>
           <div className="card kpi col-4">
             <div className="label">Variação vs período anterior</div>
@@ -154,8 +148,8 @@ export default function FinancePage() {
                     <tbody>
                       {openCash.items.map((item: any) => (
                         <tr key={`${item.id_filial}-${item.id_turno}`}>
-                          <td>{item.id_filial}</td>
-                          <td>{item.id_turno}</td>
+                          <td>{formatFilialLabel(item.id_filial, item.filial_nome)}</td>
+                          <td>{formatTurnoLabel(item.id_turno)}</td>
                           <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
                           <td>{item.severity}</td>
                         </tr>
@@ -204,10 +198,10 @@ export default function FinancePage() {
               <tbody>
                 {paymentsByTurno.slice(0, 15).map((r: any, idx: number) => (
                   <tr key={`${r.data_key}-${r.id_turno}-${r.category}-${idx}`}>
-                    <td>{shortDateKey(r.data_key)}</td>
-                    <td>{r.id_turno ?? '-'}</td>
+                    <td>{formatDateKey(r.data_key)}</td>
+                    <td>{formatTurnoLabel(r.id_turno)}</td>
                     <td>{r.category}</td>
-                    <td>{fmtMoney(r.total_valor)}</td>
+                    <td>{formatCurrency(r.total_valor)}</td>
                     <td>{Number(r.qtd_comprovantes || 0)}</td>
                   </tr>
                 ))}
@@ -223,10 +217,10 @@ export default function FinancePage() {
               <tbody>
                 {paymentsAnomalies.slice(0, 10).map((a: any, idx: number) => (
                   <tr key={`${a.insight_id || a.event_type}-${idx}`}>
-                    <td>{a.event_type}</td>
+                    <td>{a.event_label || a.event_type}</td>
                     <td>{a.severity}</td>
                     <td>{Number(a.score || 0)}</td>
-                    <td>{fmtMoney(a.impacto_estimado)}</td>
+                    <td>{formatCurrency(a.impacto_estimado)}</td>
                   </tr>
                 ))}
               </tbody>

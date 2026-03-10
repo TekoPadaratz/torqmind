@@ -18,6 +18,15 @@ import {
 import { apiGet, apiPost } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import {
+  buildUserLabel,
+  formatCurrency,
+  formatDateKey,
+  formatDateKeyShort,
+  formatDateOnly,
+  formatFilialLabel,
+  formatTurnoLabel,
+} from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 import AppNav from '../components/AppNav';
 import ActionCard from '../components/ui/ActionCard';
@@ -26,23 +35,6 @@ import HeroMoneyCard from '../components/ui/HeroMoneyCard';
 import RadarPanel from '../components/ui/RadarPanel';
 import RiskBadge from '../components/ui/RiskBadge';
 import Skeleton from '../components/ui/Skeleton';
-
-function money(v: any) {
-  const n = Number(v || 0);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
-
-function shortDateKey(key: number) {
-  const s = String(key || '');
-  if (s.length !== 8) return s;
-  return `${s.slice(6, 8)}/${s.slice(4, 6)}`;
-}
-
-function dataKeyToISO(key: any) {
-  const s = String(key || '');
-  if (s.length !== 8) return '';
-  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
-}
 
 function detailsHref(path: string, scope: any) {
   const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
@@ -70,24 +62,19 @@ export default function Dashboard() {
   const [anonRetention, setAnonRetention] = useState<any>(null);
   const [financeData, setFinanceData] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const [filialLabel, setFilialLabel] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
-    if (!claims) return undefined;
-    const parts = [
-      claims.role,
-      claims.id_empresa ? `E${claims.id_empresa}` : '',
-      claims.id_filial ? `F${claims.id_filial}` : '',
-    ].filter(Boolean);
-    return parts.join(' · ');
+    return buildUserLabel(claims);
   }, [claims]);
 
   const chartData = useMemo(() => {
     const byDay = overview?.by_day || [];
     return byDay.map((r: any) => ({
       ...r,
-      data: shortDateKey(r.data_key),
+      data: formatDateKeyShort(r.data_key),
       faturamento: Number(r.faturamento || 0),
       margem: Number(r.margem || 0),
     }));
@@ -125,6 +112,14 @@ export default function Dashboard() {
           apiGet(`/bi/notifications?${qs.toString()}&limit=10`),
         ]);
 
+        if (scope.id_filial) {
+          const branchList = await apiGet(`/bi/filiais${scope.id_empresa ? `?id_empresa=${scope.id_empresa}` : ''}`);
+          const selected = (branchList?.items || []).find((item: any) => String(item.id_filial) === String(scope.id_filial));
+          setFilialLabel(formatFilialLabel(scope.id_filial, selected?.nome));
+        } else {
+          setFilialLabel('Todas as filiais');
+        }
+
         setOverview(overviewRes);
         setChurnData(churnRes);
         setAnonRetention(anonRes);
@@ -153,7 +148,7 @@ export default function Dashboard() {
   const payments = overview?.payments || {};
   const paymentsKpis = payments?.kpis || {};
   const paymentsByDay = (payments?.by_day || []).map((r: any) => ({
-    data: shortDateKey(r.data_key),
+    data: formatDateKeyShort(r.data_key),
     valor: Number(r.total_valor || 0),
   }));
   const paymentsAnomalies = (payments?.anomalies || []).slice(0, 8);
@@ -164,11 +159,13 @@ export default function Dashboard() {
   const fraudeImpacto = Number(riskKpis?.impacto_total || 0);
 
   const heroRecoverable = fraudeImpacto + revenueAtRisk + caixaRisco;
-  const maxRiskDate = dataKeyToISO(riskWindow?.max_data_key);
+  const maxRiskDateKey = Number(riskWindow?.max_data_key || 0);
+  const maxRiskDate = formatDateKey(maxRiskDateKey);
+  const scopeEndKey = Number(String(scope.dt_fim || '').replaceAll('-', ''));
   const scopeOutdatedForRisk =
-    !!maxRiskDate &&
-    !!scope.dt_fim &&
-    scope.dt_fim < maxRiskDate &&
+    maxRiskDateKey > 0 &&
+    scopeEndKey > 0 &&
+    scopeEndKey < maxRiskDateKey &&
     Number(riskKpis?.total_eventos || 0) === 0;
   const topActions = [...generatedInsights]
     .sort((a: any, b: any) => Number(b.impacto_estimado || 0) - Number(a.impacto_estimado || 0))
@@ -195,9 +192,9 @@ export default function Dashboard() {
           <div>
             <div className="muted">Escopo ativo</div>
             <div className="scopeLine">
-              <strong>{scope.dt_ini}</strong> ate <strong>{scope.dt_fim}</strong> · Ref{' '}
-              <strong>{scope.dt_ref || scope.dt_fim}</strong> · Filial{' '}
-              <strong>{scope.id_filial || 'Todas'}</strong> · Empresa{' '}
+              <strong>{formatDateOnly(scope.dt_ini)}</strong> ate <strong>{formatDateOnly(scope.dt_fim)}</strong> · Ref{' '}
+              <strong>{formatDateOnly(scope.dt_ref || scope.dt_fim)}</strong> · Filial{' '}
+              <strong>{filialLabel || formatFilialLabel(scope.id_filial)}</strong> · Empresa{' '}
               <strong>{scope.id_empresa || claims?.id_empresa || '1'}</strong>
             </div>
           </div>
@@ -221,7 +218,7 @@ export default function Dashboard() {
             ) : (
               <HeroMoneyCard
                 title="HOJE"
-                value={money(heroRecoverable)}
+                value={formatCurrency(heroRecoverable)}
                 subtitle="Voce recupera/evita perder ao agir em Fraude + Churn + Caixa"
               />
             )}
@@ -229,15 +226,15 @@ export default function Dashboard() {
 
           <div className="card kpi col-4 riskCard">
             <div className="label">Fraude em risco</div>
-            <div className="value">{loading ? '...' : money(fraudeImpacto)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(fraudeImpacto)}</div>
           </div>
           <div className="card kpi col-4">
             <div className="label">Churn em risco (30d)</div>
-            <div className="value">{loading ? '...' : money(revenueAtRisk)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(revenueAtRisk)}</div>
           </div>
           <div className="card kpi col-4">
             <div className="label">Caixa vencido (AR/AP)</div>
-            <div className="value">{loading ? '...' : money(caixaRisco)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(caixaRisco)}</div>
           </div>
           <div className="card col-12">
             <div className="panelHead">
@@ -253,8 +250,8 @@ export default function Dashboard() {
                     <tbody>
                       {openCash.items.map((item: any) => (
                         <tr key={`${item.id_filial}-${item.id_turno}`}>
-                          <td>{item.id_filial}</td>
-                          <td>{item.id_turno}</td>
+                          <td>{formatFilialLabel(item.id_filial, item.filial_nome)}</td>
+                          <td>{formatTurnoLabel(item.id_turno)}</td>
                           <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
                           <td>{item.severity}</td>
                         </tr>
@@ -279,7 +276,7 @@ export default function Dashboard() {
 
           <div className="card kpi col-4">
             <div className="label">Mix de pagamentos</div>
-            <div className="value">{loading ? '...' : money(paymentsKpis.total_valor)}</div>
+            <div className="value">{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
             {!loading ? (
               <div className="muted">
                 {Number(paymentsKpis.delta_pct || 0).toFixed(1)}% vs período anterior
@@ -301,7 +298,7 @@ export default function Dashboard() {
               <tbody>
                 {paymentsAnomalies.map((a: any, idx: number) => (
                   <tr key={`${a.insight_id || a.event_type}-${idx}`}>
-                    <td>{a.event_type}</td>
+                    <td>{a.event_label || a.event_type}</td>
                     <td>{a.severity}</td>
                     <td>{Number(a.score || 0)}</td>
                   </tr>
@@ -338,8 +335,8 @@ export default function Dashboard() {
                   : [ins.recommendation || 'Investigar e corrigir hoje'];
                 const evidence = [
                   `Tipo: ${ins.insight_type || 'INSIGHT'}`,
-                  `Data: ${ins.dt_ref || '-'}`,
-                  `Impacto: ${money(ins.impacto_estimado)}`,
+                  `Data: ${formatDateOnly(ins.dt_ref)}`,
+                  `Impacto: ${formatCurrency(ins.impacto_estimado)}`,
                 ];
                 const path = insightDetailsPath(ins.insight_type);
                 return (
@@ -347,7 +344,7 @@ export default function Dashboard() {
                     key={ins.id}
                     title={ins.title}
                     severity={ins.severity}
-                    impactLabel={money(ins.impacto_estimado)}
+                    impactLabel={formatCurrency(ins.impacto_estimado)}
                     evidence={evidence}
                     checklist={checklist}
                     detailsHref={detailsHref(path, scope)}
@@ -362,7 +359,7 @@ export default function Dashboard() {
               title="Radar Fraude"
               href={detailsHref('/fraud', scope)}
               metrics={[
-                { label: 'Impacto estimado', value: money(fraudeImpacto) },
+                { label: 'Impacto estimado', value: formatCurrency(fraudeImpacto) },
                 { label: 'Eventos alto risco', value: String(Number(riskKpis.eventos_alto_risco || 0)) },
                 { label: 'Score medio', value: Number(riskKpis.score_medio || 0).toFixed(1) },
               ]}
@@ -375,7 +372,7 @@ export default function Dashboard() {
               href={detailsHref('/customers', scope)}
               metrics={[
                 { label: 'Clientes em risco', value: String(churnTop.length) },
-                { label: 'Receita em risco 30d', value: money(revenueAtRisk) },
+                { label: 'Receita em risco 30d', value: formatCurrency(revenueAtRisk) },
                 { label: 'Recorrencia anonima', value: `${Number(anonKpis.repeat_proxy_idx || 0).toFixed(1)}%` },
               ]}
             />
@@ -386,8 +383,8 @@ export default function Dashboard() {
               title="Radar Caixa"
               href={detailsHref('/finance', scope)}
               metrics={[
-                { label: 'Receber vencido', value: money(financeAging.receber_total_vencido) },
-                { label: 'Pagar vencido', value: money(financeAging.pagar_total_vencido) },
+                { label: 'Receber vencido', value: formatCurrency(financeAging.receber_total_vencido) },
+                { label: 'Pagar vencido', value: formatCurrency(financeAging.pagar_total_vencido) },
                 { label: 'Concentracao top5', value: `${Number(financeAging.top5_concentration_pct || 0).toFixed(1)}%` },
               ]}
             />
@@ -399,7 +396,7 @@ export default function Dashboard() {
               href={detailsHref('/customers', scope)}
               metrics={[
                 { label: 'Tendencia', value: `${Number(anonKpis.trend_pct || 0).toFixed(1)}%` },
-                { label: 'Impacto estimado 7d', value: money(anonKpis.impact_estimated_7d) },
+                { label: 'Impacto estimado 7d', value: formatCurrency(anonKpis.impact_estimated_7d) },
                 { label: 'Severidade', value: String(anonKpis.severity || 'OK') },
               ]}
             />
@@ -501,7 +498,7 @@ export default function Dashboard() {
                   <RiskBadge level={ins.severity} />
                 </div>
                 <div>
-                  <div><strong>{ins.title}</strong> · {money(ins.impacto_estimado)}</div>
+                  <div><strong>{ins.title}</strong> · {formatCurrency(ins.impacto_estimado)}</div>
                   <div className="muted">{ins.message}</div>
                   <div className="cta">Corrigir hoje: {ins.recommendation}</div>
                   {(ins.ai_plan?.actions_today || []).length ? (

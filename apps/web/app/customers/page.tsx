@@ -9,12 +9,8 @@ import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
-
-function fmtMoney(v: any) {
-  const n = Number(v || 0);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
 
 export default function CustomersPage() {
   const router = useRouter();
@@ -26,10 +22,7 @@ export default function CustomersPage() {
   const [error, setError] = useState('');
 
   const userLabel = useMemo(() => {
-    if (!claims) return undefined;
-    return [claims.role, claims.id_empresa ? `E${claims.id_empresa}` : '', claims.id_filial ? `F${claims.id_filial}` : '']
-      .filter(Boolean)
-      .join(' · ');
+    return buildUserLabel(claims);
   }, [claims]);
 
   useEffect(() => {
@@ -91,20 +84,23 @@ export default function CustomersPage() {
           <div className="card kpi col-3"><div className="label">Clientes identificados</div><div className="value">{loading ? '...' : data?.rfm?.clientes_identificados ?? 0}</div></div>
           <div className="card kpi col-3"><div className="label">Ativos 7d</div><div className="value">{loading ? '...' : data?.rfm?.ativos_7d ?? 0}</div></div>
           <div className="card kpi col-3"><div className="label">Em risco 30d</div><div className="value">{loading ? '...' : data?.rfm?.em_risco_30d ?? 0}</div></div>
-          <div className="card kpi col-3"><div className="label">Fat. 90d</div><div className="value">{loading ? '...' : fmtMoney(data?.rfm?.faturamento_90d)}</div></div>
+          <div className="card kpi col-3"><div className="label">Fat. 90d</div><div className="value">{loading ? '...' : formatCurrency(data?.rfm?.faturamento_90d)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Recorrencia anonima (trend)</div><div className="value">{loading ? '...' : `${Number(anonKpis?.trend_pct || 0).toFixed(1)}%`}</div></div>
-          <div className="card kpi col-4 riskCard"><div className="label">Impacto anonimo estimado (7d)</div><div className="value">{loading ? '...' : fmtMoney(anonKpis?.impact_estimated_7d)}</div></div>
+          <div className="card kpi col-4 riskCard"><div className="label">Impacto anonimo estimado (7d)</div><div className="value">{loading ? '...' : formatCurrency(anonKpis?.impact_estimated_7d)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Indice recorrencia anonima</div><div className="value">{loading ? '...' : `${Number(anonKpis?.repeat_proxy_idx || 0).toFixed(1)}%`}</div></div>
 
           <div className="card col-12">
             <h2>Risco de churn (top 10)</h2>
-            {!loading && !(data?.churn_top || []).length ? <p className="muted">Sem clientes com risco alto no período.</p> : null}
+            {!loading && !(data?.churn_top || []).length ? (
+              <EmptyState title="Nenhum cliente em risco relevante." detail="A base identificada nao trouxe sinais fortes de churn para este recorte." />
+            ) : null}
             <table className="table compact">
               <thead>
                 <tr>
                   <th>Cliente</th>
                   <th>Score churn</th>
                   <th>Última compra</th>
+                  <th>Sinal principal</th>
                   <th>Compras 30d</th>
                   <th>Compras 60-30d</th>
                   <th>Fat. 30d</th>
@@ -118,11 +114,12 @@ export default function CustomersPage() {
                     <td>
                       <span className={`badge ${Number(c.churn_score || 0) >= 80 ? 'warn' : 'ok'}`}>{c.churn_score}</span>
                     </td>
-                    <td>{c.last_purchase ? String(c.last_purchase).slice(0, 10) : '-'}</td>
+                    <td>{formatDateOnly(c.last_purchase)}</td>
+                    <td>{c.recommendation || c.reasons?.summary || 'Reativar relacionamento comercial.'}</td>
                     <td>{c.compras_30d}</td>
                     <td>{c.compras_60_30}</td>
-                    <td>{fmtMoney(c.faturamento_30d)}</td>
-                    <td>{fmtMoney(c.faturamento_60_30)}</td>
+                    <td>{formatCurrency(c.faturamento_30d)}</td>
+                    <td>{formatCurrency(c.faturamento_60_30)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -156,7 +153,7 @@ export default function CustomersPage() {
               <thead><tr><th>Cliente</th><th>Compras</th><th>Ticket</th></tr></thead>
               <tbody>
                 {(data?.top_customers || []).slice(0, 10).map((c: any) => (
-                  <tr key={c.id_cliente}><td>{c.cliente_nome}</td><td>{c.compras}</td><td>{fmtMoney(c.ticket_medio)}</td></tr>
+                  <tr key={c.id_cliente}><td>{c.cliente_nome}</td><td>{c.compras}</td><td>{formatCurrency(c.ticket_medio)}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -176,8 +173,8 @@ export default function CustomersPage() {
                 {(anon?.breakdown_dow || []).map((r: any) => (
                   <tr key={r.dow}>
                     <td>{r.dow}</td>
-                    <td>{fmtMoney(r.anon_current)}</td>
-                    <td>{fmtMoney(r.anon_prev)}</td>
+                    <td>{formatCurrency(r.anon_current)}</td>
+                    <td>{formatCurrency(r.anon_prev)}</td>
                     <td>{Number(r.trend_pct || 0).toFixed(1)}%</td>
                   </tr>
                 ))}
