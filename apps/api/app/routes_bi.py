@@ -378,7 +378,7 @@ def goals_overview(
     filial_for_goals = filial or 1
 
     return {
-        "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, dt_ini, dt_fim, limit=20),
+        "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, dt_ini, dt_fim, limit=15),
         "goals_today": repos_mart.goals_today(role, tenant, filial_for_goals, goal_date=as_of),
     }
 

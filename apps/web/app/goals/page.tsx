@@ -9,6 +9,7 @@ import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency } from '../lib/format';
+import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { useScopeQuery } from '../lib/scope';
 
 export default function GoalsPage() {
@@ -67,7 +68,6 @@ export default function GoalsPage() {
     () =>
       (data?.leaderboard || [])
         .filter((r: any) => String(r?.funcionario_nome || '').trim() && String(r?.funcionario_nome || '').toLowerCase() !== 'sem funcionario')
-        .slice(0, 5)
         .map((r: any, index: number) => ({
           ...r,
           rank: index + 1,
@@ -78,13 +78,16 @@ export default function GoalsPage() {
         })),
     [data, riskData]
   );
+  const podium = useMemo(() => leaderboard.slice(0, 5), [leaderboard]);
+  const detailedLeaderboard = useMemo(() => leaderboard.slice(0, 15), [leaderboard]);
+  const motivation = useMemo(() => buildGoalsMotivation(detailedLeaderboard), [detailedLeaderboard]);
 
   return (
     <div>
       <AppNav title="Metas e Equipe" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Ranking comercial com clima de podio e visao segura para exibicao publica.</div>
+          <div className="muted">Tela de incentivo comercial com leitura segura para TV, sala de reuniao e acompanhamento diario.</div>
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
@@ -100,127 +103,219 @@ export default function GoalsPage() {
             <div className="panelHead">
               <div>
                 <h2 style={{ marginBottom: 4 }}>Top 5 Vendedores</h2>
-                <div className="muted">Ranking por vendas brutas, pronto para sala de reuniao e TV da equipe.</div>
+                <div className="muted">Ranking por vendas brutas, com leitura competitiva e margem protegida por padrao.</div>
               </div>
               <button className="btn" onClick={() => setShowMargin((current) => !current)}>
                 {showMargin ? 'Ocultar margem' : 'Mostrar margem'}
               </button>
             </div>
 
-            {!loading && !leaderboard.length ? (
+            {!loading && !podium.length ? (
               <EmptyState title="Sem vendedores ranqueados." detail="Nao houve base identificada suficiente para montar o podio da equipe." />
             ) : null}
 
-            {leaderboard.length ? (
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                  gap: 14,
-                  marginTop: 18,
-                  alignItems: 'end',
-                }}
-              >
-                {leaderboard.map((row: any) => {
-                  const heights: Record<number, number> = { 1: 220, 2: 190, 3: 176, 4: 150, 5: 140 };
-                  const accent: Record<number, string> = {
-                    1: '#fbbf24',
-                    2: '#cbd5e1',
-                    3: '#f59e0b',
-                    4: '#67e8f9',
-                    5: '#86efac',
-                  };
-                  return (
-                    <div
-                      key={row.id_funcionario}
-                      style={{
-                        minHeight: heights[row.rank] || 140,
-                        borderRadius: 24,
-                        padding: '18px 18px 16px',
-                        background: `linear-gradient(180deg, ${accent[row.rank]}22, rgba(255,255,255,0.04))`,
-                        border: `1px solid ${accent[row.rank]}55`,
-                        boxShadow: row.rank === 1 ? '0 18px 50px rgba(251,191,36,0.16)' : '0 12px 32px rgba(15,23,42,0.24)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'space-between',
-                        gap: 10,
-                      }}
-                    >
-                      <div>
-                        <div
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: 36,
-                            height: 36,
-                            borderRadius: 999,
-                            background: accent[row.rank],
-                            color: '#07121f',
-                            fontWeight: 800,
-                            marginBottom: 14,
-                          }}
-                        >
-                          {row.rank}
-                        </div>
-                        <div style={{ fontSize: row.rank === 1 ? 22 : 18, fontWeight: 800, lineHeight: 1.1 }}>{row.funcionario_nome}</div>
-                        <div className="muted" style={{ marginTop: 6 }}>
-                          {row.vendas} venda(s) fechadas
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: row.rank === 1 ? 28 : 22, fontWeight: 900 }}>{formatCurrency(row.faturamento)}</div>
-                        <div className="muted" style={{ marginTop: 6 }}>
-                          {showMargin ? `Margem ${formatCurrency(row.margem)}` : 'Margem protegida'}
-                        </div>
-                        <div style={{ marginTop: 10 }}>
-                          {row.scoreRisco >= 80 ? (
-                            <span className="badge critical">Risco alto</span>
-                          ) : row.scoreRisco >= 60 ? (
-                            <span className="badge warn">Risco moderado</span>
-                          ) : (
-                            <span className="badge info">Operacao estavel</span>
-                          )}
-                        </div>
-                      </div>
+            {podium.length ? (
+              <>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1.5fr 1fr',
+                    gap: 16,
+                    marginTop: 18,
+                    alignItems: 'stretch',
+                  }}
+                >
+                  <div
+                    style={{
+                      borderRadius: 24,
+                      padding: '22px 24px',
+                      background: 'linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04))',
+                      border: '1px solid rgba(255,255,255,0.10)',
+                    }}
+                  >
+                    <div style={{ fontSize: 28, fontWeight: 900, lineHeight: 1.05, maxWidth: 780 }}>{motivation.headline}</div>
+                    <div className="muted" style={{ marginTop: 10, fontSize: 15, maxWidth: 760 }}>
+                      {motivation.subheadline}
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                      gap: 10,
+                    }}
+                  >
+                    {motivation.indicators.map((item) => (
+                      <div
+                        key={item.label}
+                        style={{
+                          borderRadius: 18,
+                          padding: '14px 16px',
+                          background: 'rgba(7,18,31,0.42)',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                        }}
+                      >
+                        <div className="muted" style={{ fontSize: 12 }}>{item.label}</div>
+                        <div style={{ fontSize: 22, fontWeight: 800, marginTop: 4 }}>{item.value}</div>
+                        <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>{item.detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                    gap: 14,
+                    marginTop: 18,
+                    alignItems: 'end',
+                  }}
+                >
+                  {podium.map((row: any) => {
+                    const heights: Record<number, number> = { 1: 220, 2: 190, 3: 176, 4: 150, 5: 140 };
+                    const accent: Record<number, string> = {
+                      1: '#fbbf24',
+                      2: '#cbd5e1',
+                      3: '#f59e0b',
+                      4: '#67e8f9',
+                      5: '#86efac',
+                    };
+                    const badge = getSellerBadge(row, podium);
+                    return (
+                      <div
+                        key={row.id_funcionario}
+                        style={{
+                          minHeight: heights[row.rank] || 140,
+                          borderRadius: 24,
+                          padding: '18px 18px 16px',
+                          background: `linear-gradient(180deg, ${accent[row.rank]}22, rgba(255,255,255,0.04))`,
+                          border: `1px solid ${accent[row.rank]}55`,
+                          boxShadow: row.rank === 1 ? '0 18px 50px rgba(251,191,36,0.16)' : '0 12px 32px rgba(15,23,42,0.24)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 36,
+                              height: 36,
+                              borderRadius: 999,
+                              background: accent[row.rank],
+                              color: '#07121f',
+                              fontWeight: 800,
+                              marginBottom: 14,
+                            }}
+                          >
+                            {row.rank}
+                          </div>
+                          <div style={{ fontSize: row.rank === 1 ? 22 : 18, fontWeight: 800, lineHeight: 1.1 }}>{row.funcionario_nome}</div>
+                          <div className="muted" style={{ marginTop: 6 }}>
+                            {row.vendas} venda(s) fechadas
+                          </div>
+                          <div
+                            style={{
+                              marginTop: 12,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              borderRadius: 999,
+                              padding: '6px 10px',
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: '#07121f',
+                              background: badge.tone,
+                            }}
+                          >
+                            {badge.label}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: row.rank === 1 ? 28 : 22, fontWeight: 900 }}>{formatCurrency(row.faturamento)}</div>
+                          <div className="muted" style={{ marginTop: 6 }}>
+                            {showMargin ? `Margem ${formatCurrency(row.margem)}` : 'Margem protegida'}
+                          </div>
+                          <div style={{ marginTop: 10 }}>
+                            {row.scoreRisco >= 80 ? (
+                              <span className="badge critical">Risco alto</span>
+                            ) : row.scoreRisco >= 60 ? (
+                              <span className="badge warn">Risco moderado</span>
+                            ) : (
+                              <span className="badge info">Operacao estavel</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             ) : null}
           </div>
 
           <div className="card col-12">
             <div className="panelHead">
               <h2>Leaderboard detalhado</h2>
-              <span className="muted">Faturamento lidera. Margem segue protegida por padrao.</span>
+              <span className="muted">Ate 15 nomes validos para acompanhar a disputa completa da equipe.</span>
             </div>
-            {!loading && !leaderboard.length ? (
+            {!loading && !detailedLeaderboard.length ? (
               <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionario nao retornou registros no periodo." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Funcionario</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Risco medio</th><th>Status risco</th></tr></thead>
+              <thead><tr><th>Pos.</th><th>Funcionario</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Risco medio</th><th>Status risco</th></tr></thead>
               <tbody>
-                {leaderboard.map((r: any) => (
-                  <tr key={r.id_funcionario}>
-                    <td>{r.funcionario_nome}</td>
-                    <td>{r.vendas}</td>
-                    <td>{formatCurrency(r.faturamento)}</td>
-                    <td>{showMargin ? formatCurrency(r.margem) : 'Oculta'}</td>
-                    <td>{Number(r.scoreRisco || 0).toFixed(1)}</td>
-                    <td>
-                      {Number(r.scoreRisco || 0) >= 80 ? (
-                        <span className="badge critical">ALTO</span>
-                      ) : Number(r.scoreRisco || 0) >= 60 ? (
-                        <span className="badge warn">SUSPEITO</span>
-                      ) : (
-                        <span className="badge info">OK</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {detailedLeaderboard.map((r: any) => {
+                  const badge = getSellerBadge(r, detailedLeaderboard);
+                  return (
+                    <tr key={r.id_funcionario} style={r.rank <= 5 ? { background: 'rgba(251,191,36,0.06)' } : undefined}>
+                      <td><strong>{r.rank}º</strong></td>
+                      <td>{r.funcionario_nome}</td>
+                      <td>
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            borderRadius: 999,
+                            padding: '4px 10px',
+                            fontSize: 12,
+                            fontWeight: 700,
+                            background: `${badge.tone}22`,
+                            color: badge.tone,
+                            border: `1px solid ${badge.tone}55`,
+                          }}
+                        >
+                          {badge.label}
+                        </span>
+                      </td>
+                      <td>{r.vendas}</td>
+                      <td>{formatCurrency(r.faturamento)}</td>
+                      <td>{showMargin ? formatCurrency(r.margem) : 'Oculta'}</td>
+                      <td>{Number(r.scoreRisco || 0).toFixed(1)}</td>
+                      <td>
+                        {Number(r.scoreRisco || 0) >= 80 ? (
+                          <span className="badge critical">ALTO</span>
+                        ) : Number(r.scoreRisco || 0) >= 60 ? (
+                          <span className="badge warn">SUSPEITO</span>
+                        ) : (
+                          <span className="badge info">OK</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+            {!loading && detailedLeaderboard.length < 15 ? (
+              <div className="muted" style={{ marginTop: 10 }}>
+                Exibindo {detailedLeaderboard.length} vendedor(es) validos neste recorte.
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
