@@ -22,6 +22,7 @@ CREATE INDEX IF NOT EXISTS ix_payment_type_map_lookup
 
 INSERT INTO app.payment_type_map (id_empresa, tipo_forma, label, category, severity_hint, active)
 VALUES
+  (NULL, 0, 'CAIXA_LOCAL', 'DINHEIRO', 'INFO', true),
   (NULL, 1, 'DINHEIRO', 'DINHEIRO', 'INFO', true),
   (NULL, 2, 'CARTAO_CREDITO', 'CARTAO', 'INFO', true),
   (NULL, 3, 'CARTAO_DEBITO', 'CARTAO', 'INFO', true),
@@ -128,7 +129,10 @@ BEGIN
       ) AS id_db,
       COALESCE(
         etl.safe_numeric(s.payload->>'VALOR'),
+        etl.safe_numeric(s.payload->>'VALOR_PAGO'),
+        etl.safe_numeric(s.payload->>'VALORPAGO'),
         etl.safe_numeric(s.payload->>'VLR'),
+        etl.safe_numeric(s.payload->>'VLR_PAGO'),
         etl.safe_numeric(s.payload->>'VLRPAGO'),
         0
       )::numeric(18,2) AS valor,
@@ -151,6 +155,10 @@ BEGIN
         s.received_at > v_wm
         OR (s.dt_evento IS NOT NULL AND s.dt_evento >= now() - make_interval(days => etl.hot_window_days()))
       )
+  ), src_refs AS (
+    SELECT DISTINCT id_empresa, id_filial, referencia
+    FROM src_raw
+    WHERE referencia IS NOT NULL
   ), comp_ref AS (
     SELECT
       c.id_empresa,
@@ -166,6 +174,10 @@ BEGIN
         ORDER BY c.received_at DESC
       ) AS rn
     FROM stg.comprovantes c
+    JOIN src_refs r
+      ON r.id_empresa = c.id_empresa
+     AND r.id_filial = c.id_filial
+     AND r.referencia = etl.safe_int(c.payload->>'REFERENCIA')
     WHERE c.id_empresa = p_id_empresa
       AND etl.safe_int(c.payload->>'REFERENCIA') IS NOT NULL
   ), src AS (

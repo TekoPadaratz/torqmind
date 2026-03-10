@@ -14,7 +14,6 @@ import {
   formatCurrency,
   formatDateKey,
   formatDateKeyShort,
-  formatFilialLabel,
   formatTurnoLabel,
 } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
@@ -55,7 +54,7 @@ export default function FinancePage() {
         if (scope.id_filial) qs.set('id_filial', scope.id_filial);
         if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
 
-        const res = await apiGet(`/bi/finance/overview?${qs.toString()}`);
+        const res = await apiGet(`/bi/finance/overview?${qs.toString()}&include_operational=false`);
         setData(res);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar financeiro'));
@@ -95,18 +94,18 @@ export default function FinancePage() {
   );
   const paymentsKpis = data?.payments?.kpis || {};
   const paymentsAnomalies = data?.payments?.anomalies || [];
-  const openCash = data?.open_cash || {};
   const paymentMixPreview = (paymentsKpis?.mix || [])
     .slice(0, 3)
-    .map((item: any) => `${item.category}: ${formatCurrency(item.total_valor)}`)
+    .map((item: any) => `${item.category_label || item.label || item.category}: ${formatCurrency(item.total_valor)}`)
     .join(' · ');
+  const paymentsStatus = String(paymentsKpis?.source_status || 'unavailable');
 
   return (
     <div>
       <AppNav title="Financeiro" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Fluxo, pagamentos e exposição financeira com leitura executiva.</div>
+          <div className="muted">Posição financeira, aging e meios de pagamento tratados com foco executivo.</div>
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
@@ -134,57 +133,36 @@ export default function FinancePage() {
           </div>
 
           <div className="card kpi col-4">
-            <div className="label">Pagamentos (período)</div>
+            <div className="label">Meios de pagamento</div>
             <div className="value">{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
-            {!loading ? <div className="muted">{paymentMixPreview || 'Sem movimento financeiro conciliado no recorte.'}</div> : null}
+            {!loading ? <div className="muted">{paymentsKpis.summary || paymentMixPreview || 'Sem movimento financeiro conciliado no recorte.'}</div> : null}
           </div>
           <div className="card kpi col-4">
             <div className="label">Variação vs período anterior</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.delta_pct || 0).toFixed(1)}%`}</div>
           </div>
           <div className="card kpi col-4" id="payment-mapping">
-            <div className="label">Formas em validação</div>
+            <div className="label">Classificação pendente</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
           </div>
 
           <div className="card col-12">
-            <h2>Monitor de turnos</h2>
-            {!loading ? (
-              <>
-                <div className="muted" style={{ marginBottom: 8 }}>{openCash.summary || 'Monitoramento operacional indisponível.'}</div>
-                {openCash.source_status === 'ok' && openCash.items?.length ? (
-                  <table className="table compact">
-                    <thead><tr><th>Filial</th><th>Turno</th><th>Horas aberto</th><th>Severidade</th></tr></thead>
-                    <tbody>
-                      {openCash.items.map((item: any) => (
-                        <tr key={`${item.id_filial}-${item.id_turno}`}>
-                          <td>{formatFilialLabel(item.id_filial, item.filial_nome)}</td>
-                          <td>{formatTurnoLabel(item.id_turno)}</td>
-                          <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
-                          <td>{item.severity}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <EmptyState
-                    title={
-                      openCash.source_status === 'unavailable'
-                        ? 'Monitor de turnos em integração.'
-                        : openCash.source_status === 'unmapped'
-                          ? 'Fonte operacional ainda não mapeada.'
-                          : 'Nenhum turno em aberto acima do limite esperado.'
-                    }
-                    detail={openCash.summary || 'Assim que a base operacional estiver disponível, esta leitura passa a destacar turnos abertos e antigos.'}
-                  />
-                )}
-              </>
-            ) : null}
+            <h2>Fronteira do módulo</h2>
+            <EmptyState
+              title="Turnos e fechamento operacional seguem fora desta tela."
+              detail="Caixa, turnos e monitoramento operacional passam a ser tratados como domínio próprio, separado da posição financeira executiva."
+            />
           </div>
 
           <div className="card col-12 chartCard">
-            <h2>Mix de pagamentos por dia</h2>
-            {!loading && !paymentsByDay.length ? (
+            <h2>Meios de pagamento por dia</h2>
+            {!loading && paymentsStatus === 'value_gap' ? (
+              <EmptyState
+                title="Valores de pagamentos ainda em validação da carga."
+                detail="Os registros da operação chegaram, mas a leitura monetária ainda não está estável o bastante para decisão."
+              />
+            ) : null}
+            {!loading && paymentsStatus !== 'value_gap' && !paymentsByDay.length ? (
               <EmptyState title="Sem pagamentos recebidos no período." detail="A consolidação diária de pagamentos ainda não trouxe movimento para este recorte." />
             ) : null}
             <div className="chartWrap">
@@ -201,8 +179,14 @@ export default function FinancePage() {
           </div>
 
           <div className="card col-7">
-            <h2>Ranking por turno (pagamentos)</h2>
-            {!loading && !paymentsByTurno.length ? (
+            <h2>Distribuição por forma e turno</h2>
+            {!loading && paymentsStatus === 'value_gap' ? (
+              <EmptyState
+                title="A leitura por turno ainda não está confiável."
+                detail="Os vínculos chegaram da operação, mas o valor monetário ainda está em correção no pipeline."
+              />
+            ) : null}
+            {!loading && paymentsStatus !== 'value_gap' && !paymentsByTurno.length ? (
               <EmptyState title="Sem leitura por turno no período." detail="A fonte de pagamentos por turno ainda não retornou registros para o recorte selecionado." />
             ) : null}
             <table className="table compact">
@@ -222,8 +206,14 @@ export default function FinancePage() {
           </div>
 
           <div className="card col-5">
-            <h2>Anomalias de pagamento</h2>
-            {!loading && !paymentsAnomalies.length ? (
+            <h2>Sinais de pagamento fora do padrão</h2>
+            {!loading && paymentsStatus === 'value_gap' ? (
+              <EmptyState
+                title="Motor de anomalias aguardando valor monetário confiável."
+                detail="Enquanto a carga monetária de pagamentos estiver em correção, esta leitura fica em monitoramento técnico."
+              />
+            ) : null}
+            {!loading && paymentsStatus !== 'value_gap' && !paymentsAnomalies.length ? (
               <EmptyState title="Sem anomalias relevantes no período." detail="A leitura de pagamentos seguiu estável neste recorte." />
             ) : null}
             <table className="table compact">

@@ -175,10 +175,12 @@ def _payment_category_label(category: Any, label: Any = None) -> str:
     label_value = str(label or "").strip()
     if category_value and category_value != "DESCONHECIDO":
         return label_value or category_value.replace("_", " ").title()
+    if "TIPO_FORMA=0" in label_value.upper():
+        return "Caixa local"
     if "TIPO_FORMA=" in label_value.upper():
         raw_code = label_value.upper().split("TIPO_FORMA=", 1)[1].split(")", 1)[0].strip()
-        return f"Outras formas (tipo {raw_code})"
-    return "Forma em validação"
+        return f"Forma operacional em classificação (tipo {raw_code})"
+    return "Forma operacional em classificação"
 
 
 def _date_key(d: date) -> int:
@@ -1705,7 +1707,9 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
       SELECT
         COALESCE(SUM(total_valor),0)::numeric(18,2) AS total_valor,
         COALESCE(SUM(CASE WHEN category = 'DESCONHECIDO' THEN total_valor ELSE 0 END),0)::numeric(18,2) AS unknown_valor,
-        COALESCE(SUM(qtd_comprovantes),0)::int AS qtd_comprovantes
+        COALESCE(SUM(qtd_comprovantes),0)::int AS qtd_comprovantes,
+        COUNT(*)::int AS row_count,
+        COUNT(*) FILTER (WHERE total_valor > 0)::int AS nonzero_rows
       FROM mart.agg_pagamentos_diaria
       WHERE id_empresa = %s
         AND data_key BETWEEN %s AND %s
@@ -1742,17 +1746,41 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
     total_curr = float(curr.get("total_valor") or 0)
     total_prev = float(prev.get("total_valor") or 0)
     unknown_val = float(curr.get("unknown_valor") or 0)
+    row_count = int(curr.get("row_count") or 0)
+    nonzero_rows = int(curr.get("nonzero_rows") or 0)
     unknown_share = (unknown_val / total_curr * 100.0) if total_curr > 0 else 0.0
     delta_pct = ((total_curr - total_prev) / total_prev * 100.0) if total_prev > 0 else (100.0 if total_curr > 0 else 0.0)
+    mix_labeled = []
+    for item in mix:
+        row = dict(item)
+        row["category_label"] = _payment_category_label(row.get("category"), row.get("label"))
+        mix_labeled.append(row)
+
+    if row_count == 0:
+        source_status = "unavailable"
+        summary = "Sem movimento de formas de pagamento no recorte selecionado."
+    elif total_curr <= 0 and nonzero_rows == 0:
+        source_status = "value_gap"
+        summary = "Os registros de pagamento chegaram, mas os valores ainda precisam de validação da carga para leitura executiva."
+    elif unknown_share >= 40:
+        source_status = "partial"
+        summary = "A leitura financeira está disponível, mas parte relevante das formas ainda precisa de classificação comercial."
+    else:
+        source_status = "ok"
+        summary = "Leitura de meios de pagamento disponível para análise executiva."
 
     return {
         "total_valor": round(total_curr, 2),
         "total_valor_prev": round(total_prev, 2),
         "delta_pct": round(delta_pct, 2),
         "qtd_comprovantes": int(curr.get("qtd_comprovantes") or 0),
+        "row_count": row_count,
+        "nonzero_rows": nonzero_rows,
         "unknown_valor": round(unknown_val, 2),
         "unknown_share_pct": round(unknown_share, 2),
-        "mix": mix,
+        "source_status": source_status,
+        "summary": summary,
+        "mix": mix_labeled,
     }
 
 
@@ -1777,7 +1805,10 @@ def payments_by_day(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
       ORDER BY data_key, total_valor DESC
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["category_label"] = _payment_category_label(row.get("category"), row.get("label"))
+    return rows
 
 
 def payments_by_turno(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:

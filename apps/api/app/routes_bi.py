@@ -44,6 +44,7 @@ def dashboard_overview(
     dt_ini: date,
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
+    compact: bool = Query(False, description="Return only signals used by the executive home"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -51,6 +52,15 @@ def dashboard_overview(
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     as_of = dt_ref or dt_fim
+
+    if compact:
+        return {
+            "insights_generated": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=20),
+            "risk": {
+                "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
+                "window": repos_mart.risk_data_window(role, tenant, filial),
+            },
+        }
 
     return {
         "kpis": repos_mart.dashboard_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -269,6 +279,9 @@ def finance_overview(
     dt_ini: date,
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
+    include_series: bool = Query(True),
+    include_payments: bool = Query(True),
+    include_operational: bool = Query(True),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -277,13 +290,17 @@ def finance_overview(
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     as_of = dt_ref or dt_fim
 
-    return {
+    response = {
         "kpis": repos_mart.finance_kpis(role, tenant, filial, dt_ini, dt_fim),
-        "by_day": repos_mart.finance_series(role, tenant, filial, dt_ini, dt_fim),
         "aging": repos_mart.finance_aging_overview(role, tenant, filial, as_of=as_of),
-        "payments": repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=10),
-        "open_cash": repos_mart.open_cash_monitor(role, tenant, filial),
     }
+    if include_series:
+        response["by_day"] = repos_mart.finance_series(role, tenant, filial, dt_ini, dt_fim)
+    if include_payments:
+        response["payments"] = repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=10)
+    if include_operational:
+        response["open_cash"] = repos_mart.open_cash_monitor(role, tenant, filial)
+    return response
 
 
 @router.get("/payments/overview")

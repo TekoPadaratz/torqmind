@@ -152,31 +152,74 @@ function buildExecutiveSummary({
   fraudImpact,
   churnImpact,
   cashPressure,
+  churnTop,
+  financeData,
 }: {
   overview: any;
   fraudImpact: number;
   churnImpact: number;
   cashPressure: number;
+  churnTop: any[];
+  financeData: any;
 }) {
-  const bullets = Array.isArray(overview?.jarvis?.bullets) ? overview.jarvis.bullets.filter(Boolean) : [];
-  if (bullets.length) {
-    return {
-      title: 'Resumo IA',
-      summary: String(bullets[0]),
-      highlights: bullets.slice(1, 3),
-    };
-  }
+  const latestInsight = (overview?.insights_generated || [])[0];
+  const topCustomer = churnTop[0];
+  const overdueTitles = Number(financeData?.aging?.receber_titulos_vencidos || 0);
 
   const ordered = [
-    { label: 'fraude operacional', value: fraudImpact },
-    { label: 'retenção de clientes', value: churnImpact },
-    { label: 'pressão de caixa', value: cashPressure },
+    {
+      key: 'fraud',
+      label: 'fraude operacional',
+      value: fraudImpact,
+      summary:
+        fraudImpact > 0
+          ? 'A maior exposição financeira do período está concentrada em cancelamentos, descontos e recompras fora da curva.'
+          : 'Nenhum desvio crítico de fraude superou a linha de corte.',
+      highlight:
+        Number(overview?.risk?.kpis?.eventos_alto_risco || 0) > 0
+          ? `${Number(overview?.risk?.kpis?.eventos_alto_risco || 0)} eventos de alto risco já pedem auditoria prioritária.`
+          : 'A operação de risco seguiu estável no período.',
+    },
+    {
+      key: 'cash',
+      label: 'pressão de caixa',
+      value: cashPressure,
+      summary:
+        cashPressure > 0
+          ? 'Recebíveis e obrigações vencidas já pressionam a posição financeira e exigem cobrança com prioridade.'
+          : 'O caixa não mostrou concentração crítica de vencidos neste recorte.',
+      highlight:
+        overdueTitles > 0
+          ? `${overdueTitles} títulos vencidos merecem régua imediata de cobrança e renegociação.`
+          : 'A carteira vencida não concentrou novos focos críticos.',
+    },
+    {
+      key: 'churn',
+      label: 'recuperação de clientes',
+      value: churnImpact,
+      summary:
+        churnImpact > 0
+          ? 'A principal oportunidade comercial está na reativação dos clientes que já saíram do padrão de retorno.'
+          : 'Nenhum grupo material de churn apareceu acima do corte de atenção.',
+      highlight:
+        topCustomer?.cliente_nome
+          ? `${topCustomer.cliente_nome} lidera a fila de recuperação com maior impacto potencial.`
+          : 'A carteira elegível segue pronta para ação comercial do time.',
+    },
   ].sort((a, b) => b.value - a.value);
 
+  const primary = ordered[0];
+  const secondary = ordered[1];
+
+  const highlights = [primary.highlight, secondary.highlight];
+  if (latestInsight?.title) {
+    highlights.push(latestInsight.title);
+  }
+
   return {
-    title: 'Resumo IA',
-    summary: `A maior frente do período está em ${ordered[0].label}, seguida por ${ordered[1].label}.`,
-    highlights: ['Priorize o maior desvio financeiro primeiro.', 'Mantenha o segundo foco em plano de execução ainda hoje.'],
+    title: 'Briefing executivo',
+    summary: `${primary.summary} O segundo foco está em ${secondary.label}, com ação recomendada ainda hoje.`,
+    highlights: highlights.filter(Boolean).slice(0, 3),
   };
 }
 
@@ -223,9 +266,9 @@ export default function Dashboard() {
         if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
 
         const [overviewRes, churnRes, financeRes] = await Promise.all([
-          apiGet(`/bi/dashboard/overview?${qs.toString()}`),
+          apiGet(`/bi/dashboard/overview?${qs.toString()}&compact=true`),
           apiGet(`/bi/clients/churn?${qs.toString()}&min_score=40&limit=10`),
-          apiGet(`/bi/finance/overview?${qs.toString()}`),
+          apiGet(`/bi/finance/overview?${qs.toString()}&include_series=false&include_payments=false&include_operational=false`),
         ]);
 
         if (scope.id_filial) {
@@ -304,8 +347,10 @@ export default function Dashboard() {
         fraudImpact: fraudeImpacto,
         churnImpact: revenueAtRisk,
         cashPressure: caixaRisco,
+        churnTop,
+        financeData,
       }),
-    [overview, fraudeImpacto, revenueAtRisk, caixaRisco]
+    [overview, fraudeImpacto, revenueAtRisk, caixaRisco, churnTop, financeData]
   );
 
   return (

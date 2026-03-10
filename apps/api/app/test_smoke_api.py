@@ -133,6 +133,15 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("by_day", body)
         self.assertIn("risk", body)
 
+        status_compact, compact = self._request(
+            "/bi/dashboard/overview?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1&compact=true",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status_compact, 200)
+        self.assertIn("risk", compact)
+        self.assertIn("insights_generated", compact)
+        self.assertNotIn("payments", compact)
+
     def test_anonymous_retention_endpoint_returns_payload(self) -> None:
         status, body = self._request(
             "/bi/clients/retention-anonymous?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1",
@@ -252,7 +261,7 @@ class SmokeApiTest(unittest.TestCase):
 
     def test_payments_overview_endpoint_returns_contract(self) -> None:
         status, body = self._request(
-            "/bi/payments/overview?dt_ini=2025-08-01&dt_fim=2025-08-31&id_empresa=1",
+            "/bi/payments/overview?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1",
             headers={"Authorization": f"Bearer {self.token}"},
         )
         self.assertEqual(status, 200)
@@ -260,6 +269,9 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("by_day", body)
         self.assertIn("by_turno", body)
         self.assertIn("anomalies", body)
+        self.assertIn("source_status", body["kpis"])
+        self.assertIn("summary", body["kpis"])
+        self.assertIn(body["kpis"].get("source_status"), {"ok", "partial", "value_gap", "unavailable"})
 
     def test_micro_risk_endpoint(self) -> None:
         # Keep telegram disabled by default in smoke; endpoint must still succeed.
