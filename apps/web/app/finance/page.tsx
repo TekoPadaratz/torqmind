@@ -80,17 +80,26 @@ export default function FinancePage() {
   const hasFinance = useMemo(() => (data?.by_day || []).length > 0, [data]);
   const paymentsByDay = useMemo(
     () =>
-      (data?.payments?.by_day || []).map((r: any) => ({
+      (data?.payments?.by_day || [])
+        .filter((r: any) => Number(r.total_valor || 0) > 0)
+        .map((r: any) => ({
         data: formatDateKeyShort(r.data_key),
         valor: Number(r.total_valor || 0),
         category: r.category,
       })),
     [data]
   );
-  const paymentsByTurno = useMemo(() => data?.payments?.by_turno || [], [data]);
+  const paymentsByTurno = useMemo(
+    () => (data?.payments?.by_turno || []).filter((r: any) => Number(r.total_valor || 0) > 0),
+    [data]
+  );
   const paymentsKpis = data?.payments?.kpis || {};
   const paymentsAnomalies = data?.payments?.anomalies || [];
   const openCash = data?.open_cash || {};
+  const paymentMixPreview = (paymentsKpis?.mix || [])
+    .slice(0, 3)
+    .map((item: any) => `${item.category}: ${formatCurrency(item.total_valor)}`)
+    .join(' · ');
 
   return (
     <div>
@@ -127,6 +136,7 @@ export default function FinancePage() {
           <div className="card kpi col-4">
             <div className="label">Pagamentos (período)</div>
             <div className="value">{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
+            {!loading ? <div className="muted">{paymentMixPreview || 'Sem movimento financeiro conciliado no recorte.'}</div> : null}
           </div>
           <div className="card kpi col-4">
             <div className="label">Variação vs período anterior</div>

@@ -1126,7 +1126,7 @@ def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> D
         return {
             "source_status": "unavailable",
             "severity": "UNAVAILABLE",
-            "summary": "Dados de turno indisponiveis. Fonte ainda nao carregada para esta filial.",
+            "summary": "Dados de turnos ainda não chegaram da operação para esta filial.",
             "total_turnos": 0,
             "mapped_rows": 0,
             "total_open": 0,
@@ -1140,7 +1140,7 @@ def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> D
         return {
             "source_status": "unmapped",
             "severity": "UNAVAILABLE",
-            "summary": "Payload de turnos presente, mas abertura/fechamento ainda nao foi mapeado.",
+            "summary": "A base de turnos já chegou, mas abertura e fechamento ainda precisam de mapeamento.",
             "total_turnos": total_turnos,
             "mapped_rows": 0,
             "total_open": 0,
@@ -1154,10 +1154,10 @@ def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> D
         summary = "Nenhum turno em aberto acima do limite esperado."
         severity = "OK"
     elif critical_count > 0:
-        summary = f"{critical_count} turno(s) aberto(s) em situacao critica."
+        summary = f"{critical_count} turno(s) aberto(s) em situação crítica."
         severity = "CRITICAL"
     elif high_count > 0:
-        summary = f"{high_count} turno(s) aberto(s) em situacao de alto risco."
+        summary = f"{high_count} turno(s) aberto(s) em situação de alto risco."
         severity = "HIGH"
     elif warn_count > 0:
         summary = f"{warn_count} turno(s) aberto(s) acima do limite esperado."

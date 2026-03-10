@@ -110,6 +110,8 @@ h2 { margin: 0; font-size: 18px; }
   display:flex; align-items:center; justify-content:space-between;
   padding: 14px 16px; border-bottom: 1px solid var(--border);
   background: rgba(10, 13, 16, 0.64); position: sticky; top: 0; backdrop-filter: blur(10px);
+  gap: 16px;
+  z-index: 20;
 }
 .brand { display:flex; gap:10px; align-items:center; font-weight:700; }
 .brandWordmark { width: auto; height: 24px; object-fit: contain; }
@@ -123,6 +125,7 @@ h2 { margin: 0; font-size: 18px; }
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
 .navLinks {
@@ -159,6 +162,27 @@ h2 { margin: 0; font-size: 18px; }
   background: var(--accent-copper-soft);
   border-color: rgba(184, 115, 51, 0.75);
   opacity: 1;
+}
+
+.navToggle {
+  display: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.06);
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.navToggle span {
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--text);
 }
 
 /* ---------- Tables / Code blocks ---------- */
@@ -327,6 +351,63 @@ h2 { margin: 0; font-size: 18px; }
 @media (max-width: 1100px) {
   .actionsGrid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  .container {
+    padding: 18px;
+  }
+
+  .nav {
+    align-items: flex-start;
+  }
+
+  .brand {
+    flex-wrap: wrap;
+  }
+
+  .navToggle {
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .navRight {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding-top: 8px;
+  }
+
+  .navRightOpen {
+    display: flex;
+  }
+
+  .navLinks,
+  .navActions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .navlink,
+  .navActions .btn,
+  .navActions button.btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .scopeLine {
+    display: grid;
+    gap: 4px;
+  }
+
+  .table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
   }
 }
 

@@ -18,15 +18,28 @@ function buildChurnSignal(customer: any) {
   const expectedCycleDays = Number(reasons.expected_cycle_days || 0);
   const frequencyDrop = Number(reasons.frequency_drop || 0);
   const monetaryDrop = Number(reasons.monetary_drop || 0);
+  const compras30 = Number(customer?.compras_30d || 0);
+  const comprasPrev = Number(customer?.compras_60_30 || 0);
+  const faturamento30 = Number(customer?.faturamento_30d || 0);
+  const faturamentoPrev = Number(customer?.faturamento_60_30 || 0);
 
   if (expectedCycleDays > 0 && recencyDays > expectedCycleDays * 2) {
     return 'Não voltou no intervalo esperado para a rotina do posto.';
   }
+  if (comprasPrev > 0 && compras30 === 0) {
+    return 'Deixou de retornar no ciclo recente e pede reativação comercial.';
+  }
   if (frequencyDrop >= 15) {
     return 'Reduziu a frequência de visitas nas últimas semanas.';
   }
+  if (comprasPrev > compras30 && compras30 > 0) {
+    return 'Perdeu ritmo de compra em relação ao padrão anterior.';
+  }
   if (monetaryDrop >= 20) {
     return 'Perdeu força de ticket médio e merece reativação comercial.';
+  }
+  if (faturamentoPrev > faturamento30 && faturamento30 > 0) {
+    return 'Reduziu gasto no posto e merece abordagem personalizada.';
   }
   return customer?.recommendation || 'Vale retomar contato e monitorar a próxima visita.';
 }

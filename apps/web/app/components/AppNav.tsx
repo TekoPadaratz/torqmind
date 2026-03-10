@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import { useEffect, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { clearAuth } from '../lib/auth';
 import { apiGet } from '../lib/api';
 
@@ -49,10 +49,11 @@ export default function AppNav({
   userLabel?: string;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [unread, setUnread] = useState(0);
-  const params = new URLSearchParams(
-    typeof window === 'undefined' ? '' : window.location.search
-  );
+  const [menuOpen, setMenuOpen] = useState(false);
+  const params = useMemo(() => new URLSearchParams(searchParams.toString()), [searchParams]);
 
   useEffect(() => {
     const load = async () => {
@@ -70,6 +71,10 @@ export default function AppNav({
     };
     load();
   }, [params]);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname, searchParams]);
 
   const onLogout = () => {
     clearAuth();
@@ -100,7 +105,18 @@ export default function AppNav({
         {userLabel ? <span className="pill">{userLabel}</span> : null}
       </div>
 
-      <div className="navRight">
+      <button
+        className="navToggle"
+        onClick={() => setMenuOpen((current) => !current)}
+        aria-label={menuOpen ? 'Fechar navegação' : 'Abrir navegação'}
+        aria-expanded={menuOpen}
+      >
+        <span />
+        <span />
+        <span />
+      </button>
+
+      <div className={`navRight ${menuOpen ? 'navRightOpen' : ''}`}>
         <div className="navLinks">
           {hrefs.map((l) => (
             <NavLink key={l.path} path={l.path} href={l.href} label={l.label} />

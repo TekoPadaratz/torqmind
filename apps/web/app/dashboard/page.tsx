@@ -52,6 +52,77 @@ function insightDetailsPath(insightType: string) {
   return '/dashboard';
 }
 
+function actionHeadline(insight: any) {
+  const title = String(insight?.title || '').trim();
+  if (title.includes('Faturamento abaixo do ritmo')) {
+    return title.replace('Faturamento abaixo do ritmo', 'Recuperar ritmo comercial');
+  }
+  if (title.includes('Ticket médio em queda')) {
+    return title.replace('Ticket médio em queda', 'Reagir à queda de ticket médio');
+  }
+  if (title.includes('Cancel')) {
+    return 'Auditar risco operacional de cancelamentos';
+  }
+  return title || 'Atuar no principal desvio do período';
+}
+
+function fallbackActions({
+  fraudeImpacto,
+  revenueAtRisk,
+  caixaRisco,
+  openCash,
+}: {
+  fraudeImpacto: number;
+  revenueAtRisk: number;
+  caixaRisco: number;
+  openCash: any;
+}) {
+  const items: Array<{ title: string; severity: string; impact: number; evidence: string[]; checklist: string[]; href: string }> = [];
+
+  if (fraudeImpacto > 0) {
+    items.push({
+      title: 'Auditar descontos e cancelamentos fora da curva',
+      severity: 'HIGH',
+      impact: fraudeImpacto,
+      evidence: ['Fraude operacional ativa', 'Impacto estimado no período'],
+      checklist: ['Revisar os eventos mais recentes', 'Priorizar filial e colaborador com maior exposição', 'Validar desconto, cancelamento e nova venda'],
+      href: '/fraud',
+    });
+  }
+  if (revenueAtRisk > 0) {
+    items.push({
+      title: 'Ativar clientes com maior risco de saída',
+      severity: 'WARN',
+      impact: revenueAtRisk,
+      evidence: ['Receita em risco de churn', 'Clientes identificados já ranqueados'],
+      checklist: ['Priorizar os 10 maiores riscos', 'Rodar contato comercial em até 7 dias', 'Acompanhar retorno de frequência'],
+      href: '/customers',
+    });
+  }
+  if (caixaRisco > 0) {
+    items.push({
+      title: 'Cobrar e renegociar vencidos com maior concentração',
+      severity: 'WARN',
+      impact: caixaRisco,
+      evidence: ['Contas vencidas em aberto', 'Pressão em caixa e inadimplência'],
+      checklist: ['Separar top 5 maiores valores', 'Definir régua de cobrança', 'Monitorar concentração de recebíveis'],
+      href: '/finance',
+    });
+  }
+  if (String(openCash?.source_status) === 'ok' && Number(openCash?.total_open || 0) > 0) {
+    items.push({
+      title: 'Fechar turnos operacionais antigos',
+      severity: String(openCash?.severity || 'WARN'),
+      impact: Number(openCash?.total_open || 0),
+      evidence: ['Turnos em aberto', 'Leitura operacional de exceção'],
+      checklist: ['Validar turnos críticos primeiro', 'Conferir abertura e fechamento', 'Corrigir pendências antes do próximo turno'],
+      href: '/fraud',
+    });
+  }
+
+  return items.slice(0, 3);
+}
+
 export default function Dashboard() {
   const router = useRouter();
   const scope = useScopeQuery();
@@ -147,7 +218,9 @@ export default function Dashboard() {
   const revenueAtRisk = churnTop.reduce((acc: number, c: any) => acc + Number(c.revenue_at_risk_30d || 0), 0);
   const payments = overview?.payments || {};
   const paymentsKpis = payments?.kpis || {};
-  const paymentsByDay = (payments?.by_day || []).map((r: any) => ({
+  const paymentsByDay = (payments?.by_day || [])
+    .filter((r: any) => Number(r.total_valor || 0) > 0)
+    .map((r: any) => ({
     data: formatDateKeyShort(r.data_key),
     valor: Number(r.total_valor || 0),
   }));
@@ -174,6 +247,72 @@ export default function Dashboard() {
   const topActions = [...generatedInsights]
     .sort((a: any, b: any) => Number(b.impacto_estimado || 0) - Number(a.impacto_estimado || 0))
     .slice(0, 3);
+  const priorityActions = useMemo(() => {
+    if (topActions.length) {
+      return topActions.map((ins: any) => ({
+        key: `ins-${ins.id}`,
+        title: actionHeadline(ins),
+        severity: ins.severity,
+        impactLabel: formatCurrency(ins.impacto_estimado),
+        evidence: [
+          `Tipo: ${ins.insight_type || 'INSIGHT'}`,
+          `Data: ${formatDateOnly(ins.dt_ref)}`,
+          `Impacto: ${formatCurrency(ins.impacto_estimado)}`,
+        ],
+        checklist: (ins.ai_plan?.actions_today || []).length
+          ? ins.ai_plan.actions_today
+          : [ins.recommendation || 'Investigar, corrigir e acompanhar ainda hoje'],
+        detailsHref: detailsHref(insightDetailsPath(ins.insight_type), scope),
+      }));
+    }
+
+    return fallbackActions({ fraudeImpacto, revenueAtRisk, caixaRisco, openCash }).map((item, index) => ({
+      key: `fallback-${index}`,
+      title: item.title,
+      severity: item.severity,
+      impactLabel: item.href === '/fraud' && item.title.includes('Fechar turnos') ? `${item.impact} turno(s)` : formatCurrency(item.impact),
+      evidence: item.evidence,
+      checklist: item.checklist,
+      detailsHref: detailsHref(item.href, scope),
+    }));
+  }, [topActions, scope, fraudeImpacto, revenueAtRisk, caixaRisco, openCash]);
+  const displayedAlerts = useMemo(() => {
+    if (notifications.length) {
+      return notifications.map((item) => ({ ...item, synthetic: false }));
+    }
+    return generatedInsights
+      .filter((ins: any) => ['CRITICAL', 'HIGH'].includes(String(ins.severity || '').toUpperCase()))
+      .slice(0, 4)
+      .map((ins: any) => ({
+        id: `insight-${ins.id}`,
+        title: ins.title,
+        body: ins.message || ins.recommendation || 'Acompanhar desvio relevante do período.',
+        severity: ins.severity,
+        url: insightDetailsPath(ins.insight_type),
+        read_at: null,
+        synthetic: true,
+      }));
+  }, [notifications, generatedInsights]);
+  const recoveryFocus = useMemo(
+    () => [
+      {
+        label: 'Fraude evitável',
+        value: formatCurrency(fraudeImpacto),
+        detail: 'Desvios e eventos de risco com impacto estimado.',
+      },
+      {
+        label: 'Clientes a recuperar',
+        value: formatCurrency(revenueAtRisk),
+        detail: 'Receita potencial em risco nos próximos 30 dias.',
+      },
+      {
+        label: 'Caixa sob pressão',
+        value: formatCurrency(caixaRisco),
+        detail: 'Vencidos a receber e a pagar exigindo atenção.',
+      },
+    ],
+    [fraudeImpacto, revenueAtRisk, caixaRisco]
+  );
 
   const markNotificationRead = async (id: number) => {
     try {
@@ -335,32 +474,21 @@ export default function Dashboard() {
               <h2>Top 3 ações de hoje</h2>
               <span className="muted">Prioridades com impacto e encaminhamento objetivo</span>
             </div>
-            {!loading && !topActions.length ? (
+            {!loading && !priorityActions.length ? (
               <EmptyState title="Sem ações críticas no período." detail="O painel volta a priorizar automaticamente assim que surgir uma nova frente relevante." />
             ) : null}
             <div className="actionsGrid">
-              {topActions.map((ins: any) => {
-                const checklist = (ins.ai_plan?.actions_today || []).length
-                  ? ins.ai_plan.actions_today
-                  : [ins.recommendation || 'Investigar, corrigir e acompanhar ainda hoje'];
-                const evidence = [
-                  `Tipo: ${ins.insight_type || 'INSIGHT'}`,
-                  `Data: ${formatDateOnly(ins.dt_ref)}`,
-                  `Impacto: ${formatCurrency(ins.impacto_estimado)}`,
-                ];
-                const path = insightDetailsPath(ins.insight_type);
-                return (
-                  <ActionCard
-                    key={ins.id}
-                    title={ins.title}
-                    severity={ins.severity}
-                    impactLabel={formatCurrency(ins.impacto_estimado)}
-                    evidence={evidence}
-                    checklist={checklist}
-                    detailsHref={detailsHref(path, scope)}
-                  />
-                );
-              })}
+              {priorityActions.map((action: any) => (
+                <ActionCard
+                  key={action.key}
+                  title={action.title}
+                  severity={action.severity}
+                  impactLabel={action.impactLabel}
+                  evidence={action.evidence}
+                  checklist={action.checklist}
+                  detailsHref={action.detailsHref}
+                />
+              ))}
             </div>
           </div>
 
@@ -414,12 +542,20 @@ export default function Dashboard() {
 
           <div className="card col-12">
             <div className="panelHead">
-              <h2>Perda invisível</h2>
-              <Link className="btn" href={detailsHref('/scope', scope)}>Ver escopo</Link>
+              <h2>Oportunidades de recuperação</h2>
+              <Link className="btn" href={detailsHref('/dashboard', scope)}>Priorizar agora</Link>
             </div>
-            <p className="muted">
-              Bloco reservado para novas alavancas de ganho. Neste momento, priorize fraude, churn e caixa.
-            </p>
+            <div className="actionsGrid" style={{ marginTop: 0 }}>
+              {recoveryFocus.map((item) => (
+                <div className="actionCard" key={item.label}>
+                  <div className="actionHead">
+                    <strong>{item.label}</strong>
+                    <span className="actionImpact">{item.value}</span>
+                  </div>
+                  <div className="muted">{item.detail}</div>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="card col-12" id="alerts">
@@ -427,8 +563,8 @@ export default function Dashboard() {
               <h2>Alertas</h2>
               <span className="muted">Gerados automaticamente para riscos críticos</span>
             </div>
-            {!notifications.length ? <p className="muted">Sem alertas relevantes no período.</p> : null}
-            {notifications.map((n) => (
+            {!displayedAlerts.length ? <p className="muted">Sem alertas relevantes no período.</p> : null}
+            {displayedAlerts.map((n: any) => (
               <div className="insightItem" key={n.id}>
                 <div>
                   <RiskBadge level={n.severity} />
@@ -438,10 +574,12 @@ export default function Dashboard() {
                   <div className="muted">{n.body}</div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                     <Link className="btn" href={detailsHref(n.url || '/dashboard', scope)}>Abrir alerta</Link>
-                    {!n.read_at ? (
+                    {!n.synthetic && !n.read_at ? (
                       <button className="btn" onClick={() => markNotificationRead(n.id)}>Marcar como lido</button>
-                    ) : (
+                    ) : !n.synthetic ? (
                       <span className="pill">Lido</span>
+                    ) : (
+                      <span className="pill">Insight crítico</span>
                     )}
                   </div>
                 </div>

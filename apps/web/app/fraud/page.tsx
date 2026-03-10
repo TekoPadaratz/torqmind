@@ -92,6 +92,9 @@ export default function FraudPage() {
     scopeEndKey < maxRiskDateKey &&
     Number(data?.risk_kpis?.total_eventos || 0) === 0;
   const openCash = data?.open_cash || {};
+  const topEmployee = (data?.risk_top_employees || [])[0];
+  const topTurn = (data?.risk_by_turn_local || [])[0];
+  const topEvent = (data?.risk_last_events || [])[0];
 
   return (
     <div>
@@ -114,6 +117,53 @@ export default function FraudPage() {
           <div className="card kpi col-4 riskCard"><div className="label">Impacto de risco (R$)</div><div className="value">{loading ? '...' : formatCurrency(data?.risk_kpis?.impacto_total)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Eventos alto risco</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.eventos_alto_risco || 0)}</div></div>
           <div className="card kpi col-4 riskCard"><div className="label">Score médio</div><div className="value">{loading ? '...' : Number(data?.risk_kpis?.score_medio || 0).toFixed(1)}</div></div>
+
+          <div className="card col-4">
+            <h2>Maior foco do período</h2>
+            {topTurn ? (
+              <>
+                <div style={{ fontSize: 20, fontWeight: 800, marginTop: 8 }}>{topTurn.filial_label}</div>
+                <div className="muted" style={{ marginTop: 6 }}>{topTurn.turno_label} · {topTurn.local_label}</div>
+                <div style={{ marginTop: 12, fontSize: 24, fontWeight: 900 }}>{formatCurrency(topTurn.impacto_estimado)}</div>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  {topTurn.eventos} evento(s), sendo {topTurn.alto_risco} de alto risco.
+                </div>
+              </>
+            ) : (
+              <EmptyState title="Sem foco crítico destacado." detail="O período não trouxe concentração relevante por turno e canal." />
+            )}
+          </div>
+
+          <div className="card col-4">
+            <h2>Colaborador mais exposto</h2>
+            {topEmployee ? (
+              <>
+                <div style={{ fontSize: 20, fontWeight: 800, marginTop: 8 }}>{topEmployee.funcionario_nome}</div>
+                <div className="muted" style={{ marginTop: 6 }}>{topEmployee.eventos} evento(s) monitorado(s)</div>
+                <div style={{ marginTop: 12, fontSize: 24, fontWeight: 900 }}>{formatCurrency(topEmployee.impacto_estimado)}</div>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Score médio de {Number(topEmployee.score_medio || 0).toFixed(1)} no período.
+                </div>
+              </>
+            ) : (
+              <EmptyState title="Sem colaborador exposto." detail="Nenhum colaborador ultrapassou o limiar de atenção neste recorte." />
+            )}
+          </div>
+
+          <div className="card col-4">
+            <h2>Ponto crítico mais recente</h2>
+            {topEvent ? (
+              <>
+                <div style={{ fontSize: 18, fontWeight: 800, marginTop: 8 }}>{topEvent.event_label}</div>
+                <div className="muted" style={{ marginTop: 6 }}>{topEvent.filial_label} · {formatDateTime(topEvent.data)}</div>
+                <div style={{ marginTop: 12, fontSize: 24, fontWeight: 900 }}>{formatCurrency(topEvent.impacto_estimado)}</div>
+                <div className="muted" style={{ marginTop: 6 }}>{topEvent.reason_summary}</div>
+              </>
+            ) : (
+              <EmptyState title="Sem ponto crítico recente." detail="Não houve evento de risco com destaque imediato neste recorte." />
+            )}
+          </div>
+
           <div className="card col-12">
             <h2>Monitor de turnos</h2>
             {loading ? null : (
