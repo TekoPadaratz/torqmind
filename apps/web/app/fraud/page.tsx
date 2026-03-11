@@ -17,6 +17,7 @@ import {
   formatDateKeyShort,
   formatDateTime,
   formatFilialLabel,
+  formatHoursLabel,
   formatTurnoLabel,
 } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
@@ -177,8 +178,8 @@ export default function FraudPage() {
                         <tr key={`${item.id_filial}-${item.id_turno}`}>
                           <td>{formatFilialLabel(item.id_filial, item.filial_nome)}</td>
                           <td>{formatTurnoLabel(item.id_turno)}</td>
-                          <td>{Number(item.open_hours || 0).toFixed(1)}h</td>
-                          <td>{item.severity}</td>
+                          <td>{formatHoursLabel(item.horas_aberto)}</td>
+                          <td>{item.status_label || item.severity}</td>
                         </tr>
                       ))}
                     </tbody>

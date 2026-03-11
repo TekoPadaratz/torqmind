@@ -133,7 +133,7 @@ export default function PricingPage() {
       <AppNav title="Preço da Concorrência" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Simulação competitiva por filial, focada apenas em combustíveis.</div>
+          <div className="muted">Simulação competitiva por filial, focada em gasolina, etanol, diesel e demais combustíveis relevantes da operação.</div>
         </div>
         <div className="card toolbar">
           <div>
@@ -174,7 +174,7 @@ export default function PricingPage() {
           <div className="card col-12">
             <h2>Preço por combustível: posto x concorrência</h2>
             <p className="muted" style={{ marginTop: 8 }}>
-              O gerente informa o preço da concorrência e o sistema simula os impactos para os próximos 10 dias, por combustível.
+              O gerente informa o preço da concorrência e o sistema projeta o impacto nos próximos 10 dias para cada combustível relevante da filial.
             </p>
             {!loading && !items.length ? (
               <EmptyState

@@ -149,77 +149,21 @@ function buildOperationalFocus({
 
 function buildExecutiveSummary({
   overview,
-  fraudImpact,
-  churnImpact,
-  cashPressure,
-  churnTop,
-  financeData,
 }: {
   overview: any;
-  fraudImpact: number;
-  churnImpact: number;
-  cashPressure: number;
-  churnTop: any[];
-  financeData: any;
 }) {
-  const latestInsight = (overview?.insights_generated || [])[0];
-  const topCustomer = churnTop[0];
-  const overdueTitles = Number(financeData?.aging?.receber_titulos_vencidos || 0);
-
-  const ordered = [
-    {
-      key: 'fraud',
-      label: 'fraude operacional',
-      value: fraudImpact,
-      summary:
-        fraudImpact > 0
-          ? 'A maior exposição financeira do período está concentrada em cancelamentos, descontos e recompras fora da curva.'
-          : 'Nenhum desvio crítico de fraude superou a linha de corte.',
-      highlight:
-        Number(overview?.risk?.kpis?.eventos_alto_risco || 0) > 0
-          ? `${Number(overview?.risk?.kpis?.eventos_alto_risco || 0)} eventos de alto risco já pedem auditoria prioritária.`
-          : 'A operação de risco seguiu estável no período.',
-    },
-    {
-      key: 'cash',
-      label: 'pressão de caixa',
-      value: cashPressure,
-      summary:
-        cashPressure > 0
-          ? 'Recebíveis e obrigações vencidas já pressionam a posição financeira e exigem cobrança com prioridade.'
-          : 'O caixa não mostrou concentração crítica de vencidos neste recorte.',
-      highlight:
-        overdueTitles > 0
-          ? `${overdueTitles} títulos vencidos merecem régua imediata de cobrança e renegociação.`
-          : 'A carteira vencida não concentrou novos focos críticos.',
-    },
-    {
-      key: 'churn',
-      label: 'recuperação de clientes',
-      value: churnImpact,
-      summary:
-        churnImpact > 0
-          ? 'A principal oportunidade comercial está na reativação dos clientes que já saíram do padrão de retorno.'
-          : 'Nenhum grupo material de churn apareceu acima do corte de atenção.',
-      highlight:
-        topCustomer?.cliente_nome
-          ? `${topCustomer.cliente_nome} lidera a fila de recuperação com maior impacto potencial.`
-          : 'A carteira elegível segue pronta para ação comercial do time.',
-    },
-  ].sort((a, b) => b.value - a.value);
-
-  const primary = ordered[0];
-  const secondary = ordered[1];
-
-  const highlights = [primary.highlight, secondary.highlight];
-  if (latestInsight?.title) {
-    highlights.push(latestInsight.title);
-  }
-
+  const copiloto = overview?.jarvis || {};
   return {
-    title: 'Briefing executivo',
-    summary: `${primary.summary} O segundo foco está em ${secondary.label}, com ação recomendada ainda hoje.`,
-    highlights: highlights.filter(Boolean).slice(0, 3),
+    title: copiloto.title || 'Copiloto operacional',
+    headline: copiloto.headline || 'Operação estável no recorte atual.',
+    summary: copiloto.summary || 'Sem foco crítico acima da linha de corte.',
+    impactLabel: copiloto.impact_label || 'Sem exposição crítica material',
+    action: copiloto.action || 'Manter a rotina de acompanhamento diário.',
+    priority: copiloto.priority || 'Acompanhar',
+    evidence: copiloto.evidence || [],
+    highlights: copiloto.highlights || [],
+    secondaryFocus: copiloto.secondary_focus || [],
+    status: copiloto.status || 'ok',
   };
 }
 
@@ -294,7 +238,6 @@ export default function Dashboard() {
 
   const riskKpis = overview?.risk?.kpis || {};
   const riskWindow = overview?.risk?.window || {};
-  const generatedInsights = overview?.insights_generated || [];
   const churnTop = churnData?.top_risk || [];
   const financeAging = financeData?.aging || {};
 
@@ -344,13 +287,8 @@ export default function Dashboard() {
     () =>
       buildExecutiveSummary({
         overview,
-        fraudImpact: fraudeImpacto,
-        churnImpact: revenueAtRisk,
-        cashPressure: caixaRisco,
-        churnTop,
-        financeData,
       }),
-    [overview, fraudeImpacto, revenueAtRisk, caixaRisco, churnTop, financeData]
+    [overview]
   );
 
   return (
@@ -444,11 +382,31 @@ export default function Dashboard() {
 
           <div className="card aiSummaryCard">
             <div className="sectionEyebrow">{aiSummary.title}</div>
-            <h2>Leitura executiva do período</h2>
+            <h2>{aiSummary.headline}</h2>
             {loading ? <Skeleton height={180} /> : null}
             {!loading ? (
               <>
+                <div className="priorityTop">
+                  <RiskBadge level={String(aiSummary.status || 'ok').toUpperCase()} />
+                  <span className="priorityImpact">{aiSummary.impactLabel}</span>
+                </div>
                 <p className="aiSummaryLead">{aiSummary.summary}</p>
+                <div className="actionCard" style={{ marginTop: 4 }}>
+                  <div className="actionHead">
+                    <div className="focusLabel">Ação recomendada</div>
+                    <strong>{aiSummary.action}</strong>
+                  </div>
+                  <div className="muted">Prioridade: {aiSummary.priority}</div>
+                  {aiSummary.evidence?.length ? (
+                    <div className="evidenceRow">
+                      {aiSummary.evidence.map((item: string, idx: number) => (
+                        <span key={`${item}-${idx}`} className="evidenceChip">
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
                 <div className="aiHighlights">
                   {aiSummary.highlights.map((item: string, idx: number) => (
                     <div className="aiHighlight" key={`${item}-${idx}`}>
@@ -456,10 +414,14 @@ export default function Dashboard() {
                     </div>
                   ))}
                 </div>
-                {generatedInsights[0]?.title ? (
+                {aiSummary.secondaryFocus?.length ? (
                   <div className="aiSummaryFooter">
-                    <span>Último sinal relevante</span>
-                    <strong>{generatedInsights[0].title}</strong>
+                    <span>Próximos focos</span>
+                    {aiSummary.secondaryFocus.map((item: any, idx: number) => (
+                      <strong key={`${item.label}-${idx}`}>
+                        {item.label} · {item.impactLabel} · {item.priority}
+                      </strong>
+                    ))}
                   </div>
                 ) : null}
               </>

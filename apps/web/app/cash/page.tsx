@@ -97,7 +97,7 @@ export default function CashPage() {
             borderColor: 'rgba(96, 165, 250, 0.22)',
           }}
         >
-          <div className="muted">Leitura operacional do caixa em tempo real: abertura, fechamento, vendas, cancelamentos e alertas prontos para ação.</div>
+          <div className="muted">Painel operacional de caixa com foco em turnos abertos, fechamento pendente, vendas expostas e cancelamentos.</div>
           {!loading ? <div style={{ marginTop: 10, fontSize: 18, fontWeight: 700 }}>{data?.summary}</div> : null}
         </div>
 
@@ -136,48 +136,57 @@ export default function CashPage() {
               />
             ) : null}
             {openBoxes.length ? (
-              <div style={{ display: 'grid', gap: 12 }}>
+              <div className="cashBoxList">
                 {openBoxes.map((item: any) => {
                   const tone = severityTone(item.severity);
                   return (
                     <div
                       key={`${item.id_filial}-${item.id_turno}`}
+                      className="cashBoxCard"
                       style={{
-                        padding: 16,
-                        borderRadius: 18,
                         border: `1px solid ${tone.border}`,
                         background: tone.bg,
                       }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                        <div>
-                          <div style={{ fontSize: 18, fontWeight: 700 }}>{formatFilialLabel(item.id_filial, item.filial_nome)}</div>
-                          <div className="muted" style={{ marginTop: 4 }}>
+                      <div className="cashBoxHead">
+                        <div className="cashBoxIdentity">
+                          <div className="cashBoxTitle">{formatFilialLabel(item.id_filial, item.filial_nome)}</div>
+                          <div className="muted">
                             Caixa {item.id_turno} • {item.usuario_label || item.usuario_nome || 'Operador não identificado'}
                           </div>
                         </div>
                         <div className="pill" style={{ borderColor: tone.border, background: 'transparent' }}>{tone.label}</div>
                       </div>
-                      <div className="bi-grid" style={{ marginTop: 14 }}>
-                        <div className="col-3">
+                      <div className="cashBoxMetrics">
+                        <div className="cashMetric cashMetricWide">
                           <div className="label">Abertura</div>
-                          <div style={{ fontWeight: 600 }}>{formatDateTime(item.abertura_ts)}</div>
+                          <div className="cashMetricValue">{formatDateTime(item.abertura_ts)}</div>
                         </div>
-                        <div className="col-2">
+                        <div className="cashMetric">
                           <div className="label">Tempo aberto</div>
-                          <div style={{ fontWeight: 600 }}>{formatHoursLabel(item.horas_aberto)}</div>
+                          <div className="cashMetricValue">{formatHoursLabel(item.horas_aberto)}</div>
                         </div>
-                        <div className="col-3">
+                        <div className="cashMetric">
+                          <div className="label">Status</div>
+                          <div className="cashMetricValue">{item.status_label || tone.label}</div>
+                        </div>
+                      </div>
+                      <div className="cashBoxMetrics cashBoxMetricsSecondary">
+                        <div className="cashMetric">
                           <div className="label">Total vendido</div>
-                          <div style={{ fontWeight: 600 }}>{formatCurrency(item.total_vendas)}</div>
+                          <div className="cashMetricValue">{formatCurrency(item.total_vendas)}</div>
                         </div>
-                        <div className="col-2">
+                        <div className="cashMetric">
+                          <div className="label">Pagamentos</div>
+                          <div className="cashMetricValue">{formatCurrency(item.total_pagamentos)}</div>
+                        </div>
+                        <div className="cashMetric">
                           <div className="label">Cancelamentos</div>
-                          <div style={{ fontWeight: 600 }}>{formatCurrency(item.total_cancelamentos)}</div>
+                          <div className="cashMetricValue">{formatCurrency(item.total_cancelamentos)}</div>
                         </div>
-                        <div className="col-2">
+                        <div className="cashMetric">
                           <div className="label">Vendas válidas</div>
-                          <div style={{ fontWeight: 600 }}>{Number(item.qtd_vendas || 0)}</div>
+                          <div className="cashMetricValue">{Number(item.qtd_vendas || 0)}</div>
                         </div>
                       </div>
                     </div>

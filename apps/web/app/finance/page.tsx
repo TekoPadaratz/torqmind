@@ -94,6 +94,10 @@ export default function FinancePage() {
   );
   const paymentsKpis = data?.payments?.kpis || {};
   const paymentsAnomalies = data?.payments?.anomalies || [];
+  const aging = data?.aging || {};
+  const receberVencido = Number(aging.receber_total_vencido || 0);
+  const pagarVencido = Number(aging.pagar_total_vencido || 0);
+  const cashPressure = receberVencido + pagarVencido;
   const paymentMixPreview = (paymentsKpis?.mix || [])
     .slice(0, 3)
     .map((item: any) => `${item.category_label || item.label || item.category}: ${formatCurrency(item.total_valor)}`)
@@ -105,15 +109,47 @@ export default function FinancePage() {
       <AppNav title="Financeiro" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Posição financeira, aging e meios de pagamento tratados com foco executivo.</div>
+          <div className="muted">Posição financeira, vencimentos e meios de pagamento organizados para leitura imediata do dono.</div>
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
-          <div className="card kpi col-3"><div className="label">Receber total</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.receber_total)}</div></div>
-          <div className="card kpi col-3"><div className="label">Receber aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.receber_aberto)}</div></div>
-          <div className="card kpi col-3"><div className="label">Pagar total</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.pagar_total)}</div></div>
-          <div className="card kpi col-3"><div className="label">Pagar aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.pagar_aberto)}</div></div>
+          <div className="card kpi col-3"><div className="label">Receber em aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.receber_aberto)}</div></div>
+          <div className="card kpi col-3 riskCard"><div className="label">Receber vencido</div><div className="value">{loading ? '...' : formatCurrency(receberVencido)}</div></div>
+          <div className="card kpi col-3"><div className="label">Pagar em aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.pagar_aberto)}</div></div>
+          <div className="card kpi col-3 riskCard"><div className="label">Pagar vencido</div><div className="value">{loading ? '...' : formatCurrency(pagarVencido)}</div></div>
+
+          <div className="card col-4">
+            <h2>Pressão imediata de caixa</h2>
+            <div style={{ marginTop: 12, fontSize: 28, fontWeight: 800 }}>{loading ? '...' : formatCurrency(cashPressure)}</div>
+            {!loading ? (
+              <div className="muted" style={{ marginTop: 8 }}>
+                {cashPressure > 0
+                  ? 'Vencidos que já exigem cobrança, renegociação ou reordenação de pagamentos.'
+                  : 'Sem concentração crítica de vencidos no recorte analisado.'}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card col-4">
+            <h2>Concentração da carteira</h2>
+            <div style={{ marginTop: 12, fontSize: 28, fontWeight: 800 }}>
+              {loading ? '...' : `${Number(aging.top5_concentration_pct || 0).toFixed(1)}%`}
+            </div>
+            {!loading ? (
+              <div className="muted" style={{ marginTop: 8 }}>
+                {Number(aging.top5_concentration_pct || 0) > 0
+                  ? 'Os 5 maiores títulos concentram esse percentual da exposição atual.'
+                  : 'A carteira segue distribuída, sem concentração material no topo.'}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card col-4">
+            <h2>Leitura dos pagamentos</h2>
+            <div style={{ marginTop: 12, fontSize: 28, fontWeight: 800 }}>{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
+            {!loading ? <div className="muted" style={{ marginTop: 8 }}>{paymentsKpis.summary || paymentMixPreview || 'Sem movimento financeiro conciliado no recorte.'}</div> : null}
+          </div>
 
           <div className="card col-12 chartCard">
             <h2>Fluxo por vencimento</h2>
@@ -133,25 +169,14 @@ export default function FinancePage() {
           </div>
 
           <div className="card kpi col-4">
-            <div className="label">Meios de pagamento</div>
-            <div className="value">{loading ? '...' : formatCurrency(paymentsKpis.total_valor)}</div>
-            {!loading ? <div className="muted">{paymentsKpis.summary || paymentMixPreview || 'Sem movimento financeiro conciliado no recorte.'}</div> : null}
-          </div>
-          <div className="card kpi col-4">
-            <div className="label">Variação vs período anterior</div>
+            <div className="label">Variação dos pagamentos</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.delta_pct || 0).toFixed(1)}%`}</div>
+            {!loading ? <div className="muted">Comparação com o período imediatamente anterior.</div> : null}
           </div>
           <div className="card kpi col-4" id="payment-mapping">
-            <div className="label">Classificação pendente</div>
+            <div className="label">Classificação em validação</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
-          </div>
-
-          <div className="card col-12">
-            <h2>Fronteira do módulo</h2>
-            <EmptyState
-              title="Turnos e fechamento operacional seguem fora desta tela."
-              detail="Caixa, turnos e monitoramento operacional passam a ser tratados como domínio próprio, separado da posição financeira executiva."
-            />
+            {!loading ? <div className="muted">Percentual que ainda depende de taxonomia comercial mais precisa.</div> : null}
           </div>
 
           <div className="card col-12 chartCard">

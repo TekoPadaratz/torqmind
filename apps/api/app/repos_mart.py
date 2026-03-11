@@ -31,6 +31,17 @@ EVENT_TYPE_LABELS = {
 }
 
 
+def _format_brl(value: Any) -> str:
+    return f"R$ {float(value or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _normalized_text_expression(expr: str) -> str:
+    return (
+        f"TRANSLATE(UPPER(COALESCE(NULLIF({expr}, ''), '')), "
+        "'ÁÀÃÂÉÈÊÍÌÎÓÒÕÔÚÙÛÇ', 'AAAAEEEIIIOOOOUUUC')"
+    )
+
+
 def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
     nome = str(filial_nome or "").strip()
     if nome:
@@ -95,7 +106,7 @@ def _humanize_risk_reasons(reasons: Any, event_type: Any) -> List[str]:
 
 
 def _group_name_expression(group_alias: str, product_alias: str) -> str:
-    normalized = f"UPPER(COALESCE(NULLIF({group_alias}.nome, ''), NULLIF({product_alias}.nome, ''), ''))"
+    normalized = _normalized_text_expression(f"COALESCE(NULLIF({group_alias}.nome, ''), NULLIF({product_alias}.nome, ''), '')")
     return f"""
       CASE
         WHEN {normalized} LIKE '%%GASOL%%'
@@ -125,14 +136,21 @@ def _group_name_expression(group_alias: str, product_alias: str) -> str:
 
 
 def _fuel_filter_expression(group_alias: str, product_alias: str) -> str:
-    product_name = f"UPPER(COALESCE(NULLIF({product_alias}.nome, ''), ''))"
-    group_name = f"UPPER(COALESCE(NULLIF({group_alias}.nome, ''), ''))"
+    product_name = _normalized_text_expression(f"{product_alias}.nome")
+    group_name = _normalized_text_expression(f"{group_alias}.nome")
     return f"""
       (
         (
           {product_name} LIKE 'GASOL%%'
+          OR {product_name} LIKE '%% GASOL%%'
           OR {product_name} LIKE 'ETANOL%%'
+          OR {product_name} LIKE '%% ETANOL%%'
           OR {product_name} LIKE 'DIESEL%%'
+          OR {product_name} LIKE '%% DIESEL%%'
+          OR {product_name} LIKE 'OLEO DIESEL S10%%'
+          OR {product_name} LIKE 'OLEO DIESEL S500%%'
+          OR {product_name} LIKE 'OLEO DIESEL BS500%%'
+          OR {product_name} LIKE '%% BS500%%'
           OR {product_name} LIKE 'GNV%%'
           OR (
             {group_name} LIKE '%%COMBUST%%'
@@ -146,17 +164,32 @@ def _fuel_filter_expression(group_alias: str, product_alias: str) -> str:
         )
         AND {product_name} NOT LIKE 'ADITIVO%%'
         AND {product_name} NOT LIKE '%% ADITIVO%%'
+        AND {product_name} NOT LIKE '%% INJECTOR %%'
+        AND {product_name} NOT LIKE '%% FUEL TREATMENT%%'
         AND {product_name} NOT LIKE '%%BOMBA%%'
         AND {product_name} NOT LIKE '%%FILTRO%%'
         AND {product_name} NOT LIKE '%%KIT%%'
         AND {product_name} NOT LIKE '%%MANGUEIRA%%'
         AND {product_name} NOT LIKE '%%BICO%%'
         AND {product_name} NOT LIKE '%%MEDIDORA%%'
+        AND {product_name} NOT LIKE '%%LEITOR%%'
+        AND {product_name} NOT LIKE '%%CODIGO%%'
+        AND {product_name} NOT LIKE '%%BARRAS%%'
+        AND {product_name} NOT LIKE '%%BEMATECH%%'
         AND {product_name} NOT LIKE '%%ARLA%%'
-        AND {product_name} NOT LIKE '%%LUB%%'
-        AND {product_name} NOT LIKE '%%ÓLEO%%'
-        AND {product_name} NOT LIKE '%%OLEO%%'
+        AND {product_name} NOT LIKE '%%LUBRIFICANTE%%'
         AND {product_name} NOT LIKE '%%FLUID%%'
+        AND {product_name} NOT LIKE '%%15W%%'
+        AND {product_name} NOT LIKE '%%10W%%'
+        AND {product_name} NOT LIKE '%%5W%%'
+        AND {product_name} NOT LIKE '%%200ML%%'
+        AND {product_name} NOT LIKE '%%236ML%%'
+        AND {product_name} NOT LIKE '%%250ML%%'
+        AND {product_name} NOT LIKE '%%354ML%%'
+        AND {product_name} NOT LIKE '%%500ML%%'
+        AND {product_name} NOT LIKE '%% 1L%%'
+        AND {product_name} NOT LIKE '%% 5L%%'
+        AND {product_name} NOT LIKE '%% 20L%%'
       )
     """
 
@@ -1801,7 +1834,9 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
 
     for row in open_rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
-        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or "Operador não identificado"
+        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or (
+            f"Operador {int(row.get('id_usuario'))}" if row.get("id_usuario") is not None else "Operador não identificado"
+        )
         row["alert_message"] = (
             f"O caixa {row.get('id_turno')} da {row['filial_label']} está aberto há {row.get('horas_aberto') or 0} horas."
         )
@@ -1854,7 +1889,9 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
 
     for row in alert_rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
-        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or "Operador não identificado"
+        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or (
+            f"Operador {int(row.get('id_usuario'))}" if row.get("id_usuario") is not None else "Operador não identificado"
+        )
 
     if total_turnos == 0:
         source_status = "unavailable"
@@ -2016,112 +2053,192 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
 # ========================
 
 def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref: date) -> Dict[str, Any]:
-    """Return a short executive briefing.
+    """Return a premium rule-based operational copilot for the home."""
 
-    PT-BR: Ainda não é LLM/ML (isso vem depois). Aqui já entregamos inteligência operacional
-    com regras simples e objetivas.
-    """
+    dt_ini = dt_ref - timedelta(days=6)
+    risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    risk_focus = (risk_by_turn_local(role, id_empresa, id_filial, dt_ini, dt_ref, limit=1) or [None])[0]
+    cash = cash_overview(role, id_empresa, id_filial)
+    finance = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
+    churn = customers_churn_diamond(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=5)
+    pricing = (
+        competitor_pricing_overview(role, id_empresa, id_filial, dt_ini=dt_ini, dt_fim=dt_ref, days_simulation=10)
+        if id_filial is not None
+        else None
+    )
 
-    d0 = dt_ref
-    d1 = dt_ref - timedelta(days=1)
+    cash_kpis = cash.get("kpis") or {}
+    receiving_overdue = float(finance.get("receber_total_vencido") or 0)
+    paying_overdue = float(finance.get("pagar_total_vencido") or 0)
+    overdue_pressure = receiving_overdue + paying_overdue
+    top_churn = churn[0] if churn else None
+    churn_impact = sum(float(item.get("revenue_at_risk_30d") or 0) for item in churn[:5])
+    pricing_summary = pricing.get("summary") if isinstance(pricing, dict) else {}
+    pricing_items = pricing.get("items") if isinstance(pricing, dict) else []
+    pricing_impact = float(pricing_summary.get("total_lost_if_no_change_10d") or 0)
+    pricing_focus = None
+    if pricing_items:
+        pricing_focus = max(
+            pricing_items,
+            key=lambda item: float(item.get("scenario_no_change", {}).get("lost_revenue_10d") or 0),
+        )
 
-    k0 = _date_key(d0)
-    k1 = _date_key(d1)
+    candidates: List[Dict[str, Any]] = []
 
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    if int(cash_kpis.get("caixas_criticos") or 0) > 0:
+        focus_box = (cash.get("open_boxes") or [None])[0]
+        candidates.append(
+            {
+                "kind": "cash",
+                "weight": 1000 + float(cash_kpis.get("total_vendas_abertas") or 0),
+                "impact_value": float(cash_kpis.get("total_vendas_abertas") or 0),
+                "priority": "Imediatamente",
+                "headline": f"Revisar imediatamente {int(cash_kpis.get('caixas_criticos') or 0)} caixa(s) aberto(s) fora da janela segura.",
+                "cause": "Caixa aberto há mais de 24 horas aumenta risco operacional, posterga fechamento e expõe cancelamentos sem revisão.",
+                "action": "Validar fechamento do caixa mais antigo, confirmar operador responsável e conciliar vendas e cancelamentos ainda hoje.",
+                "evidence": [
+                    _filial_label(focus_box.get("id_filial"), focus_box.get("filial_nome")) if focus_box else None,
+                    f"Turno {focus_box.get('id_turno')}" if focus_box and focus_box.get("id_turno") is not None else None,
+                    f"{round(float(focus_box.get('horas_aberto') or 0), 1)}h aberto" if focus_box else None,
+                    f"Vendas expostas: {_format_brl(cash_kpis.get('total_vendas_abertas'))}",
+                ],
+            }
+        )
 
-    # Revenue day 0/1
-    sql_rev = f"""
-      SELECT data_key, COALESCE(SUM(faturamento),0)::numeric(18,2) AS faturamento,
-             COALESCE(SUM(margem),0)::numeric(18,2) AS margem
-      FROM mart.agg_vendas_diaria
-      WHERE id_empresa = %s AND data_key IN (%s,%s)
-      {where_filial}
-      GROUP BY data_key
-    """
-    params_rev = [id_empresa, k0, k1] + ([] if id_filial is None else [id_filial])
+    if overdue_pressure > 0:
+        priority = "Hoje" if receiving_overdue > 0 else "Acompanhar"
+        headline = (
+            "Cobrar hoje os vencidos mais concentrados para aliviar a pressão de caixa."
+            if receiving_overdue >= paying_overdue
+            else "Reprogramar compromissos vencidos antes que a pressão financeira avance."
+        )
+        cause = (
+            "A carteira vencida concentra recursos que já deveriam estar no caixa."
+            if receiving_overdue >= paying_overdue
+            else "As obrigações vencidas já consomem capacidade de caixa e aumentam a pressão financeira do período."
+        )
+        action = (
+            "Ativar régua de cobrança nos maiores títulos vencidos, priorizando a filial com maior concentração e clientes de maior valor."
+            if receiving_overdue >= paying_overdue
+            else "Renegociar os maiores vencidos e reordenar pagamentos para proteger o caixa operacional desta semana."
+        )
+        candidates.append(
+            {
+                "kind": "finance",
+                "weight": overdue_pressure,
+                "impact_value": overdue_pressure,
+                "priority": priority,
+                "headline": headline,
+                "cause": cause,
+                "action": action,
+                "evidence": [
+                    f"Receber vencido: {_format_brl(receiving_overdue)}",
+                    f"Pagar vencido: {_format_brl(paying_overdue)}",
+                    f"Top 5 concentram {float(finance.get('top5_concentration_pct') or 0):.1f}% da carteira",
+                ],
+            }
+        )
 
-    # Fraud cancellations day 0/1
-    sql_can = f"""
-      SELECT data_key, COALESCE(SUM(cancelamentos),0)::int AS cancelamentos,
-             COALESCE(SUM(valor_cancelado),0)::numeric(18,2) AS valor_cancelado
-      FROM mart.fraude_cancelamentos_diaria
-      WHERE id_empresa = %s AND data_key IN (%s,%s)
-      {where_filial}
-      GROUP BY data_key
-    """
-    params_can = [id_empresa, k0, k1] + ([] if id_filial is None else [id_filial])
+    if float(risk.get("impacto_total") or 0) > 0:
+        candidates.append(
+            {
+                "kind": "fraud",
+                "weight": float(risk.get("impacto_total") or 0) + (int(risk.get("eventos_alto_risco") or 0) * 500),
+                "impact_value": float(risk.get("impacto_total") or 0),
+                "priority": "Hoje" if int(risk.get("eventos_alto_risco") or 0) < 5 else "Imediatamente",
+                "headline": "Auditar descontos e cancelamentos fora da curva antes do próximo fechamento.",
+                "cause": "O padrão recente de risco concentra impacto financeiro em descontos, cancelamentos e recompras rápidas.",
+                "action": "Abrir o antifraude, revisar o turno mais sensível e validar o colaborador mais exposto ainda neste ciclo.",
+                "evidence": [
+                    f"{int(risk.get('eventos_alto_risco') or 0)} evento(s) de alto risco",
+                    _filial_label(risk_focus.get("id_filial"), risk_focus.get("filial_nome")) if risk_focus else None,
+                    risk_focus.get("turno_label") if risk_focus else None,
+                ],
+            }
+        )
 
-    # Open receivables overdue (any day < dt_ref)
-    sql_overdue = f"""
-      SELECT COALESCE(SUM(valor_aberto),0)::numeric(18,2) AS receber_vencido_aberto
-      FROM mart.financeiro_vencimentos_diaria
-      WHERE id_empresa = %s
-        AND tipo_titulo = 1
-        AND data_key < %s
-        {where_filial}
-    """
-    params_overdue = [id_empresa, k0] + ([] if id_filial is None else [id_filial])
+    if churn_impact > 0:
+        candidates.append(
+            {
+                "kind": "churn",
+                "weight": churn_impact,
+                "impact_value": churn_impact,
+                "priority": "Hoje",
+                "headline": "Ativar a recuperação dos clientes que já saíram do padrão de retorno.",
+                "cause": "A queda de frequência e o intervalo acima do ciclo esperado já colocam receita recorrente em risco.",
+                "action": "Acionar os clientes mais relevantes com contato comercial e oferta aderente antes do próximo ciclo de compra.",
+                "evidence": [
+                    top_churn.get("cliente_nome") if top_churn else None,
+                    f"Receita em risco: {_format_brl(churn_impact)}",
+                    f"{len(churn)} cliente(s) prioritário(s) na fila de reativação",
+                ],
+            }
+        )
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        rev_rows = conn.execute(sql_rev, params_rev).fetchall()
-        can_rows = conn.execute(sql_can, params_can).fetchall()
-        overdue = conn.execute(sql_overdue, params_overdue).fetchone() or {"receber_vencido_aberto": 0}
+    if pricing_impact > 0 and pricing_focus:
+        candidates.append(
+            {
+                "kind": "pricing",
+                "weight": pricing_impact,
+                "impact_value": pricing_impact,
+                "priority": "Acompanhar",
+                "headline": f"Ajustar o preço de {pricing_focus.get('produto_nome')} para reduzir perda competitiva.",
+                "cause": "O cenário competitivo indica perda de volume ou margem se o preço atual continuar desalinhado com a praça.",
+                "action": "Revisar o preço do combustível líder da simulação e decidir se vale igualar, proteger margem ou reposicionar a oferta.",
+                "evidence": [
+                    _filial_label(id_filial),
+                    pricing_focus.get("produto_nome"),
+                    f"Perda em 10 dias: {_format_brl(pricing_focus.get('scenario_no_change', {}).get('lost_revenue_10d'))}",
+                ],
+            }
+        )
 
-    rev_map = {r["data_key"]: r for r in rev_rows}
-    can_map = {r["data_key"]: r for r in can_rows}
+    if not candidates:
+        return {
+            "title": "Copiloto operacional",
+            "data_ref": dt_ref.isoformat(),
+            "status": "ok",
+            "headline": "Operação estável no recorte atual, sem foco crítico acima da linha de corte.",
+            "summary": "O momento pede disciplina de execução e acompanhamento dos indicadores líderes, sem ruptura relevante no período.",
+            "priority": "Acompanhar",
+            "impact_value": 0.0,
+            "impact_label": "Sem exposição crítica material",
+            "cause": "Fraude, caixa, clientes e financeiro seguiram dentro da faixa esperada.",
+            "action": "Sustentar o ritmo comercial, proteger margem e manter a rotina de acompanhamento diário.",
+            "evidence": ["Sem alertas críticos acima do corte", "Ciclo operacional dentro da faixa esperada"],
+            "secondary_focus": [],
+            "highlights": ["A operação seguiu estável no recorte.", "Nenhum risco material superou a linha de intervenção imediata."],
+        }
 
-    f0 = float(rev_map.get(k0, {}).get("faturamento", 0) or 0)
-    f1 = float(rev_map.get(k1, {}).get("faturamento", 0) or 0)
-    m0 = float(rev_map.get(k0, {}).get("margem", 0) or 0)
-    m1 = float(rev_map.get(k1, {}).get("margem", 0) or 0)
-
-    c0 = int(can_map.get(k0, {}).get("cancelamentos", 0) or 0)
-    c1 = int(can_map.get(k1, {}).get("cancelamentos", 0) or 0)
-    cv0 = float(can_map.get(k0, {}).get("valor_cancelado", 0) or 0)
-    cv1 = float(can_map.get(k1, {}).get("valor_cancelado", 0) or 0)
-
-    receber_vencido_aberto = float(overdue.get("receber_vencido_aberto", 0) or 0)
-
-    delta_f = f0 - f1
-    delta_m = m0 - m1
-
-    bullets: List[str] = []
-
-    # Simple, high-impact heuristics
-    if f1 > 0 and delta_f / f1 <= -0.08:
-        bullets.append(f"📉 Faturamento caiu {abs(delta_f):,.2f} vs ontem. Ação: validar preço x concorrência e ruptura de bombas/loja.")
-    elif delta_f > 0:
-        bullets.append(f"📈 Faturamento subiu {delta_f:,.2f} vs ontem. Ação: replicar condições (preço/promo/escala) nas demais filiais.")
-
-    if m0 < 0 and f0 > 0:
-        bullets.append("⚠️ Margem negativa no dia. Ação: checar custo médio (cadastro de produtos) e descontos/erros de preço.")
-    elif f0 > 0 and (m0 / f0) < 0.05:
-        bullets.append("⚠️ Margem baixa (<5%). Ação: revisar mix (loja vs combustível), descontos e condições com fornecedores.")
-
-    if c0 > max(3, int(c1 * 1.5)):
-        bullets.append(f"🧨 Cancelamentos altos hoje ({c0}). Ação: auditar operador/turno e ativar alerta Telegram para o dono.")
-
-    if receber_vencido_aberto > 0:
-        bullets.append(f"💰 Recebíveis vencidos em aberto: {receber_vencido_aberto:,.2f}. Ação: cobrança ativa + renegociação (reduz churn e inadimplência).")
-
-    if not bullets:
-        bullets.append("✅ Operação dentro do esperado para o período selecionado. Ação: foque em aumentar ticket na loja e reduzir cancelamentos.")
+    candidates.sort(key=lambda item: float(item.get("weight") or 0), reverse=True)
+    primary = candidates[0]
+    secondary = candidates[1:3]
+    status = "critical" if primary.get("priority") == "Imediatamente" else ("warn" if primary.get("priority") == "Hoje" else "ok")
 
     return {
-        "data_ref": d0.isoformat(),
-        "kpis": {
-            "faturamento": f0,
-            "margem": m0,
-            "cancelamentos": c0,
-            "valor_cancelado": cv0,
-        },
-        "comparativo": {
-            "faturamento_vs_ontem": delta_f,
-            "margem_vs_ontem": delta_m,
-            "cancelamentos_vs_ontem": c0 - c1,
-        },
-        "bullets": bullets,
+        "title": "Copiloto operacional",
+        "data_ref": dt_ref.isoformat(),
+        "status": status,
+        "headline": primary["headline"],
+        "summary": primary["cause"],
+        "priority": primary["priority"],
+        "impact_value": round(float(primary.get("impact_value") or 0), 2),
+        "impact_label": f"{_format_brl(primary.get('impact_value'))} em jogo",
+        "cause": primary["cause"],
+        "action": primary["action"],
+        "evidence": [item for item in primary.get("evidence", []) if item],
+        "secondary_focus": [
+            {
+                "label": item["headline"],
+                "impact_label": _format_brl(item.get("impact_value")),
+                "priority": item["priority"],
+            }
+            for item in secondary
+        ],
+        "highlights": [
+            primary["action"],
+            *[item["headline"] for item in secondary],
+        ][:3],
     }
 
 

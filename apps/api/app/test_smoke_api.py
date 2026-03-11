@@ -140,6 +140,7 @@ class SmokeApiTest(unittest.TestCase):
         self.assertEqual(status_compact, 200)
         self.assertIn("risk", compact)
         self.assertIn("insights_generated", compact)
+        self.assertIn("jarvis", compact)
         self.assertNotIn("payments", compact)
 
     def test_anonymous_retention_endpoint_returns_payload(self) -> None:

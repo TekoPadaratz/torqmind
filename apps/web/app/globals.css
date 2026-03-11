@@ -348,8 +348,8 @@ h2 { margin: 0; font-size: 18px; }
 
 .aiSummaryLead {
   margin: 0;
-  font-size: 22px;
-  line-height: 1.35;
+  font-size: 18px;
+  line-height: 1.5;
   letter-spacing: -0.02em;
   color: #f8fafc;
 }
@@ -384,6 +384,67 @@ h2 { margin: 0; font-size: 18px; }
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+}
+
+.cashBoxList {
+  display: grid;
+  gap: 12px;
+}
+
+.cashBoxCard {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 18px;
+}
+
+.cashBoxHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.cashBoxIdentity {
+  display: grid;
+  gap: 4px;
+}
+
+.cashBoxTitle {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.cashBoxMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cashBoxMetricsSecondary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cashMetric {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(11, 16, 19, 0.22);
+  min-width: 0;
+}
+
+.cashMetricWide {
+  grid-column: span 2;
+}
+
+.cashMetricValue {
+  margin-top: 6px;
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 700;
+  word-break: break-word;
 }
 
 .focusCard {
@@ -505,6 +566,15 @@ h2 { margin: 0; font-size: 18px; }
   .priorityGrid {
     grid-template-columns: 1fr;
   }
+
+  .cashBoxMetrics,
+  .cashBoxMetricsSecondary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cashMetricWide {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 980px) {
@@ -555,6 +625,15 @@ h2 { margin: 0; font-size: 18px; }
   .scopeLine {
     display: grid;
     gap: 4px;
+  }
+
+  .cashBoxMetrics,
+  .cashBoxMetricsSecondary {
+    grid-template-columns: 1fr;
+  }
+
+  .cashMetricWide {
+    grid-column: span 1;
   }
 
   .table {

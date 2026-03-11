@@ -60,6 +60,7 @@ def dashboard_overview(
                 "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
                 "window": repos_mart.risk_data_window(role, tenant, filial),
             },
+            "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
         }
 
     return {
