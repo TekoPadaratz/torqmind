@@ -47,6 +47,9 @@ def run_etl(
             payments_telegram_sent = 0
             payments_telegram_suppressed = 0
             payments_critical = []
+            cash_telegram_sent = 0
+            cash_telegram_suppressed = 0
+            cash_critical = []
             if refresh_mart:
                 critical_rows = conn.execute(
                     """
@@ -99,6 +102,53 @@ def run_etl(
                             "data_key": r.get("data_key"),
                         }
                     )
+                cash_rows = conn.execute(
+                    """
+                    SELECT
+                      id_filial,
+                      filial_nome,
+                      id_turno,
+                      id_usuario,
+                      usuario_nome,
+                      horas_aberto,
+                      title,
+                      body,
+                      url,
+                      insight_id_hash
+                    FROM mart.alerta_caixa_aberto
+                    WHERE id_empresa = %s
+                    ORDER BY horas_aberto DESC, id_turno DESC
+                    LIMIT 5
+                    """,
+                    (tenant,),
+                ).fetchall()
+                for r in cash_rows:
+                    payload = {
+                        "severity": "CRITICAL",
+                        "insight_id": int(r["insight_id_hash"]) if r.get("insight_id_hash") is not None else None,
+                        "insight_type": "CASH_OPEN_OVER_24H",
+                        "id_filial": int(r["id_filial"]) if r.get("id_filial") is not None else None,
+                        "event_time": datetime.now(tz=timezone.utc).isoformat(),
+                        "impacto_estimado": 0,
+                        "title": r.get("title") or "Caixa aberto acima do limite",
+                        "body": r.get("body") or "",
+                        "url": r.get("url") or "/cash",
+                        "event_type": "CASH_OPEN_OVER_24H",
+                    }
+                    tg = send_telegram_alert(id_empresa=tenant, payload=payload)
+                    if tg.get("sent"):
+                        cash_telegram_sent += 1
+                    else:
+                        cash_telegram_suppressed += 1
+                    cash_critical.append(
+                        {
+                            "id_filial": r.get("id_filial"),
+                            "filial_nome": r.get("filial_nome"),
+                            "id_turno": r.get("id_turno"),
+                            "usuario_nome": r.get("usuario_nome"),
+                            "horas_aberto": float(r.get("horas_aberto") or 0),
+                        }
+                    )
             if refresh_mart:
                 conn.execute("SELECT etl.refresh_anonymous_retention()")
             conn.commit()
@@ -109,6 +159,12 @@ def run_etl(
                     "telegram_sent": payments_telegram_sent,
                     "telegram_suppressed": payments_telegram_suppressed,
                     "items": payments_critical,
+                }
+                result["cash_notifications"] = {
+                    "critical_events": len(cash_critical),
+                    "telegram_sent": cash_telegram_sent,
+                    "telegram_suppressed": cash_telegram_suppressed,
+                    "items": cash_critical,
                 }
             return result
         except Exception as e:

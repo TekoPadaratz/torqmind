@@ -38,6 +38,18 @@ export function formatDateTime(value: any) {
   return dateTimeFormatter.format(parsed);
 }
 
+export function formatHoursLabel(value: any) {
+  const hours = Number(value || 0);
+  if (!Number.isFinite(hours) || hours <= 0) return '0h';
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remHours = Math.round(hours % 24);
+    return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+  }
+  if (hours >= 1) return `${hours.toFixed(1)}h`;
+  return `${Math.round(hours * 60)}min`;
+}
+
 export function formatDateKey(value: any) {
   const digits = String(value || '');
   if (!/^\d{8}$/.test(digits)) return String(value || '-');

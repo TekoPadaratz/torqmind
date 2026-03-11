@@ -84,6 +84,7 @@ export default function AppNav({
   const links = [
     { path: '/dashboard', label: 'Dashboard Geral' },
     { path: '/sales', label: 'Vendas & Stores' },
+    { path: '/cash', label: 'Caixa' },
     { path: '/fraud', label: 'Sistema Anti-Fraude' },
     { path: '/customers', label: 'Análise de Clientes' },
     { path: '/finance', label: 'Financeiro' },

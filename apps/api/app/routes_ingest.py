@@ -137,6 +137,14 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_funcionario", ["ID_FUNCIONARIOS", "ID_FUNCIONARIO", "id_funcionario"]),
         ],
     ),
+    "usuarios": DatasetSpec(
+        table="stg.usuarios",
+        pk_cols=["id_empresa", "id_filial", "id_usuario"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_usuario", ["ID_USUARIOS", "ID_USUARIO", "id_usuario"]),
+        ],
+    ),
     "entidades": DatasetSpec(
         table="stg.entidades",
         pk_cols=["id_empresa", "id_filial", "id_entidade"],
@@ -203,6 +211,15 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_filial", ["ID_FILIAL", "id_filial"]),
             ("id_db", ["ID_DB", "id_db"]),
             ("id_movprodutos", ["ID_MOVPRODUTOS", "id_movprodutos"]),
+        ],
+    ),
+    "movlctos": DatasetSpec(
+        table="stg.movlctos",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_movlctos"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_movlctos", ["ID_MOVLCTOS", "ID_MOVLCTO", "id_movlctos", "id_movlcto"]),
         ],
     ),
     "itensmovprodutos": DatasetSpec(

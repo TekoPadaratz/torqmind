@@ -32,12 +32,16 @@ class SQLServerExtractor(BaseExtractor):
 
     def _connection_string(self) -> str:
         sql = self.cfg.sqlserver
+        server_value = str(sql.server or "").strip()
+        if server_value and "," not in server_value and ":" not in server_value and sql.port:
+            server_value = f"{server_value},{int(sql.port)}"
+
         if sql.dsn:
             parts = [f"DSN={sql.dsn}", f"UID={sql.user}", f"PWD={sql.password}"]
         else:
             parts = [
                 f"DRIVER={{{sql.driver}}}",
-                f"SERVER={sql.server}",
+                f"SERVER={server_value}",
                 f"DATABASE={sql.database}",
                 f"UID={sql.user}",
                 f"PWD={sql.password}",
@@ -261,7 +265,11 @@ class SQLServerExtractor(BaseExtractor):
         where_parts = []
         if watermark_type_detected == "text":
             where_parts.append(f"{wm_expr} IS NOT NULL")
-        if watermark_dt:
+        revisit_open_clause = str(ds_cfg.get("revisit_open_clause") or "").strip()
+        if watermark_dt and revisit_open_clause:
+            where_parts.append(f"({wm_expr} > ? OR ({revisit_open_clause}))")
+            params.append(watermark_dt)
+        elif watermark_dt:
             where_parts.append(f"{wm_expr} > ?")
             params.append(watermark_dt)
         if dt_from:

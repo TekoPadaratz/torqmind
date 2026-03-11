@@ -318,6 +318,23 @@ def payments_overview(
 
 
 # ------------------------
+# Caixa
+# ------------------------
+
+@router.get("/cash/overview")
+def cash_overview(
+    dt_ini: date,
+    dt_fim: date,
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    return repos_mart.cash_overview(role, tenant, filial)
+
+
+# ------------------------
 # Precificacao Concorrencia
 # ------------------------
 

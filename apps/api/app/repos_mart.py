@@ -976,212 +976,6 @@ def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_i
     }
 
 
-def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    where_filial_turno = "" if id_filial is None else "AND t.id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
-
-    sql_totals = f"""
-      SELECT COUNT(*)::int AS total_turnos
-      FROM stg.turnos
-      WHERE id_empresa = %s
-      {where_filial}
-    """
-
-    sql_parsed = f"""
-      WITH turnos_raw AS (
-        SELECT
-          id_empresa,
-          id_filial,
-          id_turno,
-          UPPER(COALESCE(
-            payload->>'STATUS',
-            payload->>'SITUACAO',
-            payload->>'SITUACAO_TURNO',
-            payload->>'ST',
-            ''
-          )) AS status_raw,
-          etl.safe_timestamp(COALESCE(
-            payload->>'DTABERTURA',
-            payload->>'DATAABERTURA',
-            payload->>'DTHRABERTURA',
-            payload->>'DTHR_ABERTURA',
-            payload->>'ABERTURA',
-            payload->>'INICIO',
-            payload->>'DTINICIO',
-            payload->>'DATAINICIO'
-          )) AS abertura_ts,
-          etl.safe_timestamp(COALESCE(
-            payload->>'DTFECHAMENTO',
-            payload->>'DATAFECHAMENTO',
-            payload->>'DTHRFECHAMENTO',
-            payload->>'DTHR_FECHAMENTO',
-            payload->>'FECHAMENTO',
-            payload->>'FIM',
-            payload->>'DTFIM',
-            payload->>'DATAFIM'
-          )) AS fechamento_ts
-        FROM stg.turnos
-        WHERE id_empresa = %s
-        {where_filial}
-      )
-      SELECT
-        COUNT(*) FILTER (WHERE abertura_ts IS NOT NULL)::int AS mapped_rows,
-        COUNT(*) FILTER (
-          WHERE abertura_ts IS NOT NULL
-            AND fechamento_ts IS NULL
-            AND status_raw NOT IN ('FECHADO', 'CLOSED')
-        )::int AS total_open,
-        COUNT(*) FILTER (
-          WHERE abertura_ts IS NOT NULL
-            AND fechamento_ts IS NULL
-            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 24
-        )::int AS critical_count,
-        COUNT(*) FILTER (
-          WHERE abertura_ts IS NOT NULL
-            AND fechamento_ts IS NULL
-            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 12
-            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 < 24
-        )::int AS high_count,
-        COUNT(*) FILTER (
-          WHERE abertura_ts IS NOT NULL
-            AND fechamento_ts IS NULL
-            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 6
-            AND EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 < 12
-        )::int AS warn_count
-      FROM turnos_raw
-    """
-
-    sql_items = f"""
-      WITH turnos_raw AS (
-        SELECT
-          t.id_filial,
-          COALESCE(f.nome, '') AS filial_nome,
-          t.id_turno,
-          UPPER(COALESCE(
-            t.payload->>'STATUS',
-            t.payload->>'SITUACAO',
-            t.payload->>'SITUACAO_TURNO',
-            t.payload->>'ST',
-            ''
-          )) AS status_raw,
-          etl.safe_timestamp(COALESCE(
-            t.payload->>'DTABERTURA',
-            t.payload->>'DATAABERTURA',
-            t.payload->>'DTHRABERTURA',
-            t.payload->>'DTHR_ABERTURA',
-            t.payload->>'ABERTURA',
-            t.payload->>'INICIO',
-            t.payload->>'DTINICIO',
-            t.payload->>'DATAINICIO'
-          )) AS abertura_ts,
-          etl.safe_timestamp(COALESCE(
-            t.payload->>'DTFECHAMENTO',
-            t.payload->>'DATAFECHAMENTO',
-            t.payload->>'DTHRFECHAMENTO',
-            t.payload->>'DTHR_FECHAMENTO',
-            t.payload->>'FECHAMENTO',
-            t.payload->>'FIM',
-            t.payload->>'DTFIM',
-            t.payload->>'DATAFIM'
-          )) AS fechamento_ts
-        FROM stg.turnos t
-        LEFT JOIN auth.filiais f
-          ON f.id_empresa = t.id_empresa
-         AND f.id_filial = t.id_filial
-        WHERE t.id_empresa = %s
-        {where_filial_turno}
-      )
-      SELECT
-        id_filial,
-        filial_nome,
-        id_turno,
-        abertura_ts,
-        ROUND(EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0, 2) AS open_hours,
-        CASE
-          WHEN EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 24 THEN 'CRITICAL'
-          WHEN EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 12 THEN 'HIGH'
-          WHEN EXTRACT(EPOCH FROM (now() - abertura_ts)) / 3600.0 >= 6 THEN 'WARN'
-          ELSE 'OK'
-        END AS severity
-      FROM turnos_raw
-      WHERE abertura_ts IS NOT NULL
-        AND fechamento_ts IS NULL
-        AND status_raw NOT IN ('FECHADO', 'CLOSED')
-      ORDER BY open_hours DESC NULLS LAST, id_turno DESC
-      LIMIT 10
-    """
-
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        totals = conn.execute(sql_totals, params).fetchone() or {"total_turnos": 0}
-        parsed = conn.execute(sql_parsed, params).fetchone() or {}
-        items = list(conn.execute(sql_items, params).fetchall())
-
-    total_turnos = int(totals.get("total_turnos", 0) or 0)
-    mapped_rows = int(parsed.get("mapped_rows", 0) or 0)
-    total_open = int(parsed.get("total_open", 0) or 0)
-    critical_count = int(parsed.get("critical_count", 0) or 0)
-    high_count = int(parsed.get("high_count", 0) or 0)
-    warn_count = int(parsed.get("warn_count", 0) or 0)
-
-    if total_turnos == 0:
-        return {
-            "source_status": "unavailable",
-            "severity": "UNAVAILABLE",
-            "summary": "Dados de turnos ainda não chegaram da operação para esta filial.",
-            "total_turnos": 0,
-            "mapped_rows": 0,
-            "total_open": 0,
-            "warn_count": 0,
-            "high_count": 0,
-            "critical_count": 0,
-            "items": [],
-        }
-
-    if mapped_rows == 0:
-        return {
-            "source_status": "unmapped",
-            "severity": "UNAVAILABLE",
-            "summary": "A base de turnos já chegou, mas abertura e fechamento ainda precisam de mapeamento.",
-            "total_turnos": total_turnos,
-            "mapped_rows": 0,
-            "total_open": 0,
-            "warn_count": 0,
-            "high_count": 0,
-            "critical_count": 0,
-            "items": [],
-        }
-
-    if total_open == 0:
-        summary = "Nenhum turno em aberto acima do limite esperado."
-        severity = "OK"
-    elif critical_count > 0:
-        summary = f"{critical_count} turno(s) aberto(s) em situação crítica."
-        severity = "CRITICAL"
-    elif high_count > 0:
-        summary = f"{high_count} turno(s) aberto(s) em situação de alto risco."
-        severity = "HIGH"
-    elif warn_count > 0:
-        summary = f"{warn_count} turno(s) aberto(s) acima do limite esperado."
-        severity = "WARN"
-    else:
-        summary = f"{total_open} turno(s) em aberto dentro da janela monitorada."
-        severity = "OK"
-
-    return {
-        "source_status": "ok",
-        "severity": severity,
-        "summary": summary,
-        "total_turnos": total_turnos,
-        "mapped_rows": mapped_rows,
-        "total_open": total_open,
-        "warn_count": warn_count,
-        "high_count": high_count,
-        "critical_count": critical_count,
-        "items": items,
-    }
-
-
 # ========================
 # Clientes
 # ========================
@@ -1901,6 +1695,229 @@ def payments_overview(
         "by_day": by_day,
         "by_turno": by_turno,
         "anomalies": anomalies,
+    }
+
+
+def _cash_payment_label(tipo_forma: Any) -> str:
+    mapping = {
+        0: "DINHEIRO",
+        1: "PRAZO",
+        2: "CHEQUE PRE",
+        3: "CARTÃO DE CRÉDITO",
+        4: "CARTÃO DE DÉBITO",
+        5: "CARTA FRETE",
+        6: "CHEQUE A PAGAR",
+        7: "CHEQUE A VISTA",
+        8: "MOEDAS DIFERESAS",
+        9: "OUTROS PAGOS",
+        10: "CHEQUE PRÓPRIO",
+        28: "PIX",
+    }
+    try:
+        return mapping.get(int(tipo_forma), "NÃO IDENTIFICADO")
+    except Exception:
+        return "NÃO IDENTIFICADO"
+
+
+def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+
+    sql_total_turnos = f"""
+      SELECT COUNT(*)::int AS total_turnos
+      FROM stg.turnos
+      WHERE id_empresa = %s
+      {where_filial}
+    """
+    sql_open = f"""
+      SELECT
+        id_filial,
+        filial_nome,
+        id_turno,
+        id_usuario,
+        usuario_nome,
+        abertura_ts,
+        horas_aberto,
+        severity,
+        status_label,
+        total_vendas,
+        qtd_vendas,
+        total_cancelamentos,
+        qtd_cancelamentos,
+        total_pagamentos
+      FROM mart.agg_caixa_turno_aberto
+      WHERE id_empresa = %s
+      {where_filial}
+      ORDER BY horas_aberto DESC, total_vendas DESC, id_turno DESC
+      LIMIT 20
+    """
+    sql_payments = f"""
+      SELECT
+        id_filial,
+        id_turno,
+        tipo_forma,
+        forma_label,
+        total_valor,
+        qtd_comprovantes
+      FROM mart.agg_caixa_forma_pagamento
+      WHERE id_empresa = %s
+      {where_filial}
+      ORDER BY total_valor DESC
+      LIMIT 100
+    """
+    sql_alerts = f"""
+      SELECT
+        id_filial,
+        filial_nome,
+        id_turno,
+        id_usuario,
+        usuario_nome,
+        abertura_ts,
+        horas_aberto,
+        severity,
+        title,
+        body,
+        url,
+        insight_id_hash
+      FROM mart.alerta_caixa_aberto
+      WHERE id_empresa = %s
+      {where_filial}
+      ORDER BY horas_aberto DESC, id_turno DESC
+      LIMIT 10
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        total_turnos_row = conn.execute(sql_total_turnos, params).fetchone() or {"total_turnos": 0}
+        open_rows = [dict(row) for row in conn.execute(sql_open, params).fetchall()]
+        payment_rows = [dict(row) for row in conn.execute(sql_payments, params).fetchall()]
+        alert_rows = [dict(row) for row in conn.execute(sql_alerts, params).fetchall()]
+
+    total_turnos = int(total_turnos_row.get("total_turnos") or 0)
+    critical_count = 0
+    high_count = 0
+    warn_count = 0
+    total_vendas = 0.0
+    total_cancelamentos = 0.0
+
+    for row in open_rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or "Operador não identificado"
+        row["alert_message"] = (
+            f"O caixa {row.get('id_turno')} da {row['filial_label']} está aberto há {row.get('horas_aberto') or 0} horas."
+        )
+        severity = str(row.get("severity") or "OK").upper()
+        if severity == "CRITICAL":
+            critical_count += 1
+        elif severity == "HIGH":
+            high_count += 1
+        elif severity == "WARN":
+            warn_count += 1
+        total_vendas += float(row.get("total_vendas") or 0)
+        total_cancelamentos += float(row.get("total_cancelamentos") or 0)
+
+    payment_by_label: Dict[str, Dict[str, Any]] = {}
+    for row in payment_rows:
+        label = str(row.get("forma_label") or _cash_payment_label(row.get("tipo_forma"))).strip() or "NÃO IDENTIFICADO"
+        bucket = payment_by_label.setdefault(
+            label,
+            {"label": label, "total_valor": 0.0, "qtd_comprovantes": 0, "turnos": set()},
+        )
+        bucket["total_valor"] += float(row.get("total_valor") or 0)
+        bucket["qtd_comprovantes"] += int(row.get("qtd_comprovantes") or 0)
+        bucket["turnos"].add(int(row.get("id_turno") or -1))
+
+    payment_mix = []
+    for label, row in payment_by_label.items():
+        payment_mix.append(
+            {
+                "label": label,
+                "total_valor": round(float(row["total_valor"]), 2),
+                "qtd_comprovantes": int(row["qtd_comprovantes"]),
+                "qtd_turnos": len(row["turnos"]),
+            }
+        )
+    payment_mix.sort(key=lambda item: float(item.get("total_valor") or 0), reverse=True)
+
+    cancelamentos = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "usuario_label": row.get("usuario_label"),
+            "total_cancelamentos": round(float(row.get("total_cancelamentos") or 0), 2),
+            "qtd_cancelamentos": int(row.get("qtd_cancelamentos") or 0),
+        }
+        for row in open_rows
+        if float(row.get("total_cancelamentos") or 0) > 0
+    ]
+    cancelamentos.sort(key=lambda item: float(item.get("total_cancelamentos") or 0), reverse=True)
+
+    for row in alert_rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or "Operador não identificado"
+
+    if total_turnos == 0:
+        source_status = "unavailable"
+        summary = "Os dados de turno ainda não chegaram da operação para compor o módulo de Caixa."
+    elif not open_rows:
+        source_status = "ok"
+        summary = "Nenhum caixa aberto no momento. A operação está sem pendências de fechamento."
+    elif critical_count > 0:
+        source_status = "ok"
+        summary = f"{critical_count} caixa(s) aberto(s) há mais de 24 horas exigem ação imediata."
+    elif high_count > 0:
+        source_status = "ok"
+        summary = f"{high_count} caixa(s) aberto(s) já ultrapassaram a janela segura de operação."
+    elif warn_count > 0:
+        source_status = "ok"
+        summary = f"{warn_count} caixa(s) aberto(s) merecem monitoramento antes do fim do dia."
+    else:
+        source_status = "ok"
+        summary = f"{len(open_rows)} caixa(s) aberto(s) dentro da janela operacional esperada."
+
+    return {
+        "source_status": source_status,
+        "summary": summary,
+        "kpis": {
+            "total_turnos": total_turnos,
+            "caixas_abertos": len(open_rows),
+            "caixas_criticos": critical_count,
+            "caixas_alto_risco": high_count,
+            "caixas_em_monitoramento": warn_count,
+            "total_vendas_abertas": round(total_vendas, 2),
+            "total_cancelamentos_abertos": round(total_cancelamentos, 2),
+        },
+        "open_boxes": open_rows,
+        "payment_mix": payment_mix[:8],
+        "cancelamentos": cancelamentos[:10],
+        "alerts": alert_rows,
+    }
+
+
+def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    cash = cash_overview(role, id_empresa, id_filial)
+    kpis = cash.get("kpis") or {}
+    severity = "OK"
+    if int(kpis.get("caixas_criticos") or 0) > 0:
+        severity = "CRITICAL"
+    elif int(kpis.get("caixas_alto_risco") or 0) > 0:
+        severity = "HIGH"
+    elif int(kpis.get("caixas_em_monitoramento") or 0) > 0:
+        severity = "WARN"
+    elif cash.get("source_status") == "unavailable":
+        severity = "UNAVAILABLE"
+
+    return {
+        "source_status": cash.get("source_status"),
+        "severity": severity,
+        "summary": cash.get("summary"),
+        "total_turnos": int(kpis.get("total_turnos") or 0),
+        "mapped_rows": int(kpis.get("total_turnos") or 0),
+        "total_open": int(kpis.get("caixas_abertos") or 0),
+        "warn_count": int(kpis.get("caixas_em_monitoramento") or 0),
+        "high_count": int(kpis.get("caixas_alto_risco") or 0),
+        "critical_count": int(kpis.get("caixas_criticos") or 0),
+        "items": cash.get("open_boxes") or [],
     }
 
 

@@ -2,30 +2,32 @@
 
 sqlserver:
   driver: ODBC Driver 17 for SQL Server
-  server: "tcp:SEU_HOST_SQLSERVER,1433"
-  database: SUA_BASE
-  user: SEU_USUARIO
-  password: "SUA_SENHA"
+  server: "tcp:CENTRALVR"
+  port: 1433
+  database: ATXDADOS
+  user: sa
+  password: "CHANGE_ME"
   encrypt: false
   trust_server_certificate: true
   login_timeout_seconds: 20
 
 api:
   base_url: http://localhost:8000
-  ingest_key: ""
   empresa_id: 1
 
 id_empresa: 1
 id_db: 1
 
-batch_size: 5000
-fetch_size: 2000
-max_retries: 5
-timeout_seconds: 30
-gzip_enabled: true
-state_dir: state
-spool_dir: spool
-spool_flush_max_files: 200
+runtime:
+  batch_size: 5000
+  fetch_size: 2000
+  max_retries: 5
+  timeout_seconds: 30
+  gzip_enabled: true
+  state_dir: state
+  spool_dir: spool
+  spool_flush_max_files: 200
+  interval_seconds: 60
 
 datasets:
   comprovantes:
@@ -55,12 +57,18 @@ datasets:
 
   filiais: { enabled: true, table: dbo.FILIAIS, watermark_column: DATAREPL }
   funcionarios: { enabled: true, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
+  usuarios: { enabled: true, table: dbo.USUARIOS, watermark_column: DATAREPL }
   entidades: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
   clientes: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
   grupoprodutos: { enabled: true, table: dbo.GRUPOPRODUTOS, watermark_column: DATAREPL }
   localvendas: { enabled: true, table: dbo.LOCALVENDAS, watermark_column: DATAREPL }
   produtos: { enabled: true, table: dbo.PRODUTOS, watermark_column: DATAREPL }
-  turnos: { enabled: true, table: dbo.TURNOS, watermark_column: DATAREPL }
+  turnos:
+    enabled: true
+    table: dbo.TURNOS
+    watermark_column: DATAREPL
+    revisit_open_clause: COALESCE(ENCERRANTEFECHAMENTO, 0) = 0
+  movlctos: { enabled: true, table: dbo.MOVLCTOS, watermark_column: DATAREPL }
   contaspagar: { enabled: true, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
   contasreceber: { enabled: true, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
   financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }
