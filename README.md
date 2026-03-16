@@ -29,6 +29,70 @@ Para acessar de outra máquina na LAN ou Radmin VPN, use o IP da máquina servid
 
 ---
 
+## Deploy de produção em servidor Linux
+
+Estratégia simples para um único servidor Ubuntu via SSH:
+- tudo sobe só com Docker Compose;
+- não precisa instalar PostgreSQL no host;
+- apenas o `nginx` publica porta;
+- `web` fica em `/`;
+- `api` fica atrás do `nginx` em `/api`, `/docs`, `/openapi.json` e `/health`.
+
+Arquivos de produção:
+- `docker-compose.prod.yml`
+- `deploy/nginx/default.conf`
+- `.env.production.example`
+- `deploy/scripts/prod-up.sh`
+- `deploy/scripts/prod-logs.sh`
+- `deploy/scripts/prod-seed.sh`
+
+Passo a passo no Linux:
+
+1. Clonar o repositório no servidor.
+2. Criar o arquivo `.env` a partir do exemplo seguro:
+
+```bash
+cp .env.production.example .env
+```
+
+3. Preencher no `.env` pelo menos:
+- `POSTGRES_PASSWORD`
+- `API_JWT_SECRET`
+- `SEED_PASSWORD`
+- `OPENAI_API_KEY` se quiser Jarvis IA ativo
+- `TELEGRAM_BOT_TOKEN` se quiser notificações Telegram
+
+4. Subir a stack:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+```
+
+Ou usar o script:
+
+```bash
+./deploy/scripts/prod-up.sh
+```
+
+5. Rodar seed inicial:
+
+```bash
+./deploy/scripts/prod-seed.sh
+```
+
+6. Validar no navegador:
+- `http://IP_DO_SERVIDOR/`
+- `http://IP_DO_SERVIDOR/docs`
+- `http://IP_DO_SERVIDOR/health`
+
+Observações:
+- nessa estratégia, a porta pública é apenas a `80`;
+- `postgres`, `api` e `web` não ficam expostos diretamente;
+- o volume `pgdata_prod` garante persistência do banco dentro do Docker;
+- HTTPS pode ser adicionado depois quando houver domínio e certificado.
+
+---
+
 ## Fluxo rápido local (3 comandos)
 
 Pré-requisitos:

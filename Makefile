@@ -1,10 +1,11 @@
 SHELL := /bin/bash
 
 COMPOSE ?= docker compose
+COMPOSE_PROD ?= docker compose -f docker-compose.prod.yml
 ENV_FILE ?= .env
 ENV_EXAMPLE ?= .envexemple
 
-.PHONY: setup up down logs migrate backfill-snapshots backfill-snapshots-resume test test-agent lint ci
+.PHONY: setup up down logs migrate backfill-snapshots backfill-snapshots-resume test test-agent lint ci prod-up prod-down prod-logs prod-seed
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -52,3 +53,15 @@ lint:
 	@$(COMPOSE) exec -T web npm run build
 
 ci: test test-agent lint
+
+prod-up:
+	@./deploy/scripts/prod-up.sh
+
+prod-down:
+	@$(COMPOSE_PROD) --env-file $(ENV_FILE) down
+
+prod-logs:
+	@./deploy/scripts/prod-logs.sh
+
+prod-seed:
+	@./deploy/scripts/prod-seed.sh
