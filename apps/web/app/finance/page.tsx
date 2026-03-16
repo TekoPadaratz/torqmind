@@ -18,6 +18,8 @@ import {
 } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 export default function FinancePage() {
   const router = useRouter();
   const scope = useScopeQuery();
@@ -98,6 +100,24 @@ export default function FinancePage() {
   const receberVencido = Number(aging.receber_total_vencido || 0);
   const pagarVencido = Number(aging.pagar_total_vencido || 0);
   const cashPressure = receberVencido + pagarVencido;
+  const snapshotStatus = String(aging.snapshot_status || 'missing');
+  const top5Concentration = Number(aging.top5_concentration_pct || 0);
+  const actionHeadline =
+    receberVencido >= pagarVencido && receberVencido > 0
+      ? 'Cobrar os recebíveis vencidos mais concentrados.'
+      : pagarVencido > 0
+        ? 'Renegociar compromissos vencidos para proteger o caixa.'
+        : top5Concentration >= 45
+          ? 'Desconcentrar a carteira antes que o risco aumente.'
+          : 'Manter disciplina de cobrança e acompanhamento diário.';
+  const actionDetail =
+    receberVencido >= pagarVencido && receberVencido > 0
+      ? 'Priorize os maiores títulos vencidos e a filial com mais caixa travado.'
+      : pagarVencido > 0
+        ? 'Reordene pagamentos, preserve caixa operacional e trate os maiores vencidos primeiro.'
+        : top5Concentration >= 45
+          ? 'Os maiores títulos já pesam demais na exposição atual e pedem ação preventiva.'
+          : 'Sem ruptura material no recorte, mas o cockpit continua focado em pressão, atraso e concentração.';
   const paymentMixPreview = (paymentsKpis?.mix || [])
     .slice(0, 3)
     .map((item: any) => `${item.category_label || item.label || item.category}: ${formatCurrency(item.total_valor)}`)
@@ -109,11 +129,22 @@ export default function FinancePage() {
       <AppNav title="Financeiro" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Posição financeira, vencimentos e meios de pagamento organizados para leitura imediata do dono.</div>
+          <div className="muted">Cockpit financeiro para decidir cobrança, renegociação, concentração e pressão imediata de caixa sem ruído operacional.</div>
+          {!loading && snapshotStatus === 'missing' ? (
+            <div style={{ marginTop: 10, fontWeight: 700 }}>
+              O recorte histórico de {scope.dt_ref || scope.dt_fim} ainda não possui snapshot executivo materializado.
+            </div>
+          ) : null}
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
+          <div className="card col-6">
+            <h2>Ação prioritária</h2>
+            <div style={{ marginTop: 12, fontSize: 28, fontWeight: 800 }}>{loading ? '...' : actionHeadline}</div>
+            {!loading ? <div className="muted" style={{ marginTop: 8 }}>{actionDetail}</div> : null}
+          </div>
+
           <div className="card kpi col-3"><div className="label">Receber em aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.receber_aberto)}</div></div>
           <div className="card kpi col-3 riskCard"><div className="label">Receber vencido</div><div className="value">{loading ? '...' : formatCurrency(receberVencido)}</div></div>
           <div className="card kpi col-3"><div className="label">Pagar em aberto</div><div className="value">{loading ? '...' : formatCurrency(data?.kpis?.pagar_aberto)}</div></div>
@@ -134,11 +165,11 @@ export default function FinancePage() {
           <div className="card col-4">
             <h2>Concentração da carteira</h2>
             <div style={{ marginTop: 12, fontSize: 28, fontWeight: 800 }}>
-              {loading ? '...' : `${Number(aging.top5_concentration_pct || 0).toFixed(1)}%`}
+              {loading ? '...' : `${top5Concentration.toFixed(1)}%`}
             </div>
             {!loading ? (
               <div className="muted" style={{ marginTop: 8 }}>
-                {Number(aging.top5_concentration_pct || 0) > 0
+                {top5Concentration > 0
                   ? 'Os 5 maiores títulos concentram esse percentual da exposição atual.'
                   : 'A carteira segue distribuída, sem concentração material no topo.'}
               </div>
@@ -174,9 +205,9 @@ export default function FinancePage() {
             {!loading ? <div className="muted">Comparação com o período imediatamente anterior.</div> : null}
           </div>
           <div className="card kpi col-4" id="payment-mapping">
-            <div className="label">Classificação em validação</div>
+            <div className="label">Pagamentos não identificados</div>
             <div className="value">{loading ? '...' : `${Number(paymentsKpis.unknown_share_pct || 0).toFixed(1)}%`}</div>
-            {!loading ? <div className="muted">Percentual que ainda depende de taxonomia comercial mais precisa.</div> : null}
+            {!loading ? <div className="muted">Parcela ainda sem correspondência oficial de meio de pagamento no payload recebido.</div> : null}
           </div>
 
           <div className="card col-12 chartCard">

@@ -348,21 +348,7 @@ SELECT
   t.id_filial,
   t.id_turno,
   p.tipo_forma,
-  CASE p.tipo_forma
-    WHEN 0 THEN 'DINHEIRO'
-    WHEN 1 THEN 'PRAZO'
-    WHEN 2 THEN 'CHEQUE PRE'
-    WHEN 3 THEN 'CARTÃO DE CRÉDITO'
-    WHEN 4 THEN 'CARTÃO DE DÉBITO'
-    WHEN 5 THEN 'CARTA FRETE'
-    WHEN 6 THEN 'CHEQUE A PAGAR'
-    WHEN 7 THEN 'CHEQUE A VISTA'
-    WHEN 8 THEN 'MOEDAS DIFERESAS'
-    WHEN 9 THEN 'OUTROS PAGOS'
-    WHEN 10 THEN 'CHEQUE PRÓPRIO'
-    WHEN 28 THEN 'PIX'
-    ELSE 'NÃO IDENTIFICADO'
-  END AS forma_label,
+  COALESCE(m.label, 'NÃO IDENTIFICADO') AS forma_label,
   COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_valor,
   COUNT(DISTINCT p.referencia)::int AS qtd_comprovantes,
   now() AS updated_at
@@ -371,8 +357,17 @@ JOIN dw.fact_pagamento_comprovante p
   ON p.id_empresa = t.id_empresa
  AND p.id_filial = t.id_filial
  AND p.id_turno = t.id_turno
+LEFT JOIN LATERAL (
+  SELECT label
+  FROM app.payment_type_map m
+  WHERE m.tipo_forma = p.tipo_forma
+    AND m.active = true
+    AND (m.id_empresa = p.id_empresa OR m.id_empresa IS NULL)
+  ORDER BY CASE WHEN m.id_empresa IS NULL THEN 1 ELSE 0 END, m.updated_at DESC
+  LIMIT 1
+) m ON true
 WHERE t.is_aberto = true
-GROUP BY t.id_empresa, t.id_filial, t.id_turno, p.tipo_forma;
+GROUP BY t.id_empresa, t.id_filial, t.id_turno, p.tipo_forma, COALESCE(m.label, 'NÃO IDENTIFICADO');
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_mart_agg_caixa_forma_pagamento
   ON mart.agg_caixa_forma_pagamento (id_empresa, id_filial, id_turno, tipo_forma);

@@ -58,19 +58,19 @@ def _fallback_plan(insight: Dict[str, Any], error: Optional[str] = None) -> Dict
         "priority": "CRITICAL" if severity == "CRITICAL" else ("HIGH" if severity == "WARN" else "MEDIUM"),
         "diagnosis": msg,
         "probable_causes": [
-            "Desvio operacional no turno/funcionario",
+            "Desvio operacional no turno/funcionário",
             "Processo sem dupla checagem no fechamento",
         ],
         "actions_today": [
             rec,
-            "Investigar top 5 eventos por impacto e registrar acao corretiva",
+            "Investigar top 5 eventos por impacto e registrar ação corretiva",
         ],
         "actions_7d": [
-            "Treinar equipe com foco no padrao do evento",
-            "Ajustar regra/limite operacional e monitorar recorrencia",
+            "Treinar equipe com foco no padrão do evento",
+            "Ajustar regra/limite operacional e monitorar recorrência",
         ],
         "validation_steps": [
-            "Comparar incidencia antes vs depois da acao",
+            "Comparar incidência antes vs. depois da ação",
             "Medir impacto financeiro recuperado em 7 dias",
         ],
         "expected_impact_range": f"R$ {max(0.0, impact * 0.4):,.2f} a R$ {max(0.0, impact):,.2f}",
@@ -394,8 +394,8 @@ def _create_notification_for_critical(
     """
 
     sev = "CRITICAL"
-    title = str(insight.get("title") or "Alerta critico")
-    body = str(insight.get("message") or "Risco critico detectado")
+    title = str(insight.get("title") or "Alerta crítico")
+    body = str(insight.get("message") or "Risco crítico detectado")
     ins_id = int(insight["id"])
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { clearAuth } from '../lib/auth';
 import { apiGet } from '../lib/api';
 
@@ -50,10 +50,21 @@ export default function AppNav({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const [search, setSearch] = useState('');
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
-  const params = useMemo(() => new URLSearchParams(searchParams.toString()), [searchParams]);
+  const params = useMemo(() => new URLSearchParams(search), [search]);
+
+  useEffect(() => {
+    const syncSearch = () => setSearch(window.location.search);
+    syncSearch();
+    window.addEventListener('popstate', syncSearch);
+    return () => window.removeEventListener('popstate', syncSearch);
+  }, []);
+
+  useEffect(() => {
+    setSearch(window.location.search);
+  }, [pathname]);
 
   useEffect(() => {
     const load = async () => {
@@ -74,7 +85,7 @@ export default function AppNav({
 
   useEffect(() => {
     setMenuOpen(false);
-  }, [pathname, searchParams]);
+  }, [pathname, search]);
 
   const onLogout = () => {
     clearAuth();

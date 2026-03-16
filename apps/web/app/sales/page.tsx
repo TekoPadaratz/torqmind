@@ -12,6 +12,8 @@ import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 export default function SalesPage() {
   const router = useRouter();
   const scope = useScopeQuery();

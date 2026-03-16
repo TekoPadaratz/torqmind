@@ -49,7 +49,7 @@ datasets:
     enabled: true
     table: dbo.FORMAS_PGTO_COMPROVANTES
     watermark_column: DATAREPL
-    # Opcional: usar query custom com join em COMPROVANTES para recorte eficiente por periodo.
+    # Opcional: usar query custom com join em COMPROVANTES para recorte eficiente por período.
     # query: |
     #   SELECT f.*
     #   FROM dbo.FORMAS_PGTO_COMPROVANTES f

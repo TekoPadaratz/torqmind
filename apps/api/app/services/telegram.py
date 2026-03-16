@@ -185,8 +185,8 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
     event_date = event_time[:10] if len(event_time) >= 10 else time.strftime("%Y-%m-%d")
     insight_id = _to_int(payload.get("insight_id"))
     impacto = float(payload.get("impacto_estimado") or 0.0)
-    title = str(payload.get("title") or "Alerta critico")
-    body = str(payload.get("body") or payload.get("message") or "Risco critico detectado.")
+    title = str(payload.get("title") or "Alerta crítico")
+    body = str(payload.get("body") or payload.get("message") or "Risco crítico detectado.")
     url = str(payload.get("url") or "/dashboard")
 
     dedupe_raw = f"{id_empresa}|{id_filial}|{insight_id or event_type}|{event_date}"

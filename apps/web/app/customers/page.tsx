@@ -12,6 +12,8 @@ import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 function buildChurnSignal(customer: any) {
   const reasons = customer?.reasons || {};
   const recencyDays = Number(reasons.recency_days || 0);

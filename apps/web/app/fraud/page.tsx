@@ -22,6 +22,8 @@ import {
 } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 export default function FraudPage() {
   const router = useRouter();
   const scope = useScopeQuery();

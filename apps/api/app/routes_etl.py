@@ -394,12 +394,12 @@ def run_micro_risk(
             dt_ref = (last_event_at.date() if last_event_at else datetime.now(timezone.utc).date())
 
             insight_type = f"MICRO_CRITICAL_{event_type}"
-            title = f"Risco critico ({event_type}) na filial {id_fil}"
+            title = f"Risco crítico ({event_type}) na filial {id_fil}"
             body = (
-                f"{eventos} evento(s) nos ultimos {minutes} min, score max {max_score}, "
+                f"{eventos} evento(s) nos últimos {minutes} min, score máx. {max_score}, "
                 f"impacto estimado R$ {impacto:,.2f}"
             )
-            rec = "Investigar imediatamente funcionario/turno/hora e bloquear reincidencia hoje."
+            rec = "Investigar imediatamente funcionário/turno/hora e bloquear reincidência hoje."
 
             upsert = conn.execute(
                 """

@@ -23,6 +23,10 @@ Acesse:
 - API: http://localhost:8000/docs
 - Postgres: localhost:5432
 
+Para acessar de outra máquina na LAN ou Radmin VPN, use o IP da máquina servidora:
+- Web: `http://IP_DO_SERVIDOR:3000`
+- API: `http://IP_DO_SERVIDOR:8000/docs`
+
 ---
 
 ## Fluxo rápido local (3 comandos)
@@ -52,12 +56,36 @@ Depois, acesse:
 - Health: http://localhost:8000/health
 - Debug DB (dev): http://localhost:8000/debug/db
 
+Os containers publicam:
+- Web em `0.0.0.0:3000`
+- API em `0.0.0.0:8000`
+
 Comandos úteis:
 
 ```bash
 make logs   # acompanha logs
+make migrate   # aplica todas as migrations em ordem
 make lint   # valida build do web + compilação Python
 make down   # derruba os serviços
+```
+
+### Backfill de snapshots executivos
+
+Os snapshots históricos de `churn`, `health score` e `aging financeiro` são persistidos por `dt_ref`.
+O backfill é resumível e registra progresso em:
+- `app.snapshot_backfill_runs`
+- `app.snapshot_backfill_steps`
+
+Rodar um backfill inicial:
+
+```bash
+START_DT=2024-01-01 END_DT=2024-12-31 STEP_DAYS=7 ID_EMPRESA=1 make backfill-snapshots
+```
+
+Retomar um backfill interrompido:
+
+```bash
+START_DT=2024-01-01 END_DT=2024-12-31 STEP_DAYS=7 ID_EMPRESA=1 make backfill-snapshots-resume
 ```
 
 ---
@@ -123,8 +151,8 @@ No diretório `apps/agent`, use sempre:
 cp config.example.yaml config.local.yaml
 ```
 
-Preencha segredos apenas em `config.local.yaml` (já ignorado pelo git).  
-Não versione `config.yaml`/`config.local.yaml` com credenciais reais.
+Em produção Windows, o diretório final do cliente deve conter apenas `config.enc`.  
+Use YAML apenas para desenvolvimento local ou migração para `config.enc`.
 
 ---
 
@@ -207,3 +235,28 @@ O endpoint `/debug/db` deve bater com o mesmo banco que você abriu no pgAdmin.
 O frontend agora converte erros da API em texto; verifique resposta em:
 - `http://localhost:8000/docs` (endpoint `/auth/login`)
 - senha do seed: `TorqMind@123` (ou `SEED_PASSWORD` no `.env`)
+
+### Frontend remoto, LAN e Radmin VPN
+O frontend não deve apontar para `localhost` quando aberto em outra máquina. A configuração agora funciona assim:
+
+- `NEXT_PUBLIC_API_URL`: URL pública fixa da API. Deixe vazia para o navegador usar o mesmo hostname da página atual com porta `8000`.
+- `API_INTERNAL_URL`: URL interna usada pelo container do Next.js em chamadas server-side. Em Docker, o default correto é `http://api:8000`.
+- `NEXT_PUBLIC_API_PORT`: porta pública usada no fallback automático do navegador. Default `8000`.
+- `APP_CORS_ORIGINS`: origens explícitas permitidas, por padrão `http://localhost:3000,http://127.0.0.1:3000`.
+- `APP_CORS_ORIGIN_REGEX`: regex para permitir acesso por hostname/IP na porta `3000`, cobrindo LAN e Radmin VPN sem hardcode de IP.
+
+Exemplos:
+
+- Desenvolvimento local na mesma máquina: acesse `http://localhost:3000`
+- Outra máquina na LAN: acesse `http://192.168.x.y:3000`
+- Outra máquina via Radmin VPN: acesse `http://IP_RADMIN:3000`
+
+Se quiser forçar uma URL pública fixa da API, defina no `.env`:
+
+```bash
+NEXT_PUBLIC_API_URL=http://192.168.x.y:8000
+```
+
+Portas que precisam estar acessíveis na máquina servidora:
+- `3000/tcp` para o frontend
+- `8000/tcp` para a API

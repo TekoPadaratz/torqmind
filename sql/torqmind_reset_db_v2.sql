@@ -2389,14 +2389,18 @@ CREATE INDEX IF NOT EXISTS ix_payment_type_map_lookup
 
 INSERT INTO app.payment_type_map (id_empresa, tipo_forma, label, category, severity_hint, active)
 VALUES
-  (NULL, 0, 'CAIXA_LOCAL', 'DINHEIRO', 'INFO', true),
-  (NULL, 1, 'DINHEIRO', 'DINHEIRO', 'INFO', true),
-  (NULL, 2, 'CARTAO_CREDITO', 'CARTAO', 'INFO', true),
-  (NULL, 3, 'CARTAO_DEBITO', 'CARTAO', 'INFO', true),
-  (NULL, 4, 'PIX', 'PIX', 'INFO', true),
-  (NULL, 5, 'CHEQUE', 'CHEQUE', 'WARN', true),
-  (NULL, 6, 'CONVENIO/FROTA', 'CONVENIO_FROTA', 'WARN', true),
-  (NULL, 999, 'OUTROS', 'OUTROS', 'WARN', true)
+  (NULL, 0, 'DINHEIRO', 'DINHEIRO', 'INFO', true),
+  (NULL, 1, 'PRAZO', 'PRAZO', 'WARN', true),
+  (NULL, 2, 'CHEQUE PRE', 'CHEQUE_PRE', 'WARN', true),
+  (NULL, 3, 'CARTÃO DE CRÉDITO', 'CARTAO_CREDITO', 'INFO', true),
+  (NULL, 4, 'CARTÃO DE DÉBITO', 'CARTAO_DEBITO', 'INFO', true),
+  (NULL, 5, 'CARTA FRETE', 'CARTA_FRETE', 'WARN', true),
+  (NULL, 6, 'CHEQUE A PAGAR', 'CHEQUE_A_PAGAR', 'WARN', true),
+  (NULL, 7, 'CHEQUE A VISTA', 'CHEQUE_A_VISTA', 'WARN', true),
+  (NULL, 8, 'MOEDAS DIFERESAS', 'MOEDAS_DIFERESAS', 'WARN', true),
+  (NULL, 9, 'OUTROS PAGOS', 'OUTROS_PAGOS', 'WARN', true),
+  (NULL, 10, 'CHEQUE PRÓPRIO', 'CHEQUE_PROPRIO', 'WARN', true),
+  (NULL, 28, 'PIX', 'PIX', 'INFO', true)
 ON CONFLICT (id_empresa_nk, tipo_forma)
 DO UPDATE SET
   label = EXCLUDED.label,
@@ -2630,8 +2634,8 @@ WITH labeled AS (
     f.referencia,
     f.tipo_forma,
     f.valor,
-    COALESCE(m.label, format('DESCONHECIDO (TIPO_FORMA=%s)', f.tipo_forma)) AS label,
-    COALESCE(m.category, 'DESCONHECIDO') AS category,
+    COALESCE(m.label, 'NÃO IDENTIFICADO') AS label,
+    COALESCE(m.category, 'NAO_IDENTIFICADO') AS category,
     COALESCE(m.severity_hint, 'WARN') AS severity_hint
   FROM dw.fact_pagamento_comprovante f
   LEFT JOIN LATERAL (
@@ -2675,8 +2679,8 @@ WITH labeled AS (
     f.referencia,
     f.tipo_forma,
     f.valor,
-    COALESCE(m.label, format('DESCONHECIDO (TIPO_FORMA=%s)', f.tipo_forma)) AS label,
-    COALESCE(m.category, 'DESCONHECIDO') AS category
+    COALESCE(m.label, 'NÃO IDENTIFICADO') AS label,
+    COALESCE(m.category, 'NAO_IDENTIFICADO') AS category
   FROM dw.fact_pagamento_comprovante f
   LEFT JOIN LATERAL (
     SELECT label, category
@@ -2715,9 +2719,9 @@ WITH base_ref AS (
     f.data_key,
     f.referencia,
     COUNT(*)::int AS qtd_formas,
-    COUNT(*) FILTER (WHERE UPPER(COALESCE(m.category, 'DESCONHECIDO')) = 'DESCONHECIDO')::int AS qtd_desconhecido,
+    COUNT(*) FILTER (WHERE UPPER(COALESCE(m.category, 'NAO_IDENTIFICADO')) = 'NAO_IDENTIFICADO')::int AS qtd_desconhecido,
     COALESCE(SUM(f.valor),0)::numeric(18,2) AS valor_total,
-    COALESCE(SUM(CASE WHEN UPPER(COALESCE(m.category, 'DESCONHECIDO')) = 'PIX' THEN f.valor ELSE 0 END),0)::numeric(18,2) AS valor_pix,
+    COALESCE(SUM(CASE WHEN UPPER(COALESCE(m.category, 'NAO_IDENTIFICADO')) = 'PIX' THEN f.valor ELSE 0 END),0)::numeric(18,2) AS valor_pix,
     COALESCE(MIN(f.id_turno), -1) AS id_turno
   FROM dw.fact_pagamento_comprovante f
   LEFT JOIN LATERAL (
@@ -2776,7 +2780,7 @@ WITH base_ref AS (
     id_filial,
     data_key,
     NULL::int AS id_turno,
-    'DESCONHECIDO_EXCESSO'::text AS event_type,
+    'FORMA_NAO_IDENTIFICADA'::text AS event_type,
     CASE
       WHEN (valor_desconhecido / NULLIF(valor_total,0)) >= 0.22 THEN 'CRITICAL'
       WHEN (valor_desconhecido / NULLIF(valor_total,0)) >= 0.12 THEN 'WARN'
@@ -3141,3 +3145,5 @@ EXCEPTION WHEN OTHERS THEN
   RAISE;
 END;
 $$ LANGUAGE plpgsql;
+\ir migrations/019_operational_truth_alignment.sql
+\ir migrations/020_snapshot_backfill_and_perf.sql

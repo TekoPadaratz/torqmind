@@ -2,7 +2,7 @@ BEGIN;
 
 INSERT INTO app.payment_type_map (id_empresa, tipo_forma, label, category, severity_hint, active)
 VALUES
-  (NULL, 0, 'CAIXA_LOCAL', 'DINHEIRO', 'INFO', true)
+  (NULL, 0, 'DINHEIRO', 'DINHEIRO', 'INFO', true)
 ON CONFLICT (id_empresa_nk, tipo_forma)
 DO UPDATE SET
   label = EXCLUDED.label,

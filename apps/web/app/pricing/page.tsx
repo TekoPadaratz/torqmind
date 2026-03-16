@@ -11,6 +11,8 @@ import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency, formatDateOnly, formatFilialLabel } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 function fmtNum(v: any, digits = 3) {
   return Number(v || 0).toLocaleString('pt-BR', {
     minimumFractionDigits: digits,
@@ -201,7 +203,7 @@ export default function PricingPage() {
                   <tr key={row.id_produto}>
                     <td>
                       <div><strong>{row.produto_nome}</strong></div>
-                      <div className="muted">{row.grupo_nome}</div>
+                      <div className="muted">{row.familia_combustivel} · {row.grupo_nome}</div>
                     </td>
                     <td>{fmtNum(row.avg_daily_volume, 3)}</td>
                     <td>{formatCurrency(row.avg_price_current)}</td>

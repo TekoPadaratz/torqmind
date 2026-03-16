@@ -4,7 +4,7 @@ COMPOSE ?= docker compose
 ENV_FILE ?= .env
 ENV_EXAMPLE ?= .envexemple
 
-.PHONY: setup up down logs migrate test test-agent lint ci
+.PHONY: setup up down logs migrate backfill-snapshots backfill-snapshots-resume test test-agent lint ci
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -33,7 +33,13 @@ logs:
 
 migrate:
 	@$(COMPOSE) exec -T postgres sh -lc 'until pg_isready -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" >/dev/null 2>&1; do sleep 1; done'
-	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -f /docker-entrypoint-initdb.d/003_mart_demo.sql'
+	@$(COMPOSE) exec -T postgres sh -lc 'for f in /docker-entrypoint-initdb.d/*.sql; do echo "Applying $$f"; psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -f "$$f"; done'
+
+backfill-snapshots:
+	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "CALL etl.run_operational_snapshot_backfill($${ID_EMPRESA:-1}::int, '\''$${START_DT:?missing START_DT}'\''::date, '\''$${END_DT:?missing END_DT}'\''::date, $${STEP_DAYS:-7}::int, false, false);"'
+
+backfill-snapshots-resume:
+	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "CALL etl.run_operational_snapshot_backfill($${ID_EMPRESA:-1}::int, '\''$${START_DT:?missing START_DT}'\''::date, '\''$${END_DT:?missing END_DT}'\''::date, $${STEP_DAYS:-7}::int, true, false);"'
 
 test:
 	@$(COMPOSE) exec -T api python -m unittest discover -s app -p 'test*.py'

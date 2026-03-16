@@ -21,6 +21,8 @@ import HeroMoneyCard from '../components/ui/HeroMoneyCard';
 import RiskBadge from '../components/ui/RiskBadge';
 import Skeleton from '../components/ui/Skeleton';
 
+export const dynamic = 'force-dynamic';
+
 function detailsHref(path: string, scope: any) {
   const qs = new URLSearchParams({
     dt_ini: scope.dt_ini,

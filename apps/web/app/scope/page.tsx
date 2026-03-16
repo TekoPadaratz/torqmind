@@ -8,6 +8,8 @@ import { apiGet } from '../lib/api';
 import { clearAuth, requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 
+export const dynamic = 'force-dynamic';
+
 function todayISO() {
   const d = new Date();
   return d.toISOString().slice(0, 10);
@@ -67,7 +69,7 @@ export default function ScopePage() {
         }
       } catch (e: any) {
         clearAuth();
-        setErr(extractApiError(e, 'Sessao invalida. Faça login novamente.'));
+        setErr(extractApiError(e, 'Sessão inválida. Faça login novamente.'));
         router.push('/');
       } finally {
         setLoading(false);

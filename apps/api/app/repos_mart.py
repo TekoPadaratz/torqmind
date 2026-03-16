@@ -30,6 +30,12 @@ EVENT_TYPE_LABELS = {
     "FUNCIONARIO_OUTLIER": "Comportamento fora do padrão",
 }
 
+SNAPSHOT_TABLES = {
+    "customer_churn_risk_daily": "mart.customer_churn_risk_daily",
+    "finance_aging_daily": "mart.finance_aging_daily",
+    "health_score_daily": "mart.health_score_daily",
+}
+
 
 def _format_brl(value: Any) -> str:
     return f"R$ {float(value or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -95,7 +101,7 @@ def _humanize_risk_reasons(reasons: Any, event_type: Any) -> List[str]:
     valor_total = float(metrics.get("valor_total") or 0)
     desconto_total = float(metrics.get("desconto_total") or 0)
     if desconto_total > 0 and not any("Desconto" in item for item in items):
-        items.append(f"Desconto total de R$ {desconto_total:,.2f} na operacao.".replace(",", "X").replace(".", ",").replace("X", "."))
+        items.append(f"Desconto total de R$ {desconto_total:,.2f} na operação.".replace(",", "X").replace(".", ",").replace("X", "."))
     if valor_total > 0 and not any("Valor acima" in item for item in items) and str(event_type or "").upper() == "CANCELAMENTO":
         items.append(f"Valor envolvido de R$ {valor_total:,.2f} no cancelamento.".replace(",", "X").replace(".", ",").replace("X", "."))
 
@@ -138,30 +144,32 @@ def _group_name_expression(group_alias: str, product_alias: str) -> str:
 def _fuel_filter_expression(group_alias: str, product_alias: str) -> str:
     product_name = _normalized_text_expression(f"{product_alias}.nome")
     group_name = _normalized_text_expression(f"{group_alias}.nome")
+    unit_name = _normalized_text_expression(f"{product_alias}.unidade")
     return f"""
       (
-        (
-          {product_name} LIKE 'GASOL%%'
-          OR {product_name} LIKE '%% GASOL%%'
-          OR {product_name} LIKE 'ETANOL%%'
-          OR {product_name} LIKE '%% ETANOL%%'
-          OR {product_name} LIKE 'DIESEL%%'
-          OR {product_name} LIKE '%% DIESEL%%'
-          OR {product_name} LIKE 'OLEO DIESEL S10%%'
-          OR {product_name} LIKE 'OLEO DIESEL S500%%'
-          OR {product_name} LIKE 'OLEO DIESEL BS500%%'
-          OR {product_name} LIKE '%% BS500%%'
-          OR {product_name} LIKE 'GNV%%'
-          OR (
+        CASE
+          WHEN (
+            {product_name} LIKE '%%GASOL%%'
+            OR {product_name} LIKE '%%ETANOL%%'
+            OR {product_name} LIKE '%%ALCOOL%%'
+            OR {product_name} LIKE '%%DIESEL S10%%'
+            OR {product_name} LIKE '%%S-10%%'
+            OR {product_name} LIKE '%%BS10%%'
+            OR {product_name} LIKE '%%DIESEL S500%%'
+            OR {product_name} LIKE '%%S-500%%'
+            OR {product_name} LIKE '%%BS500%%'
+            OR {product_name} LIKE '%%GNV%%'
+          ) THEN true
+          WHEN (
             {group_name} LIKE '%%COMBUST%%'
-            AND {product_name} NOT LIKE '%%BOMBA%%'
-            AND {product_name} NOT LIKE '%%FILTRO%%'
-            AND {product_name} NOT LIKE '%%KIT%%'
-            AND {product_name} NOT LIKE '%%MANGUEIRA%%'
-            AND {product_name} NOT LIKE '%%BICO%%'
-            AND {product_name} NOT LIKE '%%MEDIDORA%%'
+            OR {group_name} LIKE '%%GASOL%%'
+            OR {group_name} LIKE '%%ETANOL%%'
+            OR {group_name} LIKE '%%DIESEL%%'
           )
-        )
+          AND ({unit_name} IN ('LT', 'L', 'LITRO', 'LITROS', 'M3', 'MTS3') OR {unit_name} = '')
+          THEN true
+          ELSE false
+        END
         AND {product_name} NOT LIKE 'ADITIVO%%'
         AND {product_name} NOT LIKE '%% ADITIVO%%'
         AND {product_name} NOT LIKE '%% INJECTOR %%'
@@ -187,6 +195,8 @@ def _fuel_filter_expression(group_alias: str, product_alias: str) -> str:
         AND {product_name} NOT LIKE '%%250ML%%'
         AND {product_name} NOT LIKE '%%354ML%%'
         AND {product_name} NOT LIKE '%%500ML%%'
+        AND {product_name} NOT LIKE '%%1KG%%'
+        AND {product_name} NOT LIKE '%%20KG%%'
         AND {product_name} NOT LIKE '%% 1L%%'
         AND {product_name} NOT LIKE '%% 5L%%'
         AND {product_name} NOT LIKE '%% 20L%%'
@@ -206,18 +216,51 @@ def _employee_label(funcionario_nome: Any, id_funcionario: Any = None) -> str:
 def _payment_category_label(category: Any, label: Any = None) -> str:
     category_value = str(category or "").strip().upper()
     label_value = str(label or "").strip()
-    if category_value and category_value != "DESCONHECIDO":
-        return label_value or category_value.replace("_", " ").title()
-    if "TIPO_FORMA=0" in label_value.upper():
-        return "Caixa local"
-    if "TIPO_FORMA=" in label_value.upper():
-        raw_code = label_value.upper().split("TIPO_FORMA=", 1)[1].split(")", 1)[0].strip()
-        return f"Forma operacional em classificação (tipo {raw_code})"
-    return "Forma operacional em classificação"
+    if label_value and label_value.upper() != "NÃO IDENTIFICADO":
+        return label_value
+    if category_value and category_value != "NAO_IDENTIFICADO":
+        return category_value.replace("_", " ").title()
+    return "NÃO IDENTIFICADO"
 
 
 def _date_key(d: date) -> int:
     return int(d.strftime("%Y%m%d"))
+
+
+def _snapshot_meta(
+    role: str,
+    table_name: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    requested_dt_ref: Optional[date],
+    precision_mode: str,
+) -> Dict[str, Any]:
+    table = SNAPSHOT_TABLES[table_name]
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT
+        MIN(dt_ref) AS coverage_start_dt_ref,
+        MAX(dt_ref) AS coverage_end_dt_ref,
+        COUNT(*)::int AS row_count
+      FROM {table}
+      WHERE id_empresa = %s
+      {where_filial}
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone() or {}
+
+    start_dt = row.get("coverage_start_dt_ref")
+    end_dt = row.get("coverage_end_dt_ref")
+    has_exact = bool(requested_dt_ref and start_dt and end_dt and start_dt <= requested_dt_ref <= end_dt)
+    return {
+        "requested_dt_ref": requested_dt_ref,
+        "coverage_start_dt_ref": start_dt,
+        "coverage_end_dt_ref": end_dt,
+        "precision_mode": precision_mode,
+        "snapshot_status": "exact" if has_exact else "missing",
+        "row_count": int(row.get("row_count") or 0),
+    }
 
 
 def list_filiais(role: str, id_empresa: int) -> List[Dict[str, Any]]:
@@ -430,6 +473,18 @@ def competitor_pricing_overview(
           p.id_produto,
           COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
           {_group_name_expression("g", "p")} AS grupo_nome,
+          CASE
+            WHEN {_normalized_text_expression("p.nome")} LIKE '%%GASOL%%' THEN 'GASOLINA'
+            WHEN {_normalized_text_expression("p.nome")} LIKE '%%ETANOL%%'
+              OR {_normalized_text_expression("p.nome")} LIKE '%%ALCOOL%%' THEN 'ETANOL'
+            WHEN {_normalized_text_expression("p.nome")} LIKE '%%S10%%'
+              OR {_normalized_text_expression("p.nome")} LIKE '%%BS10%%' THEN 'DIESEL S10'
+            WHEN {_normalized_text_expression("p.nome")} LIKE '%%S500%%'
+              OR {_normalized_text_expression("p.nome")} LIKE '%%BS500%%'
+              OR {_normalized_text_expression("p.nome")} LIKE '%%DIESEL%%' THEN 'DIESEL S500'
+            WHEN {_normalized_text_expression("p.nome")} LIKE '%%GNV%%' THEN 'GNV'
+            ELSE 'COMBUSTÍVEL'
+          END AS familia_combustivel,
           COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio
         FROM dw.dim_produto p
         LEFT JOIN dw.dim_grupo_produto g
@@ -453,6 +508,7 @@ def competitor_pricing_overview(
         fp.id_produto,
         fp.produto_nome,
         fp.grupo_nome,
+        fp.familia_combustivel,
         fp.custo_medio,
         COALESCE(s.qtd_periodo, 0)::numeric(18,3) AS qtd_periodo,
         COALESCE(s.faturamento_periodo, 0)::numeric(18,2) AS faturamento_periodo,
@@ -476,6 +532,18 @@ def competitor_pricing_overview(
                 p.id_produto,
                 COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
                 {_group_name_expression("g", "p")} AS grupo_nome,
+                CASE
+                  WHEN {_normalized_text_expression("p.nome")} LIKE '%%GASOL%%' THEN 'GASOLINA'
+                  WHEN {_normalized_text_expression("p.nome")} LIKE '%%ETANOL%%'
+                    OR {_normalized_text_expression("p.nome")} LIKE '%%ALCOOL%%' THEN 'ETANOL'
+                  WHEN {_normalized_text_expression("p.nome")} LIKE '%%S10%%'
+                    OR {_normalized_text_expression("p.nome")} LIKE '%%BS10%%' THEN 'DIESEL S10'
+                  WHEN {_normalized_text_expression("p.nome")} LIKE '%%S500%%'
+                    OR {_normalized_text_expression("p.nome")} LIKE '%%BS500%%'
+                    OR {_normalized_text_expression("p.nome")} LIKE '%%DIESEL%%' THEN 'DIESEL S500'
+                  WHEN {_normalized_text_expression("p.nome")} LIKE '%%GNV%%' THEN 'GNV'
+                  ELSE 'COMBUSTÍVEL'
+                END AS familia_combustivel,
                 COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio,
                 0::numeric(18,3) AS qtd_periodo,
                 0::numeric(18,2) AS faturamento_periodo,
@@ -547,6 +615,7 @@ def competitor_pricing_overview(
                 "id_produto": row.get("id_produto"),
                 "produto_nome": row.get("produto_nome"),
                 "grupo_nome": row.get("grupo_nome"),
+                "familia_combustivel": row.get("familia_combustivel"),
                 "avg_daily_volume": round(avg_daily_volume, 3),
                 "avg_price_current": round(current_price, 4),
                 "competitor_price": round(competitor_price, 4),
@@ -572,7 +641,7 @@ def competitor_pricing_overview(
                 "recommendation": (
                     "Ajustar preço para defender volume"
                     if competitor_price > 0 and impact_match_vs_no_change_10d > 0
-                    else "Manter preço atual e acompanhar o mercado"
+                    else "Manter preço atual e monitorar a praça"
                 ),
             }
         )
@@ -1140,7 +1209,7 @@ def customers_churn_diamond(
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    where_as_of = "AND dt_ref <= %s" if as_of is not None else ""
+    where_as_of = "AND dt_ref = %s" if as_of is not None else ""
     params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of]) + [limit]
     sql = f"""
       SELECT
@@ -1169,34 +1238,16 @@ def customers_churn_diamond(
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         rows = list(conn.execute(sql, params).fetchall())
-        if as_of is not None and not rows:
-            fallback_params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [limit]
-            fallback_sql = f"""
-              SELECT
-                dt_ref,
-                id_cliente,
-                COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
-                last_purchase,
-                recency_days,
-                expected_cycle_days,
-                frequency_30,
-                frequency_90,
-                monetary_30,
-                monetary_90,
-                churn_score,
-                revenue_at_risk_30d,
-                recommendation,
-                reasons
-              FROM mart.customer_churn_risk_daily
-              WHERE id_empresa = %s
-                AND churn_score >= %s
-                AND id_cliente <> -1
-                {where_filial}
-              ORDER BY dt_ref DESC, churn_score DESC, revenue_at_risk_30d DESC
-              LIMIT %s
-            """
-            rows = list(conn.execute(fallback_sql, fallback_params).fetchall())
         return rows
+
+
+def customers_churn_snapshot_meta(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    as_of: Optional[date],
+) -> Dict[str, Any]:
+    return _snapshot_meta(role, "customer_churn_risk_daily", id_empresa, id_filial, as_of, "exact")
 
 
 def customer_churn_drilldown(
@@ -1251,7 +1302,7 @@ def customer_churn_drilldown(
       WHERE id_empresa = %s
         AND id_cliente = %s
         {"" if id_filial is None else "AND id_filial = %s"}
-        {"" if as_of is None else "AND dt_ref <= %s"}
+        {"" if as_of is None else "AND dt_ref = %s"}
       ORDER BY dt_ref DESC
       LIMIT 1
     """
@@ -1260,34 +1311,11 @@ def customer_churn_drilldown(
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         series = list(conn.execute(sql_series, params).fetchall())
         snap = conn.execute(sql_snapshot, params_snapshot).fetchone()
-        if as_of is not None and not snap:
-            fallback_sql = f"""
-              SELECT
-                dt_ref,
-                id_cliente,
-                COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
-                last_purchase,
-                recency_days,
-                expected_cycle_days,
-                frequency_30,
-                frequency_90,
-                monetary_30,
-                monetary_90,
-                ticket_30,
-                churn_score,
-                revenue_at_risk_30d,
-                recommendation,
-                reasons
-              FROM mart.customer_churn_risk_daily
-              WHERE id_empresa = %s
-                AND id_cliente = %s
-                {"" if id_filial is None else "AND id_filial = %s"}
-              ORDER BY dt_ref DESC
-              LIMIT 1
-            """
-            fallback_params = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial])
-            snap = conn.execute(fallback_sql, fallback_params).fetchone()
-    return {"snapshot": snap or {}, "series": series}
+    return {
+        "snapshot": snap or {},
+        "series": series,
+        "snapshot_meta": customers_churn_snapshot_meta(role, id_empresa, id_filial, as_of),
+    }
 
 
 def anonymous_retention_overview(
@@ -1353,9 +1381,9 @@ def anonymous_retention_overview(
     avg_repeat = (sum(float(r.get("repeat_proxy_idx") or 0) for r in latest_rows) / len(latest_rows)) if latest_rows else 0.0
 
     recommendation = (
-        "Recorrencia anonima caiu. Ajuste operacao por horario/dia, reveja mix de produtos e acione promocoes de retorno."
+        "Recorrência anônima caiu. Ajuste a operação por horário/dia, reveja o mix de produtos e acione promoções de retorno."
         if avg_trend < -8
-        else "Recorrencia anonima estavel. Monitorar horarios de maior queda e manter acoes de fidelizacao."
+        else "Recorrência anônima estável. Monitore horários de maior queda e mantenha ações de fidelização."
     )
 
     return {
@@ -1440,18 +1468,11 @@ def finance_aging_overview(
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    as_of_sql = "AND dt_ref <= %s" if as_of is not None else ""
+    as_of_sql = "AND dt_ref = %s" if as_of is not None else ""
     if id_filial is None:
-        # Consolidated tenant view: aggregate latest day across branches.
         sql = f"""
-          WITH latest AS (
-            SELECT MAX(dt_ref) AS dt_ref
-            FROM mart.finance_aging_daily
-            WHERE id_empresa = %s
-              {as_of_sql}
-          )
           SELECT
-            l.dt_ref,
+            %s::date AS dt_ref,
             COALESCE(SUM(f.receber_total_aberto),0)::numeric(18,2) AS receber_total_aberto,
             COALESCE(SUM(f.receber_total_vencido),0)::numeric(18,2) AS receber_total_vencido,
             COALESCE(SUM(f.pagar_total_aberto),0)::numeric(18,2) AS pagar_total_aberto,
@@ -1462,15 +1483,14 @@ def finance_aging_overview(
             COALESCE(SUM(f.bucket_31_60),0)::numeric(18,2) AS bucket_31_60,
             COALESCE(SUM(f.bucket_60_plus),0)::numeric(18,2) AS bucket_60_plus,
             COALESCE(AVG(f.top5_concentration_pct),0)::numeric(10,2) AS top5_concentration_pct,
-            COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps
-          FROM latest l
-          LEFT JOIN mart.finance_aging_daily f
-            ON f.id_empresa = %s
-           AND f.dt_ref = l.dt_ref
-          GROUP BY l.dt_ref
+            COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps,
+            COUNT(*)::int AS snapshot_rows
+          FROM mart.finance_aging_daily f
+          WHERE f.id_empresa = %s
+            AND f.dt_ref = %s
         """
-        params = [id_empresa] + ([as_of] if as_of is not None else []) + [id_empresa]
-        fallback_params = [id_empresa, id_empresa]
+        effective_as_of = as_of or date.today()
+        params = [effective_as_of, id_empresa, effective_as_of]
     else:
         sql = f"""
           SELECT
@@ -1485,7 +1505,8 @@ def finance_aging_overview(
             bucket_31_60,
             bucket_60_plus,
             top5_concentration_pct,
-            data_gaps
+            data_gaps,
+            1::int AS snapshot_rows
           FROM mart.finance_aging_daily
           WHERE id_empresa = %s
           {where_filial}
@@ -1495,19 +1516,18 @@ def finance_aging_overview(
         """
         if as_of is not None:
             params = [id_empresa, id_filial, as_of]
-            fallback_params = [id_empresa, id_filial]
         else:
             params = [id_empresa, id_filial]
-            fallback_params = params
+    snapshot_meta = _snapshot_meta(role, "finance_aging_daily", id_empresa, id_filial, as_of, "best_effort")
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         row = conn.execute(sql, params).fetchone()
-        # Older reference dates may have no snapshot if marts were built only for CURRENT_DATE.
-        # In this case, fallback to latest available snapshot to avoid returning all zeros.
-        if as_of is not None and (not row or row.get("dt_ref") is None):
-            fallback_sql = sql.replace(as_of_sql, "")
-            row = conn.execute(fallback_sql, fallback_params).fetchone()
-        return row or {
-            "dt_ref": None,
+        if row and int(row.get("snapshot_rows") or 0) > 0:
+            payload = dict(row)
+            payload.update(snapshot_meta)
+            payload["snapshot_status"] = "exact"
+            return payload
+        payload = {
+            "dt_ref": as_of,
             "receber_total_aberto": 0,
             "receber_total_vencido": 0,
             "pagar_total_aberto": 0,
@@ -1520,6 +1540,8 @@ def finance_aging_overview(
             "top5_concentration_pct": 0,
             "data_gaps": True,
         }
+        payload.update(snapshot_meta)
+        return payload
 
 
 def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
@@ -1533,7 +1555,7 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
     sql_curr = f"""
       SELECT
         COALESCE(SUM(total_valor),0)::numeric(18,2) AS total_valor,
-        COALESCE(SUM(CASE WHEN category = 'DESCONHECIDO' THEN total_valor ELSE 0 END),0)::numeric(18,2) AS unknown_valor,
+        COALESCE(SUM(CASE WHEN category = 'NAO_IDENTIFICADO' THEN total_valor ELSE 0 END),0)::numeric(18,2) AS unknown_valor,
         COALESCE(SUM(qtd_comprovantes),0)::int AS qtd_comprovantes,
         COUNT(*)::int AS row_count,
         COUNT(*) FILTER (WHERE total_valor > 0)::int AS nonzero_rows
@@ -1589,12 +1611,12 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
     elif total_curr <= 0 and nonzero_rows == 0:
         source_status = "value_gap"
         summary = "Os registros de pagamento chegaram, mas os valores ainda precisam de validação da carga para leitura executiva."
-    elif unknown_share >= 40:
+    elif unknown_share > 0:
         source_status = "partial"
-        summary = "A leitura financeira está disponível, mas parte relevante das formas ainda precisa de classificação comercial."
+        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos não identificados no recorte."
     else:
         source_status = "ok"
-        summary = "Leitura de meios de pagamento disponível para análise executiva."
+        summary = "Leitura de meios de pagamento alinhada à taxonomia oficial da Xpert."
 
     return {
         "total_valor": round(total_curr, 2),
@@ -1731,27 +1753,6 @@ def payments_overview(
     }
 
 
-def _cash_payment_label(tipo_forma: Any) -> str:
-    mapping = {
-        0: "DINHEIRO",
-        1: "PRAZO",
-        2: "CHEQUE PRE",
-        3: "CARTÃO DE CRÉDITO",
-        4: "CARTÃO DE DÉBITO",
-        5: "CARTA FRETE",
-        6: "CHEQUE A PAGAR",
-        7: "CHEQUE A VISTA",
-        8: "MOEDAS DIFERESAS",
-        9: "OUTROS PAGOS",
-        10: "CHEQUE PRÓPRIO",
-        28: "PIX",
-    }
-    try:
-        return mapping.get(int(tipo_forma), "NÃO IDENTIFICADO")
-    except Exception:
-        return "NÃO IDENTIFICADO"
-
-
 def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial])
@@ -1790,6 +1791,7 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
         id_turno,
         tipo_forma,
         forma_label,
+        forma_category,
         total_valor,
         qtd_comprovantes
       FROM mart.agg_caixa_forma_pagamento
@@ -1852,7 +1854,7 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
 
     payment_by_label: Dict[str, Dict[str, Any]] = {}
     for row in payment_rows:
-        label = str(row.get("forma_label") or _cash_payment_label(row.get("tipo_forma"))).strip() or "NÃO IDENTIFICADO"
+        label = str(row.get("forma_label") or "NÃO IDENTIFICADO").strip() or "NÃO IDENTIFICADO"
         bucket = payment_by_label.setdefault(
             label,
             {"label": label, "total_valor": 0.0, "qtd_comprovantes": 0, "turnos": set()},
@@ -1965,7 +1967,7 @@ def health_score_latest(
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    where_as_of = "AND dt_ref <= %s" if as_of is not None else ""
+    where_as_of = "AND dt_ref = %s" if as_of is not None else ""
     params = [id_empresa] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of])
     sql = f"""
       SELECT
@@ -1980,25 +1982,22 @@ def health_score_latest(
       ORDER BY dt_ref DESC
       LIMIT 1
     """
+    snapshot_meta = _snapshot_meta(role, "health_score_daily", id_empresa, id_filial, as_of, "snapshot")
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         row = conn.execute(sql, params).fetchone()
-        # Fallback to latest snapshot when requested reference date has no row.
-        if as_of is not None and (not row or row.get("dt_ref") is None):
-            fallback_params = [id_empresa] + ([] if id_filial is None else [id_filial])
-            fallback_sql = f"""
-              SELECT
-                dt_ref,
-                score_total,
-                components,
-                reasons
-              FROM mart.health_score_daily
-              WHERE id_empresa = %s
-              {where_filial}
-              ORDER BY dt_ref DESC
-              LIMIT 1
-            """
-            row = conn.execute(fallback_sql, fallback_params).fetchone()
-        return row or {"dt_ref": None, "score_total": 0, "components": {}, "reasons": {}}
+        if row:
+            payload = dict(row)
+            payload.update(snapshot_meta)
+            payload["snapshot_status"] = "exact"
+            return payload
+        payload = {
+            "dt_ref": as_of,
+            "score_total": 0,
+            "components": {},
+            "reasons": {},
+        }
+        payload.update(snapshot_meta)
+        return payload
 
 
 # ========================
@@ -2061,6 +2060,7 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
     cash = cash_overview(role, id_empresa, id_filial)
     finance = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
     churn = customers_churn_diamond(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=5)
+    payments = payments_overview(role, id_empresa, id_filial, dt_ini, dt_ref, anomaly_limit=5)
     pricing = (
         competitor_pricing_overview(role, id_empresa, id_filial, dt_ini=dt_ini, dt_fim=dt_ref, days_simulation=10)
         if id_filial is not None
@@ -2073,6 +2073,8 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
     overdue_pressure = receiving_overdue + paying_overdue
     top_churn = churn[0] if churn else None
     churn_impact = sum(float(item.get("revenue_at_risk_30d") or 0) for item in churn[:5])
+    payments_kpis = payments.get("kpis") or {}
+    payment_anomaly = (payments.get("anomalies") or [None])[0]
     pricing_summary = pricing.get("summary") if isinstance(pricing, dict) else {}
     pricing_items = pricing.get("items") if isinstance(pricing, dict) else []
     pricing_impact = float(pricing_summary.get("total_lost_if_no_change_10d") or 0)
@@ -2135,6 +2137,24 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
                     f"Receber vencido: {_format_brl(receiving_overdue)}",
                     f"Pagar vencido: {_format_brl(paying_overdue)}",
                     f"Top 5 concentram {float(finance.get('top5_concentration_pct') or 0):.1f}% da carteira",
+                ],
+            }
+        )
+
+    if float(payments_kpis.get("unknown_valor") or 0) > 0 or payment_anomaly:
+        candidates.append(
+            {
+                "kind": "payments",
+                "weight": float(payment_anomaly.get("impacto_estimado") or 0) if payment_anomaly else float(payments_kpis.get("unknown_valor") or 0),
+                "impact_value": float(payment_anomaly.get("impacto_estimado") or 0) if payment_anomaly else float(payments_kpis.get("unknown_valor") or 0),
+                "priority": "Hoje" if payment_anomaly else "Acompanhar",
+                "headline": "Revisar meios de pagamento fora do padrão antes do próximo fechamento.",
+                "cause": "A taxonomia oficial de pagamentos já foi aplicada, mas o recorte ainda mostra anomalia ou valores sem identificação comercial.",
+                "action": "Abrir o bloco de pagamentos, validar o turno mais exposto e corrigir a origem dos meios não identificados ainda neste ciclo.",
+                "evidence": [
+                    f"Não identificado: {_format_brl(payments_kpis.get('unknown_valor'))}",
+                    payment_anomaly.get("event_label") if payment_anomaly else None,
+                    payment_anomaly.get("turno_label") if payment_anomaly else None,
                 ],
             }
         )
@@ -2238,6 +2258,11 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
         "highlights": [
             primary["action"],
             *[item["headline"] for item in secondary],
+            *(
+                [f"Financeiro histórico em {finance.get('precision_mode')} até {finance.get('coverage_end_dt_ref')}."]
+                if finance.get("snapshot_status") != "exact"
+                else []
+            ),
         ][:3],
     }
 

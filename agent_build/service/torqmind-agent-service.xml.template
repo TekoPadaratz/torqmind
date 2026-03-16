@@ -1,0 +1,22 @@
+<service>
+  <id>TorqMindAgent</id>
+  <name>TorqMind Agent</name>
+  <description>TorqMind ETL Agent</description>
+
+  <executable>%BASE%\torqmind-agent.exe</executable>
+  <arguments>run --loop --interval {{INTERVAL_SECONDS}} --config "%BASE%\config.enc"</arguments>
+  <workingdirectory>%BASE%</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>15 sec</stoptimeout>
+
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <onfailure action="restart" delay="60 sec"/>
+</service>

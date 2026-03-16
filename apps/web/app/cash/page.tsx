@@ -18,6 +18,8 @@ import {
 } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 const PIE_COLORS = ['#38bdf8', '#34d399', '#f59e0b', '#f87171', '#a78bfa', '#f472b6', '#94a3b8'];
 
 function severityTone(value: string) {
@@ -172,9 +174,15 @@ export default function CashPage() {
                         </div>
                       </div>
                       <div className="cashBoxMetrics cashBoxMetricsSecondary">
-                        <div className="cashMetric">
+                        <div className="cashMetric cashMetricWide">
                           <div className="label">Total vendido</div>
                           <div className="cashMetricValue">{formatCurrency(item.total_vendas)}</div>
+                        </div>
+                        <div className="cashMetric">
+                          <div className="label">Vendas válidas</div>
+                          <div className="cashMetricValue">
+                            {formatCurrency(Number(item.total_vendas || 0) - Number(item.total_cancelamentos || 0))}
+                          </div>
                         </div>
                         <div className="cashMetric">
                           <div className="label">Pagamentos</div>
@@ -185,7 +193,7 @@ export default function CashPage() {
                           <div className="cashMetricValue">{formatCurrency(item.total_cancelamentos)}</div>
                         </div>
                         <div className="cashMetric">
-                          <div className="label">Vendas válidas</div>
+                          <div className="label">Comprovantes válidos</div>
                           <div className="cashMetricValue">{Number(item.qtd_vendas || 0)}</div>
                         </div>
                       </div>

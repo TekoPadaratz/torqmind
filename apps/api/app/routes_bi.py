@@ -209,6 +209,7 @@ def customers_overview(
         "top_customers": repos_mart.customers_top(role, tenant, filial, dt_ini, dt_fim, limit=15),
         "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=as_of),
         "churn_top": churn_top,
+        "churn_snapshot": repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
         "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim),
     }
 
@@ -248,6 +249,7 @@ def clients_churn(
 
     return {
         "top_risk": top,
+        "snapshot_meta": repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
         "summary": {
             "total_top_risk": len(top),
             "avg_churn_score": avg_churn_score,

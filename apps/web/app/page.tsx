@@ -24,7 +24,7 @@ export default function LoginPage() {
       })
       .catch(() => {
         clearAuth();
-        setError("Sessao expirada ou invalida. Faça login novamente.");
+        setError("Sessão expirada ou inválida. Faça login novamente.");
       })
       .finally(() => {
         setCheckingSession(false);

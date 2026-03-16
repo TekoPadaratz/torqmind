@@ -2,6 +2,16 @@
 
 Agent de produção para rodar no servidor do cliente, extrair incrementalmente do SQL Server (Xpert) e enviar para a API TorqMind em **NDJSON**.
 
+## Modelo de configuração corporativo
+
+O padrão premium usa um único arquivo criptografado:
+
+- `config.enc`: configuração completa criptografada com **DPAPI LocalMachine**
+- formato em disco: payload binário DPAPI; descriptografia apenas em memória
+
+Em produção Windows, o diretório final do agent não deve conter `config.yaml` com dados reais.
+Toda a configuração é descriptografada apenas em memória pelo agent.
+
 ## O que este agent garante
 
 - Extração incremental por dataset com watermark por dataset/scope.
@@ -15,13 +25,19 @@ Agent de produção para rodar no servidor do cliente, extrair incrementalmente 
 
 ## Pré-requisitos no servidor do cliente
 
-1. Python 3.10+
+Para instalação premium no Windows:
+
+1. Não exige Python instalado no cliente.
 2. Driver ODBC SQL Server instalado (`ODBC Driver 17` ou `18`).
 3. Conectividade de rede:
 - Servidor SQL Server (porta padrão 1433 ou custom).
 - API TorqMind (ex: `https://torqmind.com/api`).
 
-## Instalação
+Para rodar por código-fonte durante desenvolvimento:
+
+1. Python 3.10+
+
+## Instalação por código-fonte
 
 ```bash
 cd apps/agent
@@ -33,9 +49,9 @@ pip install -r requirements.txt
 ## Configuração
 
 Arquivos:
-- `config.example.yaml`: exemplo sem segredos (versionado)
-- `config.local.yaml`: sua configuração real (não versionada)
-- `config.yaml`: legado (não versionar; use apenas local se precisar de compatibilidade)
+- `config.example.yaml`: exemplo de desenvolvimento/local (versionado)
+- `config.local.yaml`: configuração local de desenvolvimento
+- `config.enc`: configuração completa criptografada usada no pacote Windows
 
 Crie o local a partir do exemplo:
 
@@ -43,12 +59,12 @@ Crie o local a partir do exemplo:
 cp config.example.yaml config.local.yaml
 ```
 
-Por padrão, a CLI já usa `config.local.yaml`.
+Para desenvolvimento, a CLI pode continuar usando `config.local.yaml`.
+Para produção Windows, use `config.enc`.
 
 Campos principais:
-- `sqlserver.dsn` **ou** `sqlserver.server/database/user/password/driver`
+- `sqlserver.dsn` **ou** `sqlserver.server/port/database/user/driver`
 - `api.base_url`
-- `api.ingest_key` (produção)
 - `api.empresa_id` (somente dev)
 - `batch_size`, `fetch_size`, `max_retries`, `timeout_seconds`, `gzip_enabled`
 - `spool_dir`, `spool_flush_max_files`
@@ -61,6 +77,7 @@ Campos principais:
 - `TORQMIND_EMPRESA_ID`
 - `TORQMIND_SQLSERVER_DSN`
 - `TORQMIND_SQLSERVER_SERVER`
+- `TORQMIND_SQLSERVER_PORT`
 - `TORQMIND_SQLSERVER_DATABASE`
 - `TORQMIND_SQLSERVER_USER`
 - `TORQMIND_SQLSERVER_PASSWORD`
@@ -81,10 +98,42 @@ Campos principais:
 
 ## Comandos
 
+### Configuração criptografada
+
+Criar `config.enc`:
+
+```bash
+python -m agent config init --config config.enc --interactive
+```
+
+Alterar um ou mais campos:
+
+```bash
+python -m agent config set --config config.enc --api-base-url https://api.torqmind.com --interval-seconds 60
+```
+
+Editar de forma interativa:
+
+```bash
+python -m agent config edit --config config.enc --interactive
+```
+
+Visualizar resumo mascarado:
+
+```bash
+python -m agent config show-safe --config config.enc
+```
+
+Migrar YAML legado para `config.enc`:
+
+```bash
+python -m agent config migrate-from-yaml --source config.local.yaml --config config.enc
+```
+
 ### Check completo
 
 ```bash
-python -m agent check --config config.local.yaml
+python -m agent check --config config.enc
 ```
 
 Valida:
@@ -92,46 +141,58 @@ Valida:
 - ping API (`GET /health`)
 - ingest credentials (`POST /ingest/filiais` vazio)
 
+### Teste completo de configuração
+
+```bash
+python -m agent config test --config config.enc
+```
+
+Valida:
+- leitura e descriptografia do `config.enc`
+- conexão SQL Server
+- reachability da API
+- validação das credenciais de ingestão
+
 ### Um ciclo de extração/envio
 
 ```bash
-python -m agent run --once --config config.local.yaml
+python -m agent run --once --config config.enc
 ```
 
 Resetando watermark de um dataset antes do ciclo:
 
 ```bash
-python -m agent run --once --reset-watermark comprovantes --config config.local.yaml
+python -m agent run --once --reset-watermark comprovantes --config config.enc
 ```
 
 Processando todos os datasets habilitados sem abortar no primeiro erro:
 
 ```bash
-python -m agent run --once --continue-on-error --config config.local.yaml
+python -m agent run --once --continue-on-error --config config.enc
 ```
 
 ### Daemon
 
 ```bash
-python -m agent run --loop --interval 60 --config config.local.yaml
+python -m agent run --loop --interval 60 --config config.enc
 ```
 
 ### Backfill de dataset
 
 ```bash
-python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-01 --config config.local.yaml
+python -m agent backfill --dataset comprovantes --from 2026-01-01 --to 2026-03-01 --config config.enc
 ```
 
 ### Reset de watermark (comando dedicado)
 
 ```bash
-python -m agent reset-watermark --dataset comprovantes --config config.local.yaml
+python -m agent reset-watermark --dataset comprovantes --config config.enc
 ```
 
 ### Schema scan (AR/AP)
 
 ```bash
-python -m agent schema-scan --keywords "PAGAR,RECEBER,TITULO,DUPLICATA,FINANC" --config config.local.yaml
+python -m agent schema-scan --keywords "PAGAR,RECEBER,TITULO,DUPLICATA,FINANC" --config config.enc
 ```
 
 Saída padrão: `docs/xpert_schema_report.json`
@@ -191,6 +252,54 @@ docker run --rm torqmind-agent
 
 - `main.py` continua existindo e chama a nova CLI.
 - `config.local.yaml` legado (`api_url`, `id_empresa`, `id_db`) continua aceito.
+- `config.yaml` / `config.local.yaml` legados podem ser migrados com `config migrate-from-yaml`.
 - Mapeamento base dos datasets críticos preservado:
   - `COMPROVANTES`, `MOVPRODUTOS`, `ITENSMOVPRODUTOS`
   - watermark padrão em `DATAREPL`
+
+## Pacote Windows premium
+
+Build local no Windows:
+
+```powershell
+cd agent_build
+.\build.ps1
+```
+
+O release gerado inclui:
+
+- `torqmind-agent.exe`
+- `torqmind-agent-service.exe`
+- `torqmind-agent-service.xml.template`
+- `update-config.bat`
+
+Instalador Inno Setup:
+
+- script: `agent_build/installer/setup.iss`
+- compilar com checkout local Windows, não via `\\wsl.localhost\...`
+
+Fluxo do instalador:
+
+1. copia binários
+2. coleta os dados no wizard
+3. cria `config.enc` criptografado
+4. aplica ACL local
+5. instala serviço Windows
+6. configura restart automático e delayed auto-start
+7. inicia o serviço
+
+Troca posterior da configuração:
+
+```bat
+update-config.bat
+```
+
+Esse utilitário chama o agent em modo interativo e regrava `config.enc` sem reinstalação.
+
+Verificar serviço no Windows:
+
+```powershell
+Get-Service TorqMindAgent
+sc.exe qc TorqMindAgent
+sc.exe query TorqMindAgent
+```

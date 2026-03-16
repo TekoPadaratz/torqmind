@@ -12,6 +12,8 @@ import { buildUserLabel, formatCurrency } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { useScopeQuery } from '../lib/scope';
 
+export const dynamic = 'force-dynamic';
+
 function buildRiskStatus(score: number) {
   if (score >= 80) return { label: 'Atenção operacional', className: 'warn' };
   if (score >= 60) return { label: 'Monitorar rotina', className: 'info' };
@@ -73,7 +75,7 @@ export default function GoalsPage() {
   const leaderboard = useMemo(
     () =>
       (data?.leaderboard || [])
-        .filter((r: any) => String(r?.funcionario_nome || '').trim() && String(r?.funcionario_nome || '').toLowerCase() !== 'sem funcionario')
+        .filter((r: any) => String(r?.funcionario_nome || '').trim() && String(r?.funcionario_nome || '').toLowerCase() !== 'sem funcionário')
         .map((r: any, index: number) => ({
           ...r,
           rank: index + 1,

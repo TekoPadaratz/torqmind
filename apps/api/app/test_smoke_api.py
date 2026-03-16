@@ -196,6 +196,7 @@ class SmokeApiTest(unittest.TestCase):
         items = body_overview.get("items") or []
         if items:
             first = items[0]
+            self.assertIn("familia_combustivel", first)
             status_save, body_save = self._request(
                 "/bi/pricing/competitor/prices?id_empresa=1&id_filial=1",
                 method="POST",
@@ -273,6 +274,8 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("source_status", body["kpis"])
         self.assertIn("summary", body["kpis"])
         self.assertIn(body["kpis"].get("source_status"), {"ok", "partial", "value_gap", "unavailable"})
+        for row in body.get("by_day") or []:
+            self.assertIn("category_label", row)
 
     def test_cash_overview_endpoint_returns_contract(self) -> None:
         status, body = self._request(
@@ -288,6 +291,15 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("cancelamentos", body)
         self.assertIn("alerts", body)
         self.assertIn(body.get("source_status"), {"ok", "unavailable"})
+
+    def test_finance_overview_exposes_snapshot_status(self) -> None:
+        status, body = self._request(
+            "/bi/finance/overview?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("aging", body)
+        self.assertIn("snapshot_status", body["aging"])
 
     def test_micro_risk_endpoint(self) -> None:
         # Keep telegram disabled by default in smoke; endpoint must still succeed.
