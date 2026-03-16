@@ -1,19 +1,21 @@
 import axios from "axios";
 
 const DEFAULT_API_PORT = process.env.NEXT_PUBLIC_API_PORT || "8000";
+const PUBLIC_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
 function normalizeBaseURL(value: string) {
   return value.replace(/\/+$/, "");
 }
 
 function resolveBaseURL() {
-  if (process.env.NEXT_PUBLIC_API_URL) return normalizeBaseURL(process.env.NEXT_PUBLIC_API_URL);
-
   if (typeof window !== "undefined") {
+    if (PUBLIC_API_BASE_URL) return normalizeBaseURL(PUBLIC_API_BASE_URL);
+    if (process.env.NEXT_PUBLIC_API_URL) return normalizeBaseURL(process.env.NEXT_PUBLIC_API_URL);
     return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`;
   }
 
   if (process.env.API_INTERNAL_URL) return normalizeBaseURL(process.env.API_INTERNAL_URL);
+  if (process.env.NEXT_PUBLIC_API_URL) return normalizeBaseURL(process.env.NEXT_PUBLIC_API_URL);
 
   return `http://api:${DEFAULT_API_PORT}`;
 }

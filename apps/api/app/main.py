@@ -36,7 +36,7 @@ def _ensure_dev_seed() -> None:
 
     seed_main()
 
-app = FastAPI(title="TorqMind API", version="0.2.1")
+app = FastAPI(title="TorqMind API", version="0.2.1", root_path=settings.app_root_path or "")
 
 cors_origins = [item.strip() for item in str(settings.app_cors_origins or "").split(",") if item.strip()]
 
