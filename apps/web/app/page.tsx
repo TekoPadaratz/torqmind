@@ -6,7 +6,7 @@ import { extractApiError } from "./lib/errors";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("master@torqmind.com");
-  const [password, setPassword] = useState("TorqMind@123");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
 

@@ -99,9 +99,9 @@ docker compose exec api python -m app.cli.seed
 ```
 
 Cria/atualiza:
-- **MASTER**  → `master@torqmind.local` / `TorqMind@123`
-- **OWNER**   → `owner@empresa1.local` / `TorqMind@123`  (Empresa 1)
-- **MANAGER** → `manager@empresa1.local` / `TorqMind@123` (Empresa 1, Filial 1)
+- **MASTER**  → `master@torqmind.local` / valor definido em `SEED_PASSWORD`
+- **OWNER**   → `owner@empresa1.local` / valor definido em `SEED_PASSWORD`  (Empresa 1)
+- **MANAGER** → `manager@empresa1.local` / valor definido em `SEED_PASSWORD` (Empresa 1, Filial 1)
 
 E imprime o `ingest_key` da Empresa 1 (útil para o Agent).
 
@@ -234,7 +234,7 @@ O endpoint `/debug/db` deve bater com o mesmo banco que você abriu no pgAdmin.
 ### Login falhando com 422 / erro estranho no front
 O frontend agora converte erros da API em texto; verifique resposta em:
 - `http://localhost:8000/docs` (endpoint `/auth/login`)
-- senha do seed: `TorqMind@123` (ou `SEED_PASSWORD` no `.env`)
+- valor atual de `SEED_PASSWORD` no seu `.env` local
 
 ### Frontend remoto, LAN e Radmin VPN
 O frontend não deve apontar para `localhost` quando aberto em outra máquina. A configuração agora funciona assim:

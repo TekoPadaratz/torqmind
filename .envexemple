@@ -1,10 +1,10 @@
 # Postgres
 PG_HOST=postgres
 PG_PORT=5432
-PG_DATABASE=database
+PG_DATABASE=CHANGE_ME_DATABASE
 PG_USER=postgres
-PG_PASSWORD=0000
-DATABASE_URL=postgresql+asyncpg://postgres:0000@postgres:5432/database
+PG_PASSWORD=CHANGE_ME_DB_PASSWORD
+DATABASE_URL=postgresql+asyncpg://postgres:CHANGE_ME_DB_PASSWORD@postgres:5432/CHANGE_ME_DATABASE
 APP_ENV=dev
 APP_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 APP_CORS_ORIGIN_REGEX=^https?://([a-zA-Z0-9.-]+|\\d{1,3}(?:\\.\\d{1,3}){3})(:3000)?$
@@ -15,7 +15,7 @@ API_JWT_ISSUER=torqmind-api
 API_ACCESS_TOKEN_MINUTES=60
 INGEST_REQUIRE_KEY=False
 
-SEED_PASSWORD=SuaSenha
+SEED_PASSWORD=CHANGE_ME_SEED_PASSWORD
 
 # Web
 API_INTERNAL_URL=http://api:8000
