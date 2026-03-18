@@ -45,6 +45,18 @@ def _connect():
     return get_conn(role="MASTER", tenant_id=None, branch_id=None)
 
 
+def _sync_tenant_identity(conn) -> None:
+    conn.execute(
+        """
+        SELECT setval(
+          pg_get_serial_sequence('app.tenants', 'id_empresa'),
+          GREATEST(COALESCE((SELECT MAX(id_empresa) FROM app.tenants), 0), 1),
+          true
+        )
+        """
+    )
+
+
 def _require_platform_access(claims: dict[str, Any]) -> None:
     if not bool((claims.get("access") or {}).get("platform")):
         raise AuthError(403, "platform_forbidden", "Acesso interno não permitido.")
@@ -430,6 +442,7 @@ def upsert_company(
     with _connect() as conn:
         previous = _load_company_row(tenant_id) if tenant_id is not None else None
         if tenant_id is None:
+            _sync_tenant_identity(conn)
             row = conn.execute(
                 """
                 INSERT INTO app.tenants (
@@ -550,106 +563,11 @@ def upsert_branch(
     branch_id: int | None = None,
 ) -> dict[str, Any]:
     _assert_company_mutable(claims, tenant_id)
-    with _connect() as conn:
-        previous = None
-        if branch_id is not None:
-            previous = conn.execute(
-                """
-                SELECT *
-                FROM auth.filiais
-                WHERE id_empresa = %s AND id_filial = %s
-                """,
-                (tenant_id, branch_id),
-            ).fetchone()
-            if not previous:
-                raise AuthError(404, "branch_not_found", "Filial não encontrada.")
-            previous = dict(previous)
-            conn.execute(
-                """
-                UPDATE auth.filiais
-                SET
-                  nome = %s,
-                  cnpj = %s,
-                  is_active = %s,
-                  valid_from = COALESCE(%s, valid_from),
-                  valid_until = %s,
-                  blocked_reason = %s
-                WHERE id_empresa = %s AND id_filial = %s
-                """,
-                (
-                    payload["nome"],
-                    payload.get("cnpj"),
-                    bool(payload.get("is_enabled", True)),
-                    payload.get("valid_from"),
-                    payload.get("valid_until"),
-                    payload.get("blocked_reason"),
-                    tenant_id,
-                    branch_id,
-                ),
-            )
-        else:
-            next_row = conn.execute(
-                "SELECT COALESCE(MAX(id_filial), 0) + 1 AS next_id FROM auth.filiais WHERE id_empresa = %s",
-                (tenant_id,),
-            ).fetchone()
-            branch_id = int(next_row["next_id"])
-            conn.execute(
-                """
-                INSERT INTO auth.filiais (
-                  id_empresa,
-                  id_filial,
-                  nome,
-                  cnpj,
-                  is_active,
-                  valid_from,
-                  valid_until,
-                  blocked_reason
-                )
-                VALUES (%s, %s, %s, %s, %s, COALESCE(%s, CURRENT_DATE), %s, %s)
-                """,
-                (
-                    tenant_id,
-                    branch_id,
-                    payload["nome"],
-                    payload.get("cnpj"),
-                    bool(payload.get("is_enabled", True)),
-                    payload.get("valid_from"),
-                    payload.get("valid_until"),
-                    payload.get("blocked_reason"),
-                ),
-            )
-
-        current = conn.execute(
-            """
-            SELECT
-              id_empresa,
-              id_filial,
-              nome,
-              cnpj,
-              is_active,
-              valid_from,
-              valid_until,
-              blocked_reason,
-              created_at,
-              updated_at
-            FROM auth.filiais
-            WHERE id_empresa = %s AND id_filial = %s
-            """,
-            (tenant_id, branch_id),
-        ).fetchone()
-        current_dict = dict(current)
-        _audit(
-            conn,
-            claims,
-            "branch.update" if previous else "branch.create",
-            "branch",
-            f"{tenant_id}:{branch_id}",
-            previous,
-            current_dict,
-            ip,
-        )
-        conn.commit()
-    return current_dict
+    raise AuthError(
+        409,
+        "branch_sync_managed",
+        "Filiais são sincronizadas da Xpert via ingest/ETL e não podem ser cadastradas manualmente.",
+    )
 
 
 def list_users(
@@ -684,6 +602,7 @@ def list_users(
         filtered.append(
             {
                 **user,
+                "id": str(user.get("id")),
                 "is_enabled": bool(user.get("is_active", True)),
                 "telegram_configured": bool(user.get("telegram_enabled") and user.get("telegram_chat_id")),
                 "accesses": accesses,
@@ -775,6 +694,8 @@ def upsert_user(
                 payload.get("valid_from"),
                 payload.get("valid_until"),
                 bool(payload.get("must_change_password", False)),
+                payload.get("locked_until"),
+                bool(payload.get("reset_failed_login", False)),
             ]
             if payload.get("password"):
                 password_sql = ", password_hash = %s"
@@ -790,7 +711,9 @@ def upsert_user(
                   is_active = %s,
                   valid_from = COALESCE(%s, valid_from),
                   valid_until = %s,
-                  must_change_password = %s
+                  must_change_password = %s,
+                  locked_until = %s,
+                  failed_login_count = CASE WHEN %s THEN 0 ELSE failed_login_count END
                   {password_sql}
                 WHERE id = %s::uuid
                 """,
@@ -867,6 +790,8 @@ def upsert_user(
               valid_from,
               valid_until,
               must_change_password,
+              failed_login_count,
+              locked_until,
               last_login_at
             FROM auth.users
             WHERE id = %s::uuid
@@ -1049,6 +974,7 @@ def _sync_active_contract_summary(conn, tenant_id: int) -> None:
             """
             UPDATE app.tenants
             SET
+              channel_id = NULL,
               plan_name = NULL,
               monthly_amount = NULL,
               billing_day = NULL,
@@ -1057,6 +983,82 @@ def _sync_active_contract_summary(conn, tenant_id: int) -> None:
             WHERE id_empresa = %s
             """,
             (tenant_id,),
+        )
+
+
+def _contract_identity_changed(previous: dict[str, Any], payload: dict[str, Any]) -> bool:
+    tracked_fields = (
+        "tenant_id",
+        "channel_id",
+        "plan_name",
+        "monthly_amount",
+        "billing_day",
+        "issue_day",
+        "start_date",
+        "commission_first_year_pct",
+        "commission_recurring_pct",
+    )
+    for field in tracked_fields:
+        if previous.get(field) != payload.get(field):
+            return True
+    return False
+
+
+def _close_active_contracts(
+    conn,
+    claims: dict[str, Any],
+    tenant_id: int,
+    new_start_date: date,
+    exclude_id: int | None,
+    ip: str | None,
+) -> None:
+    query = """
+        SELECT *
+        FROM billing.contracts
+        WHERE tenant_id = %s
+          AND is_enabled = true
+    """
+    params: list[Any] = [tenant_id]
+    if exclude_id is not None:
+        query += " AND id <> %s "
+        params.append(exclude_id)
+    query += " ORDER BY start_date DESC, id DESC "
+    rows = conn.execute(query, params).fetchall()
+    previous_end = new_start_date - timedelta(days=1)
+    for row in rows:
+        previous = dict(row)
+        transition_end = previous_end if previous_end >= previous["start_date"] else previous["start_date"]
+        end_date = previous.get("end_date")
+        if end_date and end_date <= transition_end:
+            if not previous.get("is_enabled"):
+                continue
+            next_state = {**previous, "is_enabled": False}
+        else:
+            next_state = {
+                **previous,
+                "is_enabled": False,
+                "end_date": transition_end,
+            }
+        conn.execute(
+            """
+            UPDATE billing.contracts
+            SET
+              is_enabled = false,
+              end_date = %s,
+              updated_at = now()
+            WHERE id = %s
+            """,
+            (next_state.get("end_date"), previous["id"]),
+        )
+        _audit(
+            conn,
+            claims,
+            "contract.close",
+            "contract",
+            str(previous["id"]),
+            previous,
+            next_state,
+            ip,
         )
 
 
@@ -1123,6 +1125,15 @@ def upsert_contract(claims: dict[str, Any], payload: dict[str, Any], ip: str | N
     with _connect() as conn:
         previous = None
         if contract_id is None:
+            if bool(payload.get("is_enabled", True)):
+                _close_active_contracts(
+                    conn,
+                    claims,
+                    int(payload["tenant_id"]),
+                    payload["start_date"],
+                    exclude_id=None,
+                    ip=ip,
+                )
             row = conn.execute(
                 """
                 INSERT INTO billing.contracts (
@@ -1163,46 +1174,116 @@ def upsert_contract(claims: dict[str, Any], payload: dict[str, Any], ip: str | N
             if not previous:
                 raise AuthError(404, "contract_not_found", "Contrato não encontrado.")
             previous = dict(previous)
-            row = conn.execute(
-                """
-                UPDATE billing.contracts
-                SET
-                  tenant_id = %s,
-                  channel_id = %s,
-                  plan_name = %s,
-                  monthly_amount = %s,
-                  billing_day = %s,
-                  issue_day = %s,
-                  start_date = %s,
-                  end_date = %s,
-                  is_enabled = %s,
-                  commission_first_year_pct = %s,
-                  commission_recurring_pct = %s,
-                  notes = %s,
-                  updated_at = now()
-                WHERE id = %s
-                RETURNING *
-                """,
-                (
-                    payload["tenant_id"],
-                    payload.get("channel_id"),
-                    payload["plan_name"],
-                    payload["monthly_amount"],
-                    payload["billing_day"],
-                    payload["issue_day"],
-                    payload["start_date"],
-                    payload.get("end_date"),
-                    bool(payload.get("is_enabled", True)),
-                    payload["commission_first_year_pct"],
-                    payload["commission_recurring_pct"],
-                    payload.get("notes"),
-                    contract_id,
-                ),
-            ).fetchone()
-            current = dict(row)
+            if _contract_identity_changed(previous, payload):
+                conn.execute(
+                    """
+                    UPDATE billing.contracts
+                    SET
+                      is_enabled = false,
+                      end_date = %s,
+                      updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (
+                        (payload["start_date"] - timedelta(days=1))
+                        if (payload["start_date"] - timedelta(days=1)) >= previous["start_date"]
+                        else previous["start_date"],
+                        contract_id,
+                    ),
+                )
+                closed_previous = conn.execute(
+                    "SELECT * FROM billing.contracts WHERE id = %s",
+                    (contract_id,),
+                ).fetchone()
+                _audit(conn, claims, "contract.close", "contract", str(contract_id), previous, dict(closed_previous), ip)
+                if bool(payload.get("is_enabled", True)):
+                    _close_active_contracts(
+                        conn,
+                        claims,
+                        int(payload["tenant_id"]),
+                        payload["start_date"],
+                        exclude_id=contract_id,
+                        ip=ip,
+                    )
+                row = conn.execute(
+                    """
+                    INSERT INTO billing.contracts (
+                      tenant_id,
+                      channel_id,
+                      plan_name,
+                      monthly_amount,
+                      billing_day,
+                      issue_day,
+                      start_date,
+                      end_date,
+                      is_enabled,
+                      commission_first_year_pct,
+                      commission_recurring_pct,
+                      notes
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (
+                        payload["tenant_id"],
+                        payload.get("channel_id"),
+                        payload["plan_name"],
+                        payload["monthly_amount"],
+                        payload["billing_day"],
+                        payload["issue_day"],
+                        payload["start_date"],
+                        payload.get("end_date"),
+                        bool(payload.get("is_enabled", True)),
+                        payload["commission_first_year_pct"],
+                        payload["commission_recurring_pct"],
+                        payload.get("notes"),
+                    ),
+                ).fetchone()
+                current = dict(row)
+                _audit(conn, claims, "contract.create", "contract", str(current["id"]), None, current, ip)
+            else:
+                row = conn.execute(
+                    """
+                    UPDATE billing.contracts
+                    SET
+                      tenant_id = %s,
+                      channel_id = %s,
+                      plan_name = %s,
+                      monthly_amount = %s,
+                      billing_day = %s,
+                      issue_day = %s,
+                      start_date = %s,
+                      end_date = %s,
+                      is_enabled = %s,
+                      commission_first_year_pct = %s,
+                      commission_recurring_pct = %s,
+                      notes = %s,
+                      updated_at = now()
+                    WHERE id = %s
+                    RETURNING *
+                    """,
+                    (
+                        payload["tenant_id"],
+                        payload.get("channel_id"),
+                        payload["plan_name"],
+                        payload["monthly_amount"],
+                        payload["billing_day"],
+                        payload["issue_day"],
+                        payload["start_date"],
+                        payload.get("end_date"),
+                        bool(payload.get("is_enabled", True)),
+                        payload["commission_first_year_pct"],
+                        payload["commission_recurring_pct"],
+                        payload.get("notes"),
+                        contract_id,
+                    ),
+                ).fetchone()
+                current = dict(row)
+                _audit(conn, claims, "contract.update", "contract", str(current["id"]), previous, current, ip)
 
         _sync_active_contract_summary(conn, int(current["tenant_id"]))
-        _audit(conn, claims, "contract.update" if previous else "contract.create", "contract", str(current["id"]), previous, current, ip)
+        if previous is None:
+            _audit(conn, claims, "contract.create", "contract", str(current["id"]), None, current, ip)
         conn.commit()
     return current
 
@@ -1428,6 +1509,11 @@ def _generate_channel_payable(conn, claims: dict[str, Any], receivable: dict[str
         return None
     pct = _commission_pct_for_contract(contract_dict, receivable["competence_month"])
     payable_amount = (Decimal(receivable["received_amount"] or receivable["amount"]) * pct) / Decimal("100")
+    previous = conn.execute(
+        "SELECT * FROM billing.channel_payables WHERE receivable_id = %s",
+        (receivable["id"],),
+    ).fetchone()
+    previous_dict = dict(previous) if previous else None
     row = conn.execute(
         """
         INSERT INTO billing.channel_payables (
@@ -1465,8 +1551,37 @@ def _generate_channel_payable(conn, claims: dict[str, Any], receivable: dict[str
         ),
     ).fetchone()
     payable = dict(row)
-    _audit(conn, claims, "channel_payable.generate", "channel_payable", str(payable["id"]), None, payable, ip)
+    if previous_dict != payable:
+        _audit(
+            conn,
+            claims,
+            "channel_payable.generate" if previous_dict is None else "channel_payable.refresh",
+            "channel_payable",
+            str(payable["id"]),
+            previous_dict,
+            payable,
+            ip,
+        )
     return payable
+
+
+def _recalculate_receivable_status(current: dict[str, Any], as_of: date | None = None) -> str:
+    return _receivable_status(
+        as_of=as_of or _utcnow().date(),
+        issue_date=current["issue_date"],
+        due_date=current["due_date"],
+        is_emitted=bool(current.get("is_emitted")),
+        paid_at=current.get("paid_at"),
+        cancelled=str(current.get("status")) == "cancelled",
+    )
+
+
+def _get_channel_payable_for_receivable(conn, receivable_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM billing.channel_payables WHERE receivable_id = %s",
+        (receivable_id,),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def mark_receivable_emitted(claims: dict[str, Any], receivable_id: int, payload: dict[str, Any], ip: str | None) -> dict[str, Any]:
@@ -1477,13 +1592,19 @@ def mark_receivable_emitted(claims: dict[str, Any], receivable_id: int, payload:
         if not previous:
             raise AuthError(404, "receivable_not_found", "Conta a receber não encontrada.")
         previous = dict(previous)
+        if previous["status"] == "cancelled":
+            raise AuthError(409, "receivable_cancelled", "Conta cancelada não pode ser emitida.")
         conn.execute(
             """
             UPDATE billing.receivables
             SET
               is_emitted = true,
               emitted_at = %s,
-              status = CASE WHEN status IN ('paid', 'cancelled', 'overdue') THEN status ELSE 'issued' END,
+              status = CASE
+                WHEN status IN ('paid', 'cancelled') THEN status
+                WHEN due_date < CURRENT_DATE THEN 'overdue'
+                ELSE 'issued'
+              END,
               notes = COALESCE(%s, notes),
               updated_at = now()
             WHERE id = %s
@@ -1493,6 +1614,42 @@ def mark_receivable_emitted(claims: dict[str, Any], receivable_id: int, payload:
         current = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
         current_dict = dict(current)
         _audit(conn, claims, "receivable.mark_emitted", "receivable", str(receivable_id), previous, current_dict, ip)
+        conn.commit()
+    return current_dict
+
+
+def unmark_receivable_emitted(claims: dict[str, Any], receivable_id: int, notes: str | None, ip: str | None) -> dict[str, Any]:
+    _require_platform_master(claims)
+    with _connect() as conn:
+        previous = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
+        if not previous:
+            raise AuthError(404, "receivable_not_found", "Conta a receber não encontrada.")
+        previous = dict(previous)
+        if previous["status"] == "paid":
+            raise AuthError(409, "receivable_paid", "Conta paga não pode desfazer emissão.")
+        if previous["status"] == "cancelled":
+            raise AuthError(409, "receivable_cancelled", "Conta cancelada não pode desfazer emissão.")
+        conn.execute(
+            """
+            UPDATE billing.receivables
+            SET
+              is_emitted = false,
+              emitted_at = NULL,
+              notes = COALESCE(%s, notes),
+              updated_at = now()
+            WHERE id = %s
+            """,
+            (notes, receivable_id),
+        )
+        current = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
+        current_dict = dict(current)
+        recalculated = _recalculate_receivable_status(current_dict)
+        conn.execute(
+            "UPDATE billing.receivables SET status = %s, updated_at = now() WHERE id = %s",
+            (recalculated, receivable_id),
+        )
+        current_dict["status"] = recalculated
+        _audit(conn, claims, "receivable.unmark_emitted", "receivable", str(receivable_id), previous, current_dict, ip)
         conn.commit()
     return current_dict
 
@@ -1509,6 +1666,13 @@ def mark_receivable_paid(claims: dict[str, Any], receivable_id: int, payload: di
             raise AuthError(409, "receivable_cancelled", "Conta cancelada não pode ser paga.")
 
         received_amount = payload.get("received_amount") or previous["amount"]
+        if previous["status"] == "paid":
+            same_amount = Decimal(previous.get("received_amount") or previous["amount"]) == Decimal(received_amount)
+            same_method = (previous.get("payment_method") or None) == (payload.get("payment_method") or None)
+            existing_payable = _get_channel_payable_for_receivable(conn, receivable_id)
+            if same_amount and same_method:
+                return {"receivable": previous, "channel_payable": existing_payable}
+            raise AuthError(409, "receivable_already_paid", "Conta já está paga. Desfaça o pagamento antes de alterar.")
         conn.execute(
             """
             UPDATE billing.receivables
@@ -1516,12 +1680,14 @@ def mark_receivable_paid(claims: dict[str, Any], receivable_id: int, payload: di
               paid_at = %s,
               received_amount = %s,
               payment_method = %s,
+              is_emitted = true,
+              emitted_at = COALESCE(emitted_at, %s),
               notes = COALESCE(%s, notes),
               status = 'paid',
               updated_at = now()
             WHERE id = %s
             """,
-            (paid_at, received_amount, payload.get("payment_method"), payload.get("notes"), receivable_id),
+            (paid_at, received_amount, payload.get("payment_method"), paid_at, payload.get("notes"), receivable_id),
         )
         current = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
         current_dict = dict(current)
@@ -1529,6 +1695,70 @@ def mark_receivable_paid(claims: dict[str, Any], receivable_id: int, payload: di
         _audit(conn, claims, "receivable.mark_paid", "receivable", str(receivable_id), previous, current_dict, ip)
         conn.commit()
     return {"receivable": current_dict, "channel_payable": payable}
+
+
+def undo_receivable_payment(claims: dict[str, Any], receivable_id: int, notes: str | None, ip: str | None) -> dict[str, Any]:
+    _require_platform_master(claims)
+    with _connect() as conn:
+        previous = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
+        if not previous:
+            raise AuthError(404, "receivable_not_found", "Conta a receber não encontrada.")
+        previous = dict(previous)
+        if previous["status"] != "paid":
+            raise AuthError(409, "receivable_not_paid", "Conta não está paga.")
+
+        payable = _get_channel_payable_for_receivable(conn, receivable_id)
+        if payable and payable["status"] == "paid":
+            raise AuthError(409, "channel_payable_paid", "Conta de canal já paga. Desfaça o payable antes do recebimento.")
+        if payable and payable["status"] != "cancelled":
+            payable_next = {**payable, "status": "cancelled", "notes": notes or payable.get("notes")}
+            conn.execute(
+                """
+                UPDATE billing.channel_payables
+                SET
+                  status = 'cancelled',
+                  notes = COALESCE(%s, notes),
+                  updated_at = now()
+                WHERE id = %s
+                """,
+                (notes, payable["id"]),
+            )
+            _audit(
+                conn,
+                claims,
+                "channel_payable.cancel",
+                "channel_payable",
+                str(payable["id"]),
+                payable,
+                payable_next,
+                ip,
+            )
+
+        conn.execute(
+            """
+            UPDATE billing.receivables
+            SET
+              paid_at = NULL,
+              received_amount = NULL,
+              payment_method = NULL,
+              notes = COALESCE(%s, notes),
+              updated_at = now()
+            WHERE id = %s
+            """,
+            (notes, receivable_id),
+        )
+        current = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
+        current_dict = dict(current)
+        recalculated = _recalculate_receivable_status(current_dict)
+        conn.execute(
+            "UPDATE billing.receivables SET status = %s, updated_at = now() WHERE id = %s",
+            (recalculated, receivable_id),
+        )
+        current_dict["status"] = recalculated
+        _audit(conn, claims, "receivable.undo_paid", "receivable", str(receivable_id), previous, current_dict, ip)
+        payable_after = _get_channel_payable_for_receivable(conn, receivable_id)
+        conn.commit()
+    return {"receivable": current_dict, "channel_payable": payable_after}
 
 
 def cancel_receivable(claims: dict[str, Any], receivable_id: int, notes: str | None, ip: str | None) -> dict[str, Any]:
@@ -1540,6 +1770,8 @@ def cancel_receivable(claims: dict[str, Any], receivable_id: int, notes: str | N
         previous = dict(previous)
         if previous["status"] == "paid":
             raise AuthError(409, "receivable_paid", "Conta paga não pode ser cancelada.")
+        if previous["status"] == "cancelled":
+            return previous
         conn.execute(
             """
             UPDATE billing.receivables
@@ -1554,6 +1786,44 @@ def cancel_receivable(claims: dict[str, Any], receivable_id: int, notes: str | N
         current = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
         current_dict = dict(current)
         _audit(conn, claims, "receivable.cancel", "receivable", str(receivable_id), previous, current_dict, ip)
+        conn.commit()
+    return current_dict
+
+
+def reopen_receivable(claims: dict[str, Any], receivable_id: int, notes: str | None, ip: str | None) -> dict[str, Any]:
+    _require_platform_master(claims)
+    with _connect() as conn:
+        previous = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
+        if not previous:
+            raise AuthError(404, "receivable_not_found", "Conta a receber não encontrada.")
+        previous = dict(previous)
+        if previous["status"] != "cancelled":
+            raise AuthError(409, "receivable_not_cancelled", "Somente contas canceladas podem ser reabertas.")
+        conn.execute(
+            """
+            UPDATE billing.receivables
+            SET
+              notes = COALESCE(%s, notes),
+              updated_at = now()
+            WHERE id = %s
+            """,
+            (notes, receivable_id),
+        )
+        current = conn.execute("SELECT * FROM billing.receivables WHERE id = %s", (receivable_id,)).fetchone()
+        current_dict = dict(current)
+        current_dict["status"] = _receivable_status(
+            as_of=_utcnow().date(),
+            issue_date=current_dict["issue_date"],
+            due_date=current_dict["due_date"],
+            is_emitted=bool(current_dict.get("is_emitted")),
+            paid_at=None,
+            cancelled=False,
+        )
+        conn.execute(
+            "UPDATE billing.receivables SET status = %s, updated_at = now() WHERE id = %s",
+            (current_dict["status"], receivable_id),
+        )
+        _audit(conn, claims, "receivable.reopen", "receivable", str(receivable_id), previous, current_dict, ip)
         conn.commit()
     return current_dict
 
@@ -1608,6 +1878,10 @@ def mark_channel_payable_paid(claims: dict[str, Any], payable_id: int, payload: 
         if not previous:
             raise AuthError(404, "channel_payable_not_found", "Conta a pagar não encontrada.")
         previous = dict(previous)
+        if previous["status"] == "cancelled":
+            raise AuthError(409, "channel_payable_cancelled", "Conta cancelada não pode ser paga.")
+        if previous["status"] == "paid":
+            return previous
         conn.execute(
             """
             UPDATE billing.channel_payables
@@ -1636,6 +1910,8 @@ def cancel_channel_payable(claims: dict[str, Any], payable_id: int, notes: str |
         previous = dict(previous)
         if previous["status"] == "paid":
             raise AuthError(409, "channel_payable_paid", "Conta paga não pode ser cancelada.")
+        if previous["status"] == "cancelled":
+            return previous
         conn.execute(
             """
             UPDATE billing.channel_payables
@@ -1784,9 +2060,18 @@ def upsert_notification_subscription(
     return current
 
 
-def list_audit(claims: dict[str, Any], tenant_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def list_audit(
+    claims: dict[str, Any],
+    tenant_id: int | None = None,
+    entity_type: str | None = None,
+    action: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    entity_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
     _require_platform_master(claims)
-    params: list[Any] = [limit]
+    params: list[Any] = []
     filters = ""
     if tenant_id is not None:
         filters = """
@@ -1807,8 +2092,27 @@ def list_audit(claims: dict[str, Any], tenant_id: int | None = None, limit: int 
             str(tenant_id),
             str(tenant_id),
             str(tenant_id),
-            limit,
         ]
+    else:
+        params = []
+
+    if entity_type:
+        filters += " AND entity_type = %s "
+        params.append(entity_type)
+    if action:
+        filters += " AND action = %s "
+        params.append(action)
+    if entity_id:
+        filters += " AND entity_id = %s "
+        params.append(entity_id)
+    if date_from:
+        filters += " AND created_at >= %s::date "
+        params.append(date_from)
+    if date_to:
+        filters += " AND created_at < (%s::date + interval '1 day') "
+        params.append(date_to)
+    params.append(limit)
+
     with _connect() as conn:
         rows = conn.execute(
             f"""

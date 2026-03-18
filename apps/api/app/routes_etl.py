@@ -36,7 +36,10 @@ def run_etl(
     """
 
     role = claims["role"]
-    repos_auth.assert_product_write_allowed(claims)
+    try:
+        repos_auth.assert_product_write_allowed(claims)
+    except repos_auth.AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
     tenant, _ = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=None)
 
     # Managers typically should not run ETL in production, but for dev we allow.

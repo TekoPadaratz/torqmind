@@ -119,6 +119,22 @@ BEGIN
 END $$;
 
 UPDATE auth.user_tenants
+SET id_empresa = NULL
+WHERE id_empresa = -1;
+
+UPDATE auth.user_tenants
+SET id_filial = NULL
+WHERE id_filial = -1;
+
+UPDATE auth.user_tenants
+SET channel_id = NULL
+WHERE channel_id = -1;
+
+ALTER TABLE auth.user_tenants
+  DROP CONSTRAINT IF EXISTS user_tenants_role_check,
+  DROP CONSTRAINT IF EXISTS ck_auth_user_tenants_role_scope;
+
+UPDATE auth.user_tenants
 SET role = CASE role
   WHEN 'MASTER' THEN 'platform_master'
   WHEN 'OWNER' THEN 'tenant_admin'
@@ -135,9 +151,20 @@ ALTER TABLE auth.user_tenants
   ALTER COLUMN valid_from SET NOT NULL;
 
 ALTER TABLE auth.user_tenants
-  DROP CONSTRAINT IF EXISTS ck_auth_user_tenants_role_scope;
+  DROP CONSTRAINT IF EXISTS ck_auth_user_tenants_role_scope,
+  DROP CONSTRAINT IF EXISTS ck_auth_user_tenants_role;
 
 ALTER TABLE auth.user_tenants
+  ADD CONSTRAINT ck_auth_user_tenants_role CHECK (
+    role IN (
+      'platform_master',
+      'platform_admin',
+      'channel_admin',
+      'tenant_admin',
+      'tenant_manager',
+      'tenant_viewer'
+    )
+  ),
   ADD CONSTRAINT ck_auth_user_tenants_role_scope CHECK (
     (
       role IN ('platform_master', 'platform_admin')
@@ -218,6 +245,12 @@ SET status = COALESCE(status, CASE WHEN is_active THEN 'active' ELSE 'cancelled'
     valid_from = COALESCE(valid_from, created_at::date),
     billing_status = COALESCE(billing_status, 'current'),
     updated_at = COALESCE(updated_at, created_at);
+
+SELECT setval(
+  pg_get_serial_sequence('app.tenants', 'id_empresa'),
+  GREATEST(COALESCE((SELECT MAX(id_empresa) FROM app.tenants), 0), 1),
+  true
+);
 
 ALTER TABLE app.tenants
   ALTER COLUMN status SET DEFAULT 'active',

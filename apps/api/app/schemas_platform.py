@@ -61,6 +61,8 @@ class UserUpsertRequest(BaseModel):
     valid_from: Optional[date] = None
     valid_until: Optional[date] = None
     must_change_password: bool = False
+    locked_until: Optional[datetime] = None
+    reset_failed_login: bool = False
     accesses: list[UserAccessInput] = Field(default_factory=list)
 
 

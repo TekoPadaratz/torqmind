@@ -17,6 +17,10 @@ from app.services.telegram import send_telegram_alert
 router = APIRouter(prefix="/bi", tags=["bi"])
 
 
+def _raise_auth_error(exc: repos_auth.AuthError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
+
+
 class CompetitorPriceItem(BaseModel):
     id_produto: int
     competitor_price: float = Field(..., gt=0)
@@ -376,7 +380,10 @@ def pricing_competitor_prices_upsert(
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:
         raise HTTPException(status_code=403, detail="forbidden")
-    repos_auth.assert_product_write_allowed(claims)
+    try:
+        repos_auth.assert_product_write_allowed(claims)
+    except repos_auth.AuthError as exc:
+        _raise_auth_error(exc)
 
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     if filial is None:
@@ -448,7 +455,10 @@ def jarvis_generate(
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    repos_auth.assert_product_write_allowed(claims)
+    try:
+        repos_auth.assert_product_write_allowed(claims)
+    except repos_auth.AuthError as exc:
+        _raise_auth_error(exc)
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     stats = generate_jarvis_ai_plans(role, tenant, filial, dt_ref=dt_ref, limit=limit, force=force)
     return {
@@ -470,7 +480,10 @@ def admin_ai_usage(
     role = claims["role"]
     if role not in {"MASTER", "OWNER"}:
         raise HTTPException(status_code=403, detail="forbidden")
-    repos_auth.assert_product_write_allowed(claims)
+    try:
+        repos_auth.assert_product_write_allowed(claims)
+    except repos_auth.AuthError as exc:
+        _raise_auth_error(exc)
 
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     return ai_usage_summary(role, tenant, filial, days=days)

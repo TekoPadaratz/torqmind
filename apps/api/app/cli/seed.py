@@ -1,4 +1,4 @@
-"""Seed minimal data (tenant + users) for local/dev."""
+"""Seed users for local/dev and a master-only bootstrap for production."""
 
 from __future__ import annotations
 
@@ -9,10 +9,23 @@ from app.db import get_conn
 from app.security import hash_password
 
 DEFAULT_PASSWORD = os.getenv("SEED_PASSWORD", "TorqMind@123")
+SEED_MODE = (os.getenv("SEED_MODE") or "demo").strip().lower()
 
 MASTER_EMAIL = "master@torqmind.com"
 OWNER_EMAIL = "owner@empresa1.com"
 MANAGER_EMAIL = "manager@empresa1.com"
+
+
+def _sync_tenant_identity(conn) -> None:
+    conn.execute(
+        """
+        SELECT setval(
+          pg_get_serial_sequence('app.tenants', 'id_empresa'),
+          GREATEST(COALESCE((SELECT MAX(id_empresa) FROM app.tenants), 0), 1),
+          true
+        )
+        """
+    )
 
 
 def _upsert_user(email: str, password: str, nome: str, role: str) -> str:
@@ -83,6 +96,7 @@ def _ensure_tenant(id_empresa: int, nome: str) -> str:
     """
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         row = conn.execute(sql, (id_empresa, nome)).fetchone()
+        _sync_tenant_identity(conn)
         conn.commit()
         return str(row["ingest_key"])
 
@@ -112,27 +126,33 @@ def _ensure_notification_settings(user_id: str, email: str) -> None:
 
 
 def main() -> None:
-    ingest_key = _ensure_tenant(1, "Empresa 1 (dev)")
-    _ensure_filial_placeholder(1, 1, "Filial 1")
-
     master_id = _upsert_user(MASTER_EMAIL, DEFAULT_PASSWORD, "Platform Master", "platform_master")
-    owner_id = _upsert_user(OWNER_EMAIL, DEFAULT_PASSWORD, "Tenant Admin Empresa 1", "tenant_admin")
-    manager_id = _upsert_user(MANAGER_EMAIL, DEFAULT_PASSWORD, "Tenant Manager Filial 1", "tenant_manager")
-
     _ensure_scope(master_id, "platform_master", None, None)
-    _ensure_scope(owner_id, "tenant_admin", 1, None)
-    _ensure_scope(manager_id, "tenant_manager", 1, 1)
-
     _ensure_notification_settings(master_id, MASTER_EMAIL)
-    _ensure_notification_settings(owner_id, OWNER_EMAIL)
-    _ensure_notification_settings(manager_id, MANAGER_EMAIL)
 
     print("\n=== TorqMind seed concluído ===")
-    print(f"Tenant (id_empresa=1) ingest_key: {ingest_key}")
+    print(f"Modo: {SEED_MODE}")
     print("\nUsuários criados/atualizados (senha padrão):")
     print(f"  PLATFORM MASTER -> {MASTER_EMAIL} / {DEFAULT_PASSWORD}")
-    print(f"  TENANT ADMIN    -> {OWNER_EMAIL} / {DEFAULT_PASSWORD}")
-    print(f"  TENANT MANAGER  -> {MANAGER_EMAIL} / {DEFAULT_PASSWORD}")
+
+    if SEED_MODE != "master-only":
+        ingest_key = _ensure_tenant(1, "Empresa 1 (dev)")
+        _ensure_filial_placeholder(1, 1, "Filial 1")
+
+        owner_id = _upsert_user(OWNER_EMAIL, DEFAULT_PASSWORD, "Tenant Admin Empresa 1", "tenant_admin")
+        manager_id = _upsert_user(MANAGER_EMAIL, DEFAULT_PASSWORD, "Tenant Manager Filial 1", "tenant_manager")
+
+        _ensure_scope(owner_id, "tenant_admin", 1, None)
+        _ensure_scope(manager_id, "tenant_manager", 1, 1)
+
+        _ensure_notification_settings(owner_id, OWNER_EMAIL)
+        _ensure_notification_settings(manager_id, MANAGER_EMAIL)
+
+        print(f"  TENANT ADMIN    -> {OWNER_EMAIL} / {DEFAULT_PASSWORD}")
+        print(f"  TENANT MANAGER  -> {MANAGER_EMAIL} / {DEFAULT_PASSWORD}")
+        print(f"\nTenant demo (id_empresa=1) ingest_key: {ingest_key}")
+    else:
+        print("\nNenhum tenant/filial demo foi criado nesse seed.")
 
 
 if __name__ == "__main__":

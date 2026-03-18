@@ -273,6 +273,19 @@ def receivables_emit(
         _raise(exc)
 
 
+@router.post("/receivables/{receivable_id}/unemit")
+def receivables_unemit(
+    receivable_id: int,
+    body: StatusNoteRequest,
+    request: Request,
+    claims=Depends(get_current_claims),
+):
+    try:
+        return repos_platform.unmark_receivable_emitted(claims, receivable_id, body.notes, ip=_ip(request))
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
 @router.post("/receivables/{receivable_id}/pay")
 def receivables_pay(
     receivable_id: int,
@@ -286,6 +299,19 @@ def receivables_pay(
         _raise(exc)
 
 
+@router.post("/receivables/{receivable_id}/undo-payment")
+def receivables_undo_payment(
+    receivable_id: int,
+    body: StatusNoteRequest,
+    request: Request,
+    claims=Depends(get_current_claims),
+):
+    try:
+        return repos_platform.undo_receivable_payment(claims, receivable_id, body.notes, ip=_ip(request))
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
 @router.post("/receivables/{receivable_id}/cancel")
 def receivables_cancel(
     receivable_id: int,
@@ -295,6 +321,19 @@ def receivables_cancel(
 ):
     try:
         return repos_platform.cancel_receivable(claims, receivable_id, body.notes, ip=_ip(request))
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
+@router.post("/receivables/{receivable_id}/reopen")
+def receivables_reopen(
+    receivable_id: int,
+    body: StatusNoteRequest,
+    request: Request,
+    claims=Depends(get_current_claims),
+):
+    try:
+        return repos_platform.reopen_receivable(claims, receivable_id, body.notes, ip=_ip(request))
     except repos_platform.AuthError as exc:
         _raise(exc)
 
@@ -332,10 +371,26 @@ def payables_cancel(payable_id: int, body: StatusNoteRequest, request: Request, 
 @router.get("/audit")
 def audit_list(
     tenant_id: int | None = Query(None),
+    entity_type: str | None = Query(None),
+    action: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    entity_id: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
     claims=Depends(get_current_claims),
 ):
     try:
-        return {"items": repos_platform.list_audit(claims, tenant_id=tenant_id, limit=limit)}
+        return {
+            "items": repos_platform.list_audit(
+                claims,
+                tenant_id=tenant_id,
+                entity_type=entity_type,
+                action=action,
+                date_from=date_from,
+                date_to=date_to,
+                entity_id=entity_id,
+                limit=limit,
+            )
+        }
     except repos_platform.AuthError as exc:
         _raise(exc)

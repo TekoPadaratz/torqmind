@@ -16,6 +16,7 @@ export default function PlatformNotificationsPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
   const [subscriptions, setSubscriptions] = useState<any[]>([]);
+  const [editingSubscriptionId, setEditingSubscriptionId] = useState<number | null>(null);
   const [contactForm, setContactForm] = useState<any>({
     user_id: '',
     telegram_chat_id: '',
@@ -58,6 +59,31 @@ export default function PlatformNotificationsPage() {
     }
   }
 
+  function applyUserToContact(userId: string) {
+    const selectedUser = users.find((item) => item.id === userId);
+    setContactForm({
+      user_id: userId,
+      telegram_chat_id: selectedUser?.telegram_chat_id || '',
+      telegram_username: selectedUser?.telegram_username || '',
+      telegram_enabled: Boolean(selectedUser?.telegram_enabled),
+      email: selectedUser?.contact_email || selectedUser?.email || '',
+      phone: selectedUser?.contact_phone || '',
+    });
+  }
+
+  function selectSubscription(item: any) {
+    setEditingSubscriptionId(Number(item.id));
+    setSubscriptionForm({
+      user_id: item.user_id,
+      tenant_id: item.tenant_id ? String(item.tenant_id) : '',
+      branch_id: item.branch_id ? String(item.branch_id) : '',
+      event_type: item.event_type,
+      channel: item.channel,
+      severity_min: item.severity_min || '',
+      is_enabled: Boolean(item.is_enabled),
+    });
+  }
+
   useEffect(() => {
     const boot = async () => {
       const session = await loadSession(router, 'platform');
@@ -93,7 +119,7 @@ export default function PlatformNotificationsPage() {
   async function saveSubscription(event: FormEvent) {
     event.preventDefault();
     try {
-      await api.post('/platform/notifications/subscriptions', {
+      const payload = {
         user_id: subscriptionForm.user_id,
         tenant_id: subscriptionForm.tenant_id ? Number(subscriptionForm.tenant_id) : null,
         branch_id: subscriptionForm.branch_id ? Number(subscriptionForm.branch_id) : null,
@@ -101,7 +127,13 @@ export default function PlatformNotificationsPage() {
         channel: subscriptionForm.channel,
         severity_min: subscriptionForm.severity_min || null,
         is_enabled: subscriptionForm.is_enabled,
-      });
+      };
+      if (editingSubscriptionId) {
+        await api.patch(`/platform/notifications/subscriptions/${editingSubscriptionId}`, payload);
+      } else {
+        await api.post('/platform/notifications/subscriptions', payload);
+      }
+      setEditingSubscriptionId(null);
       await load(me);
     } catch (err: any) {
       setError(err?.response?.data?.detail?.message || 'Falha ao salvar assinatura.');
@@ -125,7 +157,7 @@ export default function PlatformNotificationsPage() {
             </div>
           </div>
           <form className="platformFormGrid" onSubmit={saveContacts}>
-            <select className="input" value={contactForm.user_id} onChange={(e) => setContactForm({ ...contactForm, user_id: e.target.value })}>
+            <select className="input" value={contactForm.user_id} onChange={(e) => applyUserToContact(e.target.value)}>
               {users.map((user) => (
                 <option key={user.id} value={user.id}>
                   {user.nome} - {user.email}
@@ -150,8 +182,28 @@ export default function PlatformNotificationsPage() {
           <div className="platformSectionHead">
             <div>
               <div className="platformSectionEyebrow">Assinatura</div>
-              <h2>Nova regra</h2>
+              <h2>{editingSubscriptionId ? 'Editar regra' : 'Nova regra'}</h2>
             </div>
+            {editingSubscriptionId ? (
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setEditingSubscriptionId(null);
+                  setSubscriptionForm({
+                    user_id: users[0]?.id || '',
+                    tenant_id: '',
+                    branch_id: '',
+                    event_type: 'payment_overdue',
+                    channel: 'telegram',
+                    severity_min: 'WARN',
+                    is_enabled: true,
+                  });
+                }}
+              >
+                Nova regra
+              </button>
+            ) : null}
           </div>
           <form className="platformFormGrid" onSubmit={saveSubscription}>
             <select className="input" value={subscriptionForm.user_id} onChange={(e) => setSubscriptionForm({ ...subscriptionForm, user_id: e.target.value })}>
@@ -182,8 +234,12 @@ export default function PlatformNotificationsPage() {
               <option value="WARN">WARN</option>
               <option value="CRITICAL">CRITICAL</option>
             </select>
+            <label className="platformCheckbox">
+              <input type="checkbox" checked={subscriptionForm.is_enabled} onChange={(e) => setSubscriptionForm({ ...subscriptionForm, is_enabled: e.target.checked })} />
+              Assinatura ativa
+            </label>
             <button className="btn" type="submit">
-              Criar assinatura
+              {editingSubscriptionId ? 'Salvar assinatura' : 'Criar assinatura'}
             </button>
           </form>
         </div>
@@ -207,6 +263,7 @@ export default function PlatformNotificationsPage() {
               <th>Canal</th>
               <th>Severity</th>
               <th>Criado em</th>
+              <th>Ações</th>
             </tr>
           </thead>
           <tbody>
@@ -218,6 +275,11 @@ export default function PlatformNotificationsPage() {
                 <td>{item.channel}</td>
                 <td>{item.severity_min || '-'}</td>
                 <td>{formatDateTime(item.created_at)}</td>
+                <td className="platformActionCell">
+                  <button className="btn" type="button" onClick={() => selectSubscription(item)}>
+                    Editar
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -18,7 +18,6 @@ export default function PlatformCompanyDetailPage() {
   const [me, setMe] = useState<any>(null);
   const [data, setData] = useState<any>(null);
   const [companyForm, setCompanyForm] = useState<any>(null);
-  const [branchForm, setBranchForm] = useState({ nome: '', cnpj: '', valid_from: '', valid_until: '', is_enabled: true });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -79,32 +78,20 @@ export default function PlatformCompanyDetailPage() {
     }
   }
 
-  async function createBranch(event: FormEvent) {
-    event.preventDefault();
-    setSaving(true);
-    try {
-      await api.post(`/platform/companies/${tenantId}/branches`, {
-        ...branchForm,
-        cnpj: branchForm.cnpj || null,
-        valid_from: branchForm.valid_from || null,
-        valid_until: branchForm.valid_until || null,
-      });
-      setBranchForm({ nome: '', cnpj: '', valid_from: '', valid_until: '', is_enabled: true });
-      await loadCompany(me);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail?.message || 'Falha ao criar filial.');
-    } finally {
-      setSaving(false);
-    }
-  }
-
   return (
     <PlatformShell
       title={`Empresa #${tenantId}`}
-      subtitle="Dados gerais, filiais, usuários, contrato e trilha resumida de auditoria em uma única visão operacional."
+      subtitle="Dados gerais, filiais sincronizadas da Xpert, usuários, contrato e trilha resumida de auditoria em uma única visão operacional."
       me={me}
     >
       {error ? <div className="card errorCard">{error}</div> : null}
+      {data?.status && data.status !== 'active' ? (
+        <div className="card">
+          <div className="platformSectionEyebrow">Status comercial</div>
+          <h2 style={{ marginTop: 8 }}>{data.status}</h2>
+          <div className="platformFieldHint">{data.suspended_reason || 'A empresa está fora do ciclo comercial padrão e exige acompanhamento interno.'}</div>
+        </div>
+      ) : null}
 
       <div className="platformDetailGrid">
         <div className="card">
@@ -180,22 +167,16 @@ export default function PlatformCompanyDetailPage() {
           <div className="platformSectionHead">
             <div>
               <div className="platformSectionEyebrow">Filiais</div>
-              <h2>Cadastro rápido</h2>
+              <h2>Sincronização via Xpert</h2>
             </div>
           </div>
-          <form className="platformFormGrid" onSubmit={createBranch}>
-            <input className="input" placeholder="Nome da filial" value={branchForm.nome} onChange={(e) => setBranchForm({ ...branchForm, nome: e.target.value })} />
-            <input className="input" placeholder="CNPJ" value={branchForm.cnpj} onChange={(e) => setBranchForm({ ...branchForm, cnpj: e.target.value })} />
-            <input className="input" type="date" value={branchForm.valid_from} onChange={(e) => setBranchForm({ ...branchForm, valid_from: e.target.value })} />
-            <input className="input" type="date" value={branchForm.valid_until} onChange={(e) => setBranchForm({ ...branchForm, valid_until: e.target.value })} />
-            <label className="platformCheckbox">
-              <input type="checkbox" checked={branchForm.is_enabled} onChange={(e) => setBranchForm({ ...branchForm, is_enabled: e.target.checked })} />
-              Filial habilitada
-            </label>
-            <button className="btn" type="submit" disabled={saving}>
-              Adicionar filial
-            </button>
-          </form>
+          <div className="platformFieldHint">
+            As filiais usam o par oficial `id_empresa` + `id_filial` da Xpert e são atualizadas automaticamente pelo dataset
+            {' '}
+            <code>filiais</code>
+            {' '}
+            durante a ingestão/ETL. Não existe cadastro manual nessa tela.
+          </div>
 
           <table className="table compact">
             <thead>
@@ -215,6 +196,11 @@ export default function PlatformCompanyDetailPage() {
                   <td>{formatDateOnly(branch.valid_until || branch.valid_from)}</td>
                 </tr>
               ))}
+              {!(data?.branches || []).length ? (
+                <tr>
+                  <td colSpan={4}>Nenhuma filial sincronizada ainda para esta empresa.</td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
         </div>
