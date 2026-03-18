@@ -31,6 +31,8 @@ services:
       APP_ENV: ${APP_ENV:-dev}
     ports:
       - "8000:8000"
+    volumes:
+      - ./sql/migrations:/app/sql/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy

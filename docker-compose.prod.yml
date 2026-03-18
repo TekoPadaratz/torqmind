@@ -51,6 +51,8 @@ services:
       JARVIS_AI_OUTPUT_COST_PER_1M: ${JARVIS_AI_OUTPUT_COST_PER_1M:-1.6}
     expose:
       - "8000"
+    volumes:
+      - ./sql/migrations:/app/sql/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy

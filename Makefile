@@ -7,7 +7,7 @@ ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
 
-.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-seed
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -35,8 +35,7 @@ logs:
 	@$(COMPOSE) logs -f --tail=200
 
 migrate:
-	@$(COMPOSE) exec -T postgres sh -lc 'until pg_isready -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" >/dev/null 2>&1; do sleep 1; done'
-	@$(COMPOSE) exec -T postgres sh -lc 'for f in /docker-entrypoint-initdb.d/*.sql; do echo "Applying $$f"; psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -f "$$f"; done'
+	@$(COMPOSE) exec -T api python -m app.cli.migrate
 
 resetdb:
 	@$(COMPOSE) exec -T postgres sh -lc 'until pg_isready -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" >/dev/null 2>&1; do sleep 1; done'
@@ -75,6 +74,9 @@ prod-down:
 
 prod-logs:
 	@./deploy/scripts/prod-logs.sh
+
+prod-migrate:
+	@./deploy/scripts/prod-migrate.sh
 
 prod-seed:
 	@./deploy/scripts/prod-seed.sh

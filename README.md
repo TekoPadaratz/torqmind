@@ -43,6 +43,7 @@ Arquivos de produção:
 - `deploy/nginx/default.conf`
 - `.env.production.example`
 - `deploy/scripts/prod-up.sh`
+- `deploy/scripts/prod-migrate.sh`
 - `deploy/scripts/prod-logs.sh`
 - `deploy/scripts/prod-seed.sh`
 
@@ -74,16 +75,26 @@ Ou usar o script:
 ./deploy/scripts/prod-up.sh
 ```
 
-5. Rodar seed inicial:
+5. Aplicar migrations da release:
+
+```bash
+./deploy/scripts/prod-migrate.sh
+```
+
+Esse é o caminho canônico para alinhar bancos já existentes com o código atual.
+Ele reaplica a cadeia oficial `sql/migrations/*.sql` em ordem e valida colunas críticas
+de runtime da fase 2, incluindo `auth.users.nome`.
+
+6. Rodar seed inicial:
 
 ```bash
 ./deploy/scripts/prod-seed.sh
 ```
 
-Em produção, esse seed cria/atualiza apenas o usuário `platform_master`.
-Ele não cria tenant nem filial demo.
+Em produção, esse seed primeiro garante o migrate e depois cria/atualiza apenas o usuário
+`platform_master`. Ele não cria tenant nem filial demo.
 
-6. Validar no navegador:
+7. Validar no navegador:
 - `http://IP_DO_SERVIDOR/`
 - `http://IP_DO_SERVIDOR/docs`
 - `http://IP_DO_SERVIDOR/health`
@@ -131,7 +142,7 @@ Comandos úteis:
 
 ```bash
 make logs   # acompanha logs
-make migrate   # aplica todas as migrations em ordem
+make migrate   # aplica a cadeia oficial sql/migrations e valida o runtime
 make resetdb   # recria o banco via cadeia oficial de migrations (DEV/HOMOLOG)
 make lint   # valida build do web + compilação Python
 make down   # derruba os serviços
@@ -178,6 +189,7 @@ No script de produção `./deploy/scripts/prod-seed.sh`, o seed roda em modo `ma
 - cria/atualiza apenas `master@torqmind.com`
 - não cria tenant demo
 - não cria filial demo
+- roda `prod-migrate.sh` antes do seed para evitar drift de schema
 
 ---
 
