@@ -16,10 +16,12 @@ from fastapi.testclient import TestClient
 
 from app.cli.migrate import resolve_migrations_dir
 from app.config import settings
+from app.deps import get_current_claims
 from app.main import app
 
 
 SAFE_INTERNAL_MESSAGE = "Falha interna do servidor. Tente novamente em instantes."
+SAFE_ETL_MESSAGE = "Falha ao atualizar dados. Tente novamente em instantes."
 REAL_MASTER_EMAIL = "teko94@gmail.com"
 REAL_MASTER_PASSWORD = "@Crmjr105"
 CHANNEL_BOOTSTRAP_EMAIL = "master@torqmind.com"
@@ -81,6 +83,27 @@ def _fetchone(db_name: str, query: str, params: tuple[object, ...] = ()) -> dict
     with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
         row = conn.execute(query, params).fetchone()
     return row if row else None
+
+
+def _relation_column_type(db_name: str, schema_name: str, relation_name: str, column_name: str) -> str | None:
+    with psycopg.connect(_admin_dsn(db_name)) as conn:
+        row = conn.execute(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod) AS data_type
+            FROM pg_attribute a
+            JOIN pg_class c
+              ON c.oid = a.attrelid
+            JOIN pg_namespace n
+              ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relname = %s
+              AND a.attname = %s
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            """,
+            (schema_name, relation_name, column_name),
+        ).fetchone()
+    return str(row[0]) if row else None
 
 
 def _subprocess_env(db_name: str) -> dict[str, str]:
@@ -275,6 +298,22 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertIn('"platform": true', channel_login.stdout)
             self.assertIn('"platform_finance": false', channel_login.stdout)
 
+    def test_payment_anomaly_relation_stays_type_compatible_with_notifications(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            self.assertEqual(
+                _relation_column_type(db_name, "mart", "pagamentos_anomalias_diaria", "insight_id"),
+                "text",
+            )
+            self.assertEqual(
+                _relation_column_type(db_name, "mart", "pagamentos_anomalias_diaria", "insight_id_hash"),
+                "bigint",
+            )
+
     def test_master_only_seed_reconciles_legacy_master_to_channel_scope(self) -> None:
         with temporary_database() as db_name:
             env = _subprocess_env(db_name)
@@ -340,6 +379,43 @@ class ReleaseHardeningTest(unittest.TestCase):
         self.assertEqual(body["error"], "internal_error")
         self.assertEqual(body["detail"]["message"], SAFE_INTERNAL_MESSAGE)
         self.assertNotIn('column "nome" does not exist', response.text)
+
+    def test_internal_sql_errors_do_not_leak_in_etl_response(self) -> None:
+        client = TestClient(app, raise_server_exceptions=False)
+        claims = {
+            "sub": "00000000-0000-0000-0000-000000000001",
+            "role": "OWNER",
+            "user_role": "tenant_admin",
+            "tenant_ids": [1],
+            "branch_ids": [],
+            "channel_ids": [],
+            "access": {
+                "product": True,
+                "product_readonly": False,
+                "platform": False,
+                "platform_finance": False,
+                "platform_operations": False,
+            },
+        }
+        app.dependency_overrides[get_current_claims] = lambda: claims
+        try:
+            with patch("app.routes_etl.resolve_scope", return_value=(1, None)), patch(
+                "app.routes_etl.get_conn",
+            ) as mocked_get_conn:
+                mocked_ctx = mocked_get_conn.return_value.__enter__.return_value
+                mocked_ctx.execute.side_effect = RuntimeError(
+                    'column "insight_id" is of type bigint but expression is of type text'
+                )
+
+                response = client.post("/etl/run?refresh_mart=true")
+        finally:
+            app.dependency_overrides.pop(get_current_claims, None)
+
+        self.assertEqual(response.status_code, 500, response.text)
+        body = response.json()
+        self.assertEqual(body["error"], "etl_failed")
+        self.assertEqual(body["detail"]["message"], SAFE_ETL_MESSAGE)
+        self.assertNotIn('column "insight_id" is of type bigint but expression is of type text', response.text)
 
 
 if __name__ == "__main__":

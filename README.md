@@ -46,6 +46,7 @@ Arquivos de produção:
 - `deploy/scripts/prod-migrate.sh`
 - `deploy/scripts/prod-logs.sh`
 - `deploy/scripts/prod-seed.sh`
+- `deploy/scripts/prod-etl-incremental.sh`
 
 Passo a passo no Linux:
 
@@ -96,7 +97,16 @@ Em produção, esse seed primeiro garante o migrate e depois cria/atualiza apena
 interno real `platform_master`, rebaixa o usuário interno de canal para `channel_admin`
 e sincroniza o canal bootstrap. Ele não cria tenant nem filial demo.
 
-7. Validar no navegador:
+7. Rodar um incremental manual de validação:
+
+```bash
+./deploy/scripts/prod-etl-incremental.sh
+```
+
+Esse é o caminho canônico para atualizar STG→DW→MART de todas as empresas ativas em produção.
+O script usa `flock` no host para não sobrepor execuções do cron.
+
+8. Validar no navegador:
 - `http://IP_DO_SERVIDOR/`
 - `http://IP_DO_SERVIDOR/docs`
 - `http://IP_DO_SERVIDOR/health`
@@ -146,6 +156,7 @@ Comandos úteis:
 make logs   # acompanha logs
 make migrate   # aplica a cadeia oficial sql/migrations e valida o runtime
 make resetdb   # recria o banco via cadeia oficial de migrations (DEV/HOMOLOG)
+make etl-incremental   # roda o incremental canônico para tenants ativos
 make lint   # valida build do web + compilação Python
 make down   # derruba os serviços
 make platform-billing-daily   # gera receivables / atualiza overdue do backoffice
@@ -378,6 +389,43 @@ ExecStart=/opt/torqmind/deploy/scripts/platform-billing-daily.sh
 ```
 
 O comando é idempotente: não duplica receivables por competência nem payables por receivable, e já executa o refresh de overdue.
+
+Job agendável de ETL incremental:
+
+```bash
+make etl-incremental
+```
+
+Rodar manualmente para um tenant específico:
+
+```bash
+TENANT_ID=1 make etl-incremental
+```
+
+Wrapper canônico de produção:
+
+```bash
+./deploy/scripts/prod-etl-incremental.sh
+```
+
+O wrapper:
+- roda `python -m app.cli.etl_incremental` dentro do container `api`;
+- processa todas as empresas com `app.tenants.is_active = true`, em ordem de `id_empresa`;
+- executa `etl.run_all(id_empresa, false, true, CURRENT_DATE)` por tenant;
+- usa os watermarks existentes do ETL, então continua incrementalmente de onde parou;
+- usa `flock` no arquivo `/tmp/torqmind-prod-etl-incremental.lock` por padrão;
+- se já existir execução em andamento, registra a mensagem e sai sem iniciar uma segunda execução.
+
+Exemplo via `cron` no Ubuntu:
+
+```bash
+*/15 * * * * cd /opt/torqmind && ENV_FILE=/opt/torqmind/.env COMPOSE_FILE=docker-compose.prod.yml /opt/torqmind/deploy/scripts/prod-etl-incremental.sh >> /var/log/torqmind-etl-incremental.log 2>&1
+```
+
+Para conferir se já está executando:
+- verifique o lock em `/tmp/torqmind-prod-etl-incremental.lock`;
+- ou rode `ps`/`pgrep` no host para o script;
+- ou acompanhe `docker compose -f docker-compose.prod.yml --env-file .env logs -f api`.
 - `/finance` → Financeiro
 - `/pricing` → Preço da Concorrência (input manual + simulação 10 dias)
 - `/goals` → Metas & Equipe

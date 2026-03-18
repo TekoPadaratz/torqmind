@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -15,6 +16,7 @@ from app.scope import resolve_scope
 from app.services.telegram import send_telegram_alert
 
 router = APIRouter(prefix="/etl", tags=["etl"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/run")
@@ -36,6 +38,7 @@ def run_etl(
     """
 
     role = claims["role"]
+    effective_ref_date = ref_date or date.today()
     try:
         repos_auth.assert_product_write_allowed(claims)
     except repos_auth.AuthError as exc:
@@ -47,7 +50,7 @@ def run_etl(
         try:
             row = conn.execute(
                 "SELECT etl.run_all(%s, %s, %s, %s) AS result",
-                (tenant, force_full, refresh_mart, ref_date),
+                (tenant, force_full, refresh_mart, effective_ref_date),
             ).fetchone()
             payments_telegram_sent = 0
             payments_telegram_suppressed = 0
@@ -70,11 +73,11 @@ def run_etl(
                     FROM mart.pagamentos_anomalias_diaria
                     WHERE id_empresa = %s
                       AND severity = 'CRITICAL'
-                      AND data_key >= to_char((current_date - interval '2 day')::date, 'YYYYMMDD')::int
+                      AND data_key >= to_char((%s::date - interval '2 day')::date, 'YYYYMMDD')::int
                     ORDER BY data_key DESC, score DESC, impacto_estimado DESC
                     LIMIT 5
                     """,
-                    (tenant,),
+                    (tenant, effective_ref_date),
                 ).fetchall()
                 for r in critical_rows:
                     payload = {
@@ -173,7 +176,14 @@ def run_etl(
                 }
             return result
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"ETL failed: {e}")
+            logger.exception("ETL failed for tenant=%s refresh_mart=%s force_full=%s", tenant, refresh_mart, force_full, exc_info=e)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "etl_failed",
+                    "message": "Falha ao atualizar dados. Tente novamente em instantes.",
+                },
+            )
 
 
 def _resolve_id_empresa_from_ingest(x_ingest_key: Optional[str]) -> Optional[int]:

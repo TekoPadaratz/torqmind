@@ -4,7 +4,7 @@ import json
 import time
 import unittest
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.db import get_conn
 
@@ -144,6 +144,61 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIsInstance(row2["result"], dict)
         # Incremental expectation: second run should be similar or faster.
         self.assertLessEqual(elapsed2, elapsed1 * 1.5)
+
+    def test_incremental_run_all_refreshes_marts_and_keeps_payment_notifications_idempotent(self) -> None:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            before_row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM app.notifications
+                WHERE id_empresa = %s
+                  AND title LIKE %s
+                """,
+                (1, "Anomalia de pagamento (%)"),
+            ).fetchone()
+
+            first = conn.execute(
+                "SELECT etl.run_all(%s, %s, %s, %s) AS result",
+                (1, False, True, date.today()),
+            ).fetchone()["result"]
+
+            middle_row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM app.notifications
+                WHERE id_empresa = %s
+                  AND title LIKE %s
+                """,
+                (1, "Anomalia de pagamento (%)"),
+            ).fetchone()
+
+            second = conn.execute(
+                "SELECT etl.run_all(%s, %s, %s, %s) AS result",
+                (1, False, True, date.today()),
+            ).fetchone()["result"]
+
+            after_row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM app.notifications
+                WHERE id_empresa = %s
+                  AND title LIKE %s
+                """,
+                (1, "Anomalia de pagamento (%)"),
+            ).fetchone()
+            conn.commit()
+
+        before_total = int(before_row["total"] or 0)
+        middle_total = int(middle_row["total"] or 0)
+        after_total = int(after_row["total"] or 0)
+
+        self.assertTrue(first.get("ok"), first)
+        self.assertTrue(second.get("ok"), second)
+        self.assertTrue((first.get("meta") or {}).get("mart_refreshed"))
+        self.assertIn("payment_notifications", first.get("meta") or {})
+        self.assertIn("payment_notifications", second.get("meta") or {})
+        self.assertGreaterEqual(middle_total, before_total)
+        self.assertEqual(after_total, middle_total)
 
     def test_bi_dashboard_overview_returns_data(self) -> None:
         status, body = self._request(

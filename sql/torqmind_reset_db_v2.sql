@@ -41,3 +41,4 @@ DROP SCHEMA IF EXISTS auth CASCADE;
 \ir migrations/019_operational_truth_alignment.sql
 \ir migrations/020_snapshot_backfill_and_perf.sql
 \ir migrations/021_platform_backoffice.sql
+\ir migrations/022_etl_incremental_notification_hardening.sql
