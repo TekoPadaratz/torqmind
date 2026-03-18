@@ -1,17 +1,12 @@
-"""Scope resolution helpers.
-
-PT-BR: Resolve qual id_empresa / id_filial efetivo deve ser usado com base no role + query params.
-EN   : Resolve effective id_empresa / id_filial based on role + query params.
-
-Rules:
-- MASTER: can query any tenant/branch (defaults to id_empresa=1).
-- OWNER : fixed tenant, can optionally filter by branch.
-- MANAGER: fixed tenant+branch, cannot change.
-"""
+"""Scope resolution helpers."""
 
 from __future__ import annotations
 
 from typing import Any, Optional, Tuple
+
+from fastapi import HTTPException
+
+from app.authz import claims_access_flag, normalize_role
 
 
 def resolve_scope(
@@ -19,27 +14,42 @@ def resolve_scope(
     id_empresa_q: Optional[int] = None,
     id_filial_q: Optional[int] = None,
 ) -> Tuple[int, Optional[int]]:
-    role = claims.get("role")
+    if not claims_access_flag(claims, "product"):
+        raise HTTPException(status_code=403, detail={"error": "product_forbidden", "message": "Acesso ao produto não permitido."})
 
-    if role == "MASTER":
-        id_empresa = int(id_empresa_q or 1)
+    user_role = normalize_role(claims.get("user_role"))
+    accesses = [row for row in (claims.get("accesses") or []) if row.get("id_empresa") is not None]
+    default_tenant = claims.get("id_empresa")
+    default_branch = claims.get("id_filial")
+
+    if user_role in {"platform_master", "platform_admin"}:
+        id_empresa = int(id_empresa_q or default_tenant or 1)
         id_filial = int(id_filial_q) if id_filial_q is not None else None
         return id_empresa, id_filial
 
-    # Owner/Manager must have tenant.
-    id_empresa_claim = claims.get("id_empresa")
-    if id_empresa_claim is None:
-        raise ValueError("Missing tenant in token")
-    id_empresa = int(id_empresa_claim)
+    if not accesses:
+        raise HTTPException(status_code=403, detail={"error": "tenant_access_missing", "message": "Usuário sem empresa vinculada."})
 
-    if role == "OWNER":
-        id_filial = int(id_filial_q) if id_filial_q is not None else None
-        return id_empresa, id_filial
+    tenant_id = int(id_empresa_q or default_tenant or accesses[0]["id_empresa"])
+    tenant_rows = [row for row in accesses if int(row["id_empresa"]) == tenant_id]
+    if not tenant_rows:
+        raise HTTPException(status_code=403, detail={"error": "tenant_access_denied", "message": "Acesso não permitido à empresa."})
 
-    if role == "MANAGER":
-        id_filial_claim = claims.get("id_filial")
-        if id_filial_claim is None:
-            raise ValueError("Missing branch in token")
-        return id_empresa, int(id_filial_claim)
+    all_branches_allowed = any(row.get("id_filial") is None for row in tenant_rows)
+    requested_branch = id_filial_q
+    if requested_branch is None and default_branch is not None:
+        requested_branch = int(default_branch)
 
-    raise ValueError(f"Unknown role: {role}")
+    if requested_branch is None:
+        if all_branches_allowed:
+            return tenant_id, None
+        first_branch = next((row.get("id_filial") for row in tenant_rows if row.get("id_filial") is not None), None)
+        return tenant_id, int(first_branch) if first_branch is not None else None
+
+    if all_branches_allowed:
+        return tenant_id, int(requested_branch)
+
+    if any(int(row.get("id_filial") or 0) == int(requested_branch) for row in tenant_rows):
+        return tenant_id, int(requested_branch)
+
+    raise HTTPException(status_code=403, detail={"error": "branch_access_denied", "message": "Acesso não permitido à filial."})

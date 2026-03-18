@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.deps import get_current_claims
 from app.scope import resolve_scope
 from app import repos_mart
+from app import repos_auth
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
 from app.services.telegram import send_telegram_alert
 
@@ -375,6 +376,7 @@ def pricing_competitor_prices_upsert(
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:
         raise HTTPException(status_code=403, detail="forbidden")
+    repos_auth.assert_product_write_allowed(claims)
 
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     if filial is None:
@@ -446,6 +448,7 @@ def jarvis_generate(
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
+    repos_auth.assert_product_write_allowed(claims)
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     stats = generate_jarvis_ai_plans(role, tenant, filial, dt_ref=dt_ref, limit=limit, force=force)
     return {
@@ -467,6 +470,7 @@ def admin_ai_usage(
     role = claims["role"]
     if role not in {"MASTER", "OWNER"}:
         raise HTTPException(status_code=403, detail="forbidden")
+    repos_auth.assert_product_write_allowed(claims)
 
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     return ai_usage_summary(role, tenant, filial, days=days)

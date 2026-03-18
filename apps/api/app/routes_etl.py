@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Header
 from app.config import settings
 from app.db import get_conn
 from app.deps import get_current_claims
+from app import repos_auth
 from app.security import decode_token
 from app.scope import resolve_scope
 from app.services.telegram import send_telegram_alert
@@ -35,6 +36,7 @@ def run_etl(
     """
 
     role = claims["role"]
+    repos_auth.assert_product_write_allowed(claims)
     tenant, _ = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=None)
 
     # Managers typically should not run ETL in production, but for dev we allow.
@@ -208,7 +210,16 @@ def _resolve_micro_scope(
         raise HTTPException(status_code=401, detail="Missing auth (Bearer or X-Ingest-Key/X-Internal-Key)")
 
     token = authorization.split(" ", 1)[1].strip()
-    claims = decode_token(token)
+    payload = decode_token(token)
+    try:
+        claims = repos_auth.get_session_context(
+            user_id=str(payload.get("sub") or ""),
+            id_empresa=payload.get("id_empresa"),
+            id_filial=payload.get("id_filial"),
+            channel_id=payload.get("channel_id"),
+        )
+    except repos_auth.AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa_q, id_filial_q=id_filial_q)
     return tenant, filial, "BEARER"
 

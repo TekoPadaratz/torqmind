@@ -18,12 +18,16 @@ DROP SCHEMA IF EXISTS mart CASCADE;
 DROP SCHEMA IF EXISTS dw CASCADE;
 DROP SCHEMA IF EXISTS stg CASCADE;
 DROP SCHEMA IF EXISTS etl CASCADE;
+DROP SCHEMA IF EXISTS billing CASCADE;
+DROP SCHEMA IF EXISTS audit CASCADE;
 DROP SCHEMA IF EXISTS app CASCADE;
 DROP SCHEMA IF EXISTS auth CASCADE;
 
 -- 2) Schemas
 CREATE SCHEMA auth;
 CREATE SCHEMA app;
+CREATE SCHEMA audit;
+CREATE SCHEMA billing;
 CREATE SCHEMA stg;
 CREATE SCHEMA dw;
 CREATE SCHEMA mart;
@@ -57,32 +61,67 @@ $$ LANGUAGE sql STABLE;
 CREATE TABLE auth.users (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   email             text UNIQUE NOT NULL,
+  nome              text NOT NULL DEFAULT '',
   password_hash     text NOT NULL,
+  role              text NOT NULL CHECK (role IN (
+                        'platform_master',
+                        'platform_admin',
+                        'channel_admin',
+                        'tenant_admin',
+                        'tenant_manager',
+                        'tenant_viewer'
+                      )),
   is_active         boolean NOT NULL DEFAULT true,
-  created_at        timestamptz NOT NULL DEFAULT now()
+  valid_from        date NOT NULL DEFAULT CURRENT_DATE,
+  valid_until       date NULL,
+  must_change_password boolean NOT NULL DEFAULT false,
+  last_login_at     timestamptz NULL,
+  failed_login_count integer NOT NULL DEFAULT 0,
+  locked_until      timestamptz NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE auth.user_tenants (
   user_id           uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  role              text NOT NULL CHECK (role IN ('MASTER','OWNER','MANAGER')),
+  role              text NOT NULL CHECK (role IN (
+                        'platform_master',
+                        'platform_admin',
+                        'channel_admin',
+                        'tenant_admin',
+                        'tenant_manager',
+                        'tenant_viewer'
+                      )),
+  channel_id        bigint NULL,
   id_empresa        integer NULL,
   id_filial         integer NULL,
+  is_enabled        boolean NOT NULL DEFAULT true,
+  valid_from        date NOT NULL DEFAULT CURRENT_DATE,
+  valid_until       date NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
   id_empresa_pk     integer GENERATED ALWAYS AS (COALESCE(id_empresa, -1)) STORED,
   id_filial_pk      integer GENERATED ALWAYS AS (COALESCE(id_filial, -1)) STORED,
   PRIMARY KEY (user_id, role, id_empresa_pk, id_filial_pk),
   CONSTRAINT ck_auth_user_tenants_role_scope CHECK (
-    (role = 'MASTER'  AND id_empresa IS NULL AND id_filial IS NULL) OR
-    (role = 'OWNER'   AND id_empresa IS NOT NULL AND id_filial IS NULL) OR
-    (role = 'MANAGER' AND id_empresa IS NOT NULL AND id_filial IS NOT NULL)
+    (role IN ('platform_master', 'platform_admin') AND channel_id IS NULL AND id_empresa IS NULL AND id_filial IS NULL) OR
+    (role = 'channel_admin' AND channel_id IS NOT NULL AND id_empresa IS NULL AND id_filial IS NULL) OR
+    (role = 'tenant_admin' AND channel_id IS NULL AND id_empresa IS NOT NULL AND id_filial IS NULL) OR
+    (role IN ('tenant_manager', 'tenant_viewer') AND channel_id IS NULL AND id_empresa IS NOT NULL)
   )
 );
 
-CREATE TABLE auth.audit_log (
+CREATE TABLE audit.audit_log (
   id                bigserial PRIMARY KEY,
-  ts                timestamptz NOT NULL DEFAULT now(),
   actor_user_id     uuid NULL,
+  actor_role        text NULL,
   action            text NOT NULL,
-  meta              jsonb NOT NULL DEFAULT '{}'::jsonb
+  entity_type       text NOT NULL,
+  entity_id         text NOT NULL,
+  old_values        jsonb NULL,
+  new_values        jsonb NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  ip                text NULL
 );
 
 -- Branch catalog for access/UI convenience (kept small)
@@ -90,7 +129,11 @@ CREATE TABLE auth.filiais (
   id_empresa        integer NOT NULL,
   id_filial         integer NOT NULL,
   nome              text NOT NULL DEFAULT '',
+  cnpj              text NULL,
   is_active         boolean NOT NULL DEFAULT true,
+  valid_from        date NOT NULL DEFAULT CURRENT_DATE,
+  valid_until       date NULL,
+  blocked_reason    text NULL,
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (id_empresa, id_filial)
@@ -109,6 +152,16 @@ CREATE TRIGGER trg_auth_filiais_updated_at
 BEFORE UPDATE ON auth.filiais
 FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_auth_users_updated_at ON auth.users;
+CREATE TRIGGER trg_auth_users_updated_at
+BEFORE UPDATE ON auth.users
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_auth_user_tenants_updated_at ON auth.user_tenants;
+CREATE TRIGGER trg_auth_user_tenants_updated_at
+BEFORE UPDATE ON auth.user_tenants
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
 -- =========================
 -- APP (tenants + notifications + goals)
 -- =========================
@@ -119,14 +172,60 @@ CREATE TABLE app.tenants (
   ingest_key        uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(),
   source_system     text NOT NULL DEFAULT 'XPERT',
   is_active         boolean NOT NULL DEFAULT true,
+  cnpj              text NULL,
+  status            text NOT NULL DEFAULT 'active' CHECK (status IN (
+                        'active',
+                        'trial',
+                        'overdue',
+                        'grace',
+                        'suspended_readonly',
+                        'suspended_total',
+                        'cancelled'
+                      )),
+  valid_from        date NOT NULL DEFAULT CURRENT_DATE,
+  valid_until       date NULL,
+  billing_status    text NOT NULL DEFAULT 'current',
+  grace_until       date NULL,
+  suspended_reason  text NULL,
+  suspended_at      timestamptz NULL,
+  reactivated_at    timestamptz NULL,
+  channel_id        bigint NULL,
+  plan_name         text NULL,
+  monthly_amount    numeric(14,2) NULL,
+  billing_day       smallint NULL CHECK (billing_day BETWEEN 1 AND 31),
+  issue_day         smallint NULL CHECK (issue_day BETWEEN 1 AND 31),
   created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
   metadata          jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+
+CREATE TABLE app.channels (
+  id                bigserial PRIMARY KEY,
+  name              text NOT NULL,
+  contact_name      text NULL,
+  email             text NULL,
+  phone             text NULL,
+  is_enabled        boolean NOT NULL DEFAULT true,
+  notes             text NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE auth.user_tenants
+  ADD CONSTRAINT fk_auth_user_tenants_channel
+  FOREIGN KEY (channel_id) REFERENCES app.channels(id);
+
+ALTER TABLE app.tenants
+  ADD CONSTRAINT fk_app_tenants_channel
+  FOREIGN KEY (channel_id) REFERENCES app.channels(id);
 
 CREATE TABLE app.user_notification_settings (
   user_id           uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   telegram_chat_id  text NULL,
+  telegram_username text NULL,
   telegram_enabled  boolean NOT NULL DEFAULT false,
+  email             text NULL,
+  phone             text NULL,
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now()
 );
@@ -134,6 +233,16 @@ CREATE TABLE app.user_notification_settings (
 DROP TRIGGER IF EXISTS trg_app_user_notification_updated_at ON app.user_notification_settings;
 CREATE TRIGGER trg_app_user_notification_updated_at
 BEFORE UPDATE ON app.user_notification_settings
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_app_channels_updated_at ON app.channels;
+CREATE TRIGGER trg_app_channels_updated_at
+BEFORE UPDATE ON app.channels
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_app_tenants_updated_at ON app.tenants;
+CREATE TRIGGER trg_app_tenants_updated_at
+BEFORE UPDATE ON app.tenants
 FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
 
 -- Real-time alert table (idempotent per comprovante)
@@ -165,6 +274,106 @@ CREATE TABLE app.goals (
   created_at        timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id_empresa, id_filial, goal_date, goal_type)
 );
+
+CREATE TABLE app.notification_subscriptions (
+  id                bigserial PRIMARY KEY,
+  user_id           uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  tenant_id         integer NULL REFERENCES app.tenants(id_empresa) ON DELETE CASCADE,
+  branch_id         integer NULL,
+  event_type        text NOT NULL,
+  channel           text NOT NULL CHECK (channel IN ('telegram', 'email', 'phone', 'in_app')),
+  severity_min      text NULL CHECK (severity_min IS NULL OR severity_min IN ('INFO', 'WARN', 'CRITICAL')),
+  is_enabled        boolean NOT NULL DEFAULT true,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (tenant_id, branch_id)
+    REFERENCES auth.filiais(id_empresa, id_filial)
+    ON DELETE CASCADE
+);
+
+DROP TRIGGER IF EXISTS trg_app_notification_subscriptions_updated_at ON app.notification_subscriptions;
+CREATE TRIGGER trg_app_notification_subscriptions_updated_at
+BEFORE UPDATE ON app.notification_subscriptions
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
+CREATE TABLE billing.contracts (
+  id                             bigserial PRIMARY KEY,
+  tenant_id                      integer NOT NULL REFERENCES app.tenants(id_empresa) ON DELETE CASCADE,
+  channel_id                     bigint NULL REFERENCES app.channels(id),
+  plan_name                      text NOT NULL,
+  monthly_amount                 numeric(14,2) NOT NULL CHECK (monthly_amount >= 0),
+  billing_day                    smallint NOT NULL CHECK (billing_day BETWEEN 1 AND 31),
+  issue_day                      smallint NOT NULL CHECK (issue_day BETWEEN 1 AND 31),
+  start_date                     date NOT NULL,
+  end_date                       date NULL,
+  is_enabled                     boolean NOT NULL DEFAULT true,
+  commission_first_year_pct      numeric(7,4) NOT NULL DEFAULT 0 CHECK (commission_first_year_pct BETWEEN 0 AND 100),
+  commission_recurring_pct       numeric(7,4) NOT NULL DEFAULT 0 CHECK (commission_recurring_pct BETWEEN 0 AND 100),
+  notes                          text NULL,
+  created_at                     timestamptz NOT NULL DEFAULT now(),
+  updated_at                     timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS trg_billing_contracts_updated_at ON billing.contracts;
+CREATE TRIGGER trg_billing_contracts_updated_at
+BEFORE UPDATE ON billing.contracts
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
+CREATE TABLE billing.receivables (
+  id                bigserial PRIMARY KEY,
+  tenant_id         integer NOT NULL REFERENCES app.tenants(id_empresa) ON DELETE CASCADE,
+  contract_id       bigint NOT NULL REFERENCES billing.contracts(id) ON DELETE CASCADE,
+  competence_month  date NOT NULL,
+  issue_date        date NOT NULL,
+  due_date          date NOT NULL,
+  amount            numeric(14,2) NOT NULL CHECK (amount >= 0),
+  status            text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'open', 'issued', 'overdue', 'paid', 'cancelled')),
+  is_emitted        boolean NOT NULL DEFAULT false,
+  emitted_at        timestamptz NULL,
+  paid_at           timestamptz NULL,
+  received_amount   numeric(14,2) NULL,
+  payment_method    text NULL,
+  notes             text NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS trg_billing_receivables_updated_at ON billing.receivables;
+CREATE TRIGGER trg_billing_receivables_updated_at
+BEFORE UPDATE ON billing.receivables
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
+
+CREATE TABLE billing.channel_payables (
+  id                bigserial PRIMARY KEY,
+  tenant_id         integer NOT NULL REFERENCES app.tenants(id_empresa) ON DELETE CASCADE,
+  channel_id        bigint NOT NULL REFERENCES app.channels(id),
+  receivable_id     bigint NOT NULL REFERENCES billing.receivables(id) ON DELETE CASCADE,
+  competence_month  date NOT NULL,
+  commission_pct    numeric(7,4) NOT NULL CHECK (commission_pct BETWEEN 0 AND 100),
+  gross_amount      numeric(14,2) NOT NULL CHECK (gross_amount >= 0),
+  payable_amount    numeric(14,2) NOT NULL CHECK (payable_amount >= 0),
+  status            text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'released', 'paid', 'cancelled')),
+  due_date          date NULL,
+  paid_at           timestamptz NULL,
+  notes             text NULL,
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX ux_billing_contracts_active_tenant
+  ON billing.contracts (tenant_id)
+  WHERE is_enabled = true;
+
+CREATE UNIQUE INDEX ux_billing_receivables_tenant_contract_competence
+  ON billing.receivables (tenant_id, contract_id, competence_month);
+
+CREATE UNIQUE INDEX ux_billing_channel_payables_receivable
+  ON billing.channel_payables (receivable_id);
+
+DROP TRIGGER IF EXISTS trg_billing_channel_payables_updated_at ON billing.channel_payables;
+CREATE TRIGGER trg_billing_channel_payables_updated_at
+BEFORE UPDATE ON billing.channel_payables
+FOR EACH ROW EXECUTE FUNCTION auth.set_updated_at();
 
 -- Competitor pricing manual inputs (per fuel/product)
 CREATE TABLE app.competitor_fuel_prices (

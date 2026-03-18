@@ -13,6 +13,7 @@ from app.routes_dashboard import router as dashboard_router
 from app.routes_ingest import router as ingest_router
 from app.routes_etl import router as etl_router
 from app.routes_bi import router as bi_router
+from app.routes_platform import router as platform_router
 
 
 def _ensure_dev_seed() -> None:
@@ -52,6 +53,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(bi_router)
+app.include_router(platform_router)
 app.include_router(etl_router)
 app.include_router(ingest_router)
 
