@@ -28,6 +28,28 @@ class SmokeApiTest(unittest.TestCase):
                 (1,),
             ).fetchone()
             cls.filial_id = int(filial_row["id_filial"]) if filial_row and filial_row["id_filial"] is not None else 1
+            customer_branch_row = conn.execute(
+                """
+                SELECT v.id_filial
+                FROM dw.fact_venda v
+                JOIN dw.dim_cliente dc
+                  ON dc.id_empresa = v.id_empresa
+                 AND dc.id_filial = v.id_filial
+                 AND dc.id_cliente = v.id_cliente
+                WHERE v.id_empresa = %s
+                  AND COALESCE(v.cancelado, false) = false
+                  AND NULLIF(btrim(dc.nome), '') IS NOT NULL
+                GROUP BY v.id_filial
+                ORDER BY COUNT(*) DESC, v.id_filial
+                LIMIT 1
+                """,
+                (1,),
+            ).fetchone()
+            cls.customer_branch_id = (
+                int(customer_branch_row["id_filial"])
+                if customer_branch_row and customer_branch_row["id_filial"] is not None
+                else None
+            )
 
     @staticmethod
     def _request(
@@ -173,8 +195,14 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("series", drilldown)
 
     def test_customers_overview_returns_customer_names_for_real_branch(self) -> None:
+        if self.customer_branch_id is None:
+            self.skipTest("No branch with named customers is available in the current demo dataset")
+
         status, body = self._request(
-            "/bi/customers/overview?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1&id_filial=10169",
+            (
+                "/bi/customers/overview?dt_ini=2025-09-01&dt_fim=2025-09-18"
+                f"&dt_ref=2025-09-18&id_empresa=1&id_filial={self.customer_branch_id}"
+            ),
             headers={"Authorization": f"Bearer {self.token}"},
         )
         self.assertEqual(status, 200)

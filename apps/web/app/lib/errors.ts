@@ -2,6 +2,10 @@ export function extractApiError(err: any, fallback = 'Falha na requisicao'): str
   const data = err?.response?.data;
   const detail = data?.detail;
 
+  if (typeof detail?.message === 'string' && detail.message) {
+    return detail.message;
+  }
+
   if (typeof data?.error === 'string' && data.error) {
     if (typeof detail === 'string' && detail && detail !== data.error) {
       return `${data.error}: ${detail}`;

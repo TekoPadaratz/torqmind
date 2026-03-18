@@ -61,6 +61,22 @@ class PlatformBackofficeTest(unittest.TestCase):
             )
             conn.commit()
 
+    def _deactivate_active_contracts(self, tenant_id: int) -> None:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                UPDATE billing.contracts
+                SET
+                  is_enabled = false,
+                  end_date = COALESCE(end_date, CURRENT_DATE),
+                  updated_at = now()
+                WHERE tenant_id = %s
+                  AND is_enabled = true
+                """,
+                (tenant_id,),
+            )
+            conn.commit()
+
     def _create_user(
         self,
         role: str,
@@ -301,6 +317,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         channel_id = self._create_channel("Canal Idempotente")
         tenant_id = self._create_tenant("Tenant Billing Idempotente", channel_id=channel_id)
         self._create_branch(tenant_id, 994, "Filial 994", is_active=True)
+        self._deactivate_active_contracts(tenant_id)
 
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
             contract = conn.execute(
@@ -370,6 +387,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         channel_id = self._create_channel("Canal Comissão")
         tenant_id = self._create_tenant("Tenant Comissão", channel_id=channel_id)
         self._create_branch(tenant_id, 995, "Filial 995", is_active=True)
+        self._deactivate_active_contracts(tenant_id)
 
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
             contract = conn.execute(
@@ -447,6 +465,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         channel_id = self._create_channel("Canal Reversão")
         tenant_id = self._create_tenant("Tenant Reversão", channel_id=channel_id)
         self._create_branch(tenant_id, 996, "Filial 996", is_active=True)
+        self._deactivate_active_contracts(tenant_id)
 
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
             contract = conn.execute(
@@ -594,9 +613,10 @@ class PlatformBackofficeTest(unittest.TestCase):
                 SELECT id, is_enabled, start_date, end_date, channel_id
                 FROM billing.contracts
                 WHERE tenant_id = %s
+                  AND id IN (%s, %s)
                 ORDER BY id
                 """,
-                (tenant_id,),
+                (tenant_id, contract_id, new_contract_id),
             ).fetchall()
             conn.commit()
 
