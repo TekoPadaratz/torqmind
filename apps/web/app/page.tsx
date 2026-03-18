@@ -3,10 +3,11 @@ import { useEffect, useState } from "react";
 import { api, setAuthToken } from "./lib/api";
 import { clearAuth, getToken, setClaims, setToken } from "./lib/auth";
 import { extractApiError } from "./lib/errors";
+import { LOGIN_FORM_DEFAULTS } from "./lib/login-form-defaults.mjs";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("master@torqmind.com");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState<string>(LOGIN_FORM_DEFAULTS.email);
+  const [password, setPassword] = useState<string>(LOGIN_FORM_DEFAULTS.password);
   const [error, setError] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
 
@@ -64,13 +65,20 @@ export default function LoginPage() {
           <h1>Entrar</h1>
           <div style={{ height: 16 }} />
           <form onSubmit={onSubmit} className="row" style={{ gap: 12 }}>
-            <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
+            <input
+              className="input"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="email"
+              autoComplete="username"
+            />
             <input
               className="input"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="senha"
+              autoComplete="current-password"
             />
             {error && (
               <div className="muted" style={{ color: "#fb7185" }}>
