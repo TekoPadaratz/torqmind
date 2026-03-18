@@ -70,16 +70,26 @@ export function formatFilialLabel(idFilial: any, filialNome?: string | null) {
 }
 
 export function formatRoleLabel(role: any) {
-  const value = String(role || '').toUpperCase();
+  const raw = String(role || '');
+  const value = raw.toUpperCase();
   if (value === 'MASTER') return 'Master';
   if (value === 'OWNER') return 'Diretoria';
   if (value === 'MANAGER') return 'Gerência';
+  if (raw === 'platform_master') return 'Platform Master';
+  if (raw === 'platform_admin') return 'Platform Admin';
+  if (raw === 'channel_admin') return 'Canal';
+  if (raw === 'tenant_admin') return 'Tenant Admin';
+  if (raw === 'tenant_manager') return 'Tenant Manager';
+  if (raw === 'tenant_viewer') return 'Tenant Viewer';
   return value || 'Usuário';
 }
 
 export function buildUserLabel(claims: any) {
   if (!claims) return undefined;
-  return formatRoleLabel(claims.role);
+  const primary = formatRoleLabel(claims.user_role || claims.role);
+  const tenant = claims.id_empresa ? `E${claims.id_empresa}` : '';
+  const branch = claims.id_filial ? `F${claims.id_filial}` : '';
+  return [primary, tenant, branch].filter(Boolean).join(' · ');
 }
 
 export function formatTurnoLabel(idTurno: any) {

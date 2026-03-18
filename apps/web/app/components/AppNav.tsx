@@ -4,7 +4,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { clearAuth } from '../lib/auth';
+import { clearAuth, getClaims } from '../lib/auth';
 import { apiGet } from '../lib/api';
 
 function buildHref(path: string, params: URLSearchParams) {
@@ -53,11 +53,13 @@ export default function AppNav({
   const [search, setSearch] = useState('');
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [claims, setClaims] = useState<any>(null);
   const params = useMemo(() => new URLSearchParams(search), [search]);
 
   useEffect(() => {
     const syncSearch = () => setSearch(window.location.search);
     syncSearch();
+    setClaims(getClaims());
     window.addEventListener('popstate', syncSearch);
     return () => window.removeEventListener('popstate', syncSearch);
   }, []);
@@ -138,6 +140,11 @@ export default function AppNav({
           <Link className="btn" href={buildHref('/dashboard', params)} aria-label="Alertas">
             Alertas ({unread})
           </Link>
+          {claims?.access?.platform ? (
+            <Link className="btn" href="/platform">
+              Platform
+            </Link>
+          ) : null}
           <Link className="btn" href="/scope">
             Escopo
           </Link>

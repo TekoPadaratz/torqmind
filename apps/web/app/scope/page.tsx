@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import { apiGet } from '../lib/api';
-import { clearAuth, requireAuth } from '../lib/auth';
+import { clearAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
+import { loadSession } from '../lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,16 +46,12 @@ export default function ScopePage() {
   }, [claims]);
 
   useEffect(() => {
-    if (!requireAuth()) {
-      router.push('/');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setErr('');
       try {
-        const me = await apiGet('/auth/me');
+        const me = await loadSession(router, 'product');
+        if (!me) return;
         setClaims(me);
 
         if (me.role === 'MASTER') {
@@ -63,8 +60,7 @@ export default function ScopePage() {
           setIdEmpresa(String(me.id_empresa));
         }
 
-        // Managers are fixed
-        if (me.role === 'MANAGER' && me.id_filial) {
+        if (me.id_filial) {
           setIdFilial(String(me.id_filial));
         }
       } catch (e: any) {
@@ -109,7 +105,7 @@ export default function ScopePage() {
   };
 
   const canPickEmpresa = claims?.role === 'MASTER';
-  const canPickFilial = claims?.role !== 'MANAGER';
+  const canPickFilial = claims?.role !== 'MANAGER' || !(claims?.id_filial);
 
   return (
     <div>

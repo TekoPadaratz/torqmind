@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, setAuthToken } from "./lib/api";
-import { clearAuth, getToken, setToken } from "./lib/auth";
+import { clearAuth, getToken, setClaims, setToken } from "./lib/auth";
 import { extractApiError } from "./lib/errors";
 
 export default function LoginPage() {
@@ -19,8 +19,9 @@ export default function LoginPage() {
     setAuthToken(t);
     api
       .get("/auth/me")
-      .then(() => {
-        window.location.href = "/scope";
+      .then((res) => {
+        setClaims(res.data);
+        window.location.href = res.data?.home_path || "/scope";
       })
       .catch(() => {
         clearAuth();
@@ -39,7 +40,9 @@ export default function LoginPage() {
       const token = res.data.access_token as string;
       setToken(token);
       setAuthToken(token);
-      window.location.href = "/scope";
+      const me = await api.get("/auth/me");
+      setClaims(me.data);
+      window.location.href = res.data?.home_path || me.data?.home_path || "/scope";
     } catch (err: any) {
       setError(extractApiError(err, "Falha no login"));
     }

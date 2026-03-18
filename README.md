@@ -131,6 +131,7 @@ make logs   # acompanha logs
 make migrate   # aplica todas as migrations em ordem
 make lint   # valida build do web + compilação Python
 make down   # derruba os serviços
+make platform-billing-daily   # gera receivables / atualiza overdue do backoffice
 ```
 
 ### Backfill de snapshots executivos
@@ -168,6 +169,11 @@ Cria/atualiza:
 - **MANAGER** → `manager@empresa1.local` / valor definido em `SEED_PASSWORD` (Empresa 1, Filial 1)
 
 E imprime o `ingest_key` da Empresa 1 (útil para o Agent).
+
+Papéis criados no seed atual:
+- `platform_master` → `master@torqmind.com`
+- `tenant_admin` → `owner@empresa1.com`
+- `tenant_manager` → `manager@empresa1.com`
 
 ---
 
@@ -258,6 +264,57 @@ Páginas:
 - `/sales` → Vendas & Stores
 - `/fraud` → Sistema Anti-Fraude
 - `/customers` → Análise de Clientes
+
+---
+
+## Backoffice de Plataforma
+
+Nova área interna:
+- `/platform`
+
+Objetivo:
+- gerir empresas/clientes, filiais, usuários e acessos;
+- configurar Telegram/notificações por usuário;
+- gerir canais, contratos, contas a receber e contas a pagar de canal;
+- aplicar suspensão e reativação comercial sem misturar essas telas ao produto do cliente.
+
+Perfis:
+- `platform_master`: acesso total, incluindo financeiro/comercial, canais, contratos e auditoria global.
+- `platform_admin`: gestão operacional de empresas, filiais, usuários, acessos e notificações; sem cobrança/comissão.
+- `channel_admin`: acesso apenas à própria carteira, sem financeiro global.
+- `tenant_admin`, `tenant_manager`, `tenant_viewer`: continuam no produto do cliente com validação reforçada de vigência e escopo.
+
+Validação de login/sessão:
+- usuário deve existir, estar habilitado e dentro da vigência;
+- vínculo de acesso deve estar habilitado e válido;
+- empresa e filial vinculadas são revalidadas no backend a cada sessão;
+- `overdue` e `grace` mantêm login com aviso;
+- `suspended_readonly` mantém acesso em modo leitura;
+- `suspended_total` bloqueia login do cliente.
+
+Fluxo operacional:
+1. cadastrar empresa em `/platform/companies`;
+2. cadastrar filiais e usuários;
+3. configurar acessos explícitos por empresa/filial/canal;
+4. criar contrato em `/platform/contracts`;
+5. gerar cobranças em `/platform/receivables` ou via CLI agendada;
+6. marcar `emitido` manualmente;
+7. marcar `pago` manualmente;
+8. na baixa, o sistema gera automaticamente `billing.channel_payables` quando houver canal/comissão aplicável.
+
+Job agendável de billing:
+
+```bash
+make platform-billing-daily
+```
+
+Exemplo com escopo e data explícitos:
+
+```bash
+AS_OF=2026-03-17 COMPETENCE_MONTH=2026-03-01 MONTHS_AHEAD=1 TENANT_ID=1 make platform-billing-daily
+```
+
+No Ubuntu, basta agendar esse target em `cron` ou `systemd timer`, sempre após garantir que a stack e as migrations estão atualizadas.
 - `/finance` → Financeiro
 - `/pricing` → Preço da Concorrência (input manual + simulação 10 dias)
 - `/goals` → Metas & Equipe
