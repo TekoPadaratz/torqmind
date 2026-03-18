@@ -60,6 +60,7 @@ cp .env.production.example .env
 - `POSTGRES_PASSWORD`
 - `API_JWT_SECRET`
 - `SEED_PASSWORD`
+- `PLATFORM_MASTER_PASSWORD` se quiser trocar a senha bootstrap do Master real
 - `OPENAI_API_KEY` se quiser Jarvis IA ativo
 - `TELEGRAM_BOT_TOKEN` se quiser notificações Telegram
 
@@ -92,7 +93,8 @@ de runtime da fase 2, incluindo `auth.users.nome`.
 ```
 
 Em produção, esse seed primeiro garante o migrate e depois cria/atualiza apenas o usuário
-`platform_master`. Ele não cria tenant nem filial demo.
+interno real `platform_master`, rebaixa o usuário interno de canal para `channel_admin`
+e sincroniza o canal bootstrap. Ele não cria tenant nem filial demo.
 
 7. Validar no navegador:
 - `http://IP_DO_SERVIDOR/`
@@ -179,17 +181,25 @@ docker compose exec api python -m app.cli.seed
 ```
 
 No modo padrão local/dev, cria/atualiza:
-- **MASTER**  → `master@torqmind.com` / valor definido em `SEED_PASSWORD`
+- **MASTER REAL**   → `teko94@gmail.com` / `PLATFORM_MASTER_PASSWORD` (padrão: `@Crmjr105`)
+- **CANAL INTERNO** → `master@torqmind.com` / `CHANNEL_BOOTSTRAP_PASSWORD` ou `SEED_PASSWORD`
 - **OWNER**   → `owner@empresa1.com` / valor definido em `SEED_PASSWORD`  (Empresa 1)
 - **MANAGER** → `manager@empresa1.com` / valor definido em `SEED_PASSWORD` (Empresa 1, Filial 1)
 
-E imprime o `ingest_key` da Empresa 1 (útil para o Agent).
+Também cria/atualiza o canal bootstrap `Canal TorqMind`, vincula a Empresa 1 demo a ele
+e imprime o `ingest_key` da Empresa 1 (útil para o Agent).
 
 No script de produção `./deploy/scripts/prod-seed.sh`, o seed roda em modo `master-only`:
-- cria/atualiza apenas `master@torqmind.com`
+- cria/atualiza `teko94@gmail.com` como `platform_master`
+- cria/atualiza `master@torqmind.com` como `channel_admin`
+- cria/atualiza o canal bootstrap `Canal TorqMind`
 - não cria tenant demo
 - não cria filial demo
 - roda `prod-migrate.sh` antes do seed para evitar drift de schema
+
+Para trocar essas credenciais no futuro sem SQL manual:
+- ajuste `PLATFORM_MASTER_EMAIL`, `PLATFORM_MASTER_PASSWORD`, `CHANNEL_BOOTSTRAP_EMAIL` e `CHANNEL_BOOTSTRAP_PASSWORD` no `.env`;
+- rode novamente `./deploy/scripts/prod-seed.sh`.
 
 ---
 
@@ -299,6 +309,10 @@ Perfis:
 - `platform_admin`: gestão operacional de empresas, usuários, acessos e notificações; sem cobrança/comissão.
 - `channel_admin`: acesso apenas à própria carteira, sem financeiro global.
 - `tenant_admin`, `tenant_manager`, `tenant_viewer`: continuam no produto do cliente com validação reforçada de vigência e escopo.
+
+Bootstrap padrão desta release:
+- `teko94@gmail.com`: Master real da plataforma (`platform_master`).
+- `master@torqmind.com`: usuário interno do canal (`channel_admin`), sem acesso financeiro/comercial global.
 
 Validação de login/sessão:
 - usuário deve existir, estar habilitado e dentro da vigência;

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import psycopg
 from psycopg import sql
+from psycopg.rows import dict_row
 from fastapi.testclient import TestClient
 
 from app.cli.migrate import resolve_migrations_dir
@@ -19,6 +20,10 @@ from app.main import app
 
 
 SAFE_INTERNAL_MESSAGE = "Falha interna do servidor. Tente novamente em instantes."
+REAL_MASTER_EMAIL = "teko94@gmail.com"
+REAL_MASTER_PASSWORD = "@Crmjr105"
+CHANNEL_BOOTSTRAP_EMAIL = "master@torqmind.com"
+CHANNEL_BOOTSTRAP_PASSWORD = "TorqMind@123"
 
 
 def _admin_dsn(dbname: str) -> str:
@@ -70,6 +75,12 @@ def _column_exists(db_name: str, schema_name: str, table_name: str, column_name:
             (schema_name, table_name, column_name),
         ).fetchone()
     return row is not None
+
+
+def _fetchone(db_name: str, query: str, params: tuple[object, ...] = ()) -> dict[str, object] | None:
+    with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
+        row = conn.execute(query, params).fetchone()
+    return row if row else None
 
 
 def _subprocess_env(db_name: str) -> dict[str, str]:
@@ -128,14 +139,14 @@ class ReleaseHardeningTest(unittest.TestCase):
                     "-c",
                     (
                         "from app import repos_auth; "
-                        "session = repos_auth.verify_login('master@torqmind.com', 'TorqMind@123'); "
+                        f"session = repos_auth.verify_login('{REAL_MASTER_EMAIL}', '{REAL_MASTER_PASSWORD}'); "
                         "print(session['email'])"
                     ),
                 ],
                 env,
             )
             self.assertEqual(login.returncode, 0, login.stderr or login.stdout)
-            self.assertIn("master@torqmind.com", login.stdout)
+            self.assertIn(REAL_MASTER_EMAIL, login.stdout)
 
     def test_migrate_and_seed_work_on_clean_database(self) -> None:
         with temporary_database() as db_name:
@@ -153,7 +164,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                     "-c",
                     (
                         "from app import repos_auth; "
-                        "session = repos_auth.verify_login('master@torqmind.com', 'TorqMind@123'); "
+                        f"session = repos_auth.verify_login('{REAL_MASTER_EMAIL}', '{REAL_MASTER_PASSWORD}'); "
                         "print(session['home_path'])"
                     ),
                 ],
@@ -161,6 +172,160 @@ class ReleaseHardeningTest(unittest.TestCase):
             )
             self.assertEqual(login.returncode, 0, login.stderr or login.stdout)
             self.assertIn("/platform", login.stdout)
+
+    def test_master_only_seed_bootstraps_real_master_and_channel_admin(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
+            self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)
+
+            master_user = _fetchone(
+                db_name,
+                """
+                SELECT email, role, must_change_password, is_active
+                FROM auth.users
+                WHERE lower(email) = lower(%s)
+                """,
+                (REAL_MASTER_EMAIL,),
+            )
+            self.assertIsNotNone(master_user)
+            self.assertEqual(master_user["role"], "platform_master")
+            self.assertFalse(bool(master_user["must_change_password"]))
+            self.assertTrue(bool(master_user["is_active"]))
+
+            channel_user = _fetchone(
+                db_name,
+                """
+                SELECT email, role, must_change_password, is_active
+                FROM auth.users
+                WHERE lower(email) = lower(%s)
+                """,
+                (CHANNEL_BOOTSTRAP_EMAIL,),
+            )
+            self.assertIsNotNone(channel_user)
+            self.assertEqual(channel_user["role"], "channel_admin")
+            self.assertFalse(bool(channel_user["must_change_password"]))
+            self.assertTrue(bool(channel_user["is_active"]))
+
+            master_scope = _fetchone(
+                db_name,
+                """
+                SELECT ut.role, ut.channel_id, ut.id_empresa, ut.id_filial
+                FROM auth.user_tenants ut
+                JOIN auth.users u ON u.id = ut.user_id
+                WHERE lower(u.email) = lower(%s)
+                """,
+                (REAL_MASTER_EMAIL,),
+            )
+            self.assertEqual(master_scope, {"role": "platform_master", "channel_id": None, "id_empresa": None, "id_filial": None})
+
+            channel_scope = _fetchone(
+                db_name,
+                """
+                SELECT ut.role, ut.channel_id, ut.id_empresa, ut.id_filial, c.name AS channel_name
+                FROM auth.user_tenants ut
+                JOIN auth.users u ON u.id = ut.user_id
+                LEFT JOIN app.channels c ON c.id = ut.channel_id
+                WHERE lower(u.email) = lower(%s)
+                """,
+                (CHANNEL_BOOTSTRAP_EMAIL,),
+            )
+            self.assertIsNotNone(channel_scope)
+            self.assertEqual(channel_scope["role"], "channel_admin")
+            self.assertIsNotNone(channel_scope["channel_id"])
+            self.assertIsNone(channel_scope["id_empresa"])
+            self.assertIsNone(channel_scope["id_filial"])
+            self.assertEqual(channel_scope["channel_name"], "Canal TorqMind")
+
+            master_login = _run_python(
+                [
+                    "-c",
+                    (
+                        "import json; "
+                        "from app import repos_auth; "
+                        f"session = repos_auth.verify_login('{REAL_MASTER_EMAIL}', '{REAL_MASTER_PASSWORD}'); "
+                        "print(json.dumps({'role': session['user_role'], 'platform_finance': session['access']['platform_finance'], 'home_path': session['home_path']}))"
+                    ),
+                ],
+                env,
+            )
+            self.assertEqual(master_login.returncode, 0, master_login.stderr or master_login.stdout)
+            self.assertIn('"role": "platform_master"', master_login.stdout)
+            self.assertIn('"platform_finance": true', master_login.stdout)
+            self.assertIn('"home_path": "/platform"', master_login.stdout)
+
+            channel_login = _run_python(
+                [
+                    "-c",
+                    (
+                        "import json; "
+                        "from app import repos_auth; "
+                        f"session = repos_auth.verify_login('{CHANNEL_BOOTSTRAP_EMAIL}', '{CHANNEL_BOOTSTRAP_PASSWORD}'); "
+                        "print(json.dumps({'role': session['user_role'], 'platform': session['access']['platform'], 'platform_finance': session['access']['platform_finance'], 'channel_ids': session['channel_ids']}))"
+                    ),
+                ],
+                env,
+            )
+            self.assertEqual(channel_login.returncode, 0, channel_login.stderr or channel_login.stdout)
+            self.assertIn('"role": "channel_admin"', channel_login.stdout)
+            self.assertIn('"platform": true', channel_login.stdout)
+            self.assertIn('"platform_finance": false', channel_login.stdout)
+
+    def test_master_only_seed_reconciles_legacy_master_to_channel_scope(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            legacy_seed = _run_python(
+                [
+                    "-c",
+                    (
+                        "from app.cli.seed import _upsert_user, _replace_scopes; "
+                        f"user_id = _upsert_user('{CHANNEL_BOOTSTRAP_EMAIL}', '{CHANNEL_BOOTSTRAP_PASSWORD}', 'Legacy Master', 'platform_master'); "
+                        "_replace_scopes(user_id, [{'role': 'platform_master', 'channel_id': None, 'id_empresa': None, 'id_filial': None, 'is_enabled': True, 'valid_from': None, 'valid_until': None}]); "
+                        "print(user_id)"
+                    ),
+                ],
+                env,
+            )
+            self.assertEqual(legacy_seed.returncode, 0, legacy_seed.stderr or legacy_seed.stdout)
+
+            seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
+            self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)
+
+            channel_user = _fetchone(
+                db_name,
+                """
+                SELECT email, role
+                FROM auth.users
+                WHERE lower(email) = lower(%s)
+                """,
+                (CHANNEL_BOOTSTRAP_EMAIL,),
+            )
+            self.assertIsNotNone(channel_user)
+            self.assertEqual(channel_user["role"], "channel_admin")
+
+            channel_scope = _fetchone(
+                db_name,
+                """
+                SELECT ut.role, ut.channel_id, ut.id_empresa, ut.id_filial
+                FROM auth.user_tenants ut
+                JOIN auth.users u ON u.id = ut.user_id
+                WHERE lower(u.email) = lower(%s)
+                """,
+                (CHANNEL_BOOTSTRAP_EMAIL,),
+            )
+            self.assertIsNotNone(channel_scope)
+            self.assertEqual(channel_scope["role"], "channel_admin")
+            self.assertIsNotNone(channel_scope["channel_id"])
+            self.assertIsNone(channel_scope["id_empresa"])
+            self.assertIsNone(channel_scope["id_filial"])
 
     def test_internal_sql_errors_do_not_leak_in_login_response(self) -> None:
         client = TestClient(app, raise_server_exceptions=False)
