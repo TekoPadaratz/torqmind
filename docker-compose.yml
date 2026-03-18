@@ -38,12 +38,9 @@ services:
   web:
     build:
       context: ./apps/web
-    env_file:
-      - ./.env
     environment:
       API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
-      NEXT_PUBLIC_API_PORT: ${NEXT_PUBLIC_API_PORT:-8000}
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
     ports:
       - "3000:3000"
     depends_on:

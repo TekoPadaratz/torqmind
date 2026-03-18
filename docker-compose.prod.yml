@@ -71,12 +71,13 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile.prod
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+        API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
     restart: unless-stopped
     environment:
-      API_INTERNAL_URL: http://api:8000
-      NEXT_PUBLIC_API_BASE_URL: /api
-      NEXT_PUBLIC_API_URL: ""
-      NEXT_PUBLIC_API_PORT: ${NEXT_PUBLIC_API_PORT:-8000}
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
     expose:
       - "3000"
     depends_on:

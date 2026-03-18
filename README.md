@@ -80,6 +80,9 @@ Ou usar o script:
 ./deploy/scripts/prod-seed.sh
 ```
 
+Em produção, esse seed cria/atualiza apenas o usuário `platform_master`.
+Ele não cria tenant nem filial demo.
+
 6. Validar no navegador:
 - `http://IP_DO_SERVIDOR/`
 - `http://IP_DO_SERVIDOR/docs`
@@ -104,7 +107,7 @@ Pré-requisitos:
 docker compose up --build -d
 ```
 
-2) Seed de usuários + tenant:
+2) Seed de usuários + tenant demo:
 ```bash
 docker compose exec api python -m app.cli.seed
 ```
@@ -129,6 +132,7 @@ Comandos úteis:
 ```bash
 make logs   # acompanha logs
 make migrate   # aplica todas as migrations em ordem
+make resetdb   # recria o banco via cadeia oficial de migrations (DEV/HOMOLOG)
 make lint   # valida build do web + compilação Python
 make down   # derruba os serviços
 make platform-billing-daily   # gera receivables / atualiza overdue do backoffice
@@ -163,17 +167,17 @@ Depois de subir, rode:
 docker compose exec api python -m app.cli.seed
 ```
 
-Cria/atualiza:
-- **MASTER**  → `master@torqmind.local` / valor definido em `SEED_PASSWORD`
-- **OWNER**   → `owner@empresa1.local` / valor definido em `SEED_PASSWORD`  (Empresa 1)
-- **MANAGER** → `manager@empresa1.local` / valor definido em `SEED_PASSWORD` (Empresa 1, Filial 1)
+No modo padrão local/dev, cria/atualiza:
+- **MASTER**  → `master@torqmind.com` / valor definido em `SEED_PASSWORD`
+- **OWNER**   → `owner@empresa1.com` / valor definido em `SEED_PASSWORD`  (Empresa 1)
+- **MANAGER** → `manager@empresa1.com` / valor definido em `SEED_PASSWORD` (Empresa 1, Filial 1)
 
 E imprime o `ingest_key` da Empresa 1 (útil para o Agent).
 
-Papéis criados no seed atual:
-- `platform_master` → `master@torqmind.com`
-- `tenant_admin` → `owner@empresa1.com`
-- `tenant_manager` → `manager@empresa1.com`
+No script de produção `./deploy/scripts/prod-seed.sh`, o seed roda em modo `master-only`:
+- cria/atualiza apenas `master@torqmind.com`
+- não cria tenant demo
+- não cria filial demo
 
 ---
 
@@ -273,14 +277,14 @@ Nova área interna:
 - `/platform`
 
 Objetivo:
-- gerir empresas/clientes, filiais, usuários e acessos;
+- gerir empresas/clientes, usuários e acessos;
 - configurar Telegram/notificações por usuário;
 - gerir canais, contratos, contas a receber e contas a pagar de canal;
 - aplicar suspensão e reativação comercial sem misturar essas telas ao produto do cliente.
 
 Perfis:
 - `platform_master`: acesso total, incluindo financeiro/comercial, canais, contratos e auditoria global.
-- `platform_admin`: gestão operacional de empresas, filiais, usuários, acessos e notificações; sem cobrança/comissão.
+- `platform_admin`: gestão operacional de empresas, usuários, acessos e notificações; sem cobrança/comissão.
 - `channel_admin`: acesso apenas à própria carteira, sem financeiro global.
 - `tenant_admin`, `tenant_manager`, `tenant_viewer`: continuam no produto do cliente com validação reforçada de vigência e escopo.
 
@@ -294,13 +298,19 @@ Validação de login/sessão:
 
 Fluxo operacional:
 1. cadastrar empresa em `/platform/companies`;
-2. cadastrar filiais e usuários;
-3. configurar acessos explícitos por empresa/filial/canal;
-4. criar contrato em `/platform/contracts`;
-5. gerar cobranças em `/platform/receivables` ou via CLI agendada;
-6. marcar `emitido` manualmente;
-7. marcar `pago` manualmente;
-8. na baixa, o sistema gera automaticamente `billing.channel_payables` quando houver canal/comissão aplicável.
+2. instalar/configurar o agent do cliente com a `ingest_key` da empresa;
+3. sincronizar `filiais` via ingest/ETL;
+4. cadastrar usuários e acessos explícitos por empresa/filial/canal;
+5. criar contrato em `/platform/contracts`;
+6. gerar cobranças em `/platform/receivables` ou via CLI agendada;
+7. marcar `emitido` manualmente;
+8. marcar `pago` manualmente;
+9. na baixa, o sistema gera automaticamente `billing.channel_payables` quando houver canal/comissão aplicável.
+
+Regras de filial:
+- `auth.filiais` usa o mesmo par oficial `id_empresa` + `id_filial` vindo da Xpert.
+- O dataset `filiais` entra por ingest, passa no ETL e sincroniza o catálogo operacional de filiais.
+- O backoffice não cria nem edita filial manualmente.
 
 Job agendável de billing:
 
@@ -314,7 +324,34 @@ Exemplo com escopo e data explícitos:
 AS_OF=2026-03-17 COMPETENCE_MONTH=2026-03-01 MONTHS_AHEAD=1 TENANT_ID=1 make platform-billing-daily
 ```
 
-No Ubuntu, basta agendar esse target em `cron` ou `systemd timer`, sempre após garantir que a stack e as migrations estão atualizadas.
+Wrapper de produção:
+
+```bash
+./deploy/scripts/platform-billing-daily.sh
+```
+
+Exemplo via `cron` no Ubuntu:
+
+```bash
+0 6 * * * cd /opt/torqmind && ENV_FILE=/opt/torqmind/.env COMPOSE_FILE=docker-compose.prod.yml /opt/torqmind/deploy/scripts/platform-billing-daily.sh >> /var/log/torqmind-platform-billing.log 2>&1
+```
+
+Exemplo de `systemd`:
+
+```ini
+[Unit]
+Description=TorqMind Platform Billing Daily
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/torqmind
+Environment=ENV_FILE=/opt/torqmind/.env
+Environment=COMPOSE_FILE=docker-compose.prod.yml
+ExecStart=/opt/torqmind/deploy/scripts/platform-billing-daily.sh
+```
+
+O comando é idempotente: não duplica receivables por competência nem payables por receivable, e já executa o refresh de overdue.
 - `/finance` → Financeiro
 - `/pricing` → Preço da Concorrência (input manual + simulação 10 dias)
 - `/goals` → Metas & Equipe
@@ -323,11 +360,24 @@ No Ubuntu, basta agendar esse target em `cron` ou `systemd timer`, sempre após 
 
 ## Reset do banco (dev/homolog)
 
-Você pode rodar o script:
+Você pode rodar o alvo:
 
-- `sql/torqmind_reset_db_v2.sql`
+```bash
+make resetdb
+```
 
-Ele recria schemas/tabelas/functions/views/materialized views e seeds mínimos.
+Ou executar diretamente o script:
+
+```bash
+psql -v ON_ERROR_STOP=1 -U postgres -d TORQMIND -f sql/torqmind_reset_db_v2.sql
+```
+
+O reset agora derruba os schemas e reexecuta a cadeia oficial `001..021`, mantendo o banco alinhado com as migrations de runtime.
+Depois do reset, rode o bootstrap:
+
+```bash
+docker compose exec api python -m app.cli.seed
+```
 
 > **Atenção:** ele faz `DROP SCHEMA ... CASCADE` (não use em produção).
 
@@ -358,13 +408,17 @@ O frontend agora converte erros da API em texto; verifique resposta em:
 - valor atual de `SEED_PASSWORD` no seu `.env` local
 
 ### Frontend remoto, LAN e Radmin VPN
-O frontend não deve apontar para `localhost` quando aberto em outra máquina. A configuração agora funciona assim:
+O frontend não deve montar host/porta da API no browser. A estratégia canônica agora é:
 
-- `NEXT_PUBLIC_API_URL`: URL pública fixa da API. Deixe vazia para o navegador usar o mesmo hostname da página atual com porta `8000`.
+- `NEXT_PUBLIC_API_BASE_URL`: base pública usada no browser. O valor correto é sempre `/api`.
 - `API_INTERNAL_URL`: URL interna usada pelo container do Next.js em chamadas server-side. Em Docker, o default correto é `http://api:8000`.
-- `NEXT_PUBLIC_API_PORT`: porta pública usada no fallback automático do navegador. Default `8000`.
 - `APP_CORS_ORIGINS`: origens explícitas permitidas, por padrão `http://localhost:3000,http://127.0.0.1:3000`.
 - `APP_CORS_ORIGIN_REGEX`: regex para permitir acesso por hostname/IP na porta `3000`, cobrindo LAN e Radmin VPN sem hardcode de IP.
+
+Regra obrigatória:
+- browser usa somente `/api`
+- server-side do Next usa `API_INTERNAL_URL`
+- o browser nunca deve conhecer `:8000`
 
 Exemplos:
 
@@ -372,12 +426,13 @@ Exemplos:
 - Outra máquina na LAN: acesse `http://192.168.x.y:3000`
 - Outra máquina via Radmin VPN: acesse `http://IP_RADMIN:3000`
 
-Se quiser forçar uma URL pública fixa da API, defina no `.env`:
+Configuração mínima recomendada no `.env`:
 
 ```bash
-NEXT_PUBLIC_API_URL=http://192.168.x.y:8000
+NEXT_PUBLIC_API_BASE_URL=/api
+API_INTERNAL_URL=http://api:8000
 ```
 
 Portas que precisam estar acessíveis na máquina servidora:
 - `3000/tcp` para o frontend
-- `8000/tcp` para a API
+- `8000/tcp` apenas para tráfego interno entre containers

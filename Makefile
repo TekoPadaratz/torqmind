@@ -4,8 +4,10 @@ COMPOSE ?= docker compose
 COMPOSE_PROD ?= docker compose -f docker-compose.prod.yml
 ENV_FILE ?= .env
 ENV_EXAMPLE ?= .envexemple
+RESET_TMP_DIR ?= /tmp/torqmind-reset
+DB_NAME ?=
 
-.PHONY: setup up down logs migrate backfill-snapshots backfill-snapshots-resume platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-seed
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-seed
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -36,6 +38,13 @@ migrate:
 	@$(COMPOSE) exec -T postgres sh -lc 'until pg_isready -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" >/dev/null 2>&1; do sleep 1; done'
 	@$(COMPOSE) exec -T postgres sh -lc 'for f in /docker-entrypoint-initdb.d/*.sql; do echo "Applying $$f"; psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -f "$$f"; done'
 
+resetdb:
+	@$(COMPOSE) exec -T postgres sh -lc 'until pg_isready -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" >/dev/null 2>&1; do sleep 1; done'
+	@$(COMPOSE) exec -T postgres sh -lc 'rm -rf "$(RESET_TMP_DIR)" && mkdir -p "$(RESET_TMP_DIR)/migrations"'
+	@$(COMPOSE) cp sql/torqmind_reset_db_v2.sql postgres:$(RESET_TMP_DIR)/torqmind_reset_db_v2.sql
+	@$(COMPOSE) cp sql/migrations/. postgres:$(RESET_TMP_DIR)/migrations/
+	@$(COMPOSE) exec -T postgres sh -lc 'db_name="$(DB_NAME)"; if [ -z "$$db_name" ]; then db_name="$${POSTGRES_DB:-torqmind}"; fi; cd "$(RESET_TMP_DIR)" && psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$$db_name" -f torqmind_reset_db_v2.sql'
+
 backfill-snapshots:
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "CALL etl.run_operational_snapshot_backfill($${ID_EMPRESA:-1}::int, '\''$${START_DT:?missing START_DT}'\''::date, '\''$${END_DT:?missing END_DT}'\''::date, $${STEP_DAYS:-7}::int, false, false);"'
 
@@ -47,6 +56,7 @@ platform-billing-daily:
 
 test:
 	@$(COMPOSE) exec -T api python -m unittest discover -s app -p 'test*.py'
+	@$(COMPOSE) exec -T web npm run test:api-base
 
 test-agent:
 	@PYTHONPATH=apps/agent python3 -m unittest discover -s apps/agent/tests -v
