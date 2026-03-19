@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import date, timedelta
 from uuid import uuid4
@@ -58,6 +59,27 @@ class PlatformBackofficeTest(unittest.TestCase):
                 DO UPDATE SET nome = EXCLUDED.nome, is_active = EXCLUDED.is_active
                 """,
                 (tenant_id, branch_id, name, is_active),
+            )
+            conn.commit()
+
+    def _upsert_stg_branch(self, tenant_id: int, branch_id: int, name: str, cnpj: str | None = None) -> None:
+        payload = json.dumps(
+            {
+                "ID_FILIAL": branch_id,
+                "NOMEFILIAL": name,
+                "CNPJ": cnpj,
+            },
+            ensure_ascii=False,
+        )
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO stg.filiais (id_empresa, id_filial, payload)
+                VALUES (%s, %s, %s::jsonb)
+                ON CONFLICT (id_empresa, id_filial)
+                DO UPDATE SET payload = EXCLUDED.payload, ingested_at = now()
+                """,
+                (tenant_id, branch_id, payload),
             )
             conn.commit()
 
@@ -181,7 +203,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertEqual(tenant_platform.status_code, 403, tenant_platform.text)
         self.assertEqual(tenant_platform.json()["error"], "platform_forbidden")
 
-    def test_branches_are_sync_managed_and_cannot_be_changed_manually(self) -> None:
+    def test_existing_branches_can_be_updated_while_manual_creation_stays_blocked(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")
         headers = self._auth_headers(master_email, "Senha@123")
         tenant_id = self._create_tenant("Tenant Sync Branches")
@@ -197,11 +219,127 @@ class PlatformBackofficeTest(unittest.TestCase):
 
         update_response = self.client.patch(
             f"/platform/companies/{tenant_id}/branches/997",
-            json={"nome": "Filial Editada", "is_enabled": True},
+            json={
+                "nome": "Filial Editada",
+                "cnpj": "12.345.678/0001-90",
+                "is_enabled": False,
+                "valid_from": "2025-01-01",
+                "valid_until": "2025-12-31",
+                "blocked_reason": "manutencao_operacional",
+            },
             headers=headers,
         )
-        self.assertEqual(update_response.status_code, 409, update_response.text)
-        self.assertEqual(update_response.json()["error"], "branch_sync_managed")
+        self.assertEqual(update_response.status_code, 200, update_response.text)
+
+        body = update_response.json()
+        self.assertEqual(body["nome"], "Filial Editada")
+        self.assertEqual(body["cnpj"], "12.345.678/0001-90")
+        self.assertFalse(bool(body["is_active"]))
+        self.assertEqual(str(body["valid_from"]), "2025-01-01")
+        self.assertEqual(str(body["valid_until"]), "2025-12-31")
+        self.assertEqual(body["blocked_reason"], "manutencao_operacional")
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            branch_row = conn.execute(
+                """
+                SELECT nome, cnpj, is_active, valid_from, valid_until, blocked_reason
+                FROM auth.filiais
+                WHERE id_empresa = %s
+                  AND id_filial = %s
+                """,
+                (tenant_id, 997),
+            ).fetchone()
+            audit_row = conn.execute(
+                """
+                SELECT
+                  action,
+                  entity_type,
+                  entity_id,
+                  old_values->>'nome' AS old_nome,
+                  new_values->>'nome' AS new_nome,
+                  new_values->>'blocked_reason' AS new_blocked_reason
+                FROM audit.audit_log
+                WHERE entity_type = 'branch'
+                  AND entity_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (f"{tenant_id}:997",),
+            ).fetchone()
+            conn.commit()
+
+        self.assertEqual(branch_row["nome"], "Filial Editada")
+        self.assertEqual(branch_row["cnpj"], "12.345.678/0001-90")
+        self.assertFalse(bool(branch_row["is_active"]))
+        self.assertEqual(str(branch_row["valid_from"]), "2025-01-01")
+        self.assertEqual(str(branch_row["valid_until"]), "2025-12-31")
+        self.assertEqual(branch_row["blocked_reason"], "manutencao_operacional")
+        self.assertIsNotNone(audit_row)
+        self.assertEqual(audit_row["action"], "branch.update")
+        self.assertEqual(audit_row["entity_type"], "branch")
+        self.assertEqual(audit_row["entity_id"], f"{tenant_id}:997")
+        self.assertEqual(audit_row["old_nome"], "Filial Sincronizada")
+        self.assertEqual(audit_row["new_nome"], "Filial Editada")
+        self.assertEqual(audit_row["new_blocked_reason"], "manutencao_operacional")
+
+    def test_branch_admin_state_survives_incremental_filial_sync(self) -> None:
+        master_email = self._create_user("platform_master", "Senha@123")
+        headers = self._auth_headers(master_email, "Senha@123")
+        tenant_id = self._create_tenant("Tenant Branch ETL Preserve")
+        self._create_branch(tenant_id, 998, "Filial Original", is_active=True)
+        self._upsert_stg_branch(tenant_id, 998, "Filial Origem ETL", cnpj="98.765.432/0001-10")
+
+        update_response = self.client.patch(
+            f"/platform/companies/{tenant_id}/branches/998",
+            json={
+                "nome": "Filial Administrada",
+                "cnpj": "11.222.333/0001-44",
+                "is_enabled": False,
+                "valid_from": "2025-02-01",
+                "valid_until": None,
+                "blocked_reason": "manter_desabilitada",
+            },
+            headers=headers,
+        )
+        self.assertEqual(update_response.status_code, 200, update_response.text)
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            run_row = conn.execute(
+                "SELECT etl.run_tenant_phase(%s, %s, %s) AS result",
+                (tenant_id, False, date.today()),
+            ).fetchone()
+            branch_row = conn.execute(
+                """
+                SELECT nome, cnpj, is_active, valid_from, valid_until, blocked_reason
+                FROM auth.filiais
+                WHERE id_empresa = %s
+                  AND id_filial = %s
+                """,
+                (tenant_id, 998),
+            ).fetchone()
+            dw_row = conn.execute(
+                """
+                SELECT nome, cnpj
+                FROM dw.dim_filial
+                WHERE id_empresa = %s
+                  AND id_filial = %s
+                """,
+                (tenant_id, 998),
+            ).fetchone()
+            conn.commit()
+
+        result = run_row["result"]
+        self.assertTrue(result["ok"], result)
+        self.assertGreaterEqual(int((result.get("meta") or {}).get("dim_filial", 0)), 1)
+        self.assertEqual(branch_row["nome"], "Filial Administrada")
+        self.assertEqual(branch_row["cnpj"], "11.222.333/0001-44")
+        self.assertFalse(bool(branch_row["is_active"]))
+        self.assertEqual(str(branch_row["valid_from"]), "2025-02-01")
+        self.assertIsNone(branch_row["valid_until"])
+        self.assertEqual(branch_row["blocked_reason"], "manter_desabilitada")
+        self.assertIsNotNone(dw_row)
+        self.assertEqual(dw_row["nome"], "Filial Origem ETL")
+        self.assertEqual(dw_row["cnpj"], "98.765.432/0001-10")
 
     def test_user_ids_from_api_work_for_contacts_and_notification_subscriptions(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")

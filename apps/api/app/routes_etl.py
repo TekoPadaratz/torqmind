@@ -13,6 +13,7 @@ from app.deps import get_current_claims
 from app import repos_auth
 from app.security import decode_token
 from app.scope import resolve_scope
+from app.services.etl_orchestrator import EtlCycleBusyError, run_incremental_cycle
 from app.services.telegram import send_telegram_alert
 
 router = APIRouter(prefix="/etl", tags=["etl"])
@@ -46,144 +47,39 @@ def run_etl(
     tenant, _ = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=None)
 
     # Managers typically should not run ETL in production, but for dev we allow.
-    with get_conn(role=role, tenant_id=tenant, branch_id=None) as conn:
-        try:
-            row = conn.execute(
-                "SELECT etl.run_all(%s, %s, %s, %s) AS result",
-                (tenant, force_full, refresh_mart, effective_ref_date),
-            ).fetchone()
-            payments_telegram_sent = 0
-            payments_telegram_suppressed = 0
-            payments_critical = []
-            cash_telegram_sent = 0
-            cash_telegram_suppressed = 0
-            cash_critical = []
-            if refresh_mart:
-                critical_rows = conn.execute(
-                    """
-                    SELECT
-                      id_filial,
-                      id_turno,
-                      event_type,
-                      score,
-                      impacto_estimado,
-                      data_key,
-                      reasons,
-                      insight_id_hash
-                    FROM mart.pagamentos_anomalias_diaria
-                    WHERE id_empresa = %s
-                      AND severity = 'CRITICAL'
-                      AND data_key >= to_char((%s::date - interval '2 day')::date, 'YYYYMMDD')::int
-                    ORDER BY data_key DESC, score DESC, impacto_estimado DESC
-                    LIMIT 5
-                    """,
-                    (tenant, effective_ref_date),
-                ).fetchall()
-                for r in critical_rows:
-                    payload = {
-                        "severity": "CRITICAL",
-                        "insight_id": int(r["insight_id_hash"]) if r.get("insight_id_hash") is not None else None,
-                        "insight_type": f"PAYMENT_{r['event_type']}",
-                        "id_filial": int(r["id_filial"]) if r.get("id_filial") is not None else None,
-                        "event_time": str(r.get("data_key") or ""),
-                        "impacto_estimado": float(r.get("impacto_estimado") or 0),
-                        "title": f"Anomalia de pagamento ({r['event_type']})",
-                        "body": (
-                            f"Score {int(r.get('score') or 0)}"
-                            + (f" | Turno {int(r['id_turno'])}" if r.get("id_turno") is not None and int(r["id_turno"]) >= 0 else "")
-                        ),
-                        "url": "/fraud",
-                        "event_type": str(r["event_type"]),
-                    }
-                    tg = send_telegram_alert(id_empresa=tenant, payload=payload)
-                    if tg.get("sent"):
-                        payments_telegram_sent += 1
-                    else:
-                        payments_telegram_suppressed += 1
-                    payments_critical.append(
-                        {
-                            "id_filial": r.get("id_filial"),
-                            "id_turno": r.get("id_turno"),
-                            "event_type": r.get("event_type"),
-                            "score": int(r.get("score") or 0),
-                            "impacto_estimado": float(r.get("impacto_estimado") or 0),
-                            "data_key": r.get("data_key"),
-                        }
-                    )
-                cash_rows = conn.execute(
-                    """
-                    SELECT
-                      id_filial,
-                      filial_nome,
-                      id_turno,
-                      id_usuario,
-                      usuario_nome,
-                      horas_aberto,
-                      title,
-                      body,
-                      url,
-                      insight_id_hash
-                    FROM mart.alerta_caixa_aberto
-                    WHERE id_empresa = %s
-                    ORDER BY horas_aberto DESC, id_turno DESC
-                    LIMIT 5
-                    """,
-                    (tenant,),
-                ).fetchall()
-                for r in cash_rows:
-                    payload = {
-                        "severity": "CRITICAL",
-                        "insight_id": int(r["insight_id_hash"]) if r.get("insight_id_hash") is not None else None,
-                        "insight_type": "CASH_OPEN_OVER_24H",
-                        "id_filial": int(r["id_filial"]) if r.get("id_filial") is not None else None,
-                        "event_time": datetime.now(tz=timezone.utc).isoformat(),
-                        "impacto_estimado": 0,
-                        "title": r.get("title") or "Caixa aberto acima do limite",
-                        "body": r.get("body") or "",
-                        "url": r.get("url") or "/cash",
-                        "event_type": "CASH_OPEN_OVER_24H",
-                    }
-                    tg = send_telegram_alert(id_empresa=tenant, payload=payload)
-                    if tg.get("sent"):
-                        cash_telegram_sent += 1
-                    else:
-                        cash_telegram_suppressed += 1
-                    cash_critical.append(
-                        {
-                            "id_filial": r.get("id_filial"),
-                            "filial_nome": r.get("filial_nome"),
-                            "id_turno": r.get("id_turno"),
-                            "usuario_nome": r.get("usuario_nome"),
-                            "horas_aberto": float(r.get("horas_aberto") or 0),
-                        }
-                    )
-            if refresh_mart:
-                conn.execute("SELECT etl.refresh_anonymous_retention()")
-            conn.commit()
-            result = row["result"] if row else {}
-            if isinstance(result, dict):
-                result["payments_notifications"] = {
-                    "critical_events": len(payments_critical),
-                    "telegram_sent": payments_telegram_sent,
-                    "telegram_suppressed": payments_telegram_suppressed,
-                    "items": payments_critical,
-                }
-                result["cash_notifications"] = {
-                    "critical_events": len(cash_critical),
-                    "telegram_sent": cash_telegram_sent,
-                    "telegram_suppressed": cash_telegram_suppressed,
-                    "items": cash_critical,
-                }
-            return result
-        except Exception as e:
-            logger.exception("ETL failed for tenant=%s refresh_mart=%s force_full=%s", tenant, refresh_mart, force_full, exc_info=e)
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "etl_failed",
-                    "message": "Falha ao atualizar dados. Tente novamente em instantes.",
-                },
-            )
+    try:
+        summary = run_incremental_cycle(
+            [tenant],
+            ref_date=effective_ref_date,
+            refresh_mart=refresh_mart,
+            force_full=force_full,
+            fail_fast=True,
+            db_role=role,
+            db_tenant_scope=tenant,
+            tenant_rows=[{"id_empresa": tenant}],
+            acquire_lock=True,
+        )
+        item = (summary.get("items") or [None])[0] or {}
+        if item.get("ok") is False:
+            raise RuntimeError(str(item.get("error") or "tenant_failed"))
+        return item.get("result") or {}
+    except EtlCycleBusyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "etl_busy",
+                "message": str(exc),
+            },
+        )
+    except Exception as e:
+        logger.exception("ETL failed for tenant=%s refresh_mart=%s force_full=%s", tenant, refresh_mart, force_full, exc_info=e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "etl_failed",
+                "message": "Falha ao atualizar dados. Tente novamente em instantes.",
+            },
+        )
 
 
 def _resolve_id_empresa_from_ingest(x_ingest_key: Optional[str]) -> Optional[int]:

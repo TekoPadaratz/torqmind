@@ -3,65 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from datetime import date
-from typing import Any
 
-from app.db import get_conn
+from app.services.etl_orchestrator import EtlCycleBusyError, list_target_tenants, run_incremental_cycle
 
 
 def _parse_date(value: str | None) -> date:
     if value:
         return date.fromisoformat(value)
     return date.today()
-
-
-def _list_target_tenants(tenant_id: int | None) -> list[dict[str, Any]]:
-    if tenant_id is not None:
-        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
-            rows = conn.execute(
-                """
-                SELECT id_empresa, nome, status, is_active
-                FROM app.tenants
-                WHERE id_empresa = %s
-                ORDER BY id_empresa
-                """,
-                (tenant_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
-        rows = conn.execute(
-            """
-            SELECT id_empresa, nome, status, is_active
-            FROM app.tenants
-            WHERE is_active = true
-            ORDER BY id_empresa
-            """
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def _run_incremental_for_tenant(tenant_id: int, ref_date: date) -> dict[str, Any]:
-    started = time.perf_counter()
-    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
-        row = conn.execute(
-            "SELECT etl.run_all(%s, %s, %s, %s) AS result",
-            (tenant_id, False, True, ref_date),
-        ).fetchone()
-        conn.commit()
-
-    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-    result = row["result"] if row else None
-    meta = result.get("meta") if isinstance(result, dict) else None
-    return {
-        "tenant_id": tenant_id,
-        "elapsed_ms": elapsed_ms,
-        "result": result,
-        "payment_notifications": (meta or {}).get("payment_notifications"),
-        "cash_notifications": (meta or {}).get("cash_notifications"),
-        "mart_refreshed": (meta or {}).get("mart_refreshed"),
-    }
 
 
 def main() -> None:
@@ -72,7 +22,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ref_date = _parse_date(args.ref_date)
-    tenants = _list_target_tenants(args.tenant_id)
+    tenants = list_target_tenants(args.tenant_id)
     if not tenants:
         print(
             json.dumps(
@@ -89,45 +39,39 @@ def main() -> None:
         )
         return
 
-    started_at = time.time()
-    items: list[dict[str, Any]] = []
-    failures: list[dict[str, Any]] = []
-
-    for tenant in tenants:
-        tenant_id = int(tenant["id_empresa"])
-        try:
-            result = _run_incremental_for_tenant(tenant_id, ref_date)
-            items.append(
+    try:
+        summary = run_incremental_cycle(
+            [int(tenant["id_empresa"]) for tenant in tenants],
+            ref_date=ref_date,
+            refresh_mart=True,
+            force_full=False,
+            fail_fast=args.fail_fast,
+            tenant_rows=tenants,
+            db_role="MASTER",
+            db_tenant_scope=None,
+            acquire_lock=True,
+        )
+    except EtlCycleBusyError as exc:
+        print(
+            json.dumps(
                 {
-                    **result,
-                    "tenant_name": tenant.get("nome"),
-                    "tenant_status": tenant.get("status"),
-                    "is_active": bool(tenant.get("is_active", True)),
-                }
+                    "ok": False,
+                    "reference_date": ref_date.isoformat(),
+                    "processed": 0,
+                    "failed": 1,
+                    "error": "etl_busy",
+                    "message": str(exc),
+                    "items": [],
+                },
+                ensure_ascii=False,
+                default=str,
             )
-        except Exception as exc:  # noqa: BLE001 - CLI summary must include tenant failures.
-            failure = {
-                "tenant_id": tenant_id,
-                "tenant_name": tenant.get("nome"),
-                "tenant_status": tenant.get("status"),
-                "error": str(exc),
-            }
-            failures.append(failure)
-            items.append({**failure, "ok": False})
-            if args.fail_fast:
-                break
+        )
+        sys.exit(1)
 
-    summary = {
-        "ok": not failures,
-        "reference_date": ref_date.isoformat(),
-        "processed": len(items),
-        "failed": len(failures),
-        "duration_ms": round((time.time() - started_at) * 1000, 2),
-        "items": items,
-    }
     print(json.dumps(summary, ensure_ascii=False, default=str))
 
-    if failures:
+    if summary.get("failed"):
         sys.exit(1)
 
 

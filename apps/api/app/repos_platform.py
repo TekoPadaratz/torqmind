@@ -184,6 +184,28 @@ def _load_company_branches(tenant_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def _load_branch_row_tx(conn, tenant_id: int, branch_id: int):
+    return conn.execute(
+        """
+        SELECT
+          id_empresa,
+          id_filial,
+          nome,
+          cnpj,
+          is_active,
+          valid_from,
+          valid_until,
+          blocked_reason,
+          created_at,
+          updated_at
+        FROM auth.filiais
+        WHERE id_empresa = %s
+          AND id_filial = %s
+        """,
+        (tenant_id, branch_id),
+    ).fetchone()
+
+
 def _load_user_rows() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
@@ -563,11 +585,50 @@ def upsert_branch(
     branch_id: int | None = None,
 ) -> dict[str, Any]:
     _assert_company_mutable(claims, tenant_id)
-    raise AuthError(
-        409,
-        "branch_sync_managed",
-        "Filiais são sincronizadas da Xpert via ingest/ETL e não podem ser cadastradas manualmente.",
-    )
+    if branch_id is None:
+        raise AuthError(
+            409,
+            "branch_sync_managed",
+            "Filiais são sincronizadas da Xpert via ingest/ETL e não podem ser cadastradas manualmente.",
+        )
+
+    with _connect() as conn:
+        previous = _load_branch_row_tx(conn, tenant_id, branch_id)
+        if not previous:
+            raise AuthError(404, "branch_not_found", "Filial não encontrada.")
+        previous = dict(previous)
+
+        conn.execute(
+            """
+            UPDATE auth.filiais
+            SET
+              nome = %s,
+              cnpj = %s,
+              is_active = %s,
+              valid_from = %s,
+              valid_until = %s,
+              blocked_reason = %s,
+              updated_at = now()
+            WHERE id_empresa = %s
+              AND id_filial = %s
+            """,
+            (
+                payload["nome"],
+                payload.get("cnpj"),
+                bool(payload.get("is_enabled", True)),
+                payload.get("valid_from"),
+                payload.get("valid_until"),
+                payload.get("blocked_reason"),
+                tenant_id,
+                branch_id,
+            ),
+        )
+
+        current = _load_branch_row_tx(conn, tenant_id, branch_id)
+        entity = dict(current)
+        _audit(conn, claims, "branch.update", "branch", f"{tenant_id}:{branch_id}", previous, entity, ip)
+        conn.commit()
+    return entity
 
 
 def list_users(

@@ -30,7 +30,10 @@ class SmokeApiTest(unittest.TestCase):
             cls.filial_id = int(filial_row["id_filial"]) if filial_row and filial_row["id_filial"] is not None else 1
             customer_branch_row = conn.execute(
                 """
-                SELECT v.id_filial
+                SELECT
+                  v.id_filial,
+                  MIN(v.data::date) AS min_data,
+                  MAX(v.data::date) AS max_data
                 FROM dw.fact_venda v
                 JOIN dw.dim_cliente dc
                   ON dc.id_empresa = v.id_empresa
@@ -48,6 +51,16 @@ class SmokeApiTest(unittest.TestCase):
             cls.customer_branch_id = (
                 int(customer_branch_row["id_filial"])
                 if customer_branch_row and customer_branch_row["id_filial"] is not None
+                else None
+            )
+            cls.customer_branch_dt_ini = (
+                str(customer_branch_row["min_data"])
+                if customer_branch_row and customer_branch_row.get("min_data") is not None
+                else None
+            )
+            cls.customer_branch_dt_fim = (
+                str(customer_branch_row["max_data"])
+                if customer_branch_row and customer_branch_row.get("max_data") is not None
                 else None
             )
 
@@ -194,7 +207,10 @@ class SmokeApiTest(unittest.TestCase):
 
         self.assertTrue(first.get("ok"), first)
         self.assertTrue(second.get("ok"), second)
-        self.assertTrue((first.get("meta") or {}).get("mart_refreshed"))
+        self.assertEqual(
+            bool((first.get("meta") or {}).get("mart_refreshed")),
+            bool((((first.get("meta") or {}).get("mart_refresh") or {}).get("refreshed_any"))),
+        )
         self.assertIn("payment_notifications", first.get("meta") or {})
         self.assertIn("payment_notifications", second.get("meta") or {})
         self.assertGreaterEqual(middle_total, before_total)
@@ -250,13 +266,13 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("series", drilldown)
 
     def test_customers_overview_returns_customer_names_for_real_branch(self) -> None:
-        if self.customer_branch_id is None:
+        if self.customer_branch_id is None or self.customer_branch_dt_ini is None or self.customer_branch_dt_fim is None:
             self.skipTest("No branch with named customers is available in the current demo dataset")
 
         status, body = self._request(
             (
-                "/bi/customers/overview?dt_ini=2025-09-01&dt_fim=2025-09-18"
-                f"&dt_ref=2025-09-18&id_empresa=1&id_filial={self.customer_branch_id}"
+                f"/bi/customers/overview?dt_ini={self.customer_branch_dt_ini}&dt_fim={self.customer_branch_dt_fim}"
+                f"&dt_ref={self.customer_branch_dt_fim}&id_empresa=1&id_filial={self.customer_branch_id}"
             ),
             headers={"Authorization": f"Bearer {self.token}"},
         )

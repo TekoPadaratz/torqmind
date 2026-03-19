@@ -26,6 +26,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from app.config import settings
 from app.db import get_conn
+from app.services.etl_orchestrator import EtlCycleBusyError, run_incremental_cycle
 from app.services.telegram import notify_cancelled_comprovantes
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -504,12 +505,32 @@ async def ingest_dataset(
 
     etl_result = None
     if run_etl:
-        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
-            etl_result = conn.execute(
-                "SELECT etl.run_all(%s, %s, %s) AS result",
-                (id_empresa, False, refresh_mart),
-            ).fetchone()["result"]
-            conn.commit()
+        try:
+            summary = run_incremental_cycle(
+                [id_empresa],
+                ref_date=datetime.now(tz=timezone.utc).date(),
+                refresh_mart=refresh_mart,
+                force_full=False,
+                fail_fast=True,
+                db_role="MASTER",
+                db_tenant_scope=id_empresa,
+                tenant_rows=[{"id_empresa": id_empresa}],
+                acquire_lock=True,
+            )
+            item = (summary.get("items") or [None])[0] or {}
+            etl_result = item.get("result")
+            if item.get("ok") is False and not etl_result:
+                etl_result = {
+                    "ok": False,
+                    "error": "etl_failed",
+                    "message": str(item.get("error") or "Falha ao executar ETL após ingestão."),
+                }
+        except EtlCycleBusyError as exc:
+            etl_result = {
+                "ok": False,
+                "error": "etl_busy",
+                "message": str(exc),
+            }
 
     return {
         "ok": True,

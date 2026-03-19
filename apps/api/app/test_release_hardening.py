@@ -85,6 +85,29 @@ def _fetchone(db_name: str, query: str, params: tuple[object, ...] = ()) -> dict
     return row if row else None
 
 
+def _fetch_function_definition(db_name: str, signature: str) -> str:
+    with psycopg.connect(_admin_dsn(db_name)) as conn:
+        row = conn.execute(
+            "SELECT pg_get_functiondef(%s::regprocedure) AS definition",
+            (signature,),
+        ).fetchone()
+    return str(row[0]) if row and row[0] is not None else ""
+
+
+def _index_definition(db_name: str, schema_name: str, index_name: str) -> str | None:
+    row = _fetchone(
+        db_name,
+        """
+        SELECT indexdef
+        FROM pg_indexes
+        WHERE schemaname = %s
+          AND indexname = %s
+        """,
+        (schema_name, index_name),
+    )
+    return str(row["indexdef"]) if row else None
+
+
 def _relation_column_type(db_name: str, schema_name: str, relation_name: str, column_name: str) -> str | None:
     with psycopg.connect(_admin_dsn(db_name)) as conn:
         row = conn.execute(
@@ -314,6 +337,65 @@ class ReleaseHardeningTest(unittest.TestCase):
                 "bigint",
             )
 
+    def test_incremental_etl_release_uses_three_phase_backbone_without_global_snapshot_backfill(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            refresh_def = _fetch_function_definition(db_name, "etl.refresh_marts(jsonb, date)").lower()
+            post_refresh_def = _fetch_function_definition(db_name, "etl.run_tenant_post_refresh(integer, jsonb, date)").lower()
+            run_all_def = _fetch_function_definition(db_name, "etl.run_all(integer, boolean, boolean, date)").lower()
+            churn_mv = _fetchone(
+                db_name,
+                """
+                SELECT definition
+                FROM pg_matviews
+                WHERE schemaname = 'mart'
+                  AND matviewname = 'clientes_churn_risco'
+                """,
+            )
+
+            self.assertIn("etl.run_tenant_phase", run_all_def)
+            self.assertIn("etl.refresh_marts", run_all_def)
+            self.assertIn("etl.run_tenant_post_refresh", run_all_def)
+            self.assertNotIn("refresh materialized view", run_all_def)
+
+            self.assertNotIn("run_operational_snapshot_backfill", refresh_def)
+            self.assertNotIn("run_operational_snapshot_backfill", post_refresh_def)
+            self.assertNotIn("backfill_customer_sales_daily_range(null", refresh_def)
+            self.assertNotIn("backfill_customer_sales_daily_range(null", post_refresh_def)
+            self.assertNotIn("backfill_customer_rfm_range(null", refresh_def)
+            self.assertNotIn("backfill_customer_rfm_range(null", post_refresh_def)
+            self.assertNotIn("backfill_customer_churn_risk_range(null", refresh_def)
+            self.assertNotIn("backfill_customer_churn_risk_range(null", post_refresh_def)
+            self.assertNotIn("backfill_finance_aging_range(null", refresh_def)
+            self.assertNotIn("backfill_finance_aging_range(null", post_refresh_def)
+            self.assertNotIn("backfill_health_score_range(null", refresh_def)
+            self.assertNotIn("backfill_health_score_range(null", post_refresh_def)
+
+            self.assertIsNotNone(churn_mv)
+            self.assertIn("etl.runtime_ref_date()", str(churn_mv["definition"]).lower())
+
+    def test_incremental_refresh_matviews_have_unique_indexes_for_concurrent_path(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            for index_name in (
+                "ux_mart_agg_produtos_diaria",
+                "ux_mart_agg_grupos_diaria",
+                "ux_mart_agg_funcionarios_diaria",
+                "ux_mart_fraude_cancelamentos_eventos",
+                "ux_mart_financeiro_vencimentos_diaria",
+            ):
+                indexdef = _index_definition(db_name, "mart", index_name)
+                self.assertIsNotNone(indexdef, index_name)
+                self.assertIn("CREATE UNIQUE INDEX", str(indexdef).upper(), index_name)
+
     def test_master_only_seed_reconciles_legacy_master_to_channel_scope(self) -> None:
         with temporary_database() as db_name:
             env = _subprocess_env(db_name)
@@ -400,13 +482,11 @@ class ReleaseHardeningTest(unittest.TestCase):
         app.dependency_overrides[get_current_claims] = lambda: claims
         try:
             with patch("app.routes_etl.resolve_scope", return_value=(1, None)), patch(
-                "app.routes_etl.get_conn",
-            ) as mocked_get_conn:
-                mocked_ctx = mocked_get_conn.return_value.__enter__.return_value
-                mocked_ctx.execute.side_effect = RuntimeError(
+                "app.routes_etl.run_incremental_cycle",
+                side_effect=RuntimeError(
                     'column "insight_id" is of type bigint but expression is of type text'
-                )
-
+                ),
+            ):
                 response = client.post("/etl/run?refresh_mart=true")
         finally:
             app.dependency_overrides.pop(get_current_claims, None)

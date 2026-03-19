@@ -10,6 +10,22 @@ import { loadSession } from '../../../lib/session';
 
 export const dynamic = 'force-dynamic';
 
+function toDateInput(value: any) {
+  return value ? String(value).slice(0, 10) : '';
+}
+
+function buildBranchForm(branch: any) {
+  return {
+    id_filial: branch.id_filial,
+    nome: branch.nome || '',
+    cnpj: branch.cnpj || '',
+    is_enabled: Boolean(branch.is_active),
+    valid_from: toDateInput(branch.valid_from),
+    valid_until: toDateInput(branch.valid_until),
+    blocked_reason: branch.blocked_reason || '',
+  };
+}
+
 export default function PlatformCompanyDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -18,11 +34,15 @@ export default function PlatformCompanyDetailPage() {
   const [me, setMe] = useState<any>(null);
   const [data, setData] = useState<any>(null);
   const [companyForm, setCompanyForm] = useState<any>(null);
+  const [branchForm, setBranchForm] = useState<any>(null);
+  const [selectedBranchId, setSelectedBranchId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [branchSaving, setBranchSaving] = useState(false);
   const [error, setError] = useState('');
+  const [branchError, setBranchError] = useState('');
 
-  async function loadCompany(session: any) {
+  async function loadCompany(session: any, preferredBranchId?: number | null) {
     setLoading(true);
     try {
       const detail = await apiGet(`/platform/companies/${tenantId}`);
@@ -31,12 +51,21 @@ export default function PlatformCompanyDetailPage() {
         nome: detail.nome || '',
         cnpj: detail.cnpj || '',
         is_enabled: Boolean(detail.is_active),
-        valid_from: detail.valid_from || '',
-        valid_until: detail.valid_until || '',
+        valid_from: toDateInput(detail.valid_from),
+        valid_until: toDateInput(detail.valid_until),
         status: detail.status || 'active',
         billing_status: detail.billing_status || 'current',
         suspended_reason: detail.suspended_reason || '',
       });
+      const branches = detail.branches || [];
+      const nextSelectedBranchId = preferredBranchId ?? selectedBranchId;
+      const selectedBranch =
+        branches.find((branch: any) => branch.id_filial === nextSelectedBranchId) ||
+        branches[0] ||
+        null;
+      setSelectedBranchId(selectedBranch?.id_filial ?? null);
+      setBranchForm(selectedBranch ? buildBranchForm(selectedBranch) : null);
+      setBranchError('');
       setError('');
     } catch (err: any) {
       setError(err?.response?.data?.detail?.message || 'Falha ao carregar empresa.');
@@ -55,7 +84,21 @@ export default function PlatformCompanyDetailPage() {
     boot();
   }, [router, tenantId]);
 
-  if (!me || !companyForm) return null;
+  if (!me) return null;
+
+  if (loading && !companyForm) {
+    return (
+      <PlatformShell
+        title={`Empresa #${tenantId}`}
+        subtitle="Dados gerais, administração operacional das filiais existentes, usuários, contrato e trilha resumida de auditoria em uma única visão interna."
+        me={me}
+      >
+        <div className="card">Carregando empresa...</div>
+      </PlatformShell>
+    );
+  }
+
+  if (!companyForm) return null;
 
   async function saveCompany(event: FormEvent) {
     event.preventDefault();
@@ -78,10 +121,38 @@ export default function PlatformCompanyDetailPage() {
     }
   }
 
+  function selectBranch(branch: any) {
+    setSelectedBranchId(branch.id_filial);
+    setBranchForm(buildBranchForm(branch));
+    setBranchError('');
+  }
+
+  async function saveBranch(event: FormEvent) {
+    event.preventDefault();
+    if (!branchForm?.id_filial) return;
+    setBranchSaving(true);
+    setBranchError('');
+    try {
+      await api.patch(`/platform/companies/${tenantId}/branches/${branchForm.id_filial}`, {
+        nome: branchForm.nome,
+        cnpj: branchForm.cnpj || null,
+        is_enabled: branchForm.is_enabled,
+        valid_from: branchForm.valid_from || null,
+        valid_until: branchForm.valid_until || null,
+        blocked_reason: branchForm.blocked_reason || null,
+      });
+      await loadCompany(me, branchForm.id_filial);
+    } catch (err: any) {
+      setBranchError(err?.response?.data?.detail?.message || 'Falha ao salvar filial.');
+    } finally {
+      setBranchSaving(false);
+    }
+  }
+
   return (
     <PlatformShell
       title={`Empresa #${tenantId}`}
-      subtitle="Dados gerais, filiais sincronizadas da Xpert, usuários, contrato e trilha resumida de auditoria em uma única visão operacional."
+      subtitle="Dados gerais, administração operacional das filiais existentes, usuários, contrato e trilha resumida de auditoria em uma única visão interna."
       me={me}
     >
       {error ? <div className="card errorCard">{error}</div> : null}
@@ -167,16 +238,16 @@ export default function PlatformCompanyDetailPage() {
           <div className="platformSectionHead">
             <div>
               <div className="platformSectionEyebrow">Filiais</div>
-              <h2>Sincronização via Xpert</h2>
+              <h2>Administração operacional</h2>
             </div>
           </div>
           <div className="platformFieldHint">
-            As filiais usam o par oficial `id_empresa` + `id_filial` da Xpert e são atualizadas automaticamente pelo dataset
+            O cadastro-base continua vindo da Xpert pelo par oficial `id_empresa` + `id_filial`.
             {' '}
-            <code>filiais</code>
-            {' '}
-            durante a ingestão/ETL. Não existe cadastro manual nessa tela.
+            A criação manual segue bloqueada, mas nome administrativo, CNPJ, vigência e estado da filial existente podem ser ajustados aqui sem o ETL reverter essas alterações.
           </div>
+
+          {branchError ? <div className="card errorCard" style={{ marginTop: 16 }}>{branchError}</div> : null}
 
           <table className="table compact">
             <thead>
@@ -185,6 +256,8 @@ export default function PlatformCompanyDetailPage() {
                 <th>Nome</th>
                 <th>Habilitada</th>
                 <th>Vigência</th>
+                <th>Bloqueio</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -194,15 +267,57 @@ export default function PlatformCompanyDetailPage() {
                   <td>{branch.nome}</td>
                   <td>{branch.is_active ? 'Sim' : 'Não'}</td>
                   <td>{formatDateOnly(branch.valid_until || branch.valid_from)}</td>
+                  <td>{branch.blocked_reason || '-'}</td>
+                  <td>
+                    <button className="btn" type="button" onClick={() => selectBranch(branch)} disabled={branchSaving || loading}>
+                      {selectedBranchId === branch.id_filial ? 'Editando' : 'Editar'}
+                    </button>
+                  </td>
                 </tr>
               ))}
               {!(data?.branches || []).length ? (
                 <tr>
-                  <td colSpan={4}>Nenhuma filial sincronizada ainda para esta empresa.</td>
+                  <td colSpan={6}>Nenhuma filial sincronizada ainda para esta empresa.</td>
                 </tr>
               ) : null}
             </tbody>
           </table>
+
+          {branchForm ? (
+            <>
+              <div style={{ height: 16 }} />
+              <div className="platformSectionHead">
+                <div>
+                  <div className="platformSectionEyebrow">Filial selecionada</div>
+                  <h2>Filial #{branchForm.id_filial}</h2>
+                </div>
+              </div>
+              <form className="platformFormGrid" onSubmit={saveBranch}>
+                <input className="input" value={branchForm.nome} onChange={(e) => setBranchForm({ ...branchForm, nome: e.target.value })} />
+                <input className="input" value={branchForm.cnpj} onChange={(e) => setBranchForm({ ...branchForm, cnpj: e.target.value })} placeholder="CNPJ" />
+                <input className="input" type="date" value={branchForm.valid_from} onChange={(e) => setBranchForm({ ...branchForm, valid_from: e.target.value })} />
+                <input className="input" type="date" value={branchForm.valid_until} onChange={(e) => setBranchForm({ ...branchForm, valid_until: e.target.value })} />
+                <input
+                  className="input"
+                  value={branchForm.blocked_reason}
+                  onChange={(e) => setBranchForm({ ...branchForm, blocked_reason: e.target.value })}
+                  placeholder="Motivo do bloqueio"
+                />
+                <label className="platformCheckbox">
+                  <input
+                    type="checkbox"
+                    checked={branchForm.is_enabled}
+                    onChange={(e) => setBranchForm({ ...branchForm, is_enabled: e.target.checked })}
+                  />
+                  Filial habilitada
+                </label>
+                <button className="btn" type="submit" disabled={branchSaving}>
+                  {branchSaving ? 'Salvando...' : 'Salvar filial'}
+                </button>
+              </form>
+              {loading ? <div className="platformFieldHint">Recarregando dados atualizados da filial...</div> : null}
+            </>
+          ) : null}
         </div>
       </div>
 
