@@ -29,6 +29,20 @@ PHASE_META_KEYS = (
     "risk_events",
 )
 
+CLOCK_REFRESH_META_KEYS = (
+    "clock_daily_rollover",
+    "clock_open_cash_turns",
+    "clock_churn_mart_refresh",
+    "clock_cash_open_refresh",
+)
+
+CLOCK_POST_REFRESH_RANGE_KEYS = (
+    "clock_customer_rfm_start_dt_ref",
+    "clock_customer_churn_risk_start_dt_ref",
+    "clock_finance_aging_start_dt_ref",
+    "clock_health_score_start_dt_ref",
+)
+
 
 class EtlCycleBusyError(RuntimeError):
     pass
@@ -79,6 +93,7 @@ def run_incremental_cycle(
     items: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     successful_items: list[dict[str, Any]] = []
+    fail_fast_abort_reason: str | None = None
     cycle_started = time.perf_counter()
 
     with get_conn(role=db_role, tenant_id=db_tenant_scope, branch_id=None) as conn:
@@ -108,6 +123,7 @@ def run_incremental_cycle(
                     continue
 
                 phase_meta = _extract_meta(phase_result)
+                clock_meta = _run_tenant_clock_meta_sql(conn, int(tenant_id), ref_date)
                 item = {
                     "tenant_id": int(tenant_id),
                     "tenant_name": tenant_ctx.get("nome"),
@@ -115,6 +131,7 @@ def run_incremental_cycle(
                     "is_active": bool(tenant_ctx.get("is_active", True)),
                     "phase_result": phase_result,
                     "phase_meta": phase_meta,
+                    "clock_meta": clock_meta,
                     "phase_domains": _phase_domains(phase_meta, force_full=force_full),
                     "_perf_started": item_started,
                     "elapsed_ms": 0.0,
@@ -123,7 +140,7 @@ def run_incremental_cycle(
                 items.append(item)
                 successful_items.append(item)
 
-            aggregated_meta = _aggregate_phase_meta(successful_items, force_full=force_full)
+            aggregated_meta = _aggregate_refresh_meta(successful_items, force_full=force_full)
             refresh_meta = _empty_refresh_meta(ref_date)
             if refresh_mart and successful_items:
                 refresh_meta = _run_global_refresh_sql(conn, aggregated_meta, ref_date)
@@ -135,11 +152,11 @@ def run_incremental_cycle(
                 payment_details = _empty_notification_details()
                 cash_details = _empty_notification_details()
                 post_meta = _empty_post_meta()
-                needs_post_refresh = refresh_mart and refreshed_any and any(item["phase_domains"].values())
+                needs_post_refresh = refresh_mart and refreshed_any and _item_needs_post_refresh(item)
 
                 if needs_post_refresh:
                     try:
-                        post_meta = _run_tenant_post_refresh_sql(conn, item["tenant_id"], item["phase_meta"], ref_date, force_full)
+                        post_meta = _run_tenant_post_refresh_sql(conn, item["tenant_id"], _item_post_refresh_meta(item), ref_date, force_full)
                         conn.commit()
                     except Exception as exc:  # noqa: BLE001
                         conn.rollback()
@@ -159,11 +176,16 @@ def run_incremental_cycle(
                             }
                         )
                         if fail_fast:
+                            fail_fast_abort_reason = (
+                                f"post_refresh_aborted_due_to_fail_fast_after_tenant_{item['tenant_id']}"
+                            )
                             break
                         continue
 
-                    payment_details = _dispatch_payment_telegram_alerts(conn, item["tenant_id"], ref_date)
-                    cash_details = _dispatch_cash_telegram_alerts(conn, item["tenant_id"])
+                    if int(post_meta.get("payment_notifications", 0) or 0) > 0:
+                        payment_details = _dispatch_payment_telegram_alerts(conn, item["tenant_id"], ref_date)
+                    if int(post_meta.get("cash_notifications", 0) or 0) > 0:
+                        cash_details = _dispatch_cash_telegram_alerts(conn, item["tenant_id"])
                     post_meta = post_meta | {
                         "payment_telegram_sent": payment_details["telegram_sent"],
                         "payment_telegram_suppressed": payment_details["telegram_suppressed"],
@@ -173,6 +195,7 @@ def run_incremental_cycle(
 
                 combined_meta = _combine_item_meta(
                     phase_meta=item["phase_meta"],
+                    clock_meta=item["clock_meta"],
                     refresh_meta=refresh_meta,
                     post_meta=post_meta,
                     refresh_requested=refresh_mart,
@@ -195,6 +218,26 @@ def run_incremental_cycle(
                 item["cash_notifications"] = combined_meta.get("cash_notifications")
                 item["mart_refreshed"] = combined_meta.get("mart_refreshed")
                 item["elapsed_ms"] = round((time.perf_counter() - item["_perf_started"]) * 1000, 2)
+
+            if fail_fast_abort_reason:
+                for item in successful_items:
+                    if item.get("ok") is False or "result" in item:
+                        continue
+                    item.update(
+                        {
+                            "ok": False,
+                            "error": fail_fast_abort_reason,
+                            "elapsed_ms": round((time.perf_counter() - item["_perf_started"]) * 1000, 2),
+                        }
+                    )
+                    failures.append(
+                        {
+                            "tenant_id": item["tenant_id"],
+                            "tenant_name": item.get("tenant_name"),
+                            "tenant_status": item.get("tenant_status"),
+                            "error": fail_fast_abort_reason,
+                        }
+                    )
 
             processed_items = []
             for item in items:
@@ -251,6 +294,8 @@ def _empty_refresh_meta(ref_date: date) -> dict[str, Any]:
         "payments_marts_refreshed": False,
         "cash_marts_refreshed": False,
         "anonymous_retention_refreshed": False,
+        "churn_clock_mart_refreshed": False,
+        "cash_open_alert_marts_refreshed": False,
     }
 
 
@@ -264,6 +309,11 @@ def _empty_post_meta() -> dict[str, Any]:
         "payment_notifications": 0,
         "cash_notifications": 0,
         "insights_generated": 0,
+        "customer_rfm_clock_driven": False,
+        "customer_churn_risk_clock_driven": False,
+        "finance_aging_clock_driven": False,
+        "health_score_clock_driven": False,
+        "cash_notifications_clock_driven": False,
     }
 
 
@@ -292,6 +342,13 @@ def _aggregate_phase_meta(items: list[dict[str, Any]], *, force_full: bool) -> d
     return aggregated
 
 
+def _aggregate_refresh_meta(items: list[dict[str, Any]], *, force_full: bool) -> dict[str, Any]:
+    aggregated = _aggregate_phase_meta(items, force_full=force_full)
+    for key in CLOCK_REFRESH_META_KEYS:
+        aggregated[key] = any(bool(item.get("clock_meta", {}).get(key)) for item in items)
+    return aggregated
+
+
 def _phase_domains(meta: dict[str, Any], *, force_full: bool) -> dict[str, bool]:
     if force_full:
         return {
@@ -316,6 +373,7 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool) -> dict[str, bool]
 def _combine_item_meta(
     *,
     phase_meta: dict[str, Any],
+    clock_meta: dict[str, Any],
     refresh_meta: dict[str, Any],
     post_meta: dict[str, Any],
     refresh_requested: bool,
@@ -323,6 +381,7 @@ def _combine_item_meta(
     post_refresh_executed: bool,
 ) -> dict[str, Any]:
     combined = dict(phase_meta)
+    combined["clock_meta"] = clock_meta
     combined["mart_refresh"] = refresh_meta
     combined["mart_refreshed"] = refreshed_any
     combined["refresh_requested"] = refresh_requested
@@ -347,6 +406,14 @@ def _run_global_refresh_sql(conn, meta: dict[str, Any], ref_date: date) -> dict[
     return row["result"] if row else {}
 
 
+def _run_tenant_clock_meta_sql(conn, tenant_id: int, ref_date: date) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT etl.collect_tenant_clock_meta(%s, %s::date) AS result",
+        (tenant_id, ref_date),
+    ).fetchone()
+    return row["result"] if row else {}
+
+
 def _run_tenant_post_refresh_sql(
     conn,
     tenant_id: int,
@@ -361,6 +428,21 @@ def _run_tenant_post_refresh_sql(
         (tenant_id, json.dumps(payload, ensure_ascii=False, default=str), ref_date),
     ).fetchone()
     return row["result"] if row else {}
+
+
+def _item_post_refresh_meta(item: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(item.get("phase_meta") or {})
+    payload.update(item.get("clock_meta") or {})
+    return payload
+
+
+def _item_needs_post_refresh(item: dict[str, Any]) -> bool:
+    if any(item.get("phase_domains", {}).values()):
+        return True
+    clock_meta = item.get("clock_meta") or {}
+    if bool(clock_meta.get("clock_cash_notifications")):
+        return True
+    return any(clock_meta.get(key) for key in CLOCK_POST_REFRESH_RANGE_KEYS)
 
 
 def _dispatch_payment_telegram_alerts(conn, tenant_id: int, ref_date: date) -> dict[str, Any]:

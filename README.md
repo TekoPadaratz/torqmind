@@ -356,7 +356,9 @@ Fluxo operacional:
 Regras de filial:
 - `auth.filiais` usa o mesmo par oficial `id_empresa` + `id_filial` vindo da Xpert.
 - O dataset `filiais` entra por ingest, passa no ETL e sincroniza o catálogo operacional de filiais.
-- O backoffice não cria nem edita filial manualmente.
+- O backoffice pode editar filiais já existentes para nome, CNPJ, habilitação, vigência e bloqueio operacional.
+- A criação manual continua bloqueada; novas filiais entram pela origem.
+- O ETL continua criando filiais faltantes, mas não sobrescreve o estado administrativo em `auth.filiais`.
 
 Job agendável de billing:
 
@@ -420,9 +422,15 @@ Wrapper canônico de produção:
 O wrapper:
 - roda `python -m app.cli.etl_incremental` dentro do container `api`;
 - processa todas as empresas com `app.tenants.is_active = true`, em ordem de `id_empresa`;
-- executa `etl.run_all(id_empresa, false, true, CURRENT_DATE)` por tenant;
-- usa os watermarks existentes do ETL, então continua incrementalmente de onde parou;
+- usa a orquestração compartilhada `app.services.etl_orchestrator.run_incremental_cycle(...)`;
+- executa fase por tenant, agrega um plano único de refresh e roda o refresh global no máximo uma vez por ciclo completo;
+- combina gatilhos `data-driven` e `clock-driven`:
+  - rollover diário atualiza `mart.clientes_churn_risco` e snapshots diários de churn, aging e health score quando `ref_date` avança;
+  - caixa aberto atualiza `mart.agg_caixa_turno_aberto`, `mart.alerta_caixa_aberto` e a sincronização de notificações mesmo sem ingestão nova;
+- usa os watermarks existentes do ETL para o caminho data-driven, então continua incrementalmente de onde parou;
+- não substitui o backfill histórico inicial/rebuild: para recomputar janelas antigas ou recuperar lacunas grandes use `etl.run_operational_snapshot_backfill(...)` em job dedicado;
 - usa `flock` no arquivo `/tmp/torqmind-prod-etl-incremental.lock` por padrão;
+- usa também advisory lock no banco para impedir dois ciclos canônicos ao mesmo tempo;
 - se já existir execução em andamento, registra a mensagem e sai sem iniciar uma segunda execução.
 
 Exemplo via `cron` no Ubuntu:
@@ -455,7 +463,7 @@ Ou executar diretamente o script:
 psql -v ON_ERROR_STOP=1 -U postgres -d TORQMIND -f sql/torqmind_reset_db_v2.sql
 ```
 
-O reset agora derruba os schemas e reexecuta a cadeia oficial `001..021`, mantendo o banco alinhado com as migrations de runtime.
+O reset agora derruba os schemas e reexecuta a cadeia oficial `001..024`, mantendo o banco alinhado com as migrations de runtime.
 Depois do reset, rode o bootstrap:
 
 ```bash

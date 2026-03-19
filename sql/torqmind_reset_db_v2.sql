@@ -43,3 +43,4 @@ DROP SCHEMA IF EXISTS auth CASCADE;
 \ir migrations/021_platform_backoffice.sql
 \ir migrations/022_etl_incremental_notification_hardening.sql
 \ir migrations/023_etl_cycle_orchestration_and_branch_admin.sql
+\ir migrations/024_etl_clock_driven_rollover.sql

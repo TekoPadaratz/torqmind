@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import unittest
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -83,6 +85,18 @@ def _fetchone(db_name: str, query: str, params: tuple[object, ...] = ()) -> dict
     with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
         row = conn.execute(query, params).fetchone()
     return row if row else None
+
+
+def _fetchscalar(db_name: str, query: str, params: tuple[object, ...] = ()) -> object | None:
+    with psycopg.connect(_admin_dsn(db_name)) as conn:
+        row = conn.execute(query, params).fetchone()
+    return row[0] if row else None
+
+
+def _execute_sql(db_name: str, query: str, params: tuple[object, ...] = ()) -> None:
+    with psycopg.connect(_admin_dsn(db_name)) as conn:
+        conn.execute(query, params)
+        conn.commit()
 
 
 def _fetch_function_definition(db_name: str, signature: str) -> str:
@@ -345,6 +359,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
 
             refresh_def = _fetch_function_definition(db_name, "etl.refresh_marts(jsonb, date)").lower()
+            clock_meta_def = _fetch_function_definition(db_name, "etl.collect_tenant_clock_meta(integer, date)").lower()
             post_refresh_def = _fetch_function_definition(db_name, "etl.run_tenant_post_refresh(integer, jsonb, date)").lower()
             run_all_def = _fetch_function_definition(db_name, "etl.run_all(integer, boolean, boolean, date)").lower()
             churn_mv = _fetchone(
@@ -356,12 +371,25 @@ class ReleaseHardeningTest(unittest.TestCase):
                   AND matviewname = 'clientes_churn_risco'
                 """,
             )
+            cash_mv = _fetchone(
+                db_name,
+                """
+                SELECT definition
+                FROM pg_matviews
+                WHERE schemaname = 'mart'
+                  AND matviewname = 'agg_caixa_turno_aberto'
+                """,
+            )
 
             self.assertIn("etl.run_tenant_phase", run_all_def)
+            self.assertIn("etl.collect_tenant_clock_meta", run_all_def)
             self.assertIn("etl.refresh_marts", run_all_def)
             self.assertIn("etl.run_tenant_post_refresh", run_all_def)
             self.assertNotIn("refresh materialized view", run_all_def)
 
+            self.assertIn("clock_churn_mart_refresh", refresh_def)
+            self.assertIn("clock_cash_open_refresh", refresh_def)
+            self.assertIn("daily_rollover_window", clock_meta_def)
             self.assertNotIn("run_operational_snapshot_backfill", refresh_def)
             self.assertNotIn("run_operational_snapshot_backfill", post_refresh_def)
             self.assertNotIn("backfill_customer_sales_daily_range(null", refresh_def)
@@ -377,6 +405,319 @@ class ReleaseHardeningTest(unittest.TestCase):
 
             self.assertIsNotNone(churn_mv)
             self.assertIn("etl.runtime_ref_date()", str(churn_mv["definition"]).lower())
+            self.assertIsNotNone(cash_mv)
+            self.assertIn("etl.runtime_now()", str(cash_mv["definition"]).lower())
+
+    def test_incremental_etl_daily_rollover_updates_time_driven_artifacts_without_full_sales_refresh(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            _execute_sql(
+                db_name,
+                """
+                INSERT INTO app.tenants (id_empresa, nome, ingest_key)
+                VALUES (1, 'Tenant 1', gen_random_uuid());
+
+                INSERT INTO auth.filiais (id_empresa, id_filial, nome, cnpj, is_active, valid_from)
+                VALUES (1, 1, 'Filial 1', '12345678000199', true, DATE '2026-03-01');
+
+                INSERT INTO dw.dim_cliente (id_empresa, id_filial, id_cliente, nome)
+                VALUES (1, 1, 100, 'Cliente 100');
+
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_usuario, id_cliente, id_comprovante, id_turno, saidas_entradas,
+                  total_venda, cancelado, payload
+                )
+                VALUES (
+                  1, 1, 1, 10, TIMESTAMP '2026-03-13 10:00:00', 20260313,
+                  1, 100, 500, 7, 1, 120.00, false, '{}'::jsonb
+                );
+
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, id_grupo_produto, id_local_venda, id_funcionario, cfop,
+                  qtd, valor_unitario, total, desconto, custo_total, margem, payload
+                )
+                VALUES (
+                  1, 1, 1, 10, 1, 20260313,
+                  1, NULL, NULL, NULL, 5102,
+                  1, 120.00, 120.00, 0, 90.00, 30.00, '{}'::jsonb
+                );
+
+                INSERT INTO dw.fact_financeiro (
+                  id_empresa, id_filial, id_db, tipo_titulo, id_titulo, id_entidade,
+                  data_emissao, data_key_emissao, vencimento, data_key_venc,
+                  data_pagamento, data_key_pgto, valor, valor_pago, payload
+                )
+                VALUES (
+                  1, 1, 1, 1, 900, 300,
+                  DATE '2026-03-10', 20260310, DATE '2026-03-17', 20260317,
+                  NULL, NULL, 100.00, 0, '{}'::jsonb
+                );
+                """,
+            )
+
+            with psycopg.connect(_admin_dsn(db_name)) as conn:
+                conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria")
+                conn.execute("SET LOCAL etl.ref_date = %s", ("2026-03-18",))
+                conn.execute("REFRESH MATERIALIZED VIEW mart.clientes_churn_risco")
+                conn.commit()
+            _fetchscalar(
+                db_name,
+                "SELECT etl.backfill_customer_sales_daily_range(%s, %s, %s)",
+                (1, date(2026, 3, 13), date(2026, 3, 18)),
+            )
+            _fetchscalar(
+                db_name,
+                "SELECT etl.backfill_customer_rfm_range(%s, %s, %s)",
+                (1, date(2026, 3, 18), date(2026, 3, 18)),
+            )
+            _fetchscalar(
+                db_name,
+                "SELECT etl.backfill_customer_churn_risk_range(%s, %s, %s)",
+                (1, date(2026, 3, 18), date(2026, 3, 18)),
+            )
+            _fetchscalar(
+                db_name,
+                "SELECT etl.backfill_finance_aging_range(%s, %s, %s)",
+                (1, date(2026, 3, 18), date(2026, 3, 18)),
+            )
+            _fetchscalar(
+                db_name,
+                "SELECT etl.backfill_health_score_range(%s, %s, %s)",
+                (1, date(2026, 3, 18), date(2026, 3, 18)),
+            )
+
+            churn_before = _fetchone(
+                db_name,
+                """
+                SELECT (reasons->>'ref_date')::date AS ref_date
+                FROM mart.clientes_churn_risco
+                WHERE id_empresa = 1
+                  AND id_filial = 1
+                  AND id_cliente = 100
+                """,
+            )
+            self.assertIsNotNone(churn_before)
+            self.assertEqual(churn_before["ref_date"], date(2026, 3, 18))
+
+            clock_meta = _fetchscalar(
+                db_name,
+                "SELECT etl.collect_tenant_clock_meta(%s, %s::date)",
+                (1, date(2026, 3, 19)),
+            )
+            if isinstance(clock_meta, str):
+                clock_meta = json.loads(clock_meta)
+            self.assertIsInstance(clock_meta, dict)
+            self.assertEqual(clock_meta["clock_customer_rfm_start_dt_ref"], "2026-03-19")
+            self.assertEqual(clock_meta["clock_finance_aging_start_dt_ref"], "2026-03-19")
+            self.assertEqual(clock_meta["clock_health_score_start_dt_ref"], "2026-03-19")
+
+            refresh_meta = _fetchscalar(
+                db_name,
+                "SELECT etl.refresh_marts(%s::jsonb, %s::date)",
+                (json.dumps(clock_meta), date(2026, 3, 19)),
+            )
+            if isinstance(refresh_meta, str):
+                refresh_meta = json.loads(refresh_meta)
+            post_meta = _fetchscalar(
+                db_name,
+                "SELECT etl.run_tenant_post_refresh(%s, %s::jsonb, %s::date)",
+                (1, json.dumps(clock_meta), date(2026, 3, 19)),
+            )
+            if isinstance(post_meta, str):
+                post_meta = json.loads(post_meta)
+
+            self.assertFalse(refresh_meta["sales_marts_refreshed"])
+            self.assertFalse(refresh_meta["finance_mart_refreshed"])
+            self.assertTrue(refresh_meta["churn_clock_mart_refreshed"])
+            self.assertFalse(post_meta["customer_sales_daily_refreshed"])
+            self.assertTrue(post_meta["customer_rfm_refreshed"])
+            self.assertTrue(post_meta["customer_churn_risk_refreshed"])
+            self.assertTrue(post_meta["finance_aging_refreshed"])
+            self.assertTrue(post_meta["health_score_refreshed"])
+            self.assertTrue(post_meta["customer_rfm_clock_driven"])
+            self.assertTrue(post_meta["finance_aging_clock_driven"])
+            self.assertTrue(post_meta["health_score_clock_driven"])
+
+            churn_after = _fetchone(
+                db_name,
+                """
+                SELECT (reasons->>'ref_date')::date AS ref_date, recency_days
+                FROM mart.clientes_churn_risco
+                WHERE id_empresa = 1
+                  AND id_filial = 1
+                  AND id_cliente = 100
+                """,
+            )
+            self.assertIsNotNone(churn_after)
+            self.assertEqual(churn_after["ref_date"], date(2026, 3, 19))
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    "SELECT MAX(dt_ref) FROM mart.customer_churn_risk_daily WHERE id_empresa = %s",
+                    (1,),
+                ),
+                date(2026, 3, 19),
+            )
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    "SELECT MAX(dt_ref) FROM mart.finance_aging_daily WHERE id_empresa = %s",
+                    (1,),
+                ),
+                date(2026, 3, 19),
+            )
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    "SELECT MAX(dt_ref) FROM mart.health_score_daily WHERE id_empresa = %s",
+                    (1,),
+                ),
+                date(2026, 3, 19),
+            )
+
+    def test_incremental_etl_open_cash_turn_evolves_with_clock_without_new_ingest(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            _execute_sql(
+                db_name,
+                """
+                INSERT INTO app.tenants (id_empresa, nome, ingest_key)
+                VALUES (1, 'Tenant 1', gen_random_uuid());
+
+                INSERT INTO auth.filiais (id_empresa, id_filial, nome, cnpj, is_active, valid_from)
+                VALUES (1, 1, 'Filial Caixa', '12345678000199', true, DATE '2026-03-01');
+
+                INSERT INTO dw.dim_usuario_caixa (id_empresa, id_filial, id_usuario, nome, payload)
+                VALUES (1, 1, 900, 'Operador Caixa', '{}'::jsonb);
+
+                INSERT INTO dw.fact_caixa_turno (
+                  id_empresa, id_filial, id_turno, id_db, id_usuario, abertura_ts,
+                  fechamento_ts, data_key_abertura, data_key_fechamento,
+                  encerrante_fechamento, is_aberto, status_raw, payload
+                )
+                VALUES (
+                  1, 1, 77, 1, 900, TIMESTAMPTZ '2026-03-19 03:00:00+00',
+                  NULL, 20260319, NULL, NULL, true, 'OPEN', '{}'::jsonb
+                );
+                """,
+            )
+
+            with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
+                clock_meta = conn.execute(
+                    "SELECT etl.collect_tenant_clock_meta(%s, %s::date) AS meta",
+                    (1, date(2026, 3, 19)),
+                ).fetchone()["meta"]
+                if isinstance(clock_meta, str):
+                    clock_meta = json.loads(clock_meta)
+
+                conn.execute("SET LOCAL etl.now = %s", ("2026-03-19 10:00:00+00",))
+                refresh_one = conn.execute(
+                    "SELECT etl.refresh_marts(%s::jsonb, %s::date) AS meta",
+                    (json.dumps(clock_meta), date(2026, 3, 19)),
+                ).fetchone()["meta"]
+                if isinstance(refresh_one, str):
+                    refresh_one = json.loads(refresh_one)
+                post_one = conn.execute(
+                    "SELECT etl.run_tenant_post_refresh(%s, %s::jsonb, %s::date) AS meta",
+                    (1, json.dumps(clock_meta), date(2026, 3, 19)),
+                ).fetchone()["meta"]
+                if isinstance(post_one, str):
+                    post_one = json.loads(post_one)
+                agg_one = conn.execute(
+                    """
+                    SELECT horas_aberto, severity
+                    FROM mart.agg_caixa_turno_aberto
+                    WHERE id_empresa = 1
+                      AND id_turno = 77
+                    """
+                ).fetchone()
+                alerts_one = conn.execute(
+                    "SELECT COUNT(*) FROM mart.alerta_caixa_aberto WHERE id_empresa = %s",
+                    (1,),
+                ).fetchone()[0]
+                notifications_one = conn.execute(
+                    "SELECT COUNT(*) FROM app.notifications WHERE id_empresa = %s",
+                    (1,),
+                ).fetchone()[0]
+                conn.commit()
+
+            with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
+                clock_meta = conn.execute(
+                    "SELECT etl.collect_tenant_clock_meta(%s, %s::date) AS meta",
+                    (1, date(2026, 3, 20)),
+                ).fetchone()["meta"]
+                if isinstance(clock_meta, str):
+                    clock_meta = json.loads(clock_meta)
+
+                conn.execute("SET LOCAL etl.now = %s", ("2026-03-20 12:30:00+00",))
+                refresh_two = conn.execute(
+                    "SELECT etl.refresh_marts(%s::jsonb, %s::date) AS meta",
+                    (json.dumps(clock_meta), date(2026, 3, 20)),
+                ).fetchone()["meta"]
+                if isinstance(refresh_two, str):
+                    refresh_two = json.loads(refresh_two)
+                post_two = conn.execute(
+                    "SELECT etl.run_tenant_post_refresh(%s, %s::jsonb, %s::date) AS meta",
+                    (1, json.dumps(clock_meta), date(2026, 3, 20)),
+                ).fetchone()["meta"]
+                if isinstance(post_two, str):
+                    post_two = json.loads(post_two)
+                agg_two = conn.execute(
+                    """
+                    SELECT horas_aberto, severity
+                    FROM mart.agg_caixa_turno_aberto
+                    WHERE id_empresa = 1
+                      AND id_turno = 77
+                    """
+                ).fetchone()
+                alert_two = conn.execute(
+                    """
+                    SELECT severity, title
+                    FROM mart.alerta_caixa_aberto
+                    WHERE id_empresa = 1
+                      AND id_turno = 77
+                    """
+                ).fetchone()
+                notification_two = conn.execute(
+                    """
+                    SELECT severity, title
+                    FROM app.notifications
+                    WHERE id_empresa = 1
+                      AND id_filial = 1
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                conn.commit()
+
+            self.assertTrue(refresh_one["cash_open_alert_marts_refreshed"])
+            self.assertFalse(refresh_one["cash_marts_refreshed"])
+            self.assertEqual(float(agg_one["horas_aberto"]), 7.0)
+            self.assertEqual(agg_one["severity"], "WARN")
+            self.assertEqual(alerts_one, 0)
+            self.assertEqual(post_one["cash_notifications"], 0)
+            self.assertEqual(notifications_one, 0)
+
+            self.assertTrue(refresh_two["cash_open_alert_marts_refreshed"])
+            self.assertFalse(refresh_two["cash_marts_refreshed"])
+            self.assertGreater(float(agg_two["horas_aberto"]), float(agg_one["horas_aberto"]))
+            self.assertEqual(agg_two["severity"], "CRITICAL")
+            self.assertEqual(alert_two["severity"], "CRITICAL")
+            self.assertIn("Caixa 77 aberto", alert_two["title"])
+            self.assertEqual(post_two["cash_notifications"], 1)
+            self.assertTrue(post_two["cash_notifications_clock_driven"])
+            self.assertEqual(notification_two["severity"], "CRITICAL")
+            self.assertIn("Caixa 77 aberto", notification_two["title"])
 
     def test_incremental_refresh_matviews_have_unique_indexes_for_concurrent_path(self) -> None:
         with temporary_database() as db_name:
