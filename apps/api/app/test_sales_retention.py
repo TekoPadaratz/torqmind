@@ -452,6 +452,54 @@ class SalesRetentionTest(unittest.TestCase):
         self.assertEqual(int(pgto_rows["total"]), 1)
 
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  id_usuario, id_turno, id_cliente, valor_total, cancelado, situacao, payload
+                )
+                VALUES (%s, 1, 1, 1199, %s, %s, 1, 1, 10, 90, false, 1, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante) DO NOTHING
+                """,
+                (tenant_id, f"{old_date.isoformat()} 09:00:00", int(old_date.strftime("%Y%m%d"))),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_usuario, id_cliente, id_comprovante, id_turno, saidas_entradas,
+                  total_venda, cancelado, payload
+                )
+                VALUES (%s, 1, 1, 2199, %s, %s, 1, 10, 1199, 1, 1, 90, false, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos) DO NOTHING
+                """,
+                (tenant_id, f"{old_date.isoformat()} 09:00:00", int(old_date.strftime("%Y%m%d"))),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, qtd, valor_unitario, total, desconto, custo_total, margem, payload
+                )
+                VALUES (%s, 1, 1, 2199, 2999, %s, 700, 1, 90, 90, 0, 70, 20, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos) DO NOTHING
+                """,
+                (tenant_id, int(old_date.strftime("%Y%m%d"))),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_pagamento_comprovante (
+                  id_empresa, id_filial, referencia, id_db, id_comprovante, id_turno, id_usuario,
+                  tipo_forma, valor, dt_evento, data_key, payload
+                )
+                VALUES (%s, 1, 9199, 1, 1199, 1, 1, 1, 90, %s, %s, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, referencia, tipo_forma) DO NOTHING
+                """,
+                (tenant_id, f"{old_date.isoformat()} 09:00:00", int(old_date.strftime("%Y%m%d"))),
+            )
+            conn.commit()
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
             pre_purge = conn.execute(
                 """
                 SELECT
@@ -468,14 +516,26 @@ class SalesRetentionTest(unittest.TestCase):
             ).fetchone()["result"]
             conn.commit()
 
-        self.assertEqual(int(pre_purge["fact_comprovante"]), 1)
-        self.assertEqual(int(pre_purge["fact_venda"]), 1)
-        self.assertEqual(int(pre_purge["fact_venda_item"]), 1)
-        self.assertEqual(int(pre_purge["fact_pagamento"]), 1)
+        self.assertEqual(int(pre_purge["fact_comprovante"]), 2)
+        self.assertEqual(int(pre_purge["fact_venda"]), 2)
+        self.assertEqual(int(pre_purge["fact_venda_item"]), 2)
+        self.assertEqual(int(pre_purge["fact_pagamento"]), 2)
         self.assertTrue(bool(purge["ok"]))
         self.assertGreaterEqual(int(purge["mart_customer_sales_daily_deleted"]), 1)
         self.assertGreaterEqual(int(purge["mart_customer_rfm_daily_deleted"]), 1)
         self.assertGreaterEqual(int(purge["mart_customer_churn_risk_daily_deleted"]), 1)
+        self.assertTrue(bool(purge["refresh_meta"]["sales_marts_refreshed"]))
+        self.assertTrue(bool(purge["refresh_meta"]["payments_marts_refreshed"]))
+        self.assertTrue(bool(purge["refresh_meta"]["churn_mart_refreshed"]))
+        self.assertFalse(bool(purge["refresh_meta"]["refresh_domains"]["finance"]))
+        self.assertFalse(bool(purge["refresh_meta"]["refresh_domains"]["risk"]))
+        self.assertFalse(bool(purge["refresh_meta"]["refresh_domains"]["cash"]))
+        self.assertIn("mart.clientes_churn_risco", purge["marts_refreshed"])
+        self.assertIn("mart.agg_pagamentos_diaria", purge["marts_refreshed"])
+        self.assertNotIn("mart.financeiro_vencimentos_diaria", purge["marts_refreshed"])
+        self.assertNotIn("mart.agg_risco_diaria", purge["marts_refreshed"])
+        self.assertNotIn("mart.agg_caixa_forma_pagamento", purge["marts_refreshed"])
+        self.assertNotIn("mart.alerta_caixa_aberto", purge["marts_refreshed"])
 
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
             post_purge = conn.execute(

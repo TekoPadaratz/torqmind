@@ -132,6 +132,34 @@ DECLARE
   v_customer_sales_deleted integer := 0;
   v_customer_rfm_deleted integer := 0;
   v_customer_churn_deleted integer := 0;
+  v_refresh_changed jsonb := '{}'::jsonb;
+  v_refresh_candidate_domains jsonb := '{}'::jsonb;
+  v_refresh_domains jsonb := jsonb_build_object(
+    'sales', false,
+    'payments', false,
+    'churn', false,
+    'finance', false,
+    'risk', false,
+    'cash', false
+  );
+  v_refresh_meta jsonb := jsonb_build_object(
+    'refreshed_any', false,
+    'refresh_scope', CASE WHEN p_id_empresa IS NULL THEN 'global' ELSE 'tenant' END,
+    'sales_marts_refreshed', false,
+    'payments_marts_refreshed', false,
+    'churn_mart_refreshed', false,
+    'refresh_domains', jsonb_build_object(
+      'sales', false,
+      'payments', false,
+      'churn', false,
+      'finance', false,
+      'risk', false,
+      'cash', false
+    )
+  );
+  v_marts_refreshed text[] := ARRAY[]::text[];
+  v_sales_refresh boolean := false;
+  v_payments_refresh boolean := false;
 BEGIN
   SELECT
     COALESCE(
@@ -366,23 +394,68 @@ BEGIN
   )
   SELECT COUNT(*)::int INTO v_customer_churn_deleted FROM deleted;
 
-  REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria;
-  REFRESH MATERIALIZED VIEW mart.insights_base_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_vendas_hora;
-  REFRESH MATERIALIZED VIEW mart.agg_produtos_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_grupos_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_funcionarios_diaria;
-  REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_diaria;
-  REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_eventos;
-  REFRESH MATERIALIZED VIEW mart.clientes_churn_risco;
-  REFRESH MATERIALIZED VIEW mart.anonymous_retention_daily;
-  REFRESH MATERIALIZED VIEW mart.agg_pagamentos_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_pagamentos_turno;
-  REFRESH MATERIALIZED VIEW mart.pagamentos_anomalias_diaria;
-  REFRESH MATERIALIZED VIEW mart.agg_caixa_turno_aberto;
-  REFRESH MATERIALIZED VIEW mart.agg_caixa_forma_pagamento;
-  REFRESH MATERIALIZED VIEW mart.agg_caixa_cancelamentos;
-  REFRESH MATERIALIZED VIEW mart.alerta_caixa_aberto;
+  v_refresh_changed := jsonb_build_object(
+    'fact_comprovante', v_dw_comprovante_deleted,
+    'fact_venda', v_dw_venda_deleted,
+    'fact_venda_item', v_dw_venda_item_deleted,
+    'fact_pagamento_comprovante', v_dw_pagamentos_deleted
+  );
+  v_refresh_candidate_domains := etl.change_domains(v_refresh_changed);
+  v_sales_refresh := COALESCE((v_refresh_candidate_domains->>'sales')::boolean, false);
+  v_payments_refresh := COALESCE((v_refresh_candidate_domains->>'payments')::boolean, false);
+
+  IF v_sales_refresh THEN
+    REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria;
+    REFRESH MATERIALIZED VIEW mart.insights_base_diaria;
+    REFRESH MATERIALIZED VIEW mart.agg_vendas_hora;
+    REFRESH MATERIALIZED VIEW mart.agg_produtos_diaria;
+    REFRESH MATERIALIZED VIEW mart.agg_grupos_diaria;
+    REFRESH MATERIALIZED VIEW mart.agg_funcionarios_diaria;
+    REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_diaria;
+    REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_eventos;
+    REFRESH MATERIALIZED VIEW mart.clientes_churn_risco;
+    v_marts_refreshed := v_marts_refreshed || ARRAY[
+      'mart.agg_vendas_diaria',
+      'mart.insights_base_diaria',
+      'mart.agg_vendas_hora',
+      'mart.agg_produtos_diaria',
+      'mart.agg_grupos_diaria',
+      'mart.agg_funcionarios_diaria',
+      'mart.fraude_cancelamentos_diaria',
+      'mart.fraude_cancelamentos_eventos',
+      'mart.clientes_churn_risco'
+    ];
+  END IF;
+
+  IF v_payments_refresh THEN
+    REFRESH MATERIALIZED VIEW mart.agg_pagamentos_diaria;
+    REFRESH MATERIALIZED VIEW mart.agg_pagamentos_turno;
+    REFRESH MATERIALIZED VIEW mart.pagamentos_anomalias_diaria;
+    v_marts_refreshed := v_marts_refreshed || ARRAY[
+      'mart.agg_pagamentos_diaria',
+      'mart.agg_pagamentos_turno',
+      'mart.pagamentos_anomalias_diaria'
+    ];
+  END IF;
+
+  v_refresh_domains := jsonb_build_object(
+    'sales', v_sales_refresh,
+    'payments', v_payments_refresh,
+    'churn', v_sales_refresh,
+    'finance', false,
+    'risk', false,
+    'cash', false
+  );
+  v_refresh_meta := jsonb_build_object(
+    'refreshed_any', (v_sales_refresh OR v_payments_refresh),
+    'refresh_scope', CASE WHEN p_id_empresa IS NULL THEN 'global' ELSE 'tenant' END,
+    'sales_marts_refreshed', v_sales_refresh,
+    'payments_marts_refreshed', v_payments_refresh,
+    'churn_mart_refreshed', v_sales_refresh,
+    'refresh_domains', v_refresh_domains,
+    'candidate_domains', v_refresh_candidate_domains,
+    'marts_refreshed', to_jsonb(v_marts_refreshed)
+  );
 
   PERFORM etl.analyze_hot_tables();
 
@@ -402,25 +475,8 @@ BEGIN
     'mart_customer_rfm_daily_deleted', v_customer_rfm_deleted,
     'mart_customer_churn_risk_daily_deleted', v_customer_churn_deleted,
     'duration_ms', GREATEST(0, FLOOR(EXTRACT(epoch FROM (clock_timestamp() - v_started)) * 1000)::int),
-    'marts_refreshed', jsonb_build_array(
-      'mart.agg_vendas_diaria',
-      'mart.insights_base_diaria',
-      'mart.agg_vendas_hora',
-      'mart.agg_produtos_diaria',
-      'mart.agg_grupos_diaria',
-      'mart.agg_funcionarios_diaria',
-      'mart.fraude_cancelamentos_diaria',
-      'mart.fraude_cancelamentos_eventos',
-      'mart.clientes_churn_risco',
-      'mart.anonymous_retention_daily',
-      'mart.agg_pagamentos_diaria',
-      'mart.agg_pagamentos_turno',
-      'mart.pagamentos_anomalias_diaria',
-      'mart.agg_caixa_turno_aberto',
-      'mart.agg_caixa_forma_pagamento',
-      'mart.agg_caixa_cancelamentos',
-      'mart.alerta_caixa_aberto'
-    )
+    'refresh_meta', v_refresh_meta,
+    'marts_refreshed', to_jsonb(v_marts_refreshed)
   );
 END;
 $$;

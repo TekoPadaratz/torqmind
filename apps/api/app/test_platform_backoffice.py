@@ -255,6 +255,71 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertEqual(me_body["default_scope"]["dt_fim"], "2026-03-20")
         self.assertEqual(int(me_body["default_scope"]["days"]), 30)
 
+    def test_product_user_auto_scope_falls_back_to_branch_operational_facts_beyond_sales(self) -> None:
+        tenant_id = self._create_tenant("Tenant Auto Scope Finance")
+        branch_id = 995
+        other_branch_id = 996
+        self._create_branch(tenant_id, branch_id, "Filial 995", is_active=True)
+        self._create_branch(tenant_id, other_branch_id, "Filial 996", is_active=True)
+
+        manager_email = self._create_user(
+            "tenant_manager",
+            "Senha@123",
+            tenant_id=tenant_id,
+            branch_id=branch_id,
+        )
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                UPDATE app.tenants
+                SET default_product_scope_days = %s
+                WHERE id_empresa = %s
+                """,
+                (14, tenant_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  total_venda, payload
+                )
+                VALUES (%s, %s, 1, 3001, %s, %s, 250, '{}'::jsonb)
+                """,
+                (tenant_id, other_branch_id, "2026-03-20 10:00:00", 20260320),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_financeiro (
+                  id_empresa, id_filial, id_db, tipo_titulo, id_titulo, id_entidade,
+                  data_emissao, data_key_emissao, vencimento, data_key_venc,
+                  data_pagamento, data_key_pgto, valor, valor_pago, payload
+                )
+                VALUES (%s, %s, 1, 1, 4001, 10, %s, %s, %s, %s, NULL, NULL, 120, 0, '{}'::jsonb)
+                """,
+                (tenant_id, branch_id, "2026-03-02", 20260302, "2026-03-15", 20260315),
+            )
+            conn.commit()
+
+        login_response = self._login(manager_email, "Senha@123")
+        body = login_response.json()
+        qs = parse_qs(urlparse(body["home_path"]).query)
+
+        self.assertEqual(qs["dt_ini"][0], "2026-03-02")
+        self.assertEqual(qs["dt_fim"][0], "2026-03-15")
+        self.assertEqual(qs["dt_ref"][0], "2026-03-15")
+        self.assertEqual(qs["id_empresa"][0], str(tenant_id))
+        self.assertEqual(qs["id_filial"][0], str(branch_id))
+
+        token = body["access_token"]
+        me_response = self.client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(me_response.status_code, 200, me_response.text)
+        me_body = me_response.json()
+        self.assertEqual(me_body["default_scope"]["dt_ini"], "2026-03-02")
+        self.assertEqual(me_body["default_scope"]["dt_fim"], "2026-03-15")
+        self.assertEqual(me_body["default_scope"]["source"], "latest_operational_date")
+        self.assertEqual(int(me_body["default_scope"]["days"]), 14)
+
     def test_company_operational_defaults_appear_and_can_be_updated(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")
         headers = self._auth_headers(master_email, "Senha@123")

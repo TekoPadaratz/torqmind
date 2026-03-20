@@ -183,24 +183,62 @@ def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[
         ).fetchone()
         latest_row = conn.execute(
             f"""
-            SELECT
-              MAX(src.latest_dt_ref) AS latest_dt_ref,
-              CURRENT_DATE AS current_date
-            FROM (
-              SELECT MAX(data::date) AS latest_dt_ref
+            WITH candidates AS (
+              SELECT
+                MAX(data::date) AS latest_dt_ref,
+                'fact_venda' AS source,
+                10 AS priority
               FROM dw.fact_venda
               WHERE id_empresa = %s
                 AND data IS NOT NULL
                 {where_filial}
               UNION ALL
-              SELECT MAX(data::date) AS latest_dt_ref
+              SELECT
+                MAX(data::date) AS latest_dt_ref,
+                'fact_comprovante' AS source,
+                20 AS priority
               FROM dw.fact_comprovante
               WHERE id_empresa = %s
                 AND data IS NOT NULL
                 {where_filial}
-            ) src
+              UNION ALL
+              SELECT
+                MAX(dt_evento::date) AS latest_dt_ref,
+                'fact_pagamento_comprovante' AS source,
+                30 AS priority
+              FROM dw.fact_pagamento_comprovante
+              WHERE id_empresa = %s
+                AND dt_evento IS NOT NULL
+                {where_filial}
+              UNION ALL
+              SELECT
+                MAX(LEAST(COALESCE(data_pagamento, vencimento, data_emissao), CURRENT_DATE)) AS latest_dt_ref,
+                'fact_financeiro' AS source,
+                40 AS priority
+              FROM dw.fact_financeiro
+              WHERE id_empresa = %s
+                AND COALESCE(data_pagamento, vencimento, data_emissao) IS NOT NULL
+                {where_filial}
+              UNION ALL
+              SELECT
+                MAX(LEAST(COALESCE(fechamento_ts::date, abertura_ts::date), CURRENT_DATE)) AS latest_dt_ref,
+                'fact_caixa_turno' AS source,
+                50 AS priority
+              FROM dw.fact_caixa_turno
+              WHERE id_empresa = %s
+                AND COALESCE(fechamento_ts, abertura_ts) IS NOT NULL
+                {where_filial}
+            )
+            SELECT
+              latest_dt_ref,
+              source,
+              CURRENT_DATE AS current_date
+            FROM candidates
+            WHERE latest_dt_ref IS NOT NULL
+            ORDER BY latest_dt_ref DESC, priority
+            LIMIT 1
             """,
-            latest_params + latest_params,
+            latest_params + latest_params + latest_params + latest_params + latest_params,
         ).fetchone()
 
     default_days = int((tenant_row or {}).get("default_product_scope_days") or 30)
@@ -210,6 +248,7 @@ def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[
         "default_product_scope_days": max(default_days, 1),
         "latest_dt_ref": latest_dt_ref or current_date,
         "has_operational_data": latest_dt_ref is not None,
+        "latest_source": latest_row.get("source") if latest_row else None,
     }
 
 

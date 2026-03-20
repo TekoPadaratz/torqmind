@@ -366,6 +366,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             clock_meta_def = _fetch_function_definition(db_name, "etl.collect_tenant_clock_meta(integer, date)").lower()
             post_refresh_def = _fetch_function_definition(db_name, "etl.run_tenant_post_refresh(integer, jsonb, date)").lower()
             run_all_def = _fetch_function_definition(db_name, "etl.run_all(integer, boolean, boolean, date)").lower()
+            purge_def = _fetch_function_definition(db_name, "etl.purge_sales_history(integer, date)").lower()
             churn_mv = _fetchone(
                 db_name,
                 """
@@ -406,6 +407,11 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertNotIn("backfill_finance_aging_range(null", post_refresh_def)
             self.assertNotIn("backfill_health_score_range(null", refresh_def)
             self.assertNotIn("backfill_health_score_range(null", post_refresh_def)
+            self.assertIn("etl.change_domains", purge_def)
+            self.assertNotIn("refresh materialized view mart.financeiro_vencimentos_diaria", purge_def)
+            self.assertNotIn("refresh materialized view mart.agg_risco_diaria", purge_def)
+            self.assertNotIn("refresh materialized view mart.agg_caixa_forma_pagamento", purge_def)
+            self.assertNotIn("refresh materialized view mart.alerta_caixa_aberto", purge_def)
 
             self.assertIsNotNone(churn_mv)
             self.assertIn("etl.runtime_ref_date()", str(churn_mv["definition"]).lower())
