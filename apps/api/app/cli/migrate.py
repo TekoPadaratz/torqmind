@@ -15,6 +15,8 @@ EXPECTED_RUNTIME_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("auth", "user_tenants", "valid_from"),
     ("auth", "filiais", "valid_from"),
     ("app", "tenants", "channel_id"),
+    ("app", "tenants", "sales_history_days"),
+    ("app", "tenants", "default_product_scope_days"),
     ("billing", "contracts", "tenant_id"),
 )
 

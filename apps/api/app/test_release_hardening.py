@@ -190,6 +190,8 @@ class ReleaseHardeningTest(unittest.TestCase):
             migrate = _run_python(["-m", "app.cli.migrate"], env)
             self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
             self.assertTrue(_column_exists(db_name, "auth", "users", "nome"))
+            self.assertTrue(_column_exists(db_name, "app", "tenants", "sales_history_days"))
+            self.assertTrue(_column_exists(db_name, "app", "tenants", "default_product_scope_days"))
 
             seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
             self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)
@@ -215,6 +217,8 @@ class ReleaseHardeningTest(unittest.TestCase):
             migrate = _run_python(["-m", "app.cli.migrate"], env)
             self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
             self.assertTrue(_column_exists(db_name, "auth", "users", "nome"))
+            self.assertTrue(_column_exists(db_name, "app", "tenants", "sales_history_days"))
+            self.assertTrue(_column_exists(db_name, "app", "tenants", "default_product_scope_days"))
 
             seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
             self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)
@@ -231,7 +235,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 env,
             )
             self.assertEqual(login.returncode, 0, login.stderr or login.stdout)
-            self.assertIn("/platform", login.stdout)
+            self.assertIn("/scope", login.stdout)
 
     def test_master_only_seed_bootstraps_real_master_and_channel_admin(self) -> None:
         with temporary_database() as db_name:
@@ -316,7 +320,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertEqual(master_login.returncode, 0, master_login.stderr or master_login.stdout)
             self.assertIn('"role": "platform_master"', master_login.stdout)
             self.assertIn('"platform_finance": true', master_login.stdout)
-            self.assertIn('"home_path": "/platform"', master_login.stdout)
+            self.assertIn('"home_path": "/scope"', master_login.stdout)
 
             channel_login = _run_python(
                 [
@@ -419,10 +423,20 @@ class ReleaseHardeningTest(unittest.TestCase):
                 db_name,
                 """
                 INSERT INTO app.tenants (id_empresa, nome, ingest_key)
-                VALUES (1, 'Tenant 1', gen_random_uuid());
+                VALUES (1, 'Tenant 1', gen_random_uuid())
+                ON CONFLICT (id_empresa)
+                DO UPDATE SET
+                  nome = EXCLUDED.nome,
+                  ingest_key = COALESCE(app.tenants.ingest_key, EXCLUDED.ingest_key);
 
                 INSERT INTO auth.filiais (id_empresa, id_filial, nome, cnpj, is_active, valid_from)
-                VALUES (1, 1, 'Filial 1', '12345678000199', true, DATE '2026-03-01');
+                VALUES (1, 1, 'Filial 1', '12345678000199', true, DATE '2026-03-01')
+                ON CONFLICT (id_empresa, id_filial)
+                DO UPDATE SET
+                  nome = EXCLUDED.nome,
+                  cnpj = EXCLUDED.cnpj,
+                  is_active = EXCLUDED.is_active,
+                  valid_from = EXCLUDED.valid_from;
 
                 INSERT INTO dw.dim_cliente (id_empresa, id_filial, id_cliente, nome)
                 VALUES (1, 1, 100, 'Cliente 100');
@@ -463,7 +477,7 @@ class ReleaseHardeningTest(unittest.TestCase):
 
             with psycopg.connect(_admin_dsn(db_name)) as conn:
                 conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria")
-                conn.execute("SET LOCAL etl.ref_date = %s", ("2026-03-18",))
+                conn.execute("SELECT set_config('etl.ref_date', %s, true)", ("2026-03-18",))
                 conn.execute("REFRESH MATERIALIZED VIEW mart.clientes_churn_risco")
                 conn.commit()
             _fetchscalar(
@@ -547,7 +561,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             churn_after = _fetchone(
                 db_name,
                 """
-                SELECT (reasons->>'ref_date')::date AS ref_date, recency_days
+                SELECT (reasons->>'ref_date')::date AS ref_date
                 FROM mart.clientes_churn_risco
                 WHERE id_empresa = 1
                   AND id_filial = 1
@@ -592,10 +606,20 @@ class ReleaseHardeningTest(unittest.TestCase):
                 db_name,
                 """
                 INSERT INTO app.tenants (id_empresa, nome, ingest_key)
-                VALUES (1, 'Tenant 1', gen_random_uuid());
+                VALUES (1, 'Tenant 1', gen_random_uuid())
+                ON CONFLICT (id_empresa)
+                DO UPDATE SET
+                  nome = EXCLUDED.nome,
+                  ingest_key = COALESCE(app.tenants.ingest_key, EXCLUDED.ingest_key);
 
                 INSERT INTO auth.filiais (id_empresa, id_filial, nome, cnpj, is_active, valid_from)
-                VALUES (1, 1, 'Filial Caixa', '12345678000199', true, DATE '2026-03-01');
+                VALUES (1, 1, 'Filial Caixa', '12345678000199', true, DATE '2026-03-01')
+                ON CONFLICT (id_empresa, id_filial)
+                DO UPDATE SET
+                  nome = EXCLUDED.nome,
+                  cnpj = EXCLUDED.cnpj,
+                  is_active = EXCLUDED.is_active,
+                  valid_from = EXCLUDED.valid_from;
 
                 INSERT INTO dw.dim_usuario_caixa (id_empresa, id_filial, id_usuario, nome, payload)
                 VALUES (1, 1, 900, 'Operador Caixa', '{}'::jsonb);
@@ -620,7 +644,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 if isinstance(clock_meta, str):
                     clock_meta = json.loads(clock_meta)
 
-                conn.execute("SET LOCAL etl.now = %s", ("2026-03-19 10:00:00+00",))
+                conn.execute("SELECT set_config('etl.now', %s, true)", ("2026-03-19 10:00:00+00",))
                 refresh_one = conn.execute(
                     "SELECT etl.refresh_marts(%s::jsonb, %s::date) AS meta",
                     (json.dumps(clock_meta), date(2026, 3, 19)),
@@ -642,13 +666,13 @@ class ReleaseHardeningTest(unittest.TestCase):
                     """
                 ).fetchone()
                 alerts_one = conn.execute(
-                    "SELECT COUNT(*) FROM mart.alerta_caixa_aberto WHERE id_empresa = %s",
+                    "SELECT COUNT(*) AS total FROM mart.alerta_caixa_aberto WHERE id_empresa = %s",
                     (1,),
-                ).fetchone()[0]
+                ).fetchone()["total"]
                 notifications_one = conn.execute(
-                    "SELECT COUNT(*) FROM app.notifications WHERE id_empresa = %s",
+                    "SELECT COUNT(*) AS total FROM app.notifications WHERE id_empresa = %s",
                     (1,),
-                ).fetchone()[0]
+                ).fetchone()["total"]
                 conn.commit()
 
             with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
@@ -659,7 +683,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 if isinstance(clock_meta, str):
                     clock_meta = json.loads(clock_meta)
 
-                conn.execute("SET LOCAL etl.now = %s", ("2026-03-20 12:30:00+00",))
+                conn.execute("SELECT set_config('etl.now', %s, true)", ("2026-03-20 12:30:00+00",))
                 refresh_two = conn.execute(
                     "SELECT etl.refresh_marts(%s::jsonb, %s::date) AS meta",
                     (json.dumps(clock_meta), date(2026, 3, 20)),

@@ -47,6 +47,7 @@ Arquivos de produção:
 - `deploy/scripts/prod-logs.sh`
 - `deploy/scripts/prod-seed.sh`
 - `deploy/scripts/prod-etl-incremental.sh`
+- `deploy/scripts/prod-purge-sales-history.sh`
 
 Passo a passo no Linux:
 
@@ -112,6 +113,17 @@ O ciclo incremental canônico agora segue uma única espinha dorsal:
 
 O backfill histórico pesado (`etl.run_operational_snapshot_backfill` / `make backfill-snapshots`) fica reservado para rebuilds dedicados e não faz parte do ciclo normal de 10 minutos.
 
+Antes de habilitar o cron do incremental em produção:
+- conclua a primeira carga controlada da trilha comercial curta do tenant;
+- rode `make analyze-hot-tables` uma vez após a carga inicial relevante;
+- só então habilite o ETL de 10 minutos.
+
+O expurgo diário da trilha comercial curta roda separado do ETL incremental:
+
+```bash
+./deploy/scripts/prod-purge-sales-history.sh
+```
+
 8. Validar no navegador:
 - `http://IP_DO_SERVIDOR/`
 - `http://IP_DO_SERVIDOR/docs`
@@ -163,6 +175,8 @@ make logs   # acompanha logs
 make migrate   # aplica a cadeia oficial sql/migrations e valida o runtime
 make resetdb   # recria o banco via cadeia oficial de migrations (DEV/HOMOLOG)
 make etl-incremental   # roda o incremental canônico para tenants ativos
+make analyze-hot-tables   # ANALYZE targeted nas tabelas quentes após carga inicial ou manutenção
+make purge-sales-history   # expurga histórico comercial curto antigo e refresca marts dependentes
 make lint   # valida build do web + compilação Python
 make down   # derruba os serviços
 make platform-billing-daily   # gera receivables / atualiza overdue do backoffice
@@ -189,6 +203,15 @@ START_DT=2024-01-01 END_DT=2024-12-31 STEP_DAYS=7 ID_EMPRESA=1 make backfill-sna
 
 No backoffice da empresa, o cadastro manual de novas filiais continua bloqueado.
 O slice suportado é a edição operacional de filiais já sincronizadas, preservando nome administrativo, vigência, bloqueio e habilitação sem o ETL sobrescrever essas decisões.
+
+## Política operacional da fase
+
+- `sales_history_days = 365` por tenant, aplicado apenas à trilha comercial curta: `comprovantes`, `movprodutos`, `itensmovprodutos`, `formas_pgto_comprovantes` e fatos/snapshots derivados dessa trilha.
+- `default_product_scope_days = 30` por tenant, usado no login para montar o escopo padrão do dashboard.
+- `clientes`, `contaspagar`, `contasreceber`, `financeiro` e `dw.fact_financeiro` continuam com histórico completo nesta fase.
+- `platform_master` continua parando em `/scope`.
+- Usuários do produto com tenant/filial resolvidos entram direto em `/dashboard?...` com base na data operacional mais recente disponível em `dw.fact_venda` / `dw.fact_comprovante`.
+- O ingest protege o produto contra histórico comercial antigo demais em `comprovantes` e `movprodutos`, mesmo que o emissor esteja mal configurado.
 
 ---
 

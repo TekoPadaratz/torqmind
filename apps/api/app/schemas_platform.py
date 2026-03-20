@@ -31,6 +31,8 @@ class TenantUpsertRequest(BaseModel):
     monthly_amount: Optional[Decimal] = None
     billing_day: Optional[int] = Field(default=None, ge=1, le=31)
     issue_day: Optional[int] = Field(default=None, ge=1, le=31)
+    sales_history_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    default_product_scope_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
 class BranchUpsertRequest(BaseModel):

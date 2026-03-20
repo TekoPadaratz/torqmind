@@ -7,7 +7,7 @@ ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
 
-.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental purge-sales-history analyze-hot-tables platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -52,6 +52,12 @@ backfill-snapshots-resume:
 
 etl-incremental:
 	@$(COMPOSE) exec -T api python -m app.cli.etl_incremental $${TENANT_ID:+--tenant-id "$${TENANT_ID}"} $${REF_DATE:+--ref-date "$${REF_DATE}"} $${FAIL_FAST:+--fail-fast}
+
+purge-sales-history:
+	@$(COMPOSE) exec -T api python -m app.cli.purge_sales_history $${TENANT_ID:+--tenant-id "$${TENANT_ID}"} $${REF_DATE:+--ref-date "$${REF_DATE}"}
+
+analyze-hot-tables:
+	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "SELECT etl.analyze_hot_tables();"'
 
 platform-billing-daily:
 	@$(COMPOSE) exec -T api python -m app.cli.platform_billing daily --as-of "$${AS_OF:-}" --competence-month "$${COMPETENCE_MONTH:-}" --months-ahead "$${MONTHS_AHEAD:-0}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"}

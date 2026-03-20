@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import date, timedelta
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -186,6 +187,113 @@ class PlatformBackofficeTest(unittest.TestCase):
         finance_response = self.client.get("/platform/receivables?limit=10", headers=headers)
         self.assertEqual(finance_response.status_code, 403, finance_response.text)
         self.assertEqual(finance_response.json()["error"], "platform_finance_forbidden")
+
+    def test_platform_master_scope_and_product_user_auto_scope_use_latest_operational_date(self) -> None:
+        master_email = self._create_user("platform_master", "Senha@123")
+        master_login = self._login(master_email, "Senha@123")
+        self.assertEqual(master_login.json()["home_path"], "/scope")
+
+        tenant_id = self._create_tenant("Tenant Auto Scope")
+        branch_id = 994
+        self._create_branch(tenant_id, branch_id, "Filial 994", is_active=True)
+
+        manager_email = self._create_user(
+            "tenant_manager",
+            "Senha@123",
+            tenant_id=tenant_id,
+            branch_id=branch_id,
+        )
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                UPDATE app.tenants
+                SET default_product_scope_days = %s
+                WHERE id_empresa = %s
+                """,
+                (30, tenant_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  total_venda, payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, '{}'::jsonb)
+                """,
+                (tenant_id, branch_id, 1, 1001, "2026-03-18 12:00:00", 20260318, 150),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  valor_total, payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, '{}'::jsonb)
+                """,
+                (tenant_id, branch_id, 1, 2001, "2026-03-20 08:00:00", 20260320, 180),
+            )
+            conn.commit()
+
+        login_response = self._login(manager_email, "Senha@123")
+        body = login_response.json()
+        self.assertTrue(body["home_path"].startswith("/dashboard?"), body["home_path"])
+
+        qs = parse_qs(urlparse(body["home_path"]).query)
+        self.assertEqual(qs["dt_ini"][0], "2026-02-19")
+        self.assertEqual(qs["dt_fim"][0], "2026-03-20")
+        self.assertEqual(qs["dt_ref"][0], "2026-03-20")
+        self.assertEqual(qs["id_empresa"][0], str(tenant_id))
+        self.assertEqual(qs["id_filial"][0], str(branch_id))
+
+        token = body["access_token"]
+        me_response = self.client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(me_response.status_code, 200, me_response.text)
+        me_body = me_response.json()
+        self.assertEqual(me_body["home_path"], body["home_path"])
+        self.assertEqual(me_body["default_scope"]["dt_ini"], "2026-02-19")
+        self.assertEqual(me_body["default_scope"]["dt_fim"], "2026-03-20")
+        self.assertEqual(int(me_body["default_scope"]["days"]), 30)
+
+    def test_company_operational_defaults_appear_and_can_be_updated(self) -> None:
+        master_email = self._create_user("platform_master", "Senha@123")
+        headers = self._auth_headers(master_email, "Senha@123")
+
+        create_response = self.client.post(
+            "/platform/companies",
+            json={
+                "nome": "Tenant Operacional",
+                "is_enabled": True,
+                "sales_history_days": 365,
+                "default_product_scope_days": 30,
+            },
+            headers=headers,
+        )
+        self.assertEqual(create_response.status_code, 200, create_response.text)
+        tenant_id = int(create_response.json()["id_empresa"])
+        self.assertEqual(int(create_response.json()["sales_history_days"]), 365)
+        self.assertEqual(int(create_response.json()["default_product_scope_days"]), 30)
+
+        update_response = self.client.patch(
+            f"/platform/companies/{tenant_id}",
+            json={
+                "nome": "Tenant Operacional",
+                "is_enabled": True,
+                "sales_history_days": 180,
+                "default_product_scope_days": 45,
+            },
+            headers=headers,
+        )
+        self.assertEqual(update_response.status_code, 200, update_response.text)
+        body = update_response.json()
+        self.assertEqual(int(body["sales_history_days"]), 180)
+        self.assertEqual(int(body["default_product_scope_days"]), 45)
+
+        detail_response = self.client.get(f"/platform/companies/{tenant_id}", headers=headers)
+        self.assertEqual(detail_response.status_code, 200, detail_response.text)
+        detail = detail_response.json()
+        self.assertEqual(int(detail["sales_history_days"]), 180)
+        self.assertEqual(int(detail["default_product_scope_days"]), 45)
 
     def test_platform_admin_and_tenant_admin_cannot_cross_platform_finance_boundaries(self) -> None:
         platform_admin_email = self._create_user("platform_admin", "Senha@123")

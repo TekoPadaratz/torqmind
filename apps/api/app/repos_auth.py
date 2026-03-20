@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 from app.authz import (
     analytics_role_for_user_role,
@@ -165,6 +166,79 @@ def _get_branch(tenant_id: int, branch_id: int) -> Optional[dict[str, Any]]:
             (tenant_id, branch_id),
         ).fetchone()
         return dict(row) if row else None
+
+
+def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[str, Any]:
+    where_filial = " AND id_filial = %s " if branch_id is not None else ""
+    latest_params: list[Any] = [tenant_id] + ([] if branch_id is None else [branch_id])
+
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        tenant_row = conn.execute(
+            """
+            SELECT default_product_scope_days
+            FROM app.tenants
+            WHERE id_empresa = %s
+            """,
+            (tenant_id,),
+        ).fetchone()
+        latest_row = conn.execute(
+            f"""
+            SELECT
+              MAX(src.latest_dt_ref) AS latest_dt_ref,
+              CURRENT_DATE AS current_date
+            FROM (
+              SELECT MAX(data::date) AS latest_dt_ref
+              FROM dw.fact_venda
+              WHERE id_empresa = %s
+                AND data IS NOT NULL
+                {where_filial}
+              UNION ALL
+              SELECT MAX(data::date) AS latest_dt_ref
+              FROM dw.fact_comprovante
+              WHERE id_empresa = %s
+                AND data IS NOT NULL
+                {where_filial}
+            ) src
+            """,
+            latest_params + latest_params,
+        ).fetchone()
+
+    default_days = int((tenant_row or {}).get("default_product_scope_days") or 30)
+    current_date = latest_row.get("current_date") if latest_row else date.today()
+    latest_dt_ref = latest_row.get("latest_dt_ref") if latest_row else None
+    return {
+        "default_product_scope_days": max(default_days, 1),
+        "latest_dt_ref": latest_dt_ref or current_date,
+        "has_operational_data": latest_dt_ref is not None,
+    }
+
+
+def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[str, Any]:
+    scope_defaults = _load_product_scope_defaults(tenant_id, branch_id)
+    dt_fim = scope_defaults["latest_dt_ref"]
+    default_days = int(scope_defaults["default_product_scope_days"])
+    dt_ini = dt_fim - timedelta(days=max(default_days - 1, 0))
+    return {
+        "id_empresa": tenant_id,
+        "id_filial": branch_id,
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
+        "dt_ref": dt_fim.isoformat(),
+        "days": default_days,
+        "source": "latest_operational_date" if scope_defaults["has_operational_data"] else "current_date_fallback",
+    }
+
+
+def _build_dashboard_home_path(scope: dict[str, Any]) -> str:
+    params: dict[str, str] = {
+        "dt_ini": str(scope["dt_ini"]),
+        "dt_fim": str(scope["dt_fim"]),
+        "dt_ref": str(scope["dt_ref"]),
+        "id_empresa": str(scope["id_empresa"]),
+    }
+    if scope.get("id_filial") is not None:
+        params["id_filial"] = str(scope["id_filial"])
+    return f"/dashboard?{urlencode(params)}"
 
 
 def _record_failed_login(user_id: str) -> None:
@@ -369,6 +443,7 @@ def _build_session_context(
     preferred_tenant_id: int | None = None,
     preferred_branch_id: int | None = None,
     preferred_channel_id: int | None = None,
+    include_default_scope: bool = False,
 ) -> dict[str, Any]:
     today, now = _user_now()
     user_role = normalize_role(user.get("role"))
@@ -415,6 +490,13 @@ def _build_session_context(
         if user_role not in {"platform_master", "platform_admin", "channel_admin"}
         else False
     )
+    default_scope = None
+    home_path = "/platform" if can_access_platform(user_role) else "/scope"
+    if include_default_scope and user_role == "platform_master":
+        home_path = "/scope"
+    elif include_default_scope and can_access_product(user_role) and selected_tenant_id is not None:
+        default_scope = _build_default_product_scope(selected_tenant_id, selected_branch_id)
+        home_path = _build_dashboard_home_path(default_scope)
 
     return {
         "sub": str(user["id"]),
@@ -438,7 +520,8 @@ def _build_session_context(
             "product": can_access_product(user_role),
             "product_readonly": product_readonly,
         },
-        "home_path": "/platform" if can_access_platform(user_role) else "/scope",
+        "default_scope": default_scope,
+        "home_path": home_path,
         "accesses": [_serialize_access_row(row) for row in scoped_rows if _access_row_is_valid_now(row, today)],
         "channel_ids": sorted(
             {
@@ -462,6 +545,7 @@ def verify_login(
     password: str,
     id_empresa: int | None = None,
     id_filial: int | None = None,
+    include_default_scope: bool = True,
 ) -> dict[str, Any]:
     user = get_user_by_email(email)
     if not user:
@@ -476,6 +560,7 @@ def verify_login(
         access_rows=_list_user_access_rows(str(user["id"])),
         preferred_tenant_id=id_empresa,
         preferred_branch_id=id_filial,
+        include_default_scope=include_default_scope,
     )
     _record_successful_login(str(user["id"]))
     session["last_login_at"] = datetime.now(timezone.utc)
@@ -487,6 +572,7 @@ def get_session_context(
     id_empresa: int | None = None,
     id_filial: int | None = None,
     channel_id: int | None = None,
+    include_default_scope: bool = False,
 ) -> dict[str, Any]:
     user = get_user_by_id(user_id)
     if not user:
@@ -498,6 +584,7 @@ def get_session_context(
         preferred_tenant_id=id_empresa,
         preferred_branch_id=id_filial,
         preferred_channel_id=channel_id,
+        include_default_scope=include_default_scope,
     )
 
 

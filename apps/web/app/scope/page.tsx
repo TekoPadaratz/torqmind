@@ -38,7 +38,7 @@ export default function ScopePage() {
 
   const userLabel = useMemo(() => {
     if (!claims) return undefined;
-    const role = claims.role;
+    const role = claims.user_role || claims.role;
     const emp = claims.id_empresa ? `E${claims.id_empresa}` : '';
     const fil = claims.id_filial ? `F${claims.id_filial}` : '';
     const parts = [role, emp, fil].filter(Boolean);
@@ -52,13 +52,13 @@ export default function ScopePage() {
       try {
         const me = await loadSession(router, 'product');
         if (!me) return;
+        if (me.user_role !== 'platform_master') {
+          router.replace(me.home_path || '/dashboard');
+          return;
+        }
         setClaims(me);
 
-        if (me.role === 'MASTER') {
-          setIdEmpresa(String(me.id_empresa || 1));
-        } else {
-          setIdEmpresa(String(me.id_empresa));
-        }
+        setIdEmpresa(String(me.id_empresa || 1));
 
         if (me.id_filial) {
           setIdFilial(String(me.id_filial));
@@ -78,10 +78,10 @@ export default function ScopePage() {
   // Load filiais when tenant changes
   useEffect(() => {
     const loadFiliais = async () => {
-      if (!claims) return;
+      if (!claims || claims.user_role !== 'platform_master') return;
       try {
         const qs = new URLSearchParams();
-        if (claims.role === 'MASTER') qs.set('id_empresa', idEmpresa);
+        qs.set('id_empresa', idEmpresa);
         const res = await apiGet(`/bi/filiais?${qs.toString()}`);
         setFiliais(res.items || []);
       } catch (e) {
@@ -99,13 +99,13 @@ export default function ScopePage() {
     if (idFilial) qs.set('id_filial', idFilial);
 
     // MASTER can navigate across tenants
-    if (claims?.role === 'MASTER') qs.set('id_empresa', idEmpresa || '1');
+    if (claims?.user_role === 'platform_master') qs.set('id_empresa', idEmpresa || '1');
 
     router.push(`/dashboard?${qs.toString()}`);
   };
 
-  const canPickEmpresa = claims?.role === 'MASTER';
-  const canPickFilial = claims?.role !== 'MANAGER' || !(claims?.id_filial);
+  const canPickEmpresa = claims?.user_role === 'platform_master';
+  const canPickFilial = claims?.user_role !== 'tenant_manager' || !(claims?.id_filial);
 
   return (
     <div>
@@ -166,7 +166,7 @@ export default function ScopePage() {
                   </option>
                 ))}
               </select>
-              <div className="muted">{claims?.role === 'MANAGER' ? 'Fixado pelo seu login' : 'Visão por unidade'}</div>
+              <div className="muted">{claims?.user_role === 'tenant_manager' ? 'Fixado pelo seu login' : 'Visão por unidade'}</div>
             </div>
           </div>
 

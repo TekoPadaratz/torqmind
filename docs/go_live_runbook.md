@@ -103,6 +103,21 @@ PY
 
 Critério: todos os status `200`.
 
+### 4) Primeira carga controlada + prepare/analyze
+
+Antes de habilitar qualquer cron do ETL incremental:
+
+```bash
+# executar a primeira carga comercial curta do tenant pelo fluxo controlado da operação
+# depois, rodar ANALYZE targeted uma vez
+make analyze-hot-tables
+```
+
+Critério:
+- a primeira carga do tenant terminou sem backlog histórico inútil;
+- o `ANALYZE` pós-carga foi executado;
+- o cron de 10 minutos ainda não foi habilitado antes desse ponto.
+
 ## T+1h (validação ponta a ponta)
 
 ### 1) Ingest + ETL 2x + endpoints + contagens
@@ -176,10 +191,26 @@ make ci
 ```
 
 Checklist funcional manual (front):
+- `platform_master` continua parando em `/scope`.
+- usuários tenant entram direto no dashboard com os últimos 30 dias relativos à data-base mais recente disponível no banco.
 - Dashboard mostra HERO monetário.
 - Top 3 ações com checklist e evidências.
 - Radares Fraude/Churn/Caixa carregados.
 - Alertas in-app aparecem e podem ser marcados como lidos.
+
+## Rotina diária
+
+ETL incremental continua separado do expurgo:
+
+```bash
+./deploy/scripts/prod-etl-incremental.sh
+./deploy/scripts/prod-purge-sales-history.sh
+```
+
+Regras operacionais:
+- não misturar o purge diário com o cron de 10 minutos;
+- o purge atua apenas sobre a trilha comercial curta e snapshots diretamente derivados;
+- financeiro longo e histórico de clientes permanecem preservados nesta fase.
 
 ## Rollback (se incidente)
 

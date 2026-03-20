@@ -113,6 +113,8 @@ def _load_company_row_tx(conn, tenant_id: int):
           t.monthly_amount,
           t.billing_day,
           t.issue_day,
+          t.sales_history_days,
+          t.default_product_scope_days,
           t.created_at,
           t.updated_at,
           c.name AS channel_name
@@ -390,6 +392,8 @@ def list_companies(
               t.monthly_amount,
               t.billing_day,
               t.issue_day,
+              t.sales_history_days,
+              t.default_product_scope_days,
               t.created_at,
               t.updated_at
             FROM app.tenants t
@@ -482,11 +486,13 @@ def upsert_company(
                   monthly_amount,
                   billing_day,
                   issue_day,
+                  sales_history_days,
+                  default_product_scope_days,
                   updated_at
                 )
                 VALUES (
                   %s, %s, %s, COALESCE(%s, 'active'), COALESCE(%s, CURRENT_DATE), %s,
-                  COALESCE(%s, 'current'), %s, %s, %s, %s, %s, %s, %s, now()
+                  COALESCE(%s, 'current'), %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, 365), COALESCE(%s, 30), now()
                 )
                 RETURNING id_empresa
                 """,
@@ -505,6 +511,8 @@ def upsert_company(
                     payload.get("monthly_amount"),
                     payload.get("billing_day"),
                     payload.get("issue_day"),
+                    payload.get("sales_history_days"),
+                    payload.get("default_product_scope_days"),
                 ),
             ).fetchone()
             tenant_id = int(row["id_empresa"])
@@ -526,13 +534,13 @@ def upsert_company(
                   grace_until = %s,
                   suspended_reason = %s,
                   suspended_at = CASE
-                    WHEN %s IS NOT NULL AND %s <> COALESCE(status, '')
-                      AND %s IN ('suspended_readonly', 'suspended_total')
+                    WHEN %s::text IS NOT NULL AND %s::text <> COALESCE(status, '')
+                      AND %s::text IN ('suspended_readonly', 'suspended_total')
                       THEN now()
                     ELSE suspended_at
                   END,
                   reactivated_at = CASE
-                    WHEN %s IS NOT NULL AND %s IN ('active', 'trial', 'overdue', 'grace')
+                    WHEN %s::text IS NOT NULL AND %s::text IN ('active', 'trial', 'overdue', 'grace')
                       AND COALESCE(status, '') IN ('suspended_readonly', 'suspended_total')
                       THEN now()
                     ELSE reactivated_at
@@ -542,6 +550,8 @@ def upsert_company(
                   monthly_amount = COALESCE(%s, monthly_amount),
                   billing_day = COALESCE(%s, billing_day),
                   issue_day = COALESCE(%s, issue_day),
+                  sales_history_days = COALESCE(%s, sales_history_days),
+                  default_product_scope_days = COALESCE(%s, default_product_scope_days),
                   updated_at = now()
                 WHERE id_empresa = %s
                 """,
@@ -565,6 +575,8 @@ def upsert_company(
                     payload.get("monthly_amount"),
                     payload.get("billing_day"),
                     payload.get("issue_day"),
+                    payload.get("sales_history_days"),
+                    payload.get("default_product_scope_days"),
                     tenant_id,
                 ),
             )

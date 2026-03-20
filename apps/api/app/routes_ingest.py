@@ -19,7 +19,7 @@ Why NDJSON?
 
 import gzip
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -30,6 +30,8 @@ from app.services.etl_orchestrator import EtlCycleBusyError, run_incremental_cyc
 from app.services.telegram import notify_cancelled_comprovantes
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+SALES_RETENTION_DATASETS = {"comprovantes", "movprodutos"}
 
 
 def _get_any(d: Dict[str, Any], keys: List[str]) -> Any:
@@ -81,11 +83,12 @@ def _parse_ts(x: Any) -> Optional[datetime]:
 
 def _infer_dt_evento(obj: Dict[str, Any]) -> Optional[datetime]:
     keys = [
-        "DATAREPL",
-        "DTALTERACAO",
-        "DTMOV",
+        "TORQMIND_DT_EVENTO",
+        "DT_EVENTO",
         "DATA",
         "DATAMOV",
+        "DTMOV",
+        "DTALTERACAO",
         "DTCADASTRO",
         "VENCIMENTO",
     ]
@@ -301,6 +304,47 @@ def _resolve_id_empresa(x_ingest_key: Optional[str], x_empresa_id: Optional[str]
     return 1
 
 
+def _load_tenant_ingest_policy(id_empresa: int) -> Dict[str, Any]:
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        row = conn.execute(
+            """
+            SELECT
+              id_empresa,
+              sales_history_days,
+              default_product_scope_days,
+              CURRENT_DATE AS ref_date
+            FROM app.tenants
+            WHERE id_empresa = %s
+            """,
+            (id_empresa,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail={"error": "tenant_not_found", "message": "Empresa não encontrada."})
+    return dict(row)
+
+
+def _sales_retention_cutoff(ref_date: date, days: int) -> date:
+    window_days = max(int(days or 365), 1)
+    return ref_date - timedelta(days=window_days - 1)
+
+
+def _retention_policy_response(dataset_key: str, tenant_policy: Dict[str, Any]) -> Dict[str, Any]:
+    enforced = dataset_key in SALES_RETENTION_DATASETS
+    cutoff = None
+    days = None
+    if enforced:
+        days = int(tenant_policy.get("sales_history_days") or 365)
+        cutoff = _sales_retention_cutoff(tenant_policy["ref_date"], days)
+    return {
+        "name": "sales_history_days" if enforced else "none",
+        "enforced": enforced,
+        "days": days,
+        "cutoff": cutoff.isoformat() if cutoff else None,
+        "business_date_field": "dt_evento",
+        "datasets": sorted(SALES_RETENTION_DATASETS) if enforced else [],
+    }
+
+
 def _parse_ndjson_body(raw: bytes, is_gzip: bool) -> List[Dict[str, Any]]:
     if is_gzip:
         raw = gzip.decompress(raw)
@@ -433,6 +477,13 @@ async def ingest_dataset(
 
     id_empresa = _resolve_id_empresa(x_ingest_key=x_ingest_key, x_empresa_id=x_empresa_id)
     spec = DATASETS[dataset_key]
+    tenant_policy = _load_tenant_ingest_policy(id_empresa)
+    retention_policy = _retention_policy_response(dataset_key, tenant_policy)
+    retention_cutoff = (
+        date.fromisoformat(retention_policy["cutoff"])
+        if retention_policy.get("cutoff")
+        else None
+    )
 
     raw = await request.body()
     is_gzip = (request.headers.get("content-encoding") or "").lower() == "gzip"
@@ -440,7 +491,8 @@ async def ingest_dataset(
 
     # Build values list
     values: List[Tuple[Any, ...]] = []
-    rejected: List[Dict[str, Any]] = []
+    rejected_invalid: List[Dict[str, Any]] = []
+    rejected_by_retention: List[Dict[str, Any]] = []
 
     for obj in rows:
         pk: Dict[str, Any] = {"id_empresa": id_empresa}
@@ -455,16 +507,26 @@ async def ingest_dataset(
             pk[dest_col] = iv
 
         if not ok:
-            rejected.append({"row": obj, "reason": "Missing/invalid PK fields"})
+            rejected_invalid.append({"row": obj, "reason": "Missing/invalid PK fields"})
             continue
 
         # Ensure id_filial exists when table needs it
         if "id_filial" in spec.pk_cols and "id_filial" not in pk:
-            rejected.append({"row": obj, "reason": "Missing id_filial"})
+            rejected_invalid.append({"row": obj, "reason": "Missing id_filial"})
             continue
 
         payload_json = json.dumps(obj, ensure_ascii=False)
         dt_evento = _infer_dt_evento(obj)
+        if retention_cutoff is not None and dt_evento is not None and dt_evento.date() < retention_cutoff:
+            rejected_by_retention.append(
+                {
+                    "row": obj,
+                    "reason": "Rejected by sales_history_days retention window",
+                    "dt_evento": dt_evento.isoformat(),
+                    "cutoff": retention_cutoff.isoformat(),
+                }
+            )
+            continue
         id_db_shadow = _infer_id_db_shadow(obj)
         natural_key = _infer_natural_key(obj, pk)
 
@@ -477,12 +539,17 @@ async def ingest_dataset(
         values.append(tuple(tuple_values))
 
     if not values:
+        rejected = rejected_invalid + rejected_by_retention
         return {
             "ok": True,
             "dataset": dataset_key,
             "id_empresa": id_empresa,
             "inserted_or_updated": 0,
             "rejected": len(rejected),
+            "rejected_invalid": len(rejected_invalid),
+            "rejected_by_retention": len(rejected_by_retention),
+            "retention_cutoff": retention_policy.get("cutoff"),
+            "retention_policy": retention_policy,
             "details": rejected[:5],
         }
 
@@ -532,6 +599,7 @@ async def ingest_dataset(
                 "message": str(exc),
             }
 
+    rejected = rejected_invalid + rejected_by_retention
     return {
         "ok": True,
         "dataset": dataset_key,
@@ -541,6 +609,10 @@ async def ingest_dataset(
         "updated": updated,
         "duplicates_in_batch": duplicates_in_batch,
         "rejected": len(rejected),
+        "rejected_invalid": len(rejected_invalid),
+        "rejected_by_retention": len(rejected_by_retention),
+        "retention_cutoff": retention_policy.get("cutoff"),
+        "retention_policy": retention_policy,
         "etl": etl_result,
         "sample_rejections": rejected[:5],
     }

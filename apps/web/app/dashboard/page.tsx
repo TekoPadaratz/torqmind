@@ -191,17 +191,16 @@ export default function Dashboard() {
       return;
     }
 
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
         const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/scope');
+          return;
+        }
 
         const qs = new URLSearchParams({
           dt_ini: scope.dt_ini,

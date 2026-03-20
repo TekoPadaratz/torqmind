@@ -56,6 +56,8 @@ export default function PlatformCompanyDetailPage() {
         status: detail.status || 'active',
         billing_status: detail.billing_status || 'current',
         suspended_reason: detail.suspended_reason || '',
+        sales_history_days: String(detail.sales_history_days || 365),
+        default_product_scope_days: String(detail.default_product_scope_days || 30),
       });
       const branches = detail.branches || [];
       const nextSelectedBranchId = preferredBranchId ?? selectedBranchId;
@@ -112,6 +114,8 @@ export default function PlatformCompanyDetailPage() {
         suspended_reason: companyForm.suspended_reason || null,
         status: me?.access?.platform_finance ? companyForm.status : null,
         billing_status: me?.access?.platform_finance ? companyForm.billing_status : null,
+        sales_history_days: Number(companyForm.sales_history_days || 365),
+        default_product_scope_days: Number(companyForm.default_product_scope_days || 30),
       });
       await loadCompany(me);
     } catch (err: any) {
@@ -177,6 +181,24 @@ export default function PlatformCompanyDetailPage() {
             <input className="input" value={companyForm.cnpj} onChange={(e) => setCompanyForm({ ...companyForm, cnpj: e.target.value })} placeholder="CNPJ" />
             <input className="input" type="date" value={companyForm.valid_from} onChange={(e) => setCompanyForm({ ...companyForm, valid_from: e.target.value })} />
             <input className="input" type="date" value={companyForm.valid_until} onChange={(e) => setCompanyForm({ ...companyForm, valid_until: e.target.value })} />
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={3650}
+              value={companyForm.sales_history_days}
+              onChange={(e) => setCompanyForm({ ...companyForm, sales_history_days: e.target.value })}
+              placeholder="Histórico comercial (dias)"
+            />
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={365}
+              value={companyForm.default_product_scope_days}
+              onChange={(e) => setCompanyForm({ ...companyForm, default_product_scope_days: e.target.value })}
+              placeholder="Janela padrão do produto"
+            />
             {me?.access?.platform_finance ? (
               <>
                 <select className="input" value={companyForm.status} onChange={(e) => setCompanyForm({ ...companyForm, status: e.target.value })}>
@@ -205,6 +227,9 @@ export default function PlatformCompanyDetailPage() {
             ) : (
               <div className="platformFieldHint">Status comercial e cobrança são geridos apenas pelo Master.</div>
             )}
+            <div className="platformFieldHint" style={{ gridColumn: '1 / -1' }}>
+              sales_history_days limita somente a trilha comercial curta. default_product_scope_days define o recorte automático de entrada no dashboard para usuários do produto.
+            </div>
             <label className="platformCheckbox">
               <input
                 type="checkbox"
