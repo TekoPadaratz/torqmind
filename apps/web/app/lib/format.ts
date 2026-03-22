@@ -77,6 +77,7 @@ export function formatRoleLabel(role: any) {
   if (value === 'MANAGER') return 'Gerência';
   if (raw === 'platform_master') return 'Platform Master';
   if (raw === 'platform_admin') return 'Platform Admin';
+  if (raw === 'product_global') return 'Produto Global';
   if (raw === 'channel_admin') return 'Canal';
   if (raw === 'tenant_admin') return 'Tenant Admin';
   if (raw === 'tenant_manager') return 'Tenant Manager';

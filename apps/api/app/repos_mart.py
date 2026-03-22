@@ -278,6 +278,218 @@ def list_filiais(role: str, id_empresa: int) -> List[Dict[str, Any]]:
 # Dashboard (existing)
 # ========================
 
+def dashboard_home_bundle(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    dt_ref: date,
+) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    risk_params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    window_params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    insight_params = [id_empresa, dt_ini, dt_fim] + ([] if id_filial is None else [id_filial]) + [20]
+    churn_params = [id_empresa, 40] + ([] if id_filial is None else [id_filial]) + [dt_ref, 10]
+    unread_params = [id_empresa] + ([] if id_filial is None else [id_filial])
+
+    risk_kpis_sql = f"""
+      SELECT
+        COALESCE(SUM(eventos_risco_total),0)::int AS total_eventos,
+        COALESCE(SUM(eventos_alto_risco),0)::int AS eventos_alto_risco,
+        COALESCE(SUM(impacto_estimado_total),0)::numeric(18,2) AS impacto_total,
+        COALESCE(AVG(score_medio),0)::numeric(10,2) AS score_medio
+      FROM mart.agg_risco_diaria
+      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+      {where_filial}
+    """
+    risk_window_sql = f"""
+      SELECT
+        MIN(data_key)::int AS min_data_key,
+        MAX(data_key)::int AS max_data_key,
+        COUNT(*)::int AS rows
+      FROM mart.agg_risco_diaria
+      WHERE id_empresa = %s
+      {where_filial}
+    """
+    insights_sql = f"""
+      SELECT
+        id,
+        created_at,
+        id_filial,
+        insight_type,
+        severity,
+        dt_ref,
+        impacto_estimado,
+        title,
+        message,
+        recommendation,
+        status,
+        meta,
+        ai_plan,
+        ai_model,
+        ai_prompt_tokens,
+        ai_completion_tokens,
+        ai_generated_at,
+        ai_cache_hit,
+        ai_error
+      FROM app.insights_gerados
+      WHERE id_empresa = %s
+        AND dt_ref BETWEEN %s AND %s
+        {where_filial}
+      ORDER BY dt_ref DESC, created_at DESC
+      LIMIT %s
+    """
+    churn_sql = f"""
+      SELECT
+        dt_ref,
+        id_cliente,
+        COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+        last_purchase,
+        recency_days,
+        expected_cycle_days,
+        frequency_30,
+        frequency_90,
+        monetary_30,
+        monetary_90,
+        churn_score,
+        revenue_at_risk_30d,
+        recommendation,
+        reasons
+      FROM mart.customer_churn_risk_daily
+      WHERE id_empresa = %s
+        AND churn_score >= %s
+        AND id_cliente <> -1
+        {where_filial}
+        AND dt_ref = %s
+      ORDER BY churn_score DESC, revenue_at_risk_30d DESC
+      LIMIT %s
+    """
+    aging_sql = (
+        """
+          SELECT
+            %s::date AS dt_ref,
+            COALESCE(SUM(f.receber_total_aberto),0)::numeric(18,2) AS receber_total_aberto,
+            COALESCE(SUM(f.receber_total_vencido),0)::numeric(18,2) AS receber_total_vencido,
+            COALESCE(SUM(f.pagar_total_aberto),0)::numeric(18,2) AS pagar_total_aberto,
+            COALESCE(SUM(f.pagar_total_vencido),0)::numeric(18,2) AS pagar_total_vencido,
+            COALESCE(SUM(f.bucket_0_7),0)::numeric(18,2) AS bucket_0_7,
+            COALESCE(SUM(f.bucket_8_15),0)::numeric(18,2) AS bucket_8_15,
+            COALESCE(SUM(f.bucket_16_30),0)::numeric(18,2) AS bucket_16_30,
+            COALESCE(SUM(f.bucket_31_60),0)::numeric(18,2) AS bucket_31_60,
+            COALESCE(SUM(f.bucket_60_plus),0)::numeric(18,2) AS bucket_60_plus,
+            COALESCE(AVG(f.top5_concentration_pct),0)::numeric(10,2) AS top5_concentration_pct,
+            COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps,
+            COUNT(*)::int AS snapshot_rows
+          FROM mart.finance_aging_daily f
+          WHERE f.id_empresa = %s
+            AND f.dt_ref = %s
+        """
+        if id_filial is None
+        else """
+          SELECT
+            dt_ref,
+            receber_total_aberto,
+            receber_total_vencido,
+            pagar_total_aberto,
+            pagar_total_vencido,
+            bucket_0_7,
+            bucket_8_15,
+            bucket_16_30,
+            bucket_31_60,
+            bucket_60_plus,
+            top5_concentration_pct,
+            data_gaps,
+            1::int AS snapshot_rows
+          FROM mart.finance_aging_daily
+          WHERE id_empresa = %s
+            AND id_filial = %s
+            AND dt_ref = %s
+          ORDER BY dt_ref DESC
+          LIMIT 1
+        """
+    )
+    aging_params = [dt_ref, id_empresa, dt_ref] if id_filial is None else [id_empresa, id_filial, dt_ref]
+    unread_sql = f"""
+      SELECT COALESCE(COUNT(*),0)::int AS total
+      FROM app.notifications
+      WHERE id_empresa = %s
+        {where_filial}
+        AND read_at IS NULL
+    """
+    filial_sql = """
+      SELECT nome
+      FROM auth.filiais
+      WHERE id_empresa = %s
+        AND id_filial = %s
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        risk_kpis_row = conn.execute(risk_kpis_sql, risk_params).fetchone() or {}
+        risk_window_row = conn.execute(risk_window_sql, window_params).fetchone() or {}
+        insights_rows = list(conn.execute(insights_sql, insight_params).fetchall())
+        churn_rows = list(conn.execute(churn_sql, churn_params).fetchall())
+        aging_row = conn.execute(aging_sql, aging_params).fetchone()
+        unread_row = conn.execute(unread_sql, unread_params).fetchone() or {"total": 0}
+        filial_name = None
+        if id_filial is not None:
+            filial_name_row = conn.execute(filial_sql, (id_empresa, id_filial)).fetchone()
+            filial_name = filial_name_row.get("nome") if filial_name_row else None
+
+    churn_revenue = round(sum(float(row.get("revenue_at_risk_30d") or 0) for row in churn_rows), 2)
+    churn_avg_score = (
+        round(sum(float(row.get("churn_score") or 0) for row in churn_rows) / len(churn_rows), 2) if churn_rows else 0.0
+    )
+    if aging_row and int(aging_row.get("snapshot_rows") or 0) > 0:
+        aging = dict(aging_row)
+        aging["snapshot_status"] = "exact"
+    else:
+        aging = {
+            "dt_ref": dt_ref,
+            "receber_total_aberto": 0,
+            "receber_total_vencido": 0,
+            "pagar_total_aberto": 0,
+            "pagar_total_vencido": 0,
+            "bucket_0_7": 0,
+            "bucket_8_15": 0,
+            "bucket_16_30": 0,
+            "bucket_31_60": 0,
+            "bucket_60_plus": 0,
+            "top5_concentration_pct": 0,
+            "data_gaps": True,
+            "snapshot_status": "missing",
+        }
+
+    return {
+        "scope": {
+            "id_empresa": id_empresa,
+            "id_filial": id_filial,
+            "filial_label": _filial_label(id_filial, filial_name),
+        },
+        "overview": {
+            "insights_generated": insights_rows,
+            "risk": {
+                "kpis": risk_kpis_row or {"total_eventos": 0, "eventos_alto_risco": 0, "impacto_total": 0, "score_medio": 0},
+                "window": risk_window_row or {"min_data_key": None, "max_data_key": None, "rows": 0},
+            },
+            "jarvis": jarvis_briefing(role, id_empresa, id_filial, dt_ref=dt_ref),
+        },
+        "churn": {
+            "top_risk": churn_rows,
+            "summary": {
+                "total_top_risk": len(churn_rows),
+                "avg_churn_score": churn_avg_score,
+                "revenue_at_risk_30d": churn_revenue,
+            },
+        },
+        "finance": {
+            "aging": aging,
+        },
+        "notifications_unread": int(unread_row.get("total") or 0),
+    }
+
 def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)

@@ -87,6 +87,21 @@ def dashboard_overview(
     }
 
 
+@router.get("/dashboard/home")
+def dashboard_home(
+    dt_ini: date,
+    dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    as_of = dt_ref or dt_fim
+    return repos_mart.dashboard_home_bundle(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim, dt_ref=as_of)
+
+
 # ------------------------
 # Vendas & Stores
 # ------------------------

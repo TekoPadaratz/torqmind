@@ -27,6 +27,13 @@ def resolve_scope(
         id_filial = int(id_filial_q) if id_filial_q is not None else None
         return id_empresa, id_filial
 
+    if user_role == "product_global":
+        preferred_tenants = claims.get("tenant_ids") or []
+        fallback_tenant = preferred_tenants[0] if preferred_tenants else 1
+        id_empresa = int(id_empresa_q or default_tenant or fallback_tenant)
+        id_filial = int(id_filial_q or default_branch) if (id_filial_q is not None or default_branch is not None) else None
+        return id_empresa, id_filial
+
     if not accesses:
         raise HTTPException(status_code=403, detail={"error": "tenant_access_missing", "message": "Usuário sem empresa vinculada."})
 

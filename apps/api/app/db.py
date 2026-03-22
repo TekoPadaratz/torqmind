@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from typing import Iterator, Optional
 from urllib.parse import urlparse, unquote
 
 import psycopg
 from psycopg.rows import dict_row
 
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # pragma: no cover - local env may not be updated yet
+    ConnectionPool = None  # type: ignore[assignment]
+
 from app.config import settings
+
+
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
 
 
 def _conn_str() -> str:
@@ -48,6 +58,28 @@ def _sql_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _get_pool() -> ConnectionPool | None:
+    if ConnectionPool is None:
+        return None
+
+    global _pool
+    if _pool is not None:
+        return _pool
+
+    with _pool_lock:
+        if _pool is None:
+            _pool = ConnectionPool(
+                conninfo=_conn_str(),
+                min_size=max(1, int(settings.db_pool_min_size)),
+                max_size=max(1, int(settings.db_pool_max_size)),
+                timeout=max(1, int(settings.db_pool_timeout_seconds)),
+                max_idle=max(30, int(settings.db_pool_max_idle_seconds)),
+                kwargs={"row_factory": dict_row},
+                open=True,
+            )
+    return _pool
+
+
 @contextlib.contextmanager
 def get_conn(
     role: Optional[str] = None,
@@ -68,27 +100,54 @@ def get_conn(
     - We explicitly RESET in finally to avoid context leakage if pooling is introduced.
     """
 
-    conn = psycopg.connect(_conn_str(), row_factory=dict_row)
-    try:
-        if role is not None:
-            conn.execute(f"SET app.role = '{_sql_quote(role)}'")
-        else:
-            conn.execute("RESET app.role")
+    pool = _get_pool()
+    if pool is None:
+        conn = psycopg.connect(_conn_str(), row_factory=dict_row)
+        try:
+            if role is not None:
+                conn.execute(f"SET app.role = '{_sql_quote(role)}'")
+            else:
+                conn.execute("RESET app.role")
 
-        if tenant_id is not None:
-            conn.execute(f"SET app.tenant_id = {int(tenant_id)}")
-        else:
-            conn.execute("RESET app.tenant_id")
+            if tenant_id is not None:
+                conn.execute(f"SET app.tenant_id = {int(tenant_id)}")
+            else:
+                conn.execute("RESET app.tenant_id")
 
-        if branch_id is not None:
-            conn.execute(f"SET app.branch_id = {int(branch_id)}")
-        else:
-            conn.execute("RESET app.branch_id")
+            if branch_id is not None:
+                conn.execute(f"SET app.branch_id = {int(branch_id)}")
+            else:
+                conn.execute("RESET app.branch_id")
 
-        yield conn
-    finally:
-        with contextlib.suppress(Exception):
-            conn.execute("RESET app.role")
-            conn.execute("RESET app.tenant_id")
-            conn.execute("RESET app.branch_id")
-        conn.close()
+            yield conn
+        finally:
+            with contextlib.suppress(Exception):
+                conn.execute("RESET app.role")
+                conn.execute("RESET app.tenant_id")
+                conn.execute("RESET app.branch_id")
+            conn.close()
+        return
+
+    with pool.connection() as conn:
+        try:
+            if role is not None:
+                conn.execute(f"SET app.role = '{_sql_quote(role)}'")
+            else:
+                conn.execute("RESET app.role")
+
+            if tenant_id is not None:
+                conn.execute(f"SET app.tenant_id = {int(tenant_id)}")
+            else:
+                conn.execute("RESET app.tenant_id")
+
+            if branch_id is not None:
+                conn.execute(f"SET app.branch_id = {int(branch_id)}")
+            else:
+                conn.execute("RESET app.branch_id")
+
+            yield conn
+        finally:
+            with contextlib.suppress(Exception):
+                conn.execute("RESET app.role")
+                conn.execute("RESET app.tenant_id")
+                conn.execute("RESET app.branch_id")

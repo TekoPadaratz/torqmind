@@ -17,12 +17,14 @@ Why NDJSON?
 - Simple to generate from SQL Server
 """
 
-import gzip
 import json
+import zlib
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
+from psycopg import sql
 
 from app.config import settings
 from app.db import get_conn
@@ -81,6 +83,34 @@ def _parse_ts(x: Any) -> Optional[datetime]:
     return None
 
 
+def _to_numeric(x: Any) -> Optional[float]:
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except Exception:
+        raw = str(x).strip().replace(",", ".")
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except Exception:
+            return None
+
+
+def _to_bool(x: Any) -> Optional[bool]:
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return x
+    raw = str(x).strip().lower()
+    if raw in {"1", "true", "t", "yes", "y", "sim", "s"}:
+        return True
+    if raw in {"0", "false", "f", "no", "n", "nao", "não"}:
+        return False
+    return None
+
+
 def _infer_dt_evento(obj: Dict[str, Any]) -> Optional[datetime]:
     keys = [
         "TORQMIND_DT_EVENTO",
@@ -111,6 +141,111 @@ def _infer_natural_key(obj: Dict[str, Any], pk_values: Dict[str, Any]) -> str:
     if parts:
         return "|".join(parts)
     return json.dumps(obj, ensure_ascii=False, sort_keys=True)[:1000]
+
+
+def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[str, Any]:
+    if dataset_key == "comprovantes":
+        return {
+            "referencia_shadow": _to_int(_get_any(obj, ["REFERENCIA", "referencia", "ID_REFERENCIA", "id_referencia"])),
+            "id_usuario_shadow": _to_int(_get_any(obj, ["ID_USUARIOS", "ID_USUARIO", "id_usuario"])),
+            "id_turno_shadow": _to_int(_get_any(obj, ["ID_TURNOS", "ID_TURNO", "id_turno"])),
+            "id_cliente_shadow": _to_int(_get_any(obj, ["ID_ENTIDADE", "ID_CLIENTE", "id_entidade", "id_cliente"])),
+            "valor_total_shadow": _to_numeric(_get_any(obj, ["VLRTOTAL", "VLR_TOTAL", "valor_total"])),
+            "cancelado_shadow": _to_bool(_get_any(obj, ["CANCELADO", "cancelado"])),
+            "situacao_shadow": _to_int(_get_any(obj, ["SITUACAO", "situacao"])),
+        }
+    if dataset_key == "movprodutos":
+        return {
+            "id_comprovante_shadow": _to_int(_get_any(obj, ["ID_COMPROVANTE", "id_comprovante"])),
+            "id_usuario_shadow": _to_int(_get_any(obj, ["ID_USUARIOS", "ID_USUARIO", "id_usuario"])),
+            "id_turno_shadow": _to_int(_get_any(obj, ["ID_TURNOS", "ID_TURNO", "id_turno"])),
+            "id_cliente_shadow": _to_int(_get_any(obj, ["ID_ENTIDADE", "ID_CLIENTE", "id_entidade", "id_cliente"])),
+            "saidas_entradas_shadow": _to_int(_get_any(obj, ["SAIDAS_ENTRADAS", "saidas_entradas"])),
+            "total_venda_shadow": _to_numeric(_get_any(obj, ["TOTALVENDA", "TOTAL_VENDA", "total_venda"])),
+        }
+    if dataset_key == "itensmovprodutos":
+        return {
+            "id_produto_shadow": _to_int(_get_any(obj, ["ID_PRODUTOS", "ID_PRODUTO", "id_produto"])),
+            "id_grupo_produto_shadow": _to_int(_get_any(obj, ["ID_GRUPOPRODUTOS", "ID_GRUPO_PRODUTO", "id_grupoprodutos"])),
+            "id_local_venda_shadow": _to_int(_get_any(obj, ["ID_LOCALVENDAS", "ID_LOCAL_VENDA", "id_localvendas"])),
+            "id_funcionario_shadow": _to_int(_get_any(obj, ["ID_FUNCIONARIOS", "ID_FUNCIONARIO", "id_funcionario"])),
+            "cfop_shadow": _to_int(_get_any(obj, ["CFOP", "cfop"])),
+            "qtd_shadow": _to_numeric(_get_any(obj, ["QTDE", "QTD", "quantidade"])),
+            "valor_unitario_shadow": _to_numeric(_get_any(obj, ["VLRUNITARIO", "VALOR_UNITARIO", "valor_unitario"])),
+            "total_shadow": _to_numeric(_get_any(obj, ["TOTAL", "VLRTOTAL", "total"])),
+            "desconto_shadow": _to_numeric(_get_any(obj, ["VLRDESCONTO", "VALOR_DESCONTO", "desconto"])),
+            "custo_unitario_shadow": _to_numeric(_get_any(obj, ["VLRCUSTO", "VALOR_CUSTO", "custo_unitario"])),
+        }
+    if dataset_key == "formas_pgto_comprovantes":
+        return {
+            "valor_shadow": _to_numeric(_get_any(obj, ["VALOR", "VALOR_PAGO", "VALORPAGO", "VLR", "VLR_PAGO", "VLRPAGO", "valor"])),
+            "nsu_shadow": _get_any(obj, ["NSU", "nsu"]),
+            "autorizacao_shadow": _get_any(obj, ["AUTORIZACAO", "autorizacao"]),
+            "bandeira_shadow": _get_any(obj, ["BANDEIRA", "bandeira"]),
+            "rede_shadow": _get_any(obj, ["REDE", "rede"]),
+            "tef_shadow": _get_any(obj, ["TEF", "tef"]),
+        }
+    return {}
+
+
+def _batch_columns(dataset_key: str, spec: DatasetSpec) -> List[str]:
+    columns = spec.pk_cols + ["id_db_shadow", "id_chave_natural", "dt_evento"]
+    if dataset_key == "comprovantes":
+        columns.extend(
+            [
+                "referencia_shadow",
+                "id_usuario_shadow",
+                "id_turno_shadow",
+                "id_cliente_shadow",
+                "valor_total_shadow",
+                "cancelado_shadow",
+                "situacao_shadow",
+            ]
+        )
+    elif dataset_key == "movprodutos":
+        columns.extend(
+            [
+                "id_comprovante_shadow",
+                "id_usuario_shadow",
+                "id_turno_shadow",
+                "id_cliente_shadow",
+                "saidas_entradas_shadow",
+                "total_venda_shadow",
+            ]
+        )
+    elif dataset_key == "itensmovprodutos":
+        columns.extend(
+            [
+                "id_produto_shadow",
+                "id_grupo_produto_shadow",
+                "id_local_venda_shadow",
+                "id_funcionario_shadow",
+                "cfop_shadow",
+                "qtd_shadow",
+                "valor_unitario_shadow",
+                "total_shadow",
+                "desconto_shadow",
+                "custo_unitario_shadow",
+            ]
+        )
+    elif dataset_key == "formas_pgto_comprovantes":
+        columns.extend(
+            [
+                "valor_shadow",
+                "nsu_shadow",
+                "autorizacao_shadow",
+                "bandeira_shadow",
+                "rede_shadow",
+                "tef_shadow",
+            ]
+        )
+    columns.append("payload")
+    return columns
+
+
+def _append_sample(samples: List[Dict[str, Any]], payload: Dict[str, Any]) -> None:
+    if len(samples) < 5:
+        samples.append(payload)
 
 
 class DatasetSpec:
@@ -345,57 +480,116 @@ def _retention_policy_response(dataset_key: str, tenant_policy: Dict[str, Any]) 
     }
 
 
-def _parse_ndjson_body(raw: bytes, is_gzip: bool) -> List[Dict[str, Any]]:
-    if is_gzip:
-        raw = gzip.decompress(raw)
+async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterator[Dict[str, Any]]:
+    buffer = b""
+    line_no = 0
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS) if is_gzip else None
 
-    # Split by lines (supports both \n and \r\n)
-    lines = raw.splitlines()
-    out: List[Dict[str, Any]] = []
-    for idx, line in enumerate(lines, start=1):
-        if not line.strip():
+    def flush_lines(chunk_buffer: bytes) -> Tuple[List[bytes], bytes]:
+        lines = chunk_buffer.splitlines(keepends=True)
+        if lines and not lines[-1].endswith((b"\n", b"\r")):
+            return lines[:-1], lines[-1]
+        return lines, b""
+
+    async for chunk in request.stream():
+        if not chunk:
             continue
-        try:
-            obj = json.loads(line)
+        if decompressor is not None:
+            try:
+                chunk = decompressor.decompress(chunk)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}")
+        if not chunk:
+            continue
+        buffer += chunk
+        lines, buffer = flush_lines(buffer)
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            line_no += 1
+            try:
+                obj = json.loads(line)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: {exc}")
             if not isinstance(obj, dict):
-                raise ValueError("NDJSON line is not an object")
-            out.append(obj)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {idx}: {e}")
-    return out
+                raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: line is not an object")
+            yield obj
+
+    if decompressor is not None:
+        try:
+            buffer += decompressor.flush()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}")
+
+    if buffer.strip():
+        line_no += 1
+        try:
+            obj = json.loads(buffer)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: {exc}")
+        if not isinstance(obj, dict):
+            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: line is not an object")
+        yield obj
 
 
-def _bulk_upsert_with_stats(conn, table: str, pk_cols: List[str], rows: List[Tuple[Any, ...]]) -> Tuple[int, int]:
+def _bulk_upsert_with_stats(
+    conn,
+    dataset_key: str,
+    table: str,
+    pk_cols: List[str],
+    rows: List[Tuple[Any, ...]],
+) -> Tuple[int, int]:
     if not rows:
         return 0, 0
 
-    cols = pk_cols + ["id_db_shadow", "id_chave_natural", "dt_evento", "payload"]
-    placeholders_row = "(" + ",".join(["%s"] * (len(cols) - 1) + ["%s::jsonb"]) + ")"
-    values_sql = ",".join([placeholders_row] * len(rows))
-    update_assignments = ",".join(
+    cols = _batch_columns(dataset_key, DATASETS[dataset_key])
+    schema_name, table_name = table.split(".", 1)
+    temp_name = f"tmp_ingest_{table_name}_{uuid4().hex[:8]}"
+    cols_sql = sql.SQL(", ").join(sql.Identifier(col) for col in cols)
+    conflict_sql = sql.SQL(", ").join(sql.Identifier(col) for col in pk_cols)
+    update_sql = sql.SQL(", ").join(
         [
-            "id_db_shadow = EXCLUDED.id_db_shadow",
-            "id_chave_natural = EXCLUDED.id_chave_natural",
-            "dt_evento = EXCLUDED.dt_evento",
-            "payload = EXCLUDED.payload",
-            "ingested_at = now()",
-            "received_at = now()",
+            *[
+                sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(col), sql.Identifier(col))
+                for col in cols
+                if col not in pk_cols and col != "payload"
+            ],
+            sql.SQL("payload = EXCLUDED.payload"),
+            sql.SQL("ingested_at = now()"),
+            sql.SQL("received_at = now()"),
         ]
     )
-    sql = f"""
-      INSERT INTO {table} ({",".join(cols)})
-      VALUES {values_sql}
-      ON CONFLICT ({",".join(pk_cols)})
-      DO UPDATE SET {update_assignments}
-      RETURNING (xmax = 0) AS inserted_flag
-    """
-
-    flat_params: List[Any] = []
-    for row in rows:
-        flat_params.extend(row)
 
     with conn.cursor() as cur:
-        cur.execute(sql, flat_params)
+        cur.execute(
+            sql.SQL("CREATE TEMP TABLE {} (LIKE {} INCLUDING DEFAULTS) ON COMMIT DROP").format(
+                sql.Identifier(temp_name),
+                sql.Identifier(schema_name, table_name),
+            )
+        )
+        with cur.copy(sql.SQL("COPY {} ({}) FROM STDIN").format(sql.Identifier(temp_name), cols_sql)) as copy:
+            for row in rows:
+                copy.write_row(row)
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {} ({})
+                SELECT {}
+                FROM {}
+                ON CONFLICT ({})
+                DO UPDATE SET {}
+                RETURNING (xmax = 0) AS inserted_flag
+                """
+            ).format(
+                sql.Identifier(schema_name, table_name),
+                cols_sql,
+                cols_sql,
+                sql.Identifier(temp_name),
+                conflict_sql,
+                update_sql,
+            )
+        )
         flags = cur.fetchall()
     inserted = sum(1 for f in flags if f["inserted_flag"])
     updated = len(flags) - inserted
@@ -485,16 +679,34 @@ async def ingest_dataset(
         else None
     )
 
-    raw = await request.body()
     is_gzip = (request.headers.get("content-encoding") or "").lower() == "gzip"
-    rows = _parse_ndjson_body(raw, is_gzip=is_gzip)
+    batch_size = max(int(settings.ingest_batch_size or 5000), 1)
+    batch_values: List[Tuple[Any, ...]] = []
+    rejected_invalid_count = 0
+    rejected_by_retention_count = 0
+    rejected_samples: List[Dict[str, Any]] = []
+    cancelled_rows: List[Dict[str, Any]] = []
+    inserted = 0
+    updated = 0
+    duplicates_in_batch = 0
+    inserted_or_updated = 0
 
-    # Build values list
-    values: List[Tuple[Any, ...]] = []
-    rejected_invalid: List[Dict[str, Any]] = []
-    rejected_by_retention: List[Dict[str, Any]] = []
+    def flush_batch() -> None:
+        nonlocal batch_values, inserted, updated, duplicates_in_batch, inserted_or_updated
+        if not batch_values:
+            return
+        batch_values, batch_duplicates = _dedupe_rows_by_pk(spec.pk_cols, batch_values)
+        duplicates_in_batch += batch_duplicates
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            with conn.transaction():
+                batch_inserted, batch_updated = _bulk_upsert_with_stats(conn, dataset_key, spec.table, spec.pk_cols, batch_values)
+            conn.commit()
+        inserted += batch_inserted
+        updated += batch_updated
+        inserted_or_updated += len(batch_values)
+        batch_values = []
 
-    for obj in rows:
+    async for obj in _stream_ndjson_objects(request, is_gzip=is_gzip):
         pk: Dict[str, Any] = {"id_empresa": id_empresa}
 
         ok = True
@@ -507,65 +719,69 @@ async def ingest_dataset(
             pk[dest_col] = iv
 
         if not ok:
-            rejected_invalid.append({"row": obj, "reason": "Missing/invalid PK fields"})
+            rejected_invalid_count += 1
+            _append_sample(rejected_samples, {"row": obj, "reason": "Missing/invalid PK fields"})
             continue
 
-        # Ensure id_filial exists when table needs it
         if "id_filial" in spec.pk_cols and "id_filial" not in pk:
-            rejected_invalid.append({"row": obj, "reason": "Missing id_filial"})
+            rejected_invalid_count += 1
+            _append_sample(rejected_samples, {"row": obj, "reason": "Missing id_filial"})
             continue
 
-        payload_json = json.dumps(obj, ensure_ascii=False)
         dt_evento = _infer_dt_evento(obj)
         if retention_cutoff is not None and dt_evento is not None and dt_evento.date() < retention_cutoff:
-            rejected_by_retention.append(
+            rejected_by_retention_count += 1
+            _append_sample(
+                rejected_samples,
                 {
                     "row": obj,
                     "reason": "Rejected by sales_history_days retention window",
                     "dt_evento": dt_evento.isoformat(),
                     "cutoff": retention_cutoff.isoformat(),
-                }
+                },
             )
             continue
+
+        if dataset_key == "comprovantes" and _to_bool(_get_any(obj, ["CANCELADO", "cancelado"])):
+            cancelled_rows.append(obj)
+
         id_db_shadow = _infer_id_db_shadow(obj)
         natural_key = _infer_natural_key(obj, pk)
+        payload_json = json.dumps(obj, ensure_ascii=False)
+        shadow_values = _shadow_values_for_dataset(dataset_key, obj)
 
-        # Compose tuple in table column order: pk_cols + shadow + payload
         tuple_values = [pk.get(col) for col in spec.pk_cols]
         tuple_values.append(id_db_shadow)
         tuple_values.append(natural_key)
         tuple_values.append(dt_evento)
+        for col in _batch_columns(dataset_key, spec)[len(spec.pk_cols) + 3 : -1]:
+            tuple_values.append(shadow_values.get(col))
         tuple_values.append(payload_json)
-        values.append(tuple(tuple_values))
+        batch_values.append(tuple(tuple_values))
 
-    if not values:
-        rejected = rejected_invalid + rejected_by_retention
+        if len(batch_values) >= batch_size:
+            flush_batch()
+
+    flush_batch()
+
+    if not inserted_or_updated:
         return {
             "ok": True,
             "dataset": dataset_key,
             "id_empresa": id_empresa,
             "inserted_or_updated": 0,
-            "rejected": len(rejected),
-            "rejected_invalid": len(rejected_invalid),
-            "rejected_by_retention": len(rejected_by_retention),
+            "rejected": rejected_invalid_count + rejected_by_retention_count,
+            "rejected_invalid": rejected_invalid_count,
+            "rejected_by_retention": rejected_by_retention_count,
             "retention_cutoff": retention_policy.get("cutoff"),
             "retention_policy": retention_policy,
-            "details": rejected[:5],
+            "details": rejected_samples,
         }
 
-    # Deduplicate by PK within the same batch to avoid ON CONFLICT re-hit errors.
-    values, duplicates_in_batch = _dedupe_rows_by_pk(spec.pk_cols, values)
-
-    # Execute batch with inserted/updated stats
-    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
-        with conn.transaction():
-            inserted, updated = _bulk_upsert_with_stats(conn, spec.table, spec.pk_cols, values)
-        conn.commit()
-
     # Optional: send telegram notifications when there are cancelled comprovantes
-    if dataset_key == "comprovantes":
+    if dataset_key == "comprovantes" and cancelled_rows:
         try:
-            await notify_cancelled_comprovantes(id_empresa=id_empresa, raw_rows=rows)
+            await notify_cancelled_comprovantes(id_empresa=id_empresa, raw_rows=cancelled_rows)
         except Exception:
             # Never fail ingestion due to notification issues.
             pass
@@ -599,20 +815,19 @@ async def ingest_dataset(
                 "message": str(exc),
             }
 
-    rejected = rejected_invalid + rejected_by_retention
     return {
         "ok": True,
         "dataset": dataset_key,
         "id_empresa": id_empresa,
-        "inserted_or_updated": len(values),
+        "inserted_or_updated": inserted_or_updated,
         "inserted": inserted,
         "updated": updated,
         "duplicates_in_batch": duplicates_in_batch,
-        "rejected": len(rejected),
-        "rejected_invalid": len(rejected_invalid),
-        "rejected_by_retention": len(rejected_by_retention),
+        "rejected": rejected_invalid_count + rejected_by_retention_count,
+        "rejected_invalid": rejected_invalid_count,
+        "rejected_by_retention": rejected_by_retention_count,
         "retention_cutoff": retention_policy.get("cutoff"),
         "retention_policy": retention_policy,
         "etl": etl_result,
-        "sample_rejections": rejected[:5],
+        "sample_rejections": rejected_samples,
     }

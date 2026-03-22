@@ -44,3 +44,9 @@ DROP SCHEMA IF EXISTS auth CASCADE;
 \ir migrations/022_etl_incremental_notification_hardening.sql
 \ir migrations/023_etl_cycle_orchestration_and_branch_admin.sql
 \ir migrations/024_etl_clock_driven_rollover.sql
+\ir migrations/025_sales_retention_scope_defaults.sql
+\ir migrations/026_sales_retention_hotfixes.sql
+\ir migrations/027_sales_retention_date_key_hotfix.sql
+\ir migrations/028_prod_ready_hotpaths.sql
+\ir migrations/029_product_global_role_constraints.sql
+\ir migrations/030_user_validity_nullable.sql

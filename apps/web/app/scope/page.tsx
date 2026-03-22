@@ -52,13 +52,14 @@ export default function ScopePage() {
       try {
         const me = await loadSession(router, 'product');
         if (!me) return;
-        if (me.user_role !== 'platform_master') {
+        const canSelectCrossTenant = me.user_role === 'platform_master' || me.user_role === 'product_global';
+        if (!canSelectCrossTenant) {
           router.replace(me.home_path || '/dashboard');
           return;
         }
         setClaims(me);
 
-        setIdEmpresa(String(me.id_empresa || 1));
+        setIdEmpresa(String(me.id_empresa || me.tenant_ids?.[0] || 1));
 
         if (me.id_filial) {
           setIdFilial(String(me.id_filial));
@@ -78,7 +79,7 @@ export default function ScopePage() {
   // Load filiais when tenant changes
   useEffect(() => {
     const loadFiliais = async () => {
-      if (!claims || claims.user_role !== 'platform_master') return;
+      if (!claims || (claims.user_role !== 'platform_master' && claims.user_role !== 'product_global')) return;
       try {
         const qs = new URLSearchParams();
         qs.set('id_empresa', idEmpresa);
@@ -99,12 +100,12 @@ export default function ScopePage() {
     if (idFilial) qs.set('id_filial', idFilial);
 
     // MASTER can navigate across tenants
-    if (claims?.user_role === 'platform_master') qs.set('id_empresa', idEmpresa || '1');
+    if (claims?.user_role === 'platform_master' || claims?.user_role === 'product_global') qs.set('id_empresa', idEmpresa || '1');
 
     router.push(`/dashboard?${qs.toString()}`);
   };
 
-  const canPickEmpresa = claims?.user_role === 'platform_master';
+  const canPickEmpresa = claims?.user_role === 'platform_master' || claims?.user_role === 'product_global';
   const canPickFilial = claims?.user_role !== 'tenant_manager' || !(claims?.id_filial);
 
   return (

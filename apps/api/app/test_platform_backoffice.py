@@ -320,6 +320,102 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertEqual(me_body["default_scope"]["source"], "latest_operational_date")
         self.assertEqual(int(me_body["default_scope"]["days"]), 14)
 
+    def test_global_product_user_has_product_wide_scope_without_platform_access(self) -> None:
+        tenant_id = self._create_tenant("Tenant Global Product")
+        self._create_branch(tenant_id, 901, "Filial 901", is_active=True)
+        email = self._create_user("product_global", "Senha@123")
+
+        login_response = self._login(email, "Senha@123")
+        self.assertEqual(login_response.json()["home_path"], "/scope")
+
+        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+        me_response = self.client.get("/auth/me", headers=headers)
+        self.assertEqual(me_response.status_code, 200, me_response.text)
+        me_body = me_response.json()
+        self.assertEqual(me_body["user_role"], "product_global")
+        self.assertTrue(bool(me_body["access"]["product"]))
+        self.assertFalse(bool(me_body["access"]["platform"]))
+
+        platform_response = self.client.get("/platform/companies?limit=10", headers=headers)
+        self.assertEqual(platform_response.status_code, 403, platform_response.text)
+        self.assertEqual(platform_response.json()["error"], "platform_forbidden")
+
+        filiais_response = self.client.get(f"/bi/filiais?id_empresa={tenant_id}", headers=headers)
+        self.assertEqual(filiais_response.status_code, 200, filiais_response.text)
+        self.assertTrue(any(int(item["id_filial"]) == 901 for item in filiais_response.json()["items"]))
+
+    def test_user_update_can_clear_valid_from_and_keep_global_product_scope(self) -> None:
+        master_email = self._create_user("platform_master", "Senha@123")
+        headers = self._auth_headers(master_email, "Senha@123")
+
+        create_response = self.client.post(
+            "/platform/users",
+            json={
+                "nome": "Produto Global",
+                "email": self._unique_email("product-global"),
+                "password": "Senha@123",
+                "role": "product_global",
+                "is_enabled": True,
+                "valid_from": "2025-01-01",
+                "valid_until": None,
+                "must_change_password": False,
+                "accesses": [{"role": "product_global", "is_enabled": True}],
+            },
+            headers=headers,
+        )
+        self.assertEqual(create_response.status_code, 200, create_response.text)
+        user_id = create_response.json()["id"]
+
+        update_response = self.client.patch(
+            f"/platform/users/{user_id}",
+            json={
+                "nome": "Produto Global Editado",
+                "email": create_response.json()["email"],
+                "password": None,
+                "role": "product_global",
+                "is_enabled": True,
+                "valid_from": None,
+                "valid_until": None,
+                "must_change_password": False,
+                "locked_until": None,
+                "reset_failed_login": True,
+                "accesses": [{"role": "product_global", "is_enabled": True, "valid_from": None, "valid_until": None}],
+            },
+            headers=headers,
+        )
+        self.assertEqual(update_response.status_code, 200, update_response.text)
+        self.assertIsNone(update_response.json()["valid_from"])
+        self.assertEqual(update_response.json()["role"], "product_global")
+        self.assertEqual(len(update_response.json()["accesses"]), 1)
+        self.assertIsNone(update_response.json()["accesses"][0]["id_empresa"])
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            user_row = conn.execute(
+                """
+                SELECT valid_from, failed_login_count
+                FROM auth.users
+                WHERE id = %s::uuid
+                """,
+                (user_id,),
+            ).fetchone()
+            access_row = conn.execute(
+                """
+                SELECT role, channel_id, id_empresa, id_filial, valid_from
+                FROM auth.user_tenants
+                WHERE user_id = %s::uuid
+                """,
+                (user_id,),
+            ).fetchone()
+            conn.commit()
+
+        self.assertIsNone(user_row["valid_from"])
+        self.assertEqual(int(user_row["failed_login_count"] or 0), 0)
+        self.assertEqual(access_row["role"], "product_global")
+        self.assertIsNone(access_row["channel_id"])
+        self.assertIsNone(access_row["id_empresa"])
+        self.assertIsNone(access_row["id_filial"])
+        self.assertIsNone(access_row["valid_from"])
+
     def test_company_operational_defaults_appear_and_can_be_updated(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")
         headers = self._auth_headers(master_email, "Senha@123")

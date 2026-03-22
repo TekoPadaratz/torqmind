@@ -198,6 +198,204 @@ class SalesRetentionTest(unittest.TestCase):
         self.assertEqual(int(stg_counts["contaspagar"]), 1)
         self.assertEqual(int(stg_counts["contasreceber"]), 1)
 
+    def test_ingest_populates_typed_shadow_columns_and_reports_updates(self) -> None:
+        tenant_id, ingest_key = self._create_tenant("Tenant Typed Shadows")
+        ref_date = self._current_date().isoformat()
+
+        first_comprovante = self._post_ndjson(
+            "comprovantes",
+            ingest_key,
+            [
+                {
+                    "ID_FILIAL": 1,
+                    "ID_DB": 1,
+                    "ID_COMPROVANTE": 701,
+                    "ID_USUARIOS": 77,
+                    "ID_TURNOS": 12,
+                    "ID_ENTIDADE": 900,
+                    "VLRTOTAL": 150.5,
+                    "CANCELADO": False,
+                    "SITUACAO": 3,
+                    "REFERENCIA": 8801,
+                    "DATA": ref_date,
+                }
+            ],
+        )
+        self.assertEqual(int(first_comprovante["inserted"]), 1)
+        self.assertEqual(int(first_comprovante["updated"]), 0)
+
+        second_comprovante = self._post_ndjson(
+            "comprovantes",
+            ingest_key,
+            [
+                {
+                    "ID_FILIAL": 1,
+                    "ID_DB": 1,
+                    "ID_COMPROVANTE": 701,
+                    "ID_USUARIOS": 78,
+                    "ID_TURNOS": 13,
+                    "ID_ENTIDADE": 901,
+                    "VLRTOTAL": 199.9,
+                    "CANCELADO": True,
+                    "SITUACAO": 5,
+                    "REFERENCIA": 8801,
+                    "DATA": ref_date,
+                }
+            ],
+        )
+        self.assertEqual(int(second_comprovante["inserted"]), 0)
+        self.assertEqual(int(second_comprovante["updated"]), 1)
+
+        self._post_ndjson(
+            "movprodutos",
+            ingest_key,
+            [
+                {
+                    "ID_FILIAL": 1,
+                    "ID_DB": 1,
+                    "ID_MOVPRODUTOS": 801,
+                    "ID_COMPROVANTE": 701,
+                    "ID_USUARIOS": 78,
+                    "ID_TURNOS": 13,
+                    "ID_ENTIDADE": 901,
+                    "SAIDAS_ENTRADAS": 1,
+                    "TOTALVENDA": 199.9,
+                    "DATA": ref_date,
+                }
+            ],
+        )
+        self._post_ndjson(
+            "itensmovprodutos",
+            ingest_key,
+            [
+                {
+                    "ID_FILIAL": 1,
+                    "ID_DB": 1,
+                    "ID_MOVPRODUTOS": 801,
+                    "ID_ITENSMOVPRODUTOS": 1,
+                    "ID_PRODUTOS": 123,
+                    "ID_GRUPOPRODUTOS": 456,
+                    "ID_LOCALVENDAS": 3,
+                    "ID_FUNCIONARIOS": 9,
+                    "CFOP": 5102,
+                    "QTDE": 10,
+                    "VLRUNITARIO": 19.99,
+                    "TOTAL": 199.9,
+                    "VLRDESCONTO": 10,
+                    "VLRCUSTO": 15,
+                    "DATA": ref_date,
+                }
+            ],
+        )
+        self._post_ndjson(
+            "formas_pgto_comprovantes",
+            ingest_key,
+            [
+                {
+                    "ID_FILIAL": 1,
+                    "ID_REFERENCIA": 8801,
+                    "TIPO_FORMA": 28,
+                    "VALOR": 199.9,
+                    "NSU": "ABC123",
+                    "AUTORIZACAO": "ZX9",
+                    "BANDEIRA": "VISA",
+                    "REDE": "REDE1",
+                    "TEF": "TEF1",
+                    "DATA": ref_date,
+                }
+            ],
+        )
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            comprovante = conn.execute(
+                """
+                SELECT
+                  referencia_shadow,
+                  id_usuario_shadow,
+                  id_turno_shadow,
+                  id_cliente_shadow,
+                  valor_total_shadow,
+                  cancelado_shadow,
+                  situacao_shadow
+                FROM stg.comprovantes
+                WHERE id_empresa = %s AND id_filial = 1 AND id_db = 1 AND id_comprovante = 701
+                """,
+                (tenant_id,),
+            ).fetchone()
+            movimento = conn.execute(
+                """
+                SELECT
+                  id_comprovante_shadow,
+                  id_usuario_shadow,
+                  id_turno_shadow,
+                  id_cliente_shadow,
+                  saidas_entradas_shadow,
+                  total_venda_shadow
+                FROM stg.movprodutos
+                WHERE id_empresa = %s AND id_filial = 1 AND id_db = 1 AND id_movprodutos = 801
+                """,
+                (tenant_id,),
+            ).fetchone()
+            item = conn.execute(
+                """
+                SELECT
+                  id_produto_shadow,
+                  id_grupo_produto_shadow,
+                  id_local_venda_shadow,
+                  id_funcionario_shadow,
+                  cfop_shadow,
+                  qtd_shadow,
+                  valor_unitario_shadow,
+                  total_shadow,
+                  desconto_shadow,
+                  custo_unitario_shadow
+                FROM stg.itensmovprodutos
+                WHERE id_empresa = %s AND id_filial = 1 AND id_db = 1 AND id_movprodutos = 801 AND id_itensmovprodutos = 1
+                """,
+                (tenant_id,),
+            ).fetchone()
+            pagamento = conn.execute(
+                """
+                SELECT valor_shadow, nsu_shadow, autorizacao_shadow, bandeira_shadow, rede_shadow, tef_shadow
+                FROM stg.formas_pgto_comprovantes
+                WHERE id_empresa = %s AND id_filial = 1 AND id_referencia = 8801 AND tipo_forma = 28
+                """,
+                (tenant_id,),
+            ).fetchone()
+
+        self.assertEqual(int(comprovante["referencia_shadow"]), 8801)
+        self.assertEqual(int(comprovante["id_usuario_shadow"]), 78)
+        self.assertEqual(int(comprovante["id_turno_shadow"]), 13)
+        self.assertEqual(int(comprovante["id_cliente_shadow"]), 901)
+        self.assertAlmostEqual(float(comprovante["valor_total_shadow"]), 199.9, places=2)
+        self.assertTrue(bool(comprovante["cancelado_shadow"]))
+        self.assertEqual(int(comprovante["situacao_shadow"]), 5)
+
+        self.assertEqual(int(movimento["id_comprovante_shadow"]), 701)
+        self.assertEqual(int(movimento["id_usuario_shadow"]), 78)
+        self.assertEqual(int(movimento["id_turno_shadow"]), 13)
+        self.assertEqual(int(movimento["id_cliente_shadow"]), 901)
+        self.assertEqual(int(movimento["saidas_entradas_shadow"]), 1)
+        self.assertAlmostEqual(float(movimento["total_venda_shadow"]), 199.9, places=2)
+
+        self.assertEqual(int(item["id_produto_shadow"]), 123)
+        self.assertEqual(int(item["id_grupo_produto_shadow"]), 456)
+        self.assertEqual(int(item["id_local_venda_shadow"]), 3)
+        self.assertEqual(int(item["id_funcionario_shadow"]), 9)
+        self.assertEqual(int(item["cfop_shadow"]), 5102)
+        self.assertAlmostEqual(float(item["qtd_shadow"]), 10, places=3)
+        self.assertAlmostEqual(float(item["valor_unitario_shadow"]), 19.99, places=2)
+        self.assertAlmostEqual(float(item["total_shadow"]), 199.9, places=2)
+        self.assertAlmostEqual(float(item["desconto_shadow"]), 10, places=2)
+        self.assertAlmostEqual(float(item["custo_unitario_shadow"]), 15, places=2)
+
+        self.assertAlmostEqual(float(pagamento["valor_shadow"]), 199.9, places=2)
+        self.assertEqual(pagamento["nsu_shadow"], "ABC123")
+        self.assertEqual(pagamento["autorizacao_shadow"], "ZX9")
+        self.assertEqual(pagamento["bandeira_shadow"], "VISA")
+        self.assertEqual(pagamento["rede_shadow"], "REDE1")
+        self.assertEqual(pagamento["tef_shadow"], "TEF1")
+
     def test_sales_loaders_and_purge_do_not_touch_long_finance_or_customer_dimension(self) -> None:
         tenant_id, _ = self._create_tenant("Tenant SQL Retention")
         ref_date = self._current_date()

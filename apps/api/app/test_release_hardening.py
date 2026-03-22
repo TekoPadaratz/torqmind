@@ -192,6 +192,8 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertTrue(_column_exists(db_name, "auth", "users", "nome"))
             self.assertTrue(_column_exists(db_name, "app", "tenants", "sales_history_days"))
             self.assertTrue(_column_exists(db_name, "app", "tenants", "default_product_scope_days"))
+            self.assertTrue(_column_exists(db_name, "stg", "comprovantes", "referencia_shadow"))
+            self.assertTrue(_column_exists(db_name, "dw", "fact_venda_item", "discount_source"))
 
             seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
             self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)
@@ -219,6 +221,8 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertTrue(_column_exists(db_name, "auth", "users", "nome"))
             self.assertTrue(_column_exists(db_name, "app", "tenants", "sales_history_days"))
             self.assertTrue(_column_exists(db_name, "app", "tenants", "default_product_scope_days"))
+            self.assertTrue(_column_exists(db_name, "stg", "comprovantes", "referencia_shadow"))
+            self.assertTrue(_column_exists(db_name, "dw", "fact_venda_item", "discount_source"))
 
             seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
             self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)

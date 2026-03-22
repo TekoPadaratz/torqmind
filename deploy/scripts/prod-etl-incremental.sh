@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
+ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 LOCK_FILE="${LOCK_FILE:-/tmp/torqmind-prod-etl-incremental.lock}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Arquivo .env não encontrado em $ENV_FILE"
+  echo "Arquivo de ambiente não encontrado em $ENV_FILE"
   exit 1
 fi
 

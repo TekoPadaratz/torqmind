@@ -3,11 +3,12 @@ SHELL := /bin/bash
 COMPOSE ?= docker compose
 COMPOSE_PROD ?= docker compose -f docker-compose.prod.yml
 ENV_FILE ?= .env
+PROD_ENV_FILE ?= /etc/torqmind/prod.env
 ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
 
-.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental purge-sales-history analyze-hot-tables platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental purge-sales-history analyze-hot-tables platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-purge-sales-history prod-platform-billing-daily
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -76,19 +77,25 @@ lint:
 ci: test test-agent lint
 
 prod-up:
-	@./deploy/scripts/prod-up.sh
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-up.sh
 
 prod-down:
-	@$(COMPOSE_PROD) --env-file $(ENV_FILE) down
+	@$(COMPOSE_PROD) --env-file $(PROD_ENV_FILE) down
 
 prod-logs:
-	@./deploy/scripts/prod-logs.sh
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-logs.sh
 
 prod-migrate:
-	@./deploy/scripts/prod-migrate.sh
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-migrate.sh
 
 prod-seed:
-	@./deploy/scripts/prod-seed.sh
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-seed.sh
 
 prod-etl-incremental:
-	@./deploy/scripts/prod-etl-incremental.sh
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-incremental.sh
+
+prod-purge-sales-history:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-purge-sales-history.sh
+
+prod-platform-billing-daily:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/platform-billing-daily.sh

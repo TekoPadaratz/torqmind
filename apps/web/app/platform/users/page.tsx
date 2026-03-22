@@ -106,7 +106,7 @@ export default function PlatformUsersPage() {
       reset_failed_login: false,
       accesses: (user.accesses || []).length
         ? user.accesses.map((access: any) => ({
-            role: firstRole,
+            role: access.role || firstRole,
             channel_id: access.channel_id ? String(access.channel_id) : '',
             id_empresa: access.id_empresa ? String(access.id_empresa) : '',
             id_filial: access.id_filial ? String(access.id_filial) : '',
@@ -143,7 +143,7 @@ export default function PlatformUsersPage() {
       ...current,
       role,
       accesses:
-        role === 'platform_admin' || role === 'platform_master'
+        role === 'platform_admin' || role === 'platform_master' || role === 'product_global'
           ? [emptyAccess(role)]
           : current.accesses.map((access: any) => ({ ...access, role })),
     }));
@@ -166,7 +166,7 @@ export default function PlatformUsersPage() {
         valid_until: form.valid_until || null,
         locked_until: form.locked_until || null,
         accesses:
-          form.role === 'platform_admin' || form.role === 'platform_master'
+          form.role === 'platform_admin' || form.role === 'platform_master' || form.role === 'product_global'
             ? [{ role: form.role, channel_id: null, id_empresa: null, id_filial: null, is_enabled: true, valid_from: null, valid_until: null }]
             : form.accesses.map((access: any) => ({
                 ...access,
@@ -251,6 +251,7 @@ export default function PlatformUsersPage() {
                 <option value="tenant_manager">tenant_manager</option>
                 <option value="tenant_viewer">tenant_viewer</option>
                 {me?.user_role === 'platform_master' ? <option value="channel_admin">channel_admin</option> : null}
+                {me?.user_role === 'platform_master' ? <option value="product_global">product_global</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="platform_admin">platform_admin</option> : null}
               </select>
               <input className="input" type="date" value={form.valid_from} onChange={(e) => setForm({ ...form, valid_from: e.target.value })} />
@@ -263,7 +264,7 @@ export default function PlatformUsersPage() {
               />
             </div>
 
-            {form.role !== 'platform_admin' && form.role !== 'platform_master'
+            {form.role !== 'platform_admin' && form.role !== 'platform_master' && form.role !== 'product_global'
               ? form.accesses.map((access: any, index: number) => (
                   <div key={`${index}-${form.role}`} className="platformAccessCard">
                     <div className="platformFormGrid">
@@ -308,11 +309,11 @@ export default function PlatformUsersPage() {
                   </div>
                 ))
               : (
-                  <div className="platformFieldHint">Perfis internos usam vínculo global único e continuam fora do escopo do cliente final.</div>
+                  <div className="platformFieldHint">Perfis internos e o usuário global de produto usam vínculo global único.</div>
                 )}
 
             <div className="platformInlineFilters">
-              {form.role !== 'platform_admin' && form.role !== 'platform_master' ? (
+              {form.role !== 'platform_admin' && form.role !== 'platform_master' && form.role !== 'product_global' ? (
                 <button className="btn" type="button" onClick={() => setForm({ ...form, accesses: [...form.accesses, emptyAccess(form.role)] })}>
                   Adicionar vínculo
                 </button>

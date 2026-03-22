@@ -67,7 +67,7 @@ function buildPriorityCards({
   if (cashPressure > 0) {
     cards.push({
       title: 'Cobrar e renegociar vencidos mais concentrados',
-      severity: Number(financeData?.aging?.receber_titulos_vencidos || 0) > 0 ? 'WARN' : 'INFO',
+      severity: Number(financeData?.aging?.receber_total_vencido || 0) > 0 ? 'WARN' : 'INFO',
       impact: formatCurrency(cashPressure),
       summary: 'Recebíveis e obrigações vencidas já pressionam caixa e exigem régua de ação imediata.',
       cta: 'Abrir financeiro',
@@ -141,7 +141,7 @@ function buildOperationalFocus({
       value: formatCurrency(cashPressure),
       detail:
         cashPressure > 0
-          ? `${Number(financeData?.aging?.receber_titulos_vencidos || 0)} recebíveis vencidos concentram a necessidade de cobrança e renegociação.`
+          ? `${Number(financeData?.aging?.receber_total_vencido || 0)} recebíveis vencidos concentram a necessidade de cobrança e renegociação.`
           : latestInsight?.message || 'O caixa segue estável no período auditado.',
       href: detailsHref('/finance', scope),
       cta: 'Ver financeiro',
@@ -174,10 +174,7 @@ export default function Dashboard() {
   const scope = useScopeQuery();
 
   const [claims, setClaims] = useState<any>(null);
-  const [overview, setOverview] = useState<any>(null);
-  const [churnData, setChurnData] = useState<any>(null);
-  const [financeData, setFinanceData] = useState<any>(null);
-  const [filialLabel, setFilialLabel] = useState<string>('');
+  const [homeData, setHomeData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -210,23 +207,8 @@ export default function Dashboard() {
         if (scope.id_filial) qs.set('id_filial', scope.id_filial);
         if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
 
-        const [overviewRes, churnRes, financeRes] = await Promise.all([
-          apiGet(`/bi/dashboard/overview?${qs.toString()}&compact=true`),
-          apiGet(`/bi/clients/churn?${qs.toString()}&min_score=40&limit=10`),
-          apiGet(`/bi/finance/overview?${qs.toString()}&include_series=false&include_payments=false&include_operational=false`),
-        ]);
-
-        if (scope.id_filial) {
-          const branchList = await apiGet(`/bi/filiais${scope.id_empresa ? `?id_empresa=${scope.id_empresa}` : ''}`);
-          const selected = (branchList?.items || []).find((item: any) => String(item.id_filial) === String(scope.id_filial));
-          setFilialLabel(formatFilialLabel(scope.id_filial, selected?.nome));
-        } else {
-          setFilialLabel('Todas as filiais');
-        }
-
-        setOverview(overviewRes);
-        setChurnData(churnRes);
-        setFinanceData(financeRes);
+        const homeRes = await apiGet(`/bi/dashboard/home?${qs.toString()}`);
+        setHomeData(homeRes);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar dashboard'));
       } finally {
@@ -237,6 +219,10 @@ export default function Dashboard() {
     load();
   }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa, scope.ready]);
 
+  const overview = homeData?.overview || {};
+  const churnData = homeData?.churn || {};
+  const financeData = homeData?.finance || {};
+  const filialLabel = homeData?.scope?.filial_label || formatFilialLabel(scope.id_filial);
   const riskKpis = overview?.risk?.kpis || {};
   const riskWindow = overview?.risk?.window || {};
   const churnTop = churnData?.top_risk || [];
@@ -294,7 +280,7 @@ export default function Dashboard() {
 
   return (
     <div>
-      <AppNav title="Dashboard Geral" userLabel={userLabel} />
+      <AppNav title="Dashboard Geral" userLabel={userLabel} initialUnread={homeData?.notifications_unread} />
 
       <div className="container dashboardHome">
         <div className="card toolbar">

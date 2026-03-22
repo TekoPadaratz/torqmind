@@ -52,24 +52,27 @@ Arquivos de produção:
 Passo a passo no Linux:
 
 1. Clonar o repositório no servidor.
-2. Criar o arquivo `.env` a partir do exemplo seguro:
+2. Criar o diretório de ambiente externo e o arquivo `/etc/torqmind/prod.env` a partir do exemplo seguro:
 
 ```bash
-cp .env.production.example .env
+sudo mkdir -p /etc/torqmind
+sudo cp .env.production.example /etc/torqmind/prod.env
+sudo chmod 600 /etc/torqmind/prod.env
 ```
 
-3. Preencher no `.env` pelo menos:
+3. Preencher em `/etc/torqmind/prod.env` pelo menos:
 - `POSTGRES_PASSWORD`
 - `API_JWT_SECRET`
 - `SEED_PASSWORD`
 - `PLATFORM_MASTER_PASSWORD` se quiser trocar a senha bootstrap do Master real
 - `OPENAI_API_KEY` se quiser Jarvis IA ativo
 - `TELEGRAM_BOT_TOKEN` se quiser notificações Telegram
+- `POSTGRES_SHM_SIZE`, `POSTGRES_SHARED_BUFFERS` e `DB_POOL_MAX_SIZE` conforme a memória do host
 
 4. Subir a stack:
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env up -d --build
 ```
 
 Ou usar o script:
@@ -241,8 +244,45 @@ No script de produção `./deploy/scripts/prod-seed.sh`, o seed roda em modo `ma
 - roda `prod-migrate.sh` antes do seed para evitar drift de schema
 
 Para trocar essas credenciais no futuro sem SQL manual:
-- ajuste `PLATFORM_MASTER_EMAIL`, `PLATFORM_MASTER_PASSWORD`, `CHANNEL_BOOTSTRAP_EMAIL` e `CHANNEL_BOOTSTRAP_PASSWORD` no `.env`;
+- ajuste `PLATFORM_MASTER_EMAIL`, `PLATFORM_MASTER_PASSWORD`, `CHANNEL_BOOTSTRAP_EMAIL` e `CHANNEL_BOOTSTRAP_PASSWORD` em `/etc/torqmind/prod.env`;
 - rode novamente `./deploy/scripts/prod-seed.sh`.
+
+---
+
+## Promoção dev local -> Ubuntu por dump lógico
+
+Fluxo canônico:
+- validar primeiro a base real no PostgreSQL local de benchmark;
+- gerar dump lógico com `pg_dump -Fc`;
+- restaurar no Ubuntu com `pg_restore -j`;
+- religar API, web, agent e cron só depois da restauração validada.
+
+Origem validada no benchmark local:
+
+```bash
+pg_dump -h 127.0.0.1 -p 5432 -U postgres -d TORQMIND -Fc -f torqmind_dev_validado_$(date +%Y%m%d_%H%M%S).dump
+```
+
+Destino Ubuntu:
+
+```bash
+sudo mkdir -p /etc/torqmind
+sudo cp .env.production.example /etc/torqmind/prod.env
+sudo chmod 600 /etc/torqmind/prod.env
+
+docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env up -d postgres
+docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env exec -T postgres \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS TORQMIND;"
+docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env exec -T postgres \
+  psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE TORQMIND;"
+cat torqmind_dev_validado.dump | docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env exec -T postgres \
+  pg_restore -U postgres -d TORQMIND -j 4 --clean --if-exists
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-migrate.sh
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-seed.sh
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-up.sh
+```
+
+Nunca promover via `PGDATA`, cópia física de volume ou cópia do cluster Windows -> Ubuntu.
 
 ---
 
@@ -350,6 +390,7 @@ Objetivo:
 Perfis:
 - `platform_master`: acesso total, incluindo financeiro/comercial, canais, contratos e auditoria global.
 - `platform_admin`: gestão operacional de empresas, usuários, acessos e notificações; sem cobrança/comissão.
+- `product_global`: acesso a todo o produto e a todas as empresas, sem acesso ao menu/rotas Platform.
 - `channel_admin`: acesso apenas à própria carteira, sem financeiro global.
 - `tenant_admin`, `tenant_manager`, `tenant_viewer`: continuam no produto do cliente com validação reforçada de vigência e escopo.
 
@@ -486,7 +527,7 @@ Ou executar diretamente o script:
 psql -v ON_ERROR_STOP=1 -U postgres -d TORQMIND -f sql/torqmind_reset_db_v2.sql
 ```
 
-O reset agora derruba os schemas e reexecuta a cadeia oficial `001..024`, mantendo o banco alinhado com as migrations de runtime.
+O reset agora derruba os schemas e reexecuta a cadeia oficial `001..030`, mantendo o banco alinhado com as migrations de runtime.
 Depois do reset, rode o bootstrap:
 
 ```bash

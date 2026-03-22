@@ -6,6 +6,7 @@ from typing import Any
 CANONICAL_ROLES = {
     "platform_master",
     "platform_admin",
+    "product_global",
     "channel_admin",
     "tenant_admin",
     "tenant_manager",
@@ -21,10 +22,11 @@ LEGACY_ROLE_MAP = {
 ROLE_PRIORITY = {
     "platform_master": 0,
     "platform_admin": 1,
-    "channel_admin": 2,
-    "tenant_admin": 3,
-    "tenant_manager": 4,
-    "tenant_viewer": 5,
+    "product_global": 2,
+    "channel_admin": 3,
+    "tenant_admin": 4,
+    "tenant_manager": 5,
+    "tenant_viewer": 6,
 }
 
 TENANT_LOGIN_ALLOWED_STATUSES = {
@@ -49,7 +51,7 @@ def role_priority(role: str | None) -> int:
 
 def analytics_role_for_user_role(role: str | None) -> str | None:
     normalized = normalize_role(role)
-    if normalized in {"platform_master", "platform_admin"}:
+    if normalized in {"platform_master", "platform_admin", "product_global"}:
         return "MASTER"
     if normalized == "tenant_admin":
         return "OWNER"
@@ -74,6 +76,7 @@ def can_access_product(role: str | None) -> bool:
     return normalize_role(role) in {
         "platform_master",
         "platform_admin",
+        "product_global",
         "tenant_admin",
         "tenant_manager",
         "tenant_viewer",
@@ -89,6 +92,7 @@ def role_label(role: str | None) -> str:
     return {
         "platform_master": "Platform Master",
         "platform_admin": "Platform Admin",
+        "product_global": "Product Global User",
         "channel_admin": "Channel Admin",
         "tenant_admin": "Tenant Admin",
         "tenant_manager": "Tenant Manager",

@@ -168,6 +168,41 @@ def _get_branch(tenant_id: int, branch_id: int) -> Optional[dict[str, Any]]:
         return dict(row) if row else None
 
 
+def _get_tenant_scope_row(tenant_id: int) -> Optional[dict[str, Any]]:
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        row = conn.execute(
+            """
+            SELECT
+              id_empresa,
+              nome AS tenant_name,
+              is_active AS tenant_is_enabled,
+              status AS tenant_status,
+              valid_from AS tenant_valid_from,
+              valid_until AS tenant_valid_until,
+              billing_status AS tenant_billing_status,
+              grace_until AS tenant_grace_until,
+              channel_id AS tenant_channel_id
+            FROM app.tenants
+            WHERE id_empresa = %s
+            """,
+            (tenant_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def _all_active_tenant_ids() -> list[int]:
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        rows = conn.execute(
+            """
+            SELECT id_empresa
+            FROM app.tenants
+            WHERE is_active = true
+            ORDER BY id_empresa
+            """
+        ).fetchall()
+    return [int(row["id_empresa"]) for row in rows if row.get("id_empresa") is not None]
+
+
 def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[str, Any]:
     where_filial = " AND id_filial = %s " if branch_id is not None else ""
     latest_params: list[Any] = [tenant_id] + ([] if branch_id is None else [branch_id])
@@ -505,6 +540,22 @@ def _build_session_context(
         selected = next((row for row in global_rows if row.get("id_empresa") is None and row.get("channel_id") is None), None)
         if not selected:
             raise AuthError(403, "access_unavailable", "Usuário interno sem vínculo global válido.")
+    elif user_role == "product_global":
+        global_rows = [row for row in scoped_rows if _access_row_is_valid_now(row, today)]
+        selected = next((row for row in global_rows if row.get("id_empresa") is None and row.get("channel_id") is None), None)
+        if not selected:
+            raise AuthError(403, "access_unavailable", "Usuário global de produto sem vínculo global válido.")
+
+        if preferred_tenant_id is not None:
+            tenant_row = _get_tenant_scope_row(int(preferred_tenant_id))
+            if not tenant_row:
+                raise AuthError(403, "tenant_not_found", "Empresa não encontrada.")
+            selected_tenant_id, selected_branch_id, warnings = _assert_tenant_scope(
+                tenant_row,
+                preferred_branch_id,
+                today,
+                allow_internal_override=False,
+            )
     elif user_role == "channel_admin":
         selected = _select_channel_access(scoped_rows, today, preferred_channel_id)
         selected_channel_id = int(selected.get("channel_id"))
@@ -536,6 +587,20 @@ def _build_session_context(
     elif include_default_scope and can_access_product(user_role) and selected_tenant_id is not None:
         default_scope = _build_default_product_scope(selected_tenant_id, selected_branch_id)
         home_path = _build_dashboard_home_path(default_scope)
+    elif include_default_scope and user_role == "product_global":
+        home_path = "/scope"
+
+    tenant_ids = (
+        _all_active_tenant_ids()
+        if user_role == "product_global"
+        else sorted(
+            {
+                int(row["id_empresa"])
+                for row in scoped_rows
+                if row.get("id_empresa") is not None and _access_row_is_valid_now(row, today)
+            }
+        )
+    )
 
     return {
         "sub": str(user["id"]),
@@ -569,13 +634,7 @@ def _build_session_context(
                 if row.get("channel_id") is not None and _access_row_is_valid_now(row, today)
             }
         ),
-        "tenant_ids": sorted(
-            {
-                int(row["id_empresa"])
-                for row in scoped_rows
-                if row.get("id_empresa") is not None and _access_row_is_valid_now(row, today)
-            }
-        ),
+        "tenant_ids": tenant_ids,
     }
 
 

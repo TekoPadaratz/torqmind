@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 PlatformRole = Literal[
     "platform_master",
     "platform_admin",
+    "product_global",
     "channel_admin",
     "tenant_admin",
     "tenant_manager",

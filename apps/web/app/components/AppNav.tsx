@@ -44,17 +44,25 @@ function NavLink({
 export default function AppNav({
   title,
   userLabel,
+  initialUnread,
 }: {
   title: string;
   userLabel?: string;
+  initialUnread?: number;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const [search, setSearch] = useState('');
-  const [unread, setUnread] = useState(0);
+  const [unread, setUnread] = useState(initialUnread ?? 0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [claims, setClaims] = useState<any>(null);
   const params = useMemo(() => new URLSearchParams(search), [search]);
+
+  useEffect(() => {
+    if (typeof initialUnread === 'number') {
+      setUnread(initialUnread);
+    }
+  }, [initialUnread]);
 
   useEffect(() => {
     const syncSearch = () => setSearch(window.location.search);
@@ -69,6 +77,7 @@ export default function AppNav({
   }, [pathname]);
 
   useEffect(() => {
+    if (typeof initialUnread === 'number') return;
     const load = async () => {
       try {
         const qs = new URLSearchParams();
@@ -83,7 +92,7 @@ export default function AppNav({
       }
     };
     load();
-  }, [params]);
+  }, [initialUnread, params]);
 
   useEffect(() => {
     setMenuOpen(false);

@@ -693,7 +693,7 @@ def _validate_user_management_role(current_claims: dict[str, Any], target_role: 
     if actor_role == "platform_master":
         return
     if actor_role == "platform_admin":
-        if target_role in {"platform_master", "platform_admin"}:
+        if target_role in {"platform_master", "platform_admin", "product_global"}:
             raise AuthError(403, "role_escalation_forbidden", "Papel interno não permitido.")
         return
     if actor_role == "channel_admin":
@@ -707,7 +707,7 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
     role = normalize_role(user_role)
     normalized: list[dict[str, Any]] = []
     if not accesses:
-        if role in {"platform_master", "platform_admin"}:
+        if role in {"platform_master", "platform_admin", "product_global"}:
             return [{"role": role, "channel_id": None, "id_empresa": None, "id_filial": None, "is_enabled": True, "valid_from": None, "valid_until": None}]
         raise AuthError(422, "validation_error", "Usuário precisa de pelo menos um vínculo de acesso.")
 
@@ -715,6 +715,21 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
         access_role = normalize_role(access.get("role"))
         if access_role != role:
             raise AuthError(422, "validation_error", "Todos os vínculos devem usar o mesmo papel do usuário.")
+        if role == "product_global":
+            if any(access.get(key) is not None for key in ("channel_id", "id_empresa", "id_filial")):
+                raise AuthError(422, "validation_error", "Usuário global de produto usa vínculo global único.")
+            normalized.append(
+                {
+                    "role": role,
+                    "channel_id": None,
+                    "id_empresa": None,
+                    "id_filial": None,
+                    "is_enabled": bool(access.get("is_enabled", True)),
+                    "valid_from": access.get("valid_from"),
+                    "valid_until": access.get("valid_until"),
+                }
+            )
+            continue
         if role == "channel_admin":
             channel_ids = set(actor_claims.get("channel_ids") or [])
             if normalize_role(actor_claims.get("user_role")) == "platform_master":
@@ -731,7 +746,17 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
                 company = _assert_company_visible(actor_claims, int(tenant_scope))
                 if company.get("channel_id") not in set(actor_claims.get("channel_ids") or []):
                     raise AuthError(403, "tenant_access_denied", "Empresa não permitida para o canal.")
-        normalized.append(access)
+        normalized.append(
+            {
+                "role": role,
+                "channel_id": access.get("channel_id"),
+                "id_empresa": access.get("id_empresa"),
+                "id_filial": access.get("id_filial"),
+                "is_enabled": bool(access.get("is_enabled", True)),
+                "valid_from": access.get("valid_from"),
+                "valid_until": access.get("valid_until"),
+            }
+        )
 
     return normalized
 
@@ -782,7 +807,7 @@ def upsert_user(
                   email = %s,
                   role = %s,
                   is_active = %s,
-                  valid_from = COALESCE(%s, valid_from),
+                  valid_from = %s,
                   valid_until = %s,
                   must_change_password = %s,
                   locked_until = %s,
@@ -807,7 +832,7 @@ def upsert_user(
                   valid_until,
                   must_change_password
                 )
-                VALUES (%s, %s, %s, %s, %s, COALESCE(%s, CURRENT_DATE), %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -837,7 +862,7 @@ def upsert_user(
                   valid_from,
                   valid_until
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, COALESCE(%s, CURRENT_DATE), %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     user_id,

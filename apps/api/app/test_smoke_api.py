@@ -6,6 +6,7 @@ import unittest
 import urllib.request
 from datetime import date, datetime, timezone
 
+from app.cli import seed as seed_cli
 from app.db import get_conn
 
 API_BASE = "http://localhost:8000"
@@ -14,6 +15,7 @@ API_BASE = "http://localhost:8000"
 class SmokeApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        seed_cli.main()
         cls.token = cls._login_token("owner@empresa1.com", "TorqMind@123")
         with get_conn(role="MASTER", tenant_id=1, branch_id=None) as conn:
             row = conn.execute(
@@ -235,6 +237,17 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("insights_generated", compact)
         self.assertIn("jarvis", compact)
         self.assertNotIn("payments", compact)
+
+        status_home, home = self._request(
+            "/bi/dashboard/home?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status_home, 200)
+        self.assertIn("overview", home)
+        self.assertIn("churn", home)
+        self.assertIn("finance", home)
+        self.assertIn("scope", home)
+        self.assertIn("notifications_unread", home)
 
     def test_anonymous_retention_endpoint_returns_payload(self) -> None:
         status, body = self._request(

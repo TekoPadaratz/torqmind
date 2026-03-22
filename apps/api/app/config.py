@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     pg_database: str = "TORQMIND"
     pg_user: str = "postgres"
     pg_password: str = "1234"
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 12
+    db_pool_timeout_seconds: int = 10
+    db_pool_max_idle_seconds: int = 300
 
     # Auth
     api_jwt_secret: str = "CHANGE_ME_SUPER_SECRET"
@@ -30,6 +34,7 @@ class Settings(BaseSettings):
     # Ingestion
     # If True, /ingest requires X-Ingest-Key (recommended for production).
     ingest_require_key: bool = False
+    ingest_batch_size: int = 5000
 
     # Telegram (optional)
     telegram_bot_token: str | None = None
