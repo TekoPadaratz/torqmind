@@ -113,6 +113,7 @@ O ciclo incremental canônico agora segue uma única espinha dorsal:
 - fase por tenant para STG→DW e captura de mudanças;
 - um único refresh global de marts por ciclo, somente quando houver mudança relevante;
 - fase pós-refresh por tenant tocado para notificações, insights e snapshots operacionais curtos.
+- a orquestração Python executa loaders e pós-refresh por etapas explícitas, com `COMMIT` por etapa e `etl.run_log` visível em tempo real (`running` → `ok`/`failed`), evitando uma transação monolítica única no backbone incremental.
 
 O backfill histórico pesado (`etl.run_operational_snapshot_backfill` / `make backfill-snapshots`) fica reservado para rebuilds dedicados e não faz parte do ciclo normal de 10 minutos.
 

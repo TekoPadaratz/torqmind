@@ -14,6 +14,10 @@ def _parse_date(value: str | None) -> date:
     return date.today()
 
 
+def _emit_progress(event: dict[str, object]) -> None:
+    print(json.dumps(event, ensure_ascii=False, default=str), file=sys.stderr, flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the canonical incremental ETL for active tenants.")
     parser.add_argument("--tenant-id", dest="tenant_id", type=int, default=None, help="Run only for one tenant.")
@@ -50,6 +54,7 @@ def main() -> None:
             db_role="MASTER",
             db_tenant_scope=None,
             acquire_lock=True,
+            progress_callback=_emit_progress,
         )
     except EtlCycleBusyError as exc:
         print(
