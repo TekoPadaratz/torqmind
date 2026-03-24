@@ -10,6 +10,8 @@ export type ScopeQuery = {
   dt_fim: string;
   dt_ref: string;
   id_filial: string | null;
+  id_filiais: string[];
+  id_filiais_key: string;
   id_empresa: string | null;
   ready: boolean;
 };
@@ -19,11 +21,15 @@ export function useScopeQuery(fallback?: Partial<ScopeQuery>): ScopeQuery {
 
   return useMemo(() => {
     const scope = readScopeFromSearch(searchParams, fallback || {});
+    const id_filiais = scope.id_filiais || [];
+
     return {
       dt_ini: scope.dt_ini || '',
       dt_fim: scope.dt_fim || '',
       dt_ref: scope.dt_ref || '',
-      id_filial: scope.id_filial || null,
+      id_filial: scope.id_filial || (id_filiais.length === 1 ? id_filiais[0] : null),
+      id_filiais,
+      id_filiais_key: id_filiais.join(','),
       id_empresa: scope.id_empresa || null,
       ready: true,
     };

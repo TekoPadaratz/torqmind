@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 
@@ -81,3 +81,56 @@ def accessible_branch_ids(claims: dict[str, Any], tenant_id: int) -> tuple[bool,
         }
     )
     return False, branch_ids
+
+
+def _normalize_branch_ids(
+    branch_ids: Optional[Sequence[int]] = None,
+    branch_id: Optional[int] = None,
+) -> list[int]:
+    values: list[int] = []
+    if branch_ids:
+        values.extend(int(value) for value in branch_ids if value is not None)
+    if branch_id is not None:
+        values.append(int(branch_id))
+    return sorted({value for value in values if value > 0})
+
+
+def resolve_scope_filters(
+    claims: dict[str, Any],
+    id_empresa_q: Optional[int] = None,
+    id_filial_q: Optional[int] = None,
+    id_filiais_q: Optional[Sequence[int]] = None,
+) -> tuple[int, Optional[int | list[int]], Optional[list[int]]]:
+    tenant_id, default_branch = resolve_scope(claims, id_empresa_q=id_empresa_q, id_filial_q=None)
+    requested_branch_ids = _normalize_branch_ids(id_filiais_q, id_filial_q)
+    can_list_all, allowed_branch_ids = accessible_branch_ids(claims, tenant_id)
+
+    if requested_branch_ids:
+        if not can_list_all:
+            disallowed = [branch_id for branch_id in requested_branch_ids if branch_id not in allowed_branch_ids]
+            if disallowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "branch_access_denied", "message": "Acesso não permitido à filial."},
+                )
+        if len(requested_branch_ids) == 1:
+            return tenant_id, requested_branch_ids[0], requested_branch_ids
+        return tenant_id, requested_branch_ids, requested_branch_ids
+
+    if default_branch is not None:
+        return tenant_id, int(default_branch), [int(default_branch)]
+
+    if can_list_all:
+        return tenant_id, None, None
+
+    if allowed_branch_ids:
+        branch_id = int(allowed_branch_ids[0])
+        return tenant_id, branch_id, [branch_id]
+
+    return tenant_id, None, None
+
+
+def primary_branch_id(branch_scope: Optional[int | list[int]]) -> Optional[int]:
+    if isinstance(branch_scope, list):
+        return branch_scope[0] if len(branch_scope) == 1 else None
+    return int(branch_scope) if branch_scope is not None else None

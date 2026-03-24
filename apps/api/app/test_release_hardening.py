@@ -349,6 +349,120 @@ class ReleaseHardeningTest(unittest.TestCase):
                 len(self.migration_files),
             )
 
+    def test_migrate_installs_risk_event_hotpath_indexes(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            cancel_window_idx = _index_definition(db_name, "dw", "ix_fact_comprovante_risk_cancel_window")
+            venda_window_idx = _index_definition(db_name, "dw", "ix_fact_venda_risk_user_window")
+            venda_item_cover_idx = _index_definition(db_name, "dw", "ix_fact_venda_item_risk_cover")
+
+            self.assertIsNotNone(cancel_window_idx)
+            self.assertIsNotNone(venda_window_idx)
+            self.assertIsNotNone(venda_item_cover_idx)
+            self.assertIn("cancelado = true", str(cancel_window_idx).lower())
+            self.assertIn("id_usuario", str(venda_window_idx))
+            self.assertIn("id_movprodutos", str(venda_item_cover_idx))
+
+    def test_compute_risk_events_is_idempotent_and_cleans_stale_rows_in_recomputed_window(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+            tenant_id = 4001
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            with psycopg.connect(_admin_dsn(db_name), row_factory=dict_row) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO app.tenants (id_empresa, nome, is_active, status, billing_status, valid_from)
+                    VALUES (%s, 'Tenant Risk', true, 'active', 'current', CURRENT_DATE)
+                    """
+                    ,
+                    (tenant_id,),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO auth.filiais (id_empresa, id_filial, nome, is_active, valid_from)
+                    VALUES (%s, 1, 'Filial 1', true, CURRENT_DATE)
+                    """,
+                    (tenant_id,),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO dw.fact_comprovante (
+                      id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                      id_usuario, id_turno, valor_total, cancelado, situacao, payload
+                    )
+                    VALUES
+                      (%s, 1, 1, 91001, TIMESTAMPTZ '2026-03-10 10:00:00+00', 20260310, 88, 51, 500, true, 1, '{"CFOP":"5102"}'::jsonb)
+                    """,
+                    (tenant_id,),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO dw.fact_venda (
+                      id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                      id_usuario, id_cliente, id_comprovante, id_turno, saidas_entradas,
+                      total_venda, cancelado, payload
+                    )
+                    VALUES
+                      (%s, 1, 1, 91001, TIMESTAMPTZ '2026-03-10 10:01:00+00', 20260310, 88, NULL, 91001, 51, 1, 500, false, '{}'::jsonb)
+                    """,
+                    (tenant_id,),
+                )
+                conn.commit()
+
+                first_run = conn.execute(
+                    "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+                    (tenant_id, False, 14, "2026-03-10 23:59:59+00"),
+                ).fetchone()
+                first_total = conn.execute(
+                    "SELECT COUNT(*) AS total FROM dw.fact_risco_evento WHERE id_empresa = %s",
+                    (tenant_id,),
+                ).fetchone()["total"]
+
+                second_run = conn.execute(
+                    "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+                    (tenant_id, False, 14, "2026-03-10 23:59:59+00"),
+                ).fetchone()
+                second_total = conn.execute(
+                    "SELECT COUNT(*) AS total FROM dw.fact_risco_evento WHERE id_empresa = %s",
+                    (tenant_id,),
+                ).fetchone()["total"]
+
+                conn.execute(
+                    """
+                    UPDATE dw.fact_comprovante
+                    SET cancelado = false
+                    WHERE id_empresa = %s
+                      AND id_filial = 1
+                      AND id_db = 1
+                      AND id_comprovante = 91001
+                    """,
+                    (tenant_id,),
+                )
+                conn.commit()
+
+                third_run = conn.execute(
+                    "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+                    (tenant_id, False, 14, "2026-03-10 23:59:59+00"),
+                ).fetchone()
+                third_total = conn.execute(
+                    "SELECT COUNT(*) AS total FROM dw.fact_risco_evento WHERE id_empresa = %s",
+                    (tenant_id,),
+                ).fetchone()["total"]
+                conn.commit()
+
+            self.assertGreater(int(first_run["rows"] or 0), 0)
+            self.assertEqual(int(first_total), int(second_total))
+            self.assertGreaterEqual(int(second_run["rows"] or 0), 0)
+            self.assertEqual(int(third_run["rows"] or 0), 0)
+            self.assertEqual(int(third_total), 0)
+
     def test_master_only_seed_bootstraps_real_master_and_channel_admin(self) -> None:
         with temporary_database() as db_name:
             env = _subprocess_env(db_name)

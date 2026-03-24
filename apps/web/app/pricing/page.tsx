@@ -6,10 +6,10 @@ import { useRouter } from 'next/navigation';
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
 import { apiGet, apiPost } from '../lib/api';
-import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency, formatDateOnly, formatFilialLabel } from '../lib/format';
 import { useScopeQuery } from '../lib/scope';
+import { loadSession, readCachedSession } from '../lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,7 +24,7 @@ export default function PricingPage() {
   const router = useRouter();
   const scope = useScopeQuery();
 
-  const [claims, setClaims] = useState<any>(null);
+  const [claims, setClaims] = useState<any>(readCachedSession());
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -41,10 +41,18 @@ export default function PricingPage() {
     setLoading(true);
     setError('');
     try {
-      const me = await apiGet('/auth/me');
+      const me = await loadSession(router, 'product');
+      if (!me) return;
       setClaims(me);
       if (!scope.dt_ini || !scope.dt_fim) {
         router.replace(me?.home_path || '/dashboard');
+        return;
+      }
+
+      if (scope.id_filiais.length > 1) {
+        setError('Selecione apenas uma filial para usar o painel de preço da concorrência.');
+        setData(null);
+        setFilialLabel(`${scope.id_filiais.length} filiais selecionadas`);
         return;
       }
 
@@ -85,12 +93,8 @@ export default function PricingPage() {
 
   useEffect(() => {
     if (!scope.ready) return;
-    if (!requireAuth()) {
-      router.push('/');
-      return;
-    }
     load();
-  }, [router, scope.ready, scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial]);
+  }, [router, scope.ready, scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filiais_key]);
 
   const onSavePrices = async () => {
     if (!data?.items?.length) return;
@@ -98,7 +102,8 @@ export default function PricingPage() {
     setSaveMsg('');
     setError('');
     try {
-      const me = claims || (await apiGet('/auth/me'));
+      const me = claims || (await loadSession(router, 'product'));
+      if (!me) return;
       const filial = scope.id_filial || me?.id_filial;
       const empresa = scope.id_empresa || me?.id_empresa;
       if (!filial) throw new Error('Selecione uma filial no escopo.');

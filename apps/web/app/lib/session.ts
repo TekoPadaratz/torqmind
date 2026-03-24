@@ -1,15 +1,46 @@
 import { apiGet } from './api';
-import { clearAuth, requireAuth, setClaims } from './auth';
+import { clearAuth, getClaims, requireAuth, setClaims } from './auth';
 
-export async function loadSession(router: any, area: 'product' | 'platform') {
+let sessionCache: any | null = null;
+let sessionPromise: Promise<any> | null = null;
+
+export function readCachedSession(): any | null {
+  return sessionCache || getClaims();
+}
+
+export function clearSessionCache() {
+  sessionCache = null;
+  sessionPromise = null;
+}
+
+export async function fetchSession(force = false) {
+  if (!force) {
+    if (sessionCache) return sessionCache;
+    if (sessionPromise) return sessionPromise;
+  }
+
+  sessionPromise = apiGet('/auth/me')
+    .then((me) => {
+      sessionCache = me;
+      setClaims(me);
+      return me;
+    })
+    .finally(() => {
+      sessionPromise = null;
+    });
+
+  return sessionPromise;
+}
+
+export async function loadSession(router: any, area: 'product' | 'platform', options?: { force?: boolean }) {
   if (!requireAuth()) {
+    clearSessionCache();
     router.push('/');
     return null;
   }
 
   try {
-    const me = await apiGet('/auth/me');
-    setClaims(me);
+    const me = await fetchSession(Boolean(options?.force));
 
     const canUseProduct = Boolean(me?.access?.product);
     const canUsePlatform = Boolean(me?.access?.platform);
@@ -25,6 +56,7 @@ export async function loadSession(router: any, area: 'product' | 'platform') {
 
     return me;
   } catch {
+    clearSessionCache();
     clearAuth();
     router.push('/');
     return null;

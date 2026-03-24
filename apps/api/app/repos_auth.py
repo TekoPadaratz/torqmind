@@ -327,9 +327,11 @@ def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[
     dt_fim = scope_defaults["latest_dt_ref"]
     default_days = int(scope_defaults["default_product_scope_days"])
     dt_ini = dt_fim - timedelta(days=max(default_days - 1, 0))
+    branch_ids = [int(branch_id)] if branch_id is not None else []
     return {
         "id_empresa": tenant_id,
         "id_filial": branch_id,
+        "id_filiais": branch_ids,
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "dt_ref": scope_defaults["current_date"].isoformat(),
@@ -342,16 +344,23 @@ def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[
 
 
 def _build_dashboard_home_path(scope: dict[str, Any], include_dt_ref: bool = False) -> str:
-    params: dict[str, str] = {
-        "dt_ini": str(scope["dt_ini"]),
-        "dt_fim": str(scope["dt_fim"]),
-        "id_empresa": str(scope["id_empresa"]),
-    }
+    params: list[tuple[str, str]] = [
+        ("dt_ini", str(scope["dt_ini"])),
+        ("dt_fim", str(scope["dt_fim"])),
+        ("id_empresa", str(scope["id_empresa"])),
+    ]
     if include_dt_ref and scope.get("dt_ref"):
-        params["dt_ref"] = str(scope["dt_ref"])
+        params.append(("dt_ref", str(scope["dt_ref"])))
+
+    branch_ids = [str(value) for value in (scope.get("id_filiais") or []) if value is not None]
     if scope.get("id_filial") is not None:
-        params["id_filial"] = str(scope["id_filial"])
-    return f"/dashboard?{urlencode(params)}"
+        params.append(("id_filial", str(scope["id_filial"])))
+    elif len(branch_ids) == 1:
+        params.append(("id_filial", branch_ids[0]))
+    else:
+        params.extend(("id_filiais", branch_id) for branch_id in branch_ids)
+
+    return f"/dashboard?{urlencode(params, doseq=True)}"
 
 
 def _record_failed_login(user_id: str) -> None:

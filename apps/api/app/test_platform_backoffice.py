@@ -579,6 +579,115 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertTrue(body["historical"]["top_turnos"])
         self.assertEqual(body["source_status"], body["historical"]["source_status"])
 
+    def test_cash_overview_prefers_employee_name_when_cash_user_dimension_is_missing(self) -> None:
+        tenant_id = self._create_tenant("Tenant Cash Employee Fallback")
+        branch_id = 1000
+        self._create_branch(tenant_id, branch_id, "Filial 1000", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        headers = self._auth_headers(owner_email, "Senha@123")
+        today_key = int(date.today().strftime("%Y%m%d"))
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_funcionario (id_empresa, id_filial, id_funcionario, nome)
+                VALUES (%s, %s, 777, 'Maria Operadora')
+                ON CONFLICT (id_empresa, id_filial, id_funcionario) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_caixa_turno (
+                  id_empresa, id_filial, id_turno, id_db, id_usuario, abertura_ts,
+                  fechamento_ts, data_key_abertura, data_key_fechamento,
+                  encerrante_fechamento, is_aberto, status_raw, payload
+                )
+                VALUES
+                  (%s, %s, 51, 1, 910, TIMESTAMPTZ '2026-03-05 08:00:00+00', TIMESTAMPTZ '2026-03-05 18:00:00+00', 20260305, 20260305, NULL, false, 'CLOSED', '{}'::jsonb),
+                  (%s, %s, 52, 1, 910, now() - interval '2 hour', NULL, %s, NULL, NULL, true, 'OPEN', '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_turno) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id, today_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  id_usuario, id_turno, valor_total, cancelado, situacao, payload
+                )
+                VALUES
+                  (%s, %s, 1, 51001, TIMESTAMPTZ '2026-03-05 10:00:00+00', 20260305, 910, 51, 250, false, 1, '{"CFOP":"5102"}'::jsonb),
+                  (%s, %s, 1, 52001, now() - interval '90 minute', %s, 910, 52, 180, false, 1, '{"CFOP":"5102"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id, today_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_usuario, id_cliente, id_comprovante, id_turno, saidas_entradas,
+                  total_venda, cancelado, payload
+                )
+                VALUES
+                  (%s, %s, 1, 51001, TIMESTAMPTZ '2026-03-05 10:00:00+00', 20260305, 910, NULL, 51001, 51, 1, 250, false, '{}'::jsonb),
+                  (%s, %s, 1, 52001, now() - interval '90 minute', %s, 910, NULL, 52001, 52, 1, 180, false, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id, today_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, id_grupo_produto, id_local_venda, id_funcionario, qtd,
+                  valor_unitario, total, desconto, custo_total, margem, cfop, payload
+                )
+                VALUES
+                  (%s, %s, 1, 51001, 1, 20260305, 1, NULL, NULL, 777, 50, 5, 250, 0, 0, 0, 5102, '{}'::jsonb),
+                  (%s, %s, 1, 52001, 1, %s, 1, NULL, NULL, 777, 36, 5, 180, 0, 0, 0, 5102, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id, today_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_pagamento_comprovante (
+                  id_empresa, id_filial, referencia, id_db, id_comprovante, id_turno, id_usuario,
+                  tipo_forma, valor, dt_evento, data_key, payload
+                )
+                VALUES
+                  (%s, %s, 51001, 1, 51001, 51, 910, 1, 250, TIMESTAMPTZ '2026-03-05 10:05:00+00', 20260305, '{}'::jsonb),
+                  (%s, %s, 52001, 1, 52001, 52, 910, 1, 180, now() - interval '80 minute', %s, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, referencia, tipo_forma) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id, today_key),
+            )
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_pagamentos_turno")
+            conn.commit()
+
+        response = self.client.get(
+            f"/bi/cash/overview?dt_ini=2026-03-01&dt_fim={date.today().isoformat()}&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+
+        historical_labels = [
+            item["usuario_label"]
+            for item in (body.get("historical", {}).get("top_turnos") or [])
+            if int(item.get("id_turno") or 0) == 51
+        ]
+        live_labels = [
+            item["usuario_label"]
+            for item in (body.get("live_now", {}).get("open_boxes") or [])
+            if int(item.get("id_turno") or 0) == 52
+        ]
+
+        self.assertIn("Maria Operadora", historical_labels)
+        self.assertIn("Maria Operadora", live_labels)
+
     def test_branch_visibility_respects_platform_master_owner_and_manager(self) -> None:
         tenant_id = self._create_tenant("Tenant Branch Visibility")
         self._create_branch(tenant_id, 1001, "Filial 1001", is_active=True)
@@ -606,6 +715,37 @@ class PlatformBackofficeTest(unittest.TestCase):
 
         owner_platform = self.client.get("/platform/companies?limit=10", headers=owner_headers)
         self.assertEqual(owner_platform.status_code, 403, owner_platform.text)
+
+    def test_multi_branch_scope_allows_owner_and_blocks_manager_cross_branch(self) -> None:
+        tenant_id = self._create_tenant("Tenant Multi Branch Scope")
+        self._create_branch(tenant_id, 1101, "Filial 1101", is_active=True)
+        self._create_branch(tenant_id, 1102, "Filial 1102", is_active=True)
+
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        manager_email = self._create_user("tenant_manager", "Senha@123", tenant_id=tenant_id, branch_id=1101)
+
+        owner_headers = self._auth_headers(owner_email, "Senha@123")
+        manager_headers = self._auth_headers(manager_email, "Senha@123")
+
+        owner_response = self.client.get(
+            f"/bi/notifications/unread-count?id_empresa={tenant_id}&id_filiais=1101&id_filiais=1102",
+            headers=owner_headers,
+        )
+        self.assertEqual(owner_response.status_code, 200, owner_response.text)
+        self.assertIn("unread", owner_response.json())
+
+        manager_allowed = self.client.get(
+            f"/bi/notifications/unread-count?id_empresa={tenant_id}&id_filiais=1101",
+            headers=manager_headers,
+        )
+        self.assertEqual(manager_allowed.status_code, 200, manager_allowed.text)
+
+        manager_forbidden = self.client.get(
+            f"/bi/notifications/unread-count?id_empresa={tenant_id}&id_filiais=1101&id_filiais=1102",
+            headers=manager_headers,
+        )
+        self.assertEqual(manager_forbidden.status_code, 403, manager_forbidden.text)
+        self.assertEqual(manager_forbidden.json()["detail"]["error"], "branch_access_denied")
 
     def test_user_update_can_clear_valid_from_and_keep_global_product_scope(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")

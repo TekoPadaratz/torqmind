@@ -188,22 +188,94 @@ h2 { margin: 0; font-size: 18px; }
 body.product-shell .container {
   max-width: none;
   margin: 0;
-  padding: 28px 32px 32px 340px;
+  padding: 116px 32px 32px 360px;
+}
+
+.productTopNav {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 26;
+  padding: 16px 22px 0;
+}
+
+.productTopBar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 16px 18px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(8, 11, 14, 0.96), rgba(11, 17, 21, 0.92)),
+    radial-gradient(circle at top left, rgba(184,115,51,0.16), transparent 42%);
+  box-shadow: 0 18px 48px rgba(0,0,0,0.22);
+  backdrop-filter: blur(18px);
+}
+
+.productTopTitle {
+  margin-top: 4px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.productBrandInline {
+  min-width: 0;
+}
+
+.productTopLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+}
+
+.productTopLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.productTopLink:hover {
+  border-color: rgba(184,115,51,0.35);
+  background: rgba(184,115,51,0.08);
+  transform: translateY(-1px);
+}
+
+.productTopLinkActive {
+  border-color: rgba(184,115,51,0.62);
+  background: linear-gradient(90deg, rgba(184,115,51,0.20), rgba(184,115,51,0.06));
+}
+
+.productTopActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .productSidebar {
   position: fixed;
-  inset: 0 auto 0 0;
-  width: 300px;
+  top: 100px;
+  left: 22px;
+  bottom: 18px;
+  width: 316px;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  gap: 18px;
-  padding: 24px 18px 20px;
-  border-right: 1px solid rgba(255,255,255,0.08);
-  background:
-    linear-gradient(180deg, rgba(8, 11, 14, 0.98), rgba(11, 17, 21, 0.94)),
-    radial-gradient(circle at top left, rgba(184,115,51,0.16), transparent 42%);
-  backdrop-filter: blur(16px);
+  align-content: start;
+  gap: 16px;
+  padding: 0;
+  border-right: none;
   overflow-y: auto;
   z-index: 24;
 }
@@ -212,14 +284,17 @@ body.product-shell .container {
 .productSidebarSection,
 .productSidebarFooter {
   border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 18px;
-  padding: 14px;
-  background: rgba(255,255,255,0.03);
+  border-radius: 20px;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(8, 11, 14, 0.96), rgba(11, 17, 21, 0.90)),
+    radial-gradient(circle at top left, rgba(184,115,51,0.12), transparent 40%);
+  backdrop-filter: blur(18px);
 }
 
 .productSidebarHeader {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .productBrand {
@@ -245,37 +320,6 @@ body.product-shell .container {
 
 .productUserPill {
   width: fit-content;
-}
-
-.productNavLinks {
-  margin-top: 12px;
-  display: grid;
-  gap: 8px;
-}
-
-.productNavLink {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 11px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(255,255,255,0.02);
-  color: var(--text);
-  text-decoration: none;
-  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
-}
-
-.productNavLink:hover {
-  transform: translateX(2px);
-  border-color: rgba(184,115,51,0.35);
-  background: rgba(184,115,51,0.08);
-}
-
-.productNavLinkActive {
-  border-color: rgba(184,115,51,0.62);
-  background: linear-gradient(90deg, rgba(184,115,51,0.18), rgba(184,115,51,0.04));
 }
 
 .productFilters {
@@ -308,7 +352,7 @@ body.product-shell .container {
 .productDateGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .productScopeMeta {
@@ -332,6 +376,7 @@ body.product-shell .container {
 .productApplyButton {
   width: 100%;
   margin-top: 14px;
+  min-height: 46px;
 }
 
 .productSidebarFooter {
@@ -343,6 +388,121 @@ body.product-shell .container {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.productBranchPanel {
+  display: grid;
+  gap: 10px;
+}
+
+.productBranchChecklist {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.productBranchChecklist.is-muted {
+  opacity: 0.68;
+}
+
+.productCheckboxRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.02);
+}
+
+.productCheckboxRow input {
+  margin-top: 3px;
+  accent-color: #d5985b;
+}
+
+.productCheckboxRow strong {
+  display: block;
+  font-size: 14px;
+}
+
+.productCheckboxRow span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.productDateInput {
+  min-height: 46px;
+  padding-right: 10px;
+}
+
+.productDateInput::-webkit-calendar-picker-indicator {
+  filter: invert(0.92);
+  cursor: pointer;
+}
+
+@media (max-width: 1320px) {
+  body.product-shell .container {
+    padding-left: 344px;
+  }
+
+  .productSidebar {
+    width: 300px;
+  }
+}
+
+@media (max-width: 1160px) {
+  body.product-shell .container {
+    padding: 20px 20px 28px;
+  }
+
+  .productTopBar {
+    grid-template-columns: 1fr;
+  }
+
+  .productTopLinks,
+  .productTopActions {
+    justify-content: flex-start;
+  }
+
+  .productSidebar {
+    position: relative;
+    top: auto;
+    left: auto;
+    bottom: auto;
+    width: auto;
+    margin: 108px 20px 0;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  .productTopNav {
+    padding: 12px 12px 0;
+  }
+
+  .productSidebar {
+    margin: 100px 12px 0;
+  }
+
+  body.product-shell .container {
+    padding: 18px 12px 24px;
+  }
+
+  .productDateGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .productTopLink {
+    min-height: 38px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
 }
 
 /* ---------- Tables / Code blocks ---------- */

@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from app.deps import get_current_claims
-from app.scope import resolve_scope, accessible_branch_ids
+from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
 from app import repos_mart
 from app import repos_auth
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
@@ -55,11 +55,12 @@ def dashboard_overview(
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     compact: bool = Query(False, description="Return only signals used by the executive home"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = dt_ref or date.today()
 
     if compact:
@@ -97,11 +98,12 @@ def dashboard_home(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = dt_ref or date.today()
     return repos_mart.dashboard_home_bundle(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim, dt_ref=as_of)
 
@@ -116,11 +118,12 @@ def sales_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
     return {
         "kpis": repos_mart.dashboard_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -142,11 +145,12 @@ def fraud_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
     return {
         "kpis": repos_mart.fraud_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -171,12 +175,13 @@ def risk_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     status: Optional[str] = Query(None, description="NOVO/LIDO/RESOLVIDO"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
     return {
         "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -200,11 +205,12 @@ def customers_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = dt_ref or date.today()
     churn_bundle = repos_mart.customers_churn_bundle(role, tenant, filial, as_of=as_of, min_score=40, limit=10)
     churn_top = []
@@ -245,13 +251,14 @@ def clients_churn(
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_cliente: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     min_score: int = Query(60, ge=0, le=100),
     limit: int = Query(20, ge=1, le=100),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = dt_ref or date.today()
     churn_bundle = repos_mart.customers_churn_bundle(role, tenant, filial, as_of=as_of, min_score=min_score, limit=limit)
     top = churn_bundle.get("top_risk") or []
@@ -286,11 +293,12 @@ def clients_retention_anonymous(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim)
 
 
@@ -307,11 +315,12 @@ def finance_overview(
     include_payments: bool = Query(True),
     include_operational: bool = Query(True),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = dt_ref or date.today()
 
     response = {
@@ -333,11 +342,12 @@ def payments_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=30)
 
 
@@ -351,11 +361,12 @@ def cash_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Legacy reference date; current server date is used when omitted"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return repos_mart.cash_overview(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim)
 
 
@@ -369,11 +380,13 @@ def pricing_competitor_overview(
     dt_fim: date,
     days_simulation: int = Query(10, ge=1, le=60),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    filial = primary_branch_id(filial_scope)
     if filial is None:
         raise HTTPException(status_code=400, detail="id_filial is required for competitor pricing simulation")
 
@@ -391,6 +404,7 @@ def pricing_competitor_overview(
 def pricing_competitor_prices_upsert(
     payload: CompetitorPriceUpsertRequest,
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
@@ -402,7 +416,8 @@ def pricing_competitor_prices_upsert(
     except repos_auth.AuthError as exc:
         _raise_auth_error(exc)
 
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    filial = primary_branch_id(filial_scope)
     if filial is None:
         raise HTTPException(status_code=400, detail="id_filial is required to save competitor prices")
 
@@ -430,19 +445,18 @@ def goals_overview(
     dt_fim: date,
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = dt_ref or dt_fim
-
-    # For goals, it makes sense to require a branch for now.
-    filial_for_goals = filial or 1
 
     return {
         "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, dt_ini, dt_fim, limit=15),
-        "goals_today": repos_mart.goals_today(role, tenant, filial_for_goals, goal_date=as_of),
+        "goals_today": repos_mart.goals_today(role, tenant, filial, goal_date=as_of),
+        "risk_top_employees": repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=15),
     }
 
 
@@ -454,11 +468,12 @@ def goals_overview(
 def jarvis_briefing(
     dt_ref: date,
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=dt_ref)
 
 
@@ -466,6 +481,7 @@ def jarvis_briefing(
 def jarvis_generate(
     dt_ref: date,
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     limit: int = Query(10, ge=1, le=50),
     force: bool = Query(False),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
@@ -476,7 +492,7 @@ def jarvis_generate(
         repos_auth.assert_product_write_allowed(claims)
     except repos_auth.AuthError as exc:
         _raise_auth_error(exc)
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     stats = generate_jarvis_ai_plans(role, tenant, filial, dt_ref=dt_ref, limit=limit, force=force)
     return {
         "ok": True,
@@ -491,6 +507,7 @@ def jarvis_generate(
 def admin_ai_usage(
     days: int = Query(30, ge=1, le=365),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
@@ -502,7 +519,7 @@ def admin_ai_usage(
     except repos_auth.AuthError as exc:
         _raise_auth_error(exc)
 
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return ai_usage_summary(role, tenant, filial, days=days)
 
 
@@ -510,6 +527,7 @@ def admin_ai_usage(
 def admin_telegram_test(
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
@@ -517,7 +535,7 @@ def admin_telegram_test(
     if role not in {"MASTER", "OWNER"}:
         raise HTTPException(status_code=403, detail="forbidden")
 
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     payload = {
         "severity": "CRITICAL",
         "id_filial": filial,
@@ -535,13 +553,14 @@ def admin_telegram_test(
 @router.get("/notifications")
 def notifications_list(
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     unread_only: bool = Query(False),
     limit: int = Query(30, ge=1, le=200),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return {
         "items": repos_mart.notifications_list(role, tenant, filial, limit=limit, unread_only=unread_only),
         "unread": repos_mart.notifications_unread_count(role, tenant, filial),
@@ -552,11 +571,12 @@ def notifications_list(
 def notifications_mark_read(
     notification_id: int,
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     row = repos_mart.notification_mark_read(role, tenant, filial, notification_id)
     return {"ok": True, "item": row}
 
@@ -564,9 +584,10 @@ def notifications_mark_read(
 @router.get("/notifications/unread-count")
 def notifications_unread_count(
     id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return {"unread": repos_mart.notifications_unread_count(role, tenant, filial)}

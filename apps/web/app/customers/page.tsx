@@ -7,10 +7,10 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
-import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { buildScopeParams, useScopeQuery } from '../lib/scope';
+import { loadSession, readCachedSession } from '../lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,7 +66,7 @@ export default function CustomersPage() {
   const router = useRouter();
   const scope = useScopeQuery();
 
-  const [claims, setClaims] = useState<any>(null);
+  const [claims, setClaims] = useState<any>(readCachedSession());
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -77,16 +77,12 @@ export default function CustomersPage() {
 
   useEffect(() => {
     if (!scope.ready) return;
-
-    if (!requireAuth()) {
-      router.push('/');
-      return;
-    }
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const me = await apiGet('/auth/me');
+        const me = await loadSession(router, 'product');
+        if (!me) return;
         setClaims(me);
         if (!scope.dt_ini || !scope.dt_fim) {
           router.replace(me?.home_path || '/dashboard');
@@ -103,7 +99,7 @@ export default function CustomersPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filiais_key, scope.id_empresa, scope.ready]);
 
   const topChart = useMemo(
     () =>

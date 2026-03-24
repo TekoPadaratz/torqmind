@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import { apiGet } from '../lib/api';
-import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import {
   buildUserLabel,
@@ -15,6 +14,7 @@ import {
   formatFilialLabel,
 } from '../lib/format';
 import { buildScopeParams, useScopeQuery } from '../lib/scope';
+import { loadSession, readCachedSession } from '../lib/session';
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
 import HeroMoneyCard from '../components/ui/HeroMoneyCard';
@@ -173,7 +173,7 @@ export default function Dashboard() {
   const router = useRouter();
   const scope = useScopeQuery();
 
-  const [claims, setClaims] = useState<any>(null);
+  const [claims, setClaims] = useState<any>(readCachedSession());
   const [homeData, setHomeData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -183,16 +183,12 @@ export default function Dashboard() {
   useEffect(() => {
     if (!scope.ready) return;
 
-    if (!requireAuth()) {
-      router.push('/');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const me = await apiGet('/auth/me');
+        const me = await loadSession(router, 'product');
+        if (!me) return;
         setClaims(me);
         if (!scope.dt_ini || !scope.dt_fim) {
           router.replace(me?.home_path || '/dashboard');
@@ -209,7 +205,7 @@ export default function Dashboard() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filiais_key, scope.id_empresa, scope.ready]);
 
   const overview = homeData?.overview || {};
   const churnData = homeData?.churn || {};
@@ -223,7 +219,9 @@ export default function Dashboard() {
   const cashBundle = homeData?.cash || {};
   const cashHistorical = cashBundle?.historical || overview?.cash?.historical || {};
   const cashLiveNow = cashBundle?.live_now || overview?.cash?.live_now || {};
-  const filialLabel = homeData?.scope?.filial_label || formatFilialLabel(scope.id_filial);
+  const filialLabel =
+    homeData?.scope?.filial_label
+    || (scope.id_filiais.length > 1 ? `${scope.id_filiais.length} filiais selecionadas` : formatFilialLabel(scope.id_filial));
   const churnTop = churnData?.top_risk || [];
   const financeAging = financeData?.aging || {};
 

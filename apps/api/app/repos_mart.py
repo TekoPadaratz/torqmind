@@ -49,6 +49,13 @@ def _normalized_text_expression(expr: str) -> str:
 
 
 def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
+    if isinstance(id_filial, (list, tuple, set)):
+        branch_ids = _branch_ids(id_filial)
+        if not branch_ids:
+            return "Todas as filiais"
+        if len(branch_ids) == 1:
+            return _filial_label(branch_ids[0], filial_nome)
+        return f"{len(branch_ids)} filiais selecionadas"
     nome = str(filial_nome or "").strip()
     if nome:
         return nome
@@ -227,6 +234,31 @@ def _date_key(d: date) -> int:
     return int(d.strftime("%Y%m%d"))
 
 
+def _branch_ids(id_filial: Any) -> Optional[List[int]]:
+    if id_filial is None:
+        return None
+    if isinstance(id_filial, (list, tuple, set)):
+        values = sorted({int(value) for value in id_filial if value is not None})
+        return values or None
+    return [int(id_filial)]
+
+
+def _conn_branch_id(id_filial: Any) -> Optional[int]:
+    branch_ids = _branch_ids(id_filial)
+    if not branch_ids or len(branch_ids) != 1:
+        return None
+    return int(branch_ids[0])
+
+
+def _branch_scope_clause(column: str, id_filial: Any) -> tuple[str, list[Any]]:
+    branch_ids = _branch_ids(id_filial)
+    if not branch_ids:
+        return "", []
+    if len(branch_ids) == 1:
+        return f"AND {column} = %s", [branch_ids[0]]
+    return f"AND {column} = ANY(%s)", [branch_ids]
+
+
 def _snapshot_meta(
     role: str,
     table_name: str,
@@ -236,8 +268,8 @@ def _snapshot_meta(
     precision_mode: str,
 ) -> Dict[str, Any]:
     table = SNAPSHOT_TABLES[table_name]
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [requested_dt_ref, requested_dt_ref, requested_dt_ref, id_empresa] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [requested_dt_ref, requested_dt_ref, requested_dt_ref, id_empresa] + branch_params
     sql = f"""
       SELECT
         MIN(dt_ref) AS coverage_start_dt_ref,
@@ -250,7 +282,7 @@ def _snapshot_meta(
       WHERE id_empresa = %s
       {where_filial}
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone() or {}
 
     start_dt = row.get("coverage_start_dt_ref")
@@ -312,8 +344,9 @@ def dashboard_home_bundle(
     notifications_unread = notifications_unread_count(role, id_empresa, id_filial)
 
     filial_name = None
-    if id_filial is not None:
-        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    branch_id = _conn_branch_id(id_filial)
+    if branch_id is not None:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=branch_id) as conn:
             filial_name_row = conn.execute(
                 """
                 SELECT nome
@@ -321,14 +354,15 @@ def dashboard_home_bundle(
                 WHERE id_empresa = %s
                   AND id_filial = %s
                 """,
-                (id_empresa, id_filial),
+                (id_empresa, branch_id),
             ).fetchone()
             filial_name = filial_name_row.get("nome") if filial_name_row else None
 
     return {
         "scope": {
             "id_empresa": id_empresa,
-            "id_filial": id_filial,
+            "id_filial": branch_id,
+            "id_filiais": _branch_ids(id_filial) or [],
             "filial_label": _filial_label(id_filial, filial_name),
             "dt_ini": dt_ini,
             "dt_fim": dt_fim,
@@ -373,8 +407,8 @@ def dashboard_home_bundle(
 def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       SELECT
@@ -386,7 +420,7 @@ def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {"faturamento": 0, "margem": 0, "ticket_medio": 0, "itens": 0}
 
@@ -394,8 +428,8 @@ def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
 def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
     sql = f"""
       SELECT data_key, id_filial, faturamento, margem
       FROM mart.agg_vendas_diaria
@@ -403,15 +437,15 @@ def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_in
       {where_filial}
       ORDER BY data_key, id_filial
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def insights_base(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
     sql = f"""
       SELECT data_key, id_filial, faturamento_dia, faturamento_mes_acum, comparativo_mes_anterior
       FROM mart.insights_base_diaria
@@ -419,7 +453,7 @@ def insights_base(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
       {where_filial}
       ORDER BY data_key, id_filial
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -430,8 +464,8 @@ def insights_base(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
 def sales_by_hour(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
     sql = f"""
       SELECT data_key, id_filial, hora, faturamento, margem, vendas
       FROM mart.agg_vendas_hora
@@ -439,15 +473,15 @@ def sales_by_hour(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
       {where_filial}
       ORDER BY data_key, hora
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
     sql = f"""
       SELECT
         id_produto,
@@ -462,15 +496,15 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
       ORDER BY faturamento DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND v.id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("v.id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
     group_name_expr = _group_name_expression("g", "p")
     sql = f"""
       SELECT
@@ -501,15 +535,15 @@ def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_in
       ORDER BY faturamento DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
     sql = f"""
       SELECT
         id_funcionario,
@@ -526,7 +560,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt
       ORDER BY faturamento DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -808,8 +842,8 @@ def competitor_pricing_upsert(
 def fraud_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       SELECT
@@ -819,7 +853,7 @@ def fraud_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: dat
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {"cancelamentos": 0, "valor_cancelado": 0}
 
@@ -827,8 +861,8 @@ def fraud_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: dat
 def fraud_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       SELECT data_key, id_filial, cancelamentos, valor_cancelado
@@ -837,13 +871,13 @@ def fraud_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: d
       {where_filial}
       ORDER BY data_key
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def fraud_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa] + branch_params
     sql = f"""
       SELECT
         MIN(data_key)::int AS min_data_key,
@@ -853,14 +887,14 @@ def fraud_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> D
       WHERE id_empresa = %s
       {where_filial}
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {"min_data_key": None, "max_data_key": None, "rows": 0}
 
 
 def fraud_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit: int = 30) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa] + branch_params + [limit]
 
     sql = f"""
       SELECT id_filial, id_db, id_comprovante, data, id_usuario, id_turno, valor_total
@@ -871,15 +905,15 @@ def fraud_last_events(role: str, id_empresa: int, id_filial: Optional[int], limi
       LIMIT %s
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -895,7 +929,7 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
       ORDER BY cancelamentos DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -906,8 +940,8 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
 def risk_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       SELECT
@@ -919,7 +953,7 @@ def risk_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {"total_eventos": 0, "eventos_alto_risco": 0, "impacto_total": 0, "score_medio": 0}
 
@@ -927,8 +961,8 @@ def risk_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date
 def risk_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       SELECT
@@ -944,13 +978,13 @@ def risk_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: da
       {where_filial}
       ORDER BY data_key, id_filial
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def risk_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa] + branch_params
     sql = f"""
       SELECT
         MIN(data_key)::int AS min_data_key,
@@ -960,7 +994,7 @@ def risk_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> Di
       WHERE id_empresa = %s
       {where_filial}
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {"min_data_key": None, "max_data_key": None, "rows": 0}
 
@@ -968,8 +1002,8 @@ def risk_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> Di
 def risk_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -989,13 +1023,13 @@ def risk_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_
       ORDER BY impacto_estimado DESC, score_medio DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit: int = 30) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND e.id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("e.id_filial", id_filial)
+    params = [id_empresa] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -1027,7 +1061,7 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit
       ORDER BY e.data DESC NULLS LAST, e.id DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(row) for row in conn.execute(sql, [id_empresa] + params).fetchall()]
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
@@ -1047,9 +1081,9 @@ def risk_insights(
     status: Optional[str] = None,
     limit: int = 30,
 ) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     where_status = "" if not status else "AND status = %s"
-    params = [id_empresa, dt_ini, dt_fim] + ([] if id_filial is None else [id_filial]) + ([] if not status else [status]) + [limit]
+    params = [id_empresa, dt_ini, dt_fim] + branch_params + ([] if not status else [status]) + [limit]
 
     sql = f"""
       SELECT
@@ -1080,7 +1114,7 @@ def risk_insights(
       ORDER BY dt_ref DESC, created_at DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -1094,8 +1128,8 @@ def risk_by_turn_local(
 ) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND rtl.id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("rtl.id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -1123,7 +1157,7 @@ def risk_by_turn_local(
       ORDER BY impacto_estimado DESC, score_medio DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
@@ -1135,9 +1169,9 @@ def risk_by_turn_local(
 def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params_sales = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
-    params_risk = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params_sales = [id_empresa, ini, fim] + branch_params
+    params_risk = [id_empresa, ini, fim] + branch_params
 
     sql_sales = f"""
       SELECT
@@ -1158,7 +1192,7 @@ def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_i
       {where_filial}
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         sales = conn.execute(sql_sales, params_sales).fetchone() or {}
         risk = conn.execute(sql_risk, params_risk).fetchone() or {}
 
@@ -1197,8 +1231,8 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
 
-    where_filial = "" if id_filial is None else "AND v.id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("v.id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -1228,7 +1262,7 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
       LIMIT %s
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -1240,8 +1274,8 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int],
     ini = _date_key(dt_ini)
     fim = _date_key(as_of)
 
-    where_filial = "" if id_filial is None else "AND v.id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("v.id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       WITH base AS (
@@ -1266,7 +1300,7 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int],
     """
 
     params2 = params + [as_of, as_of]
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params2).fetchone()
         return row or {
             "clientes_identificados": 0,
@@ -1283,8 +1317,8 @@ def customers_churn_risk(
     min_score: int = 60,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, min_score] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -1305,7 +1339,7 @@ def customers_churn_risk(
       ORDER BY churn_score DESC, faturamento_60_30 DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -1317,9 +1351,9 @@ def _customers_churn_operational_current(
     limit: int,
     id_cliente: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     where_customer = "" if id_cliente is None else "AND id_cliente = %s"
-    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + ([] if id_cliente is None else [id_cliente]) + [limit]
+    params = [id_empresa, min_score] + branch_params + ([] if id_cliente is None else [id_cliente]) + [limit]
     sql = f"""
       SELECT
         COALESCE((reasons->>'ref_date')::date, CURRENT_DATE) AS dt_ref,
@@ -1350,7 +1384,7 @@ def _customers_churn_operational_current(
       ORDER BY churn_score DESC, faturamento_60_30 DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
@@ -1367,8 +1401,8 @@ def customers_churn_bundle(
 
     effective_dt_ref = snapshot_meta.get("effective_dt_ref")
     if effective_dt_ref:
-        where_filial = "" if id_filial is None else "AND id_filial = %s"
-        params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [effective_dt_ref, limit]
+        where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+        params = [id_empresa, min_score] + branch_params + [effective_dt_ref, limit]
         sql = f"""
           SELECT
             dt_ref,
@@ -1396,7 +1430,7 @@ def customers_churn_bundle(
           ORDER BY churn_score DESC, revenue_at_risk_30d DESC
           LIMIT %s
         """
-        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
             rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     if not rows:
@@ -1488,8 +1522,8 @@ def customer_churn_drilldown(
 ) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND v.id_filial = %s"
-    params = [id_empresa, id_cliente, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("v.id_filial", id_filial)
+    params = [id_empresa, id_cliente, ini, fim] + branch_params
 
     sql_series = f"""
       SELECT
@@ -1511,10 +1545,11 @@ def customer_churn_drilldown(
 
     snapshot_meta = customers_churn_snapshot_meta(role, id_empresa, id_filial, as_of)
     snapshot: Dict[str, Any] = {}
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         series = list(conn.execute(sql_series, params).fetchall())
 
         if snapshot_meta.get("snapshot_status") in {"exact", "best_effort"} and snapshot_meta.get("effective_dt_ref"):
+            where_snapshot_filial, snapshot_branch_params = _branch_scope_clause("id_filial", id_filial)
             sql_snapshot = f"""
               SELECT
                 dt_ref,
@@ -1534,12 +1569,12 @@ def customer_churn_drilldown(
               FROM mart.customer_churn_risk_daily
               WHERE id_empresa = %s
                 AND id_cliente = %s
-                {"" if id_filial is None else "AND id_filial = %s"}
+                {where_snapshot_filial}
                 AND dt_ref = %s
               ORDER BY dt_ref DESC
               LIMIT 1
             """
-            params_snapshot = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial]) + [snapshot_meta["effective_dt_ref"]]
+            params_snapshot = [id_empresa, id_cliente] + snapshot_branch_params + [snapshot_meta["effective_dt_ref"]]
             snap = conn.execute(sql_snapshot, params_snapshot).fetchone()
             snapshot = dict(snap) if snap else {}
         elif snapshot_meta.get("snapshot_status") == "operational_current":
@@ -1568,8 +1603,8 @@ def anonymous_retention_overview(
 ) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql_series = f"""
       SELECT
@@ -1611,9 +1646,9 @@ def anonymous_retention_overview(
         {where_filial}
       ORDER BY id_filial
     """
-    params_latest = [id_empresa, id_empresa, dt_fim] + ([] if id_filial is None else [id_filial, id_filial])
+    params_latest = [id_empresa, id_empresa, dt_fim] + branch_params + branch_params
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         latest_rows = list(conn.execute(sql_latest, params_latest).fetchall())
         series = list(conn.execute(sql_series, params).fetchall())
 
@@ -1653,8 +1688,8 @@ def finance_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: d
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
 
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     # tipo_titulo: 0 pagar, 1 receber
     sql = f"""
@@ -1671,7 +1706,7 @@ def finance_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: d
       {where_filial}
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return row or {
             "receber_total": 0,
@@ -1687,8 +1722,8 @@ def finance_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
 
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
       SELECT data_key, id_filial, tipo_titulo, valor_total, valor_pago, valor_aberto
@@ -1698,7 +1733,7 @@ def finance_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
       ORDER BY data_key, tipo_titulo
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -1708,8 +1743,8 @@ def _finance_aging_operational_as_of(
     id_filial: Optional[int],
     as_of: date,
 ) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND f.id_filial = %s"
-    params = [as_of, id_empresa] + ([] if id_filial is None else [id_filial]) + [
+    where_filial, branch_params = _branch_scope_clause("f.id_filial", id_filial)
+    params = [as_of, id_empresa] + branch_params + [
         as_of,
         as_of,
         as_of,
@@ -1791,7 +1826,7 @@ def _finance_aging_operational_as_of(
       FROM totals t
       CROSS JOIN top5
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         return dict(row) if row else {}
 
@@ -1807,8 +1842,9 @@ def finance_aging_overview(
     effective_dt_ref = snapshot_meta.get("effective_dt_ref")
 
     if effective_dt_ref:
-        where_filial = "" if id_filial is None else "AND f.id_filial = %s"
-        if id_filial is None:
+        where_filial, branch_params = _branch_scope_clause("f.id_filial", id_filial)
+        branch_ids = _branch_ids(id_filial)
+        if not branch_ids:
             sql = f"""
               SELECT
                 %s::date AS dt_ref,
@@ -1852,9 +1888,9 @@ def finance_aging_overview(
               ORDER BY f.dt_ref DESC
               LIMIT 1
             """
-            params = [id_empresa, id_filial, effective_dt_ref]
+            params = [id_empresa] + branch_params + [effective_dt_ref]
 
-        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
             row = conn.execute(sql, params).fetchone()
             if row and int(row.get("snapshot_rows") or 0) > 0:
                 payload = dict(row)
@@ -1901,7 +1937,7 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
     days = max((dt_fim - dt_ini).days + 1, 1)
     prev_fim = ini - 1
     prev_ini = _date_key(dt_ini - timedelta(days=days))
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
 
     sql_curr = f"""
       SELECT
@@ -1934,11 +1970,11 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
       ORDER BY total_valor DESC
       LIMIT 6
     """
-    params_curr = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
-    params_prev = [id_empresa, prev_ini, prev_fim] + ([] if id_filial is None else [id_filial])
-    params_mix = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    params_curr = [id_empresa, ini, fim] + branch_params
+    params_prev = [id_empresa, prev_ini, prev_fim] + branch_params
+    params_mix = [id_empresa, ini, fim] + branch_params
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         curr = conn.execute(sql_curr, params_curr).fetchone() or {}
         prev = conn.execute(sql_prev, params_prev).fetchone() or {}
         mix = list(conn.execute(sql_mix, params_mix).fetchall())
@@ -1987,8 +2023,8 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
 def payments_by_day(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
     sql = f"""
       SELECT
         data_key,
@@ -2004,7 +2040,7 @@ def payments_by_day(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
         {where_filial}
       ORDER BY data_key, total_valor DESC
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["category_label"] = _payment_category_label(row.get("category"), row.get("label"))
@@ -2014,8 +2050,8 @@ def payments_by_day(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
 def payments_by_turno(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
     sql = f"""
       SELECT
         data_key,
@@ -2031,7 +2067,7 @@ def payments_by_turno(role: str, id_empresa: int, id_filial: Optional[int], dt_i
         {where_filial}
       ORDER BY data_key DESC, total_valor DESC
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"))
@@ -2050,8 +2086,8 @@ def payments_anomalies(
 ) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND p.id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("p.id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
     sql = f"""
       SELECT
         p.data_key,
@@ -2075,7 +2111,7 @@ def payments_anomalies(
       ORDER BY p.score DESC, p.impacto_estimado DESC, p.data_key DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
@@ -2105,8 +2141,8 @@ def payments_overview(
 
 
 def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND t.id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("t.id_filial", id_filial)
+    params = [id_empresa] + branch_params
     sql_total_turnos = f"""
       SELECT COUNT(*)::int AS total_turnos
       FROM dw.fact_caixa_turno t
@@ -2162,13 +2198,57 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
          AND ot.id_filial = p.id_filial
          AND ot.id_turno = p.id_turno
         GROUP BY p.id_empresa, p.id_filial, p.id_turno
+      ), operador_turno AS (
+        SELECT
+          ranked.id_empresa,
+          ranked.id_filial,
+          ranked.id_turno,
+          ranked.id_funcionario,
+          COALESCE(NULLIF(df.nome, ''), '') AS funcionario_nome
+        FROM (
+          SELECT
+            v.id_empresa,
+            v.id_filial,
+            v.id_turno,
+            i.id_funcionario,
+            COUNT(*)::int AS item_count,
+            COALESCE(SUM(i.total), 0)::numeric(18,2) AS total_movimento,
+            MAX(v.data) AS last_sale_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY v.id_empresa, v.id_filial, v.id_turno
+              ORDER BY
+                COUNT(*) DESC,
+                COALESCE(SUM(i.total), 0) DESC,
+                MAX(v.data) DESC,
+                MAX(i.id_funcionario) DESC
+            ) AS rn
+          FROM dw.fact_venda v
+          JOIN open_turnos ot
+            ON ot.id_empresa = v.id_empresa
+           AND ot.id_filial = v.id_filial
+           AND ot.id_turno = v.id_turno
+          JOIN dw.fact_venda_item i
+            ON i.id_empresa = v.id_empresa
+           AND i.id_filial = v.id_filial
+           AND i.id_db = v.id_db
+           AND i.id_movprodutos = v.id_movprodutos
+          WHERE v.id_turno IS NOT NULL
+            AND i.id_funcionario IS NOT NULL
+          GROUP BY v.id_empresa, v.id_filial, v.id_turno, i.id_funcionario
+        ) ranked
+        LEFT JOIN dw.dim_funcionario df
+          ON df.id_empresa = ranked.id_empresa
+         AND df.id_filial = ranked.id_filial
+         AND df.id_funcionario = ranked.id_funcionario
+        WHERE ranked.rn = 1
       )
       SELECT
         ot.id_filial,
         COALESCE(f.nome, '') AS filial_nome,
         ot.id_turno,
         ot.id_usuario,
-        COALESCE(NULLIF(u.nome, ''), format('Usuário %%s', ot.id_usuario)) AS usuario_nome,
+        operador.id_funcionario,
+        COALESCE(NULLIF(u.nome, ''), NULLIF(operador.funcionario_nome, ''), format('Usuário %%s', ot.id_usuario)) AS usuario_nome,
         ot.abertura_ts,
         ot.horas_aberto,
         CASE
@@ -2196,6 +2276,10 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
         ON u.id_empresa = ot.id_empresa
        AND u.id_filial = ot.id_filial
        AND u.id_usuario = ot.id_usuario
+      LEFT JOIN operador_turno operador
+        ON operador.id_empresa = ot.id_empresa
+       AND operador.id_filial = ot.id_filial
+       AND operador.id_turno = ot.id_turno
       LEFT JOIN comprovantes_caixa c
         ON c.id_empresa = ot.id_empresa
        AND c.id_filial = ot.id_filial
@@ -2240,7 +2324,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
       LIMIT 12
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         total_turnos_row = conn.execute(sql_total_turnos, params).fetchone() or {"total_turnos": 0}
         open_rows = [dict(row) for row in conn.execute(sql_open, params).fetchall()]
         payment_rows = [dict(row) for row in conn.execute(sql_payments, params).fetchall()]
@@ -2363,11 +2447,11 @@ def _cash_historical_overview(
 ) -> Dict[str, Any]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial_comp = "" if id_filial is None else "AND fc.id_filial = %s"
-    where_filial_pay = "" if id_filial is None else "AND p.id_filial = %s"
-    where_filial_turn = "" if id_filial is None else "AND fc.id_filial = %s"
-    params_comp = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
-    params_pay = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    where_filial_comp, comp_branch_params = _branch_scope_clause("fc.id_filial", id_filial)
+    where_filial_pay, pay_branch_params = _branch_scope_clause("p.id_filial", id_filial)
+    where_filial_agg, agg_branch_params = _branch_scope_clause("id_filial", id_filial)
+    params_comp = [id_empresa, ini, fim] + comp_branch_params
+    params_pay = [id_empresa, ini, fim] + pay_branch_params
 
     sql_summary = f"""
       WITH comprovantes AS (
@@ -2474,7 +2558,7 @@ def _cash_historical_overview(
       FROM mart.agg_pagamentos_turno
       WHERE id_empresa = %s
         AND data_key BETWEEN %s AND %s
-        {"" if id_filial is None else "AND id_filial = %s"}
+        {where_filial_agg}
       GROUP BY 1, 2
       ORDER BY total_valor DESC
       LIMIT 12
@@ -2501,7 +2585,7 @@ def _cash_historical_overview(
           FROM dw.fact_comprovante fc
           WHERE fc.id_empresa = %s
             AND fc.data_key BETWEEN %s AND %s
-            {where_filial_turn}
+            {where_filial_comp}
             AND fc.id_turno IS NOT NULL
         ) c
         GROUP BY c.id_filial, c.id_turno
@@ -2513,16 +2597,62 @@ def _cash_historical_overview(
         FROM dw.fact_pagamento_comprovante p
         WHERE p.id_empresa = %s
           AND p.data_key BETWEEN %s AND %s
-          {"" if id_filial is None else "AND p.id_filial = %s"}
+          {where_filial_pay}
           AND p.id_turno IS NOT NULL
         GROUP BY p.id_filial, p.id_turno
+      ), operador_turno AS (
+        SELECT
+          ranked.id_empresa,
+          ranked.id_filial,
+          ranked.id_turno,
+          ranked.id_funcionario,
+          COALESCE(NULLIF(df.nome, ''), '') AS funcionario_nome
+        FROM (
+          SELECT
+            v.id_empresa,
+            v.id_filial,
+            v.id_turno,
+            i.id_funcionario,
+            COUNT(*)::int AS item_count,
+            COALESCE(SUM(i.total), 0)::numeric(18,2) AS total_movimento,
+            MAX(v.data) AS last_sale_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY v.id_empresa, v.id_filial, v.id_turno
+              ORDER BY
+                COUNT(*) DESC,
+                COALESCE(SUM(i.total), 0) DESC,
+                MAX(v.data) DESC,
+                MAX(i.id_funcionario) DESC
+            ) AS rn
+          FROM dw.fact_venda v
+          JOIN comprovantes c
+            ON c.id_filial = v.id_filial
+           AND c.id_turno = v.id_turno
+          JOIN dw.fact_venda_item i
+            ON i.id_empresa = v.id_empresa
+           AND i.id_filial = v.id_filial
+           AND i.id_db = v.id_db
+           AND i.id_movprodutos = v.id_movprodutos
+          WHERE v.id_empresa = %s
+            AND v.data_key BETWEEN %s AND %s
+            {where_filial_pay.replace('p.', 'v.')}
+            AND v.id_turno IS NOT NULL
+            AND i.id_funcionario IS NOT NULL
+          GROUP BY v.id_empresa, v.id_filial, v.id_turno, i.id_funcionario
+        ) ranked
+        LEFT JOIN dw.dim_funcionario df
+          ON df.id_empresa = ranked.id_empresa
+         AND df.id_filial = ranked.id_filial
+         AND df.id_funcionario = ranked.id_funcionario
+        WHERE ranked.rn = 1
       )
       SELECT
         c.id_filial,
         COALESCE(f.nome, '') AS filial_nome,
         c.id_turno,
         t.id_usuario,
-        COALESCE(NULLIF(u.nome, ''), format('Usuário %%s', t.id_usuario)) AS usuario_nome,
+        operador.id_funcionario,
+        COALESCE(NULLIF(u.nome, ''), NULLIF(operador.funcionario_nome, ''), format('Usuário %%s', t.id_usuario)) AS usuario_nome,
         t.abertura_ts,
         t.fechamento_ts,
         t.is_aberto,
@@ -2542,6 +2672,10 @@ def _cash_historical_overview(
         ON u.id_empresa = %s
        AND u.id_filial = c.id_filial
        AND u.id_usuario = t.id_usuario
+      LEFT JOIN operador_turno operador
+        ON operador.id_empresa = %s
+       AND operador.id_filial = c.id_filial
+       AND operador.id_turno = c.id_turno
       LEFT JOIN auth.filiais f
         ON f.id_empresa = %s
        AND f.id_filial = c.id_filial
@@ -2552,15 +2686,15 @@ def _cash_historical_overview(
       LIMIT 12
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         summary_row = conn.execute(sql_summary, params_comp + params_pay).fetchone() or {}
         by_day_rows = [dict(row) for row in conn.execute(sql_by_day, params_comp + params_pay).fetchall()]
-        payment_mix_rows = [dict(row) for row in conn.execute(sql_payment_mix, params_pay).fetchall()]
+        payment_mix_rows = [dict(row) for row in conn.execute(sql_payment_mix, [id_empresa, ini, fim] + agg_branch_params).fetchall()]
         top_turnos_rows = [
             dict(row)
             for row in conn.execute(
                 sql_top_turnos,
-                params_comp + params_pay + [id_empresa, id_empresa, id_empresa],
+                params_comp + params_pay + [id_empresa, ini, fim] + pay_branch_params + [id_empresa, id_empresa, id_empresa, id_empresa],
             ).fetchall()
         ]
 
@@ -2698,29 +2832,72 @@ def health_score_latest(
     id_filial: Optional[int],
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    where_as_of = "AND dt_ref = %s" if as_of is not None else ""
-    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of])
-    sql = f"""
-      SELECT
-        dt_ref,
-        score_total,
-        components,
-        reasons
-      FROM mart.health_score_daily
-      WHERE id_empresa = %s
-      {where_filial}
-      {where_as_of}
-      ORDER BY dt_ref DESC
-      LIMIT 1
-    """
-    snapshot_meta = _snapshot_meta(role, "health_score_daily", id_empresa, id_filial, as_of, "snapshot")
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    where_as_of = "AND dt_ref <= %s" if as_of is not None else ""
+    branch_ids = _branch_ids(id_filial)
+    snapshot_meta = _snapshot_meta(role, "health_score_daily", id_empresa, id_filial, as_of, "latest_leq_ref")
+    if branch_ids is not None and len(branch_ids) == 1:
+        sql = f"""
+          SELECT
+            dt_ref,
+            score_total,
+            components,
+            reasons
+          FROM mart.health_score_daily
+          WHERE id_empresa = %s
+          {where_filial}
+          {where_as_of}
+          ORDER BY dt_ref DESC
+          LIMIT 1
+        """
+        params = [id_empresa] + branch_params + ([] if as_of is None else [as_of])
+    else:
+        sql = f"""
+          WITH scoped AS (
+            SELECT
+              dt_ref,
+              AVG(comp_margem)::numeric(10,2) AS comp_margem,
+              AVG(comp_fraude)::numeric(10,2) AS comp_fraude,
+              AVG(comp_churn)::numeric(10,2) AS comp_churn,
+              AVG(comp_finance)::numeric(10,2) AS comp_finance,
+              AVG(comp_operacao)::numeric(10,2) AS comp_operacao,
+              AVG(comp_dados)::numeric(10,2) AS comp_dados,
+              AVG(score_total)::numeric(10,2) AS score_total
+            FROM mart.health_score_daily
+            WHERE id_empresa = %s
+            {where_filial}
+            {where_as_of}
+            GROUP BY dt_ref
+            ORDER BY dt_ref DESC
+            LIMIT 1
+          )
+          SELECT
+            dt_ref,
+            score_total,
+            jsonb_build_object(
+              'margem', comp_margem,
+              'fraude', comp_fraude,
+              'churn', comp_churn,
+              'finance', comp_finance,
+              'operacao', comp_operacao,
+              'dados', comp_dados
+            ) AS components,
+            jsonb_build_object(
+              'scope_mode', CASE WHEN %s::int[] IS NULL THEN 'all_branches' ELSE 'multi_branch' END,
+              'selected_branches', COALESCE(to_jsonb(%s::int[]), '[]'::jsonb)
+            ) AS reasons
+          FROM scoped
+        """
+        params = [id_empresa] + branch_params + ([] if as_of is None else [as_of]) + [branch_ids, branch_ids]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         if row:
             payload = dict(row)
             payload.update(snapshot_meta)
-            payload["snapshot_status"] = "exact"
+            payload["snapshot_status"] = "exact" if as_of is None or payload.get("dt_ref") == as_of else "best_effort"
+            payload["precision_mode"] = "exact" if payload["snapshot_status"] == "exact" else "latest_leq_ref"
+            payload["source_kind"] = "snapshot"
             return payload
         payload = {
             "dt_ref": as_of,
@@ -2736,18 +2913,25 @@ def health_score_latest(
 # Metas & Equipe
 # ========================
 
-def goals_today(role: str, id_empresa: int, id_filial: int, goal_date: date) -> List[Dict[str, Any]]:
-    """Goals configured for a given date (branch)."""
+def goals_today(role: str, id_empresa: int, id_filial: Any, goal_date: date) -> List[Dict[str, Any]]:
+    """Goals configured for a given date within the selected scope."""
 
-    sql = """
-      SELECT goal_type, target_value
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    sql = f"""
+      SELECT
+        goal_type,
+        SUM(target_value)::numeric(18,2) AS target_value,
+        COUNT(*)::int AS branch_goal_count
       FROM app.goals
-      WHERE id_empresa = %s AND id_filial = %s AND goal_date = %s
+      WHERE id_empresa = %s
+        AND goal_date = %s
+        {where_filial}
+      GROUP BY goal_type
       ORDER BY goal_type
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        return list(conn.execute(sql, (id_empresa, id_filial, goal_date)).fetchall())
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        return list(conn.execute(sql, [id_empresa, goal_date] + branch_params).fetchall())
 
 
 def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 20) -> List[Dict[str, Any]]:
@@ -2755,8 +2939,8 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
 
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial]) + [limit]
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -2775,7 +2959,7 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
       LIMIT %s
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -2820,9 +3004,10 @@ def jarvis_briefing(
     if not isinstance(fraud_operational, dict):
         fraud_operational = fraud_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
 
+    pricing_branch_id = _conn_branch_id(id_filial)
     pricing = (
-        competitor_pricing_overview(role, id_empresa, id_filial, dt_ini=dt_ini, dt_fim=dt_ref, days_simulation=10)
-        if id_filial is not None
+        competitor_pricing_overview(role, id_empresa, pricing_branch_id, dt_ini=dt_ini, dt_fim=dt_ref, days_simulation=10)
+        if pricing_branch_id is not None
         else None
     )
 
@@ -2973,7 +3158,7 @@ def jarvis_briefing(
                 "cause": "O cenário competitivo indica perda de volume ou margem se o preço atual continuar desalinhado com a praça.",
                 "action": "Revisar o preço do combustível líder da simulação e decidir se vale igualar, proteger margem ou reposicionar a oferta.",
                 "evidence": [
-                    _filial_label(id_filial),
+                    _filial_label(pricing_branch_id),
                     pricing_focus.get("produto_nome"),
                     f"Perda em 10 dias: {_format_brl(pricing_focus.get('scenario_no_change', {}).get('lost_revenue_10d'))}",
                 ],
@@ -3045,9 +3230,9 @@ def notifications_list(
     limit: int = 30,
     unread_only: bool = False,
 ) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     where_unread = "AND read_at IS NULL" if unread_only else ""
-    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
+    params = [id_empresa] + branch_params + [limit]
     sql = f"""
       SELECT id, id_filial, severity, title, body, url, created_at, read_at
       FROM app.notifications
@@ -3057,13 +3242,13 @@ def notifications_list(
       ORDER BY created_at DESC
       LIMIT %s
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
 def notifications_unread_count(role: str, id_empresa: int, id_filial: Optional[int]) -> int:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa] + branch_params
     sql = f"""
       SELECT COALESCE(COUNT(*),0)::int AS total
       FROM app.notifications
@@ -3071,7 +3256,7 @@ def notifications_unread_count(role: str, id_empresa: int, id_filial: Optional[i
         {where_filial}
         AND read_at IS NULL
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone() or {"total": 0}
     return int(row["total"])
 
@@ -3082,8 +3267,8 @@ def notification_mark_read(
     id_filial: Optional[int],
     notification_id: int,
 ) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa, notification_id] + ([] if id_filial is None else [id_filial])
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, notification_id] + branch_params
     sql = f"""
       UPDATE app.notifications
       SET read_at = COALESCE(read_at, now())
@@ -3092,7 +3277,7 @@ def notification_mark_read(
         {where_filial}
       RETURNING id, read_at
     """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone()
         conn.commit()
     return row or {"id": notification_id, "read_at": None}

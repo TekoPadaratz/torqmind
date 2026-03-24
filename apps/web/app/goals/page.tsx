@@ -6,11 +6,11 @@ import { useRouter } from 'next/navigation';
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
 import { apiGet } from '../lib/api';
-import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { buildScopeParams, useScopeQuery } from '../lib/scope';
+import { loadSession, readCachedSession } from '../lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,9 +24,8 @@ export default function GoalsPage() {
   const router = useRouter();
   const scope = useScopeQuery();
 
-  const [claims, setClaims] = useState<any>(null);
+  const [claims, setClaims] = useState<any>(readCachedSession());
   const [data, setData] = useState<any>(null);
-  const [riskData, setRiskData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showMargin, setShowMargin] = useState(false);
@@ -37,16 +36,12 @@ export default function GoalsPage() {
 
   useEffect(() => {
     if (!scope.ready) return;
-
-    if (!requireAuth()) {
-      router.push('/');
-      return;
-    }
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const me = await apiGet('/auth/me');
+        const me = await loadSession(router, 'product');
+        if (!me) return;
         setClaims(me);
         if (!scope.dt_ini || !scope.dt_fim) {
           router.replace(me?.home_path || '/dashboard');
@@ -55,9 +50,7 @@ export default function GoalsPage() {
 
         const qs = buildScopeParams(scope).toString();
         const res = await apiGet(`/bi/goals/overview?${qs}`);
-        const risk = await apiGet(`/bi/risk/overview?${qs}`);
         setData(res);
-        setRiskData(risk);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar metas'));
       } finally {
@@ -66,7 +59,7 @@ export default function GoalsPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filiais_key, scope.id_empresa, scope.ready]);
 
   const leaderboard = useMemo(
     () =>
@@ -78,9 +71,9 @@ export default function GoalsPage() {
           faturamento: Number(r.faturamento || 0),
           margem: Number(r.margem || 0),
           vendas: Number(r.vendas || 0),
-          scoreRisco: Number((riskData?.top_employees || []).find((x: any) => x.id_funcionario === r.id_funcionario)?.score_medio || 0),
+          scoreRisco: Number((data?.risk_top_employees || []).find((x: any) => x.id_funcionario === r.id_funcionario)?.score_medio || 0),
         })),
-    [data, riskData]
+    [data]
   );
   const podium = useMemo(() => leaderboard.slice(0, 5), [leaderboard]);
   const detailedLeaderboard = useMemo(() => leaderboard.slice(0, 15), [leaderboard]);
