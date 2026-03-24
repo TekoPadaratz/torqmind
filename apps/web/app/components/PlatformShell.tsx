@@ -54,7 +54,7 @@ export default function PlatformShell({ title, subtitle, me, children }: Platfor
 
         <div className="platformNavActions">
           {me?.access?.product ? (
-            <Link className="btn" href="/scope">
+            <Link className="btn" href={me?.home_path || '/dashboard'}>
               Produto
             </Link>
           ) : null}

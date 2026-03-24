@@ -22,7 +22,7 @@ export default function LoginPage() {
       .get("/auth/me")
       .then((res) => {
         setClaims(res.data);
-        window.location.href = res.data?.home_path || "/scope";
+        window.location.href = res.data?.home_path || "/dashboard";
       })
       .catch(() => {
         clearAuth();
@@ -43,7 +43,7 @@ export default function LoginPage() {
       setAuthToken(token);
       const me = await api.get("/auth/me");
       setClaims(me.data);
-      window.location.href = res.data?.home_path || me.data?.home_path || "/scope";
+      window.location.href = res.data?.home_path || me.data?.home_path || "/dashboard";
     } catch (err: any) {
       setError(extractApiError(err, "Falha no login"));
     }

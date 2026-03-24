@@ -1,44 +1,63 @@
 'use client';
 
-import Link from 'next/link';
 import Image from 'next/image';
+import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
-import { clearAuth, getClaims } from '../lib/auth';
-import { apiGet } from '../lib/api';
 
-function buildHref(path: string, params: URLSearchParams) {
-  const qp = new URLSearchParams(params.toString());
-  // keep only what matters across pages
-  const keep = ['dt_ini', 'dt_fim', 'dt_ref', 'id_filial', 'id_empresa'];
-  const clean = new URLSearchParams();
-  for (const k of keep) {
-    const v = qp.get(k);
-    if (v) clean.set(k, v);
-  }
-  const qs = clean.toString();
-  return qs ? `${path}?${qs}` : path;
+import { apiGet } from '../lib/api';
+import { clearAuth } from '../lib/auth';
+import {
+  PRODUCT_LINKS,
+  buildProductHref,
+  buildScopeSearchParams,
+  getScopeControls,
+  readScopeFromSearch,
+} from '../lib/product-scope.mjs';
+
+type BranchOption = {
+  id_filial: number;
+  nome: string;
+};
+
+type ScopeDraft = {
+  dt_ini: string;
+  dt_fim: string;
+  id_empresa: string;
+  id_filial: string;
+};
+
+function scopeFromSession(searchParams: URLSearchParams, session: any) {
+  const fallback = session?.default_scope || {};
+  const parsed = readScopeFromSearch(searchParams, fallback);
+  const fallbackCompany =
+    parsed.id_empresa ||
+    (fallback.id_empresa != null ? String(fallback.id_empresa) : null) ||
+    (session?.id_empresa != null ? String(session.id_empresa) : null) ||
+    (session?.tenant_ids?.length ? String(session.tenant_ids[0]) : null);
+  const controls = getScopeControls(session);
+  const fallbackBranch =
+    controls.branchLocked && session?.id_filial != null
+      ? String(session.id_filial)
+      : parsed.id_filial ||
+        (fallback.id_filial != null ? String(fallback.id_filial) : null) ||
+        (session?.id_filial != null ? String(session.id_filial) : null);
+
+  return {
+    dt_ini: parsed.dt_ini || fallback.dt_ini || '',
+    dt_fim: parsed.dt_fim || fallback.dt_fim || '',
+    dt_ref: session?.server_today || fallback.server_today || parsed.dt_ref || fallback.dt_ref || '',
+    id_empresa: fallbackCompany,
+    id_filial: fallbackBranch,
+  };
 }
 
-function NavLink({
-  path,
-  href,
-  label,
-}: {
-  path: string;
-  href: string;
-  label: string;
-}) {
-  const pathname = usePathname();
-  const isActive = pathname === path;
-  return (
-    <Link
-      href={href}
-      className={`navlink ${isActive ? 'navlinkActive' : ''}`}
-    >
-      {label}
-    </Link>
-  );
+function companyLabel(session: any, idEmpresa: string | null) {
+  if (!idEmpresa) return 'Empresa não definida';
+  const companies = session?.product_companies || [];
+  const match = companies.find((item: any) => String(item.id_empresa) === String(idEmpresa));
+  if (!match) return `Empresa ${idEmpresa}`;
+  return `${match.tenant_name || `Empresa ${idEmpresa}`}`;
 }
 
 export default function AppNav({
@@ -52,11 +71,35 @@ export default function AppNav({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [search, setSearch] = useState('');
+  const searchParams = useSearchParams();
+
+  const [session, setSession] = useState<any>(null);
+  const [draft, setDraft] = useState<ScopeDraft>({
+    dt_ini: '',
+    dt_fim: '',
+    id_empresa: '',
+    id_filial: '',
+  });
+  const [branches, setBranches] = useState<BranchOption[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
   const [unread, setUnread] = useState(initialUnread ?? 0);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [claims, setClaims] = useState<any>(null);
-  const params = useMemo(() => new URLSearchParams(search), [search]);
+
+  useEffect(() => {
+    document.body.classList.add('product-shell');
+    return () => document.body.classList.remove('product-shell');
+  }, []);
+
+  useEffect(() => {
+    const loadSession = async () => {
+      try {
+        const me = await apiGet('/auth/me');
+        setSession(me);
+      } catch {
+        setSession(null);
+      }
+    };
+    loadSession();
+  }, []);
 
   useEffect(() => {
     if (typeof initialUnread === 'number') {
@@ -64,104 +107,226 @@ export default function AppNav({
     }
   }, [initialUnread]);
 
-  useEffect(() => {
-    const syncSearch = () => setSearch(window.location.search);
-    syncSearch();
-    setClaims(getClaims());
-    window.addEventListener('popstate', syncSearch);
-    return () => window.removeEventListener('popstate', syncSearch);
-  }, []);
+  const activeScope = useMemo(() => {
+    const params = new URLSearchParams(searchParams?.toString() || '');
+    return scopeFromSession(params, session);
+  }, [searchParams, session]);
+
+  const scopeControls = useMemo(() => getScopeControls(session), [session]);
+  const companies = useMemo(() => session?.product_companies || [], [session]);
 
   useEffect(() => {
-    setSearch(window.location.search);
-  }, [pathname]);
+    setDraft({
+      dt_ini: activeScope.dt_ini || '',
+      dt_fim: activeScope.dt_fim || '',
+      id_empresa: activeScope.id_empresa || '',
+      id_filial: activeScope.id_filial || '',
+    });
+  }, [activeScope.dt_ini, activeScope.dt_fim, activeScope.id_empresa, activeScope.id_filial]);
 
   useEffect(() => {
-    if (typeof initialUnread === 'number') return;
-    const load = async () => {
+    const loadUnread = async () => {
+      if (typeof initialUnread === 'number') return;
       try {
-        const qs = new URLSearchParams();
-        const idEmpresa = params.get('id_empresa');
-        const idFilial = params.get('id_filial');
-        if (idEmpresa) qs.set('id_empresa', idEmpresa);
-        if (idFilial) qs.set('id_filial', idFilial);
-        const res = await apiGet(`/bi/notifications/unread-count?${qs.toString()}`);
-        setUnread(Number(res?.unread || 0));
+        const qs = buildScopeSearchParams(activeScope).toString();
+        const response = await apiGet(`/bi/notifications/unread-count${qs ? `?${qs}` : ''}`);
+        setUnread(Number(response?.unread || 0));
       } catch {
         setUnread(0);
       }
     };
-    load();
-  }, [initialUnread, params]);
+    loadUnread();
+  }, [activeScope, initialUnread]);
 
   useEffect(() => {
-    setMenuOpen(false);
-  }, [pathname, search]);
+    const companyId = draft.id_empresa || activeScope.id_empresa;
+    if (!companyId) {
+      setBranches([]);
+      return;
+    }
+
+    const loadBranches = async () => {
+      setLoadingBranches(true);
+      try {
+        const response = await apiGet(`/bi/filiais?id_empresa=${companyId}`);
+        const items = (response?.items || []) as BranchOption[];
+        setBranches(items);
+      } catch {
+        setBranches([]);
+      } finally {
+        setLoadingBranches(false);
+      }
+    };
+
+    loadBranches();
+  }, [activeScope.id_empresa, draft.id_empresa]);
+
+  useEffect(() => {
+    if (!scopeControls.branchLocked) return;
+    if (session?.id_filial == null) return;
+    setDraft((current) => ({ ...current, id_filial: String(session.id_filial) }));
+  }, [scopeControls.branchLocked, session]);
+
+  const currentUserLabel =
+    userLabel ||
+    session?.name ||
+    session?.email ||
+    (session?.user_role ? String(session.user_role) : undefined);
 
   const onLogout = () => {
     clearAuth();
     router.push('/');
   };
 
-  const links = [
-    { path: '/dashboard', label: 'Dashboard Geral' },
-    { path: '/sales', label: 'Vendas & Stores' },
-    { path: '/cash', label: 'Caixa' },
-    { path: '/fraud', label: 'Sistema Anti-Fraude' },
-    { path: '/customers', label: 'Análise de Clientes' },
-    { path: '/finance', label: 'Financeiro' },
-    { path: '/pricing', label: 'Preço Concorrente' },
-    { path: '/goals', label: 'Metas & Equipe' },
-  ];
+  const applyFilters = () => {
+    const params = buildScopeSearchParams({
+      dt_ini: draft.dt_ini,
+      dt_fim: draft.dt_fim,
+      id_empresa: draft.id_empresa || activeScope.id_empresa,
+      id_filial: draft.id_filial,
+    });
+    const query = params.toString();
+    router.push(query ? `${pathname}?${query}` : pathname);
+  };
 
-  const hrefs = links.map((l) => ({
-    path: l.path,
-    href: buildHref(l.path, params),
-    label: l.label,
-  }));
+  const navScope = {
+    dt_ini: activeScope.dt_ini,
+    dt_fim: activeScope.dt_fim,
+    id_empresa: activeScope.id_empresa,
+    id_filial: activeScope.id_filial,
+  };
+
+  const selectedCompanyLabel = companyLabel(session, activeScope.id_empresa || draft.id_empresa || null);
+  const selectedBranchLabel = draft.id_filial
+    ? branches.find((item) => String(item.id_filial) === String(draft.id_filial))?.nome || `Filial ${draft.id_filial}`
+    : 'Todas as filiais';
 
   return (
-    <div className="nav">
-      <div className="brand">
-        <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={28} height={28} priority />
-        <span className="pill">{title}</span>
-        {userLabel ? <span className="pill">{userLabel}</span> : null}
+    <aside className="productSidebar">
+      <div className="productSidebarHeader">
+        <div className="productBrand">
+          <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={34} height={34} priority />
+          <div>
+            <div className="productEyebrow">TorqMind BI</div>
+            <div className="productBrandTitle">{title}</div>
+          </div>
+        </div>
+        {currentUserLabel ? <div className="pill productUserPill">{currentUserLabel}</div> : null}
       </div>
 
-      <button
-        className="navToggle"
-        onClick={() => setMenuOpen((current) => !current)}
-        aria-label={menuOpen ? 'Fechar navegação' : 'Abrir navegação'}
-        aria-expanded={menuOpen}
-      >
-        <span />
-        <span />
-        <span />
-      </button>
+      <div className="productSidebarSection">
+        <div className="productSectionLabel">Navegação</div>
+        <nav className="productNavLinks">
+          {PRODUCT_LINKS.map((item) => {
+            const isActive = pathname === item.path;
+            return (
+              <Link
+                key={item.path}
+                href={buildProductHref(item.path, navScope)}
+                className={`productNavLink ${isActive ? 'productNavLinkActive' : ''}`}
+              >
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
 
-      <div className={`navRight ${menuOpen ? 'navRightOpen' : ''}`}>
-        <div className="navLinks">
-          {hrefs.map((l) => (
-            <NavLink key={l.path} path={l.path} href={l.href} label={l.label} />
-          ))}
+      <div className="productSidebarSection productFilters">
+        <div className="productSectionLabel">Filtros de produção</div>
+
+        <label className="productField">
+          <span>Empresa</span>
+          {scopeControls.canSwitchCompany ? (
+            <select
+              className="input"
+              value={draft.id_empresa}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  id_empresa: event.target.value,
+                  id_filial: scopeControls.branchLocked ? current.id_filial : '',
+                }))
+              }
+            >
+              {companies.map((item: any) => (
+                <option key={item.id_empresa} value={String(item.id_empresa)}>
+                  {item.tenant_name || `Empresa ${item.id_empresa}`}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="productReadOnlyField">{selectedCompanyLabel}</div>
+          )}
+        </label>
+
+        <label className="productField">
+          <span>Filial</span>
+          <select
+            className="input"
+            value={draft.id_filial}
+            disabled={scopeControls.branchLocked || !scopeControls.canSwitchBranch || loadingBranches}
+            onChange={(event) => setDraft((current) => ({ ...current, id_filial: event.target.value }))}
+          >
+            {!scopeControls.branchLocked ? <option value="">Todas as filiais</option> : null}
+            {branches.map((item) => (
+              <option key={item.id_filial} value={String(item.id_filial)}>
+                {item.id_filial} - {item.nome}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="productDateGrid">
+          <label className="productField">
+            <span>De</span>
+            <input
+              className="input"
+              type="date"
+              value={draft.dt_ini}
+              onChange={(event) => setDraft((current) => ({ ...current, dt_ini: event.target.value }))}
+            />
+          </label>
+          <label className="productField">
+            <span>Até</span>
+            <input
+              className="input"
+              type="date"
+              value={draft.dt_fim}
+              onChange={(event) => setDraft((current) => ({ ...current, dt_fim: event.target.value }))}
+            />
+          </label>
         </div>
-        <div className="navActions">
-          <Link className="btn" href={buildHref('/dashboard', params)} aria-label="Alertas">
-            Alertas ({unread})
-          </Link>
-          {claims?.access?.platform ? (
+
+        <div className="productScopeMeta">
+          <div>
+            <strong>Base do servidor</strong>
+            <span>{activeScope.dt_ref || session?.server_today || 'indisponível'}</span>
+          </div>
+          <div>
+            <strong>Filial ativa</strong>
+            <span>{selectedBranchLabel}</span>
+          </div>
+        </div>
+
+        <button className="btn productApplyButton" onClick={applyFilters} disabled={!draft.dt_ini || !draft.dt_fim}>
+          Aplicar filtros
+        </button>
+      </div>
+
+      <div className="productSidebarSection productSidebarFooter">
+        <div className="productSidebarMeta">
+          <span className="pill">Alertas {unread}</span>
+          {session?.access?.platform ? (
             <Link className="btn" href="/platform">
               Platform
             </Link>
           ) : null}
-          <Link className="btn" href="/scope">
-            Escopo
-          </Link>
-          <button className="btn" onClick={onLogout} aria-label="Sair da conta">
-            Sair
-          </button>
         </div>
+        <button className="btn" onClick={onLogout} aria-label="Sair da conta">
+          Sair
+        </button>
       </div>
-    </div>
+    </aside>
   );
 }

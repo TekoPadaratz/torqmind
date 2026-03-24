@@ -14,11 +14,28 @@ import {
   formatCurrency,
   formatDateKey,
   formatDateKeyShort,
+  formatDateOnly,
   formatTurnoLabel,
 } from '../lib/format';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
+
+function financeCoverageLabel(aging: any) {
+  const status = String(aging?.snapshot_status || 'missing');
+  const effectiveDate = aging?.effective_dt_ref || aging?.dt_ref || aging?.requested_dt_ref;
+
+  if (status === 'exact') {
+    return `Snapshot executivo exato em ${formatDateOnly(effectiveDate)}.`;
+  }
+  if (status === 'best_effort') {
+    return `Snapshot executivo best-effort em ${formatDateOnly(effectiveDate)} para a data-base solicitada.`;
+  }
+  if (status === 'operational') {
+    return `Leitura operacional calculada em ${formatDateOnly(effectiveDate)} a partir de títulos abertos do DW.`;
+  }
+  return `Sem snapshot executivo para ${formatDateOnly(aging?.requested_dt_ref)} e sem fallback operacional confiável.`;
+}
 
 export default function FinancePage() {
   const router = useRouter();
@@ -40,24 +57,19 @@ export default function FinancePage() {
       router.push('/');
       return;
     }
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const [me, res] = await Promise.all([
-          apiGet('/auth/me'),
-          apiGet(`/bi/finance/overview?${qs.toString()}&include_operational=false`),
-        ]);
+        const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/dashboard');
+          return;
+        }
+
+        const qs = buildScopeParams(scope).toString();
+        const res = await apiGet(`/bi/finance/overview?${qs}&include_operational=false`);
         setData(res);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar financeiro'));
@@ -67,7 +79,7 @@ export default function FinancePage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const chartData = useMemo(
     () =>
@@ -131,11 +143,7 @@ export default function FinancePage() {
       <div className="container">
         <div className="card">
           <div className="muted">Cockpit financeiro para decidir cobrança, renegociação, concentração e pressão imediata de caixa sem ruído operacional.</div>
-          {!loading && snapshotStatus === 'missing' ? (
-            <div style={{ marginTop: 10, fontWeight: 700 }}>
-              O recorte histórico de {scope.dt_ref || scope.dt_fim} ainda não possui snapshot executivo materializado.
-            </div>
-          ) : null}
+          {!loading ? <div style={{ marginTop: 10, fontWeight: 700 }}>{financeCoverageLabel(aging)}</div> : null}
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
@@ -158,7 +166,9 @@ export default function FinancePage() {
               <div className="muted" style={{ marginTop: 8 }}>
                 {cashPressure > 0
                   ? 'Vencidos que já exigem cobrança, renegociação ou reordenação de pagamentos.'
-                  : 'Sem concentração crítica de vencidos no recorte analisado.'}
+                  : aging?.data_gaps
+                    ? 'A leitura mostrada não encontrou exposição aberta relevante na referência efetiva.'
+                    : 'Sem concentração crítica de vencidos no recorte analisado.'}
               </div>
             ) : null}
           </div>

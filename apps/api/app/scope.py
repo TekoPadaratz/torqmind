@@ -60,3 +60,24 @@ def resolve_scope(
         return tenant_id, int(requested_branch)
 
     raise HTTPException(status_code=403, detail={"error": "branch_access_denied", "message": "Acesso não permitido à filial."})
+
+
+def accessible_branch_ids(claims: dict[str, Any], tenant_id: int) -> tuple[bool, list[int]]:
+    user_role = normalize_role(claims.get("user_role"))
+    accesses = [row for row in (claims.get("accesses") or []) if row.get("id_empresa") is not None]
+
+    if user_role in {"platform_master", "platform_admin", "product_global"}:
+        return True, []
+
+    tenant_rows = [row for row in accesses if int(row.get("id_empresa") or 0) == int(tenant_id)]
+    if any(row.get("id_filial") is None for row in tenant_rows):
+        return True, []
+
+    branch_ids = sorted(
+        {
+            int(row["id_filial"])
+            for row in tenant_rows
+            if row.get("id_filial") is not None
+        }
+    )
+    return False, branch_ids

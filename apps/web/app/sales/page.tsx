@@ -10,7 +10,7 @@ import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency } from '../lib/format';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,21 +35,19 @@ export default function SalesPage() {
       return;
     }
 
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const [me, res] = await Promise.all([apiGet('/auth/me'), apiGet(`/bi/sales/overview?${qs.toString()}`)]);
+        const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/dashboard');
+          return;
+        }
+
+        const qs = buildScopeParams(scope).toString();
+        const res = await apiGet(`/bi/sales/overview?${qs}`);
         setData(res);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar vendas'));
@@ -59,7 +57,7 @@ export default function SalesPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const hourAgg = useMemo(() => {
     const rows = new Array(24).fill(0).map((_, hora) => ({ hora: `${hora.toString().padStart(2, '0')}:00`, faturamento: 0 }));

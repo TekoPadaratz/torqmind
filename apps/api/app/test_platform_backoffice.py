@@ -191,7 +191,12 @@ class PlatformBackofficeTest(unittest.TestCase):
     def test_platform_master_scope_and_product_user_auto_scope_use_latest_operational_date(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")
         master_login = self._login(master_email, "Senha@123")
-        self.assertEqual(master_login.json()["home_path"], "/scope")
+        self.assertNotEqual(master_login.json()["home_path"], "/scope")
+        self.assertTrue(
+            master_login.json()["home_path"] == "/platform"
+            or master_login.json()["home_path"].startswith("/dashboard?"),
+            master_login.json()["home_path"],
+        )
 
         tenant_id = self._create_tenant("Tenant Auto Scope")
         branch_id = 994
@@ -242,7 +247,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         qs = parse_qs(urlparse(body["home_path"]).query)
         self.assertEqual(qs["dt_ini"][0], "2026-02-19")
         self.assertEqual(qs["dt_fim"][0], "2026-03-20")
-        self.assertEqual(qs["dt_ref"][0], "2026-03-20")
+        self.assertNotIn("dt_ref", qs)
         self.assertEqual(qs["id_empresa"][0], str(tenant_id))
         self.assertEqual(qs["id_filial"][0], str(branch_id))
 
@@ -253,6 +258,8 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertEqual(me_body["home_path"], body["home_path"])
         self.assertEqual(me_body["default_scope"]["dt_ini"], "2026-02-19")
         self.assertEqual(me_body["default_scope"]["dt_fim"], "2026-03-20")
+        self.assertEqual(me_body["default_scope"]["dt_ref"], str(date.today()))
+        self.assertEqual(me_body["default_scope"]["latest_operational_dt"], "2026-03-20")
         self.assertEqual(int(me_body["default_scope"]["days"]), 30)
 
     def test_product_user_auto_scope_falls_back_to_branch_operational_facts_beyond_sales(self) -> None:
@@ -307,7 +314,7 @@ class PlatformBackofficeTest(unittest.TestCase):
 
         self.assertEqual(qs["dt_ini"][0], "2026-03-02")
         self.assertEqual(qs["dt_fim"][0], "2026-03-15")
-        self.assertEqual(qs["dt_ref"][0], "2026-03-15")
+        self.assertNotIn("dt_ref", qs)
         self.assertEqual(qs["id_empresa"][0], str(tenant_id))
         self.assertEqual(qs["id_filial"][0], str(branch_id))
 
@@ -317,6 +324,8 @@ class PlatformBackofficeTest(unittest.TestCase):
         me_body = me_response.json()
         self.assertEqual(me_body["default_scope"]["dt_ini"], "2026-03-02")
         self.assertEqual(me_body["default_scope"]["dt_fim"], "2026-03-15")
+        self.assertEqual(me_body["default_scope"]["dt_ref"], str(date.today()))
+        self.assertEqual(me_body["default_scope"]["latest_operational_dt"], "2026-03-15")
         self.assertEqual(me_body["default_scope"]["source"], "latest_operational_date")
         self.assertEqual(int(me_body["default_scope"]["days"]), 14)
 
@@ -326,7 +335,8 @@ class PlatformBackofficeTest(unittest.TestCase):
         email = self._create_user("product_global", "Senha@123")
 
         login_response = self._login(email, "Senha@123")
-        self.assertEqual(login_response.json()["home_path"], "/scope")
+        self.assertTrue(login_response.json()["home_path"].startswith("/dashboard?"), login_response.json()["home_path"])
+        self.assertNotIn("/scope", login_response.json()["home_path"])
 
         headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
         me_response = self.client.get("/auth/me", headers=headers)
@@ -343,6 +353,259 @@ class PlatformBackofficeTest(unittest.TestCase):
         filiais_response = self.client.get(f"/bi/filiais?id_empresa={tenant_id}", headers=headers)
         self.assertEqual(filiais_response.status_code, 200, filiais_response.text)
         self.assertTrue(any(int(item["id_filial"]) == 901 for item in filiais_response.json()["items"]))
+
+    def test_dashboard_home_uses_operational_fallbacks_when_exact_snapshots_are_missing(self) -> None:
+        tenant_id = self._create_tenant("Tenant Home Fallback")
+        branch_id = 997
+        self._create_branch(tenant_id, branch_id, "Filial 997", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        headers = self._auth_headers(owner_email, "Senha@123")
+
+        ref_today = date.today()
+        churn_sale_date = ref_today - timedelta(days=45)
+        fraud_date = ref_today - timedelta(days=5)
+        finance_due_date = ref_today - timedelta(days=6)
+        comp_data_key = int(churn_sale_date.strftime("%Y%m%d"))
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_cliente (id_empresa, id_filial, id_cliente, nome, documento)
+                VALUES (%s, %s, 7001, 'Cliente Fallback', NULL)
+                ON CONFLICT (id_empresa, id_filial, id_cliente) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_cliente, id_comprovante, id_turno, saidas_entradas, total_venda, cancelado, payload
+                )
+                VALUES (%s, %s, 1, 7001, %s, %s, 7001, 97001, 31, 1, 180, false, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id, f"{churn_sale_date.isoformat()} 10:00:00", comp_data_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, qtd, valor_unitario, total, desconto, custo_total, margem, cfop, payload
+                )
+                VALUES (%s, %s, 1, 7001, 70011, %s, 500, 1, 180, 180, 0, 120, 60, 5102, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id, comp_data_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  id_turno, id_cliente, valor_total, cancelado, situacao, payload
+                )
+                VALUES (%s, %s, 1, 97001, %s, %s, 31, 7001, 180, true, 1, '{"CFOP":"5102"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante) DO NOTHING
+                """,
+                (tenant_id, branch_id, f"{churn_sale_date.isoformat()} 10:00:00", comp_data_key),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  id_turno, id_cliente, valor_total, cancelado, situacao, payload
+                )
+                VALUES (%s, %s, 1, 97002, %s, %s, 32, 7001, 260, true, 1, '{"CFOP":"5102"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante) DO NOTHING
+                """,
+                (tenant_id, branch_id, f"{fraud_date.isoformat()} 11:00:00", int(fraud_date.strftime("%Y%m%d"))),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_financeiro (
+                  id_empresa, id_filial, id_db, tipo_titulo, id_titulo, id_entidade,
+                  data_emissao, data_key_emissao, vencimento, data_key_venc,
+                  data_pagamento, data_key_pgto, valor, valor_pago, payload
+                )
+                VALUES (%s, %s, 1, 1, 8801, 1, %s, %s, %s, %s, NULL, NULL, 320, 0, '{}'::jsonb)
+                """,
+                (
+                    tenant_id,
+                    branch_id,
+                    (finance_due_date - timedelta(days=5)).isoformat(),
+                    int((finance_due_date - timedelta(days=5)).strftime("%Y%m%d")),
+                    finance_due_date.isoformat(),
+                    int(finance_due_date.strftime("%Y%m%d")),
+                ),
+            )
+            conn.execute("REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.clientes_churn_risco")
+            conn.commit()
+
+        response = self.client.get(
+            f"/bi/dashboard/home?dt_ini={(ref_today - timedelta(days=30)).isoformat()}&dt_fim={ref_today.isoformat()}&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+
+        self.assertGreater(float(body["overview"]["fraud"]["operational"]["kpis"]["valor_cancelado"]), 0)
+        self.assertEqual(float(body["overview"]["fraud"]["modeled_risk"]["kpis"]["impacto_total"] or 0), 0.0)
+        self.assertEqual(body["churn"]["snapshot_meta"]["snapshot_status"], "operational_current")
+        self.assertEqual(body["finance"]["aging"]["snapshot_status"], "operational")
+        self.assertGreater(float(body["overview"]["jarvis"]["impact_value"] or 0), 0)
+
+    def test_finance_aging_prefers_exact_then_best_effort_snapshot(self) -> None:
+        tenant_id = self._create_tenant("Tenant Finance Snapshot")
+        branch_id = 998
+        self._create_branch(tenant_id, branch_id, "Filial 998", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        headers = self._auth_headers(owner_email, "Senha@123")
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO mart.finance_aging_daily (
+                  dt_ref, id_empresa, id_filial, receber_total_aberto, receber_total_vencido,
+                  pagar_total_aberto, pagar_total_vencido, bucket_0_7, bucket_8_15,
+                  bucket_16_30, bucket_31_60, bucket_60_plus, top5_concentration_pct, data_gaps
+                )
+                VALUES
+                  ('2026-03-20', %s, %s, 100, 40, 50, 10, 10, 10, 10, 5, 5, 30, false),
+                  ('2026-03-22', %s, %s, 120, 55, 60, 12, 12, 12, 12, 6, 6, 35, false)
+                ON CONFLICT (dt_ref, id_empresa, id_filial) DO UPDATE SET
+                  receber_total_aberto = EXCLUDED.receber_total_aberto,
+                  receber_total_vencido = EXCLUDED.receber_total_vencido,
+                  pagar_total_aberto = EXCLUDED.pagar_total_aberto,
+                  pagar_total_vencido = EXCLUDED.pagar_total_vencido,
+                  bucket_0_7 = EXCLUDED.bucket_0_7,
+                  bucket_8_15 = EXCLUDED.bucket_8_15,
+                  bucket_16_30 = EXCLUDED.bucket_16_30,
+                  bucket_31_60 = EXCLUDED.bucket_31_60,
+                  bucket_60_plus = EXCLUDED.bucket_60_plus,
+                  top5_concentration_pct = EXCLUDED.top5_concentration_pct,
+                  data_gaps = EXCLUDED.data_gaps,
+                  updated_at = now()
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id),
+            )
+            conn.commit()
+
+        exact = self.client.get(
+            f"/bi/finance/overview?dt_ini=2026-03-01&dt_fim=2026-03-31&dt_ref=2026-03-22&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(exact.status_code, 200, exact.text)
+        exact_body = exact.json()["aging"]
+        self.assertEqual(exact_body["snapshot_status"], "exact")
+        self.assertEqual(str(exact_body["effective_dt_ref"]), "2026-03-22")
+
+        best_effort = self.client.get(
+            f"/bi/finance/overview?dt_ini=2026-03-01&dt_fim=2026-03-31&dt_ref=2026-03-24&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(best_effort.status_code, 200, best_effort.text)
+        best_effort_body = best_effort.json()["aging"]
+        self.assertEqual(best_effort_body["snapshot_status"], "best_effort")
+        self.assertEqual(best_effort_body["precision_mode"], "latest_leq_ref")
+        self.assertEqual(str(best_effort_body["effective_dt_ref"]), "2026-03-22")
+
+    def test_cash_overview_splits_historical_window_from_live_monitor(self) -> None:
+        tenant_id = self._create_tenant("Tenant Cash Split")
+        branch_id = 999
+        self._create_branch(tenant_id, branch_id, "Filial 999", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        headers = self._auth_headers(owner_email, "Senha@123")
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_usuario_caixa (id_empresa, id_filial, id_usuario, nome, payload)
+                VALUES (%s, %s, 910, 'Operador Histórico', '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_usuario) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_caixa_turno (
+                  id_empresa, id_filial, id_turno, id_db, id_usuario, abertura_ts,
+                  fechamento_ts, data_key_abertura, data_key_fechamento,
+                  encerrante_fechamento, is_aberto, status_raw, payload
+                )
+                VALUES
+                  (%s, %s, 41, 1, 910, TIMESTAMPTZ '2026-03-05 08:00:00+00', TIMESTAMPTZ '2026-03-05 18:00:00+00', 20260305, 20260305, NULL, false, 'CLOSED', '{}'::jsonb),
+                  (%s, %s, 42, 1, 910, now() - interval '4 hour', NULL, %s, NULL, NULL, true, 'OPEN', '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_turno) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id, int(date.today().strftime("%Y%m%d"))),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  id_usuario, id_turno, valor_total, cancelado, situacao, payload
+                )
+                VALUES (%s, %s, 1, 41001, TIMESTAMPTZ '2026-03-05 10:00:00+00', 20260305, 910, 41, 250, false, 1, '{"CFOP":"5102"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_pagamento_comprovante (
+                  id_empresa, id_filial, referencia, id_db, id_comprovante, id_turno, id_usuario,
+                  tipo_forma, valor, dt_evento, data_key, payload
+                )
+                VALUES (%s, %s, 41001, 1, 41001, 41, 910, 1, 250, TIMESTAMPTZ '2026-03-05 10:05:00+00', 20260305, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, referencia, tipo_forma) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_pagamentos_turno")
+            conn.commit()
+
+        response = self.client.get(
+            f"/bi/cash/overview?dt_ini=2026-03-01&dt_fim=2026-03-10&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+
+        self.assertEqual(body["historical"]["requested_window"]["dt_ini"], "2026-03-01")
+        self.assertEqual(body["historical"]["requested_window"]["dt_fim"], "2026-03-10")
+        self.assertEqual(int(body["historical"]["kpis"]["caixas_periodo"]), 1)
+        self.assertEqual(int(body["live_now"]["kpis"]["caixas_abertos"]), 1)
+        self.assertTrue(body["historical"]["top_turnos"])
+        self.assertEqual(body["source_status"], body["historical"]["source_status"])
+
+    def test_branch_visibility_respects_platform_master_owner_and_manager(self) -> None:
+        tenant_id = self._create_tenant("Tenant Branch Visibility")
+        self._create_branch(tenant_id, 1001, "Filial 1001", is_active=True)
+        self._create_branch(tenant_id, 1002, "Filial 1002", is_active=True)
+
+        master_email = self._create_user("platform_master", "Senha@123")
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        manager_email = self._create_user("tenant_manager", "Senha@123", tenant_id=tenant_id, branch_id=1001)
+
+        master_headers = self._auth_headers(master_email, "Senha@123")
+        owner_headers = self._auth_headers(owner_email, "Senha@123")
+        manager_headers = self._auth_headers(manager_email, "Senha@123")
+
+        master_filiais = self.client.get(f"/bi/filiais?id_empresa={tenant_id}", headers=master_headers)
+        owner_filiais = self.client.get(f"/bi/filiais?id_empresa={tenant_id}", headers=owner_headers)
+        manager_filiais = self.client.get(f"/bi/filiais?id_empresa={tenant_id}", headers=manager_headers)
+
+        self.assertEqual(master_filiais.status_code, 200, master_filiais.text)
+        self.assertEqual(owner_filiais.status_code, 200, owner_filiais.text)
+        self.assertEqual(manager_filiais.status_code, 200, manager_filiais.text)
+
+        self.assertEqual(len(master_filiais.json()["items"]), 2)
+        self.assertEqual(len(owner_filiais.json()["items"]), 2)
+        self.assertEqual([int(item["id_filial"]) for item in manager_filiais.json()["items"]], [1001])
+
+        owner_platform = self.client.get("/platform/companies?limit=10", headers=owner_headers)
+        self.assertEqual(owner_platform.status_code, 403, owner_platform.text)
 
     def test_user_update_can_clear_valid_from_and_keep_global_product_scope(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")

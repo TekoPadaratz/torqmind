@@ -20,7 +20,7 @@ import {
   formatHoursLabel,
   formatTurnoLabel,
 } from '../lib/format';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,23 +44,18 @@ export default function FraudPage() {
       router.push('/');
       return;
     }
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
         const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/dashboard');
+          return;
+        }
 
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const res = await apiGet(`/bi/fraud/overview?${qs.toString()}`);
+        const res = await apiGet(`/bi/fraud/overview?${buildScopeParams(scope).toString()}`);
         setData(res);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar fraude'));
@@ -70,7 +65,7 @@ export default function FraudPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const byDay = useMemo(
     () => (data?.by_day || []).map((r: any) => ({ ...r, data: formatDateKeyShort(r.data_key), cancelamentos: Number(r.cancelamentos || 0) })),
@@ -109,8 +104,7 @@ export default function FraudPage() {
         {error ? <div className="card errorCard">{error}</div> : null}
         {scopeOutdatedForRisk ? (
           <div className="card" style={{ marginTop: 12, borderColor: '#f59e0b' }}>
-            <strong>Escopo fora da janela de risco.</strong> O antifraude tem dados até <strong>{maxRiskDate}</strong>. Ajuste em{' '}
-            <Link href="/scope">Definir Escopo</Link>.
+            <strong>Período fora da janela de risco modelado.</strong> O antifraude tem dados modelados até <strong>{maxRiskDate}</strong>. Ajuste o período no menu lateral para comparar a mesma janela.
           </div>
         ) : null}
 

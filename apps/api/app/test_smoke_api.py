@@ -16,7 +16,7 @@ class SmokeApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         seed_cli.main()
-        cls.token = cls._login_token("owner@empresa1.com", "TorqMind@123")
+        cls.token = cls._login_token(seed_cli.PLATFORM_MASTER_EMAIL, seed_cli.PLATFORM_MASTER_PASSWORD)
         with get_conn(role="MASTER", tenant_id=1, branch_id=None) as conn:
             row = conn.execute(
                 "SELECT ingest_key FROM app.tenants WHERE id_empresa = %s",
@@ -246,8 +246,14 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("overview", home)
         self.assertIn("churn", home)
         self.assertIn("finance", home)
+        self.assertIn("cash", home)
         self.assertIn("scope", home)
         self.assertIn("notifications_unread", home)
+        self.assertIn("fraud", home["overview"])
+        self.assertIn("operational", home["overview"]["fraud"])
+        self.assertIn("modeled_risk", home["overview"]["fraud"])
+        self.assertIn("snapshot_meta", home["churn"])
+        self.assertIn("snapshot_status", home["finance"]["aging"])
 
     def test_anonymous_retention_endpoint_returns_payload(self) -> None:
         status, body = self._request(
@@ -273,6 +279,7 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("total_top_risk", summary)
         self.assertIn("avg_churn_score", summary)
         self.assertIn("revenue_at_risk_30d", summary)
+        self.assertIn(body.get("snapshot_meta", {}).get("snapshot_status"), {"exact", "best_effort", "operational_current", "missing"})
 
         drilldown = body.get("drilldown") or {}
         self.assertIn("snapshot", drilldown)
@@ -294,6 +301,7 @@ class SmokeApiTest(unittest.TestCase):
         self.assertTrue(top_customers)
         self.assertTrue(str(top_customers[0].get("cliente_nome") or "").strip())
         self.assertFalse(str(top_customers[0].get("cliente_nome") or "").startswith("#ID "))
+        self.assertIn(body.get("churn_snapshot", {}).get("snapshot_status"), {"exact", "best_effort", "operational_current", "missing"})
 
     def test_competitor_pricing_overview_and_save(self) -> None:
         status_overview, body_overview = self._request(
@@ -398,11 +406,15 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("source_status", body)
         self.assertIn("summary", body)
         self.assertIn("kpis", body)
+        self.assertIn("historical", body)
+        self.assertIn("live_now", body)
         self.assertIn("open_boxes", body)
         self.assertIn("payment_mix", body)
         self.assertIn("cancelamentos", body)
         self.assertIn("alerts", body)
-        self.assertIn(body.get("source_status"), {"ok", "unavailable"})
+        self.assertIn(body.get("source_status"), {"ok", "partial", "unavailable"})
+        self.assertIn(body["historical"].get("source_status"), {"ok", "partial", "unavailable"})
+        self.assertIn(body["live_now"].get("source_status"), {"ok", "unavailable"})
 
     def test_finance_overview_exposes_snapshot_status(self) -> None:
         status, body = self._request(
@@ -412,6 +424,9 @@ class SmokeApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("aging", body)
         self.assertIn("snapshot_status", body["aging"])
+        self.assertIn("precision_mode", body["aging"])
+        self.assertIn("source_kind", body["aging"])
+        self.assertIn(body["aging"].get("snapshot_status"), {"exact", "best_effort", "operational", "missing"})
 
     def test_micro_risk_endpoint(self) -> None:
         # Keep telegram disabled by default in smoke; endpoint must still succeed.

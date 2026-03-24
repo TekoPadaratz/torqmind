@@ -237,12 +237,15 @@ def _snapshot_meta(
 ) -> Dict[str, Any]:
     table = SNAPSHOT_TABLES[table_name]
     where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    params = [requested_dt_ref, requested_dt_ref, requested_dt_ref, id_empresa] + ([] if id_filial is None else [id_filial])
     sql = f"""
       SELECT
         MIN(dt_ref) AS coverage_start_dt_ref,
         MAX(dt_ref) AS coverage_end_dt_ref,
-        COUNT(*)::int AS row_count
+        COUNT(*)::int AS row_count,
+        COALESCE(BOOL_OR(dt_ref = %s), false) AS has_exact,
+        MAX(CASE WHEN %s::date IS NULL OR dt_ref <= %s::date THEN dt_ref END) AS effective_dt_ref,
+        MAX(updated_at) AS latest_updated_at
       FROM {table}
       WHERE id_empresa = %s
       {where_filial}
@@ -252,13 +255,19 @@ def _snapshot_meta(
 
     start_dt = row.get("coverage_start_dt_ref")
     end_dt = row.get("coverage_end_dt_ref")
-    has_exact = bool(requested_dt_ref and start_dt and end_dt and start_dt <= requested_dt_ref <= end_dt)
+    has_exact = bool(row.get("has_exact"))
+    effective_dt_ref = row.get("effective_dt_ref")
+    snapshot_status = "exact" if has_exact else ("best_effort" if effective_dt_ref else "missing")
     return {
         "requested_dt_ref": requested_dt_ref,
+        "effective_dt_ref": effective_dt_ref,
         "coverage_start_dt_ref": start_dt,
         "coverage_end_dt_ref": end_dt,
-        "precision_mode": precision_mode,
-        "snapshot_status": "exact" if has_exact else "missing",
+        "precision_mode": "exact" if has_exact else precision_mode,
+        "snapshot_status": snapshot_status,
+        "source_table": table,
+        "source_kind": "snapshot" if effective_dt_ref else "missing",
+        "latest_updated_at": row.get("latest_updated_at"),
         "row_count": int(row.get("row_count") or 0),
     }
 
@@ -286,208 +295,79 @@ def dashboard_home_bundle(
     dt_fim: date,
     dt_ref: date,
 ) -> Dict[str, Any]:
-    ini = _date_key(dt_ini)
-    fim = _date_key(dt_fim)
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    risk_params = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
-    window_params = [id_empresa] + ([] if id_filial is None else [id_filial])
-    insight_params = [id_empresa, dt_ini, dt_fim] + ([] if id_filial is None else [id_filial]) + [20]
-    churn_params = [id_empresa, 40] + ([] if id_filial is None else [id_filial]) + [dt_ref, 10]
-    unread_params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    insights_rows = risk_insights(role, id_empresa, id_filial, dt_ini, dt_fim, limit=20)
+    sales = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
+    fraud_operational = {
+        "kpis": fraud_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
+        "window": fraud_data_window(role, id_empresa, id_filial),
+    }
+    modeled_risk = {
+        "kpis": risk_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
+        "window": risk_data_window(role, id_empresa, id_filial),
+    }
+    churn = customers_churn_bundle(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=10)
+    finance_aging = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
+    cash = cash_overview(role, id_empresa, id_filial, dt_ini=dt_ini, dt_fim=dt_fim)
+    payments = payments_overview(role, id_empresa, id_filial, dt_ini, dt_fim, anomaly_limit=5)
+    notifications_unread = notifications_unread_count(role, id_empresa, id_filial)
 
-    risk_kpis_sql = f"""
-      SELECT
-        COALESCE(SUM(eventos_risco_total),0)::int AS total_eventos,
-        COALESCE(SUM(eventos_alto_risco),0)::int AS eventos_alto_risco,
-        COALESCE(SUM(impacto_estimado_total),0)::numeric(18,2) AS impacto_total,
-        COALESCE(AVG(score_medio),0)::numeric(10,2) AS score_medio
-      FROM mart.agg_risco_diaria
-      WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
-      {where_filial}
-    """
-    risk_window_sql = f"""
-      SELECT
-        MIN(data_key)::int AS min_data_key,
-        MAX(data_key)::int AS max_data_key,
-        COUNT(*)::int AS rows
-      FROM mart.agg_risco_diaria
-      WHERE id_empresa = %s
-      {where_filial}
-    """
-    insights_sql = f"""
-      SELECT
-        id,
-        created_at,
-        id_filial,
-        insight_type,
-        severity,
-        dt_ref,
-        impacto_estimado,
-        title,
-        message,
-        recommendation,
-        status,
-        meta,
-        ai_plan,
-        ai_model,
-        ai_prompt_tokens,
-        ai_completion_tokens,
-        ai_generated_at,
-        ai_cache_hit,
-        ai_error
-      FROM app.insights_gerados
-      WHERE id_empresa = %s
-        AND dt_ref BETWEEN %s AND %s
-        {where_filial}
-      ORDER BY dt_ref DESC, created_at DESC
-      LIMIT %s
-    """
-    churn_sql = f"""
-      SELECT
-        dt_ref,
-        id_cliente,
-        COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
-        last_purchase,
-        recency_days,
-        expected_cycle_days,
-        frequency_30,
-        frequency_90,
-        monetary_30,
-        monetary_90,
-        churn_score,
-        revenue_at_risk_30d,
-        recommendation,
-        reasons
-      FROM mart.customer_churn_risk_daily
-      WHERE id_empresa = %s
-        AND churn_score >= %s
-        AND id_cliente <> -1
-        {where_filial}
-        AND dt_ref = %s
-      ORDER BY churn_score DESC, revenue_at_risk_30d DESC
-      LIMIT %s
-    """
-    aging_sql = (
-        """
-          SELECT
-            %s::date AS dt_ref,
-            COALESCE(SUM(f.receber_total_aberto),0)::numeric(18,2) AS receber_total_aberto,
-            COALESCE(SUM(f.receber_total_vencido),0)::numeric(18,2) AS receber_total_vencido,
-            COALESCE(SUM(f.pagar_total_aberto),0)::numeric(18,2) AS pagar_total_aberto,
-            COALESCE(SUM(f.pagar_total_vencido),0)::numeric(18,2) AS pagar_total_vencido,
-            COALESCE(SUM(f.bucket_0_7),0)::numeric(18,2) AS bucket_0_7,
-            COALESCE(SUM(f.bucket_8_15),0)::numeric(18,2) AS bucket_8_15,
-            COALESCE(SUM(f.bucket_16_30),0)::numeric(18,2) AS bucket_16_30,
-            COALESCE(SUM(f.bucket_31_60),0)::numeric(18,2) AS bucket_31_60,
-            COALESCE(SUM(f.bucket_60_plus),0)::numeric(18,2) AS bucket_60_plus,
-            COALESCE(AVG(f.top5_concentration_pct),0)::numeric(10,2) AS top5_concentration_pct,
-            COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps,
-            COUNT(*)::int AS snapshot_rows
-          FROM mart.finance_aging_daily f
-          WHERE f.id_empresa = %s
-            AND f.dt_ref = %s
-        """
-        if id_filial is None
-        else """
-          SELECT
-            dt_ref,
-            receber_total_aberto,
-            receber_total_vencido,
-            pagar_total_aberto,
-            pagar_total_vencido,
-            bucket_0_7,
-            bucket_8_15,
-            bucket_16_30,
-            bucket_31_60,
-            bucket_60_plus,
-            top5_concentration_pct,
-            data_gaps,
-            1::int AS snapshot_rows
-          FROM mart.finance_aging_daily
-          WHERE id_empresa = %s
-            AND id_filial = %s
-            AND dt_ref = %s
-          ORDER BY dt_ref DESC
-          LIMIT 1
-        """
-    )
-    aging_params = [dt_ref, id_empresa, dt_ref] if id_filial is None else [id_empresa, id_filial, dt_ref]
-    unread_sql = f"""
-      SELECT COALESCE(COUNT(*),0)::int AS total
-      FROM app.notifications
-      WHERE id_empresa = %s
-        {where_filial}
-        AND read_at IS NULL
-    """
-    filial_sql = """
-      SELECT nome
-      FROM auth.filiais
-      WHERE id_empresa = %s
-        AND id_filial = %s
-    """
-
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        risk_kpis_row = conn.execute(risk_kpis_sql, risk_params).fetchone() or {}
-        risk_window_row = conn.execute(risk_window_sql, window_params).fetchone() or {}
-        insights_rows = list(conn.execute(insights_sql, insight_params).fetchall())
-        churn_rows = list(conn.execute(churn_sql, churn_params).fetchall())
-        aging_row = conn.execute(aging_sql, aging_params).fetchone()
-        unread_row = conn.execute(unread_sql, unread_params).fetchone() or {"total": 0}
-        filial_name = None
-        if id_filial is not None:
-            filial_name_row = conn.execute(filial_sql, (id_empresa, id_filial)).fetchone()
+    filial_name = None
+    if id_filial is not None:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+            filial_name_row = conn.execute(
+                """
+                SELECT nome
+                FROM auth.filiais
+                WHERE id_empresa = %s
+                  AND id_filial = %s
+                """,
+                (id_empresa, id_filial),
+            ).fetchone()
             filial_name = filial_name_row.get("nome") if filial_name_row else None
-
-    churn_revenue = round(sum(float(row.get("revenue_at_risk_30d") or 0) for row in churn_rows), 2)
-    churn_avg_score = (
-        round(sum(float(row.get("churn_score") or 0) for row in churn_rows) / len(churn_rows), 2) if churn_rows else 0.0
-    )
-    if aging_row and int(aging_row.get("snapshot_rows") or 0) > 0:
-        aging = dict(aging_row)
-        aging["snapshot_status"] = "exact"
-    else:
-        aging = {
-            "dt_ref": dt_ref,
-            "receber_total_aberto": 0,
-            "receber_total_vencido": 0,
-            "pagar_total_aberto": 0,
-            "pagar_total_vencido": 0,
-            "bucket_0_7": 0,
-            "bucket_8_15": 0,
-            "bucket_16_30": 0,
-            "bucket_31_60": 0,
-            "bucket_60_plus": 0,
-            "top5_concentration_pct": 0,
-            "data_gaps": True,
-            "snapshot_status": "missing",
-        }
 
     return {
         "scope": {
             "id_empresa": id_empresa,
             "id_filial": id_filial,
             "filial_label": _filial_label(id_filial, filial_name),
+            "dt_ini": dt_ini,
+            "dt_fim": dt_fim,
+            "requested_dt_ref": dt_ref,
         },
         "overview": {
+            "sales": sales,
             "insights_generated": insights_rows,
-            "risk": {
-                "kpis": risk_kpis_row or {"total_eventos": 0, "eventos_alto_risco": 0, "impacto_total": 0, "score_medio": 0},
-                "window": risk_window_row or {"min_data_key": None, "max_data_key": None, "rows": 0},
+            "fraud": {
+                "operational": fraud_operational,
+                "modeled_risk": modeled_risk,
             },
-            "jarvis": jarvis_briefing(role, id_empresa, id_filial, dt_ref=dt_ref),
-        },
-        "churn": {
-            "top_risk": churn_rows,
-            "summary": {
-                "total_top_risk": len(churn_rows),
-                "avg_churn_score": churn_avg_score,
-                "revenue_at_risk_30d": churn_revenue,
+            "risk": modeled_risk,
+            "cash": {
+                "historical": cash.get("historical"),
+                "live_now": cash.get("live_now"),
             },
+            "jarvis": jarvis_briefing(
+                role,
+                id_empresa,
+                id_filial,
+                dt_ref=dt_ref,
+                context={
+                    "fraud_operational": fraud_operational.get("kpis"),
+                    "modeled_risk": modeled_risk.get("kpis"),
+                    "cash_live": cash.get("live_now"),
+                    "cash_historical": cash.get("historical"),
+                    "finance_aging": finance_aging,
+                    "churn": churn,
+                    "payments": payments,
+                },
+            ),
         },
+        "churn": churn,
         "finance": {
-            "aging": aging,
+            "aging": finance_aging,
         },
-        "notifications_unread": int(unread_row.get("total") or 0),
+        "cash": cash,
+        "notifications_unread": notifications_unread,
     }
 
 def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
@@ -961,6 +841,23 @@ def fraud_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: d
         return list(conn.execute(sql, params).fetchall())
 
 
+def fraud_data_window(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    params = [id_empresa] + ([] if id_filial is None else [id_filial])
+    sql = f"""
+      SELECT
+        MIN(data_key)::int AS min_data_key,
+        MAX(data_key)::int AS max_data_key,
+        COUNT(*)::int AS rows
+      FROM mart.fraude_cancelamentos_diaria
+      WHERE id_empresa = %s
+      {where_filial}
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return row or {"min_data_key": None, "max_data_key": None, "rows": 0}
+
+
 def fraud_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit: int = 30) -> List[Dict[str, Any]]:
     where_filial = "" if id_filial is None else "AND id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [limit]
@@ -1412,6 +1309,124 @@ def customers_churn_risk(
         return list(conn.execute(sql, params).fetchall())
 
 
+def _customers_churn_operational_current(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    min_score: int,
+    limit: int,
+    id_cliente: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    where_filial = "" if id_filial is None else "AND id_filial = %s"
+    where_customer = "" if id_cliente is None else "AND id_cliente = %s"
+    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + ([] if id_cliente is None else [id_cliente]) + [limit]
+    sql = f"""
+      SELECT
+        COALESCE((reasons->>'ref_date')::date, CURRENT_DATE) AS dt_ref,
+        id_cliente,
+        COALESCE(NULLIF(cliente_nome, ''), '#ID ' || id_cliente::text) AS cliente_nome,
+        last_purchase,
+        GREATEST(0, COALESCE((reasons->>'ref_date')::date, CURRENT_DATE) - last_purchase)::int AS recency_days,
+        30::numeric(10,2) AS expected_cycle_days,
+        compras_30d AS frequency_30,
+        (compras_30d + compras_60_30)::int AS frequency_90,
+        faturamento_30d::numeric(18,2) AS monetary_30,
+        (faturamento_30d + faturamento_60_30)::numeric(18,2) AS monetary_90,
+        CASE
+          WHEN compras_30d > 0 THEN (faturamento_30d / compras_30d)::numeric(18,2)
+          ELSE 0::numeric(18,2)
+        END AS ticket_30,
+        churn_score,
+        GREATEST(faturamento_60_30, 0)::numeric(18,2) AS revenue_at_risk_30d,
+        'Leitura operacional corrente do churn; snapshot diário exato indisponível para a data solicitada.' AS recommendation,
+        reasons,
+        updated_at
+      FROM mart.clientes_churn_risco
+      WHERE id_empresa = %s
+        AND id_cliente <> -1
+        AND churn_score >= %s
+        {where_filial}
+        {where_customer}
+      ORDER BY churn_score DESC, faturamento_60_30 DESC
+      LIMIT %s
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def customers_churn_bundle(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    as_of: Optional[date] = None,
+    min_score: int = 60,
+    limit: int = 20,
+) -> Dict[str, Any]:
+    snapshot_meta = _snapshot_meta(role, "customer_churn_risk_daily", id_empresa, id_filial, as_of, "latest_leq_ref")
+    rows: List[Dict[str, Any]] = []
+
+    effective_dt_ref = snapshot_meta.get("effective_dt_ref")
+    if effective_dt_ref:
+        where_filial = "" if id_filial is None else "AND id_filial = %s"
+        params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + [effective_dt_ref, limit]
+        sql = f"""
+          SELECT
+            dt_ref,
+            id_cliente,
+            COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+            last_purchase,
+            recency_days,
+            expected_cycle_days,
+            frequency_30,
+            frequency_90,
+            monetary_30,
+            monetary_90,
+            ticket_30,
+            churn_score,
+            revenue_at_risk_30d,
+            recommendation,
+            reasons,
+            updated_at
+          FROM mart.customer_churn_risk_daily
+          WHERE id_empresa = %s
+            AND churn_score >= %s
+            AND id_cliente <> -1
+            {where_filial}
+            AND dt_ref = %s
+          ORDER BY churn_score DESC, revenue_at_risk_30d DESC
+          LIMIT %s
+        """
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+            rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    if not rows:
+        rows = _customers_churn_operational_current(role, id_empresa, id_filial, min_score=min_score, limit=limit)
+        if rows:
+            snapshot_meta = {
+                **snapshot_meta,
+                "snapshot_status": "operational_current",
+                "precision_mode": "operational_current",
+                "effective_dt_ref": rows[0].get("dt_ref"),
+                "source_table": "mart.clientes_churn_risco",
+                "source_kind": "operational_current",
+                "latest_updated_at": max((row.get("updated_at") for row in rows), default=None),
+                "row_count": len(rows),
+            }
+
+    total_revenue_at_risk = float(sum(float(row.get("revenue_at_risk_30d") or 0) for row in rows))
+    avg_churn_score = round(sum(float(row.get("churn_score") or 0) for row in rows) / len(rows), 2) if rows else 0.0
+
+    return {
+        "top_risk": rows,
+        "summary": {
+            "total_top_risk": len(rows),
+            "avg_churn_score": avg_churn_score,
+            "revenue_at_risk_30d": round(total_revenue_at_risk, 2),
+        },
+        "snapshot_meta": snapshot_meta,
+    }
+
+
 def customers_churn_diamond(
     role: str,
     id_empresa: int,
@@ -1420,37 +1435,14 @@ def customers_churn_diamond(
     min_score: int = 60,
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    where_as_of = "AND dt_ref = %s" if as_of is not None else ""
-    params = [id_empresa, min_score] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of]) + [limit]
-    sql = f"""
-      SELECT
-        dt_ref,
-        id_cliente,
-        COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
-        last_purchase,
-        recency_days,
-        expected_cycle_days,
-        frequency_30,
-        frequency_90,
-        monetary_30,
-        monetary_90,
-        churn_score,
-        revenue_at_risk_30d,
-        recommendation,
-        reasons
-      FROM mart.customer_churn_risk_daily
-      WHERE id_empresa = %s
-        AND churn_score >= %s
-        AND id_cliente <> -1
-        {where_filial}
-        {where_as_of}
-      ORDER BY dt_ref DESC, churn_score DESC, revenue_at_risk_30d DESC
-      LIMIT %s
-    """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        rows = list(conn.execute(sql, params).fetchall())
-        return rows
+    return customers_churn_bundle(
+        role,
+        id_empresa,
+        id_filial,
+        as_of=as_of,
+        min_score=min_score,
+        limit=limit,
+    )["top_risk"]
 
 
 def customers_churn_snapshot_meta(
@@ -1459,7 +1451,30 @@ def customers_churn_snapshot_meta(
     id_filial: Optional[int],
     as_of: Optional[date],
 ) -> Dict[str, Any]:
-    return _snapshot_meta(role, "customer_churn_risk_daily", id_empresa, id_filial, as_of, "exact")
+    snapshot_meta = _snapshot_meta(role, "customer_churn_risk_daily", id_empresa, id_filial, as_of, "latest_leq_ref")
+    if snapshot_meta.get("snapshot_status") != "missing":
+        return snapshot_meta
+
+    fallback_rows = _customers_churn_operational_current(
+        role,
+        id_empresa,
+        id_filial,
+        min_score=0,
+        limit=1,
+    )
+    if not fallback_rows:
+        return snapshot_meta
+
+    return {
+        **snapshot_meta,
+        "snapshot_status": "operational_current",
+        "precision_mode": "operational_current",
+        "effective_dt_ref": fallback_rows[0].get("dt_ref"),
+        "source_table": "mart.clientes_churn_risco",
+        "source_kind": "operational_current",
+        "latest_updated_at": fallback_rows[0].get("updated_at"),
+        "row_count": int(snapshot_meta.get("row_count") or 0),
+    }
 
 
 def customer_churn_drilldown(
@@ -1494,39 +1509,53 @@ def customer_churn_drilldown(
       ORDER BY v.data_key
     """
 
-    sql_snapshot = f"""
-      SELECT
-        dt_ref,
-        id_cliente,
-        COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
-        recency_days,
-        expected_cycle_days,
-        frequency_30,
-        frequency_90,
-        monetary_30,
-        monetary_90,
-        ticket_30,
-        churn_score,
-        revenue_at_risk_30d,
-        recommendation,
-        reasons
-      FROM mart.customer_churn_risk_daily
-      WHERE id_empresa = %s
-        AND id_cliente = %s
-        {"" if id_filial is None else "AND id_filial = %s"}
-        {"" if as_of is None else "AND dt_ref = %s"}
-      ORDER BY dt_ref DESC
-      LIMIT 1
-    """
-    params_snapshot = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial]) + ([] if as_of is None else [as_of])
-
+    snapshot_meta = customers_churn_snapshot_meta(role, id_empresa, id_filial, as_of)
+    snapshot: Dict[str, Any] = {}
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         series = list(conn.execute(sql_series, params).fetchall())
-        snap = conn.execute(sql_snapshot, params_snapshot).fetchone()
+
+        if snapshot_meta.get("snapshot_status") in {"exact", "best_effort"} and snapshot_meta.get("effective_dt_ref"):
+            sql_snapshot = f"""
+              SELECT
+                dt_ref,
+                id_cliente,
+                COALESCE(NULLIF(cliente_nome,''), '#ID ' || id_cliente::text) AS cliente_nome,
+                recency_days,
+                expected_cycle_days,
+                frequency_30,
+                frequency_90,
+                monetary_30,
+                monetary_90,
+                ticket_30,
+                churn_score,
+                revenue_at_risk_30d,
+                recommendation,
+                reasons
+              FROM mart.customer_churn_risk_daily
+              WHERE id_empresa = %s
+                AND id_cliente = %s
+                {"" if id_filial is None else "AND id_filial = %s"}
+                AND dt_ref = %s
+              ORDER BY dt_ref DESC
+              LIMIT 1
+            """
+            params_snapshot = [id_empresa, id_cliente] + ([] if id_filial is None else [id_filial]) + [snapshot_meta["effective_dt_ref"]]
+            snap = conn.execute(sql_snapshot, params_snapshot).fetchone()
+            snapshot = dict(snap) if snap else {}
+        elif snapshot_meta.get("snapshot_status") == "operational_current":
+            fallback_rows = _customers_churn_operational_current(
+                role,
+                id_empresa,
+                id_filial,
+                min_score=0,
+                limit=1,
+                id_cliente=id_cliente,
+            )
+            snapshot = fallback_rows[0] if fallback_rows else {}
     return {
-        "snapshot": snap or {},
+        "snapshot": snapshot,
         "series": series,
-        "snapshot_meta": customers_churn_snapshot_meta(role, id_empresa, id_filial, as_of),
+        "snapshot_meta": snapshot_meta,
     }
 
 
@@ -1673,87 +1702,197 @@ def finance_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
         return list(conn.execute(sql, params).fetchall())
 
 
+def _finance_aging_operational_as_of(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    as_of: date,
+) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND f.id_filial = %s"
+    params = [as_of, id_empresa] + ([] if id_filial is None else [id_filial]) + [
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+        as_of,
+    ]
+    sql = f"""
+      WITH base AS (
+        SELECT
+          f.tipo_titulo,
+          COALESCE(f.vencimento, f.data_emissao) AS vencimento,
+          CASE
+            WHEN f.data_pagamento IS NULL THEN GREATEST(0::numeric, COALESCE(f.valor,0) - COALESCE(f.valor_pago,0))
+            WHEN f.data_pagamento > %s THEN GREATEST(0::numeric, COALESCE(f.valor,0))
+            ELSE GREATEST(0::numeric, COALESCE(f.valor,0) - COALESCE(f.valor_pago,0))
+          END::numeric(18,2) AS valor_aberto
+        FROM dw.fact_financeiro f
+        WHERE f.id_empresa = %s
+          {where_filial}
+          AND COALESCE(f.vencimento, f.data_emissao) IS NOT NULL
+          AND COALESCE(f.vencimento, f.data_emissao) <= %s
+          AND (
+            f.data_pagamento IS NULL
+            OR f.data_pagamento > %s
+            OR (COALESCE(f.valor,0) - COALESCE(f.valor_pago,0)) > 0
+          )
+      ), open_titles AS (
+        SELECT *
+        FROM base
+        WHERE valor_aberto > 0
+      ), totals AS (
+        SELECT
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS receber_total_aberto,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 AND vencimento < %s THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS receber_total_vencido,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 0 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS pagar_total_aberto,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 0 AND vencimento < %s THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS pagar_total_vencido,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 AND (%s - vencimento) BETWEEN 0 AND 7 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS bucket_0_7,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 AND (%s - vencimento) BETWEEN 8 AND 15 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS bucket_8_15,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 AND (%s - vencimento) BETWEEN 16 AND 30 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS bucket_16_30,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 AND (%s - vencimento) BETWEEN 31 AND 60 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS bucket_31_60,
+          COALESCE(SUM(CASE WHEN tipo_titulo = 1 AND (%s - vencimento) > 60 THEN valor_aberto ELSE 0 END),0)::numeric(18,2) AS bucket_60_plus,
+          COUNT(*)::int AS open_rows
+        FROM open_titles
+      ), overdue_rank AS (
+        SELECT
+          valor_aberto,
+          ROW_NUMBER() OVER (ORDER BY valor_aberto DESC) AS rn
+        FROM open_titles
+        WHERE tipo_titulo = 1
+          AND vencimento < %s
+      ), top5 AS (
+        SELECT COALESCE(SUM(valor_aberto),0)::numeric(18,2) AS top5_vencido
+        FROM overdue_rank
+        WHERE rn <= 5
+      )
+      SELECT
+        %s::date AS dt_ref,
+        t.receber_total_aberto,
+        t.receber_total_vencido,
+        t.pagar_total_aberto,
+        t.pagar_total_vencido,
+        t.bucket_0_7,
+        t.bucket_8_15,
+        t.bucket_16_30,
+        t.bucket_31_60,
+        t.bucket_60_plus,
+        CASE
+          WHEN t.receber_total_vencido > 0 THEN (top5.top5_vencido / NULLIF(t.receber_total_vencido, 0) * 100)::numeric(10,2)
+          ELSE 0::numeric(10,2)
+        END AS top5_concentration_pct,
+        (t.receber_total_aberto = 0 AND t.pagar_total_aberto = 0) AS data_gaps,
+        t.open_rows AS snapshot_rows
+      FROM totals t
+      CROSS JOIN top5
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else {}
+
+
 def finance_aging_overview(
     role: str,
     id_empresa: int,
     id_filial: Optional[int],
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    as_of_sql = "AND dt_ref = %s" if as_of is not None else ""
-    if id_filial is None:
-        sql = f"""
-          SELECT
-            %s::date AS dt_ref,
-            COALESCE(SUM(f.receber_total_aberto),0)::numeric(18,2) AS receber_total_aberto,
-            COALESCE(SUM(f.receber_total_vencido),0)::numeric(18,2) AS receber_total_vencido,
-            COALESCE(SUM(f.pagar_total_aberto),0)::numeric(18,2) AS pagar_total_aberto,
-            COALESCE(SUM(f.pagar_total_vencido),0)::numeric(18,2) AS pagar_total_vencido,
-            COALESCE(SUM(f.bucket_0_7),0)::numeric(18,2) AS bucket_0_7,
-            COALESCE(SUM(f.bucket_8_15),0)::numeric(18,2) AS bucket_8_15,
-            COALESCE(SUM(f.bucket_16_30),0)::numeric(18,2) AS bucket_16_30,
-            COALESCE(SUM(f.bucket_31_60),0)::numeric(18,2) AS bucket_31_60,
-            COALESCE(SUM(f.bucket_60_plus),0)::numeric(18,2) AS bucket_60_plus,
-            COALESCE(AVG(f.top5_concentration_pct),0)::numeric(10,2) AS top5_concentration_pct,
-            COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps,
-            COUNT(*)::int AS snapshot_rows
-          FROM mart.finance_aging_daily f
-          WHERE f.id_empresa = %s
-            AND f.dt_ref = %s
-        """
-        effective_as_of = as_of or date.today()
-        params = [effective_as_of, id_empresa, effective_as_of]
-    else:
-        sql = f"""
-          SELECT
-            dt_ref,
-            receber_total_aberto,
-            receber_total_vencido,
-            pagar_total_aberto,
-            pagar_total_vencido,
-            bucket_0_7,
-            bucket_8_15,
-            bucket_16_30,
-            bucket_31_60,
-            bucket_60_plus,
-            top5_concentration_pct,
-            data_gaps,
-            1::int AS snapshot_rows
-          FROM mart.finance_aging_daily
-          WHERE id_empresa = %s
-          {where_filial}
-          {as_of_sql}
-          ORDER BY dt_ref DESC
-          LIMIT 1
-        """
-        if as_of is not None:
-            params = [id_empresa, id_filial, as_of]
+    requested_as_of = as_of or date.today()
+    snapshot_meta = _snapshot_meta(role, "finance_aging_daily", id_empresa, id_filial, requested_as_of, "latest_leq_ref")
+    effective_dt_ref = snapshot_meta.get("effective_dt_ref")
+
+    if effective_dt_ref:
+        where_filial = "" if id_filial is None else "AND f.id_filial = %s"
+        if id_filial is None:
+            sql = f"""
+              SELECT
+                %s::date AS dt_ref,
+                COALESCE(SUM(f.receber_total_aberto),0)::numeric(18,2) AS receber_total_aberto,
+                COALESCE(SUM(f.receber_total_vencido),0)::numeric(18,2) AS receber_total_vencido,
+                COALESCE(SUM(f.pagar_total_aberto),0)::numeric(18,2) AS pagar_total_aberto,
+                COALESCE(SUM(f.pagar_total_vencido),0)::numeric(18,2) AS pagar_total_vencido,
+                COALESCE(SUM(f.bucket_0_7),0)::numeric(18,2) AS bucket_0_7,
+                COALESCE(SUM(f.bucket_8_15),0)::numeric(18,2) AS bucket_8_15,
+                COALESCE(SUM(f.bucket_16_30),0)::numeric(18,2) AS bucket_16_30,
+                COALESCE(SUM(f.bucket_31_60),0)::numeric(18,2) AS bucket_31_60,
+                COALESCE(SUM(f.bucket_60_plus),0)::numeric(18,2) AS bucket_60_plus,
+                COALESCE(AVG(f.top5_concentration_pct),0)::numeric(10,2) AS top5_concentration_pct,
+                COALESCE(BOOL_OR(f.data_gaps), true) AS data_gaps,
+                COUNT(*)::int AS snapshot_rows
+              FROM mart.finance_aging_daily f
+              WHERE f.id_empresa = %s
+                AND f.dt_ref = %s
+            """
+            params = [effective_dt_ref, id_empresa, effective_dt_ref]
         else:
-            params = [id_empresa, id_filial]
-    snapshot_meta = _snapshot_meta(role, "finance_aging_daily", id_empresa, id_filial, as_of, "best_effort")
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        row = conn.execute(sql, params).fetchone()
-        if row and int(row.get("snapshot_rows") or 0) > 0:
-            payload = dict(row)
-            payload.update(snapshot_meta)
-            payload["snapshot_status"] = "exact"
-            return payload
-        payload = {
-            "dt_ref": as_of,
-            "receber_total_aberto": 0,
-            "receber_total_vencido": 0,
-            "pagar_total_aberto": 0,
-            "pagar_total_vencido": 0,
-            "bucket_0_7": 0,
-            "bucket_8_15": 0,
-            "bucket_16_30": 0,
-            "bucket_31_60": 0,
-            "bucket_60_plus": 0,
-            "top5_concentration_pct": 0,
-            "data_gaps": True,
-        }
-        payload.update(snapshot_meta)
+            sql = f"""
+              SELECT
+                dt_ref,
+                receber_total_aberto,
+                receber_total_vencido,
+                pagar_total_aberto,
+                pagar_total_vencido,
+                bucket_0_7,
+                bucket_8_15,
+                bucket_16_30,
+                bucket_31_60,
+                bucket_60_plus,
+                top5_concentration_pct,
+                data_gaps,
+                1::int AS snapshot_rows
+              FROM mart.finance_aging_daily f
+              WHERE f.id_empresa = %s
+                {where_filial}
+                AND f.dt_ref = %s
+              ORDER BY f.dt_ref DESC
+              LIMIT 1
+            """
+            params = [id_empresa, id_filial, effective_dt_ref]
+
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+            row = conn.execute(sql, params).fetchone()
+            if row and int(row.get("snapshot_rows") or 0) > 0:
+                payload = dict(row)
+                payload.update(snapshot_meta)
+                payload["dt_ref"] = effective_dt_ref
+                payload["source_table"] = "mart.finance_aging_daily"
+                payload["source_kind"] = "snapshot"
+                return payload
+
+    payload = _finance_aging_operational_as_of(role, id_empresa, id_filial, requested_as_of)
+    if payload:
+        payload.update(
+            {
+                **snapshot_meta,
+                "snapshot_status": "operational",
+                "precision_mode": "operational_as_of",
+                "effective_dt_ref": requested_as_of,
+                "source_table": "dw.fact_financeiro",
+                "source_kind": "operational_as_of",
+            }
+        )
         return payload
+
+    return {
+        "dt_ref": requested_as_of,
+        "receber_total_aberto": 0,
+        "receber_total_vencido": 0,
+        "pagar_total_aberto": 0,
+        "pagar_total_vencido": 0,
+        "bucket_0_7": 0,
+        "bucket_8_15": 0,
+        "bucket_16_30": 0,
+        "bucket_31_60": 0,
+        "bucket_60_plus": 0,
+        "top5_concentration_pct": 0,
+        "data_gaps": True,
+        **snapshot_meta,
+    }
 
 
 def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
@@ -1965,79 +2104,146 @@ def payments_overview(
     }
 
 
-def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
+def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial = "" if id_filial is None else "AND t.id_filial = %s"
     params = [id_empresa] + ([] if id_filial is None else [id_filial])
-
     sql_total_turnos = f"""
       SELECT COUNT(*)::int AS total_turnos
-      FROM stg.turnos
-      WHERE id_empresa = %s
+      FROM dw.fact_caixa_turno t
+      WHERE t.id_empresa = %s
       {where_filial}
     """
     sql_open = f"""
+      WITH open_turnos AS (
+        SELECT
+          t.id_empresa,
+          t.id_filial,
+          t.id_turno,
+          t.id_usuario,
+          t.abertura_ts,
+          ROUND(EXTRACT(EPOCH FROM (now() - t.abertura_ts)) / 3600.0, 2)::numeric(10,2) AS horas_aberto
+        FROM dw.fact_caixa_turno t
+        WHERE t.id_empresa = %s
+          {where_filial}
+          AND t.is_aberto = true
+      ), comprovantes_caixa AS (
+        SELECT
+          c.id_empresa,
+          c.id_filial,
+          c.id_turno,
+          COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool), 0)::numeric(18,2) AS total_vendas,
+          COUNT(*) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool)::int AS qtd_vendas,
+          COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND c.cancelado_bool), 0)::numeric(18,2) AS total_cancelamentos,
+          COUNT(*) FILTER (WHERE c.cfop_num > 5000 AND c.cancelado_bool)::int AS qtd_cancelamentos
+        FROM (
+          SELECT
+            fc.id_empresa,
+            fc.id_filial,
+            fc.id_turno,
+            fc.valor_total,
+            COALESCE(fc.cancelado, false) AS cancelado_bool,
+            etl.safe_int(NULLIF(regexp_replace(COALESCE(fc.payload->>'CFOP', ''), '[^0-9]', '', 'g'), '')) AS cfop_num
+          FROM dw.fact_comprovante fc
+          JOIN open_turnos ot
+            ON ot.id_empresa = fc.id_empresa
+           AND ot.id_filial = fc.id_filial
+           AND ot.id_turno = fc.id_turno
+        ) c
+        GROUP BY c.id_empresa, c.id_filial, c.id_turno
+      ), pagamentos_turno AS (
+        SELECT
+          p.id_empresa,
+          p.id_filial,
+          p.id_turno,
+          COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_pagamentos
+        FROM dw.fact_pagamento_comprovante p
+        JOIN open_turnos ot
+          ON ot.id_empresa = p.id_empresa
+         AND ot.id_filial = p.id_filial
+         AND ot.id_turno = p.id_turno
+        GROUP BY p.id_empresa, p.id_filial, p.id_turno
+      )
       SELECT
-        id_filial,
-        filial_nome,
-        id_turno,
-        id_usuario,
-        usuario_nome,
-        abertura_ts,
-        horas_aberto,
-        severity,
-        status_label,
-        total_vendas,
-        qtd_vendas,
-        total_cancelamentos,
-        qtd_cancelamentos,
-        total_pagamentos
-      FROM mart.agg_caixa_turno_aberto
-      WHERE id_empresa = %s
-      {where_filial}
-      ORDER BY horas_aberto DESC, total_vendas DESC, id_turno DESC
+        ot.id_filial,
+        COALESCE(f.nome, '') AS filial_nome,
+        ot.id_turno,
+        ot.id_usuario,
+        COALESCE(NULLIF(u.nome, ''), format('Usuário %%s', ot.id_usuario)) AS usuario_nome,
+        ot.abertura_ts,
+        ot.horas_aberto,
+        CASE
+          WHEN ot.horas_aberto >= 24 THEN 'CRITICAL'
+          WHEN ot.horas_aberto >= 12 THEN 'HIGH'
+          WHEN ot.horas_aberto >= 6 THEN 'WARN'
+          ELSE 'OK'
+        END AS severity,
+        CASE
+          WHEN ot.horas_aberto >= 24 THEN 'Crítico'
+          WHEN ot.horas_aberto >= 12 THEN 'Atenção alta'
+          WHEN ot.horas_aberto >= 6 THEN 'Monitorar'
+          ELSE 'Dentro da janela'
+        END AS status_label,
+        COALESCE(c.total_vendas, 0)::numeric(18,2) AS total_vendas,
+        COALESCE(c.qtd_vendas, 0)::int AS qtd_vendas,
+        COALESCE(c.total_cancelamentos, 0)::numeric(18,2) AS total_cancelamentos,
+        COALESCE(c.qtd_cancelamentos, 0)::int AS qtd_cancelamentos,
+        COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
+      FROM open_turnos ot
+      LEFT JOIN auth.filiais f
+        ON f.id_empresa = ot.id_empresa
+       AND f.id_filial = ot.id_filial
+      LEFT JOIN dw.dim_usuario_caixa u
+        ON u.id_empresa = ot.id_empresa
+       AND u.id_filial = ot.id_filial
+       AND u.id_usuario = ot.id_usuario
+      LEFT JOIN comprovantes_caixa c
+        ON c.id_empresa = ot.id_empresa
+       AND c.id_filial = ot.id_filial
+       AND c.id_turno = ot.id_turno
+      LEFT JOIN pagamentos_turno p
+        ON p.id_empresa = ot.id_empresa
+       AND p.id_filial = ot.id_filial
+       AND p.id_turno = ot.id_turno
+      ORDER BY ot.horas_aberto DESC, COALESCE(c.total_vendas, 0) DESC, ot.id_turno DESC
       LIMIT 20
     """
     sql_payments = f"""
+      WITH open_turnos AS (
+        SELECT id_empresa, id_filial, id_turno
+        FROM dw.fact_caixa_turno t
+        WHERE t.id_empresa = %s
+          {where_filial}
+          AND t.is_aberto = true
+      )
       SELECT
-        id_filial,
-        id_turno,
-        tipo_forma,
-        forma_label,
-        forma_category,
-        total_valor,
-        qtd_comprovantes
-      FROM mart.agg_caixa_forma_pagamento
-      WHERE id_empresa = %s
-      {where_filial}
+        COALESCE(m.label, 'NÃO IDENTIFICADO') AS forma_label,
+        COALESCE(m.category, 'NAO_IDENTIFICADO') AS forma_category,
+        COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_valor,
+        COUNT(DISTINCT p.referencia)::int AS qtd_comprovantes,
+        COUNT(DISTINCT p.id_filial::text || ':' || p.id_turno::text)::int AS qtd_turnos
+      FROM dw.fact_pagamento_comprovante p
+      JOIN open_turnos ot
+        ON ot.id_empresa = p.id_empresa
+       AND ot.id_filial = p.id_filial
+       AND ot.id_turno = p.id_turno
+      LEFT JOIN LATERAL (
+        SELECT label, category
+        FROM app.payment_type_map m
+        WHERE m.tipo_forma = p.tipo_forma
+          AND m.active = true
+          AND (m.id_empresa = p.id_empresa OR m.id_empresa IS NULL)
+        ORDER BY CASE WHEN m.id_empresa IS NULL THEN 1 ELSE 0 END, m.updated_at DESC
+        LIMIT 1
+      ) m ON true
+      GROUP BY 1, 2
       ORDER BY total_valor DESC
-      LIMIT 100
-    """
-    sql_alerts = f"""
-      SELECT
-        id_filial,
-        filial_nome,
-        id_turno,
-        id_usuario,
-        usuario_nome,
-        abertura_ts,
-        horas_aberto,
-        severity,
-        title,
-        body,
-        url,
-        insight_id_hash
-      FROM mart.alerta_caixa_aberto
-      WHERE id_empresa = %s
-      {where_filial}
-      ORDER BY horas_aberto DESC, id_turno DESC
-      LIMIT 10
+      LIMIT 12
     """
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         total_turnos_row = conn.execute(sql_total_turnos, params).fetchone() or {"total_turnos": 0}
         open_rows = [dict(row) for row in conn.execute(sql_open, params).fetchall()]
         payment_rows = [dict(row) for row in conn.execute(sql_payments, params).fetchall()]
-        alert_rows = [dict(row) for row in conn.execute(sql_alerts, params).fetchall()]
 
     total_turnos = int(total_turnos_row.get("total_turnos") or 0)
     critical_count = 0
@@ -2064,28 +2270,16 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
         total_vendas += float(row.get("total_vendas") or 0)
         total_cancelamentos += float(row.get("total_cancelamentos") or 0)
 
-    payment_by_label: Dict[str, Dict[str, Any]] = {}
-    for row in payment_rows:
-        label = str(row.get("forma_label") or "NÃO IDENTIFICADO").strip() or "NÃO IDENTIFICADO"
-        bucket = payment_by_label.setdefault(
-            label,
-            {"label": label, "total_valor": 0.0, "qtd_comprovantes": 0, "turnos": set()},
-        )
-        bucket["total_valor"] += float(row.get("total_valor") or 0)
-        bucket["qtd_comprovantes"] += int(row.get("qtd_comprovantes") or 0)
-        bucket["turnos"].add(int(row.get("id_turno") or -1))
-
-    payment_mix = []
-    for label, row in payment_by_label.items():
-        payment_mix.append(
-            {
-                "label": label,
-                "total_valor": round(float(row["total_valor"]), 2),
-                "qtd_comprovantes": int(row["qtd_comprovantes"]),
-                "qtd_turnos": len(row["turnos"]),
-            }
-        )
-    payment_mix.sort(key=lambda item: float(item.get("total_valor") or 0), reverse=True)
+    payment_mix = [
+        {
+            "label": str(row.get("forma_label") or "NÃO IDENTIFICADO").strip() or "NÃO IDENTIFICADO",
+            "category": row.get("forma_category"),
+            "total_valor": round(float(row.get("total_valor") or 0), 2),
+            "qtd_comprovantes": int(row.get("qtd_comprovantes") or 0),
+            "qtd_turnos": int(row.get("qtd_turnos") or 0),
+        }
+        for row in payment_rows
+    ]
 
     cancelamentos = [
         {
@@ -2101,15 +2295,30 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
     ]
     cancelamentos.sort(key=lambda item: float(item.get("total_cancelamentos") or 0), reverse=True)
 
-    for row in alert_rows:
-        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
-        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or (
-            f"Operador {int(row.get('id_usuario'))}" if row.get("id_usuario") is not None else "Operador não identificado"
-        )
+    alert_rows = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_nome": row.get("filial_nome"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "id_usuario": row.get("id_usuario"),
+            "usuario_nome": row.get("usuario_nome"),
+            "usuario_label": row.get("usuario_label"),
+            "abertura_ts": row.get("abertura_ts"),
+            "horas_aberto": row.get("horas_aberto"),
+            "severity": row.get("severity"),
+            "title": row.get("alert_message"),
+            "body": row.get("alert_message"),
+            "url": "/cash",
+            "insight_id_hash": None,
+        }
+        for row in open_rows
+        if str(row.get("severity") or "").upper() in {"CRITICAL", "HIGH", "WARN"}
+    ][:10]
 
     if total_turnos == 0:
         source_status = "unavailable"
-        summary = "Os dados de turno ainda não chegaram da operação para compor o módulo de Caixa."
+        summary = "A visão operacional em tempo real ainda não possui turnos carregados no DW."
     elif not open_rows:
         source_status = "ok"
         summary = "Nenhum caixa aberto no momento. A operação está sem pendências de fechamento."
@@ -2145,8 +2354,319 @@ def cash_overview(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[
     }
 
 
+def _cash_historical_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial_comp = "" if id_filial is None else "AND fc.id_filial = %s"
+    where_filial_pay = "" if id_filial is None else "AND p.id_filial = %s"
+    where_filial_turn = "" if id_filial is None else "AND fc.id_filial = %s"
+    params_comp = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+    params_pay = [id_empresa, ini, fim] + ([] if id_filial is None else [id_filial])
+
+    sql_summary = f"""
+      WITH comprovantes AS (
+        SELECT
+          fc.id_filial,
+          fc.id_turno,
+          fc.data_key,
+          fc.valor_total,
+          COALESCE(fc.cancelado, false) AS cancelado_bool,
+          etl.safe_int(NULLIF(regexp_replace(COALESCE(fc.payload->>'CFOP', ''), '[^0-9]', '', 'g'), '')) AS cfop_num
+        FROM dw.fact_comprovante fc
+        WHERE fc.id_empresa = %s
+          AND fc.data_key BETWEEN %s AND %s
+          {where_filial_comp}
+          AND fc.id_turno IS NOT NULL
+      ), vendas AS (
+        SELECT
+          COUNT(DISTINCT (id_filial::text || ':' || id_turno::text))::int AS caixas_periodo,
+          COUNT(DISTINCT data_key)::int AS dias_com_movimento,
+          COALESCE(SUM(valor_total) FILTER (WHERE cfop_num > 5000 AND NOT cancelado_bool), 0)::numeric(18,2) AS total_vendas,
+          COUNT(*) FILTER (WHERE cfop_num > 5000 AND NOT cancelado_bool)::int AS qtd_vendas,
+          COALESCE(SUM(valor_total) FILTER (WHERE cfop_num > 5000 AND cancelado_bool), 0)::numeric(18,2) AS total_cancelamentos,
+          COUNT(*) FILTER (WHERE cfop_num > 5000 AND cancelado_bool)::int AS qtd_cancelamentos,
+          COUNT(DISTINCT (id_filial::text || ':' || id_turno::text)) FILTER (WHERE cfop_num > 5000 AND cancelado_bool)::int AS caixas_com_cancelamento,
+          MIN(data_key)::int AS min_data_key,
+          MAX(data_key)::int AS max_data_key
+        FROM comprovantes
+      ), pagamentos AS (
+        SELECT
+          COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_pagamentos
+        FROM dw.fact_pagamento_comprovante p
+        WHERE p.id_empresa = %s
+          AND p.data_key BETWEEN %s AND %s
+          {where_filial_pay}
+          AND p.id_turno IS NOT NULL
+      )
+      SELECT
+        v.caixas_periodo,
+        v.dias_com_movimento,
+        v.total_vendas,
+        v.qtd_vendas,
+        v.total_cancelamentos,
+        v.qtd_cancelamentos,
+        v.caixas_com_cancelamento,
+        v.min_data_key,
+        v.max_data_key,
+        p.total_pagamentos
+      FROM vendas v
+      CROSS JOIN pagamentos p
+    """
+    sql_by_day = f"""
+      WITH comprovantes AS (
+        SELECT
+          fc.data_key,
+          fc.id_filial,
+          fc.id_turno,
+          fc.valor_total,
+          COALESCE(fc.cancelado, false) AS cancelado_bool,
+          etl.safe_int(NULLIF(regexp_replace(COALESCE(fc.payload->>'CFOP', ''), '[^0-9]', '', 'g'), '')) AS cfop_num
+        FROM dw.fact_comprovante fc
+        WHERE fc.id_empresa = %s
+          AND fc.data_key BETWEEN %s AND %s
+          {where_filial_comp}
+          AND fc.id_turno IS NOT NULL
+      ), vendas AS (
+        SELECT
+          data_key,
+          COUNT(DISTINCT (id_filial::text || ':' || id_turno::text))::int AS caixas,
+          COALESCE(SUM(valor_total) FILTER (WHERE cfop_num > 5000 AND NOT cancelado_bool), 0)::numeric(18,2) AS total_vendas,
+          COALESCE(SUM(valor_total) FILTER (WHERE cfop_num > 5000 AND cancelado_bool), 0)::numeric(18,2) AS total_cancelamentos,
+          COUNT(*) FILTER (WHERE cfop_num > 5000 AND cancelado_bool)::int AS qtd_cancelamentos
+        FROM comprovantes
+        GROUP BY data_key
+      ), pagamentos AS (
+        SELECT
+          p.data_key,
+          COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_pagamentos
+        FROM dw.fact_pagamento_comprovante p
+        WHERE p.id_empresa = %s
+          AND p.data_key BETWEEN %s AND %s
+          {where_filial_pay}
+          AND p.id_turno IS NOT NULL
+        GROUP BY p.data_key
+      )
+      SELECT
+        COALESCE(v.data_key, p.data_key)::int AS data_key,
+        COALESCE(v.caixas, 0)::int AS caixas,
+        COALESCE(v.total_vendas, 0)::numeric(18,2) AS total_vendas,
+        COALESCE(v.total_cancelamentos, 0)::numeric(18,2) AS total_cancelamentos,
+        COALESCE(v.qtd_cancelamentos, 0)::int AS qtd_cancelamentos,
+        COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
+      FROM vendas v
+      FULL OUTER JOIN pagamentos p
+        ON p.data_key = v.data_key
+      ORDER BY COALESCE(v.data_key, p.data_key)
+    """
+    sql_payment_mix = f"""
+      SELECT
+        COALESCE(label, 'NÃO IDENTIFICADO') AS label,
+        COALESCE(category, 'NAO_IDENTIFICADO') AS category,
+        COALESCE(SUM(total_valor), 0)::numeric(18,2) AS total_valor,
+        COALESCE(SUM(qtd_comprovantes), 0)::int AS qtd_comprovantes,
+        COUNT(DISTINCT (id_filial::text || ':' || id_turno::text))::int AS qtd_turnos
+      FROM mart.agg_pagamentos_turno
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {"" if id_filial is None else "AND id_filial = %s"}
+      GROUP BY 1, 2
+      ORDER BY total_valor DESC
+      LIMIT 12
+    """
+    sql_top_turnos = f"""
+      WITH comprovantes AS (
+        SELECT
+          c.id_filial,
+          c.id_turno,
+          MIN(c.data) AS first_event_at,
+          MAX(c.data) AS last_event_at,
+          COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool), 0)::numeric(18,2) AS total_vendas,
+          COUNT(*) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool)::int AS qtd_vendas,
+          COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND c.cancelado_bool), 0)::numeric(18,2) AS total_cancelamentos,
+          COUNT(*) FILTER (WHERE c.cfop_num > 5000 AND c.cancelado_bool)::int AS qtd_cancelamentos
+        FROM (
+          SELECT
+            fc.id_filial,
+            fc.id_turno,
+            fc.data,
+            fc.valor_total,
+            COALESCE(fc.cancelado, false) AS cancelado_bool,
+            etl.safe_int(NULLIF(regexp_replace(COALESCE(fc.payload->>'CFOP', ''), '[^0-9]', '', 'g'), '')) AS cfop_num
+          FROM dw.fact_comprovante fc
+          WHERE fc.id_empresa = %s
+            AND fc.data_key BETWEEN %s AND %s
+            {where_filial_turn}
+            AND fc.id_turno IS NOT NULL
+        ) c
+        GROUP BY c.id_filial, c.id_turno
+      ), pagamentos AS (
+        SELECT
+          p.id_filial,
+          p.id_turno,
+          COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_pagamentos
+        FROM dw.fact_pagamento_comprovante p
+        WHERE p.id_empresa = %s
+          AND p.data_key BETWEEN %s AND %s
+          {"" if id_filial is None else "AND p.id_filial = %s"}
+          AND p.id_turno IS NOT NULL
+        GROUP BY p.id_filial, p.id_turno
+      )
+      SELECT
+        c.id_filial,
+        COALESCE(f.nome, '') AS filial_nome,
+        c.id_turno,
+        t.id_usuario,
+        COALESCE(NULLIF(u.nome, ''), format('Usuário %%s', t.id_usuario)) AS usuario_nome,
+        t.abertura_ts,
+        t.fechamento_ts,
+        t.is_aberto,
+        c.first_event_at,
+        c.last_event_at,
+        c.total_vendas,
+        c.qtd_vendas,
+        c.total_cancelamentos,
+        c.qtd_cancelamentos,
+        COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
+      FROM comprovantes c
+      LEFT JOIN dw.fact_caixa_turno t
+        ON t.id_empresa = %s
+       AND t.id_filial = c.id_filial
+       AND t.id_turno = c.id_turno
+      LEFT JOIN dw.dim_usuario_caixa u
+        ON u.id_empresa = %s
+       AND u.id_filial = c.id_filial
+       AND u.id_usuario = t.id_usuario
+      LEFT JOIN auth.filiais f
+        ON f.id_empresa = %s
+       AND f.id_filial = c.id_filial
+      LEFT JOIN pagamentos p
+        ON p.id_filial = c.id_filial
+       AND p.id_turno = c.id_turno
+      ORDER BY c.total_vendas DESC, c.total_cancelamentos DESC, c.last_event_at DESC
+      LIMIT 12
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        summary_row = conn.execute(sql_summary, params_comp + params_pay).fetchone() or {}
+        by_day_rows = [dict(row) for row in conn.execute(sql_by_day, params_comp + params_pay).fetchall()]
+        payment_mix_rows = [dict(row) for row in conn.execute(sql_payment_mix, params_pay).fetchall()]
+        top_turnos_rows = [
+            dict(row)
+            for row in conn.execute(
+                sql_top_turnos,
+                params_comp + params_pay + [id_empresa, id_empresa, id_empresa],
+            ).fetchall()
+        ]
+
+    total_vendas = round(float(summary_row.get("total_vendas") or 0), 2)
+    qtd_vendas = int(summary_row.get("qtd_vendas") or 0)
+    total_cancelamentos = round(float(summary_row.get("total_cancelamentos") or 0), 2)
+    total_pagamentos = round(float(summary_row.get("total_pagamentos") or 0), 2)
+    caixas_periodo = int(summary_row.get("caixas_periodo") or 0)
+    qtd_cancelamentos = int(summary_row.get("qtd_cancelamentos") or 0)
+    payment_mix = [
+        {
+            "label": row.get("label"),
+            "category": row.get("category"),
+            "total_valor": round(float(row.get("total_valor") or 0), 2),
+            "qtd_comprovantes": int(row.get("qtd_comprovantes") or 0),
+            "qtd_turnos": int(row.get("qtd_turnos") or 0),
+        }
+        for row in payment_mix_rows
+    ]
+
+    for row in top_turnos_rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or (
+            f"Operador {int(row.get('id_usuario'))}" if row.get("id_usuario") is not None else "Operador não identificado"
+        )
+
+    cancelamentos = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "usuario_label": row.get("usuario_label"),
+            "total_cancelamentos": round(float(row.get("total_cancelamentos") or 0), 2),
+            "qtd_cancelamentos": int(row.get("qtd_cancelamentos") or 0),
+        }
+        for row in sorted(top_turnos_rows, key=lambda item: float(item.get("total_cancelamentos") or 0), reverse=True)
+        if float(row.get("total_cancelamentos") or 0) > 0
+    ][:10]
+
+    if caixas_periodo == 0 and total_pagamentos == 0:
+        source_status = "unavailable"
+        summary = "Não houve movimentos de caixa vinculados ao período selecionado."
+    elif caixas_periodo == 0:
+        source_status = "partial"
+        summary = "Há pagamentos vinculados ao período, mas sem turnos históricos suficientes para fechar a visão completa."
+    else:
+        source_status = "ok" if payment_mix else "partial"
+        summary = (
+            f"{caixas_periodo} caixa(s) movimentaram { _format_brl(total_vendas) } "
+            f"entre {dt_ini.isoformat()} e {dt_fim.isoformat()}, com {qtd_cancelamentos} cancelamento(s) somando { _format_brl(total_cancelamentos) }."
+        )
+
+    return {
+        "source_status": source_status,
+        "summary": summary,
+        "requested_window": {
+            "dt_ini": dt_ini,
+            "dt_fim": dt_fim,
+        },
+        "coverage": {
+            "min_data_key": summary_row.get("min_data_key"),
+            "max_data_key": summary_row.get("max_data_key"),
+        },
+        "kpis": {
+            "caixas_periodo": caixas_periodo,
+            "dias_com_movimento": int(summary_row.get("dias_com_movimento") or 0),
+            "ticket_medio": round(total_vendas / qtd_vendas, 2) if qtd_vendas else 0.0,
+            "total_vendas": total_vendas,
+            "total_pagamentos": total_pagamentos,
+            "total_cancelamentos": total_cancelamentos,
+            "qtd_cancelamentos": qtd_cancelamentos,
+            "caixas_com_cancelamento": int(summary_row.get("caixas_com_cancelamento") or 0),
+        },
+        "by_day": by_day_rows,
+        "payment_mix": payment_mix[:8],
+        "top_turnos": top_turnos_rows[:10],
+        "cancelamentos": cancelamentos,
+    }
+
+
+def cash_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
+) -> Dict[str, Any]:
+    effective_dt_fim = dt_fim or date.today()
+    effective_dt_ini = dt_ini or (effective_dt_fim - timedelta(days=29))
+    historical = _cash_historical_overview(role, id_empresa, id_filial, dt_ini=effective_dt_ini, dt_fim=effective_dt_fim)
+    live_now = _cash_live_now(role, id_empresa, id_filial)
+    return {
+        "source_status": historical.get("source_status"),
+        "summary": historical.get("summary"),
+        "kpis": historical.get("kpis"),
+        "historical": historical,
+        "live_now": live_now,
+        "open_boxes": live_now.get("open_boxes") or [],
+        "payment_mix": historical.get("payment_mix") or [],
+        "cancelamentos": historical.get("cancelamentos") or [],
+        "alerts": live_now.get("alerts") or [],
+    }
+
+
 def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    cash = cash_overview(role, id_empresa, id_filial)
+    cash = _cash_live_now(role, id_empresa, id_filial)
     kpis = cash.get("kpis") or {}
     severity = "OK"
     if int(kpis.get("caixas_criticos") or 0) > 0:
@@ -2263,23 +2783,50 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
 # Jarvis (rule-based briefing)
 # ========================
 
-def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref: date) -> Dict[str, Any]:
+def jarvis_briefing(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ref: date,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Return a premium rule-based operational copilot for the home."""
 
     dt_ini = dt_ref - timedelta(days=6)
-    risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    risk = context.get("modeled_risk") if context else None
+    if not isinstance(risk, dict):
+        risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+
     risk_focus = (risk_by_turn_local(role, id_empresa, id_filial, dt_ini, dt_ref, limit=1) or [None])[0]
-    cash = cash_overview(role, id_empresa, id_filial)
-    finance = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
-    churn = customers_churn_diamond(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=5)
-    payments = payments_overview(role, id_empresa, id_filial, dt_ini, dt_ref, anomaly_limit=5)
+    cash_live = context.get("cash_live") if context else None
+    if not isinstance(cash_live, dict):
+        cash_live = _cash_live_now(role, id_empresa, id_filial)
+
+    finance = context.get("finance_aging") if context else None
+    if not isinstance(finance, dict):
+        finance = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
+
+    churn_bundle = context.get("churn") if context else None
+    if isinstance(churn_bundle, dict):
+        churn = churn_bundle.get("top_risk") or []
+    else:
+        churn = customers_churn_diamond(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=5)
+
+    payments = context.get("payments") if context else None
+    if not isinstance(payments, dict):
+        payments = payments_overview(role, id_empresa, id_filial, dt_ini, dt_ref, anomaly_limit=5)
+
+    fraud_operational = context.get("fraud_operational") if context else None
+    if not isinstance(fraud_operational, dict):
+        fraud_operational = fraud_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+
     pricing = (
         competitor_pricing_overview(role, id_empresa, id_filial, dt_ini=dt_ini, dt_fim=dt_ref, days_simulation=10)
         if id_filial is not None
         else None
     )
 
-    cash_kpis = cash.get("kpis") or {}
+    cash_kpis = cash_live.get("kpis") or {}
     receiving_overdue = float(finance.get("receber_total_vencido") or 0)
     paying_overdue = float(finance.get("pagar_total_vencido") or 0)
     overdue_pressure = receiving_overdue + paying_overdue
@@ -2287,6 +2834,8 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
     churn_impact = sum(float(item.get("revenue_at_risk_30d") or 0) for item in churn[:5])
     payments_kpis = payments.get("kpis") or {}
     payment_anomaly = (payments.get("anomalies") or [None])[0]
+    fraud_impact = float(fraud_operational.get("valor_cancelado") or 0)
+    fraud_cancelamentos = int(fraud_operational.get("cancelamentos") or 0)
     pricing_summary = pricing.get("summary") if isinstance(pricing, dict) else {}
     pricing_items = pricing.get("items") if isinstance(pricing, dict) else []
     pricing_impact = float(pricing_summary.get("total_lost_if_no_change_10d") or 0)
@@ -2300,7 +2849,7 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
     candidates: List[Dict[str, Any]] = []
 
     if int(cash_kpis.get("caixas_criticos") or 0) > 0:
-        focus_box = (cash.get("open_boxes") or [None])[0]
+        focus_box = (cash_live.get("open_boxes") or [None])[0]
         candidates.append(
             {
                 "kind": "cash",
@@ -2371,18 +2920,24 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
             }
         )
 
-    if float(risk.get("impacto_total") or 0) > 0:
+    if fraud_impact > 0 or float(risk.get("impacto_total") or 0) > 0:
+        modeled_impact = float(risk.get("impacto_total") or 0)
         candidates.append(
             {
                 "kind": "fraud",
-                "weight": float(risk.get("impacto_total") or 0) + (int(risk.get("eventos_alto_risco") or 0) * 500),
-                "impact_value": float(risk.get("impacto_total") or 0),
-                "priority": "Hoje" if int(risk.get("eventos_alto_risco") or 0) < 5 else "Imediatamente",
-                "headline": "Auditar descontos e cancelamentos fora da curva antes do próximo fechamento.",
-                "cause": "O padrão recente de risco concentra impacto financeiro em descontos, cancelamentos e recompras rápidas.",
+                "weight": fraud_impact + modeled_impact + (int(risk.get("eventos_alto_risco") or 0) * 500),
+                "impact_value": max(fraud_impact, modeled_impact),
+                "priority": "Imediatamente" if int(risk.get("eventos_alto_risco") or 0) >= 5 else "Hoje",
+                "headline": "Auditar cancelamentos e descontos relevantes antes do próximo fechamento.",
+                "cause": (
+                    "Os cancelamentos operacionais do período já são materiais e pedem auditoria de turno, operador e justificativa."
+                    if fraud_impact >= modeled_impact
+                    else "A modelagem de risco encontrou concentração relevante em cancelamentos, descontos e recompras rápidas."
+                ),
                 "action": "Abrir o antifraude, revisar o turno mais sensível e validar o colaborador mais exposto ainda neste ciclo.",
                 "evidence": [
-                    f"{int(risk.get('eventos_alto_risco') or 0)} evento(s) de alto risco",
+                    f"{fraud_cancelamentos} cancelamento(s) somando {_format_brl(fraud_impact)}",
+                    f"{int(risk.get('eventos_alto_risco') or 0)} evento(s) de alto risco" if modeled_impact > 0 else None,
                     _filial_label(risk_focus.get("id_filial"), risk_focus.get("filial_nome")) if risk_focus else None,
                     risk_focus.get("turno_label") if risk_focus else None,
                 ],
@@ -2471,8 +3026,8 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Optional[int], dt_ref
             primary["action"],
             *[item["headline"] for item in secondary],
             *(
-                [f"Financeiro histórico em {finance.get('precision_mode')} até {finance.get('coverage_end_dt_ref')}."]
-                if finance.get("snapshot_status") != "exact"
+                [f"Financeiro em {finance.get('precision_mode')} com referência efetiva em {finance.get('effective_dt_ref')}."]
+                if finance.get("snapshot_status") not in {"exact"}
                 else []
             ),
         ][:3],

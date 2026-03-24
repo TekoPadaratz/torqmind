@@ -38,12 +38,15 @@ export default function PricingPage() {
   }, [claims]);
 
   const load = async () => {
-    if (!scope.dt_ini || !scope.dt_fim) return;
     setLoading(true);
     setError('');
     try {
       const me = await apiGet('/auth/me');
       setClaims(me);
+      if (!scope.dt_ini || !scope.dt_fim) {
+        router.replace(me?.home_path || '/dashboard');
+        return;
+      }
 
       const filial = scope.id_filial || me?.id_filial;
       const empresa = scope.id_empresa || me?.id_empresa;
@@ -56,7 +59,6 @@ export default function PricingPage() {
       const qs = new URLSearchParams({
         dt_ini: scope.dt_ini,
         dt_fim: scope.dt_fim,
-        dt_ref: scope.dt_ref || scope.dt_fim,
         days_simulation: '10',
         id_filial: String(filial),
       });
@@ -87,12 +89,8 @@ export default function PricingPage() {
       router.push('/');
       return;
     }
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
     load();
-  }, [scope.ready, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_empresa, scope.id_filial]);
+  }, [router, scope.ready, scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial]);
 
   const onSavePrices = async () => {
     if (!data?.items?.length) return;
@@ -141,7 +139,7 @@ export default function PricingPage() {
           <div>
             <div className="muted">Simulação 10 dias</div>
             <div className="scopeLine">
-              Período base: <strong>{formatDateOnly(scope.dt_ini)}</strong> até <strong>{formatDateOnly(scope.dt_fim)}</strong> · Ref <strong>{formatDateOnly(scope.dt_ref || scope.dt_fim)}</strong> · Filial{' '}
+              Período base: <strong>{formatDateOnly(scope.dt_ini)}</strong> até <strong>{formatDateOnly(scope.dt_fim)}</strong> · Filial{' '}
               <strong>{filialLabel || formatFilialLabel(scope.id_filial || claims?.id_filial)}</strong>
             </div>
           </div>

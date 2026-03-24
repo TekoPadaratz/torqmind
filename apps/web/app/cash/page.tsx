@@ -12,11 +12,12 @@ import { extractApiError } from '../lib/errors';
 import {
   buildUserLabel,
   formatCurrency,
+  formatDateKey,
   formatDateTime,
   formatFilialLabel,
   formatHoursLabel,
 } from '../lib/format';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,25 +49,19 @@ export default function CashPage() {
       router.push('/');
       return;
     }
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const qs = new URLSearchParams({
-          dt_ini: scope.dt_ini,
-          dt_fim: scope.dt_fim,
-          dt_ref: scope.dt_ref || scope.dt_fim,
-        });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const [me, res] = await Promise.all([apiGet('/auth/me'), apiGet(`/bi/cash/overview?${qs.toString()}`)]);
+        const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/dashboard');
+          return;
+        }
+
+        const qs = buildScopeParams(scope).toString();
+        const res = await apiGet(`/bi/cash/overview?${qs}`);
         setData(res);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar o módulo de Caixa'));
@@ -76,14 +71,20 @@ export default function CashPage() {
     };
 
     load();
-  }, [router, scope.ready, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.ready, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa]);
 
-  const kpis = data?.kpis || {};
-  const openBoxes = data?.open_boxes || [];
-  const paymentMix = data?.payment_mix || [];
-  const cancelamentos = data?.cancelamentos || [];
-  const alerts = data?.alerts || [];
-  const sourceStatus = String(data?.source_status || 'unavailable');
+  const historical = data?.historical || {};
+  const liveNow = data?.live_now || {};
+  const kpis = historical?.kpis || data?.kpis || {};
+  const liveKpis = liveNow?.kpis || {};
+  const openBoxes = liveNow?.open_boxes || data?.open_boxes || [];
+  const paymentMix = historical?.payment_mix || data?.payment_mix || [];
+  const cancelamentos = historical?.cancelamentos || data?.cancelamentos || [];
+  const alerts = liveNow?.alerts || data?.alerts || [];
+  const topTurnos = historical?.top_turnos || [];
+  const byDay = historical?.by_day || [];
+  const historicalStatus = String(historical?.source_status || data?.source_status || 'unavailable');
+  const liveStatus = String(liveNow?.source_status || 'unavailable');
 
   return (
     <div>
@@ -97,42 +98,136 @@ export default function CashPage() {
             borderColor: 'rgba(96, 165, 250, 0.22)',
           }}
         >
-          <div className="muted">Painel operacional de caixa com foco em turnos abertos, fechamento pendente, vendas expostas e cancelamentos.</div>
-          {!loading ? <div style={{ marginTop: 10, fontSize: 18, fontWeight: 700 }}>{data?.summary}</div> : null}
+          <div className="muted">Painel de caixa com visão histórica do período filtrado e monitor operacional em tempo real, sem misturar os dois conceitos.</div>
+          {!loading ? <div style={{ marginTop: 10, fontSize: 18, fontWeight: 700 }}>{historical?.summary || data?.summary}</div> : null}
+          {!loading ? <div className="muted" style={{ marginTop: 8 }}>{liveNow?.summary || 'Monitor em tempo real indisponível no momento.'}</div> : null}
         </div>
 
         {error ? <div className="card errorCard">{error}</div> : null}
 
         <div className="bi-grid" style={{ marginTop: 12 }}>
           <div className="card kpi col-3">
-            <div className="label">Caixas abertos</div>
-            <div className="value">{loading ? '...' : Number(kpis.caixas_abertos || 0)}</div>
+            <div className="label">Caixas no período</div>
+            <div className="value">{loading ? '...' : Number(kpis.caixas_periodo || 0)}</div>
+          </div>
+          <div className="card kpi col-3">
+            <div className="label">Dias com movimento</div>
+            <div className="value">{loading ? '...' : Number(kpis.dias_com_movimento || 0)}</div>
+          </div>
+          <div className="card kpi col-3">
+            <div className="label">Vendas do período</div>
+            <div className="value">{loading ? '...' : formatCurrency(kpis.total_vendas)}</div>
+          </div>
+          <div className="card kpi col-3">
+            <div className="label">Cancelamentos do período</div>
+            <div className="value">{loading ? '...' : formatCurrency(kpis.total_cancelamentos)}</div>
+          </div>
+
+          <div className="card kpi col-3">
+            <div className="label">Caixas abertos agora</div>
+            <div className="value">{loading ? '...' : Number(liveKpis.caixas_abertos || 0)}</div>
           </div>
           <div className="card kpi col-3">
             <div className="label">Acima de 24h</div>
-            <div className="value">{loading ? '...' : Number(kpis.caixas_criticos || 0)}</div>
+            <div className="value">{loading ? '...' : Number(liveKpis.caixas_criticos || 0)}</div>
           </div>
           <div className="card kpi col-3">
-            <div className="label">Vendas em caixas abertos</div>
-            <div className="value">{loading ? '...' : formatCurrency(kpis.total_vendas_abertas)}</div>
+            <div className="label">Vendas expostas agora</div>
+            <div className="value">{loading ? '...' : formatCurrency(liveKpis.total_vendas_abertas)}</div>
           </div>
           <div className="card kpi col-3">
-            <div className="label">Cancelamentos em caixas abertos</div>
-            <div className="value">{loading ? '...' : formatCurrency(kpis.total_cancelamentos_abertos)}</div>
+            <div className="label">Cancelamentos em aberto</div>
+            <div className="value">{loading ? '...' : formatCurrency(liveKpis.total_cancelamentos_abertos)}</div>
           </div>
 
           <div className="card col-8">
-            <h2>Caixas abertos agora</h2>
-            {!loading && sourceStatus === 'unavailable' ? (
+            <h2>Turnos com maior movimento no período</h2>
+            {!loading && historicalStatus === 'unavailable' ? (
               <EmptyState
-                title="O módulo está pronto, aguardando a próxima carga operacional."
-                detail="Assim que TURNOS e USUÁRIOS entrarem da Xpert, esta tela passa a mostrar abertura, operador, vendas e alertas automaticamente."
+                title="Sem histórico de caixa para o período selecionado."
+                detail="O recorte atual não trouxe turnos vinculados a comprovantes ou pagamentos."
               />
             ) : null}
-            {!loading && sourceStatus !== 'unavailable' && !openBoxes.length ? (
+            {!loading && historicalStatus !== 'unavailable' && !topTurnos.length ? (
+              <EmptyState
+                title="Sem turnos históricos destacados neste recorte."
+                detail="O período não gerou ranking relevante de turnos com comprovantes e pagamentos vinculados."
+              />
+            ) : null}
+            {topTurnos.length ? (
+              <table className="table compact">
+                <thead>
+                  <tr>
+                    <th>Filial</th>
+                    <th>Turno</th>
+                    <th>Operador</th>
+                    <th>Último evento</th>
+                    <th>Vendas</th>
+                    <th>Pagamentos</th>
+                    <th>Cancelamentos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topTurnos.map((item: any) => (
+                    <tr key={`${item.id_filial}-${item.id_turno}`}>
+                      <td>{item.filial_label}</td>
+                      <td>Caixa {item.id_turno}</td>
+                      <td>{item.usuario_label}</td>
+                      <td>{formatDateTime(item.last_event_at)}</td>
+                      <td>{formatCurrency(item.total_vendas)}</td>
+                      <td>{formatCurrency(item.total_pagamentos)}</td>
+                      <td>{formatCurrency(item.total_cancelamentos)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+          </div>
+
+          <div className="card col-4 chartCard">
+            <h2>Formas de pagamento do período</h2>
+            {!loading && !paymentMix.length ? (
+              <EmptyState
+                title="Sem pagamentos conciliados no período."
+                detail="A distribuição por forma aparece quando a carga por turno retorna pagamentos vinculados ao recorte."
+              />
+            ) : null}
+            <div className="chartWrap" style={{ height: 280 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={paymentMix} dataKey="total_valor" nameKey="label" innerRadius={60} outerRadius={95} paddingAngle={2}>
+                    {paymentMix.map((_: any, idx: number) => (
+                      <Cell key={`cash-pay-${idx}`} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: any) => formatCurrency(value)} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            {paymentMix.length ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {paymentMix.slice(0, 6).map((item: any) => (
+                  <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <span className="muted">{item.label}</span>
+                    <strong>{formatCurrency(item.total_valor)}</strong>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="card col-6">
+            <h2>Caixas abertos agora</h2>
+            {!loading && liveStatus === 'unavailable' ? (
+              <EmptyState
+                title="Monitor operacional indisponível."
+                detail="O DW ainda não possui turnos em tempo real suficientes para formar a visão de agora."
+              />
+            ) : null}
+            {!loading && liveStatus !== 'unavailable' && !openBoxes.length ? (
               <EmptyState
                 title="Nenhum caixa aberto neste momento."
-                detail="A operação está sem pendências de fechamento no recorte monitorado."
+                detail="A visão em tempo real está íntegra, mas a operação não tem pendências abertas agora."
               />
             ) : null}
             {openBoxes.length ? (
@@ -177,12 +272,6 @@ export default function CashPage() {
                           <div className="cashMetricValue">{formatCurrency(item.total_vendas)}</div>
                         </div>
                         <div className="cashMetric">
-                          <div className="label">Vendas válidas</div>
-                          <div className="cashMetricValue">
-                            {formatCurrency(Number(item.total_vendas || 0) - Number(item.total_cancelamentos || 0))}
-                          </div>
-                        </div>
-                        <div className="cashMetric">
                           <div className="label">Pagamentos</div>
                           <div className="cashMetricValue">{formatCurrency(item.total_pagamentos)}</div>
                         </div>
@@ -198,38 +287,6 @@ export default function CashPage() {
                     </div>
                   );
                 })}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="card col-4 chartCard">
-            <h2>Formas de pagamento</h2>
-            {!loading && !paymentMix.length ? (
-              <EmptyState
-                title="Sem pagamentos vinculados aos caixas abertos."
-                detail="A distribuição por forma aparece automaticamente quando houver comprovantes ligados ao turno em aberto."
-              />
-            ) : null}
-            <div className="chartWrap" style={{ height: 280 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={paymentMix} dataKey="total_valor" nameKey="label" innerRadius={60} outerRadius={95} paddingAngle={2}>
-                    {paymentMix.map((_: any, idx: number) => (
-                      <Cell key={`cash-pay-${idx}`} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value: any) => formatCurrency(value)} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            {paymentMix.length ? (
-              <div style={{ display: 'grid', gap: 8 }}>
-                {paymentMix.slice(0, 6).map((item: any) => (
-                  <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                    <span className="muted">{item.label}</span>
-                    <strong>{formatCurrency(item.total_valor)}</strong>
-                  </div>
-                ))}
               </div>
             ) : null}
           </div>
@@ -265,11 +322,11 @@ export default function CashPage() {
           </div>
 
           <div className="card col-6">
-            <h2>Cancelamentos em caixas abertos</h2>
+            <h2>Cancelamentos do período</h2>
             {!loading && !cancelamentos.length ? (
               <EmptyState
-                title="Sem cancelamentos relevantes nos caixas abertos."
-                detail="O módulo acompanha apenas comprovantes válidos do caixa com CFOP acima de 5000."
+                title="Sem cancelamentos relevantes no histórico do período."
+                detail="O ranking acompanha comprovantes vinculados a turno com CFOP acima de 5000."
               />
             ) : null}
             <table className="table compact">
@@ -290,6 +347,38 @@ export default function CashPage() {
                     <td>{item.usuario_label}</td>
                     <td>{formatCurrency(item.total_cancelamentos)}</td>
                     <td>{Number(item.qtd_cancelamentos || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="card col-6">
+            <h2>Evolução diária do período</h2>
+            {!loading && !byDay.length ? (
+              <EmptyState
+                title="Sem série diária para o período."
+                detail="Não houve movimento histórico suficiente para construir a série diária de caixa."
+              />
+            ) : null}
+            <table className="table compact">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Caixas</th>
+                  <th>Vendas</th>
+                  <th>Pagamentos</th>
+                  <th>Cancelamentos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byDay.slice(-10).reverse().map((item: any) => (
+                  <tr key={item.data_key}>
+                    <td>{formatDateKey(item.data_key)}</td>
+                    <td>{Number(item.caixas || 0)}</td>
+                    <td>{formatCurrency(item.total_vendas)}</td>
+                    <td>{formatCurrency(item.total_pagamentos)}</td>
+                    <td>{formatCurrency(item.total_cancelamentos)}</td>
                   </tr>
                 ))}
               </tbody>

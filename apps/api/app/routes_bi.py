@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from app.deps import get_current_claims
-from app.scope import resolve_scope
+from app.scope import resolve_scope, accessible_branch_ids
 from app import repos_mart
 from app import repos_auth
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
@@ -37,7 +37,11 @@ def get_filiais(
 ):
     role = claims["role"]
     tenant, _ = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=None)
-    return {"items": repos_mart.list_filiais(role, tenant)}
+    can_list_all, allowed_branch_ids = accessible_branch_ids(claims, tenant)
+    items = repos_mart.list_filiais(role, tenant)
+    if not can_list_all:
+        items = [item for item in items if int(item.get("id_filial") or 0) in allowed_branch_ids]
+    return {"items": items}
 
 
 # ------------------------
@@ -56,7 +60,7 @@ def dashboard_overview(
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    as_of = dt_ref or dt_fim
+    as_of = dt_ref or date.today()
 
     if compact:
         return {
@@ -98,7 +102,7 @@ def dashboard_home(
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    as_of = dt_ref or dt_fim
+    as_of = dt_ref or date.today()
     return repos_mart.dashboard_home_bundle(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim, dt_ref=as_of)
 
 
@@ -201,10 +205,10 @@ def customers_overview(
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    as_of = dt_ref or dt_fim
-    churn_diamond = repos_mart.customers_churn_diamond(role, tenant, filial, as_of=as_of, min_score=40, limit=10)
+    as_of = dt_ref or date.today()
+    churn_bundle = repos_mart.customers_churn_bundle(role, tenant, filial, as_of=as_of, min_score=40, limit=10)
     churn_top = []
-    for c in churn_diamond:
+    for c in churn_bundle.get("top_risk") or []:
         freq_30 = int(c.get("frequency_30") or 0)
         freq_90 = int(c.get("frequency_90") or 0)
         mon_30 = float(c.get("monetary_30") or 0)
@@ -229,7 +233,7 @@ def customers_overview(
         "top_customers": repos_mart.customers_top(role, tenant, filial, dt_ini, dt_fim, limit=15),
         "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=as_of),
         "churn_top": churn_top,
-        "churn_snapshot": repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
+        "churn_snapshot": churn_bundle.get("snapshot_meta") or repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
         "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim),
     }
 
@@ -248,12 +252,9 @@ def clients_churn(
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    as_of = dt_ref or dt_fim
-    top = repos_mart.customers_churn_diamond(role, tenant, filial, as_of=as_of, min_score=min_score, limit=limit)
-    total_revenue_at_risk = float(sum(float(row.get("revenue_at_risk_30d") or 0) for row in top))
-    avg_churn_score = (
-        round(sum(float(row.get("churn_score") or 0) for row in top) / len(top), 2) if top else 0.0
-    )
+    as_of = dt_ref or date.today()
+    churn_bundle = repos_mart.customers_churn_bundle(role, tenant, filial, as_of=as_of, min_score=min_score, limit=limit)
+    top = churn_bundle.get("top_risk") or []
 
     drilldown = {"snapshot": {}, "series": []}
     if id_cliente is not None:
@@ -269,11 +270,11 @@ def clients_churn(
 
     return {
         "top_risk": top,
-        "snapshot_meta": repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
-        "summary": {
+        "snapshot_meta": churn_bundle.get("snapshot_meta") or repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
+        "summary": churn_bundle.get("summary") or {
             "total_top_risk": len(top),
-            "avg_churn_score": avg_churn_score,
-            "revenue_at_risk_30d": round(total_revenue_at_risk, 2),
+            "avg_churn_score": 0.0,
+            "revenue_at_risk_30d": 0.0,
         },
         "drilldown": drilldown,
     }
@@ -311,7 +312,7 @@ def finance_overview(
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    as_of = dt_ref or dt_fim
+    as_of = dt_ref or date.today()
 
     response = {
         "kpis": repos_mart.finance_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -348,13 +349,14 @@ def payments_overview(
 def cash_overview(
     dt_ini: date,
     dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Legacy reference date; current server date is used when omitted"),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    return repos_mart.cash_overview(role, tenant, filial)
+    return repos_mart.cash_overview(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim)
 
 
 # ------------------------

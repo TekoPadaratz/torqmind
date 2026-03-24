@@ -189,6 +189,7 @@ make platform-billing-daily   # gera receivables / atualiza overdue do backoffic
 ### Backfill de snapshots executivos
 
 Os snapshots históricos de `churn`, `health score` e `aging financeiro` são persistidos por `dt_ref`.
+Os endpoints quentes não zeram mais quando o snapshot exato falta: cada leitura devolve metadata de cobertura com `snapshot_status` / `source_kind`, distinguindo `exact`, `best_effort`, `operational` e `missing`.
 O backfill é resumível e registra progresso em:
 - `app.snapshot_backfill_runs`
 - `app.snapshot_backfill_steps`
@@ -213,8 +214,10 @@ O slice suportado é a edição operacional de filiais já sincronizadas, preser
 - `sales_history_days = 365` por tenant, aplicado apenas à trilha comercial curta: `comprovantes`, `movprodutos`, `itensmovprodutos`, `formas_pgto_comprovantes` e fatos/snapshots derivados dessa trilha.
 - `default_product_scope_days = 30` por tenant, usado no login para montar o escopo padrão do dashboard.
 - `clientes`, `contaspagar`, `contasreceber`, `financeiro` e `dw.fact_financeiro` continuam com histórico completo nesta fase.
-- `platform_master` continua parando em `/scope`.
-- Usuários do produto com tenant/filial resolvidos entram direto em `/dashboard?...` com base na data operacional mais recente disponível em `dw.fact_venda` / `dw.fact_comprovante`.
+- `platform_master`, `product_global`, `tenant_admin` e `tenant_manager` entram direto em `/dashboard?...`.
+- A navegação principal do produto é feita pelo menu lateral com seleção de empresa, filial e intervalo `de/até`.
+- `dt_ref` continua aceito nos links legados e nos snapshots internos, mas deixou de ser campo editável no fluxo principal da UI. A data-base executiva passa a ser a data atual do servidor, com fallback explícito por cobertura.
+- Usuários com acesso amplo escolhem empresa/filial no menu lateral; `tenant_manager` permanece travado na própria filial.
 - O ingest protege o produto contra histórico comercial antigo demais em `comprovantes` e `movprodutos`, mesmo que o emissor esteja mal configurado.
 
 ---
@@ -367,7 +370,20 @@ Parâmetros:
 
 ## Dashboards (Web)
 
-A tela `/scope` define `dt_ini`, `dt_fim`, `id_empresa` (MASTER) e `id_filial` (opcional).
+O fluxo de produção entra direto em `/dashboard`. O antigo `/scope` virou compatibilidade de links legados e apenas redireciona para o dashboard com os filtros atuais.
+
+O menu lateral concentra:
+- navegação entre módulos;
+- seleção de empresa para `platform_master` e `product_global`;
+- seleção de filial conforme o papel do usuário;
+- filtro de período `de/até`.
+
+Semântica executiva padronizada:
+- `Dashboard Geral` compõe os cards a partir das mesmas leituras usadas pelos módulos especialistas e exibe cobertura por bloco.
+- `Antifraude` separa fraude operacional/cancelamentos de risco modelado.
+- `Clientes` usa snapshot exato quando existe e cai para `latest <= dt_ref` ou visão operacional atual com metadata clara.
+- `Financeiro` informa se o aging veio de snapshot exato, snapshot best effort ou fallback operacional.
+- `Caixa` separa histórico do período filtrado da visão operacional em tempo real.
 
 Páginas:
 - `/dashboard` → Dashboard Geral + Jarvis briefing

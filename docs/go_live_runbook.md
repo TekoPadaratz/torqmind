@@ -60,10 +60,12 @@ psql -h 127.0.0.1 -p 5432 -U postgres -d TORQMIND -P pager=off -c "EXPLAIN (ANAL
 Hot path HTTP:
 
 ```bash
-curl -s -o /dev/null -w 'home_total=%{time_total}\n' "http://127.0.0.1:8000/bi/dashboard/home?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1"
-curl -s -o /dev/null -w 'sales_total=%{time_total}\n' "http://127.0.0.1:8000/bi/sales/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1"
-curl -s -o /dev/null -w 'customers_total=%{time_total}\n' "http://127.0.0.1:8000/bi/customers/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1"
-curl -s -o /dev/null -w 'finance_total=%{time_total}\n' "http://127.0.0.1:8000/bi/finance/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1"
+curl -s -o /dev/null -w 'home_total=%{time_total}\n' "http://127.0.0.1:8000/bi/dashboard/home?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1"
+curl -s -o /dev/null -w 'sales_total=%{time_total}\n' "http://127.0.0.1:8000/bi/sales/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1"
+curl -s -o /dev/null -w 'cash_total=%{time_total}\n' "http://127.0.0.1:8000/bi/cash/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1"
+curl -s -o /dev/null -w 'fraud_total=%{time_total}\n' "http://127.0.0.1:8000/bi/fraud/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1"
+curl -s -o /dev/null -w 'customers_total=%{time_total}\n' "http://127.0.0.1:8000/bi/customers/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1"
+curl -s -o /dev/null -w 'finance_total=%{time_total}\n' "http://127.0.0.1:8000/bi/finance/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1"
 ```
 
 Critérios mínimos antes da promoção:
@@ -162,10 +164,13 @@ def req(path, method='GET', data=None, token=None):
 _, login = req('/auth/login', 'POST', {'email': 'owner@empresa1.com', 'password': 'TorqMind@123'})
 token = login['access_token']
 checks = {
-    'home': req('/bi/dashboard/home?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1', token=token)[0],
-    'sales': req('/bi/sales/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1', token=token)[0],
-    'customers': req('/bi/customers/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1', token=token)[0],
-    'finance': req('/bi/finance/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&dt_ref=2026-03-22&id_empresa=1', token=token)[0],
+    'auth_me': req('/auth/me', token=token)[0],
+    'home': req('/bi/dashboard/home?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1', token=token)[0],
+    'sales': req('/bi/sales/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1', token=token)[0],
+    'cash': req('/bi/cash/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1', token=token)[0],
+    'fraud': req('/bi/fraud/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1', token=token)[0],
+    'customers': req('/bi/customers/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1', token=token)[0],
+    'finance': req('/bi/finance/overview?dt_ini=2026-03-01&dt_fim=2026-03-22&id_empresa=1', token=token)[0],
     'notifications': req('/bi/notifications?id_empresa=1&limit=10', token=token)[0],
 }
 print(json.dumps(checks, indent=2))
@@ -173,6 +178,11 @@ PY
 ```
 
 Critério: todos os status `200`.
+
+Critério funcional adicional:
+- `home` deve retornar metadata de cobertura por bloco, sem zerar fraude/churn/financeiro silenciosamente;
+- `cash` deve trazer `historical` e `live_now`;
+- `auth_me` deve apontar `home_path` para `/dashboard`, não para `/scope`.
 
 ## T+1h: validação operacional
 

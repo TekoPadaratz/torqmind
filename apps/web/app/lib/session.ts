@@ -19,7 +19,7 @@ export async function loadSession(router: any, area: 'product' | 'platform') {
       return null;
     }
     if (area === 'platform' && !canUsePlatform) {
-      router.push(me?.home_path || '/scope');
+      router.push(me?.home_path || '/dashboard');
       return null;
     }
 

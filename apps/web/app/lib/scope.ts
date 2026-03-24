@@ -1,6 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
+
+import { buildScopeSearchParams, readScopeFromSearch } from './product-scope.mjs';
 
 export type ScopeQuery = {
   dt_ini: string;
@@ -11,27 +14,22 @@ export type ScopeQuery = {
   ready: boolean;
 };
 
-export function useScopeQuery(): ScopeQuery {
-  const [scope, setScope] = useState<ScopeQuery>({
-    dt_ini: '',
-    dt_fim: '',
-    dt_ref: '',
-    id_filial: null,
-    id_empresa: null,
-    ready: false,
-  });
+export function useScopeQuery(fallback?: Partial<ScopeQuery>): ScopeQuery {
+  const searchParams = useSearchParams();
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    setScope({
-      dt_ini: params.get('dt_ini') || '',
-      dt_fim: params.get('dt_fim') || '',
-      dt_ref: params.get('dt_ref') || params.get('dt_fim') || '',
-      id_filial: params.get('id_filial'),
-      id_empresa: params.get('id_empresa'),
+  return useMemo(() => {
+    const scope = readScopeFromSearch(searchParams, fallback || {});
+    return {
+      dt_ini: scope.dt_ini || '',
+      dt_fim: scope.dt_fim || '',
+      dt_ref: scope.dt_ref || '',
+      id_filial: scope.id_filial || null,
+      id_empresa: scope.id_empresa || null,
       ready: true,
-    });
-  }, []);
+    };
+  }, [fallback, searchParams]);
+}
 
-  return scope;
+export function buildScopeParams(scope: Partial<ScopeQuery>, options?: { includeDtRef?: boolean }): URLSearchParams {
+  return buildScopeSearchParams(scope, options || {});
 }

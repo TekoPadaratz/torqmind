@@ -10,7 +10,7 @@ import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,24 +42,20 @@ export default function GoalsPage() {
       router.push('/');
       return;
     }
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
         const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/dashboard');
+          return;
+        }
 
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const res = await apiGet(`/bi/goals/overview?${qs.toString()}`);
-        const risk = await apiGet(`/bi/risk/overview?${qs.toString()}`);
+        const qs = buildScopeParams(scope).toString();
+        const res = await apiGet(`/bi/goals/overview?${qs}`);
+        const risk = await apiGet(`/bi/risk/overview?${qs}`);
         setData(res);
         setRiskData(risk);
       } catch (err: any) {
@@ -70,7 +66,7 @@ export default function GoalsPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const leaderboard = useMemo(
     () =>

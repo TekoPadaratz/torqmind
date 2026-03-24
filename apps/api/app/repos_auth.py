@@ -203,6 +203,40 @@ def _all_active_tenant_ids() -> list[int]:
     return [int(row["id_empresa"]) for row in rows if row.get("id_empresa") is not None]
 
 
+def _list_active_product_companies(tenant_ids: list[int] | None = None) -> list[dict[str, Any]]:
+    where_ids = ""
+    params: list[Any] = []
+    if tenant_ids:
+        where_ids = "AND id_empresa = ANY(%s)"
+        params.append(tenant_ids)
+
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+              id_empresa,
+              nome AS tenant_name,
+              status AS tenant_status,
+              billing_status AS tenant_billing_status
+            FROM app.tenants
+            WHERE is_active = true
+              {where_ids}
+            ORDER BY id_empresa
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            "id_empresa": int(row["id_empresa"]),
+            "tenant_name": row.get("tenant_name"),
+            "tenant_status": row.get("tenant_status"),
+            "tenant_billing_status": row.get("tenant_billing_status"),
+        }
+        for row in rows
+        if row.get("id_empresa") is not None
+    ]
+
+
 def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[str, Any]:
     where_filial = " AND id_filial = %s " if branch_id is not None else ""
     latest_params: list[Any] = [tenant_id] + ([] if branch_id is None else [branch_id])
@@ -282,6 +316,7 @@ def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[
     return {
         "default_product_scope_days": max(default_days, 1),
         "latest_dt_ref": latest_dt_ref or current_date,
+        "current_date": current_date,
         "has_operational_data": latest_dt_ref is not None,
         "latest_source": latest_row.get("source") if latest_row else None,
     }
@@ -297,19 +332,23 @@ def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[
         "id_filial": branch_id,
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
-        "dt_ref": dt_fim.isoformat(),
+        "dt_ref": scope_defaults["current_date"].isoformat(),
         "days": default_days,
         "source": "latest_operational_date" if scope_defaults["has_operational_data"] else "current_date_fallback",
+        "latest_operational_dt": dt_fim.isoformat(),
+        "server_today": scope_defaults["current_date"].isoformat(),
+        "latest_source": scope_defaults.get("latest_source"),
     }
 
 
-def _build_dashboard_home_path(scope: dict[str, Any]) -> str:
+def _build_dashboard_home_path(scope: dict[str, Any], include_dt_ref: bool = False) -> str:
     params: dict[str, str] = {
         "dt_ini": str(scope["dt_ini"]),
         "dt_fim": str(scope["dt_fim"]),
-        "dt_ref": str(scope["dt_ref"]),
         "id_empresa": str(scope["id_empresa"]),
     }
+    if include_dt_ref and scope.get("dt_ref"):
+        params["dt_ref"] = str(scope["dt_ref"])
     if scope.get("id_filial") is not None:
         params["id_filial"] = str(scope["id_filial"])
     return f"/dashboard?{urlencode(params)}"
@@ -580,19 +619,9 @@ def _build_session_context(
         if user_role not in {"platform_master", "platform_admin", "channel_admin"}
         else False
     )
-    default_scope = None
-    home_path = "/platform" if can_access_platform(user_role) else "/scope"
-    if include_default_scope and user_role == "platform_master":
-        home_path = "/scope"
-    elif include_default_scope and can_access_product(user_role) and selected_tenant_id is not None:
-        default_scope = _build_default_product_scope(selected_tenant_id, selected_branch_id)
-        home_path = _build_dashboard_home_path(default_scope)
-    elif include_default_scope and user_role == "product_global":
-        home_path = "/scope"
-
     tenant_ids = (
         _all_active_tenant_ids()
-        if user_role == "product_global"
+        if user_role in {"platform_master", "product_global"}
         else sorted(
             {
                 int(row["id_empresa"])
@@ -601,6 +630,32 @@ def _build_session_context(
             }
         )
     )
+    product_companies = (
+        _list_active_product_companies(tenant_ids if user_role == "product_global" else None)
+        if user_role in {"platform_master", "product_global"}
+        else [
+            {
+                "id_empresa": int(row["id_empresa"]),
+                "tenant_name": row.get("tenant_name"),
+                "tenant_status": row.get("tenant_status"),
+                "tenant_billing_status": row.get("tenant_billing_status"),
+            }
+            for row in scoped_rows
+            if row.get("id_empresa") is not None and _access_row_is_valid_now(row, today)
+        ]
+    )
+
+    product_scope_tenant = selected_tenant_id
+    product_scope_branch = selected_branch_id
+    if product_scope_tenant is None and can_access_product(user_role):
+        product_scope_tenant = tenant_ids[0] if tenant_ids else None
+        product_scope_branch = None
+
+    default_scope = None
+    home_path = "/platform" if can_access_platform(user_role) else "/dashboard"
+    if include_default_scope and can_access_product(user_role) and product_scope_tenant is not None:
+        default_scope = _build_default_product_scope(product_scope_tenant, product_scope_branch)
+        home_path = _build_dashboard_home_path(default_scope, include_dt_ref=False)
 
     return {
         "sub": str(user["id"]),
@@ -624,6 +679,7 @@ def _build_session_context(
             "product": can_access_product(user_role),
             "product_readonly": product_readonly,
         },
+        "server_today": today.isoformat(),
         "default_scope": default_scope,
         "home_path": home_path,
         "accesses": [_serialize_access_row(row) for row in scoped_rows if _access_row_is_valid_now(row, today)],
@@ -635,6 +691,7 @@ def _build_session_context(
             }
         ),
         "tenant_ids": tenant_ids,
+        "product_companies": product_companies,
     }
 
 

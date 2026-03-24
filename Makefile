@@ -65,7 +65,7 @@ platform-billing-daily:
 
 test:
 	@$(COMPOSE) exec -T api python -m unittest discover -s app -p 'test*.py'
-	@$(COMPOSE) exec -T web npm run test:api-base
+	@$(COMPOSE) exec -T web npm test
 
 test-agent:
 	@PYTHONPATH=apps/agent python3 -m unittest discover -s apps/agent/tests -v

@@ -10,7 +10,7 @@ import { apiGet } from '../lib/api';
 import { requireAuth } from '../lib/auth';
 import { extractApiError } from '../lib/errors';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,6 +46,22 @@ function buildChurnSignal(customer: any) {
   return customer?.recommendation || 'Vale retomar contato e monitorar a próxima visita.';
 }
 
+function churnCoverageLabel(snapshot: any) {
+  const status = String(snapshot?.snapshot_status || 'missing');
+  const effectiveDate = snapshot?.effective_dt_ref || snapshot?.requested_dt_ref;
+
+  if (status === 'exact') {
+    return `Snapshot diário exato em ${formatDateOnly(effectiveDate)}.`;
+  }
+  if (status === 'best_effort') {
+    return `Snapshot diário mais recente até a data-base, efetivo em ${formatDateOnly(effectiveDate)}.`;
+  }
+  if (status === 'operational_current') {
+    return `Fallback operacional corrente do churn em ${formatDateOnly(effectiveDate)}.`;
+  }
+  return 'Sem snapshot diário nem fallback operacional confiável para a data-base atual.';
+}
+
 export default function CustomersPage() {
   const router = useRouter();
   const scope = useScopeQuery();
@@ -66,21 +82,18 @@ export default function CustomersPage() {
       router.push('/');
       return;
     }
-    if (!scope.dt_ini || !scope.dt_fim) {
-      router.push('/scope');
-      return;
-    }
-
     const load = async () => {
       setLoading(true);
       setError('');
       try {
-        const qs = new URLSearchParams({ dt_ini: scope.dt_ini, dt_fim: scope.dt_fim, dt_ref: scope.dt_ref || scope.dt_fim });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const [me, res] = await Promise.all([apiGet('/auth/me'), apiGet(`/bi/customers/overview?${qs.toString()}`)]);
+        const me = await apiGet('/auth/me');
         setClaims(me);
+        if (!scope.dt_ini || !scope.dt_fim) {
+          router.replace(me?.home_path || '/dashboard');
+          return;
+        }
+
+        const res = await apiGet(`/bi/customers/overview?${buildScopeParams(scope).toString()}`);
         setData(res);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar clientes'));
@@ -90,7 +103,7 @@ export default function CustomersPage() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const topChart = useMemo(
     () =>
@@ -102,6 +115,7 @@ export default function CustomersPage() {
   );
   const anon = data?.anonymous_retention || {};
   const anonKpis = anon?.kpis || {};
+  const churnSnapshot = data?.churn_snapshot || {};
 
   return (
     <div>
@@ -109,6 +123,7 @@ export default function CustomersPage() {
       <div className="container">
         <div className="card">
           <div className="muted">Recorrência, churn e oportunidades de reativação da base.</div>
+          {!loading ? <div style={{ marginTop: 10, fontWeight: 700 }}>{churnCoverageLabel(churnSnapshot)}</div> : null}
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}
 
@@ -123,6 +138,12 @@ export default function CustomersPage() {
 
           <div className="card col-12">
             <h2>Risco de churn (top 10)</h2>
+            {!loading ? (
+              <div className="muted" style={{ marginTop: 8 }}>
+                Data-base solicitada: {formatDateOnly(churnSnapshot?.requested_dt_ref || claims?.server_today)}.
+                {' '}Referência efetiva: {formatDateOnly(churnSnapshot?.effective_dt_ref || churnSnapshot?.requested_dt_ref || claims?.server_today)}.
+              </div>
+            ) : null}
             {!loading && !(data?.churn_top || []).length ? (
               <EmptyState title="Nenhum cliente em risco relevante." detail="A base identificada não trouxe sinais fortes de churn para este recorte." />
             ) : null}

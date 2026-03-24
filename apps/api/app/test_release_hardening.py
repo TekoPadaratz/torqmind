@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlparse, unquote
 from uuid import uuid4
 
 import psycopg
@@ -31,6 +32,15 @@ CHANNEL_BOOTSTRAP_PASSWORD = "TorqMind@123"
 
 
 def _admin_dsn(dbname: str) -> str:
+    if settings.database_url:
+        parsed = urlparse(settings.database_url)
+        if parsed.scheme.startswith("postgresql"):
+            user = unquote(parsed.username or settings.pg_user)
+            password = unquote(parsed.password or settings.pg_password)
+            host = parsed.hostname or settings.pg_host
+            port = parsed.port or settings.pg_port
+            return f"host={host} port={port} dbname={dbname} user={user} password={password}"
+
     return (
         f"host={settings.pg_host} port={settings.pg_port} dbname={dbname} "
         f"user={settings.pg_user} password={settings.pg_password}"
@@ -145,16 +155,24 @@ def _relation_column_type(db_name: str, schema_name: str, relation_name: str, co
 
 def _subprocess_env(db_name: str) -> dict[str, str]:
     env = os.environ.copy()
+    admin_dsn = _admin_dsn(db_name)
+    conn_kwargs = dict(
+        item.split("=", 1)
+        for item in admin_dsn.split()
+        if "=" in item
+    )
     env.update(
         {
-            "PG_HOST": str(settings.pg_host),
-            "PG_PORT": str(settings.pg_port),
+            "PG_HOST": str(conn_kwargs.get("host", settings.pg_host)),
+            "PG_PORT": str(conn_kwargs.get("port", settings.pg_port)),
             "PG_DATABASE": db_name,
-            "PG_USER": str(settings.pg_user),
-            "PG_PASSWORD": str(settings.pg_password),
+            "PG_USER": str(conn_kwargs.get("user", settings.pg_user)),
+            "PG_PASSWORD": str(conn_kwargs.get("password", settings.pg_password)),
             "DATABASE_URL": (
-                f"postgresql+asyncpg://{settings.pg_user}:{settings.pg_password}"
-                f"@{settings.pg_host}:{settings.pg_port}/{db_name}"
+                f"postgresql+asyncpg://{conn_kwargs.get('user', settings.pg_user)}"
+                f":{conn_kwargs.get('password', settings.pg_password)}"
+                f"@{conn_kwargs.get('host', settings.pg_host)}"
+                f":{conn_kwargs.get('port', settings.pg_port)}/{db_name}"
             ),
             "SEED_PASSWORD": "TorqMind@123",
             "APP_ENV": "test",
@@ -239,7 +257,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 env,
             )
             self.assertEqual(login.returncode, 0, login.stderr or login.stdout)
-            self.assertIn("/scope", login.stdout)
+            self.assertIn("/dashboard?", login.stdout)
 
     def test_master_only_seed_bootstraps_real_master_and_channel_admin(self) -> None:
         with temporary_database() as db_name:
@@ -324,7 +342,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertEqual(master_login.returncode, 0, master_login.stderr or master_login.stdout)
             self.assertIn('"role": "platform_master"', master_login.stdout)
             self.assertIn('"platform_finance": true', master_login.stdout)
-            self.assertIn('"home_path": "/scope"', master_login.stdout)
+            self.assertIn('"home_path": "/dashboard?', master_login.stdout)
 
             channel_login = _run_python(
                 [

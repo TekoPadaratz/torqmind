@@ -14,7 +14,7 @@ import {
   formatDateOnly,
   formatFilialLabel,
 } from '../lib/format';
-import { useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useScopeQuery } from '../lib/scope';
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
 import HeroMoneyCard from '../components/ui/HeroMoneyCard';
@@ -24,29 +24,26 @@ import Skeleton from '../components/ui/Skeleton';
 export const dynamic = 'force-dynamic';
 
 function detailsHref(path: string, scope: any) {
-  const qs = new URLSearchParams({
-    dt_ini: scope.dt_ini,
-    dt_fim: scope.dt_fim,
-    dt_ref: scope.dt_ref || scope.dt_fim,
-  });
-  if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-  if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-  return `${path}?${qs.toString()}`;
+  return buildScopeParams(scope).toString()
+    ? `${path}?${buildScopeParams(scope).toString()}`
+    : path;
 }
 
 function buildPriorityCards({
   fraudImpact,
+  fraudCancelamentos,
   churnImpact,
   cashPressure,
-  riskKpis,
+  modeledRiskKpis,
   churnTop,
   financeData,
   scope,
 }: {
   fraudImpact: number;
+  fraudCancelamentos: number;
   churnImpact: number;
   cashPressure: number;
-  riskKpis: any;
+  modeledRiskKpis: any;
   churnTop: any[];
   financeData: any;
   scope: any;
@@ -55,10 +52,13 @@ function buildPriorityCards({
 
   if (fraudImpact > 0) {
     cards.push({
-      title: 'Auditar descontos e cancelamentos fora da curva',
-      severity: Number(riskKpis?.eventos_alto_risco || 0) > 0 ? 'HIGH' : 'WARN',
+      title: 'Auditar cancelamentos materiais do período',
+      severity: Number(modeledRiskKpis?.eventos_alto_risco || 0) > 0 ? 'HIGH' : 'WARN',
       impact: formatCurrency(fraudImpact),
-      summary: `${Number(riskKpis?.eventos_alto_risco || 0)} eventos de alto risco concentram o maior impacto operacional do período.`,
+      summary:
+        Number(modeledRiskKpis?.eventos_alto_risco || 0) > 0
+          ? `${fraudCancelamentos} cancelamentos relevantes no período e ${Number(modeledRiskKpis?.eventos_alto_risco || 0)} evento(s) de alto risco modelado.`
+          : `${fraudCancelamentos} cancelamentos relevantes concentram a materialidade operacional do período.`,
       cta: 'Abrir antifraude',
       href: detailsHref('/fraud', scope),
     });
@@ -121,8 +121,8 @@ function buildOperationalFocus({
       value: formatCurrency(fraudImpact),
       detail:
         fraudImpact > 0
-          ? 'Fraude operacional segue sendo o maior ponto de atenção financeira no recorte atual.'
-          : 'Nenhum desvio crítico de fraude apareceu acima da linha de corte.',
+          ? 'A leitura executiva está ancorada em cancelamentos operacionais reais, não apenas no motor modelado de risco.'
+          : 'Sem materialidade operacional relevante de cancelamentos no recorte atual.',
       href: detailsHref('/fraud', scope),
       cta: 'Ver investigação',
     },
@@ -195,19 +195,11 @@ export default function Dashboard() {
         const me = await apiGet('/auth/me');
         setClaims(me);
         if (!scope.dt_ini || !scope.dt_fim) {
-          router.replace(me?.home_path || '/scope');
+          router.replace(me?.home_path || '/dashboard');
           return;
         }
 
-        const qs = new URLSearchParams({
-          dt_ini: scope.dt_ini,
-          dt_fim: scope.dt_fim,
-          dt_ref: scope.dt_ref || scope.dt_fim,
-        });
-        if (scope.id_filial) qs.set('id_filial', scope.id_filial);
-        if (scope.id_empresa) qs.set('id_empresa', scope.id_empresa);
-
-        const homeRes = await apiGet(`/bi/dashboard/home?${qs.toString()}`);
+        const homeRes = await apiGet(`/bi/dashboard/home?${buildScopeParams(scope).toString()}`);
         setHomeData(homeRes);
       } catch (err: any) {
         setError(extractApiError(err, 'Falha ao carregar dashboard'));
@@ -217,43 +209,53 @@ export default function Dashboard() {
     };
 
     load();
-  }, [router, scope.dt_ini, scope.dt_fim, scope.dt_ref, scope.id_filial, scope.id_empresa, scope.ready]);
+  }, [router, scope.dt_ini, scope.dt_fim, scope.id_filial, scope.id_empresa, scope.ready]);
 
   const overview = homeData?.overview || {};
   const churnData = homeData?.churn || {};
   const financeData = homeData?.finance || {};
+  const fraudOverview = overview?.fraud || {};
+  const fraudOperational = fraudOverview?.operational || {};
+  const fraudOperationalKpis = fraudOperational?.kpis || {};
+  const modeledRisk = fraudOverview?.modeled_risk || overview?.risk || {};
+  const modeledRiskKpis = modeledRisk?.kpis || {};
+  const modeledRiskWindow = modeledRisk?.window || {};
+  const cashBundle = homeData?.cash || {};
+  const cashHistorical = cashBundle?.historical || overview?.cash?.historical || {};
+  const cashLiveNow = cashBundle?.live_now || overview?.cash?.live_now || {};
   const filialLabel = homeData?.scope?.filial_label || formatFilialLabel(scope.id_filial);
-  const riskKpis = overview?.risk?.kpis || {};
-  const riskWindow = overview?.risk?.window || {};
   const churnTop = churnData?.top_risk || [];
   const financeAging = financeData?.aging || {};
 
-  const fraudeImpacto = Number(riskKpis?.impacto_total || 0);
+  const fraudeImpacto = Number(fraudOperationalKpis?.valor_cancelado || 0);
+  const fraudeCancelamentos = Number(fraudOperationalKpis?.cancelamentos || 0);
+  const riscoModeladoImpacto = Number(modeledRiskKpis?.impacto_total || 0);
   const revenueAtRisk = churnTop.reduce((acc: number, item: any) => acc + Number(item.revenue_at_risk_30d || 0), 0);
   const caixaRisco = Number(financeAging?.receber_total_vencido || 0) + Number(financeAging?.pagar_total_vencido || 0);
   const heroRecoverable = fraudeImpacto + revenueAtRisk + caixaRisco;
 
-  const maxRiskDateKey = Number(riskWindow?.max_data_key || 0);
+  const maxRiskDateKey = Number(modeledRiskWindow?.max_data_key || 0);
   const maxRiskDate = formatDateKey(maxRiskDateKey);
   const scopeEndKey = Number(String(scope.dt_fim || '').replaceAll('-', ''));
   const scopeOutdatedForRisk =
     maxRiskDateKey > 0 &&
     scopeEndKey > 0 &&
     scopeEndKey < maxRiskDateKey &&
-    Number(riskKpis?.total_eventos || 0) === 0;
+    Number(modeledRiskKpis?.total_eventos || 0) === 0;
 
   const priorityCards = useMemo(
     () =>
       buildPriorityCards({
         fraudImpact: fraudeImpacto,
+        fraudCancelamentos: fraudeCancelamentos,
         churnImpact: revenueAtRisk,
         cashPressure: caixaRisco,
-        riskKpis,
+        modeledRiskKpis,
         churnTop,
         financeData,
         scope,
       }),
-    [fraudeImpacto, revenueAtRisk, caixaRisco, riskKpis, churnTop, financeData, scope]
+    [fraudeImpacto, fraudeCancelamentos, revenueAtRisk, caixaRisco, modeledRiskKpis, churnTop, financeData, scope]
   );
 
   const operationalFocus = useMemo(
@@ -278,6 +280,36 @@ export default function Dashboard() {
     [overview]
   );
 
+  const sourceCards = [
+    {
+      title: 'Fraude executiva',
+      value: formatCurrency(fraudeImpacto),
+      detail:
+        riscoModeladoImpacto > 0
+          ? `Cancelamentos operacionais do período com apoio do motor modelado (${formatCurrency(riscoModeladoImpacto)}).`
+          : 'Baseada em cancelamentos operacionais reais do período, mesmo sem risco modelado material.',
+    },
+    {
+      title: 'Churn',
+      value: String(churnData?.snapshot_meta?.snapshot_status || churnData?.snapshot_status || churnData?.summary?.total_top_risk || 'missing'),
+      detail: `Fonte ${churnData?.snapshot_meta?.source_kind || churnData?.snapshot_meta?.source_table || 'indisponível'} em ${formatDateOnly(
+        churnData?.snapshot_meta?.effective_dt_ref || churnData?.snapshot_meta?.requested_dt_ref || claims?.server_today
+      )}.`,
+    },
+    {
+      title: 'Financeiro',
+      value: String(financeAging?.snapshot_status || 'missing'),
+      detail: `Precisão ${financeAging?.precision_mode || 'missing'} com referência efetiva em ${formatDateOnly(
+        financeAging?.effective_dt_ref || financeAging?.requested_dt_ref || claims?.server_today
+      )}.`,
+    },
+    {
+      title: 'Caixa',
+      value: `${String(cashHistorical?.source_status || 'unavailable')} / ${String(cashLiveNow?.source_status || 'unavailable')}`,
+      detail: 'Histórico do período e monitor de agora são exibidos separadamente para evitar falso zero.',
+    },
+  ];
+
   return (
     <div>
       <AppNav title="Dashboard Geral" userLabel={userLabel} initialUnread={homeData?.notifications_unread} />
@@ -287,8 +319,8 @@ export default function Dashboard() {
           <div>
             <div className="muted">Escopo ativo</div>
             <div className="scopeLine">
-              <strong>{formatDateOnly(scope.dt_ini)}</strong> até <strong>{formatDateOnly(scope.dt_fim)}</strong> · Ref.{' '}
-              <strong>{formatDateOnly(scope.dt_ref || scope.dt_fim)}</strong> · Filial{' '}
+              <strong>{formatDateOnly(scope.dt_ini)}</strong> até <strong>{formatDateOnly(scope.dt_fim)}</strong> · Base do servidor{' '}
+              <strong>{formatDateOnly(homeData?.scope?.requested_dt_ref || claims?.server_today || scope.dt_fim)}</strong> · Filial{' '}
               <strong>{filialLabel || formatFilialLabel(scope.id_filial)}</strong> · Empresa{' '}
               <strong>{scope.id_empresa || claims?.id_empresa || '1'}</strong>
             </div>
@@ -298,8 +330,7 @@ export default function Dashboard() {
         {error ? <div className="card errorCard homeBlock">{error}</div> : null}
         {scopeOutdatedForRisk ? (
           <div className="card homeBlock" style={{ borderColor: '#f59e0b' }}>
-            <strong>Escopo fora da janela de risco.</strong> Os dados mais recentes de risco vão até <strong>{maxRiskDate}</strong>. Ajuste o período em{' '}
-            <Link href="/scope">Definir escopo</Link>.
+            <strong>Período além da última janela de risco modelado.</strong> Os dados modelados mais recentes vão até <strong>{maxRiskDate}</strong>, mas a home continua mostrando cancelamentos operacionais, churn, financeiro e caixa com as melhores fontes disponíveis.
           </div>
         ) : null}
 
@@ -317,9 +348,13 @@ export default function Dashboard() {
 
         <section className="kpiStrip homeBlock">
           <article className="card kpi riskCard">
-            <div className="label">Fraude em risco</div>
+            <div className="label">Fraude operacional</div>
             <div className="value">{loading ? '...' : formatCurrency(fraudeImpacto)}</div>
-            <div className="muted">Eventos críticos e alto risco já identificados no período.</div>
+            <div className="muted">
+              {loading
+                ? '...'
+                : `${fraudeCancelamentos} cancelamento(s) materiais no período. Risco modelado: ${formatCurrency(riscoModeladoImpacto)}.`}
+            </div>
           </article>
           <article className="card kpi">
             <div className="label">Clientes em risco</div>
@@ -331,6 +366,18 @@ export default function Dashboard() {
             <div className="value">{loading ? '...' : formatCurrency(caixaRisco)}</div>
             <div className="muted">Recebíveis e obrigações vencidas que já pedem ação comercial e financeira.</div>
           </article>
+        </section>
+
+        <section className="homeBlock">
+          <div className="focusGrid">
+            {sourceCards.map((item) => (
+              <article className="card focusCard" key={item.title}>
+                <div className="focusLabel">{item.title}</div>
+                <div className="focusValue" style={{ fontSize: 24 }}>{loading ? '...' : item.value}</div>
+                <p className="focusDetail">{item.detail}</p>
+              </article>
+            ))}
+          </div>
         </section>
 
         <section className="homePrimeGrid homeBlock">
