@@ -87,9 +87,37 @@ Ou usar o script:
 ./deploy/scripts/prod-migrate.sh
 ```
 
-Esse é o caminho canônico para alinhar bancos já existentes com o código atual.
-Ele reaplica a cadeia oficial `sql/migrations/*.sql` em ordem e valida colunas críticas
-de runtime da fase 2, incluindo `auth.users.nome`.
+Esse é o caminho canônico para:
+- banco novo/vazio;
+- banco que já está sob controle de `app.schema_migrations`.
+
+O migrator agora registra histórico em `app.schema_migrations`, calcula checksum por arquivo
+e aplica apenas migrations novas. Ele não reexecuta mais a cadeia inteira em toda release.
+
+Se você estiver adotando o migrator em um banco de produção já existente e saudável, mas ainda
+sem `app.schema_migrations`, rode uma única vez:
+
+```bash
+./deploy/scripts/prod-migrate.sh --baseline-current
+```
+
+Esse baseline registra a cadeia atual sem executar SQL. O modo padrão falha de forma segura em
+bancos existentes sem histórico para impedir replay de migrations destrutivas como `003_mart_demo.sql`.
+
+Para auditoria/verificação:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env exec -T postgres \
+  psql -U postgres -d TORQMIND -P pager=off -c \
+  "SELECT filename, execution_kind, applied_at FROM app.schema_migrations ORDER BY filename;"
+```
+
+Para checar apenas o runtime sem aplicar migrations:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env exec -T api \
+  python -m app.cli.migrate --verify-only
+```
 
 6. Rodar seed inicial:
 

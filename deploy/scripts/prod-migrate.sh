@@ -9,4 +9,4 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "Arquivo de ambiente não encontrado em $ENV_FILE"
   exit 1
 fi
-docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T api python -m app.cli.migrate
+docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T api python -m app.cli.migrate "$@"

@@ -17,7 +17,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from fastapi.testclient import TestClient
 
-from app.cli.migrate import resolve_migrations_dir
+from app.cli.migrate import list_migration_files, resolve_migrations_dir
 from app.config import settings
 from app.deps import get_current_claims
 from app.main import app
@@ -197,6 +197,7 @@ class ReleaseHardeningTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.client = TestClient(app)
         cls.migrations_dir = resolve_migrations_dir()
+        cls.migration_files = list_migration_files(cls.migrations_dir)
         cls.auth_v1_path = cls.migrations_dir / "001_auth.sql"
 
     def test_migrate_repairs_existing_database_before_seed_and_login(self) -> None:
@@ -258,6 +259,95 @@ class ReleaseHardeningTest(unittest.TestCase):
             )
             self.assertEqual(login.returncode, 0, login.stderr or login.stdout)
             self.assertIn("/dashboard?", login.stdout)
+
+    def test_migrate_is_idempotent_and_skips_already_applied_files(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            first = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(first.returncode, 0, first.stderr or first.stdout)
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM app.schema_migrations"),
+                len(self.migration_files),
+            )
+
+            second = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(second.returncode, 0, second.stderr or second.stdout)
+            self.assertIn("Applied 0 new migration file(s).", second.stdout)
+            self.assertIn(
+                f"Skipped {len(self.migration_files)} already applied migration file(s).",
+                second.stdout,
+            )
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM app.schema_migrations"),
+                len(self.migration_files),
+            )
+
+    def test_migrate_refuses_to_replay_untracked_existing_runtime_database(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            _execute_sql(
+                db_name,
+                """
+                INSERT INTO app.tenants (id_empresa, nome)
+                VALUES (999, 'Sentinel Tenant')
+                """,
+            )
+            _execute_sql(db_name, "DROP TABLE app.schema_migrations")
+
+            rerun = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertNotEqual(rerun.returncode, 0)
+            self.assertIn("Refusing to replay sql/migrations", rerun.stderr or rerun.stdout)
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM app.tenants WHERE id_empresa = 999"),
+                1,
+            )
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'app' AND table_name = 'schema_migrations'",
+                ),
+                0,
+            )
+
+    def test_migrate_can_baseline_existing_runtime_database_without_replaying_sql(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            _execute_sql(
+                db_name,
+                """
+                INSERT INTO app.tenants (id_empresa, nome)
+                VALUES (999, 'Sentinel Tenant')
+                """,
+            )
+            _execute_sql(db_name, "DROP TABLE app.schema_migrations")
+
+            baseline = _run_python(["-m", "app.cli.migrate", "--baseline-current"], env)
+            self.assertEqual(baseline.returncode, 0, baseline.stderr or baseline.stdout)
+            self.assertIn("Baselined", baseline.stdout)
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM app.tenants WHERE id_empresa = 999"),
+                1,
+            )
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM app.schema_migrations"),
+                len(self.migration_files),
+            )
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    "SELECT COUNT(*) FROM app.schema_migrations WHERE execution_kind = 'baseline'",
+                ),
+                len(self.migration_files),
+            )
 
     def test_master_only_seed_bootstraps_real_master_and_channel_admin(self) -> None:
         with temporary_database() as db_name:

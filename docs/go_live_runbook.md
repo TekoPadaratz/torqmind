@@ -126,6 +126,22 @@ ENV_FILE="$TM_ENV" ./deploy/scripts/prod-migrate.sh
 ENV_FILE="$TM_ENV" ./deploy/scripts/prod-seed.sh
 ```
 
+Uso correto do migrator:
+- banco novo/vazio: `ENV_FILE="$TM_ENV" ./deploy/scripts/prod-migrate.sh`
+- banco já gerenciado por `app.schema_migrations`: mesmo comando; só migrations novas serão aplicadas
+- banco existente saudável sem histórico: `ENV_FILE="$TM_ENV" ./deploy/scripts/prod-migrate.sh --baseline-current`
+
+O modo padrão falha de forma segura em banco existente sem histórico para impedir replay da cadeia
+legada inteira, incluindo migrations destrutivas como `003_mart_demo.sql`.
+
+Verificar migrations aplicadas:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T postgres \
+  psql -U postgres -d TORQMIND -P pager=off -c \
+  "SELECT filename, execution_kind, applied_at FROM app.schema_migrations ORDER BY filename;"
+```
+
 Subir o restante da stack:
 
 ```bash
