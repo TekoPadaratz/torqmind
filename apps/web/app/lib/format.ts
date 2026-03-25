@@ -1,7 +1,4 @@
-const moneyFormatter = new Intl.NumberFormat('pt-BR', {
-  style: 'currency',
-  currency: 'BRL',
-});
+import { formatCurrencyValue } from './currency-format.mjs';
 
 const dateFormatter = new Intl.DateTimeFormat('pt-BR', {
   day: '2-digit',
@@ -18,7 +15,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat('pt-BR', {
 });
 
 export function formatCurrency(value: any) {
-  return moneyFormatter.format(Number(value || 0));
+  return formatCurrencyValue(value);
 }
 
 export function formatDateOnly(value: any) {

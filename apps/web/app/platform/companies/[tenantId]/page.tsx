@@ -254,7 +254,7 @@ export default function PlatformCompanyDetailPage() {
             </div>
             <div>
               <div className="platformMetaLabel">Mensalidade</div>
-              <div className="platformMetaValue">{data?.monthly_amount ? formatCurrency(data.monthly_amount) : '-'}</div>
+              <div className="platformMetaValue">{data?.monthly_amount != null ? formatCurrency(data.monthly_amount) : '-'}</div>
             </div>
           </div>
         </div>

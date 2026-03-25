@@ -174,7 +174,7 @@ export default function PlatformCompaniesPage() {
                 </td>
                 <td>{item.status}</td>
                 <td>{item.channel_name || '-'}</td>
-                <td>{item.monthly_amount ? formatCurrency(item.monthly_amount) : '-'}</td>
+                <td>{item.monthly_amount != null ? formatCurrency(item.monthly_amount) : '-'}</td>
                 <td>{formatDateOnly(item.valid_until || item.valid_from)}</td>
               </tr>
             ))}

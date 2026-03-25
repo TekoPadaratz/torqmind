@@ -1,3 +1,5 @@
+import { formatCurrency } from './format';
+
 type RankedSeller = {
   rank: number;
   funcionario_nome: string;
@@ -56,12 +58,12 @@ export function buildGoalsMotivation(rows: RankedSeller[]) {
     indicators: [
       {
         label: 'Distância para o líder',
-        value: second ? formatCompactCurrency(leadGap) : 'Líder isolado',
+        value: second ? formatCurrency(leadGap) : 'Líder isolado',
         detail: second ? `${second.funcionario_nome} em 2º` : 'sem 2º colocado',
       },
       {
         label: 'Disputa pelo top 3',
-        value: third && fourth ? formatCompactCurrency(podiumGap) : 'Sem disputa',
+        value: third && fourth ? formatCurrency(podiumGap) : 'Sem disputa',
         detail: third && fourth ? `${third.funcionario_nome} x ${fourth.funcionario_nome}` : 'top 3 consolidado',
       },
       {
@@ -91,10 +93,4 @@ export function getSellerBadge(row: RankedSeller, rows: RankedSeller[]) {
   if (closeToPrev && row.rank <= 3) return { label: 'Pressionando o pódio', tone: '#67e8f9' };
   if (closeToNext) return { label: 'Posição ameaçada', tone: '#f59e0b' };
   return { label: 'Operação estável', tone: '#cbd5e1' };
-}
-
-function formatCompactCurrency(value: number) {
-  const abs = Math.abs(Number(value || 0));
-  if (abs >= 1000) return `R$ ${(value / 1000).toFixed(1).replace('.', ',')} mil`;
-  return `R$ ${value.toFixed(0).replace('.', ',')}`;
 }

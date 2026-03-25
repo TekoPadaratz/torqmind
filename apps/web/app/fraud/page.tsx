@@ -308,7 +308,13 @@ export default function FraudPage() {
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
                   <XAxis dataKey="data" stroke="#9fb0d0" />
                   <YAxis stroke="#9fb0d0" />
-                  <Tooltip />
+                  <Tooltip
+                    formatter={(value: any, _name: any, item: any) =>
+                      item?.dataKey === 'impacto_estimado_total'
+                        ? formatCurrency(value)
+                        : Number(value || 0)
+                    }
+                  />
                   <Line type="monotone" dataKey="eventos_alto_risco" stroke="#ef4444" strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="impacto_estimado_total" stroke="#f59e0b" strokeWidth={2} dot={false} />
                 </LineChart>

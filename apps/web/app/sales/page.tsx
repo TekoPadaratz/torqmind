@@ -89,8 +89,8 @@ export default function SalesPage() {
                 <BarChart data={hourAgg}>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
                   <XAxis dataKey="hora" stroke="#9fb0d0" />
-                  <YAxis stroke="#9fb0d0" />
-                  <Tooltip />
+                  <YAxis stroke="#9fb0d0" tickFormatter={formatCurrency} width={112} />
+                  <Tooltip formatter={(value: any) => formatCurrency(value)} />
                   <Bar dataKey="faturamento" fill="#22d3ee" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>

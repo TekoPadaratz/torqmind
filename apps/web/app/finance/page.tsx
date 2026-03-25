@@ -197,8 +197,8 @@ export default function FinancePage() {
                 <AreaChart data={chartData}>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
                   <XAxis dataKey="data" stroke="#9fb0d0" />
-                  <YAxis stroke="#9fb0d0" />
-                  <Tooltip />
+                  <YAxis stroke="#9fb0d0" tickFormatter={formatCurrency} width={112} />
+                  <Tooltip formatter={(value: any) => formatCurrency(value)} />
                   <Area type="monotone" dataKey="pago" stackId="1" stroke="#22d3ee" fill="#22d3ee" fillOpacity={0.35} />
                   <Area type="monotone" dataKey="aberto" stackId="1" stroke="#fb7185" fill="#fb7185" fillOpacity={0.35} />
                 </AreaChart>
@@ -233,8 +233,8 @@ export default function FinancePage() {
                 <BarChart data={paymentsByDay}>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
                   <XAxis dataKey="data" stroke="#9fb0d0" />
-                  <YAxis stroke="#9fb0d0" />
-                  <Tooltip />
+                  <YAxis stroke="#9fb0d0" tickFormatter={formatCurrency} width={112} />
+                  <Tooltip formatter={(value: any) => formatCurrency(value)} />
                   <Bar dataKey="valor" fill="#60a5fa" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>

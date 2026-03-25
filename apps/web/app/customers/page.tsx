@@ -185,8 +185,8 @@ export default function CustomersPage() {
                 <BarChart data={topChart}>
                   <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
                   <XAxis dataKey="cliente" stroke="#9fb0d0" />
-                  <YAxis stroke="#9fb0d0" />
-                  <Tooltip />
+                  <YAxis stroke="#9fb0d0" tickFormatter={formatCurrency} width={112} />
+                  <Tooltip formatter={(value: any) => formatCurrency(value)} />
                   <Bar dataKey="faturamento" fill="#818cf8" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
