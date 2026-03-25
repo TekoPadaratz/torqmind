@@ -28,7 +28,7 @@ from psycopg import sql
 
 from app.config import settings
 from app.db import get_conn
-from app.services.etl_orchestrator import EtlCycleBusyError, run_incremental_cycle
+from app.services.etl_orchestrator import EtlCycleBusyError, TRACK_OPERATIONAL, run_incremental_cycle
 from app.services.telegram import notify_cancelled_comprovantes
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -795,13 +795,24 @@ async def ingest_dataset(
                 refresh_mart=refresh_mart,
                 force_full=False,
                 fail_fast=True,
+                track=TRACK_OPERATIONAL,
+                skip_busy_tenants=True,
                 db_role="MASTER",
                 db_tenant_scope=id_empresa,
                 tenant_rows=[{"id_empresa": id_empresa}],
                 acquire_lock=True,
             )
             item = (summary.get("items") or [None])[0] or {}
-            etl_result = item.get("result")
+            if item.get("skipped"):
+                etl_result = {
+                    "ok": True,
+                    "track": TRACK_OPERATIONAL,
+                    "skipped": True,
+                    "reason": item.get("reason"),
+                    "message": item.get("message"),
+                }
+            else:
+                etl_result = item.get("result")
             if item.get("ok") is False and not etl_result:
                 etl_result = {
                     "ok": False,

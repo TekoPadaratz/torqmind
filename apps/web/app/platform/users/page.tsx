@@ -52,6 +52,10 @@ function toDatetimeInput(value: any) {
   return parsed.toISOString().slice(0, 16);
 }
 
+function roleRequiresBranch(role: string) {
+  return role === 'tenant_manager' || role === 'tenant_viewer';
+}
+
 export default function PlatformUsersPage() {
   const router = useRouter();
   const [me, setMe] = useState<any>(null);
@@ -137,6 +141,7 @@ export default function PlatformUsersPage() {
   }, [router]);
 
   if (!me) return null;
+  const isPlatformSuperuser = Boolean(me?.access?.platform_superuser);
 
   function setRole(role: string) {
     setForm((current: any) => ({
@@ -157,8 +162,12 @@ export default function PlatformUsersPage() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setSaving(true);
     setError('');
+    if (roleRequiresBranch(form.role) && form.accesses.some((access: any) => !access.id_filial)) {
+      setError('tenant_manager e tenant_viewer exigem filial explícita em todos os vínculos.');
+      return;
+    }
+    setSaving(true);
     try {
       const payload = {
         ...form,
@@ -253,6 +262,11 @@ export default function PlatformUsersPage() {
                 {me?.user_role === 'platform_master' ? <option value="channel_admin">channel_admin</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="product_global">product_global</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="platform_admin">platform_admin</option> : null}
+                {isPlatformSuperuser || form.role === 'platform_master' ? (
+                  <option value="platform_master" disabled={!isPlatformSuperuser}>
+                    platform_master
+                  </option>
+                ) : null}
               </select>
               <input className="input" type="date" value={form.valid_from} onChange={(e) => setForm({ ...form, valid_from: e.target.value })} />
               <input className="input" type="date" value={form.valid_until} onChange={(e) => setForm({ ...form, valid_until: e.target.value })} />
@@ -281,19 +295,24 @@ export default function PlatformUsersPage() {
                             </option>
                           ))}
                         </select>
-                      ) : (
-                        <>
-                          <select className="input" value={access.id_empresa} onChange={(e) => updateAccess(index, { id_empresa: e.target.value })}>
-                            <option value="">Empresa</option>
+	                      ) : (
+	                        <>
+	                          <select className="input" value={access.id_empresa} onChange={(e) => updateAccess(index, { id_empresa: e.target.value })}>
+	                            <option value="">Empresa</option>
                             {companies.map((company) => (
                               <option key={company.id_empresa} value={company.id_empresa}>
                                 {company.id_empresa} - {company.nome}
-                              </option>
-                            ))}
-                          </select>
-                          <input className="input" placeholder="Filial opcional" value={access.id_filial} onChange={(e) => updateAccess(index, { id_filial: e.target.value })} />
-                        </>
-                      )}
+	                              </option>
+	                            ))}
+	                          </select>
+	                          <input
+	                            className="input"
+	                            placeholder={roleRequiresBranch(form.role) ? 'Filial obrigatória' : 'Filial opcional'}
+	                            value={access.id_filial}
+	                            onChange={(e) => updateAccess(index, { id_filial: e.target.value })}
+	                          />
+	                        </>
+	                      )}
                       <input className="input" type="date" value={access.valid_from} onChange={(e) => updateAccess(index, { valid_from: e.target.value })} />
                       <input className="input" type="date" value={access.valid_until} onChange={(e) => updateAccess(index, { valid_until: e.target.value })} />
                       <label className="platformCheckbox">

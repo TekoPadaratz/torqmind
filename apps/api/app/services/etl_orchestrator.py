@@ -9,8 +9,18 @@ from typing import Any, Callable
 from app.db import get_conn
 from app.services.telegram import send_telegram_alert
 
-LOCK_KEY_LEFT = 62041
-LOCK_KEY_RIGHT = 230319
+TRACK_OPERATIONAL = "operational"
+TRACK_RISK = "risk"
+TRACK_FULL = "full"
+SUPPORTED_TRACKS = frozenset({TRACK_OPERATIONAL, TRACK_RISK, TRACK_FULL})
+
+TRACK_CYCLE_LOCKS: dict[str, tuple[tuple[int, int], ...]] = {
+    TRACK_OPERATIONAL: ((62041, 230319),),
+    TRACK_RISK: ((62041, 230320),),
+    # Full keeps the legacy end-to-end cycle and blocks both dedicated lanes.
+    TRACK_FULL: ((62041, 230319), (62041, 230320)),
+}
+TENANT_TRACK_LOCK_NAMESPACE = 62042
 
 PHASE_META_KEYS = (
     "dim_filial",
@@ -68,6 +78,21 @@ class EtlCycleBusyError(RuntimeError):
     pass
 
 
+def normalize_track(track: str | None) -> str:
+    value = str(track or TRACK_FULL).strip().lower()
+    if value not in SUPPORTED_TRACKS:
+        raise ValueError(f"Unsupported ETL track: {track}")
+    return value
+
+
+def _track_runs_operational(track: str) -> bool:
+    return track in {TRACK_OPERATIONAL, TRACK_FULL}
+
+
+def _track_runs_risk(track: str) -> bool:
+    return track in {TRACK_RISK, TRACK_FULL}
+
+
 def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
     where = "WHERE id_empresa = %s" if tenant_id is not None else "WHERE is_active = true"
     params: list[Any] = [tenant_id] if tenant_id is not None else []
@@ -91,21 +116,26 @@ def run_incremental_cycle(
     refresh_mart: bool = True,
     force_full: bool = False,
     fail_fast: bool = False,
+    track: str = TRACK_FULL,
+    skip_busy_tenants: bool = False,
     db_role: str = "MASTER",
     db_tenant_scope: int | None = None,
     tenant_rows: list[dict[str, Any]] | None = None,
     acquire_lock: bool = True,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    track = normalize_track(track)
     started_at = datetime.now(timezone.utc)
     tenant_rows = tenant_rows or [{"id_empresa": tenant_id} for tenant_id in tenant_ids]
     tenant_by_id = {int(row["id_empresa"]): row for row in tenant_rows}
     if not tenant_ids:
         return {
             "ok": True,
+            "track": track,
             "reference_date": ref_date.isoformat(),
             "processed": 0,
             "failed": 0,
+            "skipped": 0,
             "duration_ms": 0.0,
             "global_refresh": _empty_refresh_meta(ref_date),
             "items": [],
@@ -113,40 +143,107 @@ def run_incremental_cycle(
 
     items: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    skipped_items: list[dict[str, Any]] = []
     successful_items: list[dict[str, Any]] = []
     fail_fast_abort_reason: str | None = None
     cycle_started = time.perf_counter()
 
     with get_conn(role=db_role, tenant_id=db_tenant_scope, branch_id=None) as conn:
-        if acquire_lock and not _try_cycle_lock(conn):
-            raise EtlCycleBusyError("Incremental ETL cycle is already running.")
+        acquired_cycle_locks: list[tuple[int, int]] = []
+        held_tenant_locks: set[int] = set()
+        if acquire_lock:
+            acquired_cycle_locks = _try_cycle_locks(conn, track)
+            if not acquired_cycle_locks:
+                raise EtlCycleBusyError(f"ETL {track} cycle is already running.")
 
         try:
             for tenant_id in tenant_ids:
-                tenant_ctx = tenant_by_id.get(int(tenant_id), {})
+                tenant_id = int(tenant_id)
+                tenant_ctx = tenant_by_id.get(tenant_id, {})
                 item_started = time.perf_counter()
+                if acquire_lock and not _try_tenant_track_lock(conn, tenant_id):
+                    busy_item = {
+                        "tenant_id": tenant_id,
+                        "tenant_name": tenant_ctx.get("nome"),
+                        "tenant_status": tenant_ctx.get("status"),
+                        "is_active": bool(tenant_ctx.get("is_active", True)),
+                        "track": track,
+                        "ok": True,
+                        "skipped": True,
+                        "busy": True,
+                        "reason": "tenant_busy",
+                        "message": "Tenant is already being processed by another ETL track.",
+                    }
+                    if skip_busy_tenants:
+                        items.append(busy_item)
+                        skipped_items.append(busy_item)
+                        _emit_progress(
+                            progress_callback,
+                            event="tenant_skipped",
+                            tenant_id=tenant_id,
+                            tenant_name=tenant_ctx.get("nome"),
+                            stage="phase",
+                            track=track,
+                            reason="tenant_busy",
+                        )
+                        continue
+
+                    failure = {
+                        "tenant_id": tenant_id,
+                        "tenant_name": tenant_ctx.get("nome"),
+                        "tenant_status": tenant_ctx.get("status"),
+                        "is_active": bool(tenant_ctx.get("is_active", True)),
+                        "track": track,
+                        "error_code": "tenant_busy",
+                        "error": "Tenant is already being processed by another ETL track.",
+                        "ok": False,
+                    }
+                    failures.append(failure)
+                    items.append(failure)
+                    _emit_progress(
+                        progress_callback,
+                        event="tenant_finished",
+                        tenant_id=tenant_id,
+                        tenant_name=tenant_ctx.get("nome"),
+                        track=track,
+                        ok=False,
+                        error_code="tenant_busy",
+                        error=failure["error"],
+                    )
+                    if fail_fast:
+                        break
+                    continue
+
+                held_tenant_locks.add(tenant_id)
                 _emit_progress(
                     progress_callback,
                     event="tenant_started",
-                    tenant_id=int(tenant_id),
+                    tenant_id=tenant_id,
                     tenant_name=tenant_ctx.get("nome"),
                     stage="phase",
+                    track=track,
                     ref_date=ref_date.isoformat(),
                 )
                 try:
                     phase_result = _run_tenant_phase(
                         conn,
-                        int(tenant_id),
+                        tenant_id,
                         force_full,
                         ref_date,
+                        track=track,
                         progress_callback=progress_callback,
                     )
                 except Exception as exc:  # noqa: BLE001
                     conn.rollback()
+                    with suppress(Exception):
+                        _unlock_tenant_track_lock(conn, tenant_id)
+                    held_tenant_locks.discard(tenant_id)
                     failure = {
-                        "tenant_id": int(tenant_id),
+                        "tenant_id": tenant_id,
                         "tenant_name": tenant_ctx.get("nome"),
                         "tenant_status": tenant_ctx.get("status"),
+                        "is_active": bool(tenant_ctx.get("is_active", True)),
+                        "track": track,
                         "error": str(exc),
                         "ok": False,
                     }
@@ -155,8 +252,9 @@ def run_incremental_cycle(
                     _emit_progress(
                         progress_callback,
                         event="tenant_finished",
-                        tenant_id=int(tenant_id),
+                        tenant_id=tenant_id,
                         tenant_name=tenant_ctx.get("nome"),
+                        track=track,
                         ok=False,
                         error=str(exc),
                     )
@@ -165,16 +263,21 @@ def run_incremental_cycle(
                     continue
 
                 phase_meta = _extract_meta(phase_result)
-                clock_meta = _run_tenant_clock_meta_sql(conn, int(tenant_id), ref_date)
+                clock_meta = (
+                    _run_tenant_clock_meta_sql(conn, tenant_id, ref_date)
+                    if _track_runs_operational(track)
+                    else {}
+                )
                 item = {
-                    "tenant_id": int(tenant_id),
+                    "tenant_id": tenant_id,
                     "tenant_name": tenant_ctx.get("nome"),
                     "tenant_status": tenant_ctx.get("status"),
                     "is_active": bool(tenant_ctx.get("is_active", True)),
+                    "track": track,
                     "phase_result": phase_result,
                     "phase_meta": phase_meta,
                     "clock_meta": clock_meta,
-                    "phase_domains": _phase_domains(phase_meta, force_full=force_full),
+                    "phase_domains": _phase_domains(phase_meta, force_full=force_full, track=track),
                     "_perf_started": item_started,
                     "elapsed_ms": 0.0,
                     "ok": True,
@@ -182,7 +285,7 @@ def run_incremental_cycle(
                 items.append(item)
                 successful_items.append(item)
 
-            aggregated_meta = _aggregate_refresh_meta(successful_items, force_full=force_full)
+            aggregated_meta = _aggregate_refresh_meta(successful_items, force_full=force_full, track=track)
             refresh_meta = _empty_refresh_meta(ref_date)
             if refresh_mart and successful_items:
                 refresh_meta = _run_global_refresh(
@@ -210,6 +313,7 @@ def run_incremental_cycle(
                             ref_date,
                             force_full,
                             item["phase_result"].get("hot_window_days"),
+                            track=track,
                             progress_callback=progress_callback,
                         )
                     except Exception as exc:  # noqa: BLE001
@@ -234,9 +338,13 @@ def run_incremental_cycle(
                             event="tenant_finished",
                             tenant_id=item["tenant_id"],
                             tenant_name=item.get("tenant_name"),
+                            track=track,
                             ok=False,
                             error=str(exc),
                         )
+                        with suppress(Exception):
+                            _unlock_tenant_track_lock(conn, int(item["tenant_id"]))
+                        held_tenant_locks.discard(int(item["tenant_id"]))
                         if fail_fast:
                             fail_fast_abort_reason = (
                                 f"post_refresh_aborted_due_to_fail_fast_after_tenant_{item['tenant_id']}"
@@ -267,6 +375,7 @@ def run_incremental_cycle(
                 item["result"] = {
                     "ok": item.get("ok", True),
                     "id_empresa": item["tenant_id"],
+                    "track": track,
                     "force_full": force_full,
                     "ref_date": ref_date,
                     "hot_window_days": item["phase_result"].get("hot_window_days"),
@@ -285,10 +394,14 @@ def run_incremental_cycle(
                     event="tenant_finished",
                     tenant_id=item["tenant_id"],
                     tenant_name=item.get("tenant_name"),
+                    track=track,
                     ok=item.get("ok", True),
                     elapsed_ms=item["elapsed_ms"],
                     mart_refreshed=item.get("mart_refreshed"),
                 )
+                with suppress(Exception):
+                    _unlock_tenant_track_lock(conn, int(item["tenant_id"]))
+                held_tenant_locks.discard(int(item["tenant_id"]))
 
             if fail_fast_abort_reason:
                 for item in successful_items:
@@ -314,12 +427,32 @@ def run_incremental_cycle(
                         event="tenant_finished",
                         tenant_id=item["tenant_id"],
                         tenant_name=item.get("tenant_name"),
+                        track=track,
                         ok=False,
                         error=fail_fast_abort_reason,
                     )
+                    with suppress(Exception):
+                        _unlock_tenant_track_lock(conn, int(item["tenant_id"]))
+                    held_tenant_locks.discard(int(item["tenant_id"]))
 
             processed_items = []
             for item in items:
+                if item.get("skipped"):
+                    processed_items.append(
+                        {
+                            "tenant_id": item["tenant_id"],
+                            "tenant_name": item.get("tenant_name"),
+                            "tenant_status": item.get("tenant_status"),
+                            "is_active": item.get("is_active"),
+                            "track": track,
+                            "ok": True,
+                            "skipped": True,
+                            "busy": item.get("busy", False),
+                            "reason": item.get("reason"),
+                            "message": item.get("message"),
+                        }
+                    )
+                    continue
                 if item.get("ok") is False and "result" not in item:
                     processed_items.append(
                         {
@@ -327,8 +460,10 @@ def run_incremental_cycle(
                             "tenant_name": item.get("tenant_name"),
                             "tenant_status": item.get("tenant_status"),
                             "is_active": item.get("is_active"),
+                            "track": track,
                             "ok": False,
                             "error": item.get("error"),
+                            **({"error_code": item["error_code"]} if item.get("error_code") else {}),
                         }
                     )
                     continue
@@ -338,6 +473,7 @@ def run_incremental_cycle(
                         "tenant_name": item.get("tenant_name"),
                         "tenant_status": item.get("tenant_status"),
                         "is_active": item.get("is_active"),
+                        "track": track,
                         "elapsed_ms": item.get("elapsed_ms"),
                         "result": item.get("result"),
                         "payment_notifications": item.get("payment_notifications"),
@@ -350,17 +486,22 @@ def run_incremental_cycle(
 
             return {
                 "ok": not failures,
+                "track": track,
                 "reference_date": ref_date.isoformat(),
                 "processed": len(processed_items),
                 "failed": len(failures),
+                "skipped": len(skipped_items),
                 "duration_ms": round((time.perf_counter() - cycle_started) * 1000, 2),
                 "global_refresh": refresh_meta,
                 "items": processed_items,
             }
         finally:
+            for tenant_id in list(held_tenant_locks):
+                with suppress(Exception):
+                    _unlock_tenant_track_lock(conn, tenant_id)
             if acquire_lock:
                 with suppress(Exception):
-                    _unlock_cycle(conn)
+                    _unlock_cycle_locks(conn, acquired_cycle_locks)
 
 
 def _empty_refresh_meta(ref_date: date) -> dict[str, Any]:
@@ -412,8 +553,8 @@ def _extract_meta(result: dict[str, Any] | None) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
-def _aggregate_phase_meta(items: list[dict[str, Any]], *, force_full: bool) -> dict[str, Any]:
-    aggregated: dict[str, Any] = {"force_full": force_full}
+def _aggregate_phase_meta(items: list[dict[str, Any]], *, force_full: bool, track: str) -> dict[str, Any]:
+    aggregated: dict[str, Any] = {"force_full": force_full, "track": track}
     for item in items:
         meta = item.get("phase_meta") or {}
         for key in PHASE_META_KEYS:
@@ -421,14 +562,47 @@ def _aggregate_phase_meta(items: list[dict[str, Any]], *, force_full: bool) -> d
     return aggregated
 
 
-def _aggregate_refresh_meta(items: list[dict[str, Any]], *, force_full: bool) -> dict[str, Any]:
-    aggregated = _aggregate_phase_meta(items, force_full=force_full)
+def _aggregate_refresh_meta(items: list[dict[str, Any]], *, force_full: bool, track: str) -> dict[str, Any]:
+    aggregated = _aggregate_phase_meta(items, force_full=force_full, track=track)
     for key in CLOCK_REFRESH_META_KEYS:
         aggregated[key] = any(bool(item.get("clock_meta", {}).get(key)) for item in items)
     return aggregated
 
 
-def _phase_domains(meta: dict[str, Any], *, force_full: bool) -> dict[str, bool]:
+def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dict[str, bool]:
+    track = normalize_track(track)
+    if track == TRACK_OPERATIONAL:
+        return {
+            "sales": any(
+                int(meta.get(key, 0) or 0) > 0
+                for key in (
+                    "dim_grupos",
+                    "dim_produtos",
+                    "dim_funcionarios",
+                    "dim_clientes",
+                    "fact_comprovante",
+                    "fact_venda",
+                    "fact_venda_item",
+                )
+            ),
+            "finance": int(meta.get("fact_financeiro", 0) or 0) > 0,
+            "risk": False,
+            "payments": any(
+                int(meta.get(key, 0) or 0) > 0 for key in ("fact_pagamento_comprovante", "fact_comprovante")
+            ),
+            "cash": any(
+                int(meta.get(key, 0) or 0) > 0
+                for key in ("fact_caixa_turno", "fact_pagamento_comprovante", "fact_comprovante", "dim_usuario_caixa")
+            ),
+        }
+    if track == TRACK_RISK:
+        return {
+            "sales": False,
+            "finance": False,
+            "risk": bool(force_full) or int(meta.get("risk_events", 0) or 0) > 0,
+            "payments": False,
+            "cash": False,
+        }
     if force_full:
         return {
             "sales": True,
@@ -730,13 +904,15 @@ def _run_tenant_phase(
     force_full: bool,
     ref_date: date,
     *,
+    track: str = TRACK_FULL,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    track = normalize_track(track)
     started_at = datetime.now(timezone.utc)
     hot_window_days = _hot_window_days(conn)
-    meta: dict[str, Any] = {"force_full": force_full}
+    meta: dict[str, Any] = {"force_full": force_full, "track": track}
     try:
-        if force_full:
+        if force_full and _track_runs_operational(track):
             _run_logged_count_step(
                 conn,
                 tenant_id,
@@ -753,29 +929,43 @@ def _run_tenant_phase(
             )
             meta["watermark_reset"] = True
 
-        for step_index, (step_name, query) in enumerate(PHASE_SQL_STEPS, start=1):
-            rows, step_ms = _run_logged_count_step(
-                conn,
-                tenant_id,
-                step_name,
-                stage="phase",
-                ref_date=ref_date,
-                operation=lambda q=query: _run_sql_count(conn, q, (tenant_id,)),
-                meta={
-                    "force_full": force_full,
-                    "step_index": step_index,
-                    "step_count": len(PHASE_SQL_STEPS) + 1,
-                },
-                progress_callback=progress_callback,
-            )
-            meta[step_name] = rows
-            meta[f"{step_name}_ms"] = step_ms
+        step_count = (len(PHASE_SQL_STEPS) if _track_runs_operational(track) else 0) + int(_track_runs_risk(track))
+        step_index = 0
 
-        should_compute_risk = force_full or any(
-            int(meta.get(key, 0) or 0) > 0
-            for key in ("fact_comprovante", "fact_venda", "fact_venda_item", "fact_pagamento_comprovante")
+        if _track_runs_operational(track):
+            for step_name, query in PHASE_SQL_STEPS:
+                step_index += 1
+                rows, step_ms = _run_logged_count_step(
+                    conn,
+                    tenant_id,
+                    step_name,
+                    stage="phase",
+                    ref_date=ref_date,
+                    operation=lambda q=query: _run_sql_count(conn, q, (tenant_id,)),
+                    meta={
+                        "force_full": force_full,
+                        "track": track,
+                        "step_index": step_index,
+                        "step_count": step_count,
+                    },
+                    progress_callback=progress_callback,
+                )
+                meta[step_name] = rows
+                meta[f"{step_name}_ms"] = step_ms
+
+        should_compute_risk = (
+            _track_runs_risk(track)
+            and (
+                track == TRACK_RISK
+                or force_full
+                or any(
+                    int(meta.get(key, 0) or 0) > 0
+                    for key in ("fact_comprovante", "fact_venda", "fact_venda_item", "fact_pagamento_comprovante")
+                )
+            )
         )
         if should_compute_risk:
+            step_index += 1
             rows, step_ms = _run_logged_count_step(
                 conn,
                 tenant_id,
@@ -787,12 +977,17 @@ def _run_tenant_phase(
                     "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
                     (tenant_id, force_full, 14, None),
                 ),
-                meta={"force_full": force_full, "step_index": len(PHASE_SQL_STEPS) + 1, "step_count": len(PHASE_SQL_STEPS) + 1},
+                meta={
+                    "force_full": force_full,
+                    "track": track,
+                    "step_index": step_index,
+                    "step_count": step_count,
+                },
                 progress_callback=progress_callback,
             )
             meta["risk_events"] = rows
             meta["risk_events_ms"] = step_ms
-        else:
+        elif _track_runs_risk(track):
             meta["risk_events"] = 0
             meta["risk_events_skipped"] = True
             meta["risk_events_skip_reason"] = "no_fact_changes"
@@ -804,17 +999,23 @@ def _run_tenant_phase(
                 rows_processed=0,
                 meta={
                     "stage": "phase",
+                    "track": track,
                     "ref_date": ref_date.isoformat(),
                     "skipped": True,
                     "reason": "no_fact_changes",
                 },
                 progress_callback=progress_callback,
             )
+        else:
+            meta["risk_events"] = 0
+            meta["risk_events_skipped"] = True
+            meta["risk_events_skip_reason"] = "track_excludes_risk"
 
-        meta["refresh_domains"] = _phase_domains(meta, force_full=force_full)
+        meta["refresh_domains"] = _phase_domains(meta, force_full=force_full, track=track)
         result = {
             "ok": True,
             "id_empresa": tenant_id,
+            "track": track,
             "force_full": force_full,
             "ref_date": ref_date,
             "hot_window_days": hot_window_days,
@@ -830,7 +1031,7 @@ def _run_tenant_phase(
             started_at=started_at,
             status="ok",
             rows_processed=1,
-            meta={"force_full": force_full, "ref_date": ref_date.isoformat(), "meta": meta},
+            meta={"force_full": force_full, "track": track, "ref_date": ref_date.isoformat(), "meta": meta},
             progress_callback=progress_callback,
         )
         return result
@@ -844,7 +1045,7 @@ def _run_tenant_phase(
             status="failed",
             rows_processed=0,
             error=str(exc),
-            meta={"ref_date": ref_date.isoformat(), "meta_partial": meta},
+            meta={"track": track, "ref_date": ref_date.isoformat(), "meta_partial": meta},
             progress_callback=progress_callback,
         )
         raise
@@ -929,16 +1130,20 @@ def _run_tenant_post_refresh(
     force_full: bool,
     hot_window_days: Any,
     *,
+    track: str = TRACK_FULL,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    track = normalize_track(track)
     started_at = datetime.now(timezone.utc)
     post_meta = _empty_post_meta()
-    phase_domains = _phase_domains(meta, force_full=force_full)
+    phase_domains = _phase_domains(meta, force_full=force_full, track=track)
     sales_changed = bool(phase_domains["sales"])
     finance_changed = bool(phase_domains["finance"])
     risk_changed = bool(phase_domains["risk"])
     payment_changed = bool(phase_domains["payments"])
     cash_changed = bool(phase_domains["cash"])
+    runs_operational = _track_runs_operational(track)
+    runs_risk = _track_runs_risk(track)
     effective_hot_window = max(1, int(hot_window_days or _hot_window_days(conn)))
     window_start = ref_date - timedelta(days=effective_hot_window)
 
@@ -963,8 +1168,30 @@ def _run_tenant_post_refresh(
     health_start = window_start if (sales_changed or finance_changed or risk_changed) else clock_health_start
     health_end = ref_date if (sales_changed or finance_changed or risk_changed) else clock_health_end
 
+    def _skip_step(step_name: str, reason: str) -> None:
+        _log_instant_step(
+            conn,
+            tenant_id,
+            step_name,
+            status="ok",
+            rows_processed=0,
+            meta={
+                "stage": "post_refresh",
+                "track": track,
+                "ref_date": ref_date.isoformat(),
+                "skipped": True,
+                "reason": reason,
+            },
+            progress_callback=progress_callback,
+        )
+
     try:
-        if customer_sales_start is not None and customer_sales_end is not None and customer_sales_start <= customer_sales_end:
+        if (
+            runs_operational
+            and customer_sales_start is not None
+            and customer_sales_end is not None
+            and customer_sales_start <= customer_sales_end
+        ):
             rows, step_ms = _run_logged_count_step(
                 conn,
                 tenant_id,
@@ -984,17 +1211,12 @@ def _run_tenant_post_refresh(
             post_meta["customer_sales_daily_ms"] = step_ms
         else:
             post_meta["customer_sales_daily_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
+            _skip_step(
                 "customer_sales_daily_snapshot",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_window"},
-                progress_callback=progress_callback,
+                "no_window" if runs_operational else "track_excludes_step",
             )
 
-        if customer_rfm_start is not None and customer_rfm_end is not None and customer_rfm_start <= customer_rfm_end:
+        if runs_operational and customer_rfm_start is not None and customer_rfm_end is not None and customer_rfm_start <= customer_rfm_end:
             clock_driven = not sales_changed
             rows, step_ms = _run_logged_count_step(
                 conn,
@@ -1020,17 +1242,14 @@ def _run_tenant_post_refresh(
             post_meta["customer_rfm_clock_driven"] = clock_driven
         else:
             post_meta["customer_rfm_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
-                "customer_rfm_snapshot",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_window"},
-                progress_callback=progress_callback,
-            )
+            _skip_step("customer_rfm_snapshot", "no_window" if runs_operational else "track_excludes_step")
 
-        if customer_churn_start is not None and customer_churn_end is not None and customer_churn_start <= customer_churn_end:
+        if (
+            runs_operational
+            and customer_churn_start is not None
+            and customer_churn_end is not None
+            and customer_churn_start <= customer_churn_end
+        ):
             clock_driven = not sales_changed
             rows, step_ms = _run_logged_count_step(
                 conn,
@@ -1056,17 +1275,12 @@ def _run_tenant_post_refresh(
             post_meta["customer_churn_risk_clock_driven"] = clock_driven
         else:
             post_meta["customer_churn_risk_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
+            _skip_step(
                 "customer_churn_risk_snapshot",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_window"},
-                progress_callback=progress_callback,
+                "no_window" if runs_operational else "track_excludes_step",
             )
 
-        if finance_start is not None and finance_end is not None and finance_start <= finance_end:
+        if runs_operational and finance_start is not None and finance_end is not None and finance_start <= finance_end:
             clock_driven = not finance_changed
             rows, step_ms = _run_logged_count_step(
                 conn,
@@ -1092,17 +1306,9 @@ def _run_tenant_post_refresh(
             post_meta["finance_aging_clock_driven"] = clock_driven
         else:
             post_meta["finance_aging_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
-                "finance_aging_snapshot",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_window"},
-                progress_callback=progress_callback,
-            )
+            _skip_step("finance_aging_snapshot", "no_window" if runs_operational else "track_excludes_step")
 
-        if health_start is not None and health_end is not None and health_start <= health_end:
+        if runs_risk and health_start is not None and health_end is not None and health_start <= health_end:
             clock_driven = not (sales_changed or finance_changed or risk_changed)
             rows, step_ms = _run_logged_count_step(
                 conn,
@@ -1128,17 +1334,9 @@ def _run_tenant_post_refresh(
             post_meta["health_score_clock_driven"] = clock_driven
         else:
             post_meta["health_score_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
-                "health_score_snapshot",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_window"},
-                progress_callback=progress_callback,
-            )
+            _skip_step("health_score_snapshot", "no_window" if runs_risk else "track_excludes_step")
 
-        if payment_changed:
+        if runs_operational and payment_changed:
             rows, step_ms = _run_logged_count_step(
                 conn,
                 tenant_id,
@@ -1156,17 +1354,9 @@ def _run_tenant_post_refresh(
             post_meta["payment_notifications_ms"] = step_ms
         else:
             post_meta["payment_notifications_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
-                "payment_notifications",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_payment_changes"},
-                progress_callback=progress_callback,
-            )
+            _skip_step("payment_notifications", "no_payment_changes" if runs_operational else "track_excludes_step")
 
-        if cash_changed or clock_cash_notifications:
+        if runs_operational and (cash_changed or clock_cash_notifications):
             cash_clock_driven = not cash_changed and clock_cash_notifications
             rows, step_ms = _run_logged_count_step(
                 conn,
@@ -1187,17 +1377,9 @@ def _run_tenant_post_refresh(
             post_meta["cash_notifications_clock_driven"] = cash_clock_driven
         else:
             post_meta["cash_notifications_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
-                "cash_notifications",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_cash_changes"},
-                progress_callback=progress_callback,
-            )
+            _skip_step("cash_notifications", "no_cash_changes" if runs_operational else "track_excludes_step")
 
-        if sales_changed or finance_changed or risk_changed:
+        if runs_risk and (sales_changed or finance_changed or risk_changed):
             rows, step_ms = _run_logged_count_step(
                 conn,
                 tenant_id,
@@ -1215,15 +1397,7 @@ def _run_tenant_post_refresh(
             post_meta["insights_generated_ms"] = step_ms
         else:
             post_meta["insights_generated_skipped"] = True
-            _log_instant_step(
-                conn,
-                tenant_id,
-                "insights_generated",
-                status="ok",
-                rows_processed=0,
-                meta={"stage": "post_refresh", "ref_date": ref_date.isoformat(), "skipped": True, "reason": "no_domain_changes"},
-                progress_callback=progress_callback,
-            )
+            _skip_step("insights_generated", "no_domain_changes" if runs_risk else "track_excludes_step")
 
         snapshot_bounds = [
             customer_sales_start,
@@ -1263,6 +1437,7 @@ def _run_tenant_post_refresh(
             rows_processed=1,
             meta={
                 "ref_date": ref_date.isoformat(),
+                "track": track,
                 "window_days": snapshot_window_days,
                 "window_start": snapshot_window_start.isoformat() if snapshot_window_start else None,
                 "meta": post_meta,
@@ -1280,7 +1455,7 @@ def _run_tenant_post_refresh(
             status="failed",
             rows_processed=0,
             error=str(exc),
-            meta={"ref_date": ref_date.isoformat(), "meta_partial": post_meta},
+            meta={"track": track, "ref_date": ref_date.isoformat(), "meta_partial": post_meta},
             progress_callback=progress_callback,
         )
         raise
@@ -1471,16 +1646,35 @@ def _safe_send_telegram_alert(tenant_id: int, payload: dict[str, Any]) -> dict[s
         return {"ok": False, "sent": False, "reason": "dispatch_error", "error": str(exc)}
 
 
-def _try_cycle_lock(conn) -> bool:
-    row = conn.execute(
-        "SELECT pg_try_advisory_lock(%s, %s) AS locked",
-        (LOCK_KEY_LEFT, LOCK_KEY_RIGHT),
-    ).fetchone()
+def _try_advisory_lock(conn, left: int, right: int) -> bool:
+    row = conn.execute("SELECT pg_try_advisory_lock(%s, %s) AS locked", (left, right)).fetchone()
     return bool(row and row["locked"])
 
 
-def _unlock_cycle(conn) -> None:
-    conn.execute(
-        "SELECT pg_advisory_unlock(%s, %s)",
-        (LOCK_KEY_LEFT, LOCK_KEY_RIGHT),
-    )
+def _unlock_advisory_lock(conn, left: int, right: int) -> None:
+    conn.execute("SELECT pg_advisory_unlock(%s, %s)", (left, right))
+
+
+def _try_cycle_locks(conn, track: str) -> list[tuple[int, int]]:
+    acquired: list[tuple[int, int]] = []
+    for left, right in TRACK_CYCLE_LOCKS[track]:
+        if _try_advisory_lock(conn, left, right):
+            acquired.append((left, right))
+            continue
+        _unlock_cycle_locks(conn, acquired)
+        return []
+    return acquired
+
+
+def _unlock_cycle_locks(conn, locks: list[tuple[int, int]]) -> None:
+    for left, right in reversed(locks):
+        with suppress(Exception):
+            _unlock_advisory_lock(conn, left, right)
+
+
+def _try_tenant_track_lock(conn, tenant_id: int) -> bool:
+    return _try_advisory_lock(conn, TENANT_TRACK_LOCK_NAMESPACE, int(tenant_id))
+
+
+def _unlock_tenant_track_lock(conn, tenant_id: int) -> None:
+    _unlock_advisory_lock(conn, TENANT_TRACK_LOCK_NAMESPACE, int(tenant_id))

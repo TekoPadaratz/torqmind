@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     api_jwt_secret: str = "CHANGE_ME_SUPER_SECRET"
     api_jwt_issuer: str = "torqmind-api"
     api_access_token_minutes: int = 60
+    platform_sovereign_emails: str = "teko94@gmail.com"
 
     # Ingestion
     # If True, /ingest requires X-Ingest-Key (recommended for production).

@@ -8,7 +8,7 @@ ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
 
-.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental purge-sales-history analyze-hot-tables platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-purge-sales-history prod-platform-billing-daily
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-platform-billing-daily
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -52,7 +52,13 @@ backfill-snapshots-resume:
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "CALL etl.run_operational_snapshot_backfill($${ID_EMPRESA:-1}::int, '\''$${START_DT:?missing START_DT}'\''::date, '\''$${END_DT:?missing END_DT}'\''::date, $${STEP_DAYS:-7}::int, true, false);"'
 
 etl-incremental:
-	@$(COMPOSE) exec -T api python -m app.cli.etl_incremental $${TENANT_ID:+--tenant-id "$${TENANT_ID}"} $${REF_DATE:+--ref-date "$${REF_DATE}"} $${FAIL_FAST:+--fail-fast}
+	@$(COMPOSE) exec -T api python -m app.cli.etl_incremental --track "$${TRACK:-full}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"} $${REF_DATE:+--ref-date "$${REF_DATE}"} $${FAIL_FAST:+--fail-fast} $${SKIP_BUSY_TENANTS:+--skip-busy-tenants}
+
+etl-operational:
+	@TRACK=operational SKIP_BUSY_TENANTS=1 $(MAKE) etl-incremental
+
+etl-risk:
+	@TRACK=risk SKIP_BUSY_TENANTS=1 $(MAKE) etl-incremental
 
 purge-sales-history:
 	@$(COMPOSE) exec -T api python -m app.cli.purge_sales_history $${TENANT_ID:+--tenant-id "$${TENANT_ID}"} $${REF_DATE:+--ref-date "$${REF_DATE}"}
@@ -93,6 +99,12 @@ prod-seed:
 
 prod-etl-incremental:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-incremental.sh
+
+prod-etl-operational:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-operational.sh
+
+prod-etl-risk:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-risk.sh
 
 prod-purge-sales-history:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-purge-sales-history.sh

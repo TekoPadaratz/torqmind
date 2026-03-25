@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from app.authz import normalize_role
+from app.authz import is_sovereign_email, normalize_role
 from app.db import get_conn
 from app.repos_auth import AuthError
 from app.security import hash_password
@@ -703,6 +703,41 @@ def _validate_user_management_role(current_claims: dict[str, Any], target_role: 
     raise AuthError(403, "platform_forbidden", "Ação operacional não permitida.")
 
 
+def _actor_is_sovereign(claims: dict[str, Any]) -> bool:
+    return is_sovereign_email(claims.get("email"))
+
+
+def _validate_user_management_target(
+    current_claims: dict[str, Any],
+    target_user: dict[str, Any],
+    requested_role: str,
+) -> None:
+    actor_role = normalize_role(current_claims.get("user_role"))
+    target_current_role = normalize_role(target_user.get("role"))
+    requested_role = normalize_role(requested_role)
+    target_is_sovereign = is_sovereign_email(target_user.get("email"))
+
+    if _actor_is_sovereign(current_claims):
+        return
+    if target_is_sovereign:
+        raise AuthError(403, "sovereign_user_protected", "Usuário soberano protegido.")
+    if actor_role == "platform_master":
+        if target_current_role == "platform_master" or requested_role == "platform_master":
+            raise AuthError(403, "role_escalation_forbidden", "Platform master soberano é obrigatório para esse papel.")
+        return
+    if actor_role == "platform_admin":
+        protected_roles = {"platform_master", "platform_admin", "product_global"}
+        if target_current_role in protected_roles or requested_role in protected_roles:
+            raise AuthError(403, "role_escalation_forbidden", "Papel interno não permitido.")
+        return
+    if actor_role == "channel_admin":
+        allowed_roles = {"tenant_admin", "tenant_manager", "tenant_viewer"}
+        if target_current_role not in allowed_roles or requested_role not in allowed_roles:
+            raise AuthError(403, "role_escalation_forbidden", "Papel não permitido para canal.")
+        return
+    raise AuthError(403, "platform_forbidden", "Ação operacional não permitida.")
+
+
 def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, accesses: list[dict[str, Any]]) -> list[dict[str, Any]]:
     role = normalize_role(user_role)
     normalized: list[dict[str, Any]] = []
@@ -715,6 +750,24 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
         access_role = normalize_role(access.get("role"))
         if access_role != role:
             raise AuthError(422, "validation_error", "Todos os vínculos devem usar o mesmo papel do usuário.")
+        channel_id = access.get("channel_id")
+        tenant_scope = access.get("id_empresa")
+        branch_scope = access.get("id_filial")
+        if role in {"platform_master", "platform_admin"}:
+            if any(access.get(key) is not None for key in ("channel_id", "id_empresa", "id_filial")):
+                raise AuthError(422, "validation_error", "Perfis internos usam vínculo global único.")
+            normalized.append(
+                {
+                    "role": role,
+                    "channel_id": None,
+                    "id_empresa": None,
+                    "id_filial": None,
+                    "is_enabled": bool(access.get("is_enabled", True)),
+                    "valid_from": access.get("valid_from"),
+                    "valid_until": access.get("valid_until"),
+                }
+            )
+            continue
         if role == "product_global":
             if any(access.get(key) is not None for key in ("channel_id", "id_empresa", "id_filial")):
                 raise AuthError(422, "validation_error", "Usuário global de produto usa vínculo global único.")
@@ -733,15 +786,22 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
         if role == "channel_admin":
             channel_ids = set(actor_claims.get("channel_ids") or [])
             if normalize_role(actor_claims.get("user_role")) == "platform_master":
-                channel_ids = channel_ids or {access.get("channel_id")}
-            if not access.get("channel_id"):
+                channel_ids = channel_ids or {channel_id}
+            if not channel_id:
                 raise AuthError(422, "validation_error", "channel_id é obrigatório para channel_admin.")
-            if normalize_role(actor_claims.get("user_role")) == "channel_admin" and access.get("channel_id") not in channel_ids:
+            if tenant_scope is not None or branch_scope is not None:
+                raise AuthError(422, "validation_error", "channel_admin não pode receber escopo de empresa ou filial.")
+            if normalize_role(actor_claims.get("user_role")) == "channel_admin" and channel_id not in channel_ids:
                 raise AuthError(403, "channel_access_denied", "Canal não permitido.")
         if role in {"tenant_admin", "tenant_manager", "tenant_viewer"}:
-            tenant_scope = access.get("id_empresa")
             if tenant_scope is None:
                 raise AuthError(422, "validation_error", "id_empresa é obrigatório para perfis tenant.")
+            if channel_id is not None:
+                raise AuthError(422, "validation_error", "Perfis tenant não podem receber channel_id.")
+            if role == "tenant_admin" and branch_scope is not None:
+                raise AuthError(422, "validation_error", "tenant_admin usa escopo por empresa, sem filial.")
+            if role in {"tenant_manager", "tenant_viewer"} and branch_scope is None:
+                raise AuthError(422, "validation_error", "id_filial é obrigatório para tenant_manager e tenant_viewer.")
             if normalize_role(actor_claims.get("user_role")) == "channel_admin":
                 company = _assert_company_visible(actor_claims, int(tenant_scope))
                 if company.get("channel_id") not in set(actor_claims.get("channel_ids") or []):
@@ -749,9 +809,9 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
         normalized.append(
             {
                 "role": role,
-                "channel_id": access.get("channel_id"),
-                "id_empresa": access.get("id_empresa"),
-                "id_filial": access.get("id_filial"),
+                "channel_id": channel_id,
+                "id_empresa": tenant_scope,
+                "id_filial": branch_scope,
                 "is_enabled": bool(access.get("is_enabled", True)),
                 "valid_from": access.get("valid_from"),
                 "valid_until": access.get("valid_until"),
@@ -768,7 +828,6 @@ def upsert_user(
     user_id: str | None = None,
 ) -> dict[str, Any]:
     _require_platform_operations(claims)
-    _validate_user_management_role(claims, payload["role"])
     accesses = _validate_access_payload(claims, payload["role"], payload.get("accesses") or [])
 
     with _connect() as conn:
@@ -783,6 +842,10 @@ def upsert_user(
             if not previous_row:
                 raise AuthError(404, "user_not_found", "Usuário não encontrado.")
             previous = dict(previous_row)
+            _validate_user_management_target(claims, previous, payload["role"])
+            if not _actor_is_sovereign(claims) and is_sovereign_email(payload["email"]):
+                if str(payload["email"]).strip().lower() != str(previous.get("email") or "").strip().lower():
+                    raise AuthError(403, "sovereign_user_protected", "Usuário soberano protegido.")
             password_sql = ""
             params: list[Any] = [
                 payload["nome"],
@@ -818,6 +881,12 @@ def upsert_user(
                 params,
             )
         else:
+            _validate_user_management_role(claims, payload["role"])
+            _validate_user_management_target(
+                claims,
+                {"email": payload["email"], "role": payload["role"]},
+                payload["role"],
+            )
             if not payload.get("password"):
                 raise AuthError(422, "validation_error", "Senha é obrigatória para criar usuário.")
             created = conn.execute(
@@ -919,6 +988,17 @@ def upsert_user_contacts(claims: dict[str, Any], user_id: str, payload: dict[str
     if not any(item["id"] == user_id for item in list_users(claims, limit=5000, offset=0)["items"]):
         raise AuthError(403, "user_access_denied", "Acesso não permitido ao usuário.")
     with _connect() as conn:
+        target_user = conn.execute(
+            """
+            SELECT id::text AS id, email, role
+            FROM auth.users
+            WHERE id = %s::uuid
+            """,
+            (user_id,),
+        ).fetchone()
+        if not target_user:
+            raise AuthError(404, "user_not_found", "Usuário não encontrado.")
+        _validate_user_management_target(claims, dict(target_user), dict(target_user)["role"])
         _ensure_user_contacts_row(conn, user_id)
         previous = conn.execute(
             "SELECT * FROM app.user_notification_settings WHERE user_id = %s::uuid",

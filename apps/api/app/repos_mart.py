@@ -1226,44 +1226,99 @@ def operational_score(role: str, id_empresa: int, id_filial: Optional[int], dt_i
 # ========================
 
 def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
-    """Top customers by revenue for the selected period."""
+    """Top customers by valid outbound sales for the selected period."""
+
+    where_mart_filial, mart_branch_params = _branch_scope_clause("s.id_filial", id_filial)
+    mart_params = [id_empresa, id_empresa, dt_ini, dt_fim] + mart_branch_params + [id_empresa, limit]
+    mart_sql = f"""
+      WITH names AS (
+        SELECT DISTINCT ON (d.id_empresa, d.id_cliente)
+          d.id_empresa,
+          d.id_cliente,
+          d.nome
+        FROM dw.dim_cliente d
+        WHERE d.id_empresa = %s
+        ORDER BY d.id_empresa, d.id_cliente, d.updated_at DESC, d.id_filial
+      ), ranked AS (
+        SELECT
+          s.id_cliente,
+          COALESCE(SUM(s.valor_dia),0)::numeric(18,2) AS faturamento,
+          COALESCE(SUM(s.compras_dia),0)::int AS compras,
+          MAX(s.dt_ref) AS ultima_compra
+        FROM mart.customer_sales_daily s
+        WHERE s.id_empresa = %s
+          AND s.id_cliente <> -1
+          AND s.dt_ref BETWEEN %s::date AND %s::date
+          {where_mart_filial}
+        GROUP BY s.id_cliente
+      )
+      SELECT
+        r.id_cliente,
+        COALESCE(NULLIF(n.nome, ''), '#ID ' || r.id_cliente::text) AS cliente_nome,
+        r.faturamento,
+        r.compras,
+        r.ultima_compra,
+        CASE
+          WHEN r.compras = 0 THEN 0::numeric(18,2)
+          ELSE (r.faturamento / r.compras)::numeric(18,2)
+        END AS ticket_medio
+      FROM ranked r
+      LEFT JOIN names n
+        ON n.id_empresa = %s
+       AND n.id_cliente = r.id_cliente
+      ORDER BY r.faturamento DESC, r.compras DESC, r.id_cliente
+      LIMIT %s
+    """
 
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-
-    where_filial, branch_params = _branch_scope_clause("v.id_filial", id_filial)
-    params = [id_empresa, ini, fim] + branch_params + [limit]
-
-    sql = f"""
+    where_dw_filial, dw_branch_params = _branch_scope_clause("v.id_filial", id_filial)
+    dw_params = [id_empresa, ini, fim] + dw_branch_params + [limit]
+    dw_sql = f"""
       SELECT
-        COALESCE(v.id_cliente, -1) AS id_cliente,
-        CASE
-          WHEN COALESCE(v.id_cliente, -1) = -1 THEN '(Sem cliente)'
-          ELSE COALESCE(NULLIF(MAX(dc.nome), ''), '#ID ' || COALESCE(v.id_cliente, -1)::text)
-        END AS cliente_nome,
-        COALESCE(SUM(v.total_venda),0)::numeric(18,2) AS faturamento,
+        v.id_cliente,
+        COALESCE(NULLIF(dc.nome, ''), '#ID ' || v.id_cliente::text) AS cliente_nome,
+        COALESCE(SUM(i.total),0)::numeric(18,2) AS faturamento,
         COALESCE(COUNT(DISTINCT v.id_comprovante),0)::int AS compras,
-        MAX(v.data) AS ultima_compra,
-        CASE WHEN COUNT(DISTINCT v.id_comprovante)=0 THEN 0
-             ELSE (SUM(v.total_venda)/COUNT(DISTINCT v.id_comprovante))::numeric(18,2)
+        MAX(v.data)::date AS ultima_compra,
+        CASE
+          WHEN COUNT(DISTINCT v.id_comprovante) = 0 THEN 0::numeric(18,2)
+          ELSE (SUM(i.total) / COUNT(DISTINCT v.id_comprovante))::numeric(18,2)
         END AS ticket_medio
       FROM dw.fact_venda v
-      LEFT JOIN dw.dim_cliente dc
-        ON dc.id_empresa = v.id_empresa
-       AND dc.id_filial = v.id_filial
-       AND dc.id_cliente = v.id_cliente
+      JOIN dw.fact_venda_item i
+        ON i.id_empresa = v.id_empresa
+       AND i.id_filial = v.id_filial
+       AND i.id_db = v.id_db
+       AND i.id_movprodutos = v.id_movprodutos
+      LEFT JOIN LATERAL (
+        SELECT d.nome
+        FROM dw.dim_cliente d
+        WHERE d.id_empresa = v.id_empresa
+          AND d.id_cliente = v.id_cliente
+        ORDER BY
+          CASE WHEN d.id_filial = v.id_filial THEN 0 ELSE 1 END,
+          d.updated_at DESC,
+          d.id_filial
+        LIMIT 1
+      ) dc ON true
       WHERE v.id_empresa = %s
+        AND v.id_cliente IS NOT NULL
+        AND v.id_cliente <> -1
         AND v.data_key BETWEEN %s AND %s
-        AND COALESCE(v.cancelado,false) = false
-        {where_filial}
-      GROUP BY
-        COALESCE(v.id_cliente,-1)
-      ORDER BY faturamento DESC
+        AND COALESCE(v.cancelado, false) = false
+        AND COALESCE(i.cfop, 0) >= 5000
+        {where_dw_filial}
+      GROUP BY v.id_cliente, dc.nome
+      ORDER BY faturamento DESC, compras DESC, v.id_cliente
       LIMIT %s
     """
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        mart_rows = list(conn.execute(mart_sql, mart_params).fetchall())
+        if mart_rows:
+            return mart_rows
+        return list(conn.execute(dw_sql, dw_params).fetchall())
 
 
 def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int], as_of: date) -> Dict[str, Any]:

@@ -311,6 +311,150 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertEqual(mock_stage_summary.call_count, 1)
         self.assertEqual(mock_stage_summary.call_args.args[2], "run_tenant_phase")
 
+    @patch("app.services.etl_orchestrator._hot_window_days", return_value=3)
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    def test_operational_phase_skips_risk_events_and_marks_track_in_meta(
+        self,
+        mock_logged_step,
+        mock_log_instant,
+        _mock_stage_summary,
+        _mock_hot_window_days,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 1, 10
+
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        result = etl_orchestrator._run_tenant_phase(
+            _DummyConn(),
+            1,
+            False,
+            date(2026, 3, 23),
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+        )
+
+        self.assertEqual(step_order, [name for name, _query in etl_orchestrator.PHASE_SQL_STEPS])
+        self.assertEqual(result["track"], etl_orchestrator.TRACK_OPERATIONAL)
+        self.assertEqual(result["meta"]["track"], etl_orchestrator.TRACK_OPERATIONAL)
+        self.assertTrue(result["meta"]["risk_events_skipped"])
+        self.assertEqual(result["meta"]["risk_events_skip_reason"], "track_excludes_risk")
+        self.assertFalse(result["meta"]["refresh_domains"]["risk"])
+        mock_log_instant.assert_not_called()
+
+    @patch("app.services.etl_orchestrator._hot_window_days", return_value=3)
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    def test_risk_phase_runs_only_risk_step(
+        self,
+        mock_logged_step,
+        _mock_log_instant,
+        _mock_stage_summary,
+        _mock_hot_window_days,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 9, 90
+
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        result = etl_orchestrator._run_tenant_phase(
+            _DummyConn(),
+            1,
+            False,
+            date(2026, 3, 23),
+            track=etl_orchestrator.TRACK_RISK,
+        )
+
+        self.assertEqual(step_order, ["risk_events"])
+        self.assertEqual(result["track"], etl_orchestrator.TRACK_RISK)
+        self.assertEqual(result["meta"]["risk_events"], 9)
+        self.assertTrue(result["meta"]["refresh_domains"]["risk"])
+        self.assertFalse(result["meta"]["refresh_domains"]["sales"])
+
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    def test_operational_post_refresh_skips_risk_dependent_steps(
+        self,
+        mock_logged_step,
+        mock_log_instant,
+        _mock_stage_summary,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 5, 50
+
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        meta = {
+            "fact_venda": 1,
+            "fact_pagamento_comprovante": 1,
+            "fact_caixa_turno": 1,
+        }
+        result = etl_orchestrator._run_tenant_post_refresh(
+            _DummyConn(),
+            1,
+            meta,
+            date(2026, 3, 23),
+            False,
+            3,
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+        )
+
+        self.assertEqual(
+            step_order,
+            [
+                "customer_sales_daily_snapshot",
+                "customer_rfm_snapshot",
+                "customer_churn_risk_snapshot",
+                "payment_notifications",
+                "cash_notifications",
+            ],
+        )
+        self.assertFalse(result["health_score_refreshed"])
+        self.assertFalse(result["insights_generated"])
+        skipped_reasons = [call.kwargs["meta"]["reason"] for call in mock_log_instant.call_args_list]
+        self.assertIn("track_excludes_step", skipped_reasons)
+
+    @patch("app.services.etl_orchestrator._unlock_cycle_locks")
+    @patch("app.services.etl_orchestrator._try_cycle_locks", return_value=[(62041, 230319)])
+    @patch("app.services.etl_orchestrator._try_tenant_track_lock", return_value=False)
+    @patch("app.services.etl_orchestrator.get_conn", side_effect=lambda **_: _dummy_conn_ctx())
+    def test_incremental_cycle_can_skip_busy_tenants_without_failing(
+        self,
+        _mock_get_conn,
+        _mock_try_tenant_lock,
+        _mock_try_cycle_locks,
+        _mock_unlock_cycle_locks,
+    ) -> None:
+        summary = etl_orchestrator.run_incremental_cycle(
+            [1],
+            ref_date=date(2026, 3, 23),
+            refresh_mart=True,
+            force_full=False,
+            fail_fast=True,
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+            skip_busy_tenants=True,
+            tenant_rows=[{"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True}],
+            acquire_lock=True,
+        )
+
+        self.assertTrue(summary["ok"], summary)
+        self.assertEqual(summary["failed"], 0)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertTrue(summary["items"][0]["skipped"])
+        self.assertEqual(summary["items"][0]["reason"], "tenant_busy")
+
     @patch("app.services.etl_orchestrator._run_tenant_post_refresh", return_value=etl_orchestrator._empty_post_meta())
     @patch("app.services.etl_orchestrator._run_global_refresh")
     @patch("app.services.etl_orchestrator._run_tenant_clock_meta_sql", return_value={})

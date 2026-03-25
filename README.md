@@ -516,40 +516,70 @@ Job agendável de ETL incremental:
 make etl-incremental
 ```
 
+Trilhos oficiais:
+
+```bash
+make etl-operational
+make etl-risk
+TRACK=full make etl-incremental
+```
+
 Rodar manualmente para um tenant específico:
 
 ```bash
 TENANT_ID=1 make etl-incremental
+TENANT_ID=1 make etl-operational
+TENANT_ID=1 make etl-risk
 ```
 
 Wrapper canônico de produção:
 
 ```bash
 ./deploy/scripts/prod-etl-incremental.sh
+./deploy/scripts/prod-etl-operational.sh
+./deploy/scripts/prod-etl-risk.sh
 ```
 
 O wrapper:
 - roda `python -m app.cli.etl_incremental` dentro do container `api`;
+- aceita `--track full|operational|risk` e `--skip-busy-tenants`;
 - processa todas as empresas com `app.tenants.is_active = true`, em ordem de `id_empresa`;
 - usa a orquestração compartilhada `app.services.etl_orchestrator.run_incremental_cycle(...)`;
 - executa fase por tenant, agrega um plano único de refresh e roda o refresh global no máximo uma vez por ciclo completo;
+- usa advisory lock por trilho (`operational`, `risk`, `full`) e lock separado por tenant, então:
+  - `operational` não dispara `compute_risk_events`;
+  - `risk` pode rodar separado do operacional;
+  - `full` continua disponível como compatibilidade e toma os dois locks de trilho;
 - combina gatilhos `data-driven` e `clock-driven`:
   - rollover diário atualiza `mart.clientes_churn_risco` e snapshots diários de churn, aging e health score quando `ref_date` avança;
   - caixa aberto atualiza `mart.agg_caixa_turno_aberto`, `mart.alerta_caixa_aberto` e a sincronização de notificações mesmo sem ingestão nova;
 - usa os watermarks existentes do ETL para o caminho data-driven, então continua incrementalmente de onde parou;
 - não substitui o backfill histórico inicial/rebuild: para recomputar janelas antigas ou recuperar lacunas grandes use `etl.run_operational_snapshot_backfill(...)` em job dedicado;
 - usa `flock` no arquivo `/tmp/torqmind-prod-etl-incremental.lock` por padrão;
+- os wrappers dedicados usam locks de host diferentes:
+  - `/tmp/torqmind-prod-etl-operational.lock`
+  - `/tmp/torqmind-prod-etl-risk.lock`
 - usa também advisory lock no banco para impedir dois ciclos canônicos ao mesmo tempo;
 - se já existir execução em andamento, registra a mensagem e sai sem iniciar uma segunda execução.
+
+Estratégia operacional recomendada:
+- baseline segura em produção Ubuntu 24.04 + Docker Compose:
+  - ETL operacional: `*/5 * * * *`
+  - ETL risk: `*/10 * * * *`
+- evidência local medida em `2026-03-25` com `tenant_id=1`:
+  - `operational`: `122.64s`
+  - `risk` logo após o operacional, com 43 eventos: `87.84s`
+- conclusão: cron de 1 minuto fica lock-safe, mas não sustenta cadência real nesta massa; o menor intervalo observado sem sobreposição recorrente é 3 minutos para o trilho operacional. Use `*/3` só depois de observar folga consistente em produção.
 
 Exemplo via `cron` no Ubuntu:
 
 ```bash
-*/15 * * * * cd /opt/torqmind && ENV_FILE=/opt/torqmind/.env COMPOSE_FILE=docker-compose.prod.yml /opt/torqmind/deploy/scripts/prod-etl-incremental.sh >> /var/log/torqmind-etl-incremental.log 2>&1
+*/5 * * * * cd /opt/torqmind && ENV_FILE=/etc/torqmind/prod.env COMPOSE_FILE=docker-compose.prod.yml /opt/torqmind/deploy/scripts/prod-etl-operational.sh >> /var/log/torqmind-etl-operational.log 2>&1
+*/10 * * * * cd /opt/torqmind && ENV_FILE=/etc/torqmind/prod.env COMPOSE_FILE=docker-compose.prod.yml /opt/torqmind/deploy/scripts/prod-etl-risk.sh >> /var/log/torqmind-etl-risk.log 2>&1
 ```
 
 Para conferir se já está executando:
-- verifique o lock em `/tmp/torqmind-prod-etl-incremental.lock`;
+- verifique os locks em `/tmp/torqmind-prod-etl-operational.lock` e `/tmp/torqmind-prod-etl-risk.lock`;
 - ou rode `ps`/`pgrep` no host para o script;
 - ou acompanhe `docker compose -f docker-compose.prod.yml --env-file .env logs -f api`.
 - `/finance` → Financeiro

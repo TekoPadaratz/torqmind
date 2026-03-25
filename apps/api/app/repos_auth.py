@@ -10,6 +10,7 @@ from app.authz import (
     can_access_product,
     can_manage_platform_finance,
     can_manage_platform_operations,
+    is_sovereign_email,
     is_date_in_window,
     is_product_readonly_role,
     normalize_role,
@@ -568,13 +569,43 @@ def _build_session_context(
     include_default_scope: bool = False,
 ) -> dict[str, Any]:
     today, now = _user_now()
-    user_role = normalize_role(user.get("role"))
+    sovereign_user = is_sovereign_email(user.get("email"))
+    user_role = "platform_master" if sovereign_user else normalize_role(user.get("role"))
     if not user_role:
         raise AuthError(403, "user_role_missing", "Usuário sem papel configurado.")
 
     _assert_user_enabled(user, today, now)
 
-    scoped_rows = _preferred_access_rows(user_role, access_rows)
+    effective_access_rows = list(access_rows)
+    if sovereign_user:
+        effective_access_rows.append(
+            {
+                "role": "platform_master",
+                "channel_id": None,
+                "id_empresa": None,
+                "id_filial": None,
+                "is_enabled": True,
+                "valid_from": user.get("valid_from"),
+                "valid_until": user.get("valid_until"),
+                "channel_name": None,
+                "channel_is_enabled": True,
+                "tenant_name": None,
+                "tenant_is_enabled": True,
+                "tenant_status": "active",
+                "tenant_valid_from": None,
+                "tenant_valid_until": None,
+                "tenant_billing_status": None,
+                "tenant_grace_until": None,
+                "tenant_channel_id": None,
+                "branch_name": None,
+                "branch_is_enabled": True,
+                "branch_valid_from": None,
+                "branch_valid_until": None,
+                "branch_blocked_reason": None,
+            }
+        )
+
+    scoped_rows = _preferred_access_rows(user_role, effective_access_rows)
     if not scoped_rows:
         raise AuthError(403, "access_unavailable", "Usuário sem vínculo de acesso válido.")
 
@@ -685,6 +716,7 @@ def _build_session_context(
             "platform": can_access_platform(user_role),
             "platform_operations": can_manage_platform_operations(user_role),
             "platform_finance": can_manage_platform_finance(user_role),
+            "platform_superuser": sovereign_user,
             "product": can_access_product(user_role),
             "product_readonly": product_readonly,
         },

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from app.cli import seed as seed_cli
 from app.db import get_conn
 from app.main import app
 from app.security import hash_password
@@ -155,6 +156,78 @@ class PlatformBackofficeTest(unittest.TestCase):
     def _auth_headers(self, email: str, password: str) -> dict[str, str]:
         token = self._login(email, password).json()["access_token"]
         return {"Authorization": f"Bearer {token}"}
+
+    def _user_id_by_email(self, email: str) -> str:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            row = conn.execute(
+                "SELECT id::text AS id FROM auth.users WHERE lower(email) = lower(%s)",
+                (email,),
+            ).fetchone()
+            conn.commit()
+        self.assertIsNotNone(row, email)
+        return str(row["id"])
+
+    def _ensure_sovereign_user(self) -> str:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            row = conn.execute(
+                """
+                INSERT INTO auth.users (
+                  email,
+                  password_hash,
+                  nome,
+                  role,
+                  is_active,
+                  valid_from,
+                  must_change_password,
+                  failed_login_count,
+                  locked_until
+                )
+                VALUES (%s, %s, %s, 'platform_master', true, CURRENT_DATE, false, 0, NULL)
+                ON CONFLICT (email)
+                DO UPDATE SET
+                  password_hash = EXCLUDED.password_hash,
+                  nome = EXCLUDED.nome,
+                  role = 'platform_master',
+                  is_active = true,
+                  must_change_password = false,
+                  failed_login_count = 0,
+                  locked_until = NULL,
+                  valid_from = COALESCE(auth.users.valid_from, CURRENT_DATE)
+                RETURNING id::text AS id
+                """,
+                (
+                    seed_cli.PLATFORM_MASTER_EMAIL,
+                    hash_password(seed_cli.PLATFORM_MASTER_PASSWORD),
+                    "TorqMind Sovereign Master",
+                ),
+            ).fetchone()
+            conn.execute("DELETE FROM auth.user_tenants WHERE user_id = %s::uuid", (row["id"],))
+            conn.execute(
+                """
+                INSERT INTO auth.user_tenants (
+                  user_id,
+                  role,
+                  channel_id,
+                  id_empresa,
+                  id_filial,
+                  is_enabled,
+                  valid_from,
+                  valid_until
+                )
+                VALUES (%s::uuid, 'platform_master', NULL, NULL, NULL, true, CURRENT_DATE, NULL)
+                """,
+                (row["id"],),
+            )
+            conn.execute(
+                """
+                INSERT INTO app.user_notification_settings (user_id, email)
+                VALUES (%s::uuid, %s)
+                ON CONFLICT (user_id) DO UPDATE SET email = EXCLUDED.email
+                """,
+                (row["id"], seed_cli.PLATFORM_MASTER_EMAIL),
+            )
+            conn.commit()
+        return seed_cli.PLATFORM_MASTER_EMAIL
 
     def test_login_blocks_inactive_user_company_and_branch(self) -> None:
         tenant_id = self._create_tenant("Tenant login inactive", is_active=True)
@@ -1530,3 +1603,250 @@ class PlatformBackofficeTest(unittest.TestCase):
         actions = {row["action"] for row in audit_rows}
         self.assertIn("tenant.create", actions)
         self.assertIn("receivable.generate", actions)
+
+    def test_customers_overview_excludes_supplier_only_entities_from_top_customers(self) -> None:
+        tenant_id = self._create_tenant("Tenant Customers Semantics")
+        branch_id = 1201
+        self._create_branch(tenant_id, branch_id, "Filial 1201", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        headers = self._auth_headers(owner_email, "Senha@123")
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_cliente (id_empresa, id_filial, id_cliente, nome)
+                VALUES
+                  (%s, %s, 9101, 'Cliente Válido'),
+                  (%s, %s, 9102, 'Fornecedor Exclusivo')
+                ON CONFLICT (id_empresa, id_filial, id_cliente)
+                DO UPDATE SET nome = EXCLUDED.nome
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_cliente, id_comprovante, id_turno, saidas_entradas, total_venda, cancelado, payload
+                )
+                VALUES
+                  (%s, %s, 1, 91001, '2026-03-10 10:00:00', 20260310, 9101, 991001, 1, 1, 240, false, '{}'::jsonb),
+                  (%s, %s, 1, 91002, '2026-03-11 11:00:00', 20260311, 9102, 991002, 1, 0, 900, false, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, qtd, valor_unitario, total, desconto, custo_total, margem, cfop, payload
+                )
+                VALUES
+                  (%s, %s, 1, 91001, 910011, 20260310, 501, 1, 240, 240, 0, 160, 80, 5102, '{}'::jsonb),
+                  (%s, %s, 1, 91002, 910021, 20260311, 502, 1, 900, 900, 0, 780, 120, 1102, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id),
+            )
+            conn.execute(
+                "SELECT etl.backfill_customer_sales_daily_range(%s, %s::date, %s::date)",
+                (tenant_id, "2026-03-01", "2026-03-31"),
+            )
+            conn.commit()
+
+        response = self.client.get(
+            f"/bi/customers/overview?dt_ini=2026-03-01&dt_fim=2026-03-31&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        top_customers = response.json()["top_customers"]
+        names = [item["cliente_nome"] for item in top_customers]
+        self.assertIn("Cliente Válido", names)
+        self.assertNotIn("Fornecedor Exclusivo", names)
+
+    def test_sovereign_platform_master_can_change_any_user_and_any_role(self) -> None:
+        sovereign_email = self._ensure_sovereign_user()
+        headers = self._auth_headers(sovereign_email, seed_cli.PLATFORM_MASTER_PASSWORD)
+        me_response = self.client.get("/auth/me", headers=headers)
+        self.assertEqual(me_response.status_code, 200, me_response.text)
+        self.assertTrue(bool(me_response.json()["access"]["platform_superuser"]))
+
+        tenant_id = self._create_tenant("Tenant Sovereign Target")
+        branch_id = 1931
+        self._create_branch(tenant_id, branch_id, "Filial Sovereign Target")
+        target_email = self._create_user("platform_admin", "Senha@123")
+        target_user_id = self._user_id_by_email(target_email)
+
+        promote_response = self.client.patch(
+            f"/platform/users/{target_user_id}",
+            json={
+                "nome": "Target Sovereign",
+                "email": target_email,
+                "password": None,
+                "role": "platform_master",
+                "is_enabled": True,
+                "valid_from": None,
+                "valid_until": None,
+                "must_change_password": False,
+                "locked_until": None,
+                "reset_failed_login": True,
+                "accesses": [
+                    {
+                        "role": "platform_master",
+                        "channel_id": None,
+                        "id_empresa": None,
+                        "id_filial": None,
+                        "is_enabled": True,
+                        "valid_from": None,
+                        "valid_until": None,
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(promote_response.status_code, 200, promote_response.text)
+        self.assertEqual(promote_response.json()["role"], "platform_master")
+
+        demote_response = self.client.patch(
+            f"/platform/users/{target_user_id}",
+            json={
+                "nome": "Target Sovereign",
+                "email": target_email,
+                "password": None,
+                "role": "tenant_viewer",
+                "is_enabled": True,
+                "valid_from": None,
+                "valid_until": None,
+                "must_change_password": False,
+                "locked_until": None,
+                "reset_failed_login": True,
+                "accesses": [
+                    {
+                        "role": "tenant_viewer",
+                        "channel_id": None,
+                        "id_empresa": tenant_id,
+                        "id_filial": branch_id,
+                        "is_enabled": True,
+                        "valid_from": None,
+                        "valid_until": None,
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(demote_response.status_code, 200, demote_response.text)
+        self.assertEqual(demote_response.json()["role"], "tenant_viewer")
+        self.assertEqual(demote_response.json()["accesses"][0]["id_empresa"], tenant_id)
+        self.assertEqual(demote_response.json()["accesses"][0]["id_filial"], branch_id)
+
+    def test_tenant_viewer_requires_explicit_branch_scope(self) -> None:
+        master_email = self._ensure_sovereign_user()
+        headers = self._auth_headers(master_email, seed_cli.PLATFORM_MASTER_PASSWORD)
+        tenant_id = self._create_tenant("Tenant Viewer Scope Validation")
+        target_email = self._create_user("platform_admin", "Senha@123")
+        target_user_id = self._user_id_by_email(target_email)
+
+        response = self.client.patch(
+            f"/platform/users/{target_user_id}",
+            json={
+                "nome": "Target Viewer Scope",
+                "email": target_email,
+                "password": None,
+                "role": "tenant_viewer",
+                "is_enabled": True,
+                "valid_from": None,
+                "valid_until": None,
+                "must_change_password": False,
+                "locked_until": None,
+                "reset_failed_login": False,
+                "accesses": [
+                    {
+                        "role": "tenant_viewer",
+                        "channel_id": None,
+                        "id_empresa": tenant_id,
+                        "id_filial": None,
+                        "is_enabled": True,
+                        "valid_from": None,
+                        "valid_until": None,
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        payload = response.json()
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        error_payload = detail if isinstance(detail, dict) else payload
+        self.assertEqual(error_payload["error"], "validation_error")
+        self.assertIn("id_filial", error_payload["message"])
+
+    def test_platform_admin_cannot_edit_sovereign_user_or_promote_platform_master(self) -> None:
+        sovereign_email = self._ensure_sovereign_user()
+        sovereign_user_id = self._user_id_by_email(sovereign_email)
+        platform_admin_email = self._create_user("platform_admin", "Senha@123")
+        headers = self._auth_headers(platform_admin_email, "Senha@123")
+
+        protected_response = self.client.patch(
+            f"/platform/users/{sovereign_user_id}",
+            json={
+                "nome": "TorqMind Sovereign Master",
+                "email": sovereign_email,
+                "password": None,
+                "role": "platform_master",
+                "is_enabled": True,
+                "valid_from": None,
+                "valid_until": None,
+                "must_change_password": False,
+                "locked_until": None,
+                "reset_failed_login": False,
+                "accesses": [
+                    {
+                        "role": "platform_master",
+                        "channel_id": None,
+                        "id_empresa": None,
+                        "id_filial": None,
+                        "is_enabled": True,
+                        "valid_from": None,
+                        "valid_until": None,
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(protected_response.status_code, 403, protected_response.text)
+        self.assertEqual(protected_response.json()["error"], "sovereign_user_protected")
+
+        tenant_id = self._create_tenant("Tenant Platform Admin Target")
+        target_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        target_user_id = self._user_id_by_email(target_email)
+
+        promote_response = self.client.patch(
+            f"/platform/users/{target_user_id}",
+            json={
+                "nome": "Target Platform Admin",
+                "email": target_email,
+                "password": None,
+                "role": "platform_master",
+                "is_enabled": True,
+                "valid_from": None,
+                "valid_until": None,
+                "must_change_password": False,
+                "locked_until": None,
+                "reset_failed_login": False,
+                "accesses": [
+                    {
+                        "role": "platform_master",
+                        "channel_id": None,
+                        "id_empresa": None,
+                        "id_filial": None,
+                        "is_enabled": True,
+                        "valid_from": None,
+                        "valid_until": None,
+                    }
+                ],
+            },
+            headers=headers,
+        )
+        self.assertEqual(promote_response.status_code, 403, promote_response.text)
+        self.assertEqual(promote_response.json()["error"], "role_escalation_forbidden")

@@ -13,7 +13,7 @@ from app.deps import get_current_claims
 from app import repos_auth
 from app.security import decode_token
 from app.scope import resolve_scope
-from app.services.etl_orchestrator import EtlCycleBusyError, run_incremental_cycle
+from app.services.etl_orchestrator import EtlCycleBusyError, TRACK_OPERATIONAL, normalize_track, run_incremental_cycle
 from app.services.telegram import send_telegram_alert
 
 router = APIRouter(prefix="/etl", tags=["etl"])
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 def run_etl(
     refresh_mart: bool = Query(True),
     force_full: bool = Query(False),
+    track: str = Query(TRACK_OPERATIONAL, pattern="^(operational|risk|full)$", description="ETL lane: operational, risk, or full."),
     ref_date: Optional[date] = Query(None, description="Reference date used as simulated 'today' (YYYY-MM-DD)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
@@ -39,6 +40,7 @@ def run_etl(
     """
 
     role = claims["role"]
+    track = normalize_track(track)
     effective_ref_date = ref_date or date.today()
     try:
         repos_auth.assert_product_write_allowed(claims)
@@ -54,14 +56,32 @@ def run_etl(
             refresh_mart=refresh_mart,
             force_full=force_full,
             fail_fast=True,
+            track=track,
+            skip_busy_tenants=False,
             db_role=role,
             db_tenant_scope=tenant,
             tenant_rows=[{"id_empresa": tenant}],
             acquire_lock=True,
         )
         item = (summary.get("items") or [None])[0] or {}
+        if item.get("error_code") == "tenant_busy":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "etl_busy",
+                    "message": str(item.get("error") or "Tenant is busy with another ETL lane."),
+                },
+            )
         if item.get("ok") is False:
             raise RuntimeError(str(item.get("error") or "tenant_failed"))
+        if item.get("skipped"):
+            return {
+                "ok": True,
+                "track": track,
+                "skipped": True,
+                "reason": item.get("reason"),
+                "message": item.get("message"),
+            }
         return item.get("result") or {}
     except EtlCycleBusyError as exc:
         raise HTTPException(

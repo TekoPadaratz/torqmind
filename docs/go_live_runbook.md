@@ -41,9 +41,9 @@ Tempos do ETL por etapa:
 
 ```bash
 psql -h 127.0.0.1 -p 5432 -U postgres -d TORQMIND -P pager=off -c "
-SELECT run_id, step_name, status, rows_affected, ROUND(duration_ms::numeric, 2) AS duration_ms, started_at, finished_at
+SELECT id, step_name, status, rows_processed, ROUND(duration_ms::numeric, 2) AS duration_ms, started_at, finished_at
 FROM etl.run_log
-ORDER BY run_id DESC, started_at DESC
+ORDER BY id DESC, started_at DESC
 LIMIT 100;
 "
 ```
@@ -73,6 +73,9 @@ Critérios mínimos antes da promoção:
 - delta pequeno por tenant operacionalmente viável;
 - bootstrap comercial de 365 dias materialmente menor que a janela anterior;
 - home e dashboards quentes sem latência anômala.
+- cron separado por trilho definido antes do go-live:
+  - `operational` com cadência curta e sem `compute_risk_events`
+  - `risk` em job independente
 
 ## T-24h: congelar a base validada e gerar dump lógico
 
@@ -202,11 +205,17 @@ Critério funcional adicional:
 
 ## T+1h: validação operacional
 
-Rodar o incremental manual:
+Rodar os trilhos manualmente:
 
 ```bash
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-etl-incremental.sh
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-etl-operational.sh
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-etl-risk.sh
 ```
+
+Checagens obrigatórias:
+- o log do trilho `operational` precisa trazer `risk_events_skipped=true` e `risk_events_skip_reason=track_excludes_risk`;
+- o trilho `risk` precisa trazer `refresh_domains.risk=true` quando houver eventos recalculados;
+- se um trilho já estiver segurando o tenant, o outro deve sair com `skipped=true` e `reason=tenant_busy` quando rodado com `--skip-busy-tenants`.
 
 Contagens e eventos recentes:
 
@@ -227,25 +236,36 @@ ORDER BY tabela;
 
 ```bash
 docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T postgres psql -U postgres -d TORQMIND -P pager=off -c "
-SELECT run_id, step_name, status, rows_affected, ROUND(duration_ms::numeric, 2) AS duration_ms
+SELECT id, step_name, status, rows_processed, ROUND(duration_ms::numeric, 2) AS duration_ms
 FROM etl.run_log
-ORDER BY run_id DESC, started_at DESC
+ORDER BY id DESC, started_at DESC
 LIMIT 30;
 "
 ```
+
+Cron recomendado após o smoke:
+- baseline segura:
+  - `*/5 * * * *` -> `prod-etl-operational.sh`
+  - `*/10 * * * *` -> `prod-etl-risk.sh`
+- evidência local usada para a decisão em `2026-03-25`:
+  - `operational` em tenant 1: `122.64s`
+  - `risk` em tenant 1 após delta operacional: `87.84s`
+- decisão: não reativar cron de 1 minuto ainda. Ele ficou lock-safe, mas não sustentou cadência limpa nessa massa.
 
 Habilitar agent e cron somente depois dessa validação.
 
 ## Rotina diária
 
 ```bash
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-etl-incremental.sh
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-etl-operational.sh
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-etl-risk.sh
 ENV_FILE="$TM_ENV" ./deploy/scripts/prod-purge-sales-history.sh
 ENV_FILE="$TM_ENV" ./deploy/scripts/platform-billing-daily.sh
 ```
 
 Regras:
-- não misturar o purge diário com o cron de 10 minutos;
+- não misturar o purge diário com o cron do ETL operacional;
+- manter `prod-etl-incremental.sh` só para compatibilidade/manual ou fallback controlado;
 - manter o agent desligado durante restore e migração;
 - religar agent e cron só após smoke e contagens fecharem;
 - nunca promover por cópia física do cluster.

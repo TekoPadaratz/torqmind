@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 LOCK_FILE="${LOCK_FILE:-/tmp/torqmind-prod-etl-incremental.lock}"
+TRACK="${TRACK:-full}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Arquivo de ambiente não encontrado em $ENV_FILE"
@@ -24,6 +25,8 @@ args=(
   python
   -m
   app.cli.etl_incremental
+  --track
+  "$TRACK"
 )
 
 if [[ -n "${REF_DATE:-}" ]]; then
@@ -38,6 +41,10 @@ if [[ "${FAIL_FAST:-false}" == "true" ]]; then
   args+=(--fail-fast)
 fi
 
-echo "$(date -Iseconds) TorqMind incremental ETL starting"
+if [[ "${SKIP_BUSY_TENANTS:-false}" == "true" || "${SKIP_BUSY_TENANTS:-0}" == "1" ]]; then
+  args+=(--skip-busy-tenants)
+fi
+
+echo "$(date -Iseconds) TorqMind ${TRACK} ETL starting"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api "${args[@]}"
-echo "$(date -Iseconds) TorqMind incremental ETL finished"
+echo "$(date -Iseconds) TorqMind ${TRACK} ETL finished"

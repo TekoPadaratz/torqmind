@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from app.config import settings
+
 CANONICAL_ROLES = {
     "platform_master",
     "platform_admin",
@@ -131,3 +133,15 @@ def tenant_status_warning_message(status: str | None) -> str | None:
 def claims_access_flag(claims: dict[str, Any], key: str) -> bool:
     access = claims.get("access") or {}
     return bool(access.get(key))
+
+
+def sovereign_emails() -> set[str]:
+    return {
+        email.strip().lower()
+        for email in str(settings.platform_sovereign_emails or "").split(",")
+        if email.strip()
+    }
+
+
+def is_sovereign_email(email: str | None) -> bool:
+    return str(email or "").strip().lower() in sovereign_emails()
