@@ -8,7 +8,7 @@ ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
 
-.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-platform-billing-daily
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -66,6 +66,9 @@ purge-sales-history:
 analyze-hot-tables:
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "SELECT etl.analyze_hot_tables();"'
 
+reconcile-sales:
+	@$(COMPOSE) exec -T api python -m app.cli.reconcile_sales --tenant-id "$${TENANT_ID:?missing TENANT_ID}" --date "$${DATE:?missing DATE}" $${BRANCH_ID:+--branch-id "$${BRANCH_ID}"} $${GROUP:+--group "$${GROUP}"} $${DETAIL_LIMIT:+--detail-limit "$${DETAIL_LIMIT}"}
+
 platform-billing-daily:
 	@$(COMPOSE) exec -T api python -m app.cli.platform_billing daily --as-of "$${AS_OF:-}" --competence-month "$${COMPETENCE_MONTH:-}" --months-ahead "$${MONTHS_AHEAD:-0}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"}
 
@@ -108,6 +111,9 @@ prod-etl-risk:
 
 prod-purge-sales-history:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-purge-sales-history.sh
+
+prod-reconcile-sales:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-check-sales-reconciliation.sh
 
 prod-platform-billing-daily:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/platform-billing-daily.sh

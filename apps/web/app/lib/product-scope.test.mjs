@@ -111,3 +111,12 @@ test("scope controls distinguish platform master, owner and branch manager", () 
     branchLocked: true,
   });
 });
+
+test("channel admin can switch company and branch inside its carteira", () => {
+  assert.deepEqual(getScopeControls({ user_role: "channel_admin" }), {
+    canSwitchCompany: true,
+    canSwitchBranch: true,
+    canSelectMultipleBranches: true,
+    branchLocked: false,
+  });
+});

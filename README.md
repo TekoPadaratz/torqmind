@@ -436,12 +436,12 @@ Perfis:
 - `platform_master`: acesso total, incluindo financeiro/comercial, canais, contratos e auditoria global.
 - `platform_admin`: gestão operacional de empresas, usuários, acessos e notificações; sem cobrança/comissão.
 - `product_global`: acesso a todo o produto e a todas as empresas, sem acesso ao menu/rotas Platform.
-- `channel_admin`: acesso apenas à própria carteira, sem financeiro global.
+- `channel_admin`: acesso à Platform apenas para a própria carteira e acesso ao produto somente para empresas vinculadas ao seu canal; sem financeiro global e sem poderes soberanos.
 - `tenant_admin`, `tenant_manager`, `tenant_viewer`: continuam no produto do cliente com validação reforçada de vigência e escopo.
 
 Bootstrap padrão desta release:
-- `teko94@gmail.com`: Master real da plataforma (`platform_master`).
-- `master@torqmind.com`: usuário interno do canal (`channel_admin`), sem acesso financeiro/comercial global.
+- `teko94@gmail.com`: Master real da plataforma (`platform_master`) e soberano explícito da instalação.
+- `master@torqmind.com`: usuário interno do canal (`channel_admin`), sem acesso financeiro/comercial global, mas com acesso ao produto quando houver empresas na carteira do canal bootstrap.
 
 Validação de login/sessão:
 - usuário deve existir, estar habilitado e dentro da vigência;
@@ -585,6 +585,53 @@ Para conferir se já está executando:
 - `/finance` → Financeiro
 - `/pricing` → Preço da Concorrência (input manual + simulação 10 dias)
 - `/goals` → Metas & Equipe
+
+## Reconciliação de vendas
+
+A visão de grupos de vendas agora usa o grupo operacional cru do mart (`mart.agg_grupos_diaria`), sem bucketização heurística.
+O problema real observado em produção/local era semântico: a query antiga de `Top grupos` colapsava descrições diferentes no mesmo bucket textual, por exemplo:
+
+- `COMBUSTIVEIS`
+- `FILTROS DE COMBUSTIVEIS`
+
+Isso fazia o TorqMind somar itens de grupos distintos e gerar deltas recorrentes de dezenas/centenas de reais frente ao SQL operacional do cliente.
+
+Comandos canônicos para validar sem escrever SQL manual:
+
+```bash
+TENANT_ID=1 DATE=2026-03-07 BRANCH_ID=14122 GROUP=COMBUSTIVEIS make reconcile-sales
+```
+
+Em produção Ubuntu + Docker Compose:
+
+```bash
+TENANT_ID=1 DATE=2026-03-07 BRANCH_ID=14122 GROUP_NAME=COMBUSTIVEIS \
+  docker compose -f docker-compose.prod.yml --env-file /etc/torqmind/prod.env \
+  exec -T api python -m app.cli.reconcile_sales
+```
+
+Ou via wrapper:
+
+```bash
+TENANT_ID=1 DATE=2026-03-07 BRANCH_ID=14122 GROUP_NAME=COMBUSTIVEIS \
+  ./deploy/scripts/prod-check-sales-reconciliation.sh
+```
+
+O diagnóstico retorna:
+- total da fonte operacional capturada, quando houver STG disponível para a data/grupo;
+- total do DW;
+- total do mart;
+- total do endpoint atual;
+- bucket legado para comparação;
+- delta consolidado;
+- grupos/comprovantes/itens extras que o bucket antigo engolia.
+
+Exemplo real validado nesta release:
+- tenant `1`, filial `14122`, data `2026-03-07`, grupo `COMBUSTIVEIS`;
+- `dw = mart = endpoint = 115336.56`;
+- bucket legado = `115425.56`;
+- delta do bucket legado = `89.00`;
+- origem do delta: item `FILTRO DE COMBUSTIVEL TECFIL PSC75` no grupo `FILTROS DE COMBUSTIVEIS`, comprovante `3435815`.
 
 ---
 

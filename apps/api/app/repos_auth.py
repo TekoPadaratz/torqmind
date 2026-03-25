@@ -204,12 +204,44 @@ def _all_active_tenant_ids() -> list[int]:
     return [int(row["id_empresa"]) for row in rows if row.get("id_empresa") is not None]
 
 
-def _list_active_product_companies(tenant_ids: list[int] | None = None) -> list[dict[str, Any]]:
-    where_ids = ""
+def _channel_active_tenant_ids(channel_ids: list[int] | None = None) -> list[int]:
+    if not channel_ids:
+        return []
+
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        rows = conn.execute(
+            """
+            SELECT id_empresa, status
+            FROM app.tenants
+            WHERE is_active = true
+              AND channel_id = ANY(%s)
+            ORDER BY id_empresa
+            """,
+            (channel_ids,),
+        ).fetchall()
+    return [
+        int(row["id_empresa"])
+        for row in rows
+        if row.get("id_empresa") is not None and tenant_status_allows_login(row.get("status"))
+    ]
+
+
+def _list_active_product_companies(
+    tenant_ids: list[int] | None = None,
+    channel_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    where_ids: list[str] = []
     params: list[Any] = []
     if tenant_ids:
-        where_ids = "AND id_empresa = ANY(%s)"
+        where_ids.append("id_empresa = ANY(%s)")
         params.append(tenant_ids)
+    if channel_ids:
+        where_ids.append("channel_id = ANY(%s)")
+        params.append(channel_ids)
+
+    where_sql = ""
+    if where_ids:
+        where_sql = "AND " + " AND ".join(where_ids)
 
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         rows = conn.execute(
@@ -221,7 +253,7 @@ def _list_active_product_companies(tenant_ids: list[int] | None = None) -> list[
               billing_status AS tenant_billing_status
             FROM app.tenants
             WHERE is_active = true
-              {where_ids}
+              {where_sql}
             ORDER BY id_empresa
             """,
             params,
@@ -613,6 +645,7 @@ def _build_session_context(
     selected_branch_id: int | None = None
     selected_channel_id: int | None = None
     warnings: list[str] = []
+    channel_tenant_ids: list[int] = []
 
     if user_role in {"platform_master", "platform_admin"}:
         global_rows = [row for row in scoped_rows if _access_row_is_valid_now(row, today)]
@@ -638,6 +671,21 @@ def _build_session_context(
     elif user_role == "channel_admin":
         selected = _select_channel_access(scoped_rows, today, preferred_channel_id)
         selected_channel_id = int(selected.get("channel_id"))
+        channel_tenant_ids = _channel_active_tenant_ids([selected_channel_id])
+        if preferred_tenant_id is not None:
+            if int(preferred_tenant_id) not in set(channel_tenant_ids):
+                raise AuthError(403, "tenant_access_denied", "Acesso não permitido à empresa.")
+            tenant_row = _get_tenant_scope_row(int(preferred_tenant_id))
+            if not tenant_row:
+                raise AuthError(403, "tenant_not_found", "Empresa não encontrada.")
+            if tenant_row.get("tenant_channel_id") != selected_channel_id:
+                raise AuthError(403, "tenant_access_denied", "Acesso não permitido à empresa.")
+            selected_tenant_id, selected_branch_id, warnings = _assert_tenant_scope(
+                tenant_row,
+                preferred_branch_id,
+                today,
+                allow_internal_override=False,
+            )
     else:
         selected, selected_branch_id = _select_tenant_access(
             scoped_rows,
@@ -656,12 +704,14 @@ def _build_session_context(
     analytics_role = analytics_role_for_user_role(user_role)
     product_readonly = is_product_readonly_role(user_role) or (
         selected.get("tenant_status") == "suspended_readonly"
-        if user_role not in {"platform_master", "platform_admin", "channel_admin"}
+        if user_role not in {"platform_master", "platform_admin"}
         else False
     )
     tenant_ids = (
         _all_active_tenant_ids()
         if user_role in {"platform_master", "product_global"}
+        else channel_tenant_ids
+        if user_role == "channel_admin"
         else sorted(
             {
                 int(row["id_empresa"])
@@ -671,8 +721,10 @@ def _build_session_context(
         )
     )
     product_companies = (
-        _list_active_product_companies(tenant_ids if user_role == "product_global" else None)
-        if user_role in {"platform_master", "product_global"}
+        _list_active_product_companies(
+            tenant_ids if user_role in {"product_global", "channel_admin"} else None,
+        )
+        if user_role in {"platform_master", "product_global", "channel_admin"}
         else [
             {
                 "id_empresa": int(row["id_empresa"]),
@@ -685,15 +737,19 @@ def _build_session_context(
         ]
     )
 
+    product_access_enabled = can_access_product(user_role) and (
+        user_role != "channel_admin" or bool(tenant_ids)
+    )
+
     product_scope_tenant = selected_tenant_id
     product_scope_branch = selected_branch_id
-    if product_scope_tenant is None and can_access_product(user_role):
+    if product_scope_tenant is None and product_access_enabled:
         product_scope_tenant = tenant_ids[0] if tenant_ids else None
         product_scope_branch = None
 
     default_scope = None
     home_path = "/platform" if can_access_platform(user_role) else "/dashboard"
-    if include_default_scope and can_access_product(user_role) and product_scope_tenant is not None:
+    if include_default_scope and product_access_enabled and product_scope_tenant is not None:
         default_scope = _build_default_product_scope(product_scope_tenant, product_scope_branch)
         home_path = _build_dashboard_home_path(default_scope, include_dt_ref=False)
 
@@ -717,7 +773,7 @@ def _build_session_context(
             "platform_operations": can_manage_platform_operations(user_role),
             "platform_finance": can_manage_platform_finance(user_role),
             "platform_superuser": sovereign_user,
-            "product": can_access_product(user_role),
+            "product": product_access_enabled,
             "product_readonly": product_readonly,
         },
         "server_today": today.isoformat(),

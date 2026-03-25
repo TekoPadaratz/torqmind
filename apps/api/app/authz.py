@@ -79,6 +79,7 @@ def can_access_product(role: str | None) -> bool:
         "platform_master",
         "platform_admin",
         "product_global",
+        "channel_admin",
         "tenant_admin",
         "tenant_manager",
         "tenant_viewer",

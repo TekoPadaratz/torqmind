@@ -503,35 +503,19 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
 def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial, branch_params = _branch_scope_clause("v.id_filial", id_filial)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     params = [id_empresa, ini, fim] + branch_params + [limit]
-    group_name_expr = _group_name_expression("g", "p")
     sql = f"""
       SELECT
-        MIN(COALESCE(i.id_grupo_produto, p.id_grupo_produto, -1)) AS id_grupo_produto,
-        {group_name_expr} AS grupo_nome,
-        COALESCE(SUM(i.total),0)::numeric(18,2) AS faturamento,
-        COALESCE(SUM(i.margem),0)::numeric(18,2) AS margem
-      FROM dw.fact_venda v
-      JOIN dw.fact_venda_item i
-        ON i.id_empresa = v.id_empresa
-       AND i.id_filial = v.id_filial
-       AND i.id_db = v.id_db
-       AND i.id_movprodutos = v.id_movprodutos
-      LEFT JOIN dw.dim_produto p
-        ON p.id_empresa = i.id_empresa
-       AND p.id_filial = i.id_filial
-       AND p.id_produto = i.id_produto
-      LEFT JOIN dw.dim_grupo_produto g
-        ON g.id_empresa = i.id_empresa
-       AND g.id_filial = i.id_filial
-       AND g.id_grupo_produto = COALESCE(i.id_grupo_produto, p.id_grupo_produto)
-      WHERE v.id_empresa = %s
-        AND v.data_key BETWEEN %s AND %s
-        AND COALESCE(v.cancelado, false) = false
-        AND COALESCE(i.cfop, 0) >= 5000
+        id_grupo_produto,
+        MAX(grupo_nome) AS grupo_nome,
+        SUM(faturamento)::numeric(18,2) AS faturamento,
+        SUM(margem)::numeric(18,2) AS margem
+      FROM mart.agg_grupos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
         {where_filial}
-      GROUP BY {group_name_expr}
+      GROUP BY id_grupo_produto
       ORDER BY faturamento DESC
       LIMIT %s
     """

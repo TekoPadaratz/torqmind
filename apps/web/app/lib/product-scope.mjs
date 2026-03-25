@@ -92,7 +92,7 @@ export function buildProductHref(path, scope, options = {}) {
 export function getScopeControls(claims) {
   const userRole = String(claims?.user_role || claims?.role || '').toLowerCase();
   const branchLocked = userRole === 'tenant_manager' && claims?.id_filial != null;
-  const canSwitchCompany = userRole === 'platform_master' || userRole === 'product_global';
+  const canSwitchCompany = userRole === 'platform_master' || userRole === 'product_global' || userRole === 'channel_admin';
   const canSwitchBranch = canSwitchCompany || userRole === 'tenant_admin';
 
   return {

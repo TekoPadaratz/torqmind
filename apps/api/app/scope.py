@@ -27,6 +27,17 @@ def resolve_scope(
         id_filial = int(id_filial_q) if id_filial_q is not None else None
         return id_empresa, id_filial
 
+    if user_role == "channel_admin":
+        preferred_tenants = claims.get("tenant_ids") or []
+        if not preferred_tenants:
+            raise HTTPException(status_code=403, detail={"error": "tenant_access_missing", "message": "Canal sem empresa vinculada ao produto."})
+        fallback_tenant = preferred_tenants[0]
+        id_empresa = int(id_empresa_q or default_tenant or fallback_tenant)
+        if int(id_empresa) not in {int(value) for value in preferred_tenants}:
+            raise HTTPException(status_code=403, detail={"error": "tenant_access_denied", "message": "Acesso não permitido à empresa."})
+        id_filial = int(id_filial_q or default_branch) if (id_filial_q is not None or default_branch is not None) else None
+        return id_empresa, id_filial
+
     if user_role == "product_global":
         preferred_tenants = claims.get("tenant_ids") or []
         fallback_tenant = preferred_tenants[0] if preferred_tenants else 1
@@ -66,7 +77,7 @@ def accessible_branch_ids(claims: dict[str, Any], tenant_id: int) -> tuple[bool,
     user_role = normalize_role(claims.get("user_role"))
     accesses = [row for row in (claims.get("accesses") or []) if row.get("id_empresa") is not None]
 
-    if user_role in {"platform_master", "platform_admin", "product_global"}:
+    if user_role in {"platform_master", "platform_admin", "product_global", "channel_admin"}:
         return True, []
 
     tenant_rows = [row for row in accesses if int(row.get("id_empresa") or 0) == int(tenant_id)]

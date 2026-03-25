@@ -565,6 +565,57 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertIn('"platform": true', channel_login.stdout)
             self.assertIn('"platform_finance": false', channel_login.stdout)
 
+    def test_master_only_seed_channel_bootstrap_gets_product_access_for_its_channel_portfolio(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            seed = _run_python(["-m", "app.cli.seed"], {**env, "SEED_MODE": "master-only"})
+            self.assertEqual(seed.returncode, 0, seed.stderr or seed.stdout)
+
+            channel_id = _fetchscalar(
+                db_name,
+                "SELECT id FROM app.channels WHERE lower(name) = lower('Canal TorqMind') LIMIT 1",
+            )
+            self.assertIsNotNone(channel_id)
+
+            _execute_sql(
+                db_name,
+                """
+                INSERT INTO app.tenants (
+                  nome,
+                  channel_id,
+                  status,
+                  billing_status,
+                  valid_from,
+                  is_active
+                )
+                VALUES ('Empresa Canal Bootstrap', %s, 'active', 'current', CURRENT_DATE, true)
+                """,
+                (channel_id,),
+            )
+
+            channel_login = _run_python(
+                [
+                    "-c",
+                    (
+                        "import json; "
+                        "from app import repos_auth; "
+                        f"session = repos_auth.verify_login('{CHANNEL_BOOTSTRAP_EMAIL}', '{CHANNEL_BOOTSTRAP_PASSWORD}'); "
+                        "print(json.dumps({'role': session['user_role'], 'platform': session['access']['platform'], 'product': session['access']['product'], 'platform_finance': session['access']['platform_finance'], 'tenant_ids': session['tenant_ids'], 'home_path': session['home_path']}))"
+                    ),
+                ],
+                env,
+            )
+            self.assertEqual(channel_login.returncode, 0, channel_login.stderr or channel_login.stdout)
+            self.assertIn('"role": "channel_admin"', channel_login.stdout)
+            self.assertIn('"platform": true', channel_login.stdout)
+            self.assertIn('"product": true', channel_login.stdout)
+            self.assertIn('"platform_finance": false', channel_login.stdout)
+            self.assertIn('"home_path": "/dashboard?', channel_login.stdout)
+
     def test_payment_anomaly_relation_stays_type_compatible_with_notifications(self) -> None:
         with temporary_database() as db_name:
             env = _subprocess_env(db_name)

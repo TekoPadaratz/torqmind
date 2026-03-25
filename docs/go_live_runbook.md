@@ -254,6 +254,87 @@ Cron recomendado após o smoke:
 
 Habilitar agent e cron somente depois dessa validação.
 
+## Validação funcional de vendas e acessos
+
+Reconciliação de vendas por grupo, sem SQL manual:
+
+```bash
+TENANT_ID=1 DATE=2026-03-07 BRANCH_ID=14122 GROUP_NAME=COMBUSTIVEIS \
+  docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T api \
+  python -m app.cli.reconcile_sales
+```
+
+Critério:
+- `totals.endpoint` deve bater com `totals.mart` e `totals.dw`;
+- `deltas.legacy_bucket_extra` mostra apenas a diferença que existiria na regra antiga de bucketização;
+- `legacy_bucket.extra_groups` e `legacy_bucket.extra_items` devem explicar o delta residual.
+
+Sessão do soberano real:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T api python - <<'PY'
+import json, os, urllib.request
+BASE='http://127.0.0.1:8000'
+password = os.environ.get('PLATFORM_MASTER_PASSWORD') or '@Crmjr105'
+payload=json.dumps({'email':'teko94@gmail.com','password': password}).encode()
+req=urllib.request.Request(BASE + '/auth/login', method='POST', headers={'Content-Type':'application/json'}, data=payload)
+with urllib.request.urlopen(req, timeout=60) as response:
+    login=json.loads(response.read().decode())
+token=login['access_token']
+me=urllib.request.Request(BASE + '/auth/me', headers={'Authorization': f'Bearer {token}'})
+with urllib.request.urlopen(me, timeout=60) as response:
+    body=json.loads(response.read().decode())
+print(json.dumps({
+    'email': body['email'],
+    'user_role': body['user_role'],
+    'home_path': body['home_path'],
+    'platform_superuser': body['access'].get('platform_superuser'),
+    'product': body['access'].get('product'),
+    'platform': body['access'].get('platform'),
+}, indent=2, ensure_ascii=False))
+PY
+```
+
+Critério:
+- `user_role = platform_master`;
+- `platform_superuser = true`;
+- `product = true`;
+- `platform = true`.
+
+Sessão do `master@torqmind.com`:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T api python - <<'PY'
+import json, os, urllib.request
+BASE='http://127.0.0.1:8000'
+password = os.environ.get('CHANNEL_BOOTSTRAP_PASSWORD') or os.environ.get('SEED_PASSWORD')
+payload=json.dumps({'email':'master@torqmind.com','password': password}).encode()
+req=urllib.request.Request(BASE + '/auth/login', method='POST', headers={'Content-Type':'application/json'}, data=payload)
+with urllib.request.urlopen(req, timeout=60) as response:
+    login=json.loads(response.read().decode())
+token=login['access_token']
+me=urllib.request.Request(BASE + '/auth/me', headers={'Authorization': f'Bearer {token}'})
+with urllib.request.urlopen(me, timeout=60) as response:
+    body=json.loads(response.read().decode())
+print(json.dumps({
+    'email': body['email'],
+    'user_role': body['user_role'],
+    'home_path': body['home_path'],
+    'platform': body['access'].get('platform'),
+    'platform_finance': body['access'].get('platform_finance'),
+    'product': body['access'].get('product'),
+    'tenant_ids': body.get('tenant_ids'),
+}, indent=2, ensure_ascii=False))
+PY
+```
+
+Critério:
+- `user_role = channel_admin`;
+- `platform = true`;
+- `platform_finance = false`;
+- `product = true` somente se houver empresas ativas vinculadas ao canal bootstrap;
+- `tenant_ids` deve listar apenas a carteira do canal.
+
 ## Rotina diária
 
 ```bash

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from app.cli import reconcile_sales as reconcile_sales_cli
 from app.cli import seed as seed_cli
 from app.db import get_conn
 from app.main import app
@@ -99,6 +100,15 @@ class PlatformBackofficeTest(unittest.TestCase):
                 """,
                 (tenant_id,),
             )
+            conn.commit()
+
+    def _refresh_sales_marts(self) -> None:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_hora")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_produtos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_grupos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_funcionarios_diaria")
             conn.commit()
 
     def _create_user(
@@ -260,6 +270,174 @@ class PlatformBackofficeTest(unittest.TestCase):
         finance_response = self.client.get("/platform/receivables?limit=10", headers=headers)
         self.assertEqual(finance_response.status_code, 403, finance_response.text)
         self.assertEqual(finance_response.json()["error"], "platform_finance_forbidden")
+
+    def test_channel_admin_gets_product_access_limited_to_channel_portfolio(self) -> None:
+        channel_id = self._create_channel("Canal Produto")
+        tenant_id = self._create_tenant("Tenant Canal Produto", channel_id=channel_id)
+        other_tenant_id = self._create_tenant("Tenant Outro Canal", channel_id=self._create_channel("Canal Secundário"))
+        branch_id = 991
+        self._create_branch(tenant_id, branch_id, "Filial 991", is_active=True)
+        self._create_branch(other_tenant_id, 992, "Filial 992", is_active=True)
+        email = self._create_user("channel_admin", "Senha@123", channel_id=channel_id)
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_grupo_produto (id_empresa, id_filial, id_grupo_produto, nome)
+                VALUES (%s, %s, 1, 'COMBUSTIVEIS')
+                ON CONFLICT (id_empresa, id_filial, id_grupo_produto)
+                DO UPDATE SET nome = EXCLUDED.nome
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.dim_produto (id_empresa, id_filial, id_produto, nome, id_grupo_produto, unidade)
+                VALUES (%s, %s, 101, 'GASOLINA COMUM', 1, 'LT')
+                ON CONFLICT (id_empresa, id_filial, id_produto)
+                DO UPDATE SET nome = EXCLUDED.nome, id_grupo_produto = EXCLUDED.id_grupo_produto, unidade = EXCLUDED.unidade
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_comprovante, saidas_entradas, total_venda, cancelado, payload
+                )
+                VALUES (%s, %s, 1, 501, %s, %s, 601, 1, 150, false, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos)
+                DO UPDATE SET data = EXCLUDED.data, data_key = EXCLUDED.data_key, total_venda = EXCLUDED.total_venda
+                """,
+                (tenant_id, branch_id, "2026-03-20 09:00:00", 20260320),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, id_grupo_produto, cfop, qtd, valor_unitario, total, desconto, custo_total, margem, payload
+                )
+                VALUES (%s, %s, 1, 501, 1, %s, 101, 1, 5102, 10, 15, 150, 0, 120, 30, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos)
+                DO UPDATE SET total = EXCLUDED.total, margem = EXCLUDED.margem
+                """,
+                (tenant_id, branch_id, 20260320),
+            )
+            conn.commit()
+        self._refresh_sales_marts()
+
+        login_response = self._login(email, "Senha@123")
+        self.assertTrue(login_response.json()["home_path"].startswith("/dashboard?"), login_response.json()["home_path"])
+
+        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+        me_response = self.client.get("/auth/me", headers=headers)
+        self.assertEqual(me_response.status_code, 200, me_response.text)
+        me_body = me_response.json()
+        self.assertEqual(me_body["user_role"], "channel_admin")
+        self.assertTrue(bool(me_body["access"]["platform"]))
+        self.assertTrue(bool(me_body["access"]["product"]))
+        self.assertFalse(bool(me_body["access"]["platform_finance"]))
+        self.assertIn(tenant_id, me_body["tenant_ids"])
+        self.assertNotIn(other_tenant_id, me_body["tenant_ids"])
+        self.assertTrue(any(int(company["id_empresa"]) == tenant_id for company in me_body["product_companies"]))
+
+        filiais_ok = self.client.get(f"/bi/filiais?id_empresa={tenant_id}", headers=headers)
+        self.assertEqual(filiais_ok.status_code, 200, filiais_ok.text)
+        filiais_forbidden = self.client.get(f"/bi/filiais?id_empresa={other_tenant_id}", headers=headers)
+        self.assertEqual(filiais_forbidden.status_code, 403, filiais_forbidden.text)
+
+        sales_response = self.client.get(
+            f"/bi/sales/overview?dt_ini=2026-03-20&dt_fim=2026-03-20&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(sales_response.status_code, 200, sales_response.text)
+        self.assertEqual(float(sales_response.json()["kpis"]["faturamento"]), 150.0)
+
+    def test_sales_top_groups_keep_operational_group_without_combustiveis_bucket_leak(self) -> None:
+        tenant_id = self._create_tenant("Tenant Sales Reconcile")
+        branch_id = 997
+        self._create_branch(tenant_id, branch_id, "Filial 997", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_grupo_produto (id_empresa, id_filial, id_grupo_produto, nome)
+                VALUES
+                  (%s, %s, 10, 'COMBUSTIVEIS'),
+                  (%s, %s, 11, 'FILTROS DE COMBUSTIVEIS')
+                ON CONFLICT (id_empresa, id_filial, id_grupo_produto)
+                DO UPDATE SET nome = EXCLUDED.nome
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.dim_produto (id_empresa, id_filial, id_produto, nome, id_grupo_produto, unidade)
+                VALUES
+                  (%s, %s, 201, 'GASOLINA COMUM', 10, 'LT'),
+                  (%s, %s, 202, 'FILTRO DE COMBUSTIVEL', 11, 'UN')
+                ON CONFLICT (id_empresa, id_filial, id_produto)
+                DO UPDATE SET nome = EXCLUDED.nome, id_grupo_produto = EXCLUDED.id_grupo_produto, unidade = EXCLUDED.unidade
+                """,
+                (tenant_id, branch_id, tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_comprovante, saidas_entradas, total_venda, cancelado, payload
+                )
+                VALUES
+                  (%s, %s, 1, 701, %s, %s, 801, 1, 115336.56, false, '{}'::jsonb),
+                  (%s, %s, 1, 702, %s, %s, 802, 1, 89.00, false, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos)
+                DO UPDATE SET data = EXCLUDED.data, data_key = EXCLUDED.data_key, total_venda = EXCLUDED.total_venda
+                """,
+                (tenant_id, branch_id, "2026-03-07 08:00:00", 20260307, tenant_id, branch_id, "2026-03-07 09:00:00", 20260307),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, id_grupo_produto, cfop, qtd, valor_unitario, total, desconto, custo_total, margem, payload
+                )
+                VALUES
+                  (%s, %s, 1, 701, 1, %s, 201, 10, 5102, 368, 313.414565, 115336.56, 0, 100000, 15336.56, '{}'::jsonb),
+                  (%s, %s, 1, 702, 1, %s, 202, 11, 5102, 1, 89, 89.00, 0, 40, 49, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos)
+                DO UPDATE SET total = EXCLUDED.total, margem = EXCLUDED.margem
+                """,
+                (tenant_id, branch_id, 20260307, tenant_id, branch_id, 20260307),
+            )
+            conn.commit()
+        self._refresh_sales_marts()
+
+        headers = self._auth_headers(owner_email, "Senha@123")
+        response = self.client.get(
+            f"/bi/sales/overview?dt_ini=2026-03-07&dt_fim=2026-03-07&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        top_groups = {row["grupo_nome"]: float(row["faturamento"]) for row in response.json()["top_groups"]}
+        self.assertEqual(top_groups["COMBUSTIVEIS"], 115336.56)
+        self.assertEqual(top_groups["FILTROS DE COMBUSTIVEIS"], 89.0)
+        self.assertNotIn("Combustíveis", top_groups)
+
+        reconciliation = reconcile_sales_cli.reconcile_sales(
+            tenant_id=tenant_id,
+            target_date=date(2026, 3, 7),
+            branch_id=branch_id,
+            group="COMBUSTIVEIS",
+            detail_limit=5,
+        )
+        self.assertEqual(reconciliation["totals"]["source_operational"], 0.0)
+        self.assertEqual(reconciliation["totals"]["dw"], 115336.56)
+        self.assertEqual(reconciliation["totals"]["mart"], 115336.56)
+        self.assertEqual(reconciliation["totals"]["endpoint"], 115336.56)
+        self.assertEqual(reconciliation["legacy_bucket"]["total"], 115425.56)
+        self.assertEqual(reconciliation["deltas"]["legacy_bucket_extra"], 89.0)
+        self.assertEqual(reconciliation["legacy_bucket"]["extra_groups"][0]["grupo_nome"], "FILTROS DE COMBUSTIVEIS")
 
     def test_platform_master_scope_and_product_user_auto_scope_use_latest_operational_date(self) -> None:
         master_email = self._create_user("platform_master", "Senha@123")
