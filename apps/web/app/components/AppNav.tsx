@@ -7,6 +7,7 @@ import { startTransition, useEffect, useMemo, useState } from 'react';
 
 import { apiGet } from '../lib/api';
 import { clearAuth } from '../lib/auth';
+import { getVisibleBranches, resolveAppliedBranchIds, uniqueBranchIds } from '../lib/branch-state.mjs';
 import { clearSessionCache, loadSession, readCachedSession } from '../lib/session';
 import {
   PRODUCT_LINKS,
@@ -28,13 +29,6 @@ type ScopeDraft = {
   id_filiais: string[];
   selectionMode: 'all' | 'selected';
 };
-
-function uniqueBranchIds(values: Array<string | number | null | undefined>) {
-  return Array.from(new Set(values
-    .map((value) => String(value ?? '').trim())
-    .filter((value) => /^\d+$/.test(value) && Number(value) > 0)))
-    .sort((left, right) => Number(left) - Number(right));
-}
 
 function scopeFromSession(searchParams: URLSearchParams, session: any) {
   const fallback = session?.default_scope || {};
@@ -106,6 +100,7 @@ export default function AppNav({
     id_filiais: [],
     selectionMode: 'all',
   });
+  const [branchSearch, setBranchSearch] = useState('');
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [unread, setUnread] = useState(initialUnread ?? 0);
@@ -143,6 +138,10 @@ export default function AppNav({
 
   const scopeControls = useMemo(() => getScopeControls(session), [session]);
   const companies = useMemo(() => session?.product_companies || [], [session]);
+  const visibleBranches = useMemo(
+    () => getVisibleBranches(branches, branchSearch) as BranchOption[],
+    [branchSearch, branches],
+  );
 
   useEffect(() => {
     const nextBranchIds = uniqueBranchIds(activeScope.id_filiais || []);
@@ -240,11 +239,12 @@ export default function AppNav({
 
   const applyFilters = () => {
     const companyId = draft.id_empresa || activeScope.id_empresa || '';
-    const branchIds = scopeControls.branchLocked
-      ? uniqueBranchIds([session?.id_filial])
-      : draft.selectionMode === 'all'
-        ? []
-        : uniqueBranchIds(draft.id_filiais);
+    const branchIds = resolveAppliedBranchIds({
+      branchLocked: scopeControls.branchLocked,
+      sessionBranchId: session?.id_filial,
+      selectionMode: draft.selectionMode,
+      selectedBranchIds: draft.id_filiais,
+    });
 
     const params = buildScopeSearchParams({
       dt_ini: draft.dt_ini,
@@ -400,10 +400,24 @@ export default function AppNav({
                 </label>
               ) : null}
 
+              <input
+                className="input productBranchSearchInput"
+                type="search"
+                value={branchSearch}
+                placeholder="Buscar filial"
+                aria-label="Buscar filiais"
+                autoComplete="off"
+                disabled={loadingBranches || !branches.length}
+                onChange={(event) => setBranchSearch(event.target.value)}
+              />
+
               <div className={`productBranchChecklist ${allBranchesChecked ? 'is-muted' : ''}`}>
                 {loadingBranches ? <div className="muted">Carregando filiais...</div> : null}
                 {!loadingBranches && !branches.length ? <div className="muted">Nenhuma filial disponível para esta empresa.</div> : null}
-                {branches.map((branch) => {
+                {!loadingBranches && !!branches.length && !visibleBranches.length ? (
+                  <div className="muted">Nenhuma filial encontrada para essa busca.</div>
+                ) : null}
+                {visibleBranches.map((branch) => {
                   const branchId = String(branch.id_filial);
                   const checked = scopeControls.branchLocked
                     ? branchId === String(session?.id_filial ?? '')

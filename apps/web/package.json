@@ -6,9 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --test app/lib/api-base.test.mjs app/lib/product-scope.test.mjs",
+    "test": "node --test app/lib/api-base.test.mjs app/lib/product-scope.test.mjs app/lib/branch-state.test.mjs",
     "test:api-base": "node --test app/lib/api-base.test.mjs",
-    "test:product-scope": "node --test app/lib/product-scope.test.mjs"
+    "test:product-scope": "node --test app/lib/product-scope.test.mjs",
+    "test:branch-state": "node --test app/lib/branch-state.test.mjs"
   },
   "dependencies": {
     "next": "14.2.5",

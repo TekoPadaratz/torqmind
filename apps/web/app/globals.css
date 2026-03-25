@@ -395,6 +395,14 @@ body.product-shell .container {
   gap: 10px;
 }
 
+.productBranchSearchInput {
+  min-height: 44px;
+}
+
+.productBranchSearchInput::placeholder {
+  color: var(--muted);
+}
+
 .productBranchChecklist {
   display: grid;
   gap: 8px;
