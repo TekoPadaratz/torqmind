@@ -304,7 +304,7 @@ export default function Dashboard() {
     {
       title: 'Caixa',
       value: `${String(cashHistorical?.source_status || 'unavailable')} / ${String(cashLiveNow?.source_status || 'unavailable')}`,
-      detail: 'Histórico do período e monitor de agora são exibidos separadamente para evitar falso zero.',
+      detail: `Histórico do período e monitor de agora ficam separados para evitar falso zero; ${Number(cashLiveNow?.kpis?.caixas_stale || 0)} turno(s) stale ficam fora do ao vivo.`,
     },
   ];
 
@@ -362,7 +362,7 @@ export default function Dashboard() {
           <article className="card kpi">
             <div className="label">Caixa sob pressão</div>
             <div className="value">{loading ? '...' : formatCurrency(caixaRisco)}</div>
-            <div className="muted">Recebíveis e obrigações vencidas que já pedem ação comercial e financeira.</div>
+            <div className="muted">Recebíveis e obrigações vencidas. O monitor de turnos e caixas abertos segue no módulo de Caixa.</div>
           </article>
         </section>
 

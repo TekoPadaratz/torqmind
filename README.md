@@ -365,6 +365,13 @@ cp config.example.yaml config.local.yaml
 Em produção Windows, o diretório final do cliente deve conter apenas `config.enc`.  
 Use YAML apenas para desenvolvimento local ou migração para `config.enc`.
 
+Para manter a verdade operacional de Caixa e Antifraude:
+
+- `datasets.usuarios.enabled = true`
+- `datasets.turnos.enabled = true`
+
+Se `USUARIOS` ou `TURNOS` ficarem desabilitados, o TorqMind perde a resolução correta do operador de caixa e passa a depender de fallback.
+
 ---
 
 ## Jarvis IA (Responses API) com custo controlado
@@ -632,6 +639,27 @@ Exemplo real validado nesta release:
 - bucket legado = `115425.56`;
 - delta do bucket legado = `89.00`;
 - origem do delta: item `FILTRO DE COMBUSTIVEL TECFIL PSC75` no grupo `FILTROS DE COMBUSTIVEIS`, comprovante `3435815`.
+
+---
+
+## Repair de Caixa / Antifraude
+
+Documento operacional completo:
+- `docs/cash_fraud_operational_truth.md`
+
+Comandos canônicos por tenant:
+
+```bash
+TENANT_ID=1 make operational-truth-diagnose
+TENANT_ID=1 SCOPE=cash-fraud make operational-truth-purge
+TENANT_ID=1 REF_DATE=2026-03-25 make operational-truth-rebuild
+TENANT_ID=1 DT_INI=2026-03-01 DT_FIM=2026-03-25 make operational-truth-validate
+```
+
+Notas:
+- `operational-truth-purge` limpa apenas o domínio selecionado e reseta os watermarks necessários do tenant.
+- `INCLUDE_STAGING=1` deve ser usado apenas quando o staging do tenant estiver corrompido e a reingestão da fonte for necessária.
+- `WITH_RISK=1` no rebuild adiciona o trilho modelado de risco depois do rebuild operacional.
 
 ---
 

@@ -157,6 +157,7 @@ def fraud_overview(
         "by_day": repos_mart.fraud_series(role, tenant, filial, dt_ini, dt_fim),
         "top_users": repos_mart.fraud_top_users(role, tenant, filial, dt_ini, dt_fim, limit=10),
         "last_events": repos_mart.fraud_last_events(role, tenant, filial, limit=30),
+        "definitions": repos_mart.fraud_definitions(),
         "risk_kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
         "risk_by_day": repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim),
         "risk_window": repos_mart.risk_data_window(role, tenant, filial),

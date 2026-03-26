@@ -813,6 +813,8 @@ class PlatformBackofficeTest(unittest.TestCase):
                 """,
                 (tenant_id, branch_id),
             )
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_caixa_turno_aberto")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.alerta_caixa_aberto")
             conn.execute("REFRESH MATERIALIZED VIEW mart.agg_pagamentos_turno")
             conn.commit()
 
@@ -830,8 +832,8 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertTrue(body["historical"]["top_turnos"])
         self.assertEqual(body["source_status"], body["historical"]["source_status"])
 
-    def test_cash_overview_prefers_employee_name_when_cash_user_dimension_is_missing(self) -> None:
-        tenant_id = self._create_tenant("Tenant Cash Employee Fallback")
+    def test_cash_overview_uses_turn_user_identity_without_employee_fallback(self) -> None:
+        tenant_id = self._create_tenant("Tenant Cash User Truth")
         branch_id = 1000
         self._create_branch(tenant_id, branch_id, "Filial 1000", is_active=True)
         owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
@@ -915,6 +917,8 @@ class PlatformBackofficeTest(unittest.TestCase):
                 """,
                 (tenant_id, branch_id, tenant_id, branch_id, today_key),
             )
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_caixa_turno_aberto")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.alerta_caixa_aberto")
             conn.execute("REFRESH MATERIALIZED VIEW mart.agg_pagamentos_turno")
             conn.commit()
 
@@ -936,8 +940,109 @@ class PlatformBackofficeTest(unittest.TestCase):
             if int(item.get("id_turno") or 0) == 52
         ]
 
-        self.assertIn("Maria Operadora", historical_labels)
-        self.assertIn("Maria Operadora", live_labels)
+        self.assertIn("Operador 910", historical_labels)
+        self.assertIn("Operador 910", live_labels)
+        self.assertIn("TURNOS.ID_USUARIOS", body["definitions"]["operator"])
+
+    def test_fraud_overview_aligns_cancelamento_with_cashier_operator_from_turn(self) -> None:
+        tenant_id = self._create_tenant("Tenant Fraud Cashier Truth")
+        branch_id = 1003
+        self._create_branch(tenant_id, branch_id, "Filial 1003", is_active=True)
+        owner_email = self._create_user("tenant_admin", "Senha@123", tenant_id=tenant_id)
+        headers = self._auth_headers(owner_email, "Senha@123")
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_usuario_caixa (id_empresa, id_filial, id_usuario, nome, payload)
+                VALUES (%s, %s, 910, 'Operadora do Caixa', '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_usuario) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.dim_funcionario (id_empresa, id_filial, id_funcionario, nome)
+                VALUES (%s, %s, 777, 'Frentista da Venda')
+                ON CONFLICT (id_empresa, id_filial, id_funcionario) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_caixa_turno (
+                  id_empresa, id_filial, id_turno, id_db, id_usuario, abertura_ts,
+                  fechamento_ts, data_key_abertura, data_key_fechamento,
+                  encerrante_fechamento, is_aberto, status_raw, payload
+                )
+                VALUES (%s, %s, 61, 1, 910, TIMESTAMPTZ '2026-03-05 08:00:00+00', TIMESTAMPTZ '2026-03-05 19:00:00+00', 20260305, 20260305, 901, false, 'CLOSED', '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_turno) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_comprovante (
+                  id_empresa, id_filial, id_db, id_comprovante, data, data_key,
+                  id_usuario, id_turno, valor_total, cancelado, situacao, payload
+                )
+                VALUES (%s, %s, 1, 61001, TIMESTAMPTZ '2026-03-05 12:00:00+00', 20260305, 111, 61, 300, true, 1, '{"CFOP":"5102"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda (
+                  id_empresa, id_filial, id_db, id_movprodutos, data, data_key,
+                  id_usuario, id_cliente, id_comprovante, id_turno, saidas_entradas,
+                  total_venda, cancelado, payload
+                )
+                VALUES (%s, %s, 1, 61001, TIMESTAMPTZ '2026-03-05 11:50:00+00', 20260305, 111, NULL, 61001, 61, 1, 300, true, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO dw.fact_venda_item (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key,
+                  id_produto, id_grupo_produto, id_local_venda, id_funcionario, qtd,
+                  valor_unitario, total, desconto, custo_total, margem, cfop, payload
+                )
+                VALUES (%s, %s, 1, 61001, 1, 20260305, 1, NULL, NULL, 777, 60, 5, 300, 0, 0, 0, 5102, '{}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos) DO NOTHING
+                """,
+                (tenant_id, branch_id),
+            )
+            conn.execute("REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.fraude_cancelamentos_eventos")
+            conn.commit()
+
+        fraud_response = self.client.get(
+            f"/bi/fraud/overview?dt_ini=2026-03-01&dt_fim=2026-03-10&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(fraud_response.status_code, 200, fraud_response.text)
+        fraud_body = fraud_response.json()
+
+        cash_response = self.client.get(
+            f"/bi/cash/overview?dt_ini=2026-03-01&dt_fim=2026-03-10&id_empresa={tenant_id}&id_filial={branch_id}",
+            headers=headers,
+        )
+        self.assertEqual(cash_response.status_code, 200, cash_response.text)
+        cash_body = cash_response.json()
+
+        self.assertEqual(int(fraud_body["kpis"]["cancelamentos"]), 1)
+        self.assertEqual(float(fraud_body["kpis"]["valor_cancelado"]), 300.0)
+        self.assertEqual(fraud_body["top_users"][0]["usuario_label"], "Operadora do Caixa")
+        self.assertEqual(fraud_body["last_events"][0]["usuario_label"], "Operadora do Caixa")
+        self.assertEqual(fraud_body["last_events"][0]["usuario_source"], "turno")
+        self.assertIn("TURNOS.ID_USUARIOS", fraud_body["definitions"]["cashier_operator"])
+
+        self.assertEqual(float(cash_body["historical"]["kpis"]["total_cancelamentos"]), 300.0)
+        self.assertEqual(int(cash_body["historical"]["kpis"]["qtd_cancelamentos"]), 1)
+        self.assertEqual(cash_body["historical"]["cancelamentos"][0]["usuario_label"], "Operadora do Caixa")
 
     def test_branch_visibility_respects_platform_master_owner_and_manager(self) -> None:
         tenant_id = self._create_tenant("Tenant Branch Visibility")

@@ -118,7 +118,7 @@ export default function CustomersPage() {
       <AppNav title="Análise de Clientes" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Recorrência, churn e oportunidades de reativação da base.</div>
+          <div className="muted">Recorrência, churn e oportunidades de reativação da base, com leitura própria de comportamento do cliente e sem misturar sinais de caixa ou cancelamento operacional.</div>
           {!loading ? <div style={{ marginTop: 10, fontWeight: 700 }}>{churnCoverageLabel(churnSnapshot)}</div> : null}
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}

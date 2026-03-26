@@ -71,9 +71,11 @@ export default function CashPage() {
 
   const historical = data?.historical || {};
   const liveNow = data?.live_now || {};
+  const definitions = data?.definitions || {};
   const kpis = historical?.kpis || data?.kpis || {};
   const liveKpis = liveNow?.kpis || {};
   const openBoxes = liveNow?.open_boxes || data?.open_boxes || [];
+  const staleBoxes = liveNow?.stale_boxes || data?.stale_boxes || [];
   const paymentMix = historical?.payment_mix || data?.payment_mix || [];
   const cancelamentos = historical?.cancelamentos || data?.cancelamentos || [];
   const alerts = liveNow?.alerts || data?.alerts || [];
@@ -97,6 +99,14 @@ export default function CashPage() {
           <div className="muted">Painel de caixa com visão histórica do período filtrado e monitor operacional em tempo real, sem misturar os dois conceitos.</div>
           {!loading ? <div style={{ marginTop: 10, fontSize: 18, fontWeight: 700 }}>{historical?.summary || data?.summary}</div> : null}
           {!loading ? <div className="muted" style={{ marginTop: 8 }}>{liveNow?.summary || 'Monitor em tempo real indisponível no momento.'}</div> : null}
+        </div>
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="muted" style={{ display: 'grid', gap: 8 }}>
+            <div><strong>Caixa aberto:</strong> {definitions.live_now || 'TURNOS.ENCERRANTEFECHAMENTO = 0 com atividade operacional recente.'}</div>
+            <div><strong>Encerramento:</strong> {definitions.closing_rule || 'Quando ENCERRANTEFECHAMENTO recebe valor diferente de 0, o turno deixa de ser tratado como aberto.'}</div>
+            <div><strong>Operador:</strong> {definitions.operator || 'O operador exibido vem do usuário do turno.'}</div>
+            <div><strong>Agregados:</strong> {definitions.aggregates || 'Vendas, cancelamentos e pagamentos usam o mesmo turno operacional.'}</div>
+          </div>
         </div>
 
         {error ? <div className="card errorCard">{error}</div> : null}
@@ -122,6 +132,14 @@ export default function CashPage() {
           <div className="card kpi col-3">
             <div className="label">Caixas abertos agora</div>
             <div className="value">{loading ? '...' : Number(liveKpis.caixas_abertos || 0)}</div>
+          </div>
+          <div className="card kpi col-3">
+            <div className="label">Abertos na fonte</div>
+            <div className="value">{loading ? '...' : Number(liveKpis.caixas_abertos_fonte || 0)}</div>
+          </div>
+          <div className="card kpi col-3">
+            <div className="label">Stale isolados</div>
+            <div className="value">{loading ? '...' : Number(liveKpis.caixas_stale || 0)}</div>
           </div>
           <div className="card kpi col-3">
             <div className="label">Acima de 24h</div>
@@ -214,6 +232,12 @@ export default function CashPage() {
 
           <div className="card col-6">
             <h2>Caixas abertos agora</h2>
+            {!loading ? (
+              <div className="muted" style={{ marginBottom: 8 }}>
+                Monitor ao vivo em {formatDateTime(liveKpis.snapshot_ts)}.
+                {' '}Somente turnos abertos com atividade recente entram nesta lista; os stale ficam separados.
+              </div>
+            ) : null}
             {!loading && liveStatus === 'unavailable' ? (
               <EmptyState
                 title="Monitor operacional indisponível."
@@ -288,6 +312,45 @@ export default function CashPage() {
           </div>
 
           <div className="card col-6">
+            <h2>Turnos stale isolados do ao vivo</h2>
+            {!loading ? (
+              <div className="muted" style={{ marginBottom: 8 }}>
+                Estes turnos seguem abertos na fonte, mas ficaram sem atividade observada nos últimos {Number(liveKpis.stale_window_hours || 0)}h e não entram na contagem ao vivo.
+              </div>
+            ) : null}
+            {!loading && !staleBoxes.length ? (
+              <EmptyState
+                title="Nenhum turno stale neste momento."
+                detail="Quando um caixa fica aberto na fonte sem atividade recente, ele aparece aqui para diagnóstico e reparo."
+              />
+            ) : null}
+            {staleBoxes.length ? (
+              <table className="table compact">
+                <thead>
+                  <tr>
+                    <th>Filial</th>
+                    <th>Caixa</th>
+                    <th>Operador</th>
+                    <th>Última atividade</th>
+                    <th>Sem movimento</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {staleBoxes.map((item: any) => (
+                    <tr key={`${item.id_filial}-${item.id_turno}`}>
+                      <td>{item.filial_label || formatFilialLabel(item.id_filial, item.filial_nome)}</td>
+                      <td>Caixa {item.id_turno}</td>
+                      <td>{item.usuario_label || item.usuario_nome || 'Operador não identificado'}</td>
+                      <td>{formatDateTime(item.last_activity_ts)}</td>
+                      <td>{formatHoursLabel(item.horas_sem_movimento)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+          </div>
+
+          <div className="card col-6">
             <h2>Alertas de caixa aberto</h2>
             {!loading && !alerts.length ? (
               <EmptyState
@@ -319,6 +382,11 @@ export default function CashPage() {
 
           <div className="card col-6">
             <h2>Cancelamentos do período</h2>
+            {!loading ? (
+              <div className="muted" style={{ marginBottom: 8 }}>
+                O operador desta lista é o operador de caixa do turno, não o frentista ou colaborador da venda.
+              </div>
+            ) : null}
             {!loading && !cancelamentos.length ? (
               <EmptyState
                 title="Sem cancelamentos relevantes no histórico do período."

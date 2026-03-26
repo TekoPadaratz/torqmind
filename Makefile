@@ -8,7 +8,7 @@ ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
 
-.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily
+.PHONY: setup up down logs migrate resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -68,6 +68,18 @@ analyze-hot-tables:
 
 reconcile-sales:
 	@$(COMPOSE) exec -T api python -m app.cli.reconcile_sales --tenant-id "$${TENANT_ID:?missing TENANT_ID}" --date "$${DATE:?missing DATE}" $${BRANCH_ID:+--branch-id "$${BRANCH_ID}"} $${GROUP:+--group "$${GROUP}"} $${DETAIL_LIMIT:+--detail-limit "$${DETAIL_LIMIT}"}
+
+operational-truth-diagnose:
+	@$(COMPOSE) exec -T api python -m app.cli.operational_truth diagnose --tenant-id "$${TENANT_ID:?missing TENANT_ID}" $${BRANCH_ID:+--branch-id "$${BRANCH_ID}"} $${DT_INI:+--dt-ini "$${DT_INI}"} $${DT_FIM:+--dt-fim "$${DT_FIM}"}
+
+operational-truth-purge:
+	@$(COMPOSE) exec -T api python -m app.cli.operational_truth purge --tenant-id "$${TENANT_ID:?missing TENANT_ID}" $${BRANCH_ID:+--branch-id "$${BRANCH_ID}"} $${SCOPE:+--scope "$${SCOPE}"} $${INCLUDE_STAGING:+--include-staging} $${REF_DATE:+--ref-date "$${REF_DATE}"} $${DRY_RUN:+--dry-run}
+
+operational-truth-rebuild:
+	@$(COMPOSE) exec -T api python -m app.cli.operational_truth rebuild --tenant-id "$${TENANT_ID:?missing TENANT_ID}" $${REF_DATE:+--ref-date "$${REF_DATE}"} $${WITH_RISK:+--with-risk}
+
+operational-truth-validate:
+	@$(COMPOSE) exec -T api python -m app.cli.operational_truth validate --tenant-id "$${TENANT_ID:?missing TENANT_ID}" $${BRANCH_ID:+--branch-id "$${BRANCH_ID}"} $${DT_INI:+--dt-ini "$${DT_INI}"} $${DT_FIM:+--dt-fim "$${DT_FIM}"}
 
 platform-billing-daily:
 	@$(COMPOSE) exec -T api python -m app.cli.platform_billing daily --as-of "$${AS_OF:-}" --competence-month "$${COMPETENCE_MONTH:-}" --months-ahead "$${MONTHS_AHEAD:-0}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"}

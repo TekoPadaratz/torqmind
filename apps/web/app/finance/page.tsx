@@ -138,7 +138,7 @@ export default function FinancePage() {
       <AppNav title="Financeiro" userLabel={userLabel} />
       <div className="container">
         <div className="card">
-          <div className="muted">Cockpit financeiro para decidir cobrança, renegociação, concentração e pressão imediata de caixa sem ruído operacional.</div>
+          <div className="muted">Cockpit financeiro para decidir cobrança, renegociação, concentração e pressão imediata de caixa sem misturar turnos/caixas abertos do módulo operacional.</div>
           {!loading ? <div style={{ marginTop: 10, fontWeight: 700 }}>{financeCoverageLabel(aging)}</div> : null}
         </div>
         {error ? <div className="card errorCard">{error}</div> : null}

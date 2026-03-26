@@ -62,6 +62,11 @@ cp config.example.yaml config.local.yaml
 Para desenvolvimento, a CLI pode continuar usando `config.local.yaml`.
 Para produção Windows, use `config.enc`.
 
+Para a semântica correta de Caixa e Antifraude, mantenha sempre habilitados:
+
+- `datasets.usuarios.enabled = true`
+- `datasets.turnos.enabled = true`
+
 Campos principais:
 - `sqlserver.dsn` **ou** `sqlserver.server/port/database/user/driver`
 - `api.base_url`

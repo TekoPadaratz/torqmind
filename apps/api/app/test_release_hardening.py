@@ -1044,6 +1044,285 @@ class ReleaseHardeningTest(unittest.TestCase):
                 self.assertIsNotNone(indexdef, index_name)
                 self.assertIn("CREATE UNIQUE INDEX", str(indexdef).upper(), index_name)
 
+    def test_operational_truth_cli_can_purge_rebuild_and_validate_cash_fraud_domain(self) -> None:
+        with temporary_database() as db_name:
+            env = _subprocess_env(db_name)
+
+            migrate = _run_python(["-m", "app.cli.migrate"], env)
+            self.assertEqual(migrate.returncode, 0, migrate.stderr or migrate.stdout)
+
+            _execute_sql(
+                db_name,
+                """
+                INSERT INTO app.tenants (id_empresa, nome, ingest_key)
+                VALUES (1, 'Tenant Truth', gen_random_uuid())
+                ON CONFLICT (id_empresa)
+                DO UPDATE SET
+                  nome = EXCLUDED.nome,
+                  ingest_key = COALESCE(app.tenants.ingest_key, EXCLUDED.ingest_key);
+
+                INSERT INTO auth.filiais (id_empresa, id_filial, nome, cnpj, is_active, valid_from)
+                VALUES (1, 1, 'Filial Truth', '12345678000199', true, DATE '2026-03-01')
+                ON CONFLICT (id_empresa, id_filial)
+                DO UPDATE SET
+                  nome = EXCLUDED.nome,
+                  cnpj = EXCLUDED.cnpj,
+                  is_active = EXCLUDED.is_active,
+                  valid_from = EXCLUDED.valid_from;
+
+                INSERT INTO stg.filiais (id_empresa, id_filial, payload)
+                VALUES (1, 1, '{"ID_FILIAL":1,"NOMEFILIAL":"Filial Truth","CNPJ":"12345678000199"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial)
+                DO UPDATE SET payload = EXCLUDED.payload, received_at = now();
+
+                INSERT INTO stg.usuarios (id_empresa, id_filial, id_usuario, dt_evento, payload)
+                VALUES
+                  (1, 1, 910, TIMESTAMPTZ '2026-03-25 07:50:00+00', '{"ID_USUARIO":910,"NOMEUSUARIOS":"Operadora do Caixa"}'::jsonb),
+                  (1, 1, 911, TIMESTAMPTZ '2026-03-25 09:50:00+00', '{"ID_USUARIO":911,"NOMEUSUARIOS":"Operador Encerrado"}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_usuario)
+                DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento, received_at = now();
+
+                INSERT INTO stg.turnos (id_empresa, id_filial, id_turno, dt_evento, payload)
+                VALUES
+                  (
+                    1,
+                    1,
+                    71,
+                    TIMESTAMPTZ '2026-03-25 08:00:00+00',
+                    '{
+                      "ID_DB":1,
+                      "ID_USUARIOS":910,
+                      "DATA":"2026-03-25 08:00:00",
+                      "ENCERRANTEFECHAMENTO":0,
+                      "STATUSTURNO":"ABERTO"
+                    }'::jsonb
+                  ),
+                  (
+                    1,
+                    1,
+                    72,
+                    TIMESTAMPTZ '2026-03-25 10:00:00+00',
+                    '{
+                      "ID_DB":1,
+                      "ID_USUARIOS":910,
+                      "DATA":"2026-03-25 10:00:00",
+                      "DATAFECHAMENTO":"2026-03-25 18:00:00",
+                      "ENCERRANTEFECHAMENTO":901,
+                      "STATUSTURNO":"FECHADO"
+                    }'::jsonb
+                  )
+                ON CONFLICT (id_empresa, id_filial, id_turno)
+                DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento, received_at = now();
+
+                INSERT INTO stg.comprovantes (id_empresa, id_filial, id_db, id_comprovante, dt_evento, payload)
+                VALUES
+                  (
+                    1,
+                    1,
+                    1,
+                    71001,
+                    TIMESTAMPTZ '2026-03-25 09:00:00+00',
+                    '{
+                      "ID_FILIAL":1,
+                      "ID_DB":1,
+                      "ID_COMPROVANTE":71001,
+                      "ID_USUARIOS":111,
+                      "ID_TURNOS":71,
+                      "VLRTOTAL":180,
+                      "REFERENCIA":971001,
+                      "CANCELADO":0,
+                      "SITUACAO":1,
+                      "CFOP":"5102",
+                      "DATA":"2026-03-25 09:00:00"
+                    }'::jsonb
+                  ),
+                  (
+                    1,
+                    1,
+                    1,
+                    72001,
+                    TIMESTAMPTZ '2026-03-25 17:00:00+00',
+                    '{
+                      "ID_FILIAL":1,
+                      "ID_DB":1,
+                      "ID_COMPROVANTE":72001,
+                      "ID_USUARIOS":111,
+                      "ID_TURNOS":72,
+                      "VLRTOTAL":300,
+                      "REFERENCIA":972001,
+                      "CANCELADO":1,
+                      "SITUACAO":1,
+                      "CFOP":"5102",
+                      "DATA":"2026-03-25 17:00:00"
+                    }'::jsonb
+                  )
+                ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante)
+                DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento, received_at = now();
+
+                INSERT INTO stg.movprodutos (id_empresa, id_filial, id_db, id_movprodutos, dt_evento, payload)
+                VALUES
+                  (
+                    1,
+                    1,
+                    1,
+                    71001,
+                    TIMESTAMPTZ '2026-03-25 09:00:00+00',
+                    '{
+                      "ID_FILIAL":1,
+                      "ID_DB":1,
+                      "ID_MOVPRODUTOS":71001,
+                      "ID_COMPROVANTE":71001,
+                      "ID_USUARIOS":111,
+                      "ID_TURNOS":71,
+                      "TOTALVENDA":180,
+                      "DATA":"2026-03-25 09:00:00"
+                    }'::jsonb
+                  ),
+                  (
+                    1,
+                    1,
+                    1,
+                    72001,
+                    TIMESTAMPTZ '2026-03-25 17:00:00+00',
+                    '{
+                      "ID_FILIAL":1,
+                      "ID_DB":1,
+                      "ID_MOVPRODUTOS":72001,
+                      "ID_COMPROVANTE":72001,
+                      "ID_USUARIOS":111,
+                      "ID_TURNOS":72,
+                      "TOTALVENDA":300,
+                      "DATA":"2026-03-25 17:00:00"
+                    }'::jsonb
+                  )
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos)
+                DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento, received_at = now();
+
+                INSERT INTO stg.itensmovprodutos (
+                  id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, dt_evento, payload
+                )
+                VALUES
+                  (
+                    1,
+                    1,
+                    1,
+                    71001,
+                    1,
+                    TIMESTAMPTZ '2026-03-25 09:00:00+00',
+                    '{"ID_PRODUTOS":1,"ID_FUNCIONARIOS":777,"QTDE":36,"VLRUNITARIO":5,"TOTAL":180,"CFOP":5102}'::jsonb
+                  ),
+                  (
+                    1,
+                    1,
+                    1,
+                    72001,
+                    1,
+                    TIMESTAMPTZ '2026-03-25 17:00:00+00',
+                    '{"ID_PRODUTOS":1,"ID_FUNCIONARIOS":777,"QTDE":60,"VLRUNITARIO":5,"TOTAL":300,"CFOP":5102}'::jsonb
+                  )
+                ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos)
+                DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento, received_at = now();
+
+                INSERT INTO stg.formas_pgto_comprovantes (
+                  id_empresa, id_filial, id_referencia, tipo_forma, dt_evento, payload
+                )
+                VALUES
+                  (1, 1, 971001, 28, TIMESTAMPTZ '2026-03-25 09:01:00+00', '{"ID_FILIAL":1,"TIPO_FORMA":28,"VALOR":180}'::jsonb),
+                  (1, 1, 972001, 28, TIMESTAMPTZ '2026-03-25 17:01:00+00', '{"ID_FILIAL":1,"TIPO_FORMA":28,"VALOR":300}'::jsonb)
+                ON CONFLICT (id_empresa, id_filial, id_referencia, tipo_forma)
+                DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento, received_at = now();
+                """,
+            )
+
+            rebuild = _run_python(
+                ["-m", "app.cli.operational_truth", "rebuild", "--tenant-id", "1", "--ref-date", "2026-03-25"],
+                env,
+            )
+            self.assertEqual(rebuild.returncode, 0, rebuild.stderr or rebuild.stdout)
+
+            validate = _run_python(
+                [
+                    "-m",
+                    "app.cli.operational_truth",
+                    "validate",
+                    "--tenant-id",
+                    "1",
+                    "--dt-ini",
+                    "2026-03-25",
+                    "--dt-fim",
+                    "2026-03-25",
+                ],
+                env,
+            )
+            self.assertEqual(validate.returncode, 0, validate.stderr or validate.stdout)
+            validate_body = json.loads(validate.stdout)
+            self.assertTrue(validate_body["ok"], validate.stdout)
+
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM dw.fact_caixa_turno WHERE id_empresa = 1 AND is_aberto = true"),
+                1,
+            )
+            self.assertEqual(
+                _fetchscalar(db_name, "SELECT COUNT(*) FROM dw.fact_caixa_turno WHERE id_empresa = 1 AND is_aberto = false"),
+                1,
+            )
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    """
+                    SELECT nome
+                    FROM dw.dim_usuario_caixa
+                    WHERE id_empresa = 1
+                      AND id_filial = 1
+                      AND id_usuario = 910
+                    """,
+                ),
+                "Operadora do Caixa",
+            )
+            self.assertEqual(
+                _fetchscalar(
+                    db_name,
+                    """
+                    SELECT id_usuario
+                    FROM mart.fraude_cancelamentos_eventos
+                    WHERE id_empresa = 1
+                      AND id_filial = 1
+                      AND id_comprovante = 72001
+                    """,
+                ),
+                910,
+            )
+
+            purge = _run_python(
+                ["-m", "app.cli.operational_truth", "purge", "--tenant-id", "1", "--scope", "cash-fraud"],
+                env,
+            )
+            self.assertEqual(purge.returncode, 0, purge.stderr or purge.stdout)
+            self.assertEqual(_fetchscalar(db_name, "SELECT COUNT(*) FROM dw.fact_caixa_turno WHERE id_empresa = 1"), 0)
+            self.assertEqual(_fetchscalar(db_name, "SELECT COUNT(*) FROM dw.fact_comprovante WHERE id_empresa = 1"), 0)
+
+            rebuild_again = _run_python(
+                ["-m", "app.cli.operational_truth", "rebuild", "--tenant-id", "1", "--ref-date", "2026-03-25"],
+                env,
+            )
+            self.assertEqual(rebuild_again.returncode, 0, rebuild_again.stderr or rebuild_again.stdout)
+
+            validate_again = _run_python(
+                [
+                    "-m",
+                    "app.cli.operational_truth",
+                    "validate",
+                    "--tenant-id",
+                    "1",
+                    "--dt-ini",
+                    "2026-03-25",
+                    "--dt-fim",
+                    "2026-03-25",
+                ],
+                env,
+            )
+            self.assertEqual(validate_again.returncode, 0, validate_again.stderr or validate_again.stdout)
+
     def test_master_only_seed_reconciles_legacy_master_to_channel_scope(self) -> None:
         with temporary_database() as db_name:
             env = _subprocess_env(db_name)

@@ -14,7 +14,7 @@ from agent.secrets import SecretStoreError, load_encrypted_json_file, save_encry
 DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
     "filiais": {"table": "dbo.FILIAIS", "watermark_column": "DATAREPL", "enabled": False},
     "funcionarios": {"table": "dbo.FUNCIONARIOS", "watermark_column": "DATAREPL", "enabled": False},
-    "usuarios": {"table": "dbo.USUARIOS", "watermark_column": "DATAREPL", "enabled": False},
+    "usuarios": {"table": "dbo.USUARIOS", "watermark_column": "DATAREPL", "enabled": True},
     "entidades": {"table": "dbo.ENTIDADES", "watermark_column": "DATAREPL", "enabled": False},
     "clientes": {"table": "dbo.ENTIDADES", "watermark_column": "DATAREPL", "enabled": False},
     "grupoprodutos": {"table": "dbo.GRUPOPRODUTOS", "watermark_column": "DATAREPL", "enabled": False},
@@ -24,7 +24,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.TURNOS",
         "watermark_column": "DATAREPL",
         "revisit_open_clause": "COALESCE(ENCERRANTEFECHAMENTO, 0) = 0",
-        "enabled": False,
+        "enabled": True,
     },
     "comprovantes": {"table": "dbo.COMPROVANTES", "watermark_column": "DATAREPL", "enabled": True},
     "movprodutos": {"table": "dbo.MOVPRODUTOS", "watermark_column": "DATAREPL", "enabled": True},

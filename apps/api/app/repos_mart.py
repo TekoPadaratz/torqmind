@@ -36,6 +36,9 @@ SNAPSHOT_TABLES = {
     "health_score_daily": "mart.health_score_daily",
 }
 
+CASH_STALE_WINDOW_HOURS = 96
+CASH_CANCEL_EVENT_TYPES = frozenset({"CANCELAMENTO", "CANCELAMENTO_SEGUIDO_VENDA"})
+
 
 def _format_brl(value: Any) -> str:
     return f"R$ {float(value or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -218,6 +221,51 @@ def _employee_label(funcionario_nome: Any, id_funcionario: Any = None) -> str:
     if id_funcionario is None or int(id_funcionario or -1) < 0:
         return "Equipe não identificada"
     return f"Funcionário #{id_funcionario}"
+
+
+def _cash_operator_label(usuario_nome: Any, id_usuario: Any = None) -> str:
+    nome = str(usuario_nome or "").strip()
+    if nome:
+        return nome
+    if id_usuario is None or str(id_usuario).strip() == "":
+        return "Operador não identificado"
+    return f"Operador {int(id_usuario)}"
+
+
+def cash_definitions() -> Dict[str, str]:
+    return {
+        "historical": "Histórico do caixa soma comprovantes com CFOP acima de 5000 vinculados ao turno no período filtrado.",
+        "live_now": (
+            "Caixa aberto no monitor ao vivo significa TURNOS.ENCERRANTEFECHAMENTO = 0 "
+            f"com atividade operacional nos últimos {CASH_STALE_WINDOW_HOURS} horas. "
+            "Turnos antigos sem movimento ficam isolados como stale."
+        ),
+        "operator": (
+            "O operador exibido vem de TURNOS.ID_USUARIOS e, quando disponível, do cadastro "
+            "USUARIOS/NOMEUSUARIOS. Sem a dimensão carregada, o sistema mostra o ID do operador "
+            "e nunca recorre ao FUNCIONARIOS como semântica principal."
+        ),
+        "closing_rule": "Um turno é considerado encerrado quando ENCERRANTEFECHAMENTO recebe valor diferente de 0.",
+        "aggregates": "Vendas, cancelamentos e pagamentos usam o mesmo vínculo operacional por turno para manter a mesma verdade entre caixa e antifraude.",
+    }
+
+
+def fraud_definitions() -> Dict[str, str]:
+    return {
+        "operational_cancelamentos": (
+            "Cancelamentos operacionais usam comprovantes cancelados com CFOP acima de 5000 vinculados ao turno do caixa."
+        ),
+        "cashier_operator": (
+            "O operador exibido em cancelamentos é o operador de caixa do turno "
+            "(TURNOS.ID_USUARIOS -> USUARIOS). O usuário do comprovante só aparece como fallback quando o turno não resolve o operador."
+        ),
+        "high_risk_events": (
+            "Eventos de alto risco vêm do motor modelado e sinalizam padrões fora da curva, como cancelamentos em sequência, descontos anormais e comportamento atípico."
+        ),
+        "estimated_impact": (
+            "Impacto estimado é uma estimativa financeira para priorização. Não representa perda confirmada nem promessa matemática de fraude."
+        ),
+    }
 
 
 def _payment_category_label(category: Any, label: Any = None) -> str:
@@ -881,7 +929,18 @@ def fraud_last_events(role: str, id_empresa: int, id_filial: Optional[int], limi
     params = [id_empresa] + branch_params + [limit]
 
     sql = f"""
-      SELECT id_filial, id_db, id_comprovante, data, id_usuario, id_turno, valor_total
+      SELECT
+        id_filial,
+        id_db,
+        id_comprovante,
+        data,
+        data_key,
+        id_usuario,
+        id_usuario_documento,
+        usuario_source,
+        usuario_nome,
+        id_turno,
+        valor_total
       FROM mart.fraude_cancelamentos_eventos
       WHERE id_empresa = %s
       {where_filial}
@@ -890,7 +949,10 @@ def fraud_last_events(role: str, id_empresa: int, id_filial: Optional[int], limi
     """
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
+    return rows
 
 
 def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
@@ -902,19 +964,24 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
     sql = f"""
       SELECT
         id_usuario,
+        MAX(usuario_nome) AS usuario_nome,
         COUNT(*)::int AS cancelamentos,
-        COALESCE(SUM(valor_total),0)::numeric(18,2) AS valor_cancelado
-      FROM dw.fact_comprovante
+        COALESCE(SUM(valor_total),0)::numeric(18,2) AS valor_cancelado,
+        COUNT(*) FILTER (WHERE usuario_source = 'turno')::int AS resolvidos_por_turno,
+        COUNT(*) FILTER (WHERE usuario_source = 'comprovante')::int AS fallback_comprovante
+      FROM mart.fraude_cancelamentos_eventos
       WHERE id_empresa = %s
         AND data_key BETWEEN %s AND %s
-        AND cancelado = true
         {where_filial}
       GROUP BY id_usuario
-      ORDER BY cancelamentos DESC
+      ORDER BY valor_cancelado DESC, cancelamentos DESC, id_usuario
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        return list(conn.execute(sql, params).fetchall())
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    for row in rows:
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
+    return rows
 
 
 # ========================
@@ -1029,6 +1096,9 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit
         e.id_usuario,
         e.id_funcionario,
         e.funcionario_nome,
+        fo.id_usuario AS operador_caixa_id,
+        fo.usuario_nome AS operador_caixa_nome,
+        fo.usuario_source AS operador_caixa_source,
         e.id_turno,
         e.valor_total,
         e.impacto_estimado,
@@ -1040,6 +1110,11 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit
       LEFT JOIN auth.filiais f
         ON f.id_empresa = %s
        AND f.id_filial = e.id_filial
+      LEFT JOIN mart.fraude_cancelamentos_eventos fo
+        ON fo.id_empresa = e.id_empresa
+       AND fo.id_filial = e.id_filial
+       AND fo.id_db = e.id_db
+       AND fo.id_comprovante = e.id_comprovante
       WHERE e.id_empresa = %s
       {where_filial}
       ORDER BY e.data DESC NULLS LAST, e.id DESC
@@ -1051,8 +1126,15 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Optional[int], limit
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["event_label"] = _event_type_label(row.get("event_type"))
         row["funcionario_label"] = _employee_label(row.get("funcionario_nome"), row.get("id_funcionario"))
+        row["operador_caixa_label"] = _cash_operator_label(row.get("operador_caixa_nome"), row.get("operador_caixa_id"))
         row["reasons_humanized"] = _humanize_risk_reasons(row.get("reasons"), row.get("event_type"))
         row["reason_summary"] = " ".join(row["reasons_humanized"])
+        if str(row.get("event_type") or "").strip().upper() in CASH_CANCEL_EVENT_TYPES and row.get("operador_caixa_id") is not None:
+            row["responsavel_label"] = row["operador_caixa_label"]
+            row["responsavel_kind"] = "operador_caixa"
+        else:
+            row["responsavel_label"] = row["funcionario_label"]
+            row["responsavel_kind"] = "colaborador_venda"
     return rows
 
 
@@ -2180,218 +2262,133 @@ def payments_overview(
 
 
 def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
-    where_filial, branch_params = _branch_scope_clause("t.id_filial", id_filial)
-    params = [id_empresa] + branch_params
+    where_filial_dw, dw_branch_params = _branch_scope_clause("t.id_filial", id_filial)
+    where_filial_mart, mart_branch_params = _branch_scope_clause("a.id_filial", id_filial)
+    where_filial_payment, payment_branch_params = _branch_scope_clause("id_filial", id_filial)
     sql_total_turnos = f"""
       SELECT COUNT(*)::int AS total_turnos
       FROM dw.fact_caixa_turno t
       WHERE t.id_empresa = %s
-      {where_filial}
+      {where_filial_dw}
+    """
+    sql_summary = f"""
+      SELECT
+        COUNT(*)::int AS caixas_abertos_fonte,
+        COUNT(*) FILTER (WHERE a.is_operational_live)::int AS caixas_abertos,
+        COUNT(*) FILTER (WHERE a.is_stale)::int AS caixas_stale,
+        COUNT(*) FILTER (WHERE a.is_operational_live AND a.severity = 'CRITICAL')::int AS caixas_criticos,
+        COUNT(*) FILTER (WHERE a.is_operational_live AND a.severity = 'HIGH')::int AS caixas_alto_risco,
+        COUNT(*) FILTER (WHERE a.is_operational_live AND a.severity = 'WARN')::int AS caixas_em_monitoramento,
+        COALESCE(SUM(a.total_vendas) FILTER (WHERE a.is_operational_live), 0)::numeric(18,2) AS total_vendas_abertas,
+        COALESCE(SUM(a.total_cancelamentos) FILTER (WHERE a.is_operational_live), 0)::numeric(18,2) AS total_cancelamentos_abertos,
+        MAX(a.snapshot_ts) AS snapshot_ts,
+        MAX(a.last_activity_ts) FILTER (WHERE a.is_operational_live) AS latest_activity_ts
+      FROM mart.agg_caixa_turno_aberto a
+      WHERE a.id_empresa = %s
+      {where_filial_mart}
     """
     sql_open = f"""
-      WITH open_turnos AS (
-        SELECT
-          t.id_empresa,
-          t.id_filial,
-          t.id_turno,
-          t.id_usuario,
-          t.abertura_ts,
-          ROUND(EXTRACT(EPOCH FROM (now() - t.abertura_ts)) / 3600.0, 2)::numeric(10,2) AS horas_aberto
-        FROM dw.fact_caixa_turno t
-        WHERE t.id_empresa = %s
-          {where_filial}
-          AND t.is_aberto = true
-      ), comprovantes_caixa AS (
-        SELECT
-          c.id_empresa,
-          c.id_filial,
-          c.id_turno,
-          COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool), 0)::numeric(18,2) AS total_vendas,
-          COUNT(*) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool)::int AS qtd_vendas,
-          COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND c.cancelado_bool), 0)::numeric(18,2) AS total_cancelamentos,
-          COUNT(*) FILTER (WHERE c.cfop_num > 5000 AND c.cancelado_bool)::int AS qtd_cancelamentos
-        FROM (
-          SELECT
-            fc.id_empresa,
-            fc.id_filial,
-            fc.id_turno,
-            fc.valor_total,
-            COALESCE(fc.cancelado, false) AS cancelado_bool,
-            etl.safe_int(NULLIF(regexp_replace(COALESCE(fc.payload->>'CFOP', ''), '[^0-9]', '', 'g'), '')) AS cfop_num
-          FROM dw.fact_comprovante fc
-          JOIN open_turnos ot
-            ON ot.id_empresa = fc.id_empresa
-           AND ot.id_filial = fc.id_filial
-           AND ot.id_turno = fc.id_turno
-        ) c
-        GROUP BY c.id_empresa, c.id_filial, c.id_turno
-      ), pagamentos_turno AS (
-        SELECT
-          p.id_empresa,
-          p.id_filial,
-          p.id_turno,
-          COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_pagamentos
-        FROM dw.fact_pagamento_comprovante p
-        JOIN open_turnos ot
-          ON ot.id_empresa = p.id_empresa
-         AND ot.id_filial = p.id_filial
-         AND ot.id_turno = p.id_turno
-        GROUP BY p.id_empresa, p.id_filial, p.id_turno
-      ), operador_turno AS (
-        SELECT
-          ranked.id_empresa,
-          ranked.id_filial,
-          ranked.id_turno,
-          ranked.id_funcionario,
-          COALESCE(NULLIF(df.nome, ''), '') AS funcionario_nome
-        FROM (
-          SELECT
-            v.id_empresa,
-            v.id_filial,
-            v.id_turno,
-            i.id_funcionario,
-            COUNT(*)::int AS item_count,
-            COALESCE(SUM(i.total), 0)::numeric(18,2) AS total_movimento,
-            MAX(v.data) AS last_sale_at,
-            ROW_NUMBER() OVER (
-              PARTITION BY v.id_empresa, v.id_filial, v.id_turno
-              ORDER BY
-                COUNT(*) DESC,
-                COALESCE(SUM(i.total), 0) DESC,
-                MAX(v.data) DESC,
-                MAX(i.id_funcionario) DESC
-            ) AS rn
-          FROM dw.fact_venda v
-          JOIN open_turnos ot
-            ON ot.id_empresa = v.id_empresa
-           AND ot.id_filial = v.id_filial
-           AND ot.id_turno = v.id_turno
-          JOIN dw.fact_venda_item i
-            ON i.id_empresa = v.id_empresa
-           AND i.id_filial = v.id_filial
-           AND i.id_db = v.id_db
-           AND i.id_movprodutos = v.id_movprodutos
-          WHERE v.id_turno IS NOT NULL
-            AND i.id_funcionario IS NOT NULL
-          GROUP BY v.id_empresa, v.id_filial, v.id_turno, i.id_funcionario
-        ) ranked
-        LEFT JOIN dw.dim_funcionario df
-          ON df.id_empresa = ranked.id_empresa
-         AND df.id_filial = ranked.id_filial
-         AND df.id_funcionario = ranked.id_funcionario
-        WHERE ranked.rn = 1
-      )
       SELECT
-        ot.id_filial,
-        COALESCE(f.nome, '') AS filial_nome,
-        ot.id_turno,
-        ot.id_usuario,
-        operador.id_funcionario,
-        COALESCE(NULLIF(u.nome, ''), NULLIF(operador.funcionario_nome, ''), format('Usuário %%s', ot.id_usuario)) AS usuario_nome,
-        ot.abertura_ts,
-        ot.horas_aberto,
-        CASE
-          WHEN ot.horas_aberto >= 24 THEN 'CRITICAL'
-          WHEN ot.horas_aberto >= 12 THEN 'HIGH'
-          WHEN ot.horas_aberto >= 6 THEN 'WARN'
-          ELSE 'OK'
-        END AS severity,
-        CASE
-          WHEN ot.horas_aberto >= 24 THEN 'Crítico'
-          WHEN ot.horas_aberto >= 12 THEN 'Atenção alta'
-          WHEN ot.horas_aberto >= 6 THEN 'Monitorar'
-          ELSE 'Dentro da janela'
-        END AS status_label,
-        COALESCE(c.total_vendas, 0)::numeric(18,2) AS total_vendas,
-        COALESCE(c.qtd_vendas, 0)::int AS qtd_vendas,
-        COALESCE(c.total_cancelamentos, 0)::numeric(18,2) AS total_cancelamentos,
-        COALESCE(c.qtd_cancelamentos, 0)::int AS qtd_cancelamentos,
-        COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
-      FROM open_turnos ot
-      LEFT JOIN auth.filiais f
-        ON f.id_empresa = ot.id_empresa
-       AND f.id_filial = ot.id_filial
-      LEFT JOIN dw.dim_usuario_caixa u
-        ON u.id_empresa = ot.id_empresa
-       AND u.id_filial = ot.id_filial
-       AND u.id_usuario = ot.id_usuario
-      LEFT JOIN operador_turno operador
-        ON operador.id_empresa = ot.id_empresa
-       AND operador.id_filial = ot.id_filial
-       AND operador.id_turno = ot.id_turno
-      LEFT JOIN comprovantes_caixa c
-        ON c.id_empresa = ot.id_empresa
-       AND c.id_filial = ot.id_filial
-       AND c.id_turno = ot.id_turno
-      LEFT JOIN pagamentos_turno p
-        ON p.id_empresa = ot.id_empresa
-       AND p.id_filial = ot.id_filial
-       AND p.id_turno = ot.id_turno
-      ORDER BY ot.horas_aberto DESC, COALESCE(c.total_vendas, 0) DESC, ot.id_turno DESC
+        a.id_filial,
+        a.filial_nome,
+        a.id_turno,
+        a.id_usuario,
+        a.usuario_nome,
+        a.usuario_source,
+        a.abertura_ts,
+        a.last_activity_ts,
+        a.snapshot_ts,
+        a.horas_aberto,
+        a.horas_sem_movimento,
+        a.severity,
+        a.status_label,
+        a.total_vendas,
+        a.qtd_vendas,
+        a.total_cancelamentos,
+        a.qtd_cancelamentos,
+        a.total_pagamentos
+      FROM mart.agg_caixa_turno_aberto a
+      WHERE a.id_empresa = %s
+        {where_filial_mart}
+        AND a.is_operational_live = true
+      ORDER BY
+        CASE a.severity
+          WHEN 'CRITICAL' THEN 0
+          WHEN 'HIGH' THEN 1
+          WHEN 'WARN' THEN 2
+          ELSE 3
+        END,
+        a.horas_aberto DESC,
+        a.last_activity_ts DESC NULLS LAST,
+        a.id_turno DESC
       LIMIT 20
     """
-    sql_payments = f"""
-      WITH open_turnos AS (
-        SELECT id_empresa, id_filial, id_turno
-        FROM dw.fact_caixa_turno t
-        WHERE t.id_empresa = %s
-          {where_filial}
-          AND t.is_aberto = true
-      )
+    sql_stale = f"""
       SELECT
-        COALESCE(m.label, 'NÃO IDENTIFICADO') AS forma_label,
-        COALESCE(m.category, 'NAO_IDENTIFICADO') AS forma_category,
-        COALESCE(SUM(p.valor), 0)::numeric(18,2) AS total_valor,
-        COUNT(DISTINCT p.referencia)::int AS qtd_comprovantes,
-        COUNT(DISTINCT p.id_filial::text || ':' || p.id_turno::text)::int AS qtd_turnos
-      FROM dw.fact_pagamento_comprovante p
-      JOIN open_turnos ot
-        ON ot.id_empresa = p.id_empresa
-       AND ot.id_filial = p.id_filial
-       AND ot.id_turno = p.id_turno
-      LEFT JOIN LATERAL (
-        SELECT label, category
-        FROM app.payment_type_map m
-        WHERE m.tipo_forma = p.tipo_forma
-          AND m.active = true
-          AND (m.id_empresa = p.id_empresa OR m.id_empresa IS NULL)
-        ORDER BY CASE WHEN m.id_empresa IS NULL THEN 1 ELSE 0 END, m.updated_at DESC
-        LIMIT 1
-      ) m ON true
-      GROUP BY 1, 2
+        a.id_filial,
+        a.filial_nome,
+        a.id_turno,
+        a.id_usuario,
+        a.usuario_nome,
+        a.usuario_source,
+        a.abertura_ts,
+        a.last_activity_ts,
+        a.snapshot_ts,
+        a.horas_aberto,
+        a.horas_sem_movimento,
+        a.total_vendas,
+        a.total_cancelamentos
+      FROM mart.agg_caixa_turno_aberto a
+      WHERE a.id_empresa = %s
+        {where_filial_mart}
+        AND a.is_stale = true
+      ORDER BY a.last_activity_ts DESC NULLS LAST, a.horas_aberto DESC, a.id_turno DESC
+      LIMIT 10
+    """
+    sql_payments = f"""
+      SELECT
+        forma_label,
+        forma_category,
+        COALESCE(SUM(total_valor), 0)::numeric(18,2) AS total_valor,
+        COALESCE(SUM(qtd_comprovantes), 0)::int AS qtd_comprovantes,
+        COUNT(DISTINCT (id_filial::text || ':' || id_turno::text))::int AS qtd_turnos
+      FROM mart.agg_caixa_forma_pagamento
+      WHERE id_empresa = %s
+      {where_filial_payment}
+      GROUP BY forma_label, forma_category
       ORDER BY total_valor DESC
       LIMIT 12
     """
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        total_turnos_row = conn.execute(sql_total_turnos, params).fetchone() or {"total_turnos": 0}
-        open_rows = [dict(row) for row in conn.execute(sql_open, params).fetchall()]
-        payment_rows = [dict(row) for row in conn.execute(sql_payments, params).fetchall()]
+        total_turnos_row = conn.execute(sql_total_turnos, [id_empresa] + dw_branch_params).fetchone() or {"total_turnos": 0}
+        summary_row = conn.execute(sql_summary, [id_empresa] + mart_branch_params).fetchone() or {}
+        open_rows = [dict(row) for row in conn.execute(sql_open, [id_empresa] + mart_branch_params).fetchall()]
+        stale_rows = [dict(row) for row in conn.execute(sql_stale, [id_empresa] + mart_branch_params).fetchall()]
+        payment_rows = [dict(row) for row in conn.execute(sql_payments, [id_empresa] + payment_branch_params).fetchall()]
 
     total_turnos = int(total_turnos_row.get("total_turnos") or 0)
-    critical_count = 0
-    high_count = 0
-    warn_count = 0
-    total_vendas = 0.0
-    total_cancelamentos = 0.0
+    source_open_total = int(summary_row.get("caixas_abertos_fonte") or 0)
+    operational_open_total = int(summary_row.get("caixas_abertos") or 0)
+    stale_open_total = int(summary_row.get("caixas_stale") or 0)
+    critical_count = int(summary_row.get("caixas_criticos") or 0)
+    high_count = int(summary_row.get("caixas_alto_risco") or 0)
+    warn_count = int(summary_row.get("caixas_em_monitoramento") or 0)
+    total_vendas = round(float(summary_row.get("total_vendas_abertas") or 0), 2)
+    total_cancelamentos = round(float(summary_row.get("total_cancelamentos_abertas") or 0), 2)
+    snapshot_ts = summary_row.get("snapshot_ts")
+    latest_activity_ts = summary_row.get("latest_activity_ts")
 
     for row in open_rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
-        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or (
-            f"Operador {int(row.get('id_usuario'))}" if row.get("id_usuario") is not None else "Operador não identificado"
-        )
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
         row["alert_message"] = (
-            f"O caixa {row.get('id_turno')} da {row['filial_label']} está aberto há {row.get('horas_aberto') or 0} horas."
+            f"O caixa {row.get('id_turno')} da {row['filial_label']} segue aberto há {row.get('horas_aberto') or 0} horas."
         )
-        severity = str(row.get("severity") or "OK").upper()
-        if severity == "CRITICAL":
-            critical_count += 1
-        elif severity == "HIGH":
-            high_count += 1
-        elif severity == "WARN":
-            warn_count += 1
-        total_vendas += float(row.get("total_vendas") or 0)
-        total_cancelamentos += float(row.get("total_cancelamentos") or 0)
+
+    for row in stale_rows:
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
 
     payment_mix = [
         {
@@ -2428,6 +2425,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
             "usuario_nome": row.get("usuario_nome"),
             "usuario_label": row.get("usuario_label"),
             "abertura_ts": row.get("abertura_ts"),
+            "last_activity_ts": row.get("last_activity_ts"),
             "horas_aberto": row.get("horas_aberto"),
             "severity": row.get("severity"),
             "title": row.get("alert_message"),
@@ -2442,9 +2440,15 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
     if total_turnos == 0:
         source_status = "unavailable"
         summary = "A visão operacional em tempo real ainda não possui turnos carregados no DW."
-    elif not open_rows:
+    elif source_open_total == 0:
         source_status = "ok"
-        summary = "Nenhum caixa aberto no momento. A operação está sem pendências de fechamento."
+        summary = "Nenhum caixa permanece aberto na fonte operacional atual."
+    elif operational_open_total == 0 and stale_open_total > 0:
+        source_status = "ok"
+        summary = (
+            f"Nenhum caixa ficou ativo na janela operacional recente. "
+            f"{stale_open_total} turno(s) ainda marcados abertos na fonte foram isolados como stale."
+        )
     elif critical_count > 0:
         source_status = "ok"
         summary = f"{critical_count} caixa(s) aberto(s) há mais de 24 horas exigem ação imediata."
@@ -2456,21 +2460,30 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
         summary = f"{warn_count} caixa(s) aberto(s) merecem monitoramento antes do fim do dia."
     else:
         source_status = "ok"
-        summary = f"{len(open_rows)} caixa(s) aberto(s) dentro da janela operacional esperada."
+        summary = f"{operational_open_total} caixa(s) permanecem abertos na leitura operacional recente."
+
+    if stale_open_total > 0 and source_status == "ok" and operational_open_total > 0:
+        summary = f"{summary} Mais {stale_open_total} turno(s) abertos na fonte ficaram fora do ao vivo por estarem stale."
 
     return {
         "source_status": source_status,
         "summary": summary,
         "kpis": {
             "total_turnos": total_turnos,
-            "caixas_abertos": len(open_rows),
+            "caixas_abertos_fonte": source_open_total,
+            "caixas_abertos": operational_open_total,
+            "caixas_stale": stale_open_total,
             "caixas_criticos": critical_count,
             "caixas_alto_risco": high_count,
             "caixas_em_monitoramento": warn_count,
-            "total_vendas_abertas": round(total_vendas, 2),
-            "total_cancelamentos_abertos": round(total_cancelamentos, 2),
+            "total_vendas_abertas": total_vendas,
+            "total_cancelamentos_abertos": total_cancelamentos,
+            "snapshot_ts": snapshot_ts,
+            "latest_activity_ts": latest_activity_ts,
+            "stale_window_hours": CASH_STALE_WINDOW_HOURS,
         },
         "open_boxes": open_rows,
+        "stale_boxes": stale_rows,
         "payment_mix": payment_mix[:8],
         "cancelamentos": cancelamentos[:10],
         "alerts": alert_rows,
@@ -2607,6 +2620,8 @@ def _cash_historical_overview(
         SELECT
           c.id_filial,
           c.id_turno,
+          MIN(c.data_key)::int AS min_data_key,
+          MAX(c.data_key)::int AS max_data_key,
           MIN(c.data) AS first_event_at,
           MAX(c.data) AS last_event_at,
           COALESCE(SUM(c.valor_total) FILTER (WHERE c.cfop_num > 5000 AND NOT c.cancelado_bool), 0)::numeric(18,2) AS total_vendas,
@@ -2617,6 +2632,7 @@ def _cash_historical_overview(
           SELECT
             fc.id_filial,
             fc.id_turno,
+            fc.data_key,
             fc.data,
             fc.valor_total,
             COALESCE(fc.cancelado, false) AS cancelado_bool,
@@ -2639,59 +2655,20 @@ def _cash_historical_overview(
           {where_filial_pay}
           AND p.id_turno IS NOT NULL
         GROUP BY p.id_filial, p.id_turno
-      ), operador_turno AS (
-        SELECT
-          ranked.id_empresa,
-          ranked.id_filial,
-          ranked.id_turno,
-          ranked.id_funcionario,
-          COALESCE(NULLIF(df.nome, ''), '') AS funcionario_nome
-        FROM (
-          SELECT
-            v.id_empresa,
-            v.id_filial,
-            v.id_turno,
-            i.id_funcionario,
-            COUNT(*)::int AS item_count,
-            COALESCE(SUM(i.total), 0)::numeric(18,2) AS total_movimento,
-            MAX(v.data) AS last_sale_at,
-            ROW_NUMBER() OVER (
-              PARTITION BY v.id_empresa, v.id_filial, v.id_turno
-              ORDER BY
-                COUNT(*) DESC,
-                COALESCE(SUM(i.total), 0) DESC,
-                MAX(v.data) DESC,
-                MAX(i.id_funcionario) DESC
-            ) AS rn
-          FROM dw.fact_venda v
-          JOIN comprovantes c
-            ON c.id_filial = v.id_filial
-           AND c.id_turno = v.id_turno
-          JOIN dw.fact_venda_item i
-            ON i.id_empresa = v.id_empresa
-           AND i.id_filial = v.id_filial
-           AND i.id_db = v.id_db
-           AND i.id_movprodutos = v.id_movprodutos
-          WHERE v.id_empresa = %s
-            AND v.data_key BETWEEN %s AND %s
-            {where_filial_pay.replace('p.', 'v.')}
-            AND v.id_turno IS NOT NULL
-            AND i.id_funcionario IS NOT NULL
-          GROUP BY v.id_empresa, v.id_filial, v.id_turno, i.id_funcionario
-        ) ranked
-        LEFT JOIN dw.dim_funcionario df
-          ON df.id_empresa = ranked.id_empresa
-         AND df.id_filial = ranked.id_filial
-         AND df.id_funcionario = ranked.id_funcionario
-        WHERE ranked.rn = 1
       )
       SELECT
         c.id_filial,
         COALESCE(f.nome, '') AS filial_nome,
         c.id_turno,
         t.id_usuario,
-        operador.id_funcionario,
-        COALESCE(NULLIF(u.nome, ''), NULLIF(operador.funcionario_nome, ''), format('Usuário %%s', t.id_usuario)) AS usuario_nome,
+        COALESCE(
+          NULLIF(u.nome, ''),
+          NULLIF(t.payload->>'NOMEUSUARIOS', ''),
+          NULLIF(t.payload->>'NOME_USUARIOS', ''),
+          NULLIF(t.payload->>'NOMEUSUARIO', ''),
+          NULLIF(t.payload->>'NOME_USUARIO', ''),
+          CASE WHEN t.id_usuario IS NOT NULL THEN format('Operador %%s', t.id_usuario) ELSE NULL END
+        ) AS usuario_nome,
         t.abertura_ts,
         t.fechamento_ts,
         t.is_aberto,
@@ -2707,14 +2684,16 @@ def _cash_historical_overview(
         ON t.id_empresa = %s
        AND t.id_filial = c.id_filial
        AND t.id_turno = c.id_turno
+       AND (t.data_key_abertura IS NULL OR t.data_key_abertura <= c.max_data_key)
+       AND (
+             t.data_key_fechamento IS NULL
+             OR t.data_key_fechamento >= c.min_data_key
+             OR t.is_aberto = true
+           )
       LEFT JOIN dw.dim_usuario_caixa u
         ON u.id_empresa = %s
        AND u.id_filial = c.id_filial
        AND u.id_usuario = t.id_usuario
-      LEFT JOIN operador_turno operador
-        ON operador.id_empresa = %s
-       AND operador.id_filial = c.id_filial
-       AND operador.id_turno = c.id_turno
       LEFT JOIN auth.filiais f
         ON f.id_empresa = %s
        AND f.id_filial = c.id_filial
@@ -2733,7 +2712,7 @@ def _cash_historical_overview(
             dict(row)
             for row in conn.execute(
                 sql_top_turnos,
-                params_comp + params_pay + [id_empresa, ini, fim] + pay_branch_params + [id_empresa, id_empresa, id_empresa, id_empresa],
+                params_comp + params_pay + [id_empresa, id_empresa, id_empresa],
             ).fetchall()
         ]
 
@@ -2756,9 +2735,7 @@ def _cash_historical_overview(
 
     for row in top_turnos_rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
-        row["usuario_label"] = str(row.get("usuario_nome") or "").strip() or (
-            f"Operador {int(row.get('id_usuario'))}" if row.get("id_usuario") is not None else "Operador não identificado"
-        )
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
 
     cancelamentos = [
         {
@@ -2829,9 +2806,11 @@ def cash_overview(
         "source_status": historical.get("source_status"),
         "summary": historical.get("summary"),
         "kpis": historical.get("kpis"),
+        "definitions": cash_definitions(),
         "historical": historical,
         "live_now": live_now,
         "open_boxes": live_now.get("open_boxes") or [],
+        "stale_boxes": live_now.get("stale_boxes") or [],
         "payment_mix": historical.get("payment_mix") or [],
         "cancelamentos": historical.get("cancelamentos") or [],
         "alerts": live_now.get("alerts") or [],
@@ -2848,6 +2827,8 @@ def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> D
         severity = "HIGH"
     elif int(kpis.get("caixas_em_monitoramento") or 0) > 0:
         severity = "WARN"
+    elif int(kpis.get("caixas_stale") or 0) > 0:
+        severity = "WARN"
     elif cash.get("source_status") == "unavailable":
         severity = "UNAVAILABLE"
 
@@ -2858,9 +2839,12 @@ def open_cash_monitor(role: str, id_empresa: int, id_filial: Optional[int]) -> D
         "total_turnos": int(kpis.get("total_turnos") or 0),
         "mapped_rows": int(kpis.get("total_turnos") or 0),
         "total_open": int(kpis.get("caixas_abertos") or 0),
+        "source_open_total": int(kpis.get("caixas_abertos_fonte") or 0),
+        "stale_count": int(kpis.get("caixas_stale") or 0),
         "warn_count": int(kpis.get("caixas_em_monitoramento") or 0),
         "high_count": int(kpis.get("caixas_alto_risco") or 0),
         "critical_count": int(kpis.get("caixas_criticos") or 0),
+        "snapshot_ts": kpis.get("snapshot_ts"),
         "items": cash.get("open_boxes") or [],
     }
 

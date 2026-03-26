@@ -406,15 +406,34 @@ class SmokeApiTest(unittest.TestCase):
         self.assertIn("source_status", body)
         self.assertIn("summary", body)
         self.assertIn("kpis", body)
+        self.assertIn("definitions", body)
         self.assertIn("historical", body)
         self.assertIn("live_now", body)
         self.assertIn("open_boxes", body)
+        self.assertIn("stale_boxes", body)
         self.assertIn("payment_mix", body)
         self.assertIn("cancelamentos", body)
         self.assertIn("alerts", body)
         self.assertIn(body.get("source_status"), {"ok", "partial", "unavailable"})
         self.assertIn(body["historical"].get("source_status"), {"ok", "partial", "unavailable"})
         self.assertIn(body["live_now"].get("source_status"), {"ok", "unavailable"})
+        self.assertIn("operator", body["definitions"])
+
+    def test_fraud_overview_endpoint_returns_contract(self) -> None:
+        status, body = self._request(
+            "/bi/fraud/overview?dt_ini=2025-09-01&dt_fim=2025-09-18&dt_ref=2025-09-18&id_empresa=1",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("kpis", body)
+        self.assertIn("by_day", body)
+        self.assertIn("top_users", body)
+        self.assertIn("last_events", body)
+        self.assertIn("definitions", body)
+        self.assertIn("risk_kpis", body)
+        self.assertIn("risk_last_events", body)
+        self.assertIn("open_cash", body)
+        self.assertIn("cashier_operator", body["definitions"])
 
     def test_finance_overview_exposes_snapshot_status(self) -> None:
         status, body = self._request(
