@@ -1,0 +1,29 @@
+{
+  "name": "torqmind-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "node --test app/lib/api-base.test.mjs app/lib/login-copy.test.mjs app/lib/username-policy.test.mjs app/lib/product-scope.test.mjs app/lib/pricing-request.test.mjs app/lib/branch-state.test.mjs app/lib/scope-validation.test.mjs app/lib/session-state.test.mjs app/lib/duration-format.test.mjs app/lib/goal-target-input.test.mjs app/lib/currency-format.test.mjs app/lib/reading-copy.test.mjs app/lib/reading-state.test.mjs app/lib/dashboard-home.test.mjs",
+    "test:api-base": "node --test app/lib/api-base.test.mjs",
+    "test:product-scope": "node --test app/lib/product-scope.test.mjs",
+    "test:branch-state": "node --test app/lib/branch-state.test.mjs",
+    "test:currency-format": "node --test app/lib/currency-format.test.mjs"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "axios": "1.7.2",
+    "jwt-decode": "4.0.0",
+    "recharts": "2.12.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.29",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "typescript": "5.5.4"
+  }
+}

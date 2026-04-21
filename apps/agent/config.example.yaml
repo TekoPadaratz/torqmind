@@ -1,0 +1,77 @@
+# TorqMind Extractor Agent config (SAFE EXAMPLE - no secrets)
+
+sqlserver:
+  driver: ODBC Driver 18 for SQL Server
+  server: "tcp:CENTRALVR"
+  port: 1433
+  database: ATXDADOS
+  user: sa
+  password: "CHANGE_ME"
+  encrypt: true
+  trust_server_certificate: false
+  login_timeout_seconds: 20
+
+api:
+  # Em producao, prefira sempre HTTPS + ingest_key.
+  base_url: https://torqmind.example.com/api
+  ingest_key: CHANGE_ME_INGEST_KEY
+  # Em dev/local, troque base_url para http://localhost:8000 e use empresa_id.
+  # empresa_id: 1
+
+id_empresa: 1
+id_db: 1
+
+runtime:
+  batch_size: 5000
+  fetch_size: 2000
+  max_retries: 5
+  timeout_seconds: 30
+  gzip_enabled: true
+  state_dir: state
+  spool_dir: spool
+  spool_flush_max_files: 200
+  interval_seconds: 60
+
+datasets:
+  comprovantes:
+    enabled: true
+    table: dbo.COMPROVANTES
+    watermark_column: DATAREPL
+
+  movprodutos:
+    enabled: true
+    table: dbo.MOVPRODUTOS
+    watermark_column: DATAREPL
+
+  itensmovprodutos:
+    enabled: true
+    table: dbo.ITENSMOVPRODUTOS
+    watermark_column: DATAREPL
+
+  formas_pgto_comprovantes:
+    enabled: true
+    table: dbo.FORMAS_PGTO_COMPROVANTES
+    watermark_column: DATAREPL
+    # Opcional: usar query custom com join em COMPROVANTES para recorte eficiente por período.
+    # query: |
+    #   SELECT f.*
+    #   FROM dbo.FORMAS_PGTO_COMPROVANTES f
+    #   JOIN dbo.COMPROVANTES c ON c.REFERENCIA = f.ID_REFERENCIA
+
+  filiais: { enabled: true, table: dbo.FILIAIS, watermark_column: DATAREPL }
+  funcionarios: { enabled: true, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
+  usuarios: { enabled: true, table: dbo.USUARIOS, watermark_column: DATAREPL }
+  entidades: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
+  clientes: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
+  grupoprodutos: { enabled: true, table: dbo.GRUPOPRODUTOS, watermark_column: DATAREPL }
+  localvendas: { enabled: true, table: dbo.LOCALVENDAS, watermark_column: DATAREPL }
+  produtos: { enabled: true, table: dbo.PRODUTOS, watermark_column: DATAREPL }
+  turnos:
+    enabled: true
+    table: dbo.TURNOS
+    watermark_column: DATAREPL
+    revisit_open_clause: COALESCE(ENCERRANTEFECHAMENTO, 0) = 0
+  movlctos: { enabled: true, table: dbo.MOVLCTOS, watermark_column: DATAREPL }
+  contaspagar: { enabled: true, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
+  contasreceber: { enabled: true, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
+  financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }

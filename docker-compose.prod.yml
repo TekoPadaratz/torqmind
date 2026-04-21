@@ -1,0 +1,144 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    shm_size: ${POSTGRES_SHM_SIZE:-1g}
+    command:
+      - postgres
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-16MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+      - -c
+      - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-2GB}
+      - -c
+      - checkpoint_completion_target=${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+      - ./sql/migrations:/docker-entrypoint-initdb.d:ro
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  api:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      APP_ROOT_PATH: ${APP_ROOT_PATH:-}
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: ${POSTGRES_DB}
+      PG_USER: ${POSTGRES_USER}
+      PG_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-}
+      APP_CORS_ORIGIN_REGEX: ${APP_CORS_ORIGIN_REGEX:-}
+      API_JWT_SECRET: ${API_JWT_SECRET:-}
+      API_JWT_ISSUER: ${API_JWT_ISSUER:-torqmind-api}
+      API_ACCESS_TOKEN_MINUTES: ${API_ACCESS_TOKEN_MINUTES:-60}
+      INGEST_REQUIRE_KEY: ${INGEST_REQUIRE_KEY:-true}
+      INGEST_BATCH_SIZE: ${INGEST_BATCH_SIZE:-5000}
+      PLATFORM_MASTER_EMAIL: ${PLATFORM_MASTER_EMAIL:-}
+      PLATFORM_MASTER_PASSWORD: ${PLATFORM_MASTER_PASSWORD:-}
+      PLATFORM_MASTER_NAME: ${PLATFORM_MASTER_NAME:-TorqMind Platform Master}
+      CHANNEL_BOOTSTRAP_EMAIL: ${CHANNEL_BOOTSTRAP_EMAIL:-}
+      CHANNEL_BOOTSTRAP_PASSWORD: ${CHANNEL_BOOTSTRAP_PASSWORD:-}
+      CHANNEL_BOOTSTRAP_USER_NAME: ${CHANNEL_BOOTSTRAP_USER_NAME:-TorqMind Channel Admin}
+      CHANNEL_BOOTSTRAP_NAME: ${CHANNEL_BOOTSTRAP_NAME:-Canal TorqMind}
+      ETL_INTERNAL_KEY: ${ETL_INTERNAL_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      NOTIFY_MIN_SEVERITY: ${NOTIFY_MIN_SEVERITY:-CRITICAL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      JARVIS_MODEL_FAST: ${JARVIS_MODEL_FAST:-gpt-4.1-mini}
+      JARVIS_MODEL_STRONG: ${JARVIS_MODEL_STRONG:-gpt-4.1}
+      JARVIS_AI_TOP_N: ${JARVIS_AI_TOP_N:-10}
+      JARVIS_AI_MAX_OUTPUT_TOKENS: ${JARVIS_AI_MAX_OUTPUT_TOKENS:-500}
+      JARVIS_AI_TIMEOUT_SECONDS: ${JARVIS_AI_TIMEOUT_SECONDS:-30}
+      JARVIS_AI_RPM_SLEEP_SECONDS: ${JARVIS_AI_RPM_SLEEP_SECONDS:-2}
+      JARVIS_AI_INPUT_COST_PER_1M: ${JARVIS_AI_INPUT_COST_PER_1M:-0.4}
+      JARVIS_AI_OUTPUT_COST_PER_1M: ${JARVIS_AI_OUTPUT_COST_PER_1M:-1.6}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-4}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
+      DB_POOL_TIMEOUT_SECONDS: ${DB_POOL_TIMEOUT_SECONDS:-30}
+      DB_POOL_MAX_IDLE_SECONDS: ${DB_POOL_MAX_IDLE_SECONDS:-300}
+    expose:
+      - "8000"
+    volumes:
+      - ./sql/migrations:/app/sql/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.prod
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+        API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/ >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/health >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata_prod:

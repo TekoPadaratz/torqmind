@@ -1,0 +1,10 @@
+services:
+  postgres:
+    ports:
+      - "55432:5432"
+  api:
+    ports:
+      - "18000:8000"
+  web:
+    ports:
+      - "13000:3000"
