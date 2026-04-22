@@ -39,7 +39,7 @@ export function parseCalendarDate(value) {
   return new Date(year, month - 1, day);
 }
 
-function addDays(date, amount) {
+export function addCalendarDays(date, amount) {
   const next = new Date(date);
   next.setDate(next.getDate() + amount);
   return next;
@@ -47,7 +47,7 @@ function addDays(date, amount) {
 
 function startOfWeek(date) {
   const dayIndex = (date.getDay() + 6) % 7;
-  return addDays(date, -dayIndex);
+  return addCalendarDays(date, -dayIndex);
 }
 
 function startOfMonth(date) {
@@ -60,22 +60,22 @@ function endOfMonth(date) {
 
 export function buildQuickShortcutRanges(referenceDate) {
   const weekStart = startOfWeek(referenceDate);
-  const lastWeekStart = addDays(weekStart, -7);
-  const lastWeekEnd = addDays(weekStart, -1);
-  const prevMonthDate = addDays(referenceDate, -referenceDate.getDate());
+  const lastWeekStart = addCalendarDays(weekStart, -7);
+  const lastWeekEnd = addCalendarDays(weekStart, -1);
+  const prevMonthDate = addCalendarDays(referenceDate, -referenceDate.getDate());
   const prevMonthStart = startOfMonth(prevMonthDate);
   const prevMonthEnd = endOfMonth(prevMonthDate);
-  const fifteenDaysAgo = addDays(referenceDate, -14);
-  const thirtyDaysAgo = addDays(referenceDate, -29);
+  const fifteenDaysAgo = addCalendarDays(referenceDate, -14);
+  const thirtyDaysAgo = addCalendarDays(referenceDate, -29);
 
   return [
     { id: 'today', label: 'Hoje', range: [formatCalendarDate(referenceDate), formatCalendarDate(referenceDate)] },
-    { id: 'yesterday', label: 'Ontem', range: [formatCalendarDate(addDays(referenceDate, -1)), formatCalendarDate(addDays(referenceDate, -1))] },
+    { id: 'yesterday', label: 'Ontem', range: [formatCalendarDate(addCalendarDays(referenceDate, -1)), formatCalendarDate(addCalendarDays(referenceDate, -1))] },
     { id: 'this_week', label: 'Esta semana', range: [formatCalendarDate(weekStart), formatCalendarDate(referenceDate)] },
     { id: 'last_week', label: 'Semana passada', range: [formatCalendarDate(lastWeekStart), formatCalendarDate(lastWeekEnd)] },
     { id: 'last_15_days', label: '15 dias', range: [formatCalendarDate(fifteenDaysAgo), formatCalendarDate(referenceDate)] },
     { id: 'last_30_days', label: '30 dias', range: [formatCalendarDate(thirtyDaysAgo), formatCalendarDate(referenceDate)] },
-    { id: 'last_90_days', label: '90 dias', range: [formatCalendarDate(addDays(referenceDate, -89)), formatCalendarDate(referenceDate)] },
+    { id: 'last_90_days', label: '90 dias', range: [formatCalendarDate(addCalendarDays(referenceDate, -89)), formatCalendarDate(referenceDate)] },
     { id: 'this_month', label: 'Este mês', range: [formatCalendarDate(startOfMonth(referenceDate)), formatCalendarDate(referenceDate)] },
     { id: 'last_month', label: 'Mês passado', range: [formatCalendarDate(prevMonthStart), formatCalendarDate(prevMonthEnd)] },
   ];

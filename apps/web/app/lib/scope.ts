@@ -3,7 +3,9 @@
 import { useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 
+import { buildBrowserLocalDefaultScope } from './local-scope-defaults.mjs';
 import { buildScopeSearchParams, readScopeFromSearch } from './product-scope.mjs';
+import { readCachedSession } from './session';
 
 export type ScopeQuery = {
   dt_ini: string;
@@ -20,9 +22,14 @@ export type ScopeQuery = {
 
 export function useScopeQuery(fallback?: Partial<ScopeQuery>): ScopeQuery {
   const searchParams = useSearchParams();
+  const cachedSession = readCachedSession();
 
   return useMemo(() => {
-    const scope = readScopeFromSearch(searchParams, fallback || {});
+    const sessionFallback = buildBrowserLocalDefaultScope(cachedSession);
+    const scope = readScopeFromSearch(searchParams, {
+      ...sessionFallback,
+      ...(fallback || {}),
+    });
     const id_filiais = scope.id_filiais || [];
 
     return {
@@ -37,7 +44,11 @@ export function useScopeQuery(fallback?: Partial<ScopeQuery>): ScopeQuery {
       id_empresa: scope.id_empresa || null,
       ready: true,
     };
-  }, [fallback, searchParams]);
+  }, [
+    cachedSession,
+    fallback,
+    searchParams,
+  ]);
 }
 
 export function buildScopeParams(scope: Partial<ScopeQuery>, options?: { includeDtRef?: boolean }): URLSearchParams {

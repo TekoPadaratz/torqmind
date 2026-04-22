@@ -61,6 +61,21 @@ class ReposAuthUnitTests(unittest.TestCase):
             "/dashboard?dt_ini=2026-03-01&dt_fim=2026-03-28&id_empresa=1&dt_ref=2026-03-28&id_filiais=14458&id_filiais=17337",
         )
 
+    def test_build_dashboard_home_path_can_omit_server_side_date_defaults(self):
+        path = _build_dashboard_home_path(
+            {
+                "dt_ini": "2026-03-01",
+                "dt_fim": "2026-03-28",
+                "dt_ref": "2026-03-28",
+                "id_empresa": 1,
+                "id_filial": 14458,
+                "id_filiais": [14458],
+            },
+            include_dates=False,
+        )
+
+        self.assertEqual(path, "/dashboard?id_empresa=1&id_filial=14458")
+
     def test_default_product_scope_anchors_on_business_today_while_preserving_latest_operational_date(self):
         with patch(
             "app.repos_auth._load_product_scope_defaults",

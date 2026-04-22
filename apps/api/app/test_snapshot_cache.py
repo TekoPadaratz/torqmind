@@ -83,9 +83,9 @@ class SnapshotCacheTests(unittest.TestCase):
         mock_conn.execute.assert_not_called()
         mock_conn.commit.assert_not_called()
 
-    def test_route_snapshot_is_bypassed_for_critical_bi_routes(self):
-        self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
-        self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
+    def test_hot_bi_routes_use_snapshot_cache(self):
+        self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
+        self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("noncritical_probe"))
 
     def test_with_cached_response_prefers_snapshot_during_etl(self):
@@ -431,14 +431,22 @@ class SnapshotCacheTests(unittest.TestCase):
         self.assertEqual(payload["_snapshot_cache"]["source"], "live")
         self.assertIsNone(payload["_snapshot_cache"]["updated_at"])
 
-    def test_with_cached_response_bypasses_cache_for_critical_routes(self):
-        compute = MagicMock(return_value={"kpis": {"faturamento": 42}})
+    def test_with_cached_response_uses_fresh_snapshot_for_hot_routes_even_when_etl_guard_is_busy(self):
+        cached_record = {
+            "snapshot_data": {"kpis": {"faturamento": 42}},
+            "scope_signature": "exact-sig",
+            "updated_at": datetime.now(timezone.utc),
+        }
+        compute = MagicMock(side_effect=AssertionError("live compute should not run when a fresh snapshot exists"))
 
         with (
-            patch.object(routes_bi.snapshot_cache, "get_hot_route_guard", return_value={"protect_reads": True, "reasons": ["etl_running"], "etl_running": True}),
-            patch.object(routes_bi.snapshot_cache, "read_snapshot_record") as read_snapshot_record,
-            patch.object(routes_bi.snapshot_cache, "read_latest_compatible_snapshot_record") as read_latest_compatible_snapshot_record,
-            patch.object(routes_bi.snapshot_cache, "write_snapshot") as write_snapshot,
+            patch.object(routes_bi.snapshot_cache, "read_snapshot_record", return_value=cached_record),
+            patch.object(
+                routes_bi.snapshot_cache,
+                "get_hot_route_guard",
+                return_value={"protect_reads": True, "reasons": ["etl_running"], "etl_running": True},
+            ),
+            patch.object(routes_bi.snapshot_cache, "refresh_snapshot_async") as refresh_snapshot_async,
         ):
             payload = routes_bi._with_cached_response(
                 scope_key="sales_overview",
@@ -453,37 +461,12 @@ class SnapshotCacheTests(unittest.TestCase):
             )
 
         self.assertEqual(payload["kpis"]["faturamento"], 42)
-        self.assertEqual(payload["_snapshot_cache"]["source"], "live")
-        self.assertEqual(payload["_snapshot_cache"]["mode"], "cache_bypassed")
-        self.assertEqual(payload["_snapshot_cache"]["reason"], "truth_over_performance")
+        self.assertEqual(payload["_snapshot_cache"]["source"], "snapshot")
+        self.assertEqual(payload["_snapshot_cache"]["mode"], "protected_snapshot")
+        self.assertEqual(payload["_snapshot_cache"]["reason"], "etl_running")
         self.assertEqual(payload["_snapshot_cache"]["busy_reasons"], ["etl_running"])
-        compute.assert_called_once()
-        read_snapshot_record.assert_not_called()
-        read_latest_compatible_snapshot_record.assert_not_called()
-        write_snapshot.assert_not_called()
-
-    def test_with_cached_response_bypassed_route_returns_explicit_live_unavailable_payload(self):
-        with patch.object(
-            routes_bi.snapshot_cache,
-            "get_hot_route_guard",
-            return_value={"protect_reads": True, "reasons": ["etl_running"], "etl_running": True},
-        ):
-            payload = routes_bi._with_cached_response(
-                scope_key="dashboard_home",
-                role="MASTER",
-                tenant_id=1,
-                branch_scope=None,
-                dt_ini=date(2026, 3, 1),
-                dt_fim=date(2026, 3, 28),
-                dt_ref=date(2026, 3, 28),
-                compute=MagicMock(side_effect=TimeoutError("db busy")),
-                safe_fallback=lambda: {"data_state": "transient_unavailable", "_fallback_meta": {"fallback_state": "preparing"}},
-            )
-
-        self.assertEqual(payload["data_state"], "transient_unavailable")
-        self.assertEqual(payload["_snapshot_cache"]["source"], "live")
-        self.assertEqual(payload["_snapshot_cache"]["mode"], "live_unavailable")
-        self.assertEqual(payload["_snapshot_cache"]["reason"], "TimeoutError")
+        compute.assert_not_called()
+        refresh_snapshot_async.assert_not_called()
 
     def test_snapshot_is_fresh_uses_route_refresh_window(self):
         fresh = datetime.now(timezone.utc)
@@ -563,6 +546,8 @@ class SnapshotCacheTests(unittest.TestCase):
         self.assertFalse(result)
 
     def test_last_consolidated_sync_falls_back_to_analytics_status_when_operational_phase_is_missing(self):
+        snapshot_cursor = MagicMock()
+        snapshot_cursor.fetchone.return_value = {}
         phase_cursor = MagicMock()
         phase_cursor.fetchone.return_value = {}
         analytics_cursor = MagicMock()
@@ -572,7 +557,7 @@ class SnapshotCacheTests(unittest.TestCase):
             "publication_mode": "global_refresh",
         }
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [phase_cursor, analytics_cursor]
+        mock_conn.execute.side_effect = [snapshot_cursor, phase_cursor, analytics_cursor]
         mock_conn.__enter__.return_value = mock_conn
 
         with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):
@@ -585,6 +570,8 @@ class SnapshotCacheTests(unittest.TestCase):
         self.assertTrue(result["analytics"]["available"])
 
     def test_last_consolidated_sync_prefers_operational_phase_when_available(self):
+        snapshot_cursor = MagicMock()
+        snapshot_cursor.fetchone.return_value = {}
         phase_cursor = MagicMock()
         phase_cursor.fetchone.return_value = {
             "finished_at": datetime(2026, 3, 27, 8, 35, tzinfo=timezone.utc),
@@ -597,7 +584,7 @@ class SnapshotCacheTests(unittest.TestCase):
             "publication_mode": "fast_path",
         }
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [phase_cursor, analytics_cursor]
+        mock_conn.execute.side_effect = [snapshot_cursor, phase_cursor, analytics_cursor]
         mock_conn.__enter__.return_value = mock_conn
 
         with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):
@@ -612,6 +599,8 @@ class SnapshotCacheTests(unittest.TestCase):
         self.assertEqual(result["analytics"]["mode"], "fast_path")
 
     def test_last_consolidated_sync_reports_fast_path_when_only_tenant_publication_exists(self):
+        snapshot_cursor = MagicMock()
+        snapshot_cursor.fetchone.return_value = {}
         phase_cursor = MagicMock()
         phase_cursor.fetchone.return_value = {}
         analytics_cursor = MagicMock()
@@ -621,7 +610,7 @@ class SnapshotCacheTests(unittest.TestCase):
             "publication_mode": "fast_path",
         }
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [phase_cursor, analytics_cursor]
+        mock_conn.execute.side_effect = [snapshot_cursor, phase_cursor, analytics_cursor]
         mock_conn.__enter__.return_value = mock_conn
 
         with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):

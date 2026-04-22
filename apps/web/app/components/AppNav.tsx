@@ -9,6 +9,7 @@ import { apiGet } from '../lib/api';
 import { clearAuth } from '../lib/auth';
 import { getVisibleBranches, uniqueBranchIds } from '../lib/branch-state.mjs';
 import { buildQuickShortcutRanges, formatCalendarDate, parseCalendarDate } from '../lib/calendar-date.mjs';
+import { buildBrowserLocalDefaultScope } from '../lib/local-scope-defaults.mjs';
 import { describeLastSync, describeServerBaseDate, describeSyncMessage } from '../lib/reading-copy.mjs';
 import { clearSessionCache, loadSession, readCachedSession } from '../lib/session';
 import { buildValidatedScope, validateScopeDraft } from '../lib/scope-validation.mjs';
@@ -36,7 +37,7 @@ type ScopeDraft = {
 };
 
 function scopeFromSession(searchParams: URLSearchParams, session: any) {
-  const fallback = session?.default_scope || {};
+  const fallback = buildBrowserLocalDefaultScope(session);
   const parsed = readScopeFromSearch(searchParams, fallback);
   const controls = getScopeControls(session);
 
@@ -59,7 +60,7 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
   return {
     dt_ini: parsed.dt_ini || fallback.dt_ini || '',
     dt_fim: parsed.dt_fim || fallback.dt_fim || '',
-    dt_ref: parsed.dt_ref || fallback.dt_ref || session?.server_today || fallback.server_today || '',
+    dt_ref: parsed.dt_ref || fallback.dt_ref || '',
     scope_epoch: parsed.scope_epoch || fallback.scope_epoch || '',
     scope_key: parsed.scope_key || fallback.scope_key || '',
     id_empresa: fallbackCompany,
@@ -425,7 +426,8 @@ export default function AppNav({
 
   const allBranchesChecked = !scopeControls.branchLocked && draft.selectionMode === 'all';
 
-  const shortcutReferenceDateValue = session?.server_today || formatCalendarDate(new Date());
+  const localScopeFallback = useMemo(() => buildBrowserLocalDefaultScope(session), [session]);
+  const shortcutReferenceDateValue = localScopeFallback.dt_ref || formatCalendarDate(new Date());
   const shortcutReferenceDate = parseCalendarDate(shortcutReferenceDateValue) || new Date();
   const quickShortcutRanges = useMemo(
     () => buildQuickShortcutRanges(shortcutReferenceDate),
@@ -650,7 +652,7 @@ export default function AppNav({
           <div className="productScopeMeta">
             <div>
               <strong>Referência da leitura</strong>
-              <span>{describeServerBaseDate(navScope.dt_ref || session?.server_today)}</span>
+              <span>{describeServerBaseDate(navScope.dt_ref || localScopeFallback.dt_ref)}</span>
             </div>
             <div>
               <strong>{applying ? 'Novo escopo' : 'Escopo atual'}</strong>

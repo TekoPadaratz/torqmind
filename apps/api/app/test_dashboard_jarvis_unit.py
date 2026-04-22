@@ -6,7 +6,62 @@ from app import repos_mart
 
 
 class DashboardJarvisUnitTests(unittest.TestCase):
-    def test_sales_declining_products_signal_uses_closed_30_day_windows_and_active_product_filter(self) -> None:
+    def test_dashboard_home_bundle_stays_on_operational_fast_path(self) -> None:
+        sales_bundle = {
+            "kpis": {"faturamento": 1250.0},
+            "operational_sync": {"last_sync_at": "2026-04-15T10:00:00-03:00"},
+            "freshness": {"mode": "operational_overlay"},
+        }
+        cash_live = {
+            "summary": "live",
+            "operational_sync": {"last_sync_at": "2026-04-15T10:01:00-03:00"},
+            "freshness": {"mode": "live_monitor"},
+        }
+
+        with (
+            patch.object(repos_mart, "risk_insights", return_value=[]),
+            patch.object(repos_mart, "sales_operational_range_bundle", return_value=sales_bundle) as sales_operational_range_bundle,
+            patch.object(repos_mart, "sales_peak_hours_signal", return_value={"peak_hours": []}) as sales_peak_hours_signal,
+            patch.object(repos_mart, "sales_declining_products_signal", return_value={"items": []}) as sales_declining_products_signal,
+            patch.object(repos_mart, "fraud_kpis", return_value={"cancelamentos": 0}),
+            patch.object(repos_mart, "fraud_data_window", return_value={"source": "mart"}),
+            patch.object(repos_mart, "risk_kpis", return_value={"impacto_total": 0}),
+            patch.object(repos_mart, "risk_data_window", return_value={"source": "mart"}),
+            patch.object(repos_mart, "customers_churn_bundle", return_value={"top_risk": []}),
+            patch.object(repos_mart, "finance_aging_overview", return_value={"receber_total_vencido": 0}),
+            patch.object(repos_mart, "_cash_live_now", return_value=cash_live) as cash_live_now,
+            patch.object(repos_mart, "payments_overview", return_value={"kpis": {"source_status": "ok"}}),
+            patch.object(repos_mart, "notifications_unread_count", return_value=2),
+            patch.object(repos_mart, "jarvis_briefing", return_value={"status": "ok"}) as jarvis_briefing,
+            patch.object(repos_mart, "sales_overview_bundle", side_effect=AssertionError("dashboard home should not call sales_overview_bundle")),
+            patch.object(repos_mart, "cash_overview", side_effect=AssertionError("dashboard home should not call cash_overview")),
+        ):
+            payload = repos_mart.dashboard_home_bundle(
+                "MASTER",
+                7,
+                None,
+                dt_ini=date(2026, 4, 10),
+                dt_fim=date(2026, 4, 15),
+                dt_ref=date(2026, 4, 15),
+            )
+
+        sales_operational_range_bundle.assert_called_once_with(
+            "MASTER",
+            7,
+            None,
+            date(2026, 4, 10),
+            date(2026, 4, 15),
+            include_rankings=False,
+        )
+        sales_peak_hours_signal.assert_called_once_with("MASTER", 7, None, date(2026, 4, 15))
+        sales_declining_products_signal.assert_called_once_with("MASTER", 7, None, date(2026, 4, 15))
+        cash_live_now.assert_called_once_with("MASTER", 7, None)
+        jarvis_briefing.assert_called_once()
+        self.assertEqual(payload["overview"]["sales"]["reading_status"], "operational_overlay")
+        self.assertEqual(payload["cash"]["live_now"]["summary"], "live")
+        self.assertEqual(payload["notifications_unread"], 2)
+
+    def test_sales_declining_products_signal_uses_closed_30_day_windows_from_mart(self) -> None:
         class _FakeResult:
             def __init__(self, rows):
                 self._rows = rows
@@ -32,11 +87,7 @@ class DashboardJarvisUnitTests(unittest.TestCase):
         conn = _RecordingConn([])
         dt_ref = date(2026, 4, 15)
 
-        with patch.object(
-            repos_mart,
-            "_sales_window_fact_cte",
-            return_value=("WITH sale_items AS (SELECT 1)", ["cte-window"], 17),
-        ) as sales_window_cte, patch("app.repos_mart.get_conn", return_value=conn):
+        with patch("app.repos_mart.get_conn", return_value=conn):
             signal = repos_mart.sales_declining_products_signal(
                 "MASTER",
                 7,
@@ -44,12 +95,6 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                 dt_ref=dt_ref,
             )
 
-        sales_window_cte.assert_called_once_with(
-            id_empresa=7,
-            id_filial=17,
-            date_predicate_sql="v.data_key BETWEEN %s AND %s",
-            date_params=[20260214, 20260414],
-        )
         self.assertEqual(
             signal["recent_window"],
             {"dt_ini": "2026-03-16", "dt_fim": "2026-04-14"},
@@ -61,11 +106,11 @@ class DashboardJarvisUnitTests(unittest.TestCase):
         self.assertEqual(signal["source_status"], "unavailable")
 
         executed_sql, executed_params = conn.calls[0]
-        self.assertIn("COALESCE(p.situacao, 0) = 1", executed_sql)
+        self.assertIn("FROM mart.agg_produtos_diaria a", executed_sql)
+        self.assertIn("FROM dw.dim_produto p", executed_sql)
         self.assertEqual(
             executed_params,
             [
-                "cte-window",
                 20260316,
                 20260414,
                 20260316,
@@ -74,6 +119,13 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                 20260315,
                 20260214,
                 20260315,
+                7,
+                20260214,
+                20260414,
+                17,
+                7,
+                17,
+                7,
                 3,
             ],
         )
