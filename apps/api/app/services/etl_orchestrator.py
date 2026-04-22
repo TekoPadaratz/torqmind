@@ -41,6 +41,7 @@ PHASE_META_KEYS = (
     "fact_venda",
     "fact_venda_item",
     "fact_financeiro",
+    "fact_estoque_atual",
     "risk_events",
 )
 
@@ -84,6 +85,7 @@ PHASE_SQL_STEPS: tuple[tuple[str, str], ...] = (
     ("fact_venda", "SELECT etl.load_fact_venda(%s) AS rows"),
     ("fact_venda_item", "SELECT etl.load_fact_venda_item(%s) AS rows"),
     ("fact_financeiro", "SELECT etl.load_fact_financeiro(%s) AS rows"),
+    ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -694,7 +696,13 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dic
             ),
             "cash": any(
                 int(meta.get(key, 0) or 0) > 0
-                for key in ("fact_caixa_turno", "fact_pagamento_comprovante", "fact_comprovante", "dim_usuario_caixa")
+                for key in (
+                    "fact_caixa_turno",
+                    "fact_pagamento_comprovante",
+                    "fact_comprovante",
+                    "dim_usuario_caixa",
+                    "fact_estoque_atual",
+                )
             ),
         }
     if track == TRACK_RISK:
@@ -721,7 +729,16 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dic
         "finance": int(meta.get("fact_financeiro", 0) or 0) > 0,
         "risk": risk_changed or int(meta.get("dim_funcionarios", 0) or 0) > 0,
         "payments": any(int(meta.get(key, 0) or 0) > 0 for key in ("fact_pagamento_comprovante", "fact_comprovante")),
-        "cash": any(int(meta.get(key, 0) or 0) > 0 for key in ("fact_caixa_turno", "fact_pagamento_comprovante", "fact_comprovante", "dim_usuario_caixa")),
+        "cash": any(
+            int(meta.get(key, 0) or 0) > 0
+            for key in (
+                "fact_caixa_turno",
+                "fact_pagamento_comprovante",
+                "fact_comprovante",
+                "dim_usuario_caixa",
+                "fact_estoque_atual",
+            )
+        ),
     }
 
 

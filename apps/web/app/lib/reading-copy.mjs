@@ -95,9 +95,43 @@ export function describeCacheBanner(meta, moduleLabel = 'esta tela') {
   return null;
 }
 
+export function describeCommercialCoverage(coverage, moduleLabel = 'esta tela') {
+  const mode = String(coverage?.mode || '').toLowerCase();
+  if (!mode || mode === 'exact') return null;
+
+  const latestDate = formatDateOnly(coverage?.latest_available_dt || coverage?.effective_dt_fim);
+  const effectiveStart = formatDateOnly(coverage?.effective_dt_ini);
+  const effectiveEnd = formatDateOnly(coverage?.effective_dt_fim);
+
+  if (mode === 'shifted_latest') {
+    if (effectiveStart && effectiveEnd && effectiveStart !== effectiveEnd) {
+      return `A base comercial de ${moduleLabel} ainda vai ate ${latestDate}. Mostrando o ultimo periodo comparavel entre ${effectiveStart} e ${effectiveEnd}.`;
+    }
+    return `A base comercial de ${moduleLabel} ainda vai ate ${latestDate}. Mostrando a ultima referencia compativel ja publicada.`;
+  }
+
+  if (mode === 'partial_requested') {
+    return `A base comercial de ${moduleLabel} cobre o recorte somente ate ${effectiveEnd}. Os dias posteriores ainda aguardam ingestao da origem.`;
+  }
+
+  if (mode === 'missing') {
+    return coverage?.message || `A trilha comercial canonica ainda nao publicou base suficiente para ${moduleLabel}.`;
+  }
+
+  return coverage?.message || null;
+}
+
 export function describeDataFreshness(payload, moduleLabel = 'esta tela') {
   const cacheBanner = describeCacheBanner(payload?._snapshot_cache, moduleLabel);
   if (cacheBanner) return cacheBanner;
+
+  const coverageBanner = describeCommercialCoverage(
+    payload?.commercial_coverage
+      || payload?.commercial?.commercial_coverage
+      || payload?.monthly_projection?.commercial_coverage,
+    moduleLabel,
+  );
+  if (coverageBanner) return coverageBanner;
 
   const freshness = payload?.freshness;
   const mode = String(freshness?.mode || '').toLowerCase();

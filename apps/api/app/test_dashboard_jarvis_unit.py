@@ -20,6 +20,15 @@ class DashboardJarvisUnitTests(unittest.TestCase):
 
         with (
             patch.object(repos_mart, "risk_insights", return_value=[]),
+            patch.object(
+                repos_mart,
+                "commercial_window_coverage",
+                return_value={
+                    "mode": "exact",
+                    "effective_dt_ini": date(2026, 4, 10),
+                    "effective_dt_fim": date(2026, 4, 15),
+                },
+            ),
             patch.object(repos_mart, "sales_operational_range_bundle", return_value=sales_bundle) as sales_operational_range_bundle,
             patch.object(repos_mart, "sales_peak_hours_signal", return_value={"peak_hours": []}) as sales_peak_hours_signal,
             patch.object(repos_mart, "sales_declining_products_signal", return_value={"items": []}) as sales_declining_products_signal,
@@ -87,7 +96,15 @@ class DashboardJarvisUnitTests(unittest.TestCase):
         conn = _RecordingConn([])
         dt_ref = date(2026, 4, 15)
 
-        with patch("app.repos_mart.get_conn", return_value=conn):
+        with patch.object(
+            repos_mart,
+            "commercial_window_coverage",
+            return_value={
+                "mode": "exact",
+                "effective_dt_ini": dt_ref,
+                "effective_dt_fim": dt_ref,
+            },
+        ), patch("app.repos_mart.get_conn", return_value=conn):
             signal = repos_mart.sales_declining_products_signal(
                 "MASTER",
                 7,

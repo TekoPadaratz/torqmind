@@ -201,6 +201,14 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
 
         with patch.object(repos_mart, "business_today", return_value=date(2026, 4, 2)), patch.object(
             repos_mart,
+            "commercial_window_coverage",
+            return_value={
+                "mode": "exact",
+                "effective_dt_ini": date(2026, 3, 31),
+                "effective_dt_fim": date(2026, 4, 1),
+            },
+        ), patch.object(
+            repos_mart,
             "sales_operational_range_bundle",
             return_value=expected,
         ) as range_bundle, patch.object(
@@ -241,6 +249,14 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
     def test_uses_same_operational_semantics_when_window_includes_live_day(self) -> None:
         fallback_bundle = _operational_range_bundle()
         with patch.object(repos_mart, "business_today", return_value=date(2026, 4, 2)), patch.object(
+            repos_mart,
+            "commercial_window_coverage",
+            return_value={
+                "mode": "exact",
+                "effective_dt_ini": date(2026, 3, 31),
+                "effective_dt_fim": date(2026, 4, 2),
+            },
+        ), patch.object(
             repos_mart,
             "sales_operational_range_bundle",
             return_value=fallback_bundle,

@@ -332,8 +332,9 @@ class SnapshotCacheTests(unittest.TestCase):
         compute.assert_not_called()
         refresh_snapshot_async.assert_not_called()
 
-    def test_with_cached_response_schedules_background_refresh_when_snapshot_is_missing_and_db_is_free(self):
-        compute = MagicMock(side_effect=AssertionError("live compute should not run on a cold hot route"))
+    def test_with_cached_response_computes_synchronously_when_snapshot_is_missing_and_db_is_free(self):
+        updated_at = datetime(2026, 3, 27, 9, 30, tzinfo=timezone.utc)
+        compute = MagicMock(return_value={"kpis": {"faturamento": 512.4}})
 
         with (
             patch.object(routes_bi.snapshot_cache, "read_snapshot_record", return_value=None),
@@ -344,6 +345,7 @@ class SnapshotCacheTests(unittest.TestCase):
                 return_value={"protect_reads": False, "reasons": [], "etl_running": False},
             ),
             patch.object(routes_bi.snapshot_cache, "refresh_snapshot_async", return_value=True) as refresh_snapshot_async,
+            patch.object(routes_bi.snapshot_cache, "write_snapshot", return_value=updated_at) as write_snapshot,
         ):
             payload = routes_bi._with_cached_response(
                 scope_key="sales_probe",
@@ -357,10 +359,14 @@ class SnapshotCacheTests(unittest.TestCase):
                 safe_fallback=lambda: {"kpis": {"faturamento": 0}},
             )
 
-        self.assertEqual(payload["_snapshot_cache"]["mode"], "warming_up")
-        self.assertTrue(payload["_snapshot_cache"]["refresh_scheduled"])
-        compute.assert_not_called()
-        refresh_snapshot_async.assert_called_once()
+        self.assertEqual(payload["kpis"]["faturamento"], 512.4)
+        self.assertEqual(payload["_snapshot_cache"]["source"], "live")
+        self.assertEqual(payload["_snapshot_cache"]["mode"], "cold_miss_sync")
+        self.assertEqual(payload["_snapshot_cache"]["reason"], "snapshot_cold_miss")
+        self.assertEqual(payload["_snapshot_cache"]["updated_at"], updated_at.isoformat())
+        compute.assert_called_once()
+        write_snapshot.assert_called_once()
+        refresh_snapshot_async.assert_not_called()
 
     def test_safe_sales_overview_payload_uses_operational_current_for_same_day(self):
         operational_payload = {

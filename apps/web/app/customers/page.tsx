@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -21,7 +21,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import {
-  describeCacheBanner,
+  describeDataFreshness,
   describeChurnCoverage,
 } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
@@ -66,6 +66,7 @@ function buildChurnSignal(customer: any) {
 
 export default function CustomersPage() {
   const scope = useScopeQuery();
+  const [delinquencyPage, setDelinquencyPage] = useState(0);
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -94,14 +95,35 @@ export default function CustomersPage() {
   const anonKpis = anon?.kpis || {};
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
+  const delinquencyCustomers = delinquency?.customers || [];
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
         bucket: bucket?.label || bucket?.bucket || "Bucket",
         valor: Number(bucket?.valor || 0),
+        titulos: Number(bucket?.titulos || 0),
       })),
     [delinquency],
   );
+  const delinquencyPageSize = 8;
+  const delinquencyPageCount = Math.max(
+    1,
+    Math.ceil(delinquencyCustomers.length / delinquencyPageSize),
+  );
+  const delinquencyPageItems = useMemo(() => {
+    const safePage = Math.min(delinquencyPage, Math.max(delinquencyPageCount - 1, 0));
+    const start = safePage * delinquencyPageSize;
+    return delinquencyCustomers.slice(start, start + delinquencyPageSize);
+  }, [delinquencyCustomers, delinquencyPage, delinquencyPageCount]);
+  const customersBanner =
+    describeDataFreshness(data, "clientes")
+    || (String(churnSnapshot?.snapshot_status || "").toLowerCase() === "exact"
+      ? null
+      : describeChurnCoverage(churnSnapshot));
+
+  useEffect(() => {
+    setDelinquencyPage(0);
+  }, [data?.commercial_coverage?.effective_dt_fim, delinquencyCustomers.length]);
 
   return (
     <div>
@@ -121,7 +143,7 @@ export default function CustomersPage() {
         ) : (
           <>
             <ReadingStatusBanner
-              message={describeCacheBanner(data?._snapshot_cache, "clientes")}
+              message={customersBanner}
             />
 
             <div className="bi-grid" style={{ marginTop: 12 }}>
@@ -215,7 +237,42 @@ export default function CustomersPage() {
                 </div>
               </div>
 
-              <div className="card col-5 chartCard">
+              <div className="card col-12">
+                <h2>Buckets por atraso</h2>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Os buckets mostram concentracao de titulos e valores para orientar a ordem de cobranca.
+                </div>
+              </div>
+
+              <div className="card kpi col-4 riskCard">
+                <div className="label">Bucket 30 dias</div>
+                <div className="value">
+                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_30)}
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_30 || 0)} titulo(s)`}
+                </div>
+              </div>
+              <div className="card kpi col-4 riskCard">
+                <div className="label">Bucket 60 dias</div>
+                <div className="value">
+                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_60)}
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_60 || 0)} titulo(s)`}
+                </div>
+              </div>
+              <div className="card kpi col-4 riskCard">
+                <div className="label">Bucket 90+ dias</div>
+                <div className="value">
+                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_90_plus)}
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_90_plus || 0)} titulo(s)`}
+                </div>
+              </div>
+
+              <div className="card col-12 chartCard">
                 <h2>Buckets por atraso</h2>
                 {!loading && !delinquencyChart.length ? (
                   <EmptyState
@@ -247,36 +304,80 @@ export default function CustomersPage() {
                 </div>
               </div>
 
-              <div className="card col-7">
-                <h2>Prioridades de cobrança</h2>
+              <div className="card col-12">
+                <div className="panelHead">
+                  <div>
+                    <h2>Prioridades de cobrança</h2>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      Ranking executivo dos clientes com maior pressao em aberto, separado pelos buckets 30, 60 e 90+ dias.
+                    </div>
+                  </div>
+                  {delinquencyCustomers.length > delinquencyPageSize ? (
+                    <div className="inlinePager">
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => setDelinquencyPage((current) => Math.max(current - 1, 0))}
+                        disabled={delinquencyPage <= 0}
+                      >
+                        Pagina anterior
+                      </button>
+                      <div className="muted">
+                        Pagina {Math.min(delinquencyPage + 1, delinquencyPageCount)} de {delinquencyPageCount}
+                      </div>
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() =>
+                          setDelinquencyPage((current) => Math.min(current + 1, delinquencyPageCount - 1))
+                        }
+                        disabled={delinquencyPage >= delinquencyPageCount - 1}
+                      >
+                        Proxima pagina
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 {!loading && !(delinquency?.customers || []).length ? (
                   <EmptyState
                     title="Sem clientes em atraso para priorizar."
                     detail="Quando houver recebíveis vencidos, os maiores riscos aparecem aqui."
                   />
                 ) : null}
-                <table className="table compact">
-                  <thead>
-                    <tr>
-                      <th>Cliente</th>
-                      <th>Bucket</th>
-                      <th>Títulos</th>
-                      <th>Maior atraso</th>
-                      <th>Valor aberto</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(delinquency?.customers || []).map((item: any) => (
-                      <tr key={item.id_cliente}>
-                        <td>{item.cliente_nome}</td>
-                        <td>{item.bucket_label}</td>
-                        <td>{item.titulos}</td>
-                        <td>{item.max_dias_atraso} dias</td>
-                        <td>{formatCurrency(item.valor_aberto)}</td>
+                <div className="tableScroll">
+                  <table className="table compact">
+                    <thead>
+                      <tr>
+                        <th>Cliente</th>
+                        <th>Bucket</th>
+                        <th>Titulos 30</th>
+                        <th>Titulos 60</th>
+                        <th>Titulos 90+</th>
+                        <th>Valores 30</th>
+                        <th>Valores 60</th>
+                        <th>Valores 90+</th>
+                        <th>Titulos totais</th>
+                        <th>Valor total</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {delinquencyPageItems.map((item: any) => (
+                        <tr key={item.id_cliente}>
+                          <td>{item.cliente_nome}</td>
+                          <td>{item.bucket_label}</td>
+                          <td>{item.titulos_30}</td>
+                          <td>{item.titulos_60}</td>
+                          <td>{item.titulos_90_plus}</td>
+                          <td>{formatCurrency(item.valor_30)}</td>
+                          <td>{formatCurrency(item.valor_60)}</td>
+                          <td>{formatCurrency(item.valor_90_plus)}</td>
+                          <td>{item.titulos_totais}</td>
+                          <td>{formatCurrency(item.valor_total)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <div className="card col-12">

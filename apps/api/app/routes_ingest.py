@@ -236,6 +236,12 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "rede_shadow": _get_any(obj, ["REDE", "rede"]),
             "tef_shadow": _get_any(obj, ["TEF", "tef"]),
         }
+    if dataset_key in {"estoque", "estoques"}:
+        return {
+            "id_produto_shadow": _to_int(_get_any(obj, ["ID_PRODUTOS", "ID_PRODUTO", "id_produto"])),
+            "id_local_venda_shadow": _to_int(_get_any(obj, ["ID_LOCALVENDAS", "ID_LOCAL_VENDA", "id_localvendas"])),
+            "qtd_atual_shadow": _to_numeric(_get_any(obj, ["QTDEATUAL", "QTD_ATUAL", "qtd_atual"])),
+        }
     return {}
 
 
@@ -304,6 +310,14 @@ def _batch_columns(dataset_key: str, spec: DatasetSpec) -> List[str]:
                 "bandeira_shadow",
                 "rede_shadow",
                 "tef_shadow",
+            ]
+        )
+    elif dataset_key in {"estoque", "estoques"}:
+        columns.extend(
+            [
+                "id_produto_shadow",
+                "id_local_venda_shadow",
+                "qtd_atual_shadow",
             ]
         )
     columns.append("payload")
@@ -484,6 +498,22 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_filial", ["ID_FILIAL", "id_filial"]),
             ("id_referencia", ["ID_REFERENCIA", "id_referencia", "REFERENCIA", "referencia"]),
             ("tipo_forma", ["TIPO_FORMA", "tipo_forma"]),
+        ],
+    ),
+    "estoque": DatasetSpec(
+        table="stg.estoque",
+        pk_cols=["id_empresa", "id_filial", "id_estoque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_estoque", ["ID_ESTOQUE", "id_estoque"]),
+        ],
+    ),
+    "estoques": DatasetSpec(
+        table="stg.estoque",
+        pk_cols=["id_empresa", "id_filial", "id_estoque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_estoque", ["ID_ESTOQUE", "id_estoque"]),
         ],
     ),
 

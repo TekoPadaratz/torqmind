@@ -47,6 +47,15 @@ function severityTone(value: string) {
   return { bg: "rgba(52, 211, 153, 0.12)", border: "rgba(74, 222, 128, 0.24)" };
 }
 
+function formatStockQuantity(value: any) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  return numeric.toLocaleString("pt-BR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 3,
+  });
+}
+
 export default function CashPage() {
   const scope = useScopeQuery();
   const { claims, data, error, loading, pendingUnavailable } =
@@ -155,9 +164,29 @@ export default function CashPage() {
                 </div>
                 <div className="bi-grid" style={{ marginTop: 12 }}>
                   {(dreSummary?.cards || []).map((card: any) => (
-                    <div key={card.key} className="card kpi col-12">
+                    <div
+                      key={card.key}
+                      className="card kpi col-12"
+                      style={
+                        String(card?.status || "").toLowerCase() === "unavailable"
+                          ? {
+                              background: "rgba(148,163,184,0.08)",
+                              borderColor: "rgba(148,163,184,0.18)",
+                            }
+                          : undefined
+                      }
+                    >
                       <div className="label">{card.label}</div>
-                      <div className="value">{formatCurrency(card.amount)}</div>
+                      <div className="value">
+                        {card.amount === null || card.amount === undefined
+                          ? "Aguardando base"
+                          : formatCurrency(card.amount)}
+                      </div>
+                      {card.quantity !== null && card.quantity !== undefined ? (
+                        <div className="muted" style={{ marginTop: 8 }}>
+                          Posição: {formatStockQuantity(card.quantity)}
+                        </div>
+                      ) : null}
                       <div className="muted" style={{ marginTop: 8 }}>
                         {card.detail}
                       </div>

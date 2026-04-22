@@ -598,7 +598,8 @@ class EtlOrchestrationTest(unittest.TestCase):
             "fact_venda": 11,
             "fact_venda_item": 12,
             "fact_financeiro": 13,
-            "risk_events": 14,
+            "fact_estoque_atual": 14,
+            "risk_events": 15,
         }
         step_order: list[str] = []
 
