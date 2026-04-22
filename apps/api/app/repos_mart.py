@@ -1684,9 +1684,8 @@ def _sales_window_fact_cte(
           v.id_empresa,
           v.id_filial,
           v.id_db,
-          v.id_movprodutos,
           v.id_comprovante,
-          COALESCE(v.id_comprovante, v.id_movprodutos) AS doc_key,
+          v.id_comprovante AS doc_key,
           v.data,
           v.data_key,
           v.updated_at AS venda_updated_at,
@@ -1701,7 +1700,6 @@ def _sales_window_fact_cte(
           v.id_empresa,
           v.id_filial,
           v.id_db,
-          v.id_movprodutos,
           v.id_comprovante,
           v.doc_key,
           v.data,
@@ -1732,7 +1730,6 @@ def _sales_window_fact_cte(
           v.id_empresa,
           v.id_filial,
           v.id_db,
-          v.id_movprodutos,
           v.id_comprovante,
           v.data,
           v.data_key,
@@ -1748,7 +1745,6 @@ def _sales_window_fact_cte(
           v.id_empresa,
           v.id_filial,
           v.id_db,
-          v.id_movprodutos,
           v.id_comprovante,
           v.data,
           v.data_key,
@@ -4910,7 +4906,7 @@ def _cash_sales_docs_cte(
           COALESCE(c.id_turno, v.id_turno) AS id_turno,
           COALESCE(v.data_key, c.data_key) AS data_key,
           COALESCE(v.data, c.data) AS data,
-          COALESCE(v.id_comprovante, v.id_movprodutos) AS doc_key,
+          v.id_comprovante AS doc_key,
           {_sales_status_expression('v')} AS situacao,
           COALESCE(SUM(i.total), 0)::numeric(18,2) AS total
         FROM dw.fact_venda v
@@ -4935,7 +4931,7 @@ def _cash_sales_docs_cte(
           COALESCE(c.id_turno, v.id_turno),
           COALESCE(v.data_key, c.data_key),
           COALESCE(v.data, c.data),
-          COALESCE(v.id_comprovante, v.id_movprodutos),
+          v.id_comprovante,
           {_sales_status_expression('v')}
       )
     """

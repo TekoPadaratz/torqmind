@@ -129,6 +129,21 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
         self.assertNotIn("COALESCE(v.situacao, 0) > 2", cte)
         self.assertIn("COALESCE(i.cfop, 0) > 5000", cte)
         self.assertNotIn("COALESCE(i.cfop, 0) >= 5000", cte)
+        self.assertIn("v.id_comprovante AS doc_key", cte)
+        self.assertNotIn("COALESCE(v.id_comprovante, v.id_movprodutos) AS doc_key", cte)
+
+    def test_cash_sales_docs_cte_uses_canonical_comprovante_key(self) -> None:
+        cte, _params = repos_mart._cash_sales_docs_cte(
+            id_empresa=7,
+            id_filial=11,
+            date_key_sql="v.data_key BETWEEN %s AND %s",
+            date_params=[20260414, 20260415],
+        )
+
+        self.assertIn("v.id_comprovante AS doc_key", cte)
+        self.assertIn("GROUP BY", cte)
+        self.assertIn("v.id_comprovante,", cte)
+        self.assertNotIn("COALESCE(v.id_comprovante, v.id_movprodutos)", cte)
 
     def test_collapse_group_rank_rows_uses_canonical_bucket_for_convenience(self) -> None:
         collapsed = repos_mart._collapse_group_rank_rows(
