@@ -6,7 +6,7 @@ from app import repos_mart
 
 
 class DashboardJarvisUnitTests(unittest.TestCase):
-    def test_sales_declining_products_signal_uses_closed_30_day_windows_and_active_product_filter(self) -> None:
+    def test_sales_declining_products_signal_uses_closed_30_day_windows_from_mart(self) -> None:
         class _FakeResult:
             def __init__(self, rows):
                 self._rows = rows
@@ -32,11 +32,7 @@ class DashboardJarvisUnitTests(unittest.TestCase):
         conn = _RecordingConn([])
         dt_ref = date(2026, 4, 15)
 
-        with patch.object(
-            repos_mart,
-            "_sales_window_fact_cte",
-            return_value=("WITH sale_items AS (SELECT 1)", ["cte-window"], 17),
-        ) as sales_window_cte, patch("app.repos_mart.get_conn", return_value=conn):
+        with patch("app.repos_mart.get_conn", return_value=conn):
             signal = repos_mart.sales_declining_products_signal(
                 "MASTER",
                 7,
@@ -44,12 +40,6 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                 dt_ref=dt_ref,
             )
 
-        sales_window_cte.assert_called_once_with(
-            id_empresa=7,
-            id_filial=17,
-            date_predicate_sql="v.data_key BETWEEN %s AND %s",
-            date_params=[20260214, 20260414],
-        )
         self.assertEqual(
             signal["recent_window"],
             {"dt_ini": "2026-03-16", "dt_fim": "2026-04-14"},
@@ -61,11 +51,11 @@ class DashboardJarvisUnitTests(unittest.TestCase):
         self.assertEqual(signal["source_status"], "unavailable")
 
         executed_sql, executed_params = conn.calls[0]
-        self.assertIn("COALESCE(p.situacao, 0) = 1", executed_sql)
+        self.assertIn("FROM mart.agg_produtos_diaria a", executed_sql)
+        self.assertIn("FROM dw.dim_produto p", executed_sql)
         self.assertEqual(
             executed_params,
             [
-                "cte-window",
                 20260316,
                 20260414,
                 20260316,
@@ -74,6 +64,13 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                 20260315,
                 20260214,
                 20260315,
+                7,
+                20260214,
+                20260414,
+                17,
+                7,
+                17,
+                7,
                 3,
             ],
         )

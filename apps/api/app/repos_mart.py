@@ -15,7 +15,13 @@ from typing import Optional, List, Dict, Any
 import unicodedata
 
 from app.business_time import business_clock_payload, business_timezone_name, business_today
-from app.cash_operational_truth import cash_open_source_sql
+from app.cash_operational_truth import (
+    CASH_OPEN_RELATION,
+    cash_open_schema_mode,
+    cash_open_source_sql,
+    cash_payment_relation_exists,
+    relation_exists,
+)
 from app.db import get_conn
 from app.sales_semantics import (
     CANCELLATION_STATUS,
@@ -929,7 +935,17 @@ def dashboard_home_bundle(
     dt_ref: date,
 ) -> Dict[str, Any]:
     insights_rows = risk_insights(role, id_empresa, id_filial, dt_ini, dt_fim, limit=20)
-    sales = sales_overview_bundle(role, id_empresa, id_filial, dt_ini, dt_fim, as_of=dt_ref, include_details=False)
+    sales = sales_operational_range_bundle(
+        role,
+        id_empresa,
+        id_filial,
+        dt_ini,
+        dt_fim,
+        include_rankings=False,
+    ) or _empty_sales_overview_bundle()
+    sales["reading_status"] = str(sales.get("reading_status") or "operational_overlay")
+    peak_hours_signal = sales_peak_hours_signal(role, id_empresa, id_filial, dt_ref)
+    declining_products_signal = sales_declining_products_signal(role, id_empresa, id_filial, dt_ref)
     fraud_operational = {
         "kpis": fraud_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
         "window": fraud_data_window(role, id_empresa, id_filial),
@@ -940,14 +956,14 @@ def dashboard_home_bundle(
     }
     churn = customers_churn_bundle(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=10)
     finance_aging = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
-    cash = cash_overview(role, id_empresa, id_filial, dt_ini=dt_ini, dt_fim=dt_fim)
+    cash_live = _cash_live_now(role, id_empresa, id_filial)
     payments = payments_overview(role, id_empresa, id_filial, dt_ini, dt_fim, anomaly_limit=5)
     notifications_unread = notifications_unread_count(role, id_empresa, id_filial)
-    operational_sync = sales.get("operational_sync") or cash.get("operational_sync")
+    operational_sync = sales.get("operational_sync") or cash_live.get("operational_sync")
     freshness = {
         "mode": "hybrid_operational_home",
         "sales": sales.get("freshness"),
-        "cash": cash.get("freshness"),
+        "cash": cash_live.get("freshness"),
         "live_through_at": (operational_sync or {}).get("last_sync_at"),
         "source": "operational_truth",
     }
@@ -986,8 +1002,7 @@ def dashboard_home_bundle(
             },
             "risk": modeled_risk,
             "cash": {
-                "historical": cash.get("historical"),
-                "live_now": cash.get("live_now"),
+                "live_now": cash_live,
             },
             "jarvis": jarvis_briefing(
                 role,
@@ -997,12 +1012,15 @@ def dashboard_home_bundle(
                 context={
                     "fraud_operational": fraud_operational.get("kpis"),
                     "modeled_risk": modeled_risk.get("kpis"),
-                    "cash_live": cash.get("live_now"),
-                    "cash_historical": cash.get("historical"),
+                    "cash_live": cash_live,
                     "finance_aging": finance_aging,
                     "churn": churn,
                     "payments": payments,
                     "sales": sales,
+                    "signals": {
+                        "peak_hours": peak_hours_signal,
+                        "declining_products": declining_products_signal,
+                    },
                 },
             ),
         },
@@ -1010,7 +1028,11 @@ def dashboard_home_bundle(
         "finance": {
             "aging": finance_aging,
         },
-        "cash": cash,
+        "cash": {
+            "live_now": cash_live,
+            "operational_sync": cash_live.get("operational_sync"),
+            "freshness": cash_live.get("freshness"),
+        },
         "notifications_unread": notifications_unread,
         "operational_sync": operational_sync,
         "freshness": freshness,
@@ -1247,23 +1269,32 @@ def sales_commercial_overview(
         date_params=[ini, fim],
     )
     where_filial, branch_params = _branch_scope_clause("c.id_filial", id_filial)
+    mart_where_filial, mart_branch_params = _branch_scope_clause("m.id_filial", id_filial)
     comparison_year = dt_fim.year
     comparison_start_key = _date_key(date(comparison_year - 1, 1, 1))
     comparison_end_key = _date_key(date(comparison_year, 12, 31))
-    combined_params = params + [id_empresa, comparison_start_key, comparison_end_key] + branch_params
+    combined_params = params + [id_empresa, comparison_start_key, comparison_end_key] + mart_branch_params
     sql_combined = commercial_cte + f"""
-      , monthly_docs AS MATERIALIZED (
+      , monthly AS MATERIALIZED (
         SELECT
-          (c.data_key / 100)::int AS month_key,
-          c.valor_total,
-          COALESCE(c.cancelado, false) AS cancelado,
-          {comercial_cfop_direction_sql('c')} AS cfop_direction
-        FROM dw.fact_comprovante c
-        WHERE c.id_empresa = %s
-          AND c.data_key BETWEEN %s AND %s
-          {where_filial}
-      ),
-      kpis AS (
+          m.month_key,
+          make_date((m.month_key / 100)::int, (m.month_key %% 100)::int, 1) AS month_ref,
+          (m.month_key / 100)::int AS ano,
+          (m.month_key %% 100)::int AS mes,
+          COALESCE(SUM(m.faturamento), 0)::numeric(18,2) AS saidas,
+          0::numeric(18,2) AS entradas,
+          0::numeric(18,2) AS cancelamentos
+        FROM (
+          SELECT
+            (m.data_key / 100)::int AS month_key,
+            m.faturamento
+          FROM mart.agg_vendas_diaria m
+          WHERE m.id_empresa = %s
+            AND m.data_key BETWEEN %s AND %s
+            {mart_where_filial}
+        ) m
+        GROUP BY m.month_key
+      ), kpis AS (
         SELECT
           COALESCE(SUM(valor_total) FILTER (WHERE cancelado = false AND cfop_direction = 'saida'), 0)::numeric(18,2) AS saidas,
           COUNT(DISTINCT id_comprovante) FILTER (WHERE cancelado = false AND cfop_direction = 'saida')::int AS qtd_saidas,
@@ -1292,19 +1323,6 @@ def sales_commercial_overview(
         FROM commercial_docs
         WHERE data IS NOT NULL
         GROUP BY 1
-      ),
-      monthly AS (
-        SELECT
-          month_key,
-          make_date((month_key / 100)::int, (month_key %% 100)::int, 1) AS month_ref,
-          (month_key / 100)::int AS ano,
-          (month_key %% 100)::int AS mes,
-          COALESCE(SUM(valor_total) FILTER (WHERE cancelado = false AND cfop_direction = 'saida'), 0)::numeric(18,2) AS saidas,
-          COALESCE(SUM(valor_total) FILTER (WHERE cancelado = false AND cfop_direction = 'entrada'), 0)::numeric(18,2) AS entradas,
-          COALESCE(SUM(valor_total) FILTER (WHERE cancelado = true AND cfop_direction IN ('saida', 'entrada')), 0)::numeric(18,2) AS cancelamentos
-        FROM monthly_docs
-        WHERE cfop_direction IN ('saida', 'entrada')
-        GROUP BY month_key
       )
       SELECT
         to_jsonb(kpis) AS kpis,
@@ -2121,9 +2139,14 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
       SELECT
         id_produto,
         MAX(produto_nome) AS produto_nome,
-        SUM(faturamento) AS faturamento,
-        SUM(margem) AS margem,
-        SUM(qtd) AS qtd
+        COALESCE(SUM(faturamento), 0)::numeric(18,2) AS faturamento,
+        COALESCE(SUM(custo_total), 0)::numeric(18,2) AS custo_total,
+        COALESCE(SUM(margem), 0)::numeric(18,2) AS margem,
+        COALESCE(SUM(qtd), 0)::numeric(18,3) AS qtd,
+        CASE
+          WHEN COALESCE(SUM(qtd), 0) = 0 THEN 0::numeric(18,4)
+          ELSE ROUND((SUM(faturamento) / NULLIF(SUM(qtd), 0))::numeric, 4)
+        END AS valor_unitario_medio
       FROM mart.agg_produtos_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
@@ -4248,7 +4271,7 @@ def payments_overview(
     }
 
 
-def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+def _cash_live_now_live_query(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
     where_filial_dw, dw_branch_params = _branch_scope_clause("t.id_filial", id_filial)
     where_filial_live, live_branch_params = _branch_scope_clause("a.id_filial", id_filial)
     where_filial_payment, payment_branch_params = _branch_scope_clause("live_turns.id_filial", id_filial)
@@ -4544,6 +4567,331 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict
         "cancelamentos": cancelamentos[:10],
         "alerts": alert_rows,
     }
+
+
+def _cash_live_now_from_marts(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    where_filial_dw, dw_branch_params = _branch_scope_clause("t.id_filial", id_filial)
+    where_filial_open, open_branch_params = _branch_scope_clause("a.id_filial", id_filial)
+    where_filial_payment, payment_branch_params = _branch_scope_clause("p.id_filial", id_filial)
+    conn_branch_id = _conn_branch_id(id_filial)
+    sql_total_turnos = f"""
+      SELECT COUNT(*)::int AS total_turnos
+      FROM dw.fact_caixa_turno t
+      WHERE t.id_empresa = %s
+      {where_filial_dw}
+    """
+    sql_summary = f"""
+      SELECT
+        COUNT(*)::int AS caixas_abertos_fonte,
+        COUNT(*) FILTER (WHERE a.is_operational_live)::int AS caixas_abertos,
+        COUNT(*) FILTER (WHERE a.is_stale)::int AS caixas_stale,
+        COUNT(*) FILTER (WHERE a.is_operational_live AND a.severity = 'CRITICAL')::int AS caixas_criticos,
+        COUNT(*) FILTER (WHERE a.is_operational_live AND a.severity = 'HIGH')::int AS caixas_alto_risco,
+        COUNT(*) FILTER (WHERE a.is_operational_live AND a.severity = 'WARN')::int AS caixas_em_monitoramento,
+        COALESCE(SUM(a.total_vendas) FILTER (WHERE a.is_operational_live), 0)::numeric(18,2) AS total_vendas_abertas,
+        COALESCE(SUM(a.total_cancelamentos) FILTER (WHERE a.is_operational_live), 0)::numeric(18,2) AS total_cancelamentos_abertas,
+        MAX(a.snapshot_ts) AS snapshot_ts,
+        MAX(a.last_activity_ts) FILTER (WHERE a.is_operational_live) AS latest_activity_ts
+      FROM mart.agg_caixa_turno_aberto a
+      WHERE a.id_empresa = %s
+      {where_filial_open}
+    """
+    sql_open = f"""
+      SELECT
+        a.id_filial,
+        a.filial_nome,
+        a.id_turno,
+        a.id_turno::text AS turno_value,
+        a.id_usuario,
+        a.usuario_nome,
+        a.usuario_source,
+        a.abertura_ts,
+        a.last_activity_ts,
+        a.snapshot_ts,
+        a.horas_aberto,
+        a.horas_sem_movimento,
+        a.severity,
+        a.status_label,
+        a.total_vendas,
+        a.qtd_vendas,
+        a.total_cancelamentos,
+        a.qtd_cancelamentos,
+        a.total_pagamentos
+      FROM mart.agg_caixa_turno_aberto a
+      WHERE a.id_empresa = %s
+        {where_filial_open}
+        AND a.is_operational_live = true
+      ORDER BY
+        CASE a.severity
+          WHEN 'CRITICAL' THEN 0
+          WHEN 'HIGH' THEN 1
+          WHEN 'WARN' THEN 2
+          ELSE 3
+        END,
+        a.horas_aberto DESC,
+        a.last_activity_ts DESC NULLS LAST,
+        a.id_turno DESC
+      LIMIT 20
+    """
+    sql_stale = f"""
+      SELECT
+        a.id_filial,
+        a.filial_nome,
+        a.id_turno,
+        a.id_turno::text AS turno_value,
+        a.id_usuario,
+        a.usuario_nome,
+        a.usuario_source,
+        a.abertura_ts,
+        a.last_activity_ts,
+        a.snapshot_ts,
+        a.horas_aberto,
+        a.horas_sem_movimento,
+        a.total_vendas,
+        a.total_cancelamentos,
+        a.total_pagamentos
+      FROM mart.agg_caixa_turno_aberto a
+      WHERE a.id_empresa = %s
+        {where_filial_open}
+        AND a.is_stale = true
+      ORDER BY a.last_activity_ts DESC NULLS LAST, a.horas_aberto DESC, a.id_turno DESC
+      LIMIT 10
+    """
+    sql_payments = f"""
+      SELECT
+        p.forma_label,
+        p.forma_category,
+        COALESCE(SUM(p.total_valor), 0)::numeric(18,2) AS total_valor,
+        COALESCE(SUM(p.qtd_comprovantes), 0)::int AS qtd_comprovantes,
+        COUNT(DISTINCT (p.id_filial::text || ':' || p.id_turno::text))::int AS qtd_turnos
+      FROM mart.agg_caixa_forma_pagamento p
+      WHERE p.id_empresa = %s
+        {where_filial_payment}
+      GROUP BY p.forma_label, p.forma_category
+      ORDER BY total_valor DESC
+    """
+    sql_returns = f"""
+      WITH relevant_turns AS (
+        SELECT
+          a.id_empresa,
+          a.id_filial,
+          a.id_turno,
+          a.is_operational_live
+        FROM mart.agg_caixa_turno_aberto a
+        WHERE a.id_empresa = %s
+          {where_filial_open}
+      )
+      SELECT
+        t.id_filial,
+        t.id_turno,
+        t.is_operational_live,
+        COALESCE(
+          SUM(c.valor_total) FILTER (
+            WHERE COALESCE(c.cancelado, false) = false
+              AND {comercial_cfop_class_sql('c')} IN ('devolucao_saida', 'devolucao_entrada')
+          ),
+          0
+        )::numeric(18,2) AS total_devolucoes,
+        COUNT(DISTINCT c.id_comprovante) FILTER (
+          WHERE COALESCE(c.cancelado, false) = false
+            AND {comercial_cfop_class_sql('c')} IN ('devolucao_saida', 'devolucao_entrada')
+        )::int AS qtd_devolucoes
+      FROM relevant_turns t
+      LEFT JOIN dw.fact_comprovante c
+        ON c.id_empresa = t.id_empresa
+       AND c.id_filial = t.id_filial
+       AND c.id_turno = t.id_turno
+       AND {_resolved_cash_eligible_sql('c.cash_eligible', 'c.data', 'c.data_conta', 'c.id_turno')}
+      GROUP BY t.id_filial, t.id_turno, t.is_operational_live
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=conn_branch_id) as conn:
+        if not relation_exists(conn, *CASH_OPEN_RELATION) or not cash_payment_relation_exists(conn):
+            return _cash_live_now_live_query(role, id_empresa, id_filial)
+
+        cash_schema_mode = cash_open_schema_mode(conn)
+        total_turnos_row = conn.execute(sql_total_turnos, [id_empresa] + dw_branch_params).fetchone() or {"total_turnos": 0}
+        summary_row = conn.execute(sql_summary, [id_empresa] + open_branch_params).fetchone() or {}
+        open_rows = [dict(row) for row in conn.execute(sql_open, [id_empresa] + open_branch_params).fetchall()]
+        stale_rows = [dict(row) for row in conn.execute(sql_stale, [id_empresa] + open_branch_params).fetchall()]
+        payment_rows = [dict(row) for row in conn.execute(sql_payments, [id_empresa] + payment_branch_params).fetchall()]
+        return_rows = [dict(row) for row in conn.execute(sql_returns, [id_empresa] + open_branch_params).fetchall()]
+
+    return_map = {
+        (int(row.get("id_filial") or 0), int(row.get("id_turno") or 0)): {
+            "total_devolucoes": round(float(row.get("total_devolucoes") or 0), 2),
+            "qtd_devolucoes": int(row.get("qtd_devolucoes") or 0),
+            "is_operational_live": bool(row.get("is_operational_live")),
+        }
+        for row in return_rows
+    }
+
+    total_turnos = int(total_turnos_row.get("total_turnos") or 0)
+    source_open_total = int(summary_row.get("caixas_abertos_fonte") or 0)
+    operational_open_total = int(summary_row.get("caixas_abertos") or 0)
+    stale_open_total = int(summary_row.get("caixas_stale") or 0)
+    critical_count = int(summary_row.get("caixas_criticos") or 0)
+    high_count = int(summary_row.get("caixas_alto_risco") or 0)
+    warn_count = int(summary_row.get("caixas_em_monitoramento") or 0)
+    total_vendas = round(float(summary_row.get("total_vendas_abertas") or 0), 2)
+    total_cancelamentos = round(float(summary_row.get("total_cancelamentos_abertas") or 0), 2)
+    snapshot_ts = summary_row.get("snapshot_ts")
+    latest_activity_ts = summary_row.get("latest_activity_ts")
+    snapshot_ts_iso = _iso_or_none(snapshot_ts)
+    latest_activity_iso = _iso_or_none(latest_activity_ts)
+
+    for row in open_rows:
+        return_info = return_map.get((int(row.get("id_filial") or 0), int(row.get("id_turno") or 0)), {})
+        row["total_vendas"] = round(float(row.get("total_vendas") or 0), 2)
+        row["qtd_vendas"] = int(row.get("qtd_vendas") or 0)
+        row["total_cancelamentos"] = round(float(row.get("total_cancelamentos") or 0), 2)
+        row["qtd_cancelamentos"] = int(row.get("qtd_cancelamentos") or 0)
+        row["total_devolucoes"] = round(float(return_info.get("total_devolucoes") or 0), 2)
+        row["qtd_devolucoes"] = int(return_info.get("qtd_devolucoes") or 0)
+        row["total_pagamentos"] = round(float(row.get("total_pagamentos") or 0), 2)
+        row["caixa_liquido"] = cash_net_value(
+            row.get("total_vendas"),
+            row.get("total_cancelamentos"),
+            row.get("total_devolucoes"),
+        )
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
+        row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
+        row["alert_message"] = (
+            f"O turno {row['turno_label']} da {row['filial_label']} segue aberto há {row.get('horas_aberto') or 0} horas."
+        )
+
+    for row in stale_rows:
+        return_info = return_map.get((int(row.get("id_filial") or 0), int(row.get("id_turno") or 0)), {})
+        row["total_vendas"] = round(float(row.get("total_vendas") or 0), 2)
+        row["total_cancelamentos"] = round(float(row.get("total_cancelamentos") or 0), 2)
+        row["total_devolucoes"] = round(float(return_info.get("total_devolucoes") or 0), 2)
+        row["qtd_devolucoes"] = int(return_info.get("qtd_devolucoes") or 0)
+        row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
+        row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
+        row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
+
+    total_devolucoes = round(sum(float(row.get("total_devolucoes") or 0) for row in open_rows), 2)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+
+    payment_mix = [
+        {
+            "label": str(row.get("forma_label") or "NÃO IDENTIFICADO").strip() or "NÃO IDENTIFICADO",
+            "category": row.get("forma_category"),
+            "total_valor": round(float(row.get("total_valor") or 0), 2),
+            "qtd_comprovantes": int(row.get("qtd_comprovantes") or 0),
+            "qtd_turnos": int(row.get("qtd_turnos") or 0),
+        }
+        for row in payment_rows
+    ]
+
+    cancelamentos = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "turno_label": row.get("turno_label"),
+            "usuario_label": row.get("usuario_label"),
+            "total_cancelamentos": round(float(row.get("total_cancelamentos") or 0), 2),
+            "qtd_cancelamentos": int(row.get("qtd_cancelamentos") or 0),
+        }
+        for row in open_rows
+        if float(row.get("total_cancelamentos") or 0) > 0
+    ]
+    cancelamentos.sort(key=lambda item: float(item.get("total_cancelamentos") or 0), reverse=True)
+
+    alert_rows = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_nome": row.get("filial_nome"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "turno_label": row.get("turno_label"),
+            "id_usuario": row.get("id_usuario"),
+            "usuario_nome": row.get("usuario_nome"),
+            "usuario_label": row.get("usuario_label"),
+            "abertura_ts": row.get("abertura_ts"),
+            "last_activity_ts": row.get("last_activity_ts"),
+            "horas_aberto": row.get("horas_aberto"),
+            "severity": row.get("severity"),
+            "title": row.get("alert_message"),
+            "body": row.get("alert_message"),
+            "url": "/cash",
+            "insight_id_hash": None,
+        }
+        for row in open_rows
+        if str(row.get("severity") or "").upper() in {"CRITICAL", "HIGH", "WARN"}
+    ][:10]
+
+    if total_turnos == 0:
+        source_status = "unavailable"
+        summary = "A visão operacional em tempo real ainda não possui turnos carregados no DW."
+    elif source_open_total == 0:
+        source_status = "ok"
+        summary = "Nenhum caixa permanece aberto na fonte operacional atual."
+    elif operational_open_total == 0 and stale_open_total > 0:
+        source_status = "ok"
+        summary = (
+            f"Nenhum caixa ficou ativo na janela operacional recente. "
+            f"{stale_open_total} turno(s) ainda marcados abertos na fonte foram isolados como stale."
+        )
+    elif critical_count > 0:
+        source_status = "ok"
+        summary = f"{critical_count} caixa(s) aberto(s) há mais de 24 horas exigem ação imediata."
+    elif high_count > 0:
+        source_status = "ok"
+        summary = f"{high_count} caixa(s) aberto(s) já ultrapassaram a janela segura de operação."
+    elif warn_count > 0:
+        source_status = "ok"
+        summary = f"{warn_count} caixa(s) aberto(s) merecem monitoramento antes do fim do dia."
+    else:
+        source_status = "ok"
+        summary = f"{operational_open_total} caixa(s) permanecem abertos na leitura operacional recente."
+
+    if stale_open_total > 0 and source_status == "ok" and operational_open_total > 0:
+        summary = f"{summary} Mais {stale_open_total} turno(s) abertos na fonte ficaram fora do ao vivo por estarem stale."
+
+    return {
+        "source_status": source_status,
+        "summary": summary,
+        "kpis": {
+            "total_turnos": total_turnos,
+            "caixas_abertos_fonte": source_open_total,
+            "caixas_abertos": operational_open_total,
+            "caixas_stale": stale_open_total,
+            "caixas_criticos": critical_count,
+            "caixas_alto_risco": high_count,
+            "caixas_em_monitoramento": warn_count,
+            "total_vendas_abertas": total_vendas,
+            "total_cancelamentos_abertos": total_cancelamentos,
+            "total_devolucoes_abertas": total_devolucoes,
+            "caixa_liquido_aberto": caixa_liquido,
+            "snapshot_ts": snapshot_ts,
+            "latest_activity_ts": latest_activity_ts,
+            "stale_window_hours": CASH_STALE_WINDOW_HOURS,
+            "schema_mode": cash_schema_mode,
+        },
+        "operational_sync": {
+            "last_sync_at": latest_activity_iso or snapshot_ts_iso,
+            "snapshot_generated_at": snapshot_ts_iso,
+            "source": "mart.agg_caixa_turno_aberto",
+        },
+        "freshness": {
+            "mode": "live_monitor",
+            "live_through_at": latest_activity_iso or snapshot_ts_iso,
+            "snapshot_generated_at": snapshot_ts_iso,
+            "source": "mart.agg_caixa_turno_aberto + mart.agg_caixa_forma_pagamento",
+        },
+        "open_boxes": open_rows,
+        "stale_boxes": stale_rows,
+        "payment_mix": payment_mix,
+        "cancelamentos": cancelamentos[:10],
+        "alerts": alert_rows,
+    }
+
+
+def _cash_live_now(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    return _cash_live_now_from_marts(role, id_empresa, id_filial)
 
 
 def _cash_sales_docs_cte(
@@ -5654,78 +6002,94 @@ def sales_declining_products_signal(
             "items": [],
         }
 
-    sales_window_cte, params, conn_branch_id = _sales_window_fact_cte(
-        id_empresa=id_empresa,
-        id_filial=id_filial,
-        date_predicate_sql="v.data_key BETWEEN %s AND %s",
-        date_params=[_date_key(prior_start), _date_key(recent_end)],
-    )
     recent_start_key = _date_key(recent_start)
     recent_end_key = _date_key(recent_end)
     prior_start_key = _date_key(prior_start)
     prior_end_key = _date_key(prior_end)
+    where_filial, branch_params = _branch_scope_clause("a.id_filial", id_filial)
+    dim_where_filial, dim_branch_params = _branch_scope_clause("p.id_filial", id_filial)
+    conn_branch_id = _conn_branch_id(id_filial)
     active_filter = _active_product_filter_expression("p")
-    sql = sales_window_cte + f"""
-      , product_windows AS (
+    params = [
+        recent_start_key,
+        recent_end_key,
+        recent_start_key,
+        recent_end_key,
+        prior_start_key,
+        prior_end_key,
+        prior_start_key,
+        prior_end_key,
+        id_empresa,
+        prior_start_key,
+        recent_end_key,
+        *branch_params,
+        id_empresa,
+        *dim_branch_params,
+        id_empresa,
+        limit,
+    ]
+    sql = f"""
+      WITH aggregated AS (
         SELECT
-          si.id_produto,
-          MAX(COALESCE(NULLIF(p.nome, ''), '#ID ' || si.id_produto::text)) AS produto_nome,
-          MAX({_group_name_expression('g', 'p')}) AS grupo_nome,
-          COALESCE(SUM(CASE WHEN si.data_key BETWEEN %s AND %s THEN si.total ELSE 0 END), 0)::numeric(18,2) AS recent_faturamento,
-          COALESCE(SUM(CASE WHEN si.data_key BETWEEN %s AND %s THEN si.qtd ELSE 0 END), 0)::numeric(18,3) AS recent_qtd,
-          COALESCE(SUM(CASE WHEN si.data_key BETWEEN %s AND %s THEN si.total ELSE 0 END), 0)::numeric(18,2) AS prior_faturamento,
-          COALESCE(SUM(CASE WHEN si.data_key BETWEEN %s AND %s THEN si.qtd ELSE 0 END), 0)::numeric(18,3) AS prior_qtd
-        FROM sale_items si
-        JOIN dw.dim_produto p
-          ON p.id_empresa = si.id_empresa
-         AND p.id_filial = si.id_filial
-         AND p.id_produto = si.id_produto
-         AND {active_filter}
+          a.id_produto,
+          MAX(COALESCE(NULLIF(a.produto_nome, ''), '#ID ' || a.id_produto::text)) AS produto_nome,
+          COALESCE(SUM(a.faturamento) FILTER (WHERE a.data_key BETWEEN %s AND %s), 0)::numeric(18,2) AS recent_faturamento,
+          COALESCE(SUM(a.qtd) FILTER (WHERE a.data_key BETWEEN %s AND %s), 0)::numeric(18,3) AS recent_qtd,
+          COALESCE(SUM(a.faturamento) FILTER (WHERE a.data_key BETWEEN %s AND %s), 0)::numeric(18,2) AS prior_faturamento,
+          COALESCE(SUM(a.qtd) FILTER (WHERE a.data_key BETWEEN %s AND %s), 0)::numeric(18,3) AS prior_qtd
+        FROM mart.agg_produtos_diaria a
+        WHERE a.id_empresa = %s
+          AND a.data_key BETWEEN %s AND %s
+          {where_filial}
+        GROUP BY a.id_produto
+      ), latest_products AS (
+        SELECT DISTINCT ON (p.id_empresa, p.id_produto)
+          p.id_empresa,
+          p.id_produto,
+          {_group_name_expression('g', 'p')} AS grupo_nome
+        FROM dw.dim_produto p
         LEFT JOIN dw.dim_grupo_produto g
-          ON g.id_empresa = si.id_empresa
-         AND g.id_filial = si.id_filial
-         AND g.id_grupo_produto = si.id_grupo_produto
-        GROUP BY si.id_produto
+          ON g.id_empresa = p.id_empresa
+         AND g.id_filial = p.id_filial
+         AND g.id_grupo_produto = p.id_grupo_produto
+        WHERE p.id_empresa = %s
+          {dim_where_filial}
+          AND {active_filter}
+        ORDER BY
+          p.id_empresa,
+          p.id_produto,
+          p.updated_at DESC NULLS LAST,
+          p.created_at DESC NULLS LAST,
+          p.id_filial
       )
       SELECT
-        id_produto,
-        produto_nome,
-        grupo_nome,
-        recent_faturamento,
-        recent_qtd,
-        prior_faturamento,
-        prior_qtd,
-        (prior_faturamento - recent_faturamento)::numeric(18,2) AS delta_faturamento,
+        a.id_produto,
+        a.produto_nome,
+        COALESCE(lp.grupo_nome, '(Sem grupo)') AS grupo_nome,
+        a.recent_faturamento,
+        a.recent_qtd,
+        a.prior_faturamento,
+        a.prior_qtd,
+        (a.prior_faturamento - a.recent_faturamento)::numeric(18,2) AS delta_faturamento,
         CASE
-          WHEN prior_faturamento <= 0 THEN 0::numeric(18,2)
-          ELSE ROUND((((recent_faturamento / NULLIF(prior_faturamento, 0)) - 1) * 100)::numeric, 2)
+          WHEN a.prior_faturamento <= 0 THEN 0::numeric(18,2)
+          ELSE ROUND((((a.recent_faturamento / NULLIF(a.prior_faturamento, 0)) - 1) * 100)::numeric, 2)
         END AS variation_pct
-      FROM product_windows
-      WHERE prior_faturamento >= 1000
-        AND (prior_faturamento - recent_faturamento) >= 300
-        AND recent_faturamento <= (prior_faturamento * 0.85)
-      ORDER BY delta_faturamento DESC, prior_faturamento DESC, produto_nome
+      FROM aggregated a
+      LEFT JOIN latest_products lp
+        ON lp.id_empresa = %s
+       AND lp.id_produto = a.id_produto
+      WHERE a.prior_faturamento >= 1000
+        AND (a.prior_faturamento - a.recent_faturamento) >= 300
+        AND a.recent_faturamento <= (a.prior_faturamento * 0.85)
+      ORDER BY delta_faturamento DESC, a.prior_faturamento DESC, a.produto_nome
       LIMIT %s
     """
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=conn_branch_id) as conn:
         rows = [
             dict(row)
-            for row in conn.execute(
-                sql,
-                params
-                + [
-                    recent_start_key,
-                    recent_end_key,
-                    recent_start_key,
-                    recent_end_key,
-                    prior_start_key,
-                    prior_end_key,
-                    prior_start_key,
-                    prior_end_key,
-                    limit,
-                ],
-            ).fetchall()
+            for row in conn.execute(sql, params).fetchall()
         ]
 
     items = [

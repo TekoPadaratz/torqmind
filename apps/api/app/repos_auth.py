@@ -465,14 +465,21 @@ def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[
     }
 
 
-def _build_dashboard_home_path(scope: dict[str, Any], include_dt_ref: bool = False) -> str:
-    params: list[tuple[str, str]] = [
-        ("dt_ini", str(scope["dt_ini"])),
-        ("dt_fim", str(scope["dt_fim"])),
-        ("id_empresa", str(scope["id_empresa"])),
-    ]
-    if include_dt_ref and scope.get("dt_ref"):
-        params.append(("dt_ref", str(scope["dt_ref"])))
+def _build_dashboard_home_path(
+    scope: dict[str, Any],
+    include_dt_ref: bool = False,
+    *,
+    include_dates: bool = True,
+) -> str:
+    params: list[tuple[str, str]] = [("id_empresa", str(scope["id_empresa"]))]
+    if include_dates:
+        params = [
+            ("dt_ini", str(scope["dt_ini"])),
+            ("dt_fim", str(scope["dt_fim"])),
+            ("id_empresa", str(scope["id_empresa"])),
+        ]
+        if include_dt_ref and scope.get("dt_ref"):
+            params.append(("dt_ref", str(scope["dt_ref"])))
 
     branch_ids = [str(value) for value in (scope.get("id_filiais") or []) if value is not None]
     if scope.get("id_filial") is not None:
@@ -846,7 +853,7 @@ def _build_session_context(
     )
     if include_default_scope and product_access_enabled and product_scope_tenant is not None:
         default_scope = _build_default_product_scope(product_scope_tenant, product_scope_branch)
-        home_path = _build_dashboard_home_path(default_scope, include_dt_ref=True)
+        home_path = _build_dashboard_home_path(default_scope, include_dt_ref=False, include_dates=False)
 
     return {
         "sub": str(user["id"]),
