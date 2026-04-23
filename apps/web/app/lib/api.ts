@@ -1,6 +1,7 @@
 import axios from "axios";
 import type { AxiosRequestConfig } from "axios";
 import { resolveBrowserApiBaseURL } from "./api-base-client.mjs";
+import { isRequestCanceled as isRequestCanceledBase } from "./request-cancel.mjs";
 
 export const api = axios.create({
   baseURL: resolveBrowserApiBaseURL(),
@@ -23,4 +24,8 @@ export async function apiGet(path: string, config?: AxiosRequestConfig) {
 export async function apiPost(path: string, body: any, config?: AxiosRequestConfig) {
   const res = await api.post(path, body, config);
   return res.data;
+}
+
+export function isRequestCanceled(error: any): boolean {
+  return isRequestCanceledBase(error);
 }

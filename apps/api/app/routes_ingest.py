@@ -186,7 +186,7 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "cfop_shadow": _to_int(_get_any(obj, ["CFOP", "cfop"])),
             "qtd_shadow": _to_numeric(_get_any(obj, ["QTDE", "QTD", "quantidade"])),
             "valor_unitario_shadow": _to_numeric(_get_any(obj, ["VLRUNITARIO", "VALOR_UNITARIO", "valor_unitario"])),
-            "total_shadow": _to_numeric(_get_any(obj, ["TOTAL", "VLRTOTAL", "total"])),
+            "total_shadow": _to_numeric(_get_any(obj, ["TOTAL", "VLRTOTALITEM", "VLRTOTAL", "total"])),
             "desconto_shadow": _to_numeric(_get_any(obj, ["VLRDESCONTO", "VALOR_DESCONTO", "desconto"])),
             "custo_unitario_shadow": _to_numeric(
                 _get_any(
@@ -211,7 +211,7 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "cfop_shadow": _to_int(_get_any(obj, ["CFOP", "cfop"])),
             "qtd_shadow": _to_numeric(_get_any(obj, ["QTDE", "QTD", "quantidade"])),
             "valor_unitario_shadow": _to_numeric(_get_any(obj, ["VLRUNITARIO", "VALOR_UNITARIO", "valor_unitario"])),
-            "total_shadow": _to_numeric(_get_any(obj, ["TOTAL", "VLRTOTAL", "total"])),
+            "total_shadow": _to_numeric(_get_any(obj, ["TOTAL", "VLRTOTALITEM", "VLRTOTAL", "total"])),
             "desconto_shadow": _to_numeric(_get_any(obj, ["VLRDESCONTO", "VALOR_DESCONTO", "desconto"])),
             "custo_unitario_shadow": _to_numeric(
                 _get_any(

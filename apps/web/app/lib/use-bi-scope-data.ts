@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { extractApiError } from './errors';
+import { isRequestCanceled } from './api';
 import { finishScopeTransition, loadStableScopeData } from './scope-runtime';
 import type { ScopeQuery } from './scope';
 import { loadSession, readCachedSession } from './session';
@@ -81,7 +82,7 @@ export function useBiScopeData<T>({
         setData(payload);
         finishScopeTransition(scope, moduleKey, true);
       } catch (err: any) {
-        if (disposed || activeRequestRef.current !== requestToken || err?.name === 'AbortError') return;
+        if (disposed || activeRequestRef.current !== requestToken || isRequestCanceled(err)) return;
         setError(extractApiError(err, errorMessage));
         finishScopeTransition(scope, moduleKey, false);
       } finally {

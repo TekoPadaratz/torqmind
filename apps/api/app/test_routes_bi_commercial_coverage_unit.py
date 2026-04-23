@@ -95,6 +95,49 @@ class RoutesBiCommercialCoverageUnitTest(unittest.TestCase):
         mock_leaderboard.assert_called_once_with("MASTER", 1, 7, date(2026, 3, 16), date(2026, 3, 31), limit=15)
         self.assertEqual(payload["commercial_coverage"]["effective_dt_fim"], date(2026, 3, 31))
 
+    @patch("app.routes_bi._with_cached_response", side_effect=_direct_cached_response)
+    @patch("app.routes_bi.resolve_business_date", return_value=date(2026, 4, 22))
+    @patch("app.routes_bi.resolve_scope_filters", return_value=(1, 7, 7))
+    @patch("app.routes_bi.repos_mart.monthly_goal_projection", return_value={"status": "ok"})
+    @patch(
+        "app.routes_bi.repos_mart.risk_top_employees",
+        side_effect=routes_bi.repos_mart.SNAPSHOT_FALLBACK_ERRORS[0]("risco_top_funcionarios_diaria not populated"),
+    )
+    @patch("app.routes_bi.repos_mart.goals_today", return_value=[{"id_meta": 1}])
+    @patch("app.routes_bi.repos_mart.leaderboard_employees", return_value=[{"id_funcionario": 10}])
+    @patch("app.routes_bi.business_clock_payload", return_value={"business_date": "2026-04-22"})
+    @patch(
+        "app.routes_bi.repos_mart.commercial_window_coverage",
+        return_value={
+            "mode": "exact",
+            "effective_dt_ini": date(2026, 4, 22),
+            "effective_dt_fim": date(2026, 4, 22),
+            "latest_available_dt": date(2026, 4, 22),
+        },
+    )
+    def test_goals_overview_keeps_real_payload_when_risk_mart_is_unavailable(
+        self,
+        _mock_coverage,
+        _mock_business_clock,
+        _mock_leaderboard,
+        _mock_goals_today,
+        _mock_risk_top,
+        _mock_projection,
+        _mock_scope,
+        _mock_business_date,
+        _mock_cache,
+    ) -> None:
+        payload = routes_bi.goals_overview(
+            dt_ini=date(2026, 4, 22),
+            dt_fim=date(2026, 4, 22),
+            dt_ref=date(2026, 4, 22),
+            claims={"role": "MASTER"},
+        )
+
+        self.assertEqual(len(payload["leaderboard"]), 1)
+        self.assertEqual(len(payload["goals_today"]), 1)
+        self.assertEqual(payload["risk_top_employees"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1557,11 +1557,17 @@ def goals_overview(
             dt_ini,
             dt_fim,
         )
+        try:
+            risk_top_employees = repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=15)
+        except repos_mart.SNAPSHOT_FALLBACK_ERRORS:
+            risk_top_employees = []
+        except TimeoutError:
+            risk_top_employees = []
         return {
             "business_clock": business_clock_payload(tenant),
             "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, effective_dt_ini, effective_dt_fim, limit=15),
             "goals_today": repos_mart.goals_today(role, tenant, filial, goal_date=as_of),
-            "risk_top_employees": repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=15),
+            "risk_top_employees": risk_top_employees,
             "monthly_projection": repos_mart.monthly_goal_projection(role, tenant, filial, as_of=as_of),
             "commercial_coverage": commercial_coverage,
         }

@@ -12,6 +12,7 @@ Design:
 
 from datetime import date, timedelta
 from typing import Optional, List, Dict, Any
+import logging
 import unicodedata
 
 from app.business_time import business_clock_payload, business_timezone_name, business_today
@@ -22,6 +23,7 @@ from app.cash_operational_truth import (
     cash_payment_relation_exists,
     relation_exists,
 )
+from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.db import get_conn
 from app.sales_semantics import (
     CANCELLATION_STATUS,
@@ -35,6 +37,8 @@ from app.sales_semantics import (
     sales_status_filter_sql,
     sales_status_sql,
 )
+
+logger = logging.getLogger(__name__)
 
 
 LOCAL_VENDA_LABELS = {
@@ -839,6 +843,55 @@ def commercial_window_coverage(
     )
 
 
+def _dashboard_home_modeled_risk_bundle(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    try:
+        return {
+            "source_status": "ok",
+            "message": None,
+            "insights": risk_insights(role, id_empresa, id_filial, dt_ini, dt_fim, limit=20),
+            "kpis": risk_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
+            "window": risk_data_window(role, id_empresa, id_filial),
+        }
+    except SNAPSHOT_FALLBACK_ERRORS as exc:
+        logger.warning(
+            "Dashboard home modeled risk unavailable tenant=%s filial=%s: %s",
+            id_empresa,
+            id_filial,
+            exc.__class__.__name__,
+            exc_info=exc,
+        )
+    except TimeoutError as exc:
+        logger.warning(
+            "Dashboard home modeled risk timed out tenant=%s filial=%s",
+            id_empresa,
+            id_filial,
+            exc_info=exc,
+        )
+
+    return {
+        "source_status": "unavailable",
+        "message": "A leitura modelada de risco ainda não ficou pronta neste ambiente restaurado.",
+        "insights": [],
+        "kpis": {
+            "total_eventos": None,
+            "eventos_alto_risco": None,
+            "impacto_total": None,
+            "score_medio": None,
+        },
+        "window": {
+            "min_data_key": None,
+            "max_data_key": None,
+            "rows": None,
+        },
+    }
+
+
 def _commercial_annual_comparison(
     monthly_rows: List[Dict[str, Any]],
     *,
@@ -1042,24 +1095,41 @@ def dashboard_home_bundle(
     dt_fim: date,
     dt_ref: date,
 ) -> Dict[str, Any]:
-    insights_rows = risk_insights(role, id_empresa, id_filial, dt_ini, dt_fim, limit=20)
+    modeled_risk_bundle = _dashboard_home_modeled_risk_bundle(role, id_empresa, id_filial, dt_ini, dt_fim)
+    insights_rows = modeled_risk_bundle.get("insights") or []
     sales_coverage = commercial_window_coverage(role, id_empresa, id_filial, dt_ini, dt_fim)
     sales_dt_ini = sales_coverage.get("effective_dt_ini") or dt_ini
     sales_dt_fim = sales_coverage.get("effective_dt_fim") or dt_fim
     signal_dt_ref = sales_coverage.get("effective_dt_fim") or dt_ref
-    sales = sales_operational_range_bundle(
-        role,
-        id_empresa,
-        id_filial,
+    sales_live_day = _sales_live_day_in_window(
         sales_dt_ini,
         sales_dt_fim,
-        include_rankings=False,
-    ) or _empty_sales_overview_bundle()
+        dt_ref,
+        tenant_id=id_empresa,
+    )
+    if sales_live_day is None:
+        sales = _sales_historical_bundle_from_marts(
+            role,
+            id_empresa,
+            id_filial,
+            sales_dt_ini,
+            sales_dt_fim,
+            include_details=False,
+        )
+    else:
+        sales = sales_operational_range_bundle(
+            role,
+            id_empresa,
+            id_filial,
+            sales_dt_ini,
+            sales_dt_fim,
+            include_rankings=False,
+        ) or _empty_sales_overview_bundle()
     sales["commercial_coverage"] = sales_coverage
     sales["reading_status"] = (
         "latest_compatible"
         if sales_coverage.get("mode") == "shifted_latest"
-        else str(sales.get("reading_status") or "operational_overlay")
+        else str(sales.get("reading_status") or ("operational_overlay" if sales_live_day else "historical_snapshot"))
     )
     peak_hours_signal = sales_peak_hours_signal(role, id_empresa, id_filial, signal_dt_ref)
     declining_products_signal = sales_declining_products_signal(role, id_empresa, id_filial, signal_dt_ref)
@@ -1068,8 +1138,10 @@ def dashboard_home_bundle(
         "window": fraud_data_window(role, id_empresa, id_filial),
     }
     modeled_risk = {
-        "kpis": risk_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
-        "window": risk_data_window(role, id_empresa, id_filial),
+        "source_status": modeled_risk_bundle.get("source_status"),
+        "message": modeled_risk_bundle.get("message"),
+        "kpis": modeled_risk_bundle.get("kpis"),
+        "window": modeled_risk_bundle.get("window"),
     }
     churn = customers_churn_bundle(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=10)
     finance_aging = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
@@ -1216,7 +1288,10 @@ def _sales_live_day_in_window(
     as_of: Optional[date] = None,
     tenant_id: Optional[int] = None,
 ) -> Optional[date]:
-    live_day = as_of or business_today(tenant_id)
+    actual_business_today = business_today(tenant_id)
+    if as_of is not None and as_of != actual_business_today:
+        return None
+    live_day = actual_business_today
     if dt_ini <= live_day <= dt_fim:
         return live_day
     return None
@@ -2320,6 +2395,52 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def _sales_historical_bundle_from_marts(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    *,
+    include_details: bool = True,
+) -> Dict[str, Any]:
+    kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim) or {}
+    by_day = dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim)
+    by_hour = sales_by_hour(role, id_empresa, id_filial, dt_ini, dt_fim) if include_details else []
+    top_products = sales_top_products(role, id_empresa, id_filial, dt_ini, dt_fim, limit=15) if include_details else []
+    top_groups = sales_top_groups(role, id_empresa, id_filial, dt_ini, dt_fim, limit=10) if include_details else []
+    top_employees = sales_top_employees(role, id_empresa, id_filial, dt_ini, dt_fim, limit=10) if include_details else []
+
+    return {
+        "kpis": {
+            "faturamento": round(float(kpis.get("faturamento") or 0), 2),
+            "margem": round(float(kpis.get("margem") or 0), 2),
+            "ticket_medio": round(float(kpis.get("ticket_medio") or 0), 2),
+            "devolucoes": 0.0,
+        },
+        "by_day": by_day,
+        "by_hour": by_hour,
+        "top_products": _normalize_sales_top_products_rows(top_products),
+        "top_groups": top_groups,
+        "top_employees": top_employees,
+        "stats": {
+            "vendas": int(sum(int(row.get("vendas") or 0) for row in by_hour)),
+        },
+        "operational_sync": {
+            "last_sync_at": None,
+            "source": "mart.agg_vendas_diaria",
+            "dt_ref": dt_fim.isoformat(),
+        },
+        "freshness": {
+            "mode": "historical_snapshot",
+            "operational_day": None,
+            "live_through_at": None,
+            "historical_through_dt": dt_fim.isoformat(),
+            "source": "mart.agg_vendas_diaria",
+        },
+    }
+
+
 def sales_overview_bundle(
     role: str,
     id_empresa: int,
@@ -2333,16 +2454,32 @@ def sales_overview_bundle(
     sales_coverage = commercial_window_coverage(role, id_empresa, id_filial, dt_ini, dt_fim)
     effective_dt_ini = sales_coverage.get("effective_dt_ini") or dt_ini
     effective_dt_fim = sales_coverage.get("effective_dt_fim") or dt_fim
-    bundle = sales_operational_range_bundle(
-        role,
-        id_empresa,
-        id_filial,
+    live_day = _sales_live_day_in_window(
         effective_dt_ini,
         effective_dt_fim,
-        include_rankings=include_details,
+        as_of,
+        tenant_id=id_empresa,
     )
-    if bundle is None:
-        bundle = _empty_sales_overview_bundle()
+    if live_day is None:
+        bundle = _sales_historical_bundle_from_marts(
+            role,
+            id_empresa,
+            id_filial,
+            effective_dt_ini,
+            effective_dt_fim,
+            include_details=include_details,
+        )
+    else:
+        bundle = sales_operational_range_bundle(
+            role,
+            id_empresa,
+            id_filial,
+            effective_dt_ini,
+            effective_dt_fim,
+            include_rankings=include_details,
+        )
+        if bundle is None:
+            bundle = _empty_sales_overview_bundle()
     commercial = sales_commercial_overview(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
     bundle["commercial_kpis"] = commercial.get("kpis") or _empty_sales_overview_bundle()["commercial_kpis"]
     bundle["cfop_breakdown"] = commercial.get("cfop_breakdown") or []
@@ -2351,10 +2488,9 @@ def sales_overview_bundle(
     bundle["annual_comparison"] = commercial.get("annual_comparison") or _empty_sales_overview_bundle()["annual_comparison"]
     bundle["commercial_coverage"] = sales_coverage
 
-    live_day = _sales_live_day_in_window(dt_ini, dt_fim, as_of, tenant_id=id_empresa)
     freshness = dict(bundle.get("freshness") or {})
     operational_sync = dict(bundle.get("operational_sync") or {})
-    reading_status = "operational_overlay"
+    reading_status = "historical_snapshot" if live_day is None else "operational_overlay"
 
     if live_day is None:
         freshness.update(
@@ -3684,10 +3820,10 @@ def customers_delinquency_overview(
         FROM base
         WHERE valor_aberto > 0
           AND id_cliente <> -1
-      ), ranked AS (
+      ), per_branch_customer AS (
         SELECT
+          o.id_filial,
           o.id_cliente,
-          COALESCE(NULLIF(d.nome, ''), '#ID ' || o.id_cliente::text) AS cliente_nome,
           COUNT(*)::int AS titulos,
           MAX(o.dias_atraso)::int AS max_dias_atraso,
           COALESCE(SUM(o.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
@@ -3698,18 +3834,47 @@ def customers_delinquency_overview(
           COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
           COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus
         FROM open_rows o
+        GROUP BY o.id_filial, o.id_cliente
+      ), named AS (
+        SELECT
+          p.id_cliente,
+          COALESCE(NULLIF(d.nome, ''), '#ID ' || p.id_cliente::text) AS cliente_nome,
+          p.titulos,
+          p.max_dias_atraso,
+          p.valor_aberto,
+          p.titulos_30,
+          p.titulos_60,
+          p.titulos_90_plus,
+          p.valor_30,
+          p.valor_60,
+          p.valor_90_plus
+        FROM per_branch_customer p
         LEFT JOIN LATERAL (
           SELECT d.nome
           FROM dw.dim_cliente d
           WHERE d.id_empresa = %s
-            AND d.id_cliente = o.id_cliente
+            AND d.id_cliente = p.id_cliente
           ORDER BY
-            CASE WHEN d.id_filial = o.id_filial THEN 0 ELSE 1 END,
+            CASE WHEN d.id_filial = p.id_filial THEN 0 ELSE 1 END,
             d.updated_at DESC,
             d.id_filial
           LIMIT 1
         ) d ON true
-        GROUP BY o.id_cliente, d.nome
+      ), ranked AS (
+        SELECT
+          n.id_cliente,
+          MAX(n.cliente_nome) AS cliente_nome,
+          COALESCE(SUM(n.titulos), 0)::int AS titulos,
+          MAX(n.max_dias_atraso)::int AS max_dias_atraso,
+          COALESCE(SUM(n.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
+          COALESCE(SUM(n.titulos_30), 0)::int AS titulos_30,
+          COALESCE(SUM(n.titulos_60), 0)::int AS titulos_60,
+          COALESCE(SUM(n.titulos_90_plus), 0)::int AS titulos_90_plus,
+          COALESCE(SUM(n.valor_30), 0)::numeric(18,2) AS valor_30,
+          COALESCE(SUM(n.valor_60), 0)::numeric(18,2) AS valor_60,
+          COALESCE(SUM(n.valor_90_plus), 0)::numeric(18,2) AS valor_90_plus
+        FROM named n
+        GROUP BY n.id_cliente
       ), totals AS (
         SELECT
           COUNT(DISTINCT id_cliente)::int AS clientes_em_aberto,
@@ -5551,6 +5716,111 @@ def _cash_historical_overview(
     }
 
 
+def _cash_historical_overview_from_marts(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    commercial = cash_commercial_overview(role, id_empresa, id_filial, dt_ini, dt_fim)
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+
+    sql_payment_mix = f"""
+      SELECT
+        label,
+        category,
+        COALESCE(SUM(total_valor), 0)::numeric(18,2) AS total_valor,
+        COALESCE(SUM(qtd_comprovantes), 0)::int AS qtd_comprovantes,
+        COUNT(DISTINCT data_key)::int AS qtd_turnos
+      FROM mart.agg_pagamentos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      GROUP BY label, category
+      ORDER BY total_valor DESC, label
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        payment_mix_rows = [
+            dict(row)
+            for row in conn.execute(sql_payment_mix, [id_empresa, ini, fim] + branch_params).fetchall()
+        ]
+
+    payment_mix = [
+        {
+            "label": row.get("label"),
+            "category": row.get("category"),
+            "total_valor": round(float(row.get("total_valor") or 0), 2),
+            "qtd_comprovantes": int(row.get("qtd_comprovantes") or 0),
+            "qtd_turnos": int(row.get("qtd_turnos") or 0),
+        }
+        for row in payment_mix_rows
+    ]
+    commercial_top_turnos = commercial.get("top_turnos") or []
+    cancelamentos = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "turno_label": row.get("turno_label"),
+            "usuario_label": row.get("usuario_label"),
+            "total_cancelamentos": round(float(row.get("total_cancelamentos") or 0), 2),
+            "qtd_cancelamentos": int(row.get("qtd_cancelamentos") or 0),
+        }
+        for row in sorted(commercial_top_turnos, key=lambda item: float(item.get("total_cancelamentos") or 0), reverse=True)
+        if float(row.get("total_cancelamentos") or 0) > 0
+    ]
+
+    commercial_kpis = dict(commercial.get("kpis") or {})
+    total_vendas = round(float(commercial_kpis.get("total_vendas") or 0), 2)
+    total_cancelamentos = round(float(commercial_kpis.get("total_cancelamentos") or 0), 2)
+    total_pagamentos = round(float(commercial_kpis.get("total_pagamentos") or 0), 2)
+    caixas_periodo = int(commercial_kpis.get("caixas_periodo") or 0)
+    qtd_vendas = int(commercial_kpis.get("qtd_vendas") or 0)
+    qtd_cancelamentos = int(sum(int(row.get("qtd_cancelamentos") or 0) for row in cancelamentos))
+
+    if caixas_periodo == 0 and total_pagamentos == 0:
+        source_status = "unavailable"
+    elif total_vendas == 0 and total_pagamentos == 0 and total_cancelamentos == 0:
+        source_status = "partial"
+    else:
+        source_status = "ok"
+
+    return {
+        "source_status": source_status,
+        "summary": commercial.get("summary"),
+        "requested_window": {
+            "dt_ini": dt_ini,
+            "dt_fim": dt_fim,
+        },
+        "coverage": {
+            "min_data_key": _date_key(dt_ini),
+            "max_data_key": _date_key(dt_fim),
+        },
+        "kpis": {
+            "caixas_periodo": caixas_periodo,
+            "dias_com_movimento": len(commercial.get("by_day") or []),
+            "ticket_medio": round(total_vendas / qtd_vendas, 2) if qtd_vendas else 0.0,
+            "total_vendas": total_vendas,
+            "total_pagamentos": total_pagamentos,
+            "total_cancelamentos": total_cancelamentos,
+            "qtd_cancelamentos": qtd_cancelamentos,
+            "caixas_com_cancelamento": len(cancelamentos),
+            "total_devolucoes": 0.0,
+            "qtd_devolucoes": 0,
+            "caixas_com_devolucao": 0,
+            "caixa_liquido": cash_net_value(total_vendas, total_cancelamentos, 0.0),
+        },
+        "by_day": commercial.get("by_day") or [],
+        "payment_mix": payment_mix,
+        "top_turnos": commercial.get("top_turnos") or [],
+        "cancelamentos": cancelamentos,
+    }
+
+
 def cash_overview(
     role: str,
     id_empresa: int,
@@ -5563,7 +5833,13 @@ def cash_overview(
     commercial_coverage = commercial_window_coverage(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
     historical_dt_ini = commercial_coverage.get("effective_dt_ini") or effective_dt_ini
     historical_dt_fim = commercial_coverage.get("effective_dt_fim") or effective_dt_fim
-    historical = _cash_historical_overview(role, id_empresa, id_filial, dt_ini=historical_dt_ini, dt_fim=historical_dt_fim)
+    historical = _cash_historical_overview_from_marts(
+        role,
+        id_empresa,
+        id_filial,
+        dt_ini=historical_dt_ini,
+        dt_fim=historical_dt_fim,
+    )
     commercial = cash_commercial_overview(role, id_empresa, id_filial, dt_ini=historical_dt_ini, dt_fim=historical_dt_fim)
     commercial["commercial_coverage"] = commercial_coverage
     dre_summary = cash_dre_summary(role, id_empresa, id_filial, as_of=historical_dt_fim)
@@ -5869,34 +6145,7 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
 
     if dt_fim < dt_ini:
         return []
-
-    sales_window_cte, params, conn_branch_id = _sales_window_fact_cte(
-        id_empresa=id_empresa,
-        id_filial=id_filial,
-        date_predicate_sql="v.data_key BETWEEN %s AND %s",
-        date_params=[_date_key(dt_ini), _date_key(dt_fim)],
-    )
-    sql = sales_window_cte + """
-      SELECT
-        si.id_funcionario,
-        MAX(COALESCE(NULLIF(f.nome, ''), 'Funcionário #' || si.id_funcionario::text)) AS funcionario_nome,
-        COALESCE(SUM(si.total), 0)::numeric(18,2) AS faturamento,
-        COALESCE(SUM(si.margem), 0)::numeric(18,2) AS margem,
-        COUNT(DISTINCT si.doc_key)::int AS vendas
-      FROM sale_items si
-      LEFT JOIN dw.dim_funcionario f
-        ON f.id_empresa = si.id_empresa
-       AND f.id_filial = si.id_filial
-       AND f.id_funcionario = si.id_funcionario
-      WHERE COALESCE(si.id_funcionario, -1) <> -1
-      GROUP BY si.id_funcionario
-      ORDER BY faturamento DESC
-      LIMIT %s
-    """
-
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=conn_branch_id) as conn:
-        conn.execute(f"SET LOCAL statement_timeout = {int(SALES_OPERATIONAL_FALLBACK_TIMEOUT_MS)}")
-        return [dict(row) for row in conn.execute(sql, params + [limit]).fetchall()]
+    return sales_top_employees(role, id_empresa, id_filial, dt_ini, dt_fim, limit=limit)
 
 
 def monthly_goal_projection(
@@ -6216,24 +6465,25 @@ def sales_peak_hours_signal(
             "recommendations": {"peak": None, "off_peak": None},
         }
 
-    sales_window_cte, params, conn_branch_id = _sales_window_fact_cte(
-        id_empresa=id_empresa,
-        id_filial=id_filial,
-        date_predicate_sql="v.data_key BETWEEN %s AND %s",
-        date_params=[_date_key(closed_start), _date_key(closed_end)],
-    )
     closed_days = max((closed_end - closed_start).days + 1, 1)
-    timezone_name = business_timezone_name(id_empresa)
-    sql = sales_window_cte + """
-      , hour_dim AS (
+    start_key = _date_key(closed_start)
+    end_key = _date_key(closed_end)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, start_key, end_key] + branch_params + [closed_days, closed_days]
+    conn_branch_id = _conn_branch_id(id_filial)
+    sql = f"""
+      WITH hour_dim AS (
         SELECT generate_series(0, 23)::int AS hora
       ), hourly AS (
         SELECT
-          EXTRACT(HOUR FROM timezone(%s, si.data))::int AS hora,
-          COALESCE(SUM(si.total), 0)::numeric(18,2) AS faturamento_total,
-          COUNT(DISTINCT si.doc_key)::int AS vendas_total
-        FROM sale_items si
-        GROUP BY 1
+          hora,
+          COALESCE(SUM(faturamento), 0)::numeric(18,2) AS faturamento_total,
+          COALESCE(SUM(vendas), 0)::int AS vendas_total
+        FROM mart.agg_vendas_hora
+        WHERE id_empresa = %s
+          AND data_key BETWEEN %s AND %s
+          {where_filial}
+        GROUP BY hora
       )
       SELECT
         h.hora,
@@ -6247,7 +6497,7 @@ def sales_peak_hours_signal(
       ORDER BY h.hora
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=conn_branch_id) as conn:
-        rows = [dict(row) for row in conn.execute(sql, params + [timezone_name, closed_days, closed_days]).fetchall()]
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     active_rows = [row for row in rows if float(row.get("avg_faturamento_dia") or 0) > 0]
     baseline_avg = (
@@ -6442,10 +6692,20 @@ def jarvis_briefing(
 
     dt_ini = dt_ref - timedelta(days=6)
     risk = context.get("modeled_risk") if context else None
-    if not isinstance(risk, dict):
-        risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    try:
+        if not isinstance(risk, dict):
+            risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    except SNAPSHOT_FALLBACK_ERRORS:
+        risk = {}
+    except TimeoutError:
+        risk = {}
 
-    risk_focus = (risk_by_turn_local(role, id_empresa, id_filial, dt_ini, dt_ref, limit=1) or [None])[0]
+    try:
+        risk_focus = (risk_by_turn_local(role, id_empresa, id_filial, dt_ini, dt_ref, limit=1) or [None])[0]
+    except SNAPSHOT_FALLBACK_ERRORS:
+        risk_focus = None
+    except TimeoutError:
+        risk_focus = None
     sales = context.get("sales") if context else None
     if not isinstance(sales, dict):
         sales = sales_overview_bundle(role, id_empresa, id_filial, dt_ini, dt_ref, as_of=dt_ref)
