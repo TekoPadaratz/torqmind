@@ -1514,7 +1514,7 @@ def _run_risk_loader_detail(
     window_end_dt_ref = window.get("window_end_dt_ref")
     before_count = _count_risk_rows_in_window(conn, tenant_id, window_start_dt_ref, window_end_dt_ref)
     row = conn.execute(
-        "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+        "SELECT etl.compute_risk_events_v2(%s, %s, %s, %s) AS rows",
         (tenant_id, force_full, lookback_days, None),
     ).fetchone() or {}
     rows = int(row.get("rows") or 0)

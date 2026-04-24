@@ -155,6 +155,7 @@ def _resolve_micro_scope(
 
 
 def _upsert_notification_critical(
+    conn,
     id_empresa: int,
     id_filial: Optional[int],
     insight_id: int,
@@ -162,31 +163,22 @@ def _upsert_notification_critical(
     body: str,
     url: str,
 ) -> None:
-    sql_update = """
-      UPDATE app.notifications
-      SET
-        severity = 'CRITICAL',
-        title = %s,
-        body = %s,
-        url = %s,
-        created_at = now(),
-        read_at = NULL
-      WHERE id_empresa = %s
-        AND insight_id = %s
-        AND (
-          (id_filial IS NULL AND %s IS NULL)
-          OR id_filial = %s
-        )
-    """
-    sql_insert = """
-      INSERT INTO app.notifications (id_empresa, id_filial, insight_id, severity, title, body, url)
-      VALUES (%s,%s,%s,'CRITICAL',%s,%s,%s)
-    """
-    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=id_filial) as conn:
-        cur = conn.execute(sql_update, (title, body, url, id_empresa, insight_id, id_filial, id_filial))
-        if (cur.rowcount or 0) == 0:
-            conn.execute(sql_insert, (id_empresa, id_filial, insight_id, title, body, url))
-        conn.commit()
+    """Upsert a CRITICAL notification, reusing the caller's connection."""
+    conn.execute(
+        """
+        INSERT INTO app.notifications (id_empresa, id_filial, insight_id, severity, title, body, url)
+        VALUES (%s, %s, %s, 'CRITICAL', %s, %s, %s)
+        ON CONFLICT (id_empresa, id_filial, insight_id) WHERE insight_id IS NOT NULL
+        DO UPDATE SET
+          severity   = 'CRITICAL',
+          title      = EXCLUDED.title,
+          body       = EXCLUDED.body,
+          url        = EXCLUDED.url,
+          created_at = now(),
+          read_at    = NULL
+        """,
+        (id_empresa, id_filial, insight_id, title, body, url),
+    )
 
 
 @router.post("/micro_risk")
@@ -282,7 +274,7 @@ def run_micro_risk(
 
         risk_rows = conn.execute(
             """
-            SELECT etl.compute_risk_events(
+            SELECT etl.compute_risk_events_v2(
               %s::int,
               %s::boolean,
               %s::int,
@@ -387,6 +379,7 @@ def run_micro_risk(
                 updated += 1
 
             _upsert_notification_critical(
+                conn,
                 id_empresa=id_emp,
                 id_filial=id_fil,
                 insight_id=insight_id,

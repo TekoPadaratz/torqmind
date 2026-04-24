@@ -1,4 +1,4 @@
-export function extractApiError(err: any, fallback = 'Falha na requisicao'): string {
+export function extractApiError(err: any, fallback = 'Falha na requisição'): string {
   const data = err?.response?.data;
   const detail = data?.detail;
 

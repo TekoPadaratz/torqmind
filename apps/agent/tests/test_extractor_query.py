@@ -1,8 +1,8 @@
 import unittest
 from datetime import datetime
 
-from agent_bkp.config import APIConfig, AppConfig, RuntimeConfig, SQLServerConfig
-from agent_bkp.extractors.xpert import SQLServerExtractor
+from agent.config import APIConfig, AppConfig, RuntimeConfig, SQLServerConfig
+from agent.extractors.xpert import SQLServerExtractor
 
 
 class _DummyLogger:

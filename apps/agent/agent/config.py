@@ -8,12 +8,21 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from agent_bkp.secrets import SecretStoreError, load_encrypted_json_file, save_encrypted_json_file
+from agent.secrets import SecretStoreError, load_encrypted_json_file, save_encrypted_json_file
 
 
 COMMERCIAL_WINDOW_DAYS = 365
+DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 120
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
+LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
+FORMAS_PGTO_COMPROVANTES_REFERENCE_EXPR = (
+    "CASE "
+    "WHEN NULLIF(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))), '') IS NOT NULL "
+    " AND LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) NOT LIKE '%[^0-9]%' "
+    "THEN CAST(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) AS int) "
+    "ELSE NULL END"
+)
 
 
 DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
@@ -42,6 +51,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.ENTIDADES",
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": WATERMARK_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT e.*, "
             "COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
@@ -53,6 +63,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.ENTIDADES",
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": WATERMARK_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT e.*, "
             "COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
@@ -78,6 +89,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.PRODUTOS",
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": WATERMARK_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT p.*, "
             "COALESCE(CAST(p.ULTALTERACAO AS datetime2), CAST(p.DATACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
@@ -91,6 +103,20 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_TURNOS",
         "allow_zero_inserted_batches": True,
+        "contract_name": "turnos_pk",
+        "required_fields": ["ID_TURNOS", "ID_FILIAL"],
+        "unique_key_fields": ["ID_TURNOS", "ID_FILIAL"],
+        "preflight_tables": {
+            "dbo.TURNOS": [
+                "ID_TURNOS",
+                "ID_FILIAL",
+                "DATA",
+                "DATATURNO",
+                "DATAFECHAMENTO",
+                "ENCERRANTEFECHAMENTO",
+            ]
+        },
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT t.*, "
             "CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
@@ -106,47 +132,172 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
     },
     "comprovantes": {
         "table": "dbo.COMPROVANTES",
-        "watermark_column": "DATA",
-        "event_date_column": "DATA",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_COMPROVANTE, ID_FILIAL, ID_DB",
+        "cursor_pk_columns": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB"],
+        "contract_name": "comprovantes_pk_required_fields",
+        "required_fields": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "SITUACAO"],
+        "unique_key_fields": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB"],
+        "preflight_tables": {
+            "dbo.COMPROVANTES": [
+                "ID_COMPROVANTE",
+                "ID_FILIAL",
+                "ID_DB",
+                "DATA",
+                "DATAREPL",
+                "SITUACAO",
+            ]
+        },
         "retention_days": COMMERCIAL_WINDOW_DAYS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(c.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.COMPROVANTES c"
+        ),
+        "enabled": True,
+    },
+    "itenscomprovantes": {
+        "table": "dbo.ITENSCOMPROVANTE",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_ITENSCOMPROVANTE, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_ITENSCOMPROVANTE", "ID_DB"],
+        "contract_name": "itenscomprovantes_pk_parent",
+        "required_fields": ["ID_ITENSCOMPROVANTE", "ID_ITEMCOMPROVANTE", "ID_FILIAL", "ID_DB", "ID_COMPROVANTE"],
+        "unique_key_fields": ["ID_FILIAL", "ID_ITENSCOMPROVANTE", "ID_DB"],
+        # Keep the raw SQL Server key and add an explicit canonical alias expected by TorqMind.
+        "row_aliases": {"ID_ITEMCOMPROVANTE": "ID_ITENSCOMPROVANTE"},
+        "preflight_tables": {
+            "dbo.ITENSCOMPROVANTE": [
+                "ID_ITENSCOMPROVANTE",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_COMPROVANTE",
+                "DATAREPL",
+            ],
+            "dbo.COMPROVANTES": [
+                "ID_COMPROVANTE",
+                "ID_FILIAL",
+                "ID_DB",
+                "DATA",
+            ],
+        },
+        "retention_days": COMMERCIAL_WINDOW_DAYS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT i.*, "
+            "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(c.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(i.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.ITENSCOMPROVANTE i "
+            "JOIN dbo.COMPROVANTES c "
+            "  ON c.ID_COMPROVANTE = i.ID_COMPROVANTE "
+            " AND c.ID_FILIAL = i.ID_FILIAL "
+            " AND c.ID_DB = i.ID_DB"
+        ),
         "enabled": True,
     },
     "movprodutos": {
         "table": "dbo.MOVPRODUTOS",
-        "watermark_column": "DATA",
-        "event_date_column": "DATA",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_MOVPRODUTOS, ID_FILIAL, ID_DB",
+        "cursor_pk_columns": ["ID_MOVPRODUTOS", "ID_FILIAL", "ID_DB"],
         "retention_days": COMMERCIAL_WINDOW_DAYS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
-        "enabled": True,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(m.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVPRODUTOS m"
+        ),
+        "enabled": False,
+        "deprecated": True,
+        "deprecation_notice": "Legacy sales architecture disabled by default; use comprovantes instead.",
     },
     "itensmovprodutos": {
         "table": "dbo.ITENSMOVPRODUTOS",
-        "watermark_column": EVENT_DATE_ALIAS,
+        "watermark_column": WATERMARK_ALIAS,
         "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB",
+        "cursor_pk_columns": ["ID_ITENSMOVPRODUTOS", "ID_FILIAL", "ID_DB"],
         "retention_days": COMMERCIAL_WINDOW_DAYS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
-            "SELECT i.*, m.DATA AS TORQMIND_DT_EVENTO "
+            "SELECT i.*, "
+            "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(m.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(i.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.ITENSMOVPRODUTOS i "
             "JOIN dbo.MOVPRODUTOS m "
             "  ON m.ID_MOVPRODUTOS = i.ID_MOVPRODUTOS "
             " AND m.ID_FILIAL = i.ID_FILIAL "
             " AND m.ID_DB = i.ID_DB"
         ),
-        "enabled": True,
+        "enabled": False,
+        "deprecated": True,
+        "deprecation_notice": "Legacy sales architecture disabled by default; use itenscomprovantes instead.",
     },
     "formas_pgto_comprovantes": {
         "table": "dbo.FORMAS_PGTO_COMPROVANTES",
-        "watermark_column": EVENT_DATE_ALIAS,
+        "watermark_column": WATERMARK_ALIAS,
         "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_FORMAS_PGTO_COMPROVANTES, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_FORMAS_PGTO_COMPROVANTES", "ID_DB"],
+        "contract_name": "formas_pgto_comprovantes_pk",
+        "required_fields": ["ID_FORMAS_PGTO_COMPROVANTES", "ID_FILIAL", "ID_DB", "ID_REFERENCIA"],
+        "unique_key_fields": ["ID_FILIAL", "ID_FORMAS_PGTO_COMPROVANTES", "ID_DB"],
+        "preflight_tables": {
+            "dbo.FORMAS_PGTO_COMPROVANTES": [
+                "ID_FORMAS_PGTO_COMPROVANTES",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_REFERENCIA",
+                "DATAREPL",
+            ],
+            "dbo.COMPROVANTES": [
+                "ID_COMPROVANTE",
+                "ID_FILIAL",
+                "ID_DB",
+                "REFERENCIA",
+                "DATA",
+            ],
+        },
         "retention_days": COMMERCIAL_WINDOW_DAYS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
-            "SELECT f.*, c.DATA AS TORQMIND_DT_EVENTO "
+            "SELECT f.*, "
+            "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(c.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(f.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.FORMAS_PGTO_COMPROVANTES f "
             "JOIN dbo.COMPROVANTES c "
-            "  ON c.REFERENCIA = f.ID_REFERENCIA "
+            f"  ON c.REFERENCIA = {FORMAS_PGTO_COMPROVANTES_REFERENCE_EXPR} "
             " AND c.ID_FILIAL = f.ID_FILIAL "
             " AND c.ID_DB = f.ID_DB"
         ),
@@ -156,6 +307,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.CONTASPAGAR",
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
@@ -175,6 +327,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.CONTASRECEBER",
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
@@ -196,14 +349,14 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
 @dataclass
 class SQLServerConfig:
     dsn: Optional[str] = None
-    driver: str = "ODBC Driver 17 for SQL Server"
+    driver: str = "ODBC Driver 18 for SQL Server"
     server: str = ""
     port: int = 1433
     database: str = ""
     user: str = ""
     password: str = ""
-    encrypt: Optional[bool] = None
-    trust_server_certificate: Optional[bool] = None
+    encrypt: Optional[bool] = True
+    trust_server_certificate: Optional[bool] = False
     login_timeout_seconds: int = 30
 
 
@@ -312,14 +465,14 @@ def save_public_config(config_path: str | Path, raw: Dict[str, Any]) -> None:
 def build_default_raw_config() -> Dict[str, Any]:
     return {
         "sqlserver": {
-            "driver": "ODBC Driver 17 for SQL Server",
+            "driver": "ODBC Driver 18 for SQL Server",
             "server": "",
             "port": 1433,
             "database": "",
             "user": "",
             "password": "",
-            "encrypt": False,
-            "trust_server_certificate": True,
+            "encrypt": True,
+            "trust_server_certificate": False,
             "login_timeout_seconds": 30,
         },
         "api": {
@@ -393,7 +546,7 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
             runtime[legacy_key] = raw[legacy_key]
 
     sql["dsn"] = os.getenv("TORQMIND_SQLSERVER_DSN", sql.get("dsn"))
-    sql["driver"] = os.getenv("TORQMIND_SQLSERVER_DRIVER", sql.get("driver", "ODBC Driver 17 for SQL Server"))
+    sql["driver"] = os.getenv("TORQMIND_SQLSERVER_DRIVER", sql.get("driver", "ODBC Driver 18 for SQL Server"))
     sql["server"] = os.getenv("TORQMIND_SQLSERVER_SERVER", sql.get("server"))
     sql["port"] = _env_int("TORQMIND_SQLSERVER_PORT", int(sql.get("port", 1433)))
     sql["database"] = os.getenv("TORQMIND_SQLSERVER_DATABASE", sql.get("database"))

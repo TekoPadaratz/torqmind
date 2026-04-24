@@ -1131,7 +1131,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 legacy_checksum,
             )
 
-    def test_compute_risk_events_is_idempotent_and_cleans_stale_rows_in_recomputed_window(self) -> None:
+    def test_compute_risk_events_v2_is_idempotent_and_cleans_stale_rows_in_recomputed_window(self) -> None:
         with temporary_database() as db_name:
             env = _subprocess_env(db_name)
             tenant_id = 4001
@@ -1181,7 +1181,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 conn.commit()
 
                 first_run = conn.execute(
-                    "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+                    "SELECT etl.compute_risk_events_v2(%s, %s, %s, %s) AS rows",
                     (tenant_id, False, 14, "2026-03-10 23:59:59+00"),
                 ).fetchone()
                 first_total = conn.execute(
@@ -1190,7 +1190,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 ).fetchone()["total"]
 
                 second_run = conn.execute(
-                    "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+                    "SELECT etl.compute_risk_events_v2(%s, %s, %s, %s) AS rows",
                     (tenant_id, False, 14, "2026-03-10 23:59:59+00"),
                 ).fetchone()
                 second_total = conn.execute(
@@ -1212,7 +1212,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 conn.commit()
 
                 third_run = conn.execute(
-                    "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+                    "SELECT etl.compute_risk_events_v2(%s, %s, %s, %s) AS rows",
                     (tenant_id, False, 14, "2026-03-10 23:59:59+00"),
                 ).fetchone()
                 third_total = conn.execute(

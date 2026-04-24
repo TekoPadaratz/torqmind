@@ -5,11 +5,12 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Any, Dict, Iterable, Optional
 
-from agent_bkp.config import AppConfig
-from agent_bkp.extractors.xpert import SQLServerExtractor
-from agent_bkp.sink.torqmind_api import TorqMindSink
-from agent_bkp.state.watermark import WatermarkStore
-from agent_bkp.utils.log import append_summary_line
+from agent.config import AppConfig
+from agent.extractors.xpert import SQLServerExtractor
+from agent.sink.torqmind_api import TorqMindSink
+from agent.state.watermark import IncrementalCursor, WatermarkStore
+from agent.utils.log import append_summary_line
+from agent.utils.timezone import business_datetime_iso
 
 
 @dataclass
@@ -22,6 +23,22 @@ class RunMetrics:
     spooled_batches: int = 0
     status: str = "ok"
     error: Optional[str] = None
+    window_mode: str = ""
+    watermark_before: Optional[str] = None
+    query_watermark: Optional[str] = None
+    watermark_after: Optional[str] = None
+    dt_from: Optional[str] = None
+    dt_to: Optional[str] = None
+    watermark_overlap_seconds: int = 0
+
+
+@dataclass(frozen=True)
+class BatchValidationSummary:
+    dataset: str
+    row_count: int
+    event_min: Optional[str] = None
+    event_max: Optional[str] = None
+    contract_name: Optional[str] = None
 
 
 TURNOS_DATASET = "turnos"
@@ -58,7 +75,7 @@ class AgentRunner:
         )
 
     def _write_cycle_summary(self, metrics: list[RunMetrics], *, started: float) -> None:
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_iso = self._utc_now_iso(timespec="seconds")
         spool = self.sink.spool_status()
         ok = sum(1 for m in metrics if m.status == "ok")
         failed = sum(1 for m in metrics if m.status == "failed")
@@ -77,7 +94,13 @@ class AgentRunner:
                 (
                     f"{now_iso} dataset={metric.dataset} status={metric.status} extracted={metric.extracted} "
                     f"sent={metric.sent} rejected={metric.rejected} spooled_batches={metric.spooled_batches} "
-                    f"batches={metric.batches} error={metric.error or ''}"
+                    f"batches={metric.batches} mode={metric.window_mode or ''} "
+                    f"watermark_before={metric.watermark_before or ''} "
+                    f"query_watermark={metric.query_watermark or ''} "
+                    f"watermark_after={metric.watermark_after or ''} "
+                    f"overlap_seconds={metric.watermark_overlap_seconds} "
+                    f"from={metric.dt_from or ''} to={metric.dt_to or ''} "
+                    f"error={metric.error or ''}"
                 ),
             )
 
@@ -85,6 +108,14 @@ class AgentRunner:
         for ds, ds_cfg in self.cfg.datasets.items():
             if ds_cfg.get("enabled", False):
                 yield ds
+
+    def _preflight_dataset(self, dataset: str) -> None:
+        preflight = getattr(self.extractor, "preflight_dataset", None)
+        if not callable(preflight):
+            return
+        self.logger.info("dataset=%s phase=preflight_start", dataset)
+        preflight(dataset)
+        self.logger.info("dataset=%s phase=preflight_done", dataset)
 
     def _scope(self) -> str:
         return f"db:{self.cfg.id_db or 1}"
@@ -102,6 +133,36 @@ class AgentRunner:
         window_end = datetime.combine((anchor + timedelta(days=1)).date(), datetime.min.time())
         window_start = window_end - timedelta(days=int(days))
         return window_start, window_end
+
+    @staticmethod
+    def _dataset_overlap_seconds(ds_cfg: dict) -> int:
+        value = ds_cfg.get("watermark_overlap_seconds")
+        if value in {None, "", False}:
+            return 0
+        return max(0, int(value))
+
+    @classmethod
+    def _effective_query_watermark(cls, watermark: Optional[str], ds_cfg: dict) -> tuple[Optional[str], int]:
+        if not watermark:
+            return watermark, 0
+
+        watermark_dt = WatermarkStore.parse_watermark_dt(watermark)
+        if watermark_dt is None:
+            return watermark, 0
+
+        overlap_seconds = cls._dataset_overlap_seconds(ds_cfg)
+        if overlap_seconds <= 0:
+            return business_datetime_iso(watermark_dt, timespec="microseconds"), 0
+
+        query_watermark = watermark_dt - timedelta(seconds=overlap_seconds)
+        return business_datetime_iso(query_watermark, timespec="microseconds"), overlap_seconds
+
+    @classmethod
+    def _effective_query_cursor(cls, cursor: IncrementalCursor, ds_cfg: dict) -> tuple[IncrementalCursor, int]:
+        query_watermark, overlap_seconds = cls._effective_query_watermark(cursor.last_watermark, ds_cfg)
+        if overlap_seconds > 0:
+            return IncrementalCursor(last_watermark=query_watermark, last_pk_tuple=None), overlap_seconds
+        return IncrementalCursor(last_watermark=query_watermark, last_pk_tuple=cursor.last_pk_tuple), overlap_seconds
 
     def _bootstrap_complete(self, dataset: str, scope: str, watermark_before: Optional[str]) -> bool:
         if self.state.is_bootstrap_complete(dataset, scope=scope):
@@ -165,29 +226,258 @@ class AgentRunner:
         return str(candidate) > str(current)
 
     @staticmethod
+    def _compare_pk_tuple(candidate: Optional[list[Any]], current: Optional[list[Any]]) -> int:
+        if candidate is None and current is None:
+            return 0
+        if candidate is None:
+            return -1
+        if current is None:
+            return 1
+
+        for cand_value, curr_value in zip(candidate, current):
+            if cand_value == curr_value:
+                continue
+            try:
+                return 1 if cand_value > curr_value else -1
+            except TypeError:
+                cand_text = str(cand_value)
+                curr_text = str(curr_value)
+                return 1 if cand_text > curr_text else -1
+
+        if len(candidate) == len(current):
+            return 0
+        return 1 if len(candidate) > len(current) else -1
+
+    @classmethod
+    def _is_newer_cursor(cls, candidate: IncrementalCursor, current: IncrementalCursor) -> bool:
+        if cls._is_newer_watermark(candidate.last_watermark, current.last_watermark):
+            return True
+        if cls._is_newer_watermark(current.last_watermark, candidate.last_watermark):
+            return False
+        return cls._compare_pk_tuple(candidate.last_pk_tuple, current.last_pk_tuple) > 0
+
+    @staticmethod
     def _chunked(items: list[Any], size: int) -> Iterable[list[Any]]:
         chunk_size = max(1, int(size))
         for idx in range(0, len(items), chunk_size):
             yield items[idx : idx + chunk_size]
 
     @staticmethod
+    def _utc_now_iso(*, timespec: str = "seconds") -> str:
+        return datetime.now(timezone.utc).isoformat(timespec=timespec).replace("+00:00", "Z")
+
+    @staticmethod
     def _allow_zero_inserted(ds_cfg: dict) -> bool:
         return bool(ds_cfg.get("allow_zero_inserted_batches", False) or ds_cfg.get("full_refresh", False))
+
+    def _summarize_batch_event_range(self, rows: list[Dict[str, Any]]) -> tuple[Optional[str], Optional[str]]:
+        values: list[str] = []
+        for row in rows:
+            for key in ("TORQMIND_DT_EVENTO", "DT_EVENTO", "DATA", "DATAMOV", "DTMOV", "TORQMIND_WATERMARK"):
+                normalized = self._serialize_state_value(row.get(key))
+                if normalized not in {None, ""}:
+                    values.append(str(normalized))
+                    break
+        if not values:
+            return None, None
+        return min(values), max(values)
+
+    @staticmethod
+    def _contract_field_list(ds_cfg: dict, key: str) -> list[str]:
+        value = ds_cfg.get(key)
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if value in {None, ""}:
+            return []
+        return [str(value).strip()]
+
+    @staticmethod
+    def _contract_allowed_values(ds_cfg: dict) -> dict[str, set[str]]:
+        configured = ds_cfg.get("allowed_values_by_field")
+        if not isinstance(configured, dict):
+            return {}
+
+        normalized: dict[str, set[str]] = {}
+        for field_name, allowed_values in configured.items():
+            clean_field = str(field_name or "").strip()
+            if not clean_field:
+                continue
+            if isinstance(allowed_values, list):
+                normalized[clean_field] = {str(item).strip() for item in allowed_values if str(item).strip()}
+            elif allowed_values not in {None, ""}:
+                normalized[clean_field] = {str(allowed_values).strip()}
+        return normalized
+
+    @staticmethod
+    def _contract_row_aliases(ds_cfg: dict) -> dict[str, str]:
+        configured = ds_cfg.get("row_aliases")
+        if not isinstance(configured, dict):
+            return {}
+
+        normalized: dict[str, str] = {}
+        for canonical_name, source_name in configured.items():
+            clean_canonical = str(canonical_name or "").strip()
+            clean_source = str(source_name or "").strip()
+            if clean_canonical and clean_source:
+                normalized[clean_canonical] = clean_source
+        return normalized
+
+    def _validate_dataset_contract(self, dataset: str, ds_cfg: dict, rows: list[Dict[str, Any]]) -> BatchValidationSummary:
+        required_fields = self._contract_field_list(ds_cfg, "required_fields")
+        unique_key_fields = self._contract_field_list(ds_cfg, "unique_key_fields")
+        allowed_values = self._contract_allowed_values(ds_cfg)
+        row_aliases = self._contract_row_aliases(ds_cfg)
+        contract_name = str(ds_cfg.get("contract_name") or "").strip() or None
+
+        if not required_fields and not unique_key_fields and not allowed_values and not row_aliases and not contract_name:
+            event_min, event_max = self._summarize_batch_event_range(rows)
+            return BatchValidationSummary(
+                dataset=dataset,
+                row_count=len(rows),
+                event_min=event_min,
+                event_max=event_max,
+            )
+
+        missing_required: list[str] = []
+        invalid_values: list[str] = []
+        missing_aliases: list[str] = []
+        mismatched_aliases: list[str] = []
+        duplicate_keys: list[str] = []
+        seen: dict[tuple[Any, ...], int] = {}
+
+        for idx, row in enumerate(rows, start=1):
+            missing = [field for field in required_fields if row.get(field) in {None, ""}]
+            if missing:
+                missing_required.append(f"row={idx} missing={','.join(missing)}")
+
+            for canonical_name, source_name in row_aliases.items():
+                source_value = row.get(source_name)
+                canonical_value = row.get(canonical_name)
+                if source_value in {None, ""}:
+                    continue
+                if canonical_value in {None, ""}:
+                    missing_aliases.append(f"row={idx} alias={canonical_name} source={source_name}")
+                    continue
+                if canonical_value != source_value:
+                    mismatched_aliases.append(
+                        f"row={idx} alias={canonical_name} source={source_name} "
+                        f"alias_value={canonical_value!r} source_value={source_value!r}"
+                    )
+
+            for field_name, allowed in allowed_values.items():
+                value = row.get(field_name)
+                if value in {None, ""}:
+                    continue
+                if str(value).strip() not in allowed:
+                    invalid_values.append(f"row={idx} field={field_name} value={value!r}")
+
+            if unique_key_fields and any(row.get(field) in {None, ""} for field in unique_key_fields):
+                continue
+
+            key_tuple = tuple(row.get(field) for field in unique_key_fields)
+            if unique_key_fields and key_tuple in seen:
+                duplicate_keys.append(
+                    "%s first_row=%s duplicate_row=%s"
+                    % (
+                        " ".join(f"{field}={row.get(field)!r}" for field in unique_key_fields),
+                        seen[key_tuple],
+                        idx,
+                    )
+                )
+            elif unique_key_fields:
+                seen[key_tuple] = idx
+
+        if missing_required or missing_aliases or mismatched_aliases or invalid_values or duplicate_keys:
+            problems: list[str] = []
+            if missing_required:
+                problems.append(f"missing_required_fields={len(missing_required)} sample={missing_required[0]}")
+            if missing_aliases:
+                problems.append(f"missing_row_aliases={len(missing_aliases)} sample={missing_aliases[0]}")
+            if mismatched_aliases:
+                problems.append(f"mismatched_row_aliases={len(mismatched_aliases)} sample={mismatched_aliases[0]}")
+            if invalid_values:
+                problems.append(f"invalid_field_values={len(invalid_values)} sample={invalid_values[0]}")
+            if duplicate_keys:
+                problems.append(f"duplicate_key_rows={len(duplicate_keys)} sample={duplicate_keys[0]}")
+            raise RuntimeError(
+                f"Outgoing {dataset} batch failed local contract validation: " + " ".join(problems)
+            )
+
+        event_min, event_max = self._summarize_batch_event_range(rows)
+        return BatchValidationSummary(
+            dataset=dataset,
+            row_count=len(rows),
+            event_min=event_min,
+            event_max=event_max,
+            contract_name=contract_name,
+        )
+
+    def _validate_outgoing_batch(self, dataset: str, rows: list[Dict[str, Any]], ds_cfg: Optional[dict] = None) -> BatchValidationSummary:
+        summary = self._validate_dataset_contract(dataset, ds_cfg or self.cfg.datasets.get(dataset, {}), rows)
+        if summary.contract_name:
+            self.logger.info(
+                "dataset=%s phase=payload_contract status=ok contract=%s rows=%s event_min=%s event_max=%s",
+                dataset,
+                summary.contract_name,
+                summary.row_count,
+                summary.event_min,
+                summary.event_max,
+            )
+        return summary
 
     def _validate_batch_delivery(
         self,
         *,
         dataset: str,
         ds_cfg: dict,
+        rows: list[Dict[str, Any]],
         extracted: int,
         inserted: int,
         rejected: int,
         spooled: bool,
+        ingest_result: Optional[Dict[str, Any]] = None,
+        validation_summary: Optional[BatchValidationSummary] = None,
     ) -> None:
         if extracted > 0 and inserted == 0 and not spooled and not self._allow_zero_inserted(ds_cfg):
+            body = dict(ingest_result or {})
+            rejected_invalid = int(body.get("rejected_invalid", 0) or 0)
+            rejected_by_retention = int(body.get("rejected_by_retention", 0) or 0)
+            retention_cutoff = body.get("retention_cutoff")
+            details = body.get("details") if isinstance(body.get("details"), list) else []
+            sample_reason = ""
+            if details:
+                sample_reason = str((details[0] or {}).get("reason") or "").strip()
+            if validation_summary is not None:
+                summary = validation_summary
+            else:
+                event_min, event_max = self._summarize_batch_event_range(rows)
+                summary = BatchValidationSummary(
+                    dataset=dataset,
+                    row_count=extracted,
+                    event_min=event_min,
+                    event_max=event_max,
+                )
+
+            if rejected_by_retention == extracted:
+                raise RuntimeError(
+                    f"Batch extracted but fully rejected by retention for dataset={dataset}. "
+                    f"rejected={rejected} retention_cutoff={retention_cutoff or 'unknown'} "
+                    f"event_min={summary.event_min or 'unknown'} event_max={summary.event_max or 'unknown'} "
+                    f"sample_reason={sample_reason or 'Rejected by retention window'}"
+                )
+
+            if rejected_invalid == extracted:
+                raise RuntimeError(
+                    f"Batch extracted but rejected by API payload contract for dataset={dataset}. "
+                    f"rejected={rejected} sample_reason={sample_reason or 'Missing/invalid PK fields'}"
+                )
+
+            contract_hint = ""
+            if validation_summary and validation_summary.contract_name:
+                contract_hint = f" Local {validation_summary.contract_name} validation passed before POST."
             raise RuntimeError(
                 f"Batch extracted but nothing inserted for dataset={dataset}. "
-                f"rejected={rejected}. Verify base_url, ingest key and PK fields."
+                f"rejected={rejected}.{contract_hint} Verify API response details for retention or payload issues."
             )
 
     @staticmethod
@@ -195,8 +485,9 @@ class AgentRunner:
         if value is None:
             return None
         if isinstance(value, datetime):
-            return value.isoformat(timespec="microseconds")
-        return str(value)
+            return business_datetime_iso(value, timespec="microseconds")
+        normalized = WatermarkStore.normalize_watermark(str(value))
+        return str(value) if normalized is None else normalized
 
     @staticmethod
     def _normalize_optional_int(value: Any) -> Any:
@@ -283,7 +574,7 @@ class AgentRunner:
         phase: str,
         seen_keys: set[str],
     ) -> Dict[str, int]:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = self._utc_now_iso()
         changed = False
         stats = {
             "tracked_open": 0,
@@ -359,7 +650,7 @@ class AgentRunner:
         if not missing_keys:
             return 0
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = self._utc_now_iso()
         changed = False
         for key in missing_keys:
             current = dict(pending.get(key) or {})
@@ -441,6 +732,7 @@ class AgentRunner:
                 metric.batches += 1
                 metric.extracted += len(batch_rows)
 
+                validation_summary = self._validate_outgoing_batch(TURNOS_DATASET, batch_rows, ds_cfg=ds_cfg)
                 ingest_result = self.sink.send(dataset=TURNOS_DATASET, rows=batch_rows)
                 inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
                 rejected = int(ingest_result.get("rejected", 0) or 0)
@@ -453,10 +745,13 @@ class AgentRunner:
                 self._validate_batch_delivery(
                     dataset=TURNOS_DATASET,
                     ds_cfg=ds_cfg,
+                    rows=batch_rows,
                     extracted=len(batch_rows),
                     inserted=inserted,
                     rejected=rejected,
                     spooled=spooled,
+                    ingest_result=ingest_result,
+                    validation_summary=validation_summary,
                 )
                 stats = self._record_turnos_delivery(
                     pending=pending,
@@ -496,12 +791,15 @@ class AgentRunner:
             self.cfg.sqlserver.database,
         )
         self.extractor.check_connection()
+        for dataset in self._enabled_datasets():
+            self._preflight_dataset(dataset)
         self.logger.info("action=check step=api_ping")
         self.sink.check_api()
         self.logger.info("action=check step=ingest_auth")
         self.sink.validate_ingest_credentials()
-        self.logger.info("action=check step=ingest_post")
-        self.sink.test_ingest_endpoint(dataset="filiais")
+        for dataset in self._enabled_datasets():
+            self.logger.info("action=check step=ingest_post dataset=%s", dataset)
+            self.sink.test_ingest_endpoint(dataset=dataset)
         self.logger.info("action=check result=ok")
 
     def run_once(
@@ -531,7 +829,12 @@ class AgentRunner:
                 turnos_pending = self._load_turnos_pending(scope) if dataset == TURNOS_DATASET else {}
                 turnos_seen_keys: set[str] = set()
                 full_refresh = bool(ds_cfg.get("full_refresh", False))
-                watermark_before = None if (ignore_watermark or full_refresh) else self.state.get(dataset, scope=scope)
+                stored_cursor = (
+                    IncrementalCursor(last_watermark=None, last_pk_tuple=None)
+                    if (ignore_watermark or full_refresh)
+                    else self.state.get_cursor(dataset, scope=scope)
+                )
+                watermark_before = stored_cursor.last_watermark
                 effective_dt_from, effective_dt_to, effective_ignore_watermark, window_mode, bootstrap_run = self._resolve_dataset_window(
                     dataset,
                     scope,
@@ -540,30 +843,45 @@ class AgentRunner:
                     dt_to,
                     (ignore_watermark or full_refresh),
                 )
-                effective_watermark = None if effective_ignore_watermark else watermark_before
-                commit_watermark = (not manual_window) and (not full_refresh)
+                effective_cursor = (
+                    IncrementalCursor(last_watermark=None, last_pk_tuple=None)
+                    if effective_ignore_watermark
+                    else stored_cursor
+                )
+                query_cursor, overlap_seconds = self._effective_query_cursor(effective_cursor, ds_cfg)
+                query_watermark = query_cursor.last_watermark
+                commit_cursor = (not manual_window) and (not full_refresh)
+                metric.window_mode = window_mode
+                metric.watermark_before = watermark_before
+                metric.query_watermark = query_watermark
+                metric.dt_from = self._serialize_state_value(effective_dt_from)
+                metric.dt_to = self._serialize_state_value(effective_dt_to)
+                metric.watermark_overlap_seconds = overlap_seconds
                 self.logger.info(
-                    "dataset=%s phase=start mode=%s full_refresh=%s watermark=%s effective_watermark=%s from=%s to=%s ignore_watermark=%s effective_ignore_watermark=%s",
+                    "dataset=%s phase=start mode=%s full_refresh=%s watermark=%s effective_watermark=%s query_watermark=%s stored_pk_tuple=%s query_pk_tuple=%s from=%s to=%s ignore_watermark=%s effective_ignore_watermark=%s overlap_seconds=%s",
                     dataset,
                     window_mode,
                     full_refresh,
                     watermark_before,
-                    effective_watermark,
+                    effective_cursor.last_watermark,
+                    query_watermark,
+                    stored_cursor.last_pk_tuple,
+                    query_cursor.last_pk_tuple,
                     effective_dt_from,
                     effective_dt_to,
                     ignore_watermark,
                     effective_ignore_watermark,
+                    overlap_seconds,
                 )
 
-                max_watermark_seen = effective_watermark
-                # Keep one watermark step lag before committing to avoid skipping rows
-                # that share the same watermark across batch boundaries.
-                committed_watermark = effective_watermark
-                pending_watermark = effective_watermark
+                max_watermark_seen = effective_cursor.last_watermark
+                committed_cursor = effective_cursor
                 try:
+                    self._preflight_dataset(dataset)
                     for batch in self.extractor.iter_batches(
                         dataset=dataset,
-                        watermark=effective_watermark,
+                        watermark=query_watermark,
+                        cursor_pk_tuple=query_cursor.last_pk_tuple,
                         batch_size=self.cfg.runtime.batch_size,
                         fetch_size=self.cfg.runtime.fetch_size,
                         dt_from=effective_dt_from,
@@ -572,6 +890,7 @@ class AgentRunner:
                         metric.batches += 1
                         metric.extracted += len(batch.rows)
 
+                        validation_summary = self._validate_outgoing_batch(dataset, batch.rows, ds_cfg=ds_cfg)
                         ingest_result = self.sink.send(dataset=dataset, rows=batch.rows)
                         inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
                         rejected = int(ingest_result.get("rejected", 0) or 0)
@@ -583,10 +902,13 @@ class AgentRunner:
                         self._validate_batch_delivery(
                             dataset=dataset,
                             ds_cfg=ds_cfg,
+                            rows=batch.rows,
                             extracted=len(batch.rows),
                             inserted=inserted,
                             rejected=rejected,
                             spooled=spooled,
+                            ingest_result=ingest_result,
+                            validation_summary=validation_summary,
                         )
                         if dataset == TURNOS_DATASET:
                             stats = self._record_turnos_delivery(
@@ -609,23 +931,22 @@ class AgentRunner:
 
                         if batch.max_watermark:
                             max_watermark_seen = batch.max_watermark
-                            if self._is_newer_watermark(batch.max_watermark, pending_watermark):
-                                if (
-                                    commit_watermark
-                                    and pending_watermark
-                                    and self._is_newer_watermark(pending_watermark, committed_watermark)
-                                ):
-                                    self.state.set(dataset, pending_watermark, scope=scope)
-                                    committed_watermark = pending_watermark
-                                    self.logger.info(
-                                        "dataset=%s phase=checkpoint watermark=%s",
-                                        dataset,
-                                        committed_watermark,
-                                    )
-                                pending_watermark = batch.max_watermark
+                            batch_cursor = IncrementalCursor(
+                                last_watermark=batch.max_watermark,
+                                last_pk_tuple=list(batch.last_pk_tuple) if batch.last_pk_tuple else None,
+                            )
+                            if commit_cursor and self._is_newer_cursor(batch_cursor, committed_cursor):
+                                self.state.set_cursor(dataset, batch_cursor, scope=scope)
+                                committed_cursor = batch_cursor
+                                self.logger.info(
+                                    "dataset=%s phase=checkpoint watermark=%s pk_tuple=%s",
+                                    dataset,
+                                    committed_cursor.last_watermark,
+                                    committed_cursor.last_pk_tuple,
+                                )
 
                         self.logger.info(
-                            "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s spooled=%s watermark=%s",
+                            "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s spooled=%s watermark=%s pk_tuple=%s",
                             dataset,
                             metric.batches,
                             metric.extracted,
@@ -633,6 +954,7 @@ class AgentRunner:
                             rejected,
                             spooled,
                             max_watermark_seen,
+                            batch.last_pk_tuple,
                         )
 
                     if dataset == TURNOS_DATASET:
@@ -644,22 +966,11 @@ class AgentRunner:
                             ds_cfg=ds_cfg,
                         )
 
-                    if (
-                        commit_watermark
-                        and pending_watermark
-                        and self._is_newer_watermark(pending_watermark, committed_watermark)
-                    ):
-                        self.state.set(dataset, pending_watermark, scope=scope)
-                        committed_watermark = pending_watermark
-                        self.logger.info(
-                            "dataset=%s phase=checkpoint watermark=%s",
-                            dataset,
-                            committed_watermark,
-                        )
                     watermark_after = self.state.get(dataset, scope=scope)
+                    metric.watermark_after = watermark_after
 
                     self.logger.info(
-                        "dataset=%s phase=done mode=%s extracted=%s sent=%s batches=%s elapsed_s=%.2f watermark_before=%s watermark_after=%s",
+                        "dataset=%s phase=done mode=%s extracted=%s sent=%s batches=%s elapsed_s=%.2f watermark_before=%s query_watermark=%s watermark_after=%s overlap_seconds=%s",
                         dataset,
                         window_mode,
                         metric.extracted,
@@ -667,7 +978,9 @@ class AgentRunner:
                         metric.batches,
                         time.monotonic() - t0,
                         watermark_before,
+                        query_watermark,
                         watermark_after,
+                        overlap_seconds,
                     )
                     if bootstrap_run:
                         self.state.mark_bootstrap_complete(dataset, scope=scope)
@@ -680,6 +993,7 @@ class AgentRunner:
                 except Exception as exc:  # noqa: PERF203
                     metric.status = "failed"
                     metric.error = str(exc)
+                    metric.watermark_after = self.state.get(dataset, scope=scope)
                     self.logger.exception(
                         "dataset=%s phase=failed elapsed_s=%.2f error=%s",
                         dataset,
@@ -729,9 +1043,10 @@ class AgentRunner:
                 self.logger.exception("phase=loop_error error=%s", str(exc)[:500])
             time.sleep(interval_seconds)
 
-    def backfill(self, dataset: str, from_date: datetime, to_date: datetime) -> None:
-        # to_date is inclusive in CLI; convert to exclusive upper bound for query.
-        to_exclusive = to_date + timedelta(days=1)
+    def backfill(self, dataset: str, from_date: datetime, to_date: datetime, *, to_is_date_only: bool = True) -> None:
+        # Date-only windows keep the historical inclusive semantics. Datetime
+        # windows are treated as exact exclusive upper bounds.
+        to_exclusive = to_date + timedelta(days=1) if to_is_date_only else to_date
         self.run_once(
             only_dataset=dataset,
             dt_from=from_date,

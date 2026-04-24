@@ -101,53 +101,45 @@ def get_conn(
     """
 
     pool = _get_pool()
+
+    def _set_scope(conn: psycopg.Connection) -> None:
+        """Set session-level scope variables. Always reset first to avoid leakage."""
+        conn.execute("RESET app.role; RESET app.tenant_id; RESET app.branch_id")
+        if role is not None:
+            conn.execute(f"SET app.role = '{_sql_quote(role)}'")
+        if tenant_id is not None:
+            conn.execute(f"SET app.tenant_id = {int(tenant_id)}")
+        if branch_id is not None:
+            conn.execute(f"SET app.branch_id = {int(branch_id)}")
+
+    def _reset_scope(conn: psycopg.Connection) -> None:
+        """Reset all scope variables. Separate statements for robustness."""
+        try:
+            conn.execute("RESET app.role")
+        except Exception:
+            pass
+        try:
+            conn.execute("RESET app.tenant_id")
+        except Exception:
+            pass
+        try:
+            conn.execute("RESET app.branch_id")
+        except Exception:
+            pass
+
     if pool is None:
         conn = psycopg.connect(_conn_str(), row_factory=dict_row)
         try:
-            if role is not None:
-                conn.execute(f"SET app.role = '{_sql_quote(role)}'")
-            else:
-                conn.execute("RESET app.role")
-
-            if tenant_id is not None:
-                conn.execute(f"SET app.tenant_id = {int(tenant_id)}")
-            else:
-                conn.execute("RESET app.tenant_id")
-
-            if branch_id is not None:
-                conn.execute(f"SET app.branch_id = {int(branch_id)}")
-            else:
-                conn.execute("RESET app.branch_id")
-
+            _set_scope(conn)
             yield conn
         finally:
-            with contextlib.suppress(Exception):
-                conn.execute("RESET app.role")
-                conn.execute("RESET app.tenant_id")
-                conn.execute("RESET app.branch_id")
+            _reset_scope(conn)
             conn.close()
         return
 
     with pool.connection() as conn:
         try:
-            if role is not None:
-                conn.execute(f"SET app.role = '{_sql_quote(role)}'")
-            else:
-                conn.execute("RESET app.role")
-
-            if tenant_id is not None:
-                conn.execute(f"SET app.tenant_id = {int(tenant_id)}")
-            else:
-                conn.execute("RESET app.tenant_id")
-
-            if branch_id is not None:
-                conn.execute(f"SET app.branch_id = {int(branch_id)}")
-            else:
-                conn.execute("RESET app.branch_id")
-
+            _set_scope(conn)
             yield conn
         finally:
-            with contextlib.suppress(Exception):
-                conn.execute("RESET app.role")
-                conn.execute("RESET app.tenant_id")
-                conn.execute("RESET app.branch_id")
+            _reset_scope(conn)
