@@ -73,8 +73,8 @@ export default function GoalsPage() {
   const projectionGoal = projection.goal || {};
   const projectionHistory = projection.history || {};
   const projectionForecast = projection.forecast || {};
-  const teamGoals = data?.goals_today || [];
-  const totalTeamGoalValue = teamGoals.reduce((value, goal) => value + Number(goal.target_value || 0), 0);
+  const teamGoals: any[] = data?.goals_today || [];
+  const totalTeamGoalValue = teamGoals.reduce((value: number, goal: any) => value + Number(goal.target_value || 0), 0);
   const metaGoalMonth = projectionGoal.goal_month || projection.month_ref || null;
   const businessClock = data?.business_clock || {};
   const branchLabel = scope.id_filial

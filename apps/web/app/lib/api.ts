@@ -10,8 +10,8 @@ export const api = axios.create({
 
 // Intercept 401 responses to redirect to login
 api.interceptors.response.use(
-  (response) => response,
-  (error) => {
+  (response: any) => response,
+  (error: any) => {
     if (
       error?.response?.status === 401 &&
       typeof window !== "undefined" &&
