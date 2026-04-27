@@ -1,0 +1,57 @@
+---
+description: Regras do frontend Next.js do TorqMind
+globs:
+  - "apps/web/**/*.ts"
+  - "apps/web/**/*.tsx"
+alwaysApply: false
+---
+
+# 🖥️ Frontend — Next.js 14 + TypeScript
+
+## Módulos do Dashboard
+
+```
+/dashboard/geral        → KPIs executivos — lê mart.agg_vendas_diaria
+/dashboard/vendas       → Análise de vendas por produto/filial
+/dashboard/risco        → Antifraude e eventos de risco
+/dashboard/financeiro   → DRE simplificado, margem, custo
+/dashboard/clientes     → Churn, RFM, retenção
+/dashboard/caixa        → Fluxo de caixa e conciliação
+/backoffice             → Platform admin (empresas, filiais, usuários)
+```
+
+## Regras de Dados no Frontend
+
+- NUNCA chame endpoints que leem `dw.fact_*` diretamente
+- Sempre use os endpoints de `mart.*` para dashboards
+- Dados do "dia de hoje" vêm da mart — não crie workarounds
+
+## Padrões de Componente
+
+```tsx
+// ✅ Sempre tipar as props
+interface VendasCardProps {
+  idEmpresa: number
+  idFilial?: number
+  dataReferencia: string
+}
+
+// ✅ Tratar loading e error states sempre
+const { data, isLoading, error } = useVendasOverview({ idEmpresa, idFilial })
+if (isLoading) return <SkeletonCard />
+if (error) return <ErrorState message={error.message} />
+```
+
+## Convenções
+
+- Componentes em PascalCase, arquivos em kebab-case
+- Hooks customizados com prefixo `use`
+- Server Components quando possível (Next.js 14)
+- Client Components apenas quando necessário (interatividade, hooks de estado)
+- Tailwind CSS para estilização — sem CSS modules ou styled-components
+
+## Performance
+
+- Use `React.memo` em componentes de gráfico que recebem dados estáticos
+- Skeleton loading em todos os componentes assíncronos
+- Evite re-renders desnecessários nos dashboards com muitos charts

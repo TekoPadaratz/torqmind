@@ -1,0 +1,65 @@
+---
+description: Regras de segurança multi-tenant do TorqMind — INEGOCIÁVEIS
+globs:
+  - "apps/api/**/*.py"
+  - "apps/web/**/*.ts"
+  - "apps/web/**/*.tsx"
+  - "sql/**/*.sql"
+alwaysApply: true
+---
+
+# 🔒 Segurança Multi-Tenant — Regras de Ouro
+
+## ⛔ CRIME #1 — Vazamento entre Tenants
+
+NENHUMA query, endpoint ou lógica pode existir sem aplicar os filtros de escopo:
+- `id_empresa` → SEMPRE obrigatório
+- `id_filial` → quando aplicável ao contexto
+
+Exemplos corretos:
+```sql
+-- ✅ Correto
+WHERE id_empresa = :id_empresa AND id_filial = :id_filial
+
+-- ❌ CRIME — nunca faça isso
+SELECT * FROM mart.agg_vendas_diaria;
+```
+
+```python
+# ✅ Correto
+.filter(Venda.id_empresa == tenant.id_empresa)
+
+# ❌ CRIME
+.all()  # sem filtro de tenant
+```
+
+## ⛔ CRIME #2 — Ler fatos no Dashboard
+
+O Dashboard Geral e endpoints de overview NUNCA leem de `dw.fact_*`.
+Leitura EXCLUSIVA de Materialized Views: `mart.*`
+
+```python
+# ✅ Correto — lê da mart
+SELECT * FROM mart.agg_vendas_diaria WHERE id_empresa = :id_empresa
+
+# ❌ CRIME — causa 3 minutos de lentidão
+SELECT * FROM dw.fact_venda WHERE id_empresa = :id_empresa
+```
+
+## ⛔ CRIME #3 — Assumer nomes de colunas
+
+A fonte da verdade são as migrations SQL (até a 061+).
+Nunca assuma nomes. Sempre verifique.
+
+Exemplo crítico: o valor em `fact_venda` chama-se `total_vendas`, não `valor`, não `amount`.
+
+## ⛔ CRIME #4 — Motor de Risco sem tratamento
+
+O grão de `dw.fact_risco_evento` é por `id_comprovante`.
+Eventos de "usuários outliers" DEVEM usar ID sintético negativo para evitar colisão na constraint `uq_fact_risco_evento_nk`.
+
+## Hierarquia de Permissões
+
+- Permissões de platform (backoffice interno) ≠ permissões de usuários do tenant
+- Estado de empresa e filial influencia acesso real ao produto
+- Nunca confunda os dois contextos de permissão

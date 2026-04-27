@@ -7,10 +7,11 @@ from app import repos_mart
 
 class DashboardJarvisUnitTests(unittest.TestCase):
     def test_dashboard_home_bundle_stays_on_operational_fast_path(self) -> None:
+        # 2026-04-29: dashboard_home_bundle now always reads from marts (no dw.fact_* overlay).
         sales_bundle = {
             "kpis": {"faturamento": 1250.0},
-            "operational_sync": {"last_sync_at": "2026-04-15T10:00:00-03:00"},
-            "freshness": {"mode": "operational_overlay"},
+            "operational_sync": {"last_sync_at": None, "source": "mart.agg_vendas_diaria"},
+            "freshness": {"mode": "mart_snapshot"},
         }
         cash_live = {
             "summary": "live",
@@ -30,7 +31,8 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                     "effective_dt_fim": date(2026, 4, 15),
                 },
             ),
-            patch.object(repos_mart, "sales_operational_range_bundle", return_value=sales_bundle) as sales_operational_range_bundle,
+            patch.object(repos_mart, "_sales_historical_bundle_from_marts", return_value=sales_bundle) as historical_bundle,
+            patch.object(repos_mart, "sales_operational_range_bundle", side_effect=AssertionError("should not call operational bundle")),
             patch.object(repos_mart, "sales_peak_hours_signal", return_value={"peak_hours": []}) as sales_peak_hours_signal,
             patch.object(repos_mart, "sales_declining_products_signal", return_value={"items": []}) as sales_declining_products_signal,
             patch.object(repos_mart, "fraud_kpis", return_value={"cancelamentos": 0}),
@@ -55,27 +57,28 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                 dt_ref=date(2026, 4, 15),
             )
 
-        sales_operational_range_bundle.assert_called_once_with(
+        historical_bundle.assert_called_once_with(
             "MASTER",
             7,
             None,
             date(2026, 4, 10),
             date(2026, 4, 15),
-            include_rankings=False,
+            include_details=False,
         )
         sales_peak_hours_signal.assert_called_once_with("MASTER", 7, None, date(2026, 4, 15))
         sales_declining_products_signal.assert_called_once_with("MASTER", 7, None, date(2026, 4, 15))
         cash_live_now.assert_called_once_with("MASTER", 7, None)
         jarvis_briefing.assert_called_once()
-        self.assertEqual(payload["overview"]["sales"]["reading_status"], "operational_overlay")
+        self.assertEqual(payload["overview"]["sales"]["reading_status"], "mart_snapshot")
         self.assertEqual(payload["cash"]["live_now"]["summary"], "live")
         self.assertEqual(payload["notifications_unread"], 2)
 
     def test_dashboard_home_bundle_keeps_sales_and_cash_when_modeled_risk_is_unavailable(self) -> None:
+        # 2026-04-29: dashboard_home_bundle always reads from marts now.
         sales_bundle = {
             "kpis": {"faturamento": 980.0},
-            "operational_sync": {"last_sync_at": "2026-04-15T10:00:00-03:00"},
-            "freshness": {"mode": "operational_overlay"},
+            "operational_sync": {"last_sync_at": None, "source": "mart.agg_vendas_diaria"},
+            "freshness": {"mode": "mart_snapshot"},
         }
         cash_live = {
             "summary": "live",
@@ -95,7 +98,8 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                     "effective_dt_fim": date(2026, 4, 15),
                 },
             ),
-            patch.object(repos_mart, "sales_operational_range_bundle", return_value=sales_bundle),
+            patch.object(repos_mart, "_sales_historical_bundle_from_marts", return_value=sales_bundle),
+            patch.object(repos_mart, "sales_operational_range_bundle", side_effect=AssertionError("should not call operational bundle")),
             patch.object(repos_mart, "sales_peak_hours_signal", return_value={"peak_hours": []}),
             patch.object(repos_mart, "sales_declining_products_signal", return_value={"items": []}),
             patch.object(repos_mart, "fraud_kpis", return_value={"cancelamentos": 0}),
@@ -117,7 +121,7 @@ class DashboardJarvisUnitTests(unittest.TestCase):
                 dt_ref=date(2026, 4, 15),
             )
 
-        self.assertEqual(payload["overview"]["sales"]["reading_status"], "operational_overlay")
+        self.assertEqual(payload["overview"]["sales"]["reading_status"], "mart_snapshot")
         self.assertEqual(payload["cash"]["live_now"]["summary"], "live")
         self.assertEqual(payload["overview"]["risk"]["source_status"], "unavailable")
         self.assertEqual(payload["overview"]["risk"]["kpis"]["total_eventos"], None)

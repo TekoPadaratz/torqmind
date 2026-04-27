@@ -1,0 +1,36 @@
+# Dependências — nunca indexar
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build artifacts
+.next/
+dist/
+build/
+*.egg-info/
+
+# Docker e infra gerados
+deploy/data/
+deploy/logs/
+*.log
+
+# Arquivos grandes de dados
+*.ndjson
+*.csv
+*.parquet
+dump/
+backups/
+
+# Ambientes e segredos
+.env
+.env.*
+*.pem
+*.key
+
+# Cache e temporários
+.mypy_cache/
+.ruff_cache/
+coverage/
+htmlcov/

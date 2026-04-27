@@ -1,0 +1,67 @@
+---
+description: Regras do pipeline ETL e arquitetura PostgreSQL do TorqMind
+globs:
+  - "apps/api/etl_orchestrator.py"
+  - "apps/api/*etl*.py"
+  - "apps/api/*repos*.py"
+  - "sql/**/*.sql"
+alwaysApply: false
+---
+
+# 🗄️ Pipeline ETL e PostgreSQL
+
+## Arquitetura dos Schemas (Os 4 Schemas Sagrados)
+
+```
+stg.*   → Landing/Raw — dados chegam aqui via ingestão NDJSON
+dw.*    → Fatos e Dimensões consolidadas
+            ex: dw.fact_venda, dw.fact_comprovante
+mart.*  → Materialized Views para leitura real-time
+            ex: mart.agg_vendas_diaria
+etl.*   → Controle, logs e funções PL/pgSQL
+```
+
+## Fluxo de Dados
+
+```
+[Origem Operacional]
+      ↓ NDJSON
+  stg.* (raw)
+      ↓ ETL incremental
+  dw.* (fatos + dimensões)
+      ↓ REFRESH MATERIALIZED VIEW
+  mart.* (leitura dos dashboards)
+```
+
+## Regras do ETL
+
+- O ETL é **incremental** — nunca reprocesse tudo sem necessidade
+- O arquivo central é `etl_orchestrator.py` — não quebre sua interface
+- A track `operational` faz REFRESH MATERIALIZED VIEW automaticamente ao final de cada ciclo
+- O cron de produção precisa terminar rápido — sem operações que travem por horas
+- Cargas novas podem chegar DURANTE a janela do ETL — o pipeline deve ser robusto a isso
+- Filiais administráveis via backoffice: o ETL jamais reverte mudanças administrativas
+
+## Performance SQL
+
+- Prefira queries O(1) ou O(N) — evite N+1 absolutamente
+- Use índices nas colunas de filtro de tenant (`id_empresa`, `id_filial`)
+- Materialized views com índices nos campos de join e filtro
+- NEVER faça SELECT * em tabelas de fatos em produção
+- Use EXPLAIN ANALYZE antes de commitar queries novas em tabelas grandes
+
+## Nomenclatura
+
+- Tabelas de fato: `dw.fact_<entidade>` (ex: `dw.fact_venda`)
+- Dimensões: `dw.dim_<entidade>` (ex: `dw.dim_produto`)
+- Agregados: `mart.agg_<descricao>` (ex: `mart.agg_vendas_diaria`)
+- Migrations: sequenciais com prefixo numérico `NNN_descricao.sql`
+
+## Comandos Operacionais
+
+```bash
+make migrate          # aplica migrations pendentes
+make test             # roda suite de testes
+make lint             # linting completo
+make etl-incremental  # roda ciclo ETL incremental
+```

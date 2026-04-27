@@ -144,7 +144,11 @@ def _track_runs_risk(track: str) -> bool:
 
 
 def _track_runs_publication(track: str) -> bool:
-    return track in {TRACK_RISK, TRACK_FULL}
+    # 2026-04-29: incluir OPERATIONAL para que mart.agg_vendas_diaria, mart.agg_pagamentos_diaria
+    # e demais matviews "gerais" sejam refrescadas a cada ciclo operacional.
+    # Sem isso, o Dashboard Geral exibia dados defasados (fallback "stale data").
+    # Veja docs/ARCHITECTURE.md §10 (Refresh Policy by Track).
+    return track in {TRACK_OPERATIONAL, TRACK_RISK, TRACK_FULL}
 
 
 def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
@@ -343,7 +347,9 @@ def run_incremental_cycle(
             aggregated_meta = _aggregate_refresh_meta(successful_items, force_full=force_full, track=track)
             publication_requested = refresh_mart and bool(successful_items) and _refresh_meta_has_requested_work(aggregated_meta)
             publication_enabled = publication_requested and _track_runs_publication(track)
-            publication_deferred = publication_requested and track == TRACK_OPERATIONAL
+            # 2026-04-29: removido publication_deferred. OPERATIONAL agora também publica
+            # marts globais (`etl.refresh_marts`) a cada ciclo, garantindo Dashboard Geral fresco.
+            publication_deferred = False
             refresh_meta = _empty_refresh_meta(ref_date)
             if publication_enabled:
                 refresh_meta = _empty_refresh_meta(ref_date) | {"requested": True} | _run_global_refresh(
@@ -353,15 +359,6 @@ def run_incremental_cycle(
                     tenant_ids=[int(item["tenant_id"]) for item in successful_items],
                     progress_callback=progress_callback,
                 )
-            elif publication_deferred:
-                refresh_meta = _empty_refresh_meta(ref_date) | {
-                    "requested": True,
-                    "deferred": True,
-                    "deferred_reason": "operational_track_keeps_global_refresh_off_hot_path",
-                    "recommended_track": TRACK_RISK,
-                    "fast_path_available": True,
-                    "publication_policy": "operational_fast_path_plus_risk_heavy_refresh",
-                }
 
             refreshed_any = bool(refresh_meta.get("refreshed_any"))
             fast_path_items = 0

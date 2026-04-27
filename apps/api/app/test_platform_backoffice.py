@@ -883,6 +883,12 @@ class PlatformBackofficeTest(unittest.TestCase):
                     20260402,
                 ),
             )
+            # 2026-04-29: refresh marts so the mart-only path can see the data
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_hora")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_produtos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_grupos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_funcionarios_diaria")
             conn.commit()
 
         headers = self._auth_headers(owner_email, "Senha@123")
@@ -898,11 +904,11 @@ class PlatformBackofficeTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["reading_status"], "operational_overlay")
+        self.assertEqual(body["reading_status"], "mart_snapshot")
         self.assertEqual([int(row["data_key"]) for row in body["by_day"]], [20260331, 20260401, 20260402])
         self.assertEqual(round(float(body["kpis"]["faturamento"]), 2), 600.0)
         self.assertEqual(round(float(body["kpis"]["margem"]), 2), 180.0)
-        self.assertEqual(body["freshness"]["source"], "dw.fact_venda")
+        self.assertEqual(body["freshness"]["source"], "mart.agg_vendas_diaria")
         self.assertEqual(body["operational_sync"]["dt_ref"], "2026-04-02")
 
     def test_sales_overview_separates_sales_returns_and_canceled_rows(self) -> None:
@@ -995,6 +1001,12 @@ class PlatformBackofficeTest(unittest.TestCase):
                     branch_id,
                 ),
             )
+            # 2026-04-29: refresh marts so the mart-only path can see the data
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_vendas_hora")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_produtos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_grupos_diaria")
+            conn.execute("REFRESH MATERIALIZED VIEW mart.agg_funcionarios_diaria")
             conn.commit()
 
         headers = self._auth_headers(owner_email, "Senha@123")

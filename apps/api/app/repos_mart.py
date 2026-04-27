@@ -1101,35 +1101,22 @@ def dashboard_home_bundle(
     sales_dt_ini = sales_coverage.get("effective_dt_ini") or dt_ini
     sales_dt_fim = sales_coverage.get("effective_dt_fim") or dt_fim
     signal_dt_ref = sales_coverage.get("effective_dt_fim") or dt_ref
-    sales_live_day = _sales_live_day_in_window(
+    # 2026-04-29: marts are now refreshed every operational cycle (TRACK_OPERATIONAL
+    # includes global refresh). No need for live-day overlay from dw.fact_*.
+    # Always read from marts for consistent, fast performance.
+    sales = _sales_historical_bundle_from_marts(
+        role,
+        id_empresa,
+        id_filial,
         sales_dt_ini,
         sales_dt_fim,
-        dt_ref,
-        tenant_id=id_empresa,
+        include_details=False,
     )
-    if sales_live_day is None:
-        sales = _sales_historical_bundle_from_marts(
-            role,
-            id_empresa,
-            id_filial,
-            sales_dt_ini,
-            sales_dt_fim,
-            include_details=False,
-        )
-    else:
-        sales = sales_operational_range_bundle(
-            role,
-            id_empresa,
-            id_filial,
-            sales_dt_ini,
-            sales_dt_fim,
-            include_rankings=False,
-        ) or _empty_sales_overview_bundle()
     sales["commercial_coverage"] = sales_coverage
     sales["reading_status"] = (
         "latest_compatible"
         if sales_coverage.get("mode") == "shifted_latest"
-        else str(sales.get("reading_status") or ("operational_overlay" if sales_live_day else "historical_snapshot"))
+        else str(sales.get("reading_status") or "mart_snapshot")
     )
     peak_hours_signal = sales_peak_hours_signal(role, id_empresa, id_filial, signal_dt_ref)
     declining_products_signal = sales_declining_products_signal(role, id_empresa, id_filial, signal_dt_ref)
@@ -1234,13 +1221,14 @@ def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     params = [id_empresa, ini, fim] + branch_params
 
+    # 2026-04-29: marts are refreshed every operational cycle — read exclusively
+    # from mart.agg_vendas_diaria, no live-day overlay from dw.fact_*.
     sql = f"""
       SELECT
         COALESCE(SUM(faturamento),0) AS faturamento,
         COALESCE(SUM(margem),0) AS margem,
         COALESCE(AVG(ticket_medio),0) AS ticket_medio,
-        COALESCE(SUM(quantidade_itens),0) AS itens,
-        COALESCE(SUM(CASE WHEN COALESCE(ticket_medio, 0) > 0 THEN faturamento / NULLIF(ticket_medio, 0) ELSE 0 END),0) AS sales_count
+        COALESCE(SUM(quantidade_itens),0) AS itens
       FROM mart.agg_vendas_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
@@ -1248,14 +1236,7 @@ def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = dict(conn.execute(sql, params).fetchone() or {})
 
-    live_day = _sales_live_day_in_window(dt_ini, dt_fim, tenant_id=id_empresa)
-    if live_day is None:
-        row.pop("sales_count", None)
-        return row or {"faturamento": 0, "margem": 0, "ticket_medio": 0, "itens": 0}
-
-    live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, live_day, include_rankings=False)
-    merged = _merge_sales_kpis(row, live_bundle)
-    return merged
+    return row or {"faturamento": 0, "margem": 0, "ticket_medio": 0, "itens": 0}
 
 
 def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
@@ -1263,6 +1244,7 @@ def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_in
     fim = _date_key(dt_fim)
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     params = [id_empresa, ini, fim] + branch_params
+    # 2026-04-29: marts refreshed every operational cycle — no live-day overlay.
     sql = f"""
       SELECT data_key, id_filial, faturamento, margem
       FROM mart.agg_vendas_diaria
@@ -1271,15 +1253,7 @@ def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_in
       ORDER BY data_key, id_filial
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        historical_rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
-
-    live_day = _sales_live_day_in_window(dt_ini, dt_fim, tenant_id=id_empresa)
-    if live_day is None:
-        return historical_rows
-
-    live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, live_day, include_rankings=False)
-    live_rows = live_bundle.get("by_day") or []
-    return _merge_series_rows(historical_rows, live_rows[0] if live_rows else None)
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
 def _sales_live_day_in_window(
@@ -2432,7 +2406,7 @@ def _sales_historical_bundle_from_marts(
             "dt_ref": dt_fim.isoformat(),
         },
         "freshness": {
-            "mode": "historical_snapshot",
+            "mode": "mart_snapshot",
             "operational_day": None,
             "live_through_at": None,
             "historical_through_dt": dt_fim.isoformat(),
@@ -2454,32 +2428,15 @@ def sales_overview_bundle(
     sales_coverage = commercial_window_coverage(role, id_empresa, id_filial, dt_ini, dt_fim)
     effective_dt_ini = sales_coverage.get("effective_dt_ini") or dt_ini
     effective_dt_fim = sales_coverage.get("effective_dt_fim") or dt_fim
-    live_day = _sales_live_day_in_window(
+    # 2026-04-29: marts refreshed every operational cycle — always use marts.
+    bundle = _sales_historical_bundle_from_marts(
+        role,
+        id_empresa,
+        id_filial,
         effective_dt_ini,
         effective_dt_fim,
-        as_of,
-        tenant_id=id_empresa,
+        include_details=include_details,
     )
-    if live_day is None:
-        bundle = _sales_historical_bundle_from_marts(
-            role,
-            id_empresa,
-            id_filial,
-            effective_dt_ini,
-            effective_dt_fim,
-            include_details=include_details,
-        )
-    else:
-        bundle = sales_operational_range_bundle(
-            role,
-            id_empresa,
-            id_filial,
-            effective_dt_ini,
-            effective_dt_fim,
-            include_rankings=include_details,
-        )
-        if bundle is None:
-            bundle = _empty_sales_overview_bundle()
     commercial = sales_commercial_overview(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
     bundle["commercial_kpis"] = commercial.get("kpis") or _empty_sales_overview_bundle()["commercial_kpis"]
     bundle["cfop_breakdown"] = commercial.get("cfop_breakdown") or []
@@ -2490,39 +2447,17 @@ def sales_overview_bundle(
 
     freshness = dict(bundle.get("freshness") or {})
     operational_sync = dict(bundle.get("operational_sync") or {})
-    reading_status = "historical_snapshot" if live_day is None else "operational_overlay"
+    reading_status = "mart_snapshot"
 
-    if live_day is None:
-        freshness.update(
-            {
-                "mode": "operational_range",
-                "operational_day": None,
-                "historical_through_dt": effective_dt_fim.isoformat(),
-                "source": "dw.fact_venda",
-            }
-        )
-        operational_sync["dt_ref"] = effective_dt_fim.isoformat()
-    elif dt_ini == dt_fim == live_day:
-        freshness.update(
-            {
-                "mode": "live_day",
-                "operational_day": live_day.isoformat(),
-                "historical_through_dt": None,
-                "source": "dw.fact_venda",
-            }
-        )
-        operational_sync["dt_ref"] = live_day.isoformat()
-        reading_status = "operational_current"
-    else:
-        freshness.update(
-            {
-                "mode": "live_range",
-                "operational_day": live_day.isoformat(),
-                "historical_through_dt": effective_dt_fim.isoformat(),
-                "source": "dw.fact_venda",
-            }
-        )
-        operational_sync["dt_ref"] = effective_dt_fim.isoformat()
+    freshness.update(
+        {
+            "mode": "mart_snapshot",
+            "operational_day": None,
+            "historical_through_dt": effective_dt_fim.isoformat(),
+            "source": "mart.agg_vendas_diaria",
+        }
+    )
+    operational_sync["dt_ref"] = effective_dt_fim.isoformat()
 
     if sales_coverage.get("mode") == "shifted_latest":
         reading_status = "latest_compatible"

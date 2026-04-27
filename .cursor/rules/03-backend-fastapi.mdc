@@ -1,0 +1,54 @@
+---
+description: Regras do backend FastAPI do TorqMind
+globs:
+  - "apps/api/**/*.py"
+alwaysApply: false
+---
+
+# ⚙️ Backend — FastAPI + Pydantic + JWT
+
+## Responsabilidades da API
+
+- Autenticação JWT com escopo de tenant
+- Ingestão NDJSON contínua da operação
+- Orquestração do ETL via `etl_orchestrator.py`
+- Endpoints de BI para os dashboards
+- Backoffice platform (empresas, filiais, usuários, contratos, recebíveis, auditoria)
+
+## Padrões de Código
+
+```python
+# ✅ Sempre tipar com Pydantic
+class VendaResponse(BaseModel):
+    id_empresa: int
+    total_vendas: Decimal  # nome correto — não use "valor" ou "amount"
+    data_referencia: date
+
+# ✅ Sempre validar escopo no início do endpoint
+@router.get("/vendas/overview")
+async def get_vendas_overview(
+    tenant: TenantScope = Depends(get_tenant_scope),
+    db: AsyncSession = Depends(get_db)
+):
+    # tenant.id_empresa e tenant.id_filial já validados
+    ...
+```
+
+## Regras de Endpoint
+
+- Endpoints de overview/dashboard → leem EXCLUSIVAMENTE de `mart.*`
+- Endpoints de backoffice platform → contexto de permissão DIFERENTE dos endpoints de tenant
+- Toda ingestão NDJSON deve ser idempotente
+- Respostas de erro devem ter estrutura consistente com código HTTP correto
+
+## Segurança
+
+- JWT deve carregar `id_empresa` e `id_filial` no payload
+- Nunca confie em parâmetros de query para escopo — use sempre o token
+- Logs de auditoria para ações administrativas no backoffice
+
+## Performance
+
+- Use `async/await` em todos os endpoints de banco
+- Connection pool configurado — não abra conexões avulsas
+- Para queries pesadas de BI, use `background_tasks` se a resposta puder ser assíncrona
