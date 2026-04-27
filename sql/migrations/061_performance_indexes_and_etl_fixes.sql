@@ -27,7 +27,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_fact_venda_turno
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_fact_venda_data_cancel
   ON dw.fact_venda (id_empresa, data_key DESC, cancelado)
-  INCLUDE (id_filial, valor_total);
+  INCLUDE (id_filial, total_venda);
 
 -- fact_comprovante: used by risk scoring (id_usuario), fraud dashboard
 CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_fact_comprovante_usuario_data
@@ -51,7 +51,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_fact_venda_item_local_venda
 
 -- fact_financeiro: used by aging analysis (vencimento + entidade)
 CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_fact_financeiro_aging
-  ON dw.fact_financeiro (id_empresa, id_filial, vencimento, status)
+  ON dw.fact_financeiro (id_empresa, id_filial, vencimento)
   WHERE vencimento IS NOT NULL;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_fact_financeiro_entidade
