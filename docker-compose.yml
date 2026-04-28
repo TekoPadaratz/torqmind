@@ -1,3 +1,5 @@
+include:
+  - path: docker-compose.clickhouse.yml
 services:
   postgres:
     image: postgres:16
@@ -35,6 +37,8 @@ services:
       - ./sql/migrations:/app/sql/migrations:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
 
   web:
