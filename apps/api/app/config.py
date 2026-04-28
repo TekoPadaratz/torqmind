@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     app_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     app_cors_origin_regex: str = r"^https?://([a-zA-Z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(:3000)?$"
 
-    # Database
+    # Database (PostgreSQL)
     database_url: str | None = None
     pg_host: str = "localhost"
     pg_port: int = 5432
@@ -27,6 +27,17 @@ class Settings(BaseSettings):
     db_pool_max_size: int = 30
     db_pool_timeout_seconds: int = 30
     db_pool_max_idle_seconds: int = 300
+
+    # Database (ClickHouse - Analytics)
+    clickhouse_host: str = "localhost"
+    clickhouse_port: int = 8123
+    clickhouse_database: str = "torqmind_mart"
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    
+    # Feature flags for Phase 3 migration
+    use_clickhouse: bool = True  # When False, fallback to PostgreSQL dw
+    dual_read_mode: bool = False  # When True, validate both sources
 
     # Business clock
     business_timezone: str = "America/Sao_Paulo"
