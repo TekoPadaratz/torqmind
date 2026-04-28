@@ -1,27 +1,25 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: torqmind-clickhouse
+    image: clickhouse/clickhouse-server:24.8
     ports:
       - "8123:8123"
       - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-torqmind_mart}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-torqmind}
     volumes:
-      - ./ch_data:/var/lib/clickhouse
+      - chdata:/var/lib/clickhouse
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok"]
       interval: 10s
       timeout: 5s
-      retries: 5
-    # ADICIONE ESTAS 2 LINHAS AQUI (respeite o alinhamento do "networks" com o "clickhouse"):
-    networks:
-      - torqmind_default
+      retries: 12
+      start_period: 20s
 
-# ADICIONE ESTE BLOCO NO FINAL DO ARQUIVO (totalmente encostado na margem esquerda):
-networks:
-  torqmind_default:
-    external: true
-    name: torqmind_default
+volumes:
+  chdata:

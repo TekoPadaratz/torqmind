@@ -144,7 +144,7 @@ def load_agg_produtos_diaria():
     with get_conn() as conn:
         rows_pg = conn.execute(
             "SELECT id_empresa, id_filial, data_key, id_produto, produto_nome, "
-            "faturamento, margem, qtd, updated_at "
+            "faturamento, custo_total, margem, qtd, updated_at "
             "FROM mart.agg_produtos_diaria "
             "ORDER BY id_empresa, data_key, id_filial, id_produto"
         ).fetchall()
@@ -156,6 +156,7 @@ def load_agg_produtos_diaria():
             "id_produto":   _i(r["id_produto"]),
             "produto_nome": _s(r["produto_nome"]),
             "faturamento":  _f(r["faturamento"]),
+            "custo_total":  _f(r["custo_total"]),
             "margem":       _f(r["margem"]),
             "qtd":          _f(r["qtd"]),
             "updated_at":   _dt(r["updated_at"]),
@@ -962,9 +963,9 @@ def load_anonymous_retention_daily():
 def load_health_score_daily():
     with get_conn() as conn:
         rows_pg = conn.execute(
-            "SELECT dt_ref, id_empresa, id_filial, fat_30d, margem_30d, "
-            "ticket_30d, high_risk_30d, total_risk_30d, impacto_risco_30d, "
-            "health_pct, customer_pct, risk_pct, final_score, updated_at "
+            "SELECT dt_ref, id_empresa, id_filial, comp_margem, comp_fraude, "
+            "comp_churn, comp_finance, comp_operacao, comp_dados, score_total, "
+            "updated_at "
             "FROM mart.health_score_daily "
             "ORDER BY dt_ref, id_empresa, id_filial"
         ).fetchall()
@@ -973,16 +974,16 @@ def load_health_score_daily():
             "dt_ref":            r["dt_ref"],
             "id_empresa":        _i(r["id_empresa"]),
             "id_filial":         _i(r["id_filial"]),
-            "fat_30d":           _f(r["fat_30d"]),
-            "margem_30d":        _f(r["margem_30d"]),
-            "ticket_30d":        _f(r["ticket_30d"]),
-            "high_risk_30d":     _i(r["high_risk_30d"]),
-            "total_risk_30d":    _i(r["total_risk_30d"]),
-            "impacto_risco_30d": _f(r["impacto_risco_30d"]),
-            "health_pct":        _f(r["health_pct"]),
-            "customer_pct":      _f(r["customer_pct"]),
-            "risk_pct":          _f(r["risk_pct"]),
-            "final_score":       _f(r["final_score"]),
+            "fat_30d":           0.0,
+            "margem_30d":        0.0,
+            "ticket_30d":        0.0,
+            "high_risk_30d":     0,
+            "total_risk_30d":    0,
+            "impacto_risco_30d": 0.0,
+            "health_pct":        _f(r["comp_margem"]),
+            "customer_pct":      _f(r["comp_churn"]),
+            "risk_pct":          _f(r["comp_fraude"]),
+            "final_score":       _f(r["score_total"]),
             "updated_at":        _dt(r["updated_at"]),
         }
         for r in rows_pg

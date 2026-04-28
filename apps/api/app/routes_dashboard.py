@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.deps import get_current_claims
 from app.scope import resolve_scope
 from app.schemas import DashboardKpisResponse, DashboardSeriesResponse, InsightsResponse
-from app import repos_mart
+from app import repos_analytics as repos_mart
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 

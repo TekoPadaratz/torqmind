@@ -30,6 +30,7 @@
 --   - Índices skip implícitos via ORDER BY
 -- ============================================================================
 
+CREATE DATABASE IF NOT EXISTS torqmind_mart;
 USE torqmind_mart;
 
 -- ============================================================================
@@ -85,11 +86,12 @@ CREATE TABLE torqmind_mart.agg_produtos_diaria (
     id_produto          Int32,
     produto_nome        String,
     faturamento         Decimal128(2),
+    custo_total         Decimal128(2),
     margem              Decimal128(2),
     qtd                 Decimal128(3),
     updated_at          DateTime DEFAULT now()
 )
-ENGINE = SummingMergeTree((faturamento, margem, qtd))
+ENGINE = SummingMergeTree((faturamento, custo_total, margem, qtd))
 ORDER BY (id_empresa, data_key, id_filial, id_produto)
 PARTITION BY (id_empresa)
 COMMENT 'Product-level daily aggregates';
@@ -621,24 +623,31 @@ COMMENT 'Composite daily health score (sales + risk + customer)';
 
 CREATE OR REPLACE VIEW risco_eventos_recentes AS
 SELECT
-    id_empresa,
-    id_filial,
-    id_db,
-    id_comprovante,
-    data,
-    data_key,
-    id_usuario,
-    id_funcionario,
-    id_turno,
-    id_cliente,
-    valor_total,
-    impacto_estimado,
-    score_risco,
-    score_level,
-    reasons,
-    created_at
-FROM torqmind_dw.fact_risco_evento
-ORDER BY id_empresa, id_filial, data
+    r.id,
+    r.id_empresa,
+    r.id_filial,
+    r.id_db,
+    r.id_comprovante,
+    r.id_movprodutos,
+    r.data,
+    r.data_key,
+    r.id_usuario,
+    r.id_funcionario,
+    ifNull(df.nome, '(Sem funcionario)') AS funcionario_nome,
+    r.id_turno,
+    r.id_cliente,
+    r.valor_total,
+    r.impacto_estimado,
+    r.score_risco,
+    r.score_level,
+    r.reasons,
+    r.created_at
+FROM torqmind_dw.fact_risco_evento r
+LEFT JOIN torqmind_dw.dim_funcionario df
+    ON df.id_empresa = r.id_empresa
+   AND df.id_filial = r.id_filial
+   AND df.id_funcionario = r.id_funcionario
+ORDER BY r.id_empresa, r.id_filial, r.data
 LIMIT 10000;
 
 -- ============================================================================

@@ -6,6 +6,7 @@
 --   Execute apos phase2_mvs_design.sql (criacao das tabelas destino).
 -- ============================================================================
 
+CREATE DATABASE IF NOT EXISTS torqmind_mart;
 USE torqmind_mart;
 
 -- ============================================================================
@@ -72,6 +73,7 @@ SELECT
     toInt32(i.id_produto) AS id_produto,
     ifNull(p.nome, '') AS produto_nome,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento,
+    toDecimal128(sum(ifNull(i.custo_total, 0)), 2) AS custo_total,
     toDecimal128(sum(ifNull(i.margem, 0)), 2) AS margem,
     toDecimal128(sum(ifNull(i.qtd, 0)), 3) AS qtd,
     now() AS updated_at

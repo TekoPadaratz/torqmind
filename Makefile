@@ -7,8 +7,18 @@ PROD_ENV_FILE ?= /etc/torqmind/prod.env
 ENV_EXAMPLE ?= .envexemple
 RESET_TMP_DIR ?= /tmp/torqmind-reset
 DB_NAME ?=
+CLICKHOUSE_PG_HOST ?= postgres
+CLICKHOUSE_PG_PORT ?= 5432
+CLICKHOUSE_PG_DATABASE ?= $(or $(PG_DATABASE),TORQMIND)
+CLICKHOUSE_PG_USER ?= $(or $(PG_USER),postgres)
+CLICKHOUSE_PG_PASSWORD ?= $(or $(PG_PASSWORD),postgres)
 
-.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
+ifneq (,$(wildcard $(ENV_FILE)))
+include $(ENV_FILE)
+export
+endif
+
+.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -101,6 +111,42 @@ operational-truth-validate:
 
 platform-billing-daily:
 	@$(COMPOSE) exec -T api python -m app.cli.platform_billing daily --as-of "$${AS_OF:-}" --competence-month "$${COMPETENCE_MONTH:-}" --months-ahead "$${MONTHS_AHEAD:-0}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"}
+
+clickhouse-dw-init:
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --multiquery --query "SET allow_experimental_database_materialized_postgresql=1; CREATE DATABASE IF NOT EXISTS torqmind_dw ENGINE = MaterializedPostgreSQL('$(CLICKHOUSE_PG_HOST):$(CLICKHOUSE_PG_PORT)', '$(CLICKHOUSE_PG_DATABASE)', '$(CLICKHOUSE_PG_USER)', '$(CLICKHOUSE_PG_PASSWORD)') SETTINGS materialized_postgresql_schema = 'dw';"
+
+clickhouse-wait-dw:
+	@for attempt in {1..120}; do \
+		count="$$( $(COMPOSE) exec -T clickhouse clickhouse-client --query "SELECT count() FROM system.tables WHERE database = 'torqmind_dw' AND name IN ('dim_cliente','dim_filial','dim_funcionario','dim_grupo_produto','dim_local_venda','dim_produto','dim_usuario_caixa','fact_caixa_turno','fact_comprovante','fact_financeiro','fact_pagamento_comprovante','fact_risco_evento','fact_venda','fact_venda_item')" )"; \
+		if [ "$$count" -ge 14 ]; then \
+			echo "torqmind_dw ready with $$count required tables"; \
+			exit 0; \
+		fi; \
+		sleep 2; \
+	done; \
+	echo "Timed out waiting for torqmind_dw MaterializedPostgreSQL tables"; \
+	exit 1
+
+clickhouse-marts-init:
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --multiquery < sql/clickhouse/phase2_mvs_design.sql
+
+clickhouse-init: clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init
+
+clickhouse-mvs:
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --multiquery < sql/clickhouse/phase2_mvs_streaming_triggers.sql
+
+clickhouse-backfill:
+	@bash deploy/scripts/load_clickhouse_historical.sh
+
+clickhouse-native-backfill:
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --multiquery < sql/clickhouse/phase3_native_backfill.sql
+
+clickhouse-smoke:
+	@$(COMPOSE) exec -T clickhouse sh -lc 'wget -q -O - http://127.0.0.1:8123/ping'
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --query "SELECT database, count() AS tables FROM system.tables WHERE database IN ('torqmind_dw', 'torqmind_mart') GROUP BY database ORDER BY database"
+
+analytics-smoke:
+	@$(COMPOSE) exec -T api python -c "from app.config import settings; from app.repos_analytics import analytics_backend_inventory; inv=analytics_backend_inventory(); print({'use_clickhouse': settings.use_clickhouse, 'dual_read_mode': settings.dual_read_mode, 'functions': len(inv['functions'])})"
 
 test:
 	@$(COMPOSE) exec -T api python -m unittest discover -s app -p 'test*.py'

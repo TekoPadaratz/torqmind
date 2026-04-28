@@ -13,7 +13,7 @@ from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
-from app import repos_mart
+from app import repos_analytics as repos_mart
 from app import repos_auth
 from app.services import snapshot_cache
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans

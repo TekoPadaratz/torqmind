@@ -17,7 +17,7 @@ import contextlib
 import threading
 from typing import Iterator, Optional, List, Dict, Any
 import logging
-import json
+import re
 
 import clickhouse_connect
 
@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 
 _pool: clickhouse_connect.driver.client.Client | None = None
 _pool_lock = threading.Lock()
+_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def _safe_identifier(value: str, *, label: str) -> str:
+    """Validate simple SQL identifiers used by operational helper queries."""
+    if not _SQL_IDENTIFIER_RE.match(value or ""):
+        raise ValueError(f"Invalid ClickHouse {label}: {value!r}")
+    return value
 
 
 def _get_client() -> clickhouse_connect.driver.client.Client | None:
@@ -48,8 +56,8 @@ def _get_client() -> clickhouse_connect.driver.client.Client | None:
                     database=settings.clickhouse_database,
                     username=settings.clickhouse_user,
                     password=settings.clickhouse_password,
-                    read_timeout=30,
-                    write_timeout=30,
+                    connect_timeout=10,
+                    send_receive_timeout=30,
                 )
                 logger.info(
                     f"ClickHouse client initialized: "
@@ -111,8 +119,17 @@ def query_dict(
     EN: Convenient wrapper for read queries
     """
     with get_clickhouse_client(tenant_id=tenant_id) as client:
-        result = client.query(query, parameters=parameters)
-        return result.result_rows
+        result = client.query(query, parameters=parameters or {})
+        rows = list(result.result_rows or [])
+        if not rows:
+            return []
+        if isinstance(rows[0], dict):
+            return [dict(row) for row in rows]
+
+        column_names = list(getattr(result, "column_names", None) or [])
+        if not column_names:
+            raise RuntimeError("ClickHouse query returned rows without column_names")
+        return [dict(zip(column_names, row)) for row in rows]
 
 
 def query_scalar(
@@ -126,7 +143,7 @@ def query_scalar(
     EN: For queries like COUNT(*), SUM(...), etc.
     """
     with get_clickhouse_client(tenant_id=tenant_id) as client:
-        result = client.query(query, parameters=parameters)
+        result = client.query(query, parameters=parameters or {})
         rows = result.result_rows
         if rows and len(rows) > 0:
             return rows[0][0]
@@ -164,6 +181,7 @@ def insert_batch(
     """
     if not rows:
         return 0
+    table = _safe_identifier(table, label="table")
 
     # Sort by order_by columns for optimal compression
     if order_by:
@@ -174,8 +192,10 @@ def insert_batch(
         # Insert in chunks
         for i in range(0, len(rows), batch_size):
             chunk = rows[i : i + batch_size]
+            column_names = list(chunk[0].keys())
+            data = [[row.get(column) for column in column_names] for row in chunk]
             try:
-                result = client.insert(table, chunk)
+                client.insert(table, data, column_names=column_names)
                 total_inserted += len(chunk)
                 logger.info(f"Inserted {len(chunk)} rows into {table}")
             except Exception as e:
@@ -195,6 +215,7 @@ def validate_row_count(
     PT-BR: Usado para reconciliação após migração histórica
     EN: Used for reconciliation after historical migration
     """
+    table = _safe_identifier(table, label="table")
     actual_count = query_scalar(f"SELECT COUNT(*) FROM {table}")
     if actual_count is None:
         actual_count = 0
@@ -227,6 +248,8 @@ def validate_aggregate(
     PT-BR: Reconciliação de valores financeiros
     EN: Reconciliation of financial values
     """
+    table = _safe_identifier(table, label="table")
+    column = _safe_identifier(column, label="column")
     actual_sum = query_scalar(f"SELECT SUM({column}) FROM {table}")
     if actual_sum is None:
         actual_sum = 0
