@@ -17,9 +17,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_vendas_diaria
 TO torqmind_mart.agg_vendas_diaria
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
-    v.data_key,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
+    v.data_key AS data_key,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento,
     toInt32(count()) AS quantidade_itens,
     toDecimal128(sum(ifNull(i.margem, 0)), 2) AS margem,
@@ -41,9 +41,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_vendas_hora
 TO torqmind_mart.agg_vendas_hora
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
-    v.data_key,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
+    v.data_key AS data_key,
     toInt8(toHour(v.data)) AS hora,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento,
     toDecimal128(sum(ifNull(i.margem, 0)), 2) AS margem,
@@ -66,9 +66,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_produtos_diaria
 TO torqmind_mart.agg_produtos_diaria
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
-    v.data_key,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
+    v.data_key AS data_key,
     toInt32(i.id_produto) AS id_produto,
     ifNull(p.nome, '') AS produto_nome,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento,
@@ -95,9 +95,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_grupos_diaria
 TO torqmind_mart.agg_grupos_diaria
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
-    v.data_key,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
+    v.data_key AS data_key,
     toInt32(ifNull(i.id_grupo_produto, -1)) AS id_grupo_produto,
     ifNull(g.nome, '(Sem grupo)') AS grupo_nome,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento,
@@ -123,9 +123,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_funcionarios_diaria
 TO torqmind_mart.agg_funcionarios_diaria
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
-    v.data_key,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
+    v.data_key AS data_key,
     toInt32(ifNull(i.id_funcionario, -1)) AS id_funcionario,
     ifNull(f.nome, '(Sem funcionario)') AS funcionario_nome,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento,
@@ -152,9 +152,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_insights_base_diaria
 TO torqmind_mart.insights_base_diaria
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
-    v.data_key,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
+    v.data_key AS data_key,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento_dia,
     toDecimal128(sum(ifNull(i.total, 0)), 2) AS faturamento_mes_acum,
     toDecimal128(0, 2) AS comparativo_mes_anterior,
@@ -187,9 +187,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_fraude_cancelamentos_diaria
 TO torqmind_mart.fraude_cancelamentos_diaria
 AS
 SELECT
-    c.id_empresa,
-    c.id_filial,
-    c.data_key,
+    c.id_empresa AS id_empresa,
+    c.id_filial AS id_filial,
+    c.data_key AS data_key,
     toInt32(count()) AS cancelamentos,
     toDecimal128(sum(ifNull(c.valor_total, 0)), 2) AS valor_cancelado,
     now() AS updated_at
@@ -203,14 +203,14 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_fraude_cancelamentos_eventos
 TO torqmind_mart.fraude_cancelamentos_eventos
 AS
 SELECT
-    c.id_empresa,
-    c.id_filial,
-    c.id_db,
+    c.id_empresa AS id_empresa,
+    c.id_filial AS id_filial,
+    c.id_db AS id_db,
     toString(c.id_comprovante) AS id_comprovante,
-    c.data,
-    c.data_key,
-    c.id_usuario,
-    c.id_turno,
+    c.data AS data,
+    c.data_key AS data_key,
+    c.id_usuario AS id_usuario,
+    c.id_turno AS id_turno,
     toDecimal128(ifNull(c.valor_total, 0), 2) AS valor_total,
     now() AS updated_at
 FROM torqmind_dw.fact_comprovante c
@@ -221,9 +221,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_risco_diaria
 TO torqmind_mart.agg_risco_diaria
 AS
 SELECT
-    r.id_empresa,
-    r.id_filial,
-    r.data_key,
+    r.id_empresa AS id_empresa,
+    r.id_filial AS id_filial,
+    r.data_key AS data_key,
     toInt32(count()) AS eventos_risco_total,
     toInt32(countIf(ifNull(r.score_risco, 0) >= 80)) AS eventos_alto_risco,
     toDecimal128(sum(ifNull(r.impacto_estimado, 0)), 2) AS impacto_estimado_total,
@@ -238,9 +238,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_risco_top_funcionarios_diaria
 TO torqmind_mart.risco_top_funcionarios_diaria
 AS
 SELECT
-    r.id_empresa,
-    r.id_filial,
-    r.data_key,
+    r.id_empresa AS id_empresa,
+    r.id_filial AS id_filial,
+    r.data_key AS data_key,
     toInt32(ifNull(r.id_funcionario, -1)) AS id_funcionario,
     ifNull(df.nome, '(Sem funcionario)') AS funcionario_nome,
     toInt32(count()) AS eventos,
@@ -260,9 +260,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_risco_turno_local_diaria
 TO torqmind_mart.risco_turno_local_diaria
 AS
 SELECT
-    r.id_empresa,
-    r.id_filial,
-    r.data_key,
+    r.id_empresa AS id_empresa,
+    r.id_filial AS id_filial,
+    r.data_key AS data_key,
     toInt32(ifNull(r.id_turno, -1)) AS id_turno,
     toInt32(ifNull(i.id_local_venda, -1)) AS id_local_venda,
     toInt32(count()) AS eventos,
@@ -283,8 +283,8 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_clientes_churn_risco
 TO torqmind_mart.clientes_churn_risco
 AS
 SELECT
-    v.id_empresa,
-    v.id_filial,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
     toInt32(ifNull(v.id_cliente, -1)) AS id_cliente,
     ifNull(c.nome, concat('#ID ', toString(ifNull(v.id_cliente, -1)))) AS cliente_nome,
     max(toDate(v.data)) AS last_purchase,
@@ -327,8 +327,8 @@ TO torqmind_mart.customer_rfm_daily
 AS
 SELECT
     today() AS dt_ref,
-    v.id_empresa,
-    v.id_filial,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
     toInt32(v.id_cliente) AS id_cliente,
     ifNull(c.nome, concat('#ID ', toString(v.id_cliente))) AS cliente_nome,
     max(toDate(v.data)) AS last_purchase,
@@ -368,8 +368,8 @@ TO torqmind_mart.customer_churn_risk_daily
 AS
 SELECT
     today() AS dt_ref,
-    v.id_empresa,
-    v.id_filial,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
     toInt32(v.id_cliente) AS id_cliente,
     ifNull(c.nome, concat('#ID ', toString(v.id_cliente))) AS cliente_nome,
     max(toDate(v.data)) AS last_purchase,
@@ -430,8 +430,8 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_financeiro_vencimentos_diaria
 TO torqmind_mart.financeiro_vencimentos_diaria
 AS
 SELECT
-    f.id_empresa,
-    f.id_filial,
+    f.id_empresa AS id_empresa,
+    f.id_filial AS id_filial,
     f.data_key_venc AS data_key,
     toInt8(f.tipo_titulo) AS tipo_titulo,
     toDecimal128(sum(ifNull(f.valor, 0)), 2) AS valor_total,
@@ -448,8 +448,8 @@ TO torqmind_mart.finance_aging_daily
 AS
 SELECT
     today() AS dt_ref,
-    f.id_empresa,
-    f.id_filial,
+    f.id_empresa AS id_empresa,
+    f.id_filial AS id_filial,
     toDecimal128(sumIf(greatest(ifNull(f.valor, 0) - ifNull(f.valor_pago, 0), 0), f.tipo_titulo = 1), 2) AS receber_total_aberto,
     toDecimal128(sumIf(greatest(ifNull(f.valor, 0) - ifNull(f.valor_pago, 0), 0), f.tipo_titulo = 1 AND f.vencimento < today()), 2) AS receber_total_vencido,
     toDecimal128(sumIf(greatest(ifNull(f.valor, 0) - ifNull(f.valor_pago, 0), 0), f.tipo_titulo = 0), 2) AS pagar_total_aberto,
@@ -475,9 +475,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_pagamentos_diaria
 TO torqmind_mart.agg_pagamentos_diaria
 AS
 SELECT
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
+    p.id_empresa AS id_empresa,
+    p.id_filial AS id_filial,
+    p.data_key AS data_key,
     multiIf(
         p.tipo_forma IN (3, 13, 23), 'PIX',
         p.tipo_forma IN (4, 5, 6), 'CARTAO',
@@ -507,9 +507,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_pagamentos_turno
 TO torqmind_mart.agg_pagamentos_turno
 AS
 SELECT
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
+    p.id_empresa AS id_empresa,
+    p.id_filial AS id_filial,
+    p.data_key AS data_key,
     toInt32(ifNull(p.id_turno, -1)) AS id_turno,
     multiIf(
         p.tipo_forma IN (3, 13, 23), 'PIX',
@@ -540,9 +540,9 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_pagamentos_anomalias_diaria
 TO torqmind_mart.pagamentos_anomalias_diaria
 AS
 SELECT
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
+    p.id_empresa AS id_empresa,
+    p.id_filial AS id_filial,
+    p.data_key AS data_key,
     toInt32(ifNull(p.id_turno, -1)) AS id_turno,
     'PAYMENT_PATTERN' AS event_type,
     multiIf(sum(ifNull(p.valor, 0)) >= 100000, 'CRITICAL', sum(ifNull(p.valor, 0)) >= 30000, 'WARN', 'INFO') AS severity,
@@ -565,14 +565,14 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_caixa_turno_aberto
 TO torqmind_mart.agg_caixa_turno_aberto
 AS
 SELECT
-    t.id_empresa,
-    t.id_filial,
+    t.id_empresa AS id_empresa,
+    t.id_filial AS id_filial,
     ifNull(df.nome, '') AS filial_nome,
-    t.id_turno,
+    t.id_turno AS id_turno,
     toInt32(ifNull(t.id_usuario, -1)) AS id_usuario,
     ifNull(u.nome, concat('Usuario ', toString(ifNull(t.id_usuario, -1)))) AS usuario_nome,
-    t.abertura_ts,
-    t.fechamento_ts,
+    t.abertura_ts AS abertura_ts,
+    t.fechamento_ts AS fechamento_ts,
     toDecimal64(dateDiff('minute', t.abertura_ts, now()) / 60.0, 2) AS horas_aberto,
     multiIf(dateDiff('hour', t.abertura_ts, now()) >= 24, 'CRITICAL', dateDiff('hour', t.abertura_ts, now()) >= 12, 'HIGH', dateDiff('hour', t.abertura_ts, now()) >= 6, 'WARN', 'OK') AS severity,
     multiIf(dateDiff('hour', t.abertura_ts, now()) >= 24, 'Critico', dateDiff('hour', t.abertura_ts, now()) >= 12, 'Atencao alta', dateDiff('hour', t.abertura_ts, now()) >= 6, 'Monitorar', 'Dentro da janela') AS status_label,
@@ -617,8 +617,8 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_caixa_forma_pagamento
 TO torqmind_mart.agg_caixa_forma_pagamento
 AS
 SELECT
-    p.id_empresa,
-    p.id_filial,
+    p.id_empresa AS id_empresa,
+    p.id_filial AS id_filial,
     toInt32(ifNull(p.id_turno, -1)) AS id_turno,
     toInt32(p.tipo_forma) AS tipo_forma,
     concat('FORMA_', toString(p.tipo_forma)) AS forma_label,
@@ -651,8 +651,8 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_agg_caixa_cancelamentos
 TO torqmind_mart.agg_caixa_cancelamentos
 AS
 SELECT
-    c.id_empresa,
-    c.id_filial,
+    c.id_empresa AS id_empresa,
+    c.id_filial AS id_filial,
     toInt32(ifNull(c.id_turno, -1)) AS id_turno,
     ifNull(df.nome, '') AS filial_nome,
     toDecimal128(sum(ifNull(c.valor_total, 0)), 2) AS total_cancelamentos,
@@ -671,13 +671,13 @@ CREATE MATERIALIZED VIEW torqmind_mart.mv_alerta_caixa_aberto
 TO torqmind_mart.alerta_caixa_aberto
 AS
 SELECT
-    t.id_empresa,
-    t.id_filial,
+    t.id_empresa AS id_empresa,
+    t.id_filial AS id_filial,
     ifNull(df.nome, '') AS filial_nome,
-    t.id_turno,
+    t.id_turno AS id_turno,
     toInt32(ifNull(t.id_usuario, -1)) AS id_usuario,
     ifNull(u.nome, concat('Usuario ', toString(ifNull(t.id_usuario, -1)))) AS usuario_nome,
-    t.abertura_ts,
+    t.abertura_ts AS abertura_ts,
     toDecimal64(dateDiff('minute', t.abertura_ts, now()) / 60.0, 2) AS horas_aberto,
     'CRITICAL' AS severity,
     concat('Caixa ', toString(t.id_turno), ' aberto ha ', toString(toDecimal64(dateDiff('minute', t.abertura_ts, now()) / 60.0, 2)), ' horas') AS title,
@@ -711,8 +711,8 @@ TO torqmind_mart.anonymous_retention_daily
 AS
 SELECT
     toDate(v.data) AS dt_ref,
-    v.id_empresa,
-    v.id_filial,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
     toDecimal128(sumIf(ifNull(v.total_venda, 0), isNull(v.id_cliente) OR v.id_cliente = -1), 2) AS anon_faturamento_7d,
     toDecimal128(0, 2) AS anon_faturamento_prev_28d,
     toDecimal64(0, 2) AS trend_pct,
@@ -736,8 +736,8 @@ TO torqmind_mart.health_score_daily
 AS
 SELECT
     today() AS dt_ref,
-    v.id_empresa,
-    v.id_filial,
+    v.id_empresa AS id_empresa,
+    v.id_filial AS id_filial,
     toDecimal128(sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 30), 2) AS fat_30d,
     toDecimal128(sumIf(ifNull(i.margem, 0), toDate(v.data) >= today() - 30), 2) AS margem_30d,
     toDecimal128(if(countIf(toDate(v.data) >= today() - 30) = 0, 0, sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 30) / countIf(toDate(v.data) >= today() - 30)), 2) AS ticket_30d,
@@ -759,12 +759,3 @@ WHERE ifNull(v.cancelado, 0) = 0
   AND ifNull(i.cfop, 0) >= 5000
   AND v.data IS NOT NULL
 GROUP BY v.id_empresa, v.id_filial;
-
--- ============================================================================
--- CHECKLIST
--- ============================================================================
--- [x] 25 CREATE MATERIALIZED VIEW ... TO torqmind_mart.<destino>
--- [x] Fontes em torqmind_dw.fact_*
--- [x] Chaves de agrupamento alinhadas com ORDER BY das tabelas destino
--- [x] Script pronto para execucao imediata
--- ============================================================================
