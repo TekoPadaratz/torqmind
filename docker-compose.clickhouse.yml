@@ -1,9 +1,7 @@
-# docker-compose.clickhouse.yml
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     container_name: torqmind-clickhouse
-    restart: always
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -18,3 +16,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # ADICIONE ESTAS 2 LINHAS AQUI (respeite o alinhamento do "networks" com o "clickhouse"):
+    networks:
+      - torqmind_default
+
+# ADICIONE ESTE BLOCO NO FINAL DO ARQUIVO (totalmente encostado na margem esquerda):
+networks:
+  torqmind_default:
+    external: true
+    name: torqmind_default
