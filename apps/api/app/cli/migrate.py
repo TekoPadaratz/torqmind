@@ -34,7 +34,12 @@ ACCEPTED_CHECKSUM_ALIASES: dict[str, frozenset[str]] = {
     # already-tracked environments can move forward after the deploy-safe rewrite.
     "036_operational_publication_overlay_indexes.sql": frozenset(
         {"d7fa2ec538e1632e3d88fd5b8ec0a09d1d0f83177960f5f2af5facbc83485674"}
-    )
+    ),
+    # 071 was applied in one environment before a no-op CTE cleanup landed in git.
+    # Keep the tracked checksum accepted so deployed databases do not block future migrations.
+    "071_payment_notification_hash_schema_compat.sql": frozenset(
+        {"40bc100c429efcd86c67f112a5493f91ac4a28c3ce0293347189ab60f8c51196"}
+    ),
 }
 
 

@@ -49,6 +49,7 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-CHANGE_ME_CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
     volumes:
       - chdata_prod:/var/lib/clickhouse
       - ./deploy/clickhouse/users.d:/etc/clickhouse-server/users.d:ro

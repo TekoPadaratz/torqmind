@@ -1,0 +1,14 @@
+<clickhouse>
+  <users>
+    <default remove="remove" />
+    <torqmind>
+      <profile>default</profile>
+      <networks>
+        <ip>::/0</ip>
+      </networks>
+      <password from_env="CLICKHOUSE_PASSWORD" />
+      <quota>default</quota>
+      <access_management>1</access_management>
+    </torqmind>
+  </users>
+</clickhouse>
