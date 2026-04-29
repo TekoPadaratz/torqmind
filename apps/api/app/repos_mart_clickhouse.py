@@ -869,7 +869,7 @@ def sales_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini
         "cfop_breakdown": [
             {
                 "cfop_class": "saida_normal",
-                "label": "Saída normal",
+                "label": "Vendas normais",
                 "documentos": _to_int(kpis.get("itens")),
                 "valor_ativo": _to_float(kpis.get("faturamento")),
                 "valor_cancelado": 0.0,

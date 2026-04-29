@@ -28,8 +28,8 @@ export function buildModuleLoadingCopy(moduleLabel) {
       ? `da ${label.slice(2)}`
       : `de ${label}`;
   return {
-    headline: `Atualizando a leitura ${scopedLabel}`,
-    detail: 'Estamos fechando o novo recorte antes de liberar números e recomendações finais.',
+    headline: `Atualizando os dados ${scopedLabel}`,
+    detail: 'Estamos preparando os números deste período. Isso costuma levar poucos segundos.',
   };
 }
 
@@ -41,7 +41,7 @@ export function buildModuleUnavailableCopy(moduleLabel) {
       ? `da ${label.slice(2)}`
       : `de ${label}`;
   return {
-    headline: `Ainda estamos fechando a leitura ${scopedLabel}`,
-    detail: 'Este recorte continua em atualização. Mantivemos a tela protegida para não exibir zero provisório ou dados misturados.',
+    headline: `Ainda estamos atualizando os dados ${scopedLabel}`,
+    detail: 'Os números deste período ainda não ficaram prontos. Tente novamente em instantes.',
   };
 }

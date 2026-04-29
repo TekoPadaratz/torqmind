@@ -15,6 +15,8 @@ type UseBiScopeDataOptions<T> = {
   errorMessage: string;
   buildRequestUrl: (scope: ScopeQuery, session: any) => string | null;
   requestTimeoutMs?: number;
+  unavailableRetryAttempts?: number;
+  unavailableRetryDelayMs?: number;
 };
 
 export function useBiScopeData<T>({
@@ -23,6 +25,8 @@ export function useBiScopeData<T>({
   errorMessage,
   buildRequestUrl,
   requestTimeoutMs,
+  unavailableRetryAttempts = 4,
+  unavailableRetryDelayMs = 2_000,
 }: UseBiScopeDataOptions<T>) {
   const router = useRouter();
   const activeRequestRef = useRef('');
@@ -39,6 +43,23 @@ export function useBiScopeData<T>({
 
     const controller = new AbortController();
     let disposed = false;
+
+    const waitBeforeRetry = (ms: number) =>
+      new Promise<void>((resolve, reject) => {
+        if (controller.signal.aborted) {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+          return;
+        }
+        const timer = window.setTimeout(resolve, ms);
+        controller.signal.addEventListener(
+          'abort',
+          () => {
+            window.clearTimeout(timer);
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          },
+          { once: true },
+        );
+      });
 
     const load = async () => {
       setLoading(true);
@@ -63,13 +84,18 @@ export function useBiScopeData<T>({
           return;
         }
 
-        const payload = await loadStableScopeData<T>({
-          moduleKey,
-          requestUrl,
-          scope,
-          signal: controller.signal,
-          requestTimeoutMs,
-        });
+        let payload: T | null = null;
+        for (let attempt = 0; attempt <= unavailableRetryAttempts; attempt += 1) {
+          payload = await loadStableScopeData<T>({
+            moduleKey,
+            requestUrl,
+            scope,
+            signal: controller.signal,
+            requestTimeoutMs,
+          });
+          if (payload || attempt >= unavailableRetryAttempts) break;
+          await waitBeforeRetry(unavailableRetryDelayMs);
+        }
 
         if (disposed || activeRequestRef.current !== requestToken) return;
 
@@ -98,7 +124,7 @@ export function useBiScopeData<T>({
       disposed = true;
       controller.abort();
     };
-  }, [errorMessage, moduleKey, requestTimeoutMs, router, scope]);
+  }, [errorMessage, moduleKey, requestTimeoutMs, router, scope, unavailableRetryAttempts, unavailableRetryDelayMs]);
 
   return {
     claims,

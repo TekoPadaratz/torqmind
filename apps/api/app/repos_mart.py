@@ -49,10 +49,10 @@ LOCAL_VENDA_LABELS = {
 }
 
 COMMERCIAL_CFOP_LABELS = {
-    "saida_normal": "Saída normal",
-    "entrada_normal": "Entrada normal",
-    "devolucao_saida": "Devolução de saída",
-    "devolucao_entrada": "Devolução de entrada",
+    "saida_normal": "Vendas normais",
+    "entrada_normal": "Entradas registradas",
+    "devolucao_saida": "Devoluções de venda",
+    "devolucao_entrada": "Devoluções de entrada",
     "outro": "Outros CFOPs",
 }
 
@@ -6887,7 +6887,7 @@ def jarvis_briefing(
         confidence_reasons.append("vendas ainda não confirmaram a trilha operacional")
     elif sales_reading_status != "operational_overlay" and dt_ref == business_today(id_empresa):
         confidence_score -= 1
-        confidence_reasons.append("vendas do dia ainda dependem só da publicação analítica")
+        confidence_reasons.append("vendas do dia ainda aguardam a atualização final")
 
     if finance_status in {"missing", ""}:
         confidence_score -= 2

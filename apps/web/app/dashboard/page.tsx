@@ -194,6 +194,7 @@ export default function Dashboard() {
               detail={transitionCopy.detail}
               metrics={3}
               panels={3}
+              onRetry={pendingUnavailable ? () => window.location.reload() : undefined}
             />
           </section>
         ) : (

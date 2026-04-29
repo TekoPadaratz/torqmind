@@ -84,13 +84,13 @@ export function describeCacheBanner(meta, moduleLabel = 'esta tela') {
   const fallbackState = String(meta.fallback_state || '').toLowerCase();
   if (normalizedMode === 'fresh_snapshot') return null;
   if (meta.source === 'snapshot') {
-    return meta.message || `Usando a base mais recente de ${moduleLabel} enquanto o recorte termina de atualizar.`;
+    return meta.message || `Mostrando os dados mais recentes de ${moduleLabel} enquanto a atualização termina.`;
   }
   if (meta.source === 'fallback') {
     if (fallbackState === 'operational_current') {
       return meta.message || `Mostrando a leitura atual de ${moduleLabel} enquanto os demais detalhes terminam de fechar.`;
     }
-    return meta.message || `Estamos finalizando a atualização de ${moduleLabel}. Os números finais aparecem assim que o recorte estiver pronto.`;
+    return meta.message || `Estamos finalizando a atualização de ${moduleLabel}. Os números finais aparecem em instantes.`;
   }
   return null;
 }
@@ -111,11 +111,11 @@ export function describeCommercialCoverage(coverage, moduleLabel = 'esta tela') 
   }
 
   if (mode === 'partial_requested') {
-    return `A base comercial de ${moduleLabel} cobre o recorte somente ate ${effectiveEnd}. Os dias posteriores ainda aguardam ingestao da origem.`;
+    return `Os dados de ${moduleLabel} estão disponíveis até ${effectiveEnd}. Os dias posteriores ainda estão chegando.`;
   }
 
   if (mode === 'missing') {
-    return coverage?.message || `A trilha comercial canonica ainda nao publicou base suficiente para ${moduleLabel}.`;
+    return coverage?.message || `Ainda estamos atualizando os dados de ${moduleLabel}.`;
   }
 
   return coverage?.message || null;
@@ -145,29 +145,25 @@ export function describeDataFreshness(payload, moduleLabel = 'esta tela') {
   const historicalThrough = formatDateOnly(freshness?.historical_through_dt);
 
   if (mode === 'hybrid_live') {
-    if (liveThrough && historicalThrough) {
-      return `Leitura híbrida ativa em ${moduleLabel}: histórico publicado até ${historicalThrough} e trilho operacional do dia até ${liveThrough}.`;
-    }
     if (liveThrough) {
-      return `Leitura operacional do dia ativa em ${moduleLabel} até ${liveThrough}.`;
+      return `Atualizado em ${liveThrough}.`;
     }
+    if (historicalThrough) return `Dados disponíveis até ${historicalThrough}.`;
   }
 
   if (mode === 'historical_plus_live') {
-    if (liveThrough && historicalThrough) {
-      return `Histórico publicado até ${historicalThrough} e monitor operacional ao vivo até ${liveThrough}.`;
-    }
     if (liveThrough) {
-      return `Monitor operacional ao vivo até ${liveThrough}.`;
+      return `Atualizado em ${liveThrough}.`;
     }
+    if (historicalThrough) return `Dados disponíveis até ${historicalThrough}.`;
   }
 
   if (mode === 'live_monitor' && liveThrough) {
-    return `Monitor operacional ao vivo em ${moduleLabel} até ${liveThrough}.`;
+    return `Atualizado em ${liveThrough}.`;
   }
 
   if (mode === 'hybrid_operational_home' && liveThrough) {
-    return `Dashboard ancorado no trilho operacional até ${liveThrough}, sem esperar o fechamento completo da publicação analítica.`;
+    return `Atualizado em ${liveThrough}.`;
   }
 
   const publishedAt = formatDateTimeBr(
@@ -176,7 +172,7 @@ export function describeDataFreshness(payload, moduleLabel = 'esta tela') {
       || freshness?.cash?.snapshot_generated_at
   );
   if (publishedAt) {
-    return `Base publicada em ${publishedAt}.`;
+    return `Atualizado em ${publishedAt}.`;
   }
 
   const latestCommercialDate = formatDateOnly(
@@ -185,7 +181,7 @@ export function describeDataFreshness(payload, moduleLabel = 'esta tela') {
       || freshness?.historical_through_dt
   ) || historicalThrough;
   if (latestCommercialDate) {
-    return `Última base comercial disponível: ${latestCommercialDate}.`;
+    return `Dados disponíveis até ${latestCommercialDate}.`;
   }
 
   return null;
@@ -201,10 +197,11 @@ export function describeLastSync(syncStatus) {
     const publicationAt = formatDateTimeBr(syncStatus?.publication?.last_sync_at || syncStatus?.analytics?.last_sync_at);
     if (publicationAt) return `Base publicada em ${publicationAt}.`;
     const latestCommercialDate = formatDateOnly(syncStatus?.commercial_coverage?.latest_available_dt);
-    if (latestCommercialDate) return `Última base comercial disponível: ${latestCommercialDate}.`;
-    return 'A primeira base pronta ainda está sendo preparada.';
+    if (latestCommercialDate) return `Dados disponíveis até ${latestCommercialDate}.`;
+    return 'Estamos atualizando os dados.';
   }
-  return formatDateTimeBr(operationalSyncAt) || 'A primeira base pronta ainda está sendo preparada.';
+  const formatted = formatDateTimeBr(operationalSyncAt);
+  return formatted ? `Atualizado em ${formatted}` : 'Estamos atualizando os dados.';
 }
 
 export function describeSyncMessage(syncStatus) {
@@ -213,16 +210,16 @@ export function describeSyncMessage(syncStatus) {
   const publicationAt = formatDateTimeBr(syncStatus?.publication?.last_sync_at);
 
   if (operationalAt && analyticsAt) {
-    return `Trilho operacional em ${operationalAt}. Publicação analítica mais recente em ${analyticsAt}.`;
+    return `Atualizado em ${analyticsAt}.`;
   }
   if (operationalAt) {
-    return `Trilho operacional em ${operationalAt}.`;
+    return `Atualizado em ${operationalAt}.`;
   }
   if (publicationAt) {
-    return `Base publicada em ${publicationAt}.`;
+    return `Atualizado em ${publicationAt}.`;
   }
   if (analyticsAt) {
-    return `Publicação analítica em ${analyticsAt}.`;
+    return `Atualizado em ${analyticsAt}.`;
   }
-  return syncStatus?.message || 'A base mais recente desta empresa já está pronta para consulta.';
+  return syncStatus?.message || 'Dados prontos para consulta.';
 }

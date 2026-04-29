@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     # Feature flags for Phase 3 migration
     use_clickhouse: bool = True  # When False, fallback to PostgreSQL dw
     dual_read_mode: bool = False  # When True, validate both sources
+    refresh_legacy_pg_marts: bool = False  # Legacy PostgreSQL mart refresh is off in ClickHouse-first production
 
     # Business clock
     business_timezone: str = "America/Sao_Paulo"

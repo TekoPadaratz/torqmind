@@ -40,12 +40,12 @@ test('scope payload stability rejects protected, mixed or preparing payloads', (
 
 test('scope loading copy is explicit about waiting for final numbers', () => {
   assert.deepEqual(buildModuleLoadingCopy('o dashboard geral'), {
-    headline: 'Atualizando a leitura do dashboard geral',
-    detail: 'Estamos fechando o novo recorte antes de liberar números e recomendações finais.',
+    headline: 'Atualizando os dados do dashboard geral',
+    detail: 'Estamos preparando os números deste período. Isso costuma levar poucos segundos.',
   });
 
   assert.deepEqual(buildModuleUnavailableCopy('financeiro'), {
-    headline: 'Ainda estamos fechando a leitura de financeiro',
-    detail: 'Este recorte continua em atualização. Mantivemos a tela protegida para não exibir zero provisório ou dados misturados.',
+    headline: 'Ainda estamos atualizando os dados de financeiro',
+    detail: 'Os números deste período ainda não ficaram prontos. Tente novamente em instantes.',
   });
 });

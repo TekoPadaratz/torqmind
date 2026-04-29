@@ -9,6 +9,7 @@ Arquivo de contexto rapido para futuras sessoes. Leia este arquivo antes de reau
 - PostgreSQL continua sendo fonte da verdade transacional e legado analitico (`stg`, `dw`, `mart`, `app`, `auth`, `billing`).
 - ClickHouse mantem uma copia analitica nativa do schema `dw` PostgreSQL no banco `torqmind_dw`, carregada explicitamente por script via table function `postgresql(...)`.
 - ClickHouse serve marts nativas em `torqmind_mart` com tabelas agregadas/desnormalizadas e MVs streaming.
+- Operacao normal: ETL incremental atualiza PostgreSQL DW, depois `prod-clickhouse-sync-dw.sh MODE=incremental` publica `torqmind_dw` nativo e `prod-clickhouse-refresh-marts.sh MODE=incremental` republica janelas afetadas nas marts.
 - O backend analitico usa `app.repos_analytics` como facade ClickHouse-first. As rotas continuam chamando nomes publicos iguais aos de `repos_mart`.
 - Origem canonica de vendas: `stg.comprovantes` e `stg.itenscomprovantes`. `MovProdutos`/`ItensMovProdutos` nao devem voltar ao hot path de vendas; campos DW como `id_movprodutos` podem permanecer apenas como aliases legados preenchidos a partir de comprovantes.
 - Timezone: infraestrutura segue em UTC; negocio e UI usam `America/Sao_Paulo`; filtros trafegam como `YYYY-MM-DD`; timestamps tecnicos da API devem sair ISO 8601 com offset explicito.
@@ -45,6 +46,12 @@ Atalhos uteis:
 - `make analytics-smoke`: valida inventory do facade.
 - `make clickhouse-init`: executa sync DW nativo, espera as 14 tabelas obrigatorias e cria tabelas mart; para refresh completo rode backfill e MVs em seguida.
 - `make prod-clickhouse-sync-dw`: sync produtivo PostgreSQL DW -> ClickHouse DW nativo.
+- `make prod-clickhouse-sync-dw-full`: full refresh controlado do DW ClickHouse nativo.
+- `make prod-clickhouse-sync-dw-incremental`: sync incremental do DW ClickHouse nativo.
+- `make prod-clickhouse-refresh-marts-full`: recria/repopula marts.
+- `make prod-clickhouse-refresh-marts-incremental`: republica somente janela afetada.
+- `make prod-history-coverage-audit ID_EMPRESA=1 ID_FILIAL=14458`: audita cobertura historica sem usar `MovProdutos`.
+- `make prod-sales-orphans-report ID_EMPRESA=1 ID_FILIAL=14458`: relata itens orfaos como WARN, sem apagar dados.
 - `make prod-clickhouse-init`: em producao recria `torqmind_dw` nativo, valida `fact_venda`/`fact_venda_item` contra PostgreSQL, recria `torqmind_mart`, roda backfill e cria MVs streaming nesta ordem.
 - `make prod-data-reconcile ID_EMPRESA=1 ID_FILIAL=14458`: compara PostgreSQL DW, `torqmind_dw` e marts de vendas sem depender de `stg.movprodutos`.
 
@@ -55,6 +62,11 @@ Atalhos uteis:
 - `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`: conexao ClickHouse.
 - `CLICKHOUSE_PG_HOST`, `CLICKHOUSE_PG_PORT`: host/porta PostgreSQL acessiveis pelo ClickHouse para a table function `postgresql(...)`.
 - `CLICKHOUSE_DW_WAIT_ATTEMPTS`: limite de espera local por tabelas DW nativas.
+- `REFRESH_LEGACY_PG_MARTS=false`: desativa refresh global de marts PostgreSQL legadas no ETL; o hot path BI usa ClickHouse.
+- `OPERATIONAL_INTERVAL_MINUTES=2`: intervalo recomendado do cron leve, com lock anti-overlap.
+- `RISK_INTERVAL_MINUTES=30`: intervalo default do trilho risk.
+- `PIPELINE_TIMEOUT_SECONDS`, `PIPELINE_WARN_SECONDS`, `PIPELINE_TRACK_LOG_MAX_BYTES`: limites de tempo/log do ciclo operacional.
+- `CLICKHOUSE_INCREMENTAL_ENABLED=true`: habilita sync DW + refresh marts apos tracks com mudancas.
 - `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: conexao PostgreSQL.
 - `DATABASE_URL`: URL async da API.
 - `JWT_SECRET_KEY`/equivalentes em `config.py`: nunca logar nem commitar.
@@ -109,8 +121,13 @@ Deploy:
 - `.env.production.example`: variaveis prod esperadas.
 - `deploy/scripts/load_clickhouse_historical.sh`: carga historica CH.
 - `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 14 tabelas DW obrigatorias por `postgresql(...)` e valida counts/max(data_key); nao imprime credenciais.
+- `deploy/scripts/prod-clickhouse-refresh-marts.sh`: modo `full` para bootstrap e `incremental` para republicar janelas afetadas de marts idempotentes.
 - `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; executa sync DW nativo, valida vendas, recria marts, roda backfill e depois cria MVs streaming.
 - `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW nativo vs marts; diferencia ERROR critico de WARN de qualidade.
+- `deploy/scripts/prod-etl-pipeline.sh`: rotina leve com lock, timeout, ETL operational/risk e publicacao incremental ClickHouse.
+- `deploy/scripts/prod-install-cron.sh`: instala cron `*/${OPERATIONAL_INTERVAL_MINUTES}`; default operacional 2 min e risk 30 min.
+- `deploy/scripts/prod-history-coverage-audit.sh`: auditoria historica por STG canonico, DW PostgreSQL, DW ClickHouse e mart.
+- `deploy/scripts/prod-sales-orphans-report.sh`: relatorio de orfaos de venda; nao deleta nada.
 - `Makefile`: fonte unica dos comandos operacionais.
 
 Testes:
@@ -144,7 +161,7 @@ Funcoes ClickHouse implementadas:
 | `sales_top_groups` | `/bi/sales/overview` | `agg_grupos_diaria` | ranking grupos |
 | `sales_top_employees` | `/bi/sales/overview`, goals | `agg_funcionarios_diaria` | ranking funcionarios |
 | `sales_commercial_overview` | `/bi/sales/overview` | vendas/produtos/grupos/funcionarios | objeto comercial |
-| `sales_overview_bundle` | `/bi/sales/overview` | vendas + rankings | payload sales |
+| `sales_overview_bundle` | `/bi/sales/overview` | vendas + rankings | payload sales; usa mart publicada tambem para janela com dia atual |
 | `_sales_sync_meta` | home/sales/cash | `agg_vendas_diaria.updated_at` | publicacao tecnica ISO com offset |
 | `sales_operational_current` | sales/cash | `agg_vendas_diaria` | atual operacional |
 | `sales_operational_day_bundle` | sales/cash | vendas mart | dia operacional |
@@ -252,6 +269,14 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - `prod-clickhouse-init.sh` deve validar count/max(data_key) de `torqmind_dw.fact_venda` e `torqmind_dw.fact_venda_item` contra PostgreSQL antes de criar/backfillar marts.
 - `prod-data-reconcile.sh` retorna exit code `1` apenas para divergencia critica; itens orfaos no DW PostgreSQL sao WARN de qualidade e nao gatilho automatico de rebuild.
 - Frontend nunca deve montar filtro BI com `toISOString().slice(0, 10)`; datas de negocio ficam como string `YYYY-MM-DD`.
+- `prod-etl-pipeline.sh` nunca roda full refresh: quando o track operational/risk produz mudancas, chama somente `MODE=incremental`.
+- Incremental DW usa delete da janela afetada nas facts (`data_key`) e insert por `postgresql(...)`; dimensoes entram como novas versoes em `ReplacingMergeTree`.
+- Incremental mart e idempotente por delete/reinsert da janela afetada antes de inserir agregados. Rodar duas vezes seguidas nao deve duplicar resultado.
+- O sync incremental derruba MVs streaming antes de inserir no DW nativo para evitar escrita paralela/duplicada em marts; a publicacao operacional oficial e o refresh controlado. Full bootstrap pode recriar as MVs.
+- Frescor simples para UI vem de `torqmind_ops.sync_state` com `name='mart_publication'`: `available`, `last_success_at`, `data_through_dt`, `source='clickhouse_mart'`, `mode`.
+- Dashboard geral faz auto retry curto para payload instavel: 2s, ate 4 tentativas, cancelando quando o usuario troca filtro.
+- Textos visiveis ao cliente evitam jargoes como mart/snapshot/recorte/trilho; exemplo: `Saidas normais` virou `Vendas normais`.
+- Alertas futuros devem entrar depois do ETL operational e/ou depois da publicacao incremental ClickHouse, usando eventos/marts leves sem full refresh.
 
 ## 8. Pontas soltas resolvidas
 
@@ -274,6 +299,11 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Corrigido bootstrap ClickHouse prod para validar `fact_venda` e `fact_venda_item` completas antes do backfill das marts.
 - Corrigido backfill historico para aceitar refresh com muitas particoes em uma sessao controlada.
 - Adicionado script de reconciliacao `prod-data-reconcile.sh`.
+- Adicionado fluxo operacional incremental ClickHouse: `prod-clickhouse-sync-dw.sh MODE=incremental`, `prod-clickhouse-refresh-marts.sh MODE=incremental`, pipeline com lock/timeout e cron default 2 min.
+- Desativado refresh global de marts PostgreSQL legadas por default (`REFRESH_LEGACY_PG_MARTS=false`).
+- Adicionados auditor historico e relatorio de orfaos, ambos baseados em `Comprovantes`/`ItensComprovantes`.
+- Frontend ganhou auto retry para primeira carga sem payload estavel e copy mais simples de frescor.
+- Corrigido `prod-etl-incremental.sh` para nao passar mensagens gigantes como argumento Python; pipeline agora extrai resumo JSON sem estourar `Argument list too long`.
 
 ## 9. Pontas soltas remanescentes
 
@@ -282,6 +312,9 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - O `make test` completo ainda nao esta verde: restam falhas de ETL/fixtures legadas e smokes que batem no servidor externo com estado diferente do processo de teste.
 - Cobertura e2e Docker com autenticacao real dos endpoints `/bi/*` ainda deve ser consolidada com dados seedados representativos.
 - Queries ClickHouse foram mantidas sem JOIN pesado no hot path, mas o tuning de ORDER BY/TTL/projecoes deve ser revisto com cardinalidade real de producao.
+- No compose local, o track risk falhou por fixture/schema antigo sem constraint `uq_fact_risco_evento_nk`; pipeline registra falha e nao avanca janela risk. Validar migration prod antes de religar risk amplo.
+- A primeira execucao incremental apos bootstrap antigo pode escolher janela grande se nao houver estado recente em `torqmind_ops.sync_state`; ciclos seguintes tendem a ser pequenos.
+- Como o incremental derruba MVs streaming para garantir idempotencia, decidir em producao se as MVs continuam necessarias ou se o refresh controlado passa a ser o unico mecanismo operacional.
 
 ## 10. Checklist para futuras alteracoes
 
@@ -299,6 +332,8 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Ao mexer em vendas, confirmar que ETL ativo usa `stg.comprovantes`/`stg.itenscomprovantes`, nao `stg.movprodutos`.
 - Ao mexer em datas no frontend, adicionar teste cobrindo horario noturno em `America/Sao_Paulo`.
 - Nunca usar `DATABASE ENGINE = MaterializedPostgreSQL` no caminho produtivo de `torqmind_dw`; use DW nativo + sync explicito via `postgresql(...)`.
+- Nunca colocar `prod-clickhouse-init.sh` ou `MODE=full` no cron operacional.
+- Ao mexer no pipeline, validar lock, timeout, ausencia de senha em log e que orfaos continuam WARN.
 
 ## 11. Comandos validados nesta revisao
 
@@ -341,6 +376,19 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Revisao client CH 2026-04-29: `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit` passou, 19 testes, incluindo concorrencia com `ThreadPoolExecutor`.
 - Revisao client CH 2026-04-29: `make analytics-smoke` passou com 68 funcoes no facade.
 - Revisao client CH 2026-04-29: `make lint` passou com build Next.js.
+- Revisao operacional incremental 2026-04-29: `bash -n deploy/scripts/prod-clickhouse-sync-dw.sh deploy/scripts/prod-clickhouse-refresh-marts.sh deploy/scripts/prod-etl-pipeline.sh deploy/scripts/prod-install-cron.sh deploy/scripts/prod-history-coverage-audit.sh deploy/scripts/prod-sales-orphans-report.sh deploy/scripts/prod-clickhouse-init.sh deploy/scripts/prod-data-reconcile.sh` passou.
+- Revisao operacional incremental 2026-04-29: `python3 apps/api/app/test_clickhouse_operational_scripts_unit.py` passou, 5 testes.
+- Revisao operacional incremental 2026-04-29: `PYTHONPATH=apps/api python3 -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit app.test_sales_overview_unit` passou, 31 testes.
+- Revisao operacional incremental 2026-04-29: `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit app.test_sales_overview_unit` passou, 31 testes.
+- Revisao operacional incremental 2026-04-29: `docker compose exec -T web npm test` passou, 76 testes.
+- Revisao operacional incremental 2026-04-29: `make analytics-smoke` passou com 68 funcoes no facade.
+- Revisao operacional incremental 2026-04-29: `make lint` passou com build Next.js.
+- Revisao operacional incremental 2026-04-29: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet` passou.
+- Revisao operacional incremental 2026-04-29: sync DW incremental local detectou janela grande `20250423-20260429`, validou `fact_venda`/`fact_venda_item` e o refresh mart incremental concluiu; uma execucao sem mudancas retornou `window=0-0`.
+- Revisao operacional incremental 2026-04-29: `prod-data-reconcile.sh` passou com `errors=0 warnings=1`; `83` itens orfaos continuam WARN.
+- Revisao operacional incremental 2026-04-29: `prod-history-coverage-audit.sh` passou e mostrou STG canonico desde `2025-01-01`, DW/mart de vendas da filial `14458` desde `2025-04-21/2025-04-22`.
+- Revisao operacional incremental 2026-04-29: `prod-sales-orphans-report.sh` passou, reportando `orphan_items=83` sem deletar dados.
+- Revisao operacional incremental 2026-04-29: simulacao de `prod-etl-pipeline.sh` validou timeout/skip; operational local excedeu 20s e risk local falhou por constraint ausente de fixture, sem rodar full refresh nem avancar janela risk.
 
 ## 12. Regras de ouro
 

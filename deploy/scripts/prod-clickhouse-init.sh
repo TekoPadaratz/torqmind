@@ -68,7 +68,7 @@ echo "Services OK"
 
 echo
 echo "== sync native torqmind_dw from PostgreSQL dw =="
-ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" \
+ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=full \
   "$ROOT_DIR/deploy/scripts/prod-clickhouse-sync-dw.sh"
 
 echo
@@ -99,6 +99,7 @@ ch --query "SHOW TABLES FROM torqmind_mart"
 echo
 echo "== validate principal marts =="
 validate_marts
+ch --query "INSERT INTO torqmind_ops.sync_state SELECT 'mart_publication', 'full', 'ok', now64(6), null, toInt32(coalesce(max(data_key), 0)), toUInt64(count()), 'full_mart_refresh_completed', now64(6) FROM torqmind_mart.agg_vendas_diaria"
 
 echo
 echo "ClickHouse production initialization completed with native torqmind_dw."

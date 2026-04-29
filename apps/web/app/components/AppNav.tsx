@@ -498,7 +498,7 @@ export default function AppNav({
           <div className="productBrandTitle">{title}</div>
           <div className="muted">
             {applying
-              ? 'Atualizando o novo recorte antes de liberar os números finais.'
+              ? 'Atualizando os dados antes de liberar os números finais.'
               : 'Os filtros abaixo atualizam a rota atual do produto sem sair do módulo.'}
           </div>
         </div>

@@ -6,15 +6,17 @@ export default function ScopeTransitionState({
   detail,
   metrics = 4,
   panels = 3,
+  onRetry,
 }: {
   mode?: 'loading' | 'unavailable';
   headline: string;
   detail: string;
   metrics?: number;
   panels?: number;
+  onRetry?: () => void;
 }) {
   const toneClass = mode === 'unavailable' ? 'scopeTransitionCard is-warning' : 'scopeTransitionCard';
-  const pill = mode === 'unavailable' ? 'Atualização em andamento' : 'Atualizando recorte';
+  const pill = mode === 'unavailable' ? 'Atualização em andamento' : 'Atualizando dados';
 
   return (
     <div className="scopeTransitionState">
@@ -22,6 +24,11 @@ export default function ScopeTransitionState({
         <div className="scopeTransitionPill">{pill}</div>
         <h2 className="scopeTransitionHeadline">{headline}</h2>
         <p className="scopeTransitionDetail">{detail}</p>
+        {mode === 'unavailable' && onRetry ? (
+          <button className="btn" type="button" onClick={onRetry}>
+            Tentar novamente
+          </button>
+        ) : null}
       </section>
 
       <section className="scopeTransitionMetricGrid" aria-hidden="true">

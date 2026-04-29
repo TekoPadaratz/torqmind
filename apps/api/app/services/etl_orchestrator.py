@@ -8,6 +8,7 @@ from contextlib import suppress
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
+from app.config import settings
 from app.db import get_conn
 from app.services.telegram import send_telegram_alert
 
@@ -149,6 +150,10 @@ def _track_runs_publication(track: str) -> bool:
     # Sem isso, o Dashboard Geral exibia dados defasados (fallback "stale data").
     # Veja docs/ARCHITECTURE.md §10 (Refresh Policy by Track).
     return track in {TRACK_OPERATIONAL, TRACK_RISK, TRACK_FULL}
+
+
+def _legacy_pg_marts_enabled() -> bool:
+    return bool(getattr(settings, "refresh_legacy_pg_marts", False))
 
 
 def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
@@ -346,9 +351,9 @@ def run_incremental_cycle(
 
             aggregated_meta = _aggregate_refresh_meta(successful_items, force_full=force_full, track=track)
             publication_requested = refresh_mart and bool(successful_items) and _refresh_meta_has_requested_work(aggregated_meta)
-            publication_enabled = publication_requested and _track_runs_publication(track)
-            # 2026-04-29: removido publication_deferred. OPERATIONAL agora também publica
-            # marts globais (`etl.refresh_marts`) a cada ciclo, garantindo Dashboard Geral fresco.
+            publication_enabled = publication_requested and _track_runs_publication(track) and _legacy_pg_marts_enabled()
+            # ClickHouse-first production publishes BI through the external incremental
+            # pipeline; legacy PostgreSQL mart refresh remains explicit opt-in.
             publication_deferred = False
             refresh_meta = _empty_refresh_meta(ref_date)
             if publication_enabled:

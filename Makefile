@@ -18,7 +18,7 @@ include $(ENV_FILE)
 export
 endif
 
-.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-init prod-data-reconcile prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
+.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-sync-dw-full prod-clickhouse-sync-dw-incremental prod-clickhouse-refresh-marts-full prod-clickhouse-refresh-marts-incremental prod-clickhouse-init prod-data-reconcile prod-history-coverage-audit prod-sales-orphans-report prod-etl-pipeline prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -113,7 +113,7 @@ platform-billing-daily:
 	@$(COMPOSE) exec -T api python -m app.cli.platform_billing daily --as-of "$${AS_OF:-}" --competence-month "$${COMPETENCE_MONTH:-}" --months-ahead "$${MONTHS_AHEAD:-0}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"}
 
 clickhouse-sync-dw:
-	@ALLOW_INSECURE_ENV=1 ENV_FILE=$(ENV_FILE) COMPOSE_FILE=docker-compose.yml ./deploy/scripts/prod-clickhouse-sync-dw.sh
+	@ALLOW_INSECURE_ENV=1 ENV_FILE=$(ENV_FILE) COMPOSE_FILE=docker-compose.yml MODE=full ./deploy/scripts/prod-clickhouse-sync-dw.sh
 
 clickhouse-dw-init: clickhouse-sync-dw
 
@@ -182,10 +182,31 @@ prod-clickhouse-init:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-clickhouse-init.sh
 
 prod-clickhouse-sync-dw:
-	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-clickhouse-sync-dw.sh
+	@ENV_FILE=$(PROD_ENV_FILE) MODE=incremental ./deploy/scripts/prod-clickhouse-sync-dw.sh
+
+prod-clickhouse-sync-dw-full:
+	@ENV_FILE=$(PROD_ENV_FILE) MODE=full ./deploy/scripts/prod-clickhouse-sync-dw.sh
+
+prod-clickhouse-sync-dw-incremental:
+	@ENV_FILE=$(PROD_ENV_FILE) MODE=incremental ./deploy/scripts/prod-clickhouse-sync-dw.sh
+
+prod-clickhouse-refresh-marts-full:
+	@ENV_FILE=$(PROD_ENV_FILE) MODE=full ./deploy/scripts/prod-clickhouse-refresh-marts.sh
+
+prod-clickhouse-refresh-marts-incremental:
+	@ENV_FILE=$(PROD_ENV_FILE) MODE=incremental ./deploy/scripts/prod-clickhouse-refresh-marts.sh
 
 prod-data-reconcile:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-data-reconcile.sh
+
+prod-history-coverage-audit:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-history-coverage-audit.sh
+
+prod-sales-orphans-report:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-sales-orphans-report.sh
+
+prod-etl-pipeline:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-pipeline.sh
 
 prod-etl-incremental:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-incremental.sh

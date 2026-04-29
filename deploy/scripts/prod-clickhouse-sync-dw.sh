@@ -5,6 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 ALLOW_INSECURE_ENV="${ALLOW_INSECURE_ENV:-0}"
+MODE="${MODE:-full}"
+SYNC_OVERLAP_MINUTES="${SYNC_OVERLAP_MINUTES:-10}"
+SINCE="${SINCE:-}"
+DT_INI="${DT_INI:-}"
+DT_FIM="${DT_FIM:-}"
+ID_EMPRESA="${ID_EMPRESA:-}"
 
 # shellcheck source=deploy/scripts/lib/prod-env.sh
 source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
@@ -34,6 +40,14 @@ CLICKHOUSE_PG_PORT="${CLICKHOUSE_PG_PORT:-5432}"
 if [[ -z "$POSTGRES_DB" || -z "$POSTGRES_USER" || -z "$POSTGRES_PASSWORD" ]]; then
   echo "PostgreSQL credentials are unavailable for ClickHouse DW sync." >&2
   exit 1
+fi
+if [[ "$MODE" != "full" && "$MODE" != "incremental" ]]; then
+  echo "MODE must be full or incremental" >&2
+  exit 2
+fi
+if [[ -n "$ID_EMPRESA" && ! "$ID_EMPRESA" =~ ^[0-9]+$ ]]; then
+  echo "ID_EMPRESA must be numeric when provided" >&2
+  exit 2
 fi
 
 clickhouse_client_args=(clickhouse-client)
@@ -153,6 +167,36 @@ declare -A chunk_column=(
   [fact_venda_item]="data_key"
 )
 
+declare -A incremental_key_column=(
+  [fact_comprovante]="data_key"
+  [fact_pagamento_comprovante]="data_key"
+  [fact_risco_evento]="data_key"
+  [fact_venda]="data_key"
+  [fact_venda_item]="data_key"
+  [fact_financeiro]="data_key_venc"
+  [fact_caixa_turno]="data_key_abertura"
+)
+
+incremental_fact_tables=(
+  fact_venda
+  fact_venda_item
+  fact_pagamento_comprovante
+  fact_caixa_turno
+  fact_financeiro
+  fact_risco_evento
+  fact_comprovante
+)
+
+incremental_dim_tables=(
+  dim_cliente
+  dim_filial
+  dim_funcionario
+  dim_produto
+  dim_grupo_produto
+  dim_local_venda
+  dim_usuario_caixa
+)
+
 next_month() {
   local month_key="$1"
   local year=$((month_key / 100))
@@ -234,6 +278,151 @@ validate_sales_fact() {
   echo "  OK ${table}: count|max_data_key=${ch_metric}"
 }
 
+ensure_ops_metadata() {
+  ch --multiquery --query "
+CREATE DATABASE IF NOT EXISTS torqmind_ops;
+CREATE TABLE IF NOT EXISTS torqmind_ops.sync_state (
+  name String,
+  mode String,
+  status String,
+  last_success_at DateTime64(6),
+  dt_ini_key Nullable(Int32),
+  dt_fim_key Nullable(Int32),
+  changed_rows UInt64,
+  message String,
+  updated_at DateTime64(6)
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY name;
+"
+}
+
+sync_state_since() {
+  if [[ -n "$SINCE" ]]; then
+    printf "%s" "$SINCE"
+    return 0
+  fi
+  local state_since
+  state_since="$(ch --query "SELECT if(count() = 0, '', formatDateTime(max(last_success_at) - INTERVAL ${SYNC_OVERLAP_MINUTES} MINUTE, '%Y-%m-%d %H:%i:%S')) FROM torqmind_ops.sync_state WHERE name = 'dw_incremental' AND status = 'ok'" 2>/dev/null || true)"
+  if [[ -n "$state_since" && "$state_since" != "1970-01-01 00:00:00" ]]; then
+    printf "%s" "$state_since"
+    return 0
+  fi
+  pg "SELECT to_char(COALESCE(max(updated_at) - interval '${SYNC_OVERLAP_MINUTES} minutes', now() - interval '1 day') AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') FROM dw.fact_venda;"
+}
+
+date_to_key() {
+  local value="$1"
+  python3 - "$value" <<'PY'
+from datetime import date
+import sys
+value = sys.argv[1]
+try:
+    print(int(date.fromisoformat(value).strftime("%Y%m%d")))
+except Exception:
+    raise SystemExit(2)
+PY
+}
+
+find_incremental_window() {
+  local since="$1"
+  if [[ -n "$DT_INI" && -n "$DT_FIM" ]]; then
+    printf "%s|%s|manual" "$(date_to_key "$DT_INI")" "$(date_to_key "$DT_FIM")"
+    return 0
+  fi
+
+  local tenant_clause=""
+  if [[ -n "$ID_EMPRESA" ]]; then
+    tenant_clause=" AND id_empresa = ${ID_EMPRESA}"
+  fi
+
+  pg "
+WITH changed AS (
+  SELECT data_key::int AS data_key FROM dw.fact_venda WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key IS NOT NULL
+  UNION ALL
+  SELECT data_key::int AS data_key FROM dw.fact_venda_item WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key IS NOT NULL
+  UNION ALL
+  SELECT data_key::int AS data_key FROM dw.fact_pagamento_comprovante WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key IS NOT NULL
+  UNION ALL
+  SELECT data_key::int AS data_key FROM dw.fact_comprovante WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key IS NOT NULL
+  UNION ALL
+  SELECT data_key_abertura::int AS data_key FROM dw.fact_caixa_turno WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key_abertura IS NOT NULL
+  UNION ALL
+  SELECT data_key_venc::int AS data_key FROM dw.fact_financeiro WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key_venc IS NOT NULL
+  UNION ALL
+  SELECT data_key::int AS data_key FROM dw.fact_risco_evento WHERE created_at >= '${since}'::timestamptz${tenant_clause} AND data_key IS NOT NULL
+)
+SELECT COALESCE(min(data_key), 0)::int || '|' || COALESCE(max(data_key), 0)::int || '|' || count(*)::bigint FROM changed;
+"
+}
+
+insert_sync_state() {
+  local status="$1"
+  local dt_ini_key="$2"
+  local dt_fim_key="$3"
+  local changed_rows="$4"
+  local message="$5"
+  ch --query "
+INSERT INTO torqmind_ops.sync_state
+SELECT
+  'dw_incremental',
+  '${MODE}',
+  '${status}',
+  now64(6),
+  nullIf(toInt32(${dt_ini_key}), 0),
+  nullIf(toInt32(${dt_fim_key}), 0),
+  toUInt64(${changed_rows}),
+  '${message}',
+  now64(6)
+"
+}
+
+load_incremental_table() {
+  local table="$1"
+  local key_column="$2"
+  local dt_ini_key="$3"
+  local dt_fim_key="$4"
+  local source where_clause delete_clause
+  source="$(pg_table_fn "$table")"
+  where_clause="${key_column} BETWEEN ${dt_ini_key} AND ${dt_fim_key}"
+  delete_clause="${key_column} BETWEEN ${dt_ini_key} AND ${dt_fim_key}"
+  if [[ -n "$ID_EMPRESA" ]]; then
+    where_clause="${where_clause} AND id_empresa = ${ID_EMPRESA}"
+    delete_clause="${delete_clause} AND id_empresa = ${ID_EMPRESA}"
+  fi
+  ch --query "ALTER TABLE torqmind_dw.${table} DELETE WHERE ${delete_clause} SETTINGS mutations_sync = 1"
+  ch_sql_sensitive "INSERT INTO torqmind_dw.${table} SELECT * FROM ${source} WHERE ${where_clause};"
+}
+
+load_incremental_dimension() {
+  local table="$1"
+  local since="$2"
+  local source where_clause
+  source="$(pg_table_fn "$table")"
+  where_clause="updated_at >= toDateTime64('${since}', 6)"
+  if [[ -n "$ID_EMPRESA" ]]; then
+    where_clause="${where_clause} AND id_empresa = ${ID_EMPRESA}"
+  fi
+  ch_sql_sensitive "INSERT INTO torqmind_dw.${table} SELECT * FROM ${source} WHERE ${where_clause};"
+}
+
+validate_incremental_window() {
+  local table="$1"
+  local key_column="$2"
+  local dt_ini_key="$3"
+  local dt_fim_key="$4"
+  local tenant_clause="" pg_metric ch_metric
+  if [[ -n "$ID_EMPRESA" ]]; then
+    tenant_clause=" AND id_empresa = ${ID_EMPRESA}"
+  fi
+  pg_metric="$(pg "SELECT count(*)::bigint || '|' || COALESCE(max(${key_column}), 0)::bigint FROM dw.${table} WHERE ${key_column} BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_clause};")"
+  ch_metric="$(ch --query "SELECT concat(toString(count()), '|', toString(coalesce(max(${key_column}), 0))) FROM torqmind_dw.${table} WHERE ${key_column} BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_clause}")"
+  if [[ "$pg_metric" != "$ch_metric" ]]; then
+    echo "ERROR: torqmind_dw.${table} incremental window mismatch: postgres=${pg_metric} clickhouse=${ch_metric}" >&2
+    return 1
+  fi
+  echo "  OK ${table}: window_count|max_key=${ch_metric}"
+}
+
 drop_streaming_mvs() {
   local views=()
   mapfile -t views < <(ch --query "SELECT name FROM system.tables WHERE database = 'torqmind_mart' AND engine = 'MaterializedView' ORDER BY name" || true)
@@ -241,11 +430,92 @@ drop_streaming_mvs() {
     return 0
   fi
   echo
-  echo "== drop streaming materialized views before full DW refresh =="
+  echo "== drop streaming materialized views before controlled DW sync =="
   for view in "${views[@]}"; do
     echo "  dropping torqmind_mart.${view}"
     ch --query "DROP VIEW IF EXISTS torqmind_mart.${view}"
   done
+}
+
+run_full_sync() {
+  drop_streaming_mvs
+
+  echo
+  echo "== recreate native torqmind_dw =="
+  ch --multiquery --query "DROP DATABASE IF EXISTS torqmind_dw SYNC; CREATE DATABASE torqmind_dw;"
+
+  echo
+  echo "== create native torqmind_dw tables =="
+  for table in "${required_tables[@]}"; do
+    echo "  creating ${table}"
+    create_native_table "$table"
+  done
+
+  echo
+  echo "== load PostgreSQL dw.* into native ClickHouse torqmind_dw =="
+  for table in "${required_tables[@]}"; do
+    echo "  loading ${table}"
+    if [[ -n "${chunk_column[$table]:-}" ]]; then
+      load_table_chunked "$table" "${chunk_column[$table]}"
+    else
+      load_table_full "$table"
+    fi
+  done
+
+  echo
+  echo "== validate native torqmind_dw row counts =="
+  for table in "${required_tables[@]}"; do
+    validate_table_count "$table"
+  done
+
+  echo
+  echo "== validate critical sales facts =="
+  validate_sales_fact fact_venda
+  validate_sales_fact fact_venda_item
+  ensure_ops_metadata
+  insert_sync_state ok 0 0 0 full_sync_completed
+
+  echo
+  echo "Native ClickHouse DW full sync completed."
+}
+
+run_incremental_sync() {
+  ensure_ops_metadata
+  drop_streaming_mvs
+
+  local table_count
+  table_count="$(ch --query "SELECT count() FROM system.tables WHERE database = 'torqmind_dw' AND name IN ('dim_cliente','dim_filial','dim_funcionario','dim_grupo_produto','dim_local_venda','dim_produto','dim_usuario_caixa','fact_caixa_turno','fact_comprovante','fact_financeiro','fact_pagamento_comprovante','fact_risco_evento','fact_venda','fact_venda_item')")"
+  if [[ "$table_count" -lt 14 ]]; then
+    echo "ERROR: torqmind_dw native tables are incomplete; run MODE=full first." >&2
+    exit 1
+  fi
+
+  local since window dt_ini_key dt_fim_key changed_rows table key_column
+  since="$(sync_state_since)"
+  window="$(find_incremental_window "$since")"
+  IFS='|' read -r dt_ini_key dt_fim_key changed_rows <<< "$window"
+  echo "Incremental DW sync since=${since} window=${dt_ini_key}-${dt_fim_key} changed_rows=${changed_rows}"
+
+  if [[ "${changed_rows:-0}" -le 0 || "${dt_ini_key:-0}" -le 0 || "${dt_fim_key:-0}" -le 0 ]]; then
+    insert_sync_state ok 0 0 0 no_changes
+    echo "No PostgreSQL DW changes detected for ClickHouse incremental sync."
+    return 0
+  fi
+
+  for table in "${incremental_fact_tables[@]}"; do
+    key_column="${incremental_key_column[$table]}"
+    echo "  refreshing torqmind_dw.${table} window ${dt_ini_key}-${dt_fim_key}"
+    load_incremental_table "$table" "$key_column" "$dt_ini_key" "$dt_fim_key"
+    validate_incremental_window "$table" "$key_column" "$dt_ini_key" "$dt_fim_key"
+  done
+
+  for table in "${incremental_dim_tables[@]}"; do
+    echo "  appending changed dimension rows torqmind_dw.${table}"
+    load_incremental_dimension "$table" "$since"
+  done
+
+  insert_sync_state ok "$dt_ini_key" "$dt_fim_key" "$changed_rows" incremental_sync_completed
+  echo "Native ClickHouse DW incremental sync completed. dt_ini_key=${dt_ini_key} dt_fim_key=${dt_fim_key}"
 }
 
 echo "== validate PostgreSQL and ClickHouse connectivity =="
@@ -253,40 +523,8 @@ pg "SELECT 1" >/dev/null
 compose exec -T clickhouse sh -lc 'wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok'
 echo "Connectivity OK"
 
-drop_streaming_mvs
-
-echo
-echo "== recreate native torqmind_dw =="
-ch --multiquery --query "DROP DATABASE IF EXISTS torqmind_dw SYNC; CREATE DATABASE torqmind_dw;"
-
-echo
-echo "== create native torqmind_dw tables =="
-for table in "${required_tables[@]}"; do
-  echo "  creating ${table}"
-  create_native_table "$table"
-done
-
-echo
-echo "== load PostgreSQL dw.* into native ClickHouse torqmind_dw =="
-for table in "${required_tables[@]}"; do
-  echo "  loading ${table}"
-  if [[ -n "${chunk_column[$table]:-}" ]]; then
-    load_table_chunked "$table" "${chunk_column[$table]}"
-  else
-    load_table_full "$table"
-  fi
-done
-
-echo
-echo "== validate native torqmind_dw row counts =="
-for table in "${required_tables[@]}"; do
-  validate_table_count "$table"
-done
-
-echo
-echo "== validate critical sales facts =="
-validate_sales_fact fact_venda
-validate_sales_fact fact_venda_item
-
-echo
-echo "Native ClickHouse DW sync completed."
+if [[ "$MODE" == "incremental" ]]; then
+  run_incremental_sync
+else
+  run_full_sync
+fi
