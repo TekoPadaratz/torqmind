@@ -1,4 +1,4 @@
-import { addCalendarDays, formatCalendarDate, parseCalendarDate } from './calendar-date.mjs';
+import { addCalendarDays, formatBusinessCalendarDate, formatCalendarDate, parseCalendarDate } from './calendar-date.mjs';
 
 function positiveInt(value, fallbackValue = 1) {
   const parsed = Number(value);
@@ -21,7 +21,7 @@ function normalizeBranchIds(values, fallbackValue = null) {
 export function buildBrowserLocalDefaultScope(session) {
   const defaultScope = session?.default_scope || {};
   const localTodayDate = new Date();
-  const localToday = formatCalendarDate(localTodayDate);
+  const localToday = formatBusinessCalendarDate(localTodayDate);
   const referenceDate = parseCalendarDate(localToday) || localTodayDate;
   const days = positiveInt(defaultScope?.days, 1);
   const startDate = addCalendarDays(referenceDate, -(days - 1));

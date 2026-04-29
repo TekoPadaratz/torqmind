@@ -30,7 +30,7 @@ def _operational_range_bundle() -> dict:
         ],
         "by_hour": [],
         "commercial_by_hour": [{"hora": 9, "saidas": 320.0, "entradas": 0.0, "cancelamentos": 0.0}],
-        "cfop_breakdown": [{"cfop_class": "saida_normal", "label": "Saída normal", "documentos": 4, "valor_ativo": 640.0, "valor_cancelado": 75.0, "valor_total": 715.0}],
+        "cfop_breakdown": [{"cfop_class": "saida_normal", "label": "Vendas normais", "documentos": 4, "valor_ativo": 640.0, "valor_cancelado": 75.0, "valor_total": 715.0}],
         "monthly_evolution": [{"month_ref": "2026-04-01", "ano": 2026, "mes": 4, "saidas": 640.0, "entradas": 120.0, "cancelamentos": 75.0}],
         "annual_comparison": {
             "current_year": 2026,
@@ -177,33 +177,42 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
         self.assertEqual(collapsed[1]["grupo_key"], "group:11")
         self.assertEqual(float(collapsed[1]["faturamento"]), 89.0)
 
-    def test_uses_dw_range_for_fully_historical_windows(self) -> None:
+    def test_uses_mart_bundle_for_fully_historical_windows(self) -> None:
         expected = _operational_range_bundle()
         expected["by_day"] = expected["by_day"][:2]
+        expected["by_hour"] = expected["by_hour"][:0]
         expected["kpis"] = {
             "faturamento": 300.0,
             "margem": 90.0,
             "ticket_medio": 150.0,
-            "devolucoes": 10.0,
+            "devolucoes": 0.0,
         }
         expected["operational_sync"] = {
-            "last_sync_at": "2026-04-02T15:34:00-03:00",
-            "source": "dw.fact_venda",
+            "last_sync_at": None,
+            "source": "mart.agg_vendas_diaria",
             "dt_ref": "2026-04-01",
         }
         expected["freshness"] = {
-            "mode": "operational_range",
+            "mode": "historical_snapshot",
             "operational_day": None,
-            "live_through_at": "2026-04-02T15:34:00-03:00",
+            "live_through_at": None,
             "historical_through_dt": "2026-04-01",
-            "source": "dw.fact_venda",
+            "source": "mart.agg_vendas_diaria",
         }
 
         with patch.object(repos_mart, "business_today", return_value=date(2026, 4, 2)), patch.object(
             repos_mart,
-            "sales_operational_range_bundle",
+            "commercial_window_coverage",
+            return_value={
+                "mode": "exact",
+                "effective_dt_ini": date(2026, 3, 31),
+                "effective_dt_fim": date(2026, 4, 1),
+            },
+        ), patch.object(
+            repos_mart,
+            "_sales_historical_bundle_from_marts",
             return_value=expected,
-        ) as range_bundle, patch.object(
+        ) as historical_bundle, patch.object(
             repos_mart,
             "sales_commercial_overview",
             return_value={
@@ -223,36 +232,44 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
                 as_of=date(2026, 4, 2),
             )
 
-        range_bundle.assert_called_once_with(
+        historical_bundle.assert_called_once_with(
             "MASTER",
             1,
             None,
             date(2026, 3, 31),
             date(2026, 4, 1),
-            include_rankings=True,
+            include_details=True,
         )
         commercial_bundle.assert_called_once()
-        self.assertEqual(payload["reading_status"], "operational_overlay")
+        self.assertEqual(payload["reading_status"], "mart_snapshot")
         self.assertEqual([int(row["data_key"]) for row in payload["by_day"]], [20260331, 20260401])
         self.assertEqual(float(payload["kpis"]["faturamento"]), 300.0)
         self.assertEqual(float(payload["commercial_kpis"]["saidas"]), 640.0)
         self.assertEqual(payload["annual_comparison"]["current_year"], 2026)
 
-    def test_uses_same_operational_semantics_when_window_includes_live_day(self) -> None:
-        fallback_bundle = _operational_range_bundle()
+    def test_uses_mart_semantics_when_window_includes_live_day(self) -> None:
+        mart_bundle = _operational_range_bundle()
         with patch.object(repos_mart, "business_today", return_value=date(2026, 4, 2)), patch.object(
             repos_mart,
-            "sales_operational_range_bundle",
-            return_value=fallback_bundle,
-        ) as range_bundle, patch.object(
+            "commercial_window_coverage",
+            return_value={
+                "mode": "exact",
+                "effective_dt_ini": date(2026, 3, 31),
+                "effective_dt_fim": date(2026, 4, 2),
+            },
+        ), patch.object(
+            repos_mart,
+            "_sales_historical_bundle_from_marts",
+            return_value=mart_bundle,
+        ) as historical_bundle, patch.object(
             repos_mart,
             "sales_commercial_overview",
             return_value={
-                "kpis": fallback_bundle["commercial_kpis"],
-                "cfop_breakdown": fallback_bundle["cfop_breakdown"],
-                "by_hour": fallback_bundle["commercial_by_hour"],
-                "monthly_evolution": fallback_bundle["monthly_evolution"],
-                "annual_comparison": fallback_bundle["annual_comparison"],
+                "kpis": mart_bundle["commercial_kpis"],
+                "cfop_breakdown": mart_bundle["cfop_breakdown"],
+                "by_hour": mart_bundle["commercial_by_hour"],
+                "monthly_evolution": mart_bundle["monthly_evolution"],
+                "annual_comparison": mart_bundle["annual_comparison"],
             },
         ) as commercial_bundle:
             payload = repos_mart.sales_overview_bundle(
@@ -264,21 +281,93 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
                 as_of=date(2026, 4, 2),
             )
 
-        range_bundle.assert_called_once_with(
+        historical_bundle.assert_called_once_with(
             "MASTER",
             1,
             None,
             date(2026, 3, 31),
             date(2026, 4, 2),
-            include_rankings=True,
+            include_details=True,
         )
         commercial_bundle.assert_called_once()
-        self.assertEqual(payload["reading_status"], "operational_overlay")
+        self.assertEqual(payload["reading_status"], "mart_snapshot")
         self.assertEqual([int(row["data_key"]) for row in payload["by_day"]], [20260331, 20260401, 20260402])
         self.assertEqual(float(payload["kpis"]["faturamento"]), 600.0)
         self.assertEqual(float(payload["kpis"]["devolucoes"]), 40.0)
         self.assertEqual(float(payload["commercial_kpis"]["cancelamentos"]), 75.0)
         self.assertEqual(float(payload["top_products"][0]["custo_total"]), 420.0)
+
+    def test_sales_live_day_ignores_historical_simulated_reference(self) -> None:
+        with patch.object(repos_mart, "business_today", return_value=date(2026, 4, 23)):
+            live_day = repos_mart._sales_live_day_in_window(
+                date(2026, 4, 22),
+                date(2026, 4, 22),
+                as_of=date(2026, 4, 22),
+                tenant_id=1,
+            )
+
+        self.assertIsNone(live_day)
+
+    def test_shifted_latest_window_stays_on_historical_bundle(self) -> None:
+        expected = _operational_range_bundle()
+        expected["freshness"] = {
+            "mode": "historical_snapshot",
+            "operational_day": None,
+            "live_through_at": None,
+            "historical_through_dt": "2026-04-22",
+            "source": "mart.agg_vendas_diaria",
+        }
+        expected["operational_sync"] = {
+            "last_sync_at": None,
+            "source": "mart.agg_vendas_diaria",
+            "dt_ref": "2026-04-22",
+        }
+
+        with patch.object(repos_mart, "business_today", return_value=date(2026, 4, 23)), patch.object(
+            repos_mart,
+            "commercial_window_coverage",
+            return_value={
+                "mode": "shifted_latest",
+                "effective_dt_ini": date(2026, 4, 22),
+                "effective_dt_fim": date(2026, 4, 22),
+            },
+        ), patch.object(
+            repos_mart,
+            "_sales_historical_bundle_from_marts",
+            return_value=expected,
+        ) as historical_bundle, patch.object(
+            repos_mart,
+            "sales_operational_range_bundle",
+            side_effect=AssertionError("shifted latest should not use the operational sales window"),
+        ), patch.object(
+            repos_mart,
+            "sales_commercial_overview",
+            return_value={
+                "kpis": expected["commercial_kpis"],
+                "cfop_breakdown": expected["cfop_breakdown"],
+                "by_hour": expected["commercial_by_hour"],
+                "monthly_evolution": expected["monthly_evolution"],
+                "annual_comparison": expected["annual_comparison"],
+            },
+        ):
+            payload = repos_mart.sales_overview_bundle(
+                "MASTER",
+                1,
+                14458,
+                date(2026, 4, 23),
+                date(2026, 4, 23),
+                as_of=date(2026, 4, 23),
+            )
+
+        historical_bundle.assert_called_once_with(
+            "MASTER",
+            1,
+            14458,
+            date(2026, 4, 22),
+            date(2026, 4, 22),
+            include_details=True,
+        )
+        self.assertEqual(payload["reading_status"], "latest_compatible")
 
 
 if __name__ == "__main__":

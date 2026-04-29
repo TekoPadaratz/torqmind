@@ -1,3 +1,5 @@
+include:
+  - path: docker-compose.clickhouse.yml
 services:
   postgres:
     image: postgres:16
@@ -15,6 +17,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
 
   api:
     build:
@@ -23,11 +26,18 @@ services:
       - ./.env
     environment:
       PG_HOST: postgres
-      PG_PORT: 55432
+      PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-TORQMIND}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
       DATABASE_URL: postgresql+asyncpg://${PG_USER:-postgres}:${PG_PASSWORD:-postgres}@postgres:5432/${PG_DATABASE:-TORQMIND}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-torqmind_mart}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-torqmind}
+      USE_CLICKHOUSE: ${USE_CLICKHOUSE:-true}
+      DUAL_READ_MODE: ${DUAL_READ_MODE:-false}
       APP_ENV: ${APP_ENV:-dev}
     ports:
       - "18000:8000"
@@ -36,12 +46,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      clickhouse:
+        condition: service_healthy
 
   web:
     build:
       context: ./apps/web
     environment:
-      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:18000}
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
     ports:
       - "3000:3000"

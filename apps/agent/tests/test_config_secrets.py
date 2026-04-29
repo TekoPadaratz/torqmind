@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_bkp.config import (
+from agent.config import (
     AgentConfigError,
     build_default_raw_config,
     load_config,
@@ -11,7 +11,7 @@ from agent_bkp.config import (
     migrate_yaml_to_encrypted_config,
     save_encrypted_config,
 )
-from agent_bkp.secrets import load_encrypted_json_file
+from agent.secrets import load_encrypted_json_file
 
 
 class TestEncryptedConfig(unittest.TestCase):

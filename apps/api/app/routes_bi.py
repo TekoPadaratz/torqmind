@@ -13,7 +13,7 @@ from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
-from app import repos_mart
+from app import repos_analytics as repos_mart
 from app import repos_auth
 from app.services import snapshot_cache
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
@@ -49,6 +49,21 @@ def _build_snapshot_context(
     if extra:
         context.update(extra)
     return context
+
+
+def _effective_commercial_window(
+    role: str,
+    tenant_id: int,
+    filial_scope: Optional[int | List[int]],
+    dt_ini: date,
+    dt_fim: date,
+) -> tuple[Dict[str, Any], date, date]:
+    coverage = repos_mart.commercial_window_coverage(role, tenant_id, filial_scope, dt_ini, dt_fim)
+    return (
+        coverage,
+        coverage.get("effective_dt_ini") or dt_ini,
+        coverage.get("effective_dt_fim") or dt_fim,
+    )
 
 
 def _with_fallback_state(
@@ -335,28 +350,15 @@ def _with_cached_response(
             exact_scope_match=False,
         )
 
-    if safe_fallback is not None:
+    if safe_fallback is not None and protect_reads:
         payload = safe_fallback()
         fallback_overrides = payload.pop("_fallback_meta", {}) if isinstance(payload.get("_fallback_meta"), dict) else {}
-        payload = attach_scope_meta(payload, matched_signature=None, exact_scope_match=not protect_reads)
-        if protect_reads:
-            payload["_snapshot_cache"] = {
-                **fallback_meta(
-                    mode="protected_unavailable",
-                    reason="transient_snapshot_unavailable",
-                    message="A leitura consolidada deste recorte ainda não ficou pronta e a base está protegida agora. A tela mostra indisponibilidade transitória em vez de assumir zero real.",
-                ),
-                **fallback_overrides,
-            }
-            return payload
-
-        refresh_scheduled = safe_refresh_snapshot_async()
+        payload = attach_scope_meta(payload, matched_signature=None, exact_scope_match=False)
         payload["_snapshot_cache"] = {
             **fallback_meta(
-                mode="warming_up",
-                reason="snapshot_missing",
-                message="A primeira leitura consolidada ainda está sendo preparada. A tela já está protegida e deve ganhar dados consolidados nos próximos instantes.",
-                refresh_scheduled=refresh_scheduled,
+                mode="protected_unavailable",
+                reason="transient_snapshot_unavailable",
+                message="A leitura consolidada deste recorte ainda não ficou pronta e a base está protegida agora. A tela mostra indisponibilidade transitória em vez de assumir zero real.",
             ),
             **fallback_overrides,
         }
@@ -414,8 +416,8 @@ def _with_cached_response(
     payload["_snapshot_cache"] = {
         "source": "live",
         "scope_key": scope_key,
-        "mode": "live_computed",
-        "reason": "snapshot_refreshed",
+        "mode": "cold_miss_sync" if cached_record is None else "live_computed",
+        "reason": "snapshot_cold_miss" if cached_record is None else "snapshot_refreshed",
         "signature": scope_signature,
         "matched_signature": scope_signature,
         "exact_scope_match": True,
@@ -1207,6 +1209,13 @@ def customers_overview(
     as_of = resolve_business_date(dt_ref, tenant)
 
     def build_response() -> Dict[str, Any]:
+        commercial_coverage, effective_dt_ini, effective_dt_fim = _effective_commercial_window(
+            role,
+            tenant,
+            filial,
+            dt_ini,
+            dt_fim,
+        )
         churn_bundle = repos_mart.customers_churn_bundle(role, tenant, filial, as_of=as_of, min_score=40, limit=10)
         churn_top = []
         for c in churn_bundle.get("top_risk") or []:
@@ -1231,12 +1240,13 @@ def customers_overview(
             )
 
         return {
-            "top_customers": repos_mart.customers_top(role, tenant, filial, dt_ini, dt_fim, limit=15),
+            "top_customers": repos_mart.customers_top(role, tenant, filial, effective_dt_ini, effective_dt_fim, limit=15),
             "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=as_of),
             "delinquency": repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of, limit=15),
             "churn_top": churn_top,
             "churn_snapshot": churn_bundle.get("snapshot_meta") or repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
-            "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim),
+            "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, effective_dt_ini, effective_dt_fim),
+            "commercial_coverage": commercial_coverage,
         }
 
     return _with_cached_response(
@@ -1308,7 +1318,16 @@ def clients_retention_anonymous(
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return repos_mart.anonymous_retention_overview(role, tenant, filial, dt_ini, dt_fim)
+    commercial_coverage, effective_dt_ini, effective_dt_fim = _effective_commercial_window(
+        role,
+        tenant,
+        filial,
+        dt_ini,
+        dt_fim,
+    )
+    payload = repos_mart.anonymous_retention_overview(role, tenant, filial, effective_dt_ini, effective_dt_fim)
+    payload["commercial_coverage"] = commercial_coverage
+    return payload
 
 
 # ------------------------
@@ -1531,12 +1550,26 @@ def goals_overview(
     as_of = resolve_business_date(dt_ref, tenant)
 
     def build_response() -> Dict[str, Any]:
+        commercial_coverage, effective_dt_ini, effective_dt_fim = _effective_commercial_window(
+            role,
+            tenant,
+            filial,
+            dt_ini,
+            dt_fim,
+        )
+        try:
+            risk_top_employees = repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=15)
+        except repos_mart.SNAPSHOT_FALLBACK_ERRORS:
+            risk_top_employees = []
+        except TimeoutError:
+            risk_top_employees = []
         return {
             "business_clock": business_clock_payload(tenant),
-            "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, dt_ini, dt_fim, limit=15),
+            "leaderboard": repos_mart.leaderboard_employees(role, tenant, filial, effective_dt_ini, effective_dt_fim, limit=15),
             "goals_today": repos_mart.goals_today(role, tenant, filial, goal_date=as_of),
-            "risk_top_employees": repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=15),
+            "risk_top_employees": risk_top_employees,
             "monthly_projection": repos_mart.monthly_goal_projection(role, tenant, filial, as_of=as_of),
+            "commercial_coverage": commercial_coverage,
         }
 
     return _with_cached_response(

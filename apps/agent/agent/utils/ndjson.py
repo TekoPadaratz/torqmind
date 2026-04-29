@@ -5,9 +5,13 @@ import json
 from decimal import Decimal
 from typing import Dict, Iterable, List
 
+from agent.utils.timezone import business_datetime_iso
+
 
 def _default_serializer(obj):
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, datetime):
+        return business_datetime_iso(obj, timespec="microseconds")
+    if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, Decimal):
         return float(obj)

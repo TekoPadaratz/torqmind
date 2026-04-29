@@ -8,6 +8,7 @@ from contextlib import suppress
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
+from app.config import settings
 from app.db import get_conn
 from app.services.telegram import send_telegram_alert
 
@@ -41,6 +42,7 @@ PHASE_META_KEYS = (
     "fact_venda",
     "fact_venda_item",
     "fact_financeiro",
+    "fact_estoque_atual",
     "risk_events",
 )
 
@@ -84,6 +86,11 @@ PHASE_SQL_STEPS: tuple[tuple[str, str], ...] = (
     ("fact_venda", "SELECT etl.load_fact_venda(%s) AS rows"),
     ("fact_venda_item", "SELECT etl.load_fact_venda_item(%s) AS rows"),
     ("fact_financeiro", "SELECT etl.load_fact_financeiro(%s) AS rows"),
+    # HOTFIX 2026-04-27: módulo de estoque ainda não implementado no banco.
+    # A função etl.load_fact_estoque_atual não existe — step temporariamente
+    # desabilitado para manter o pipeline operacional rodando. Reativar quando
+    # a migration do estoque for criada.
+    # ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -138,7 +145,15 @@ def _track_runs_risk(track: str) -> bool:
 
 
 def _track_runs_publication(track: str) -> bool:
-    return track in {TRACK_RISK, TRACK_FULL}
+    # 2026-04-29: incluir OPERATIONAL para que mart.agg_vendas_diaria, mart.agg_pagamentos_diaria
+    # e demais matviews "gerais" sejam refrescadas a cada ciclo operacional.
+    # Sem isso, o Dashboard Geral exibia dados defasados (fallback "stale data").
+    # Veja docs/ARCHITECTURE.md §10 (Refresh Policy by Track).
+    return track in {TRACK_OPERATIONAL, TRACK_RISK, TRACK_FULL}
+
+
+def _legacy_pg_marts_enabled() -> bool:
+    return bool(getattr(settings, "refresh_legacy_pg_marts", False))
 
 
 def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
@@ -336,8 +351,10 @@ def run_incremental_cycle(
 
             aggregated_meta = _aggregate_refresh_meta(successful_items, force_full=force_full, track=track)
             publication_requested = refresh_mart and bool(successful_items) and _refresh_meta_has_requested_work(aggregated_meta)
-            publication_enabled = publication_requested and _track_runs_publication(track)
-            publication_deferred = publication_requested and track == TRACK_OPERATIONAL
+            publication_enabled = publication_requested and _track_runs_publication(track) and _legacy_pg_marts_enabled()
+            # ClickHouse-first production publishes BI through the external incremental
+            # pipeline; legacy PostgreSQL mart refresh remains explicit opt-in.
+            publication_deferred = False
             refresh_meta = _empty_refresh_meta(ref_date)
             if publication_enabled:
                 refresh_meta = _empty_refresh_meta(ref_date) | {"requested": True} | _run_global_refresh(
@@ -347,15 +364,6 @@ def run_incremental_cycle(
                     tenant_ids=[int(item["tenant_id"]) for item in successful_items],
                     progress_callback=progress_callback,
                 )
-            elif publication_deferred:
-                refresh_meta = _empty_refresh_meta(ref_date) | {
-                    "requested": True,
-                    "deferred": True,
-                    "deferred_reason": "operational_track_keeps_global_refresh_off_hot_path",
-                    "recommended_track": TRACK_RISK,
-                    "fast_path_available": True,
-                    "publication_policy": "operational_fast_path_plus_risk_heavy_refresh",
-                }
 
             refreshed_any = bool(refresh_meta.get("refreshed_any"))
             fast_path_items = 0
@@ -694,7 +702,13 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dic
             ),
             "cash": any(
                 int(meta.get(key, 0) or 0) > 0
-                for key in ("fact_caixa_turno", "fact_pagamento_comprovante", "fact_comprovante", "dim_usuario_caixa")
+                for key in (
+                    "fact_caixa_turno",
+                    "fact_pagamento_comprovante",
+                    "fact_comprovante",
+                    "dim_usuario_caixa",
+                    "fact_estoque_atual",
+                )
             ),
         }
     if track == TRACK_RISK:
@@ -721,7 +735,16 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dic
         "finance": int(meta.get("fact_financeiro", 0) or 0) > 0,
         "risk": risk_changed or int(meta.get("dim_funcionarios", 0) or 0) > 0,
         "payments": any(int(meta.get(key, 0) or 0) > 0 for key in ("fact_pagamento_comprovante", "fact_comprovante")),
-        "cash": any(int(meta.get(key, 0) or 0) > 0 for key in ("fact_caixa_turno", "fact_pagamento_comprovante", "fact_comprovante", "dim_usuario_caixa")),
+        "cash": any(
+            int(meta.get(key, 0) or 0) > 0
+            for key in (
+                "fact_caixa_turno",
+                "fact_pagamento_comprovante",
+                "fact_comprovante",
+                "dim_usuario_caixa",
+                "fact_estoque_atual",
+            )
+        ),
     }
 
 
@@ -1497,7 +1520,7 @@ def _run_risk_loader_detail(
     window_end_dt_ref = window.get("window_end_dt_ref")
     before_count = _count_risk_rows_in_window(conn, tenant_id, window_start_dt_ref, window_end_dt_ref)
     row = conn.execute(
-        "SELECT etl.compute_risk_events(%s, %s, %s, %s) AS rows",
+        "SELECT etl.compute_risk_events_v2(%s, %s, %s, %s) AS rows",
         (tenant_id, force_full, lookback_days, None),
     ).fetchone() or {}
     rows = int(row.get("rows") or 0)

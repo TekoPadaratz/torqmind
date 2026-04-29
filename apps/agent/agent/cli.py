@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from agent_bkp.config import (
+from agent.config import (
     AgentConfigError,
     build_default_raw_config,
     derive_encrypted_config_path,
@@ -17,7 +17,7 @@ from agent_bkp.config import (
     migrate_yaml_to_encrypted_config,
     save_encrypted_config,
 )
-from agent_bkp.utils.log import build_logger
+from agent.utils.log import build_logger
 
 
 SAFE_MASK_KEYS = {"password", "ingest_key", "token", "secret"}
@@ -25,6 +25,22 @@ SAFE_MASK_KEYS = {"password", "ingest_key", "token", "secret"}
 
 def _parse_date(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%d")
+
+
+def _parse_window_value(raw: str) -> tuple[datetime, bool]:
+    text = str(raw or "").strip()
+    if not text:
+        raise AgentConfigError("Window value must not be empty.")
+    try:
+        return _parse_date(text), True
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(text.replace(" ", "T")), False
+    except ValueError as exc:
+        raise AgentConfigError(
+            f"Invalid window value `{raw}`. Use YYYY-MM-DD or ISO datetime such as 2026-04-02T14:00:00."
+        ) from exc
 
 
 def _mask_value(key: str, value: Any) -> str:
@@ -214,8 +230,8 @@ def _handle_config_command(args, logger) -> None:
         return
 
     if args.config_command == "test":
-        from agent_bkp.runner import AgentRunner
-        from agent_bkp.state.watermark import WatermarkStore
+        from agent.runner import AgentRunner
+        from agent.state.watermark import WatermarkStore
 
         cfg = load_config(config_path)
         runner = AgentRunner(cfg, logger)
@@ -260,8 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = sub.add_parser("backfill", help="Run backfill for one dataset")
     backfill.add_argument("--config", dest="command_config", default=None, help="Path to config file")
     backfill.add_argument("--dataset", required=True)
-    backfill.add_argument("--from", dest="from_date", required=True, help="YYYY-MM-DD")
-    backfill.add_argument("--to", dest="to_date", required=True, help="YYYY-MM-DD")
+    backfill.add_argument("--from", dest="from_date", required=True, help="YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
+    backfill.add_argument("--to", dest="to_date", required=True, help="YYYY-MM-DD or exact exclusive datetime")
 
     check = sub.add_parser("check", help="Check SQL Server + API + ingest credentials")
     check.add_argument("--config", dest="command_config", default=None, help="Path to config file")
@@ -361,7 +377,7 @@ def main() -> None:
         handler.setLevel(effective_level)
 
     if args.command in api_only_commands:
-        from agent_bkp.sink.torqmind_api import TorqMindSink
+        from agent.sink.torqmind_api import TorqMindSink
 
         sink = TorqMindSink(cfg.api, cfg.runtime, logger)
         try:
@@ -412,8 +428,8 @@ def main() -> None:
             logger.error("command=%s status=failed error=%s", args.command, str(exc))
             raise SystemExit(2) from exc
 
-    from agent_bkp.runner import AgentRunner
-    from agent_bkp.state.watermark import WatermarkStore
+    from agent.runner import AgentRunner
+    from agent.state.watermark import WatermarkStore
 
     runner = AgentRunner(cfg, logger)
     tenant_key = f"empresa_{cfg.api.empresa_id or cfg.id_empresa or 'unknown'}"
@@ -471,11 +487,18 @@ def main() -> None:
             return
 
         if args.command == "backfill":
-            dt_from = _parse_date(args.from_date)
-            dt_to = _parse_date(args.to_date)
+            dt_from, from_is_date_only = _parse_window_value(args.from_date)
+            dt_to, to_is_date_only = _parse_window_value(args.to_date)
             if dt_to < dt_from:
                 raise ValueError("--to must be >= --from")
-            runner.backfill(dataset=args.dataset, from_date=dt_from, to_date=dt_to)
+            if from_is_date_only and not to_is_date_only and dt_to <= dt_from:
+                raise ValueError("Datetime --to must be greater than --from when --from is date-only.")
+            runner.backfill(
+                dataset=args.dataset,
+                from_date=dt_from,
+                to_date=dt_to,
+                to_is_date_only=to_is_date_only,
+            )
             return
 
         if args.command in {"reset", "reset-watermark"}:

@@ -8,7 +8,9 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi.encoders import jsonable_encoder
 
+from app.config import settings
 from app.db import get_conn
+from app.db_clickhouse import query_dict
 from app.services.etl_orchestrator import (
     TENANT_TRACK_LOCK_NAMESPACE,
     advisory_lock_is_available,
@@ -37,6 +39,55 @@ SYNC_SNAPSHOT_KEYS = tuple(HOT_ROUTE_REFRESH_AFTER_SECONDS.keys())
 DB_BUSY_LONG_QUERY_SECONDS = 15
 DB_BUSY_LOCK_WAITER_THRESHOLD = 1
 DB_BUSY_LONG_QUERY_THRESHOLD = 2
+
+
+def _date_key_to_iso(value: Any) -> Optional[str]:
+    try:
+        key = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    if key <= 0:
+        return None
+    raw = f"{key:08d}"
+    return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+
+
+def _clickhouse_publication_status() -> Optional[Dict[str, Any]]:
+    if not getattr(settings, "use_clickhouse", False):
+        return None
+    try:
+        rows = query_dict(
+            """
+            SELECT
+              formatDateTime(last_success_at, '%Y-%m-%dT%H:%M:%S', 'America/Sao_Paulo') AS last_success_at,
+              mode,
+              dt_fim_key,
+              message
+            FROM torqmind_ops.sync_state
+            WHERE name = 'mart_publication'
+              AND status = 'ok'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ClickHouse publication status unavailable: %s", exc)
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    last_success_at = row.get("last_success_at")
+    if last_success_at and len(str(last_success_at)) == 19:
+        last_success_at = f"{last_success_at}-03:00"
+    return {
+        "available": bool(last_success_at),
+        "last_success_at": last_success_at,
+        "last_sync_at": last_success_at,
+        "data_through_dt": _date_key_to_iso(row.get("dt_fim_key")),
+        "source": "clickhouse_mart",
+        "mode": row.get("mode") or "incremental",
+        "message": "Atualizado.",
+    }
 
 
 def build_scope_signature(context: Dict[str, Any]) -> str:
@@ -267,6 +318,7 @@ def get_hot_route_guard(tenant_id: int) -> Dict[str, Any]:
 
 
 def last_consolidated_sync(tenant_id: int, branch_id: Optional[int] = None) -> Dict[str, Any]:
+    clickhouse_status = _clickhouse_publication_status()
     branch_sql = "AND id_filial IS NULL" if branch_id is None else "AND id_filial = %s"
     snapshot_params: list[Any] = [tenant_id, list(SYNC_SNAPSHOT_KEYS)]
     if branch_id is not None:
@@ -354,22 +406,50 @@ def last_consolidated_sync(tenant_id: int, branch_id: Optional[int] = None) -> D
     }
 
     if isinstance(phase_finished_at, datetime):
-        message = f"Trilho operacional pronto em {phase_finished_at.isoformat()}."
+        if clickhouse_status and clickhouse_status.get("available"):
+            last_success_at = clickhouse_status.get("last_success_at")
+            return {
+                "available": True,
+                "last_success_at": last_success_at,
+                "last_sync_at": last_success_at,
+                "data_through_dt": clickhouse_status.get("data_through_dt"),
+                "source": "clickhouse_mart",
+                "mode": clickhouse_status.get("mode") or "incremental",
+                "message": "Atualizado.",
+                "operational": operational,
+                "analytics": {
+                    "available": True,
+                    "last_sync_at": last_success_at,
+                    "last_success_at": last_success_at,
+                    "source": "clickhouse_mart",
+                    "mode": clickhouse_status.get("mode") or "incremental",
+                },
+                "publication": {
+                    "available": True,
+                    "last_sync_at": last_success_at,
+                    "last_success_at": last_success_at,
+                    "source": "clickhouse_mart",
+                    "mode": clickhouse_status.get("mode") or "incremental",
+                },
+            }
+        message = f"Atualizado em {phase_finished_at.isoformat()}."
         if isinstance(analytics_finished_at, datetime):
             if analytics_source == "etl_publication_fast_path":
                 message = (
-                    f"{message} Publicação rápida por tenant concluída em {analytics_finished_at.isoformat()}."
+                    f"{message} BI concluído em {analytics_finished_at.isoformat()}."
                 )
             else:
                 message = (
-                    f"{message} Publicação analítica mais recente em {analytics_finished_at.isoformat()}."
+                    f"{message} BI concluído em {analytics_finished_at.isoformat()}."
                 )
         elif isinstance(snapshot_updated_at, datetime):
-            message = f"{message} Última publicação em cache em {snapshot_updated_at.isoformat()}."
+            message = f"{message} Última leitura salva em {snapshot_updated_at.isoformat()}."
         return {
             "available": True,
+            "last_success_at": phase_finished_at.isoformat(),
             "last_sync_at": phase_finished_at.isoformat(),
             "source": "operational_phase",
+            "mode": "incremental",
             "message": message,
             "operational": operational,
             "analytics": analytics,
@@ -388,11 +468,7 @@ def last_consolidated_sync(tenant_id: int, branch_id: Optional[int] = None) -> D
             "publication": publication,
         }
     if isinstance(analytics_finished_at, datetime):
-        analytics_message = (
-            f"Publicação rápida por tenant concluída em {analytics_finished_at.isoformat()}."
-            if analytics_source == "etl_publication_fast_path"
-            else f"Última publicação analítica concluída em {analytics_finished_at.isoformat()}."
-        )
+        analytics_message = f"Base atualizada em {analytics_finished_at.isoformat()}."
         return {
             "available": True,
             "last_sync_at": analytics_finished_at.isoformat(),
@@ -404,9 +480,11 @@ def last_consolidated_sync(tenant_id: int, branch_id: Optional[int] = None) -> D
         }
     return {
         "available": False,
+        "last_success_at": None,
+        "data_through_dt": None,
         "last_sync_at": None,
         "source": "unavailable",
-        "message": "A primeira base pronta ainda está sendo preparada.",
+        "message": "Estamos atualizando os dados.",
         "operational": operational,
         "analytics": analytics,
         "publication": publication,

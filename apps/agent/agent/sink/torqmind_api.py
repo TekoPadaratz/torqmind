@@ -8,10 +8,10 @@ from typing import Dict, Iterable, Optional
 
 import requests
 
-from agent_bkp.config import APIConfig, RuntimeConfig
-from agent_bkp.spool import SpoolQueue
-from agent_bkp.utils.ndjson import to_ndjson_bytes
-from agent_bkp.utils.retry import RetryableError, retry_with_backoff
+from agent.config import APIConfig, RuntimeConfig
+from agent.spool import SpoolQueue
+from agent.utils.ndjson import to_ndjson_bytes
+from agent.utils.retry import RetryableError, retry_with_backoff
 
 
 class SinkError(RuntimeError):

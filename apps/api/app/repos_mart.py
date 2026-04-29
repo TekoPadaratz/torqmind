@@ -12,6 +12,7 @@ Design:
 
 from datetime import date, timedelta
 from typing import Optional, List, Dict, Any
+import logging
 import unicodedata
 
 from app.business_time import business_clock_payload, business_timezone_name, business_today
@@ -22,6 +23,7 @@ from app.cash_operational_truth import (
     cash_payment_relation_exists,
     relation_exists,
 )
+from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.db import get_conn
 from app.sales_semantics import (
     CANCELLATION_STATUS,
@@ -36,6 +38,8 @@ from app.sales_semantics import (
     sales_status_sql,
 )
 
+logger = logging.getLogger(__name__)
+
 
 LOCAL_VENDA_LABELS = {
     -1: "Canal não identificado",
@@ -45,10 +49,10 @@ LOCAL_VENDA_LABELS = {
 }
 
 COMMERCIAL_CFOP_LABELS = {
-    "saida_normal": "Saída normal",
-    "entrada_normal": "Entrada normal",
-    "devolucao_saida": "Devolução de saída",
-    "devolucao_entrada": "Devolução de entrada",
+    "saida_normal": "Vendas normais",
+    "entrada_normal": "Entradas registradas",
+    "devolucao_saida": "Devoluções de venda",
+    "devolucao_entrada": "Devoluções de entrada",
     "outro": "Outros CFOPs",
 }
 
@@ -731,6 +735,163 @@ def _month_ref(year: int, month: int) -> date:
     return date(year, month, 1)
 
 
+def _window_coverage_payload(
+    *,
+    requested_dt_ini: date,
+    requested_dt_fim: date,
+    min_data_key: Any,
+    max_data_key: Any,
+    source_label: str,
+) -> Dict[str, Any]:
+    requested_days = max((requested_dt_fim - requested_dt_ini).days + 1, 1)
+    earliest_available_dt = _date_from_key(min_data_key)
+    latest_available_dt = _date_from_key(max_data_key)
+
+    if earliest_available_dt is None or latest_available_dt is None:
+        return {
+            "mode": "missing",
+            "source": source_label,
+            "requested_dt_ini": requested_dt_ini,
+            "requested_dt_fim": requested_dt_fim,
+            "effective_dt_ini": None,
+            "effective_dt_fim": None,
+            "earliest_available_dt": None,
+            "latest_available_dt": None,
+            "requested_days": requested_days,
+            "covered_days_in_requested": 0,
+            "requested_has_coverage": False,
+            "is_stale": False,
+            "message": "A trilha comercial canônica ainda não publicou base suficiente para este escopo.",
+        }
+
+    overlap_start = max(requested_dt_ini, earliest_available_dt)
+    overlap_end = min(requested_dt_fim, latest_available_dt)
+    covered_days = (
+        max((overlap_end - overlap_start).days + 1, 0)
+        if overlap_end >= overlap_start
+        else 0
+    )
+
+    if requested_dt_ini > latest_available_dt:
+        effective_dt_fim = latest_available_dt
+        effective_dt_ini = max(
+            earliest_available_dt,
+            latest_available_dt - timedelta(days=requested_days - 1),
+        )
+        mode = "shifted_latest"
+        message = (
+            f"O recorte pedido vai até {requested_dt_fim.isoformat()}, mas a última base comercial disponível "
+            f"vai até {latest_available_dt.isoformat()}. A tela usa o último período comparável entre "
+            f"{effective_dt_ini.isoformat()} e {effective_dt_fim.isoformat()}."
+        )
+    elif requested_dt_fim > latest_available_dt:
+        effective_dt_ini = requested_dt_ini
+        effective_dt_fim = latest_available_dt
+        mode = "partial_requested"
+        message = (
+            f"A base comercial canônica cobre este recorte apenas até {latest_available_dt.isoformat()}. "
+            "Os valores posteriores ainda não chegaram da origem."
+        )
+    else:
+        effective_dt_ini = requested_dt_ini
+        effective_dt_fim = requested_dt_fim
+        mode = "exact"
+        message = None
+
+    return {
+        "mode": mode,
+        "source": source_label,
+        "requested_dt_ini": requested_dt_ini,
+        "requested_dt_fim": requested_dt_fim,
+        "effective_dt_ini": effective_dt_ini,
+        "effective_dt_fim": effective_dt_fim,
+        "earliest_available_dt": earliest_available_dt,
+        "latest_available_dt": latest_available_dt,
+        "requested_days": requested_days,
+        "covered_days_in_requested": covered_days,
+        "requested_has_coverage": covered_days > 0,
+        "is_stale": requested_dt_fim > latest_available_dt,
+        "message": message,
+    }
+
+
+def commercial_window_coverage(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    requested_dt_ini: date,
+    requested_dt_fim: date,
+) -> Dict[str, Any]:
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    sql = f"""
+      SELECT
+        MIN(data_key)::int AS min_data_key,
+        MAX(data_key)::int AS max_data_key
+      FROM mart.agg_vendas_diaria
+      WHERE id_empresa = %s
+        {where_filial}
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        row = conn.execute(sql, [id_empresa] + branch_params).fetchone() or {}
+
+    return _window_coverage_payload(
+        requested_dt_ini=requested_dt_ini,
+        requested_dt_fim=requested_dt_fim,
+        min_data_key=row.get("min_data_key"),
+        max_data_key=row.get("max_data_key"),
+        source_label="mart.agg_vendas_diaria",
+    )
+
+
+def _dashboard_home_modeled_risk_bundle(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    try:
+        return {
+            "source_status": "ok",
+            "message": None,
+            "insights": risk_insights(role, id_empresa, id_filial, dt_ini, dt_fim, limit=20),
+            "kpis": risk_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
+            "window": risk_data_window(role, id_empresa, id_filial),
+        }
+    except SNAPSHOT_FALLBACK_ERRORS as exc:
+        logger.warning(
+            "Dashboard home modeled risk unavailable tenant=%s filial=%s: %s",
+            id_empresa,
+            id_filial,
+            exc.__class__.__name__,
+            exc_info=exc,
+        )
+    except TimeoutError as exc:
+        logger.warning(
+            "Dashboard home modeled risk timed out tenant=%s filial=%s",
+            id_empresa,
+            id_filial,
+            exc_info=exc,
+        )
+
+    return {
+        "source_status": "unavailable",
+        "message": "A leitura modelada de risco ainda não ficou pronta neste ambiente restaurado.",
+        "insights": [],
+        "kpis": {
+            "total_eventos": None,
+            "eventos_alto_risco": None,
+            "impacto_total": None,
+            "score_medio": None,
+        },
+        "window": {
+            "min_data_key": None,
+            "max_data_key": None,
+            "rows": None,
+        },
+    }
+
+
 def _commercial_annual_comparison(
     monthly_rows: List[Dict[str, Any]],
     *,
@@ -934,30 +1095,45 @@ def dashboard_home_bundle(
     dt_fim: date,
     dt_ref: date,
 ) -> Dict[str, Any]:
-    insights_rows = risk_insights(role, id_empresa, id_filial, dt_ini, dt_fim, limit=20)
-    sales = sales_operational_range_bundle(
+    modeled_risk_bundle = _dashboard_home_modeled_risk_bundle(role, id_empresa, id_filial, dt_ini, dt_fim)
+    insights_rows = modeled_risk_bundle.get("insights") or []
+    sales_coverage = commercial_window_coverage(role, id_empresa, id_filial, dt_ini, dt_fim)
+    sales_dt_ini = sales_coverage.get("effective_dt_ini") or dt_ini
+    sales_dt_fim = sales_coverage.get("effective_dt_fim") or dt_fim
+    signal_dt_ref = sales_coverage.get("effective_dt_fim") or dt_ref
+    # 2026-04-29: marts are now refreshed every operational cycle (TRACK_OPERATIONAL
+    # includes global refresh). No need for live-day overlay from dw.fact_*.
+    # Always read from marts for consistent, fast performance.
+    sales = _sales_historical_bundle_from_marts(
         role,
         id_empresa,
         id_filial,
-        dt_ini,
-        dt_fim,
-        include_rankings=False,
-    ) or _empty_sales_overview_bundle()
-    sales["reading_status"] = str(sales.get("reading_status") or "operational_overlay")
-    peak_hours_signal = sales_peak_hours_signal(role, id_empresa, id_filial, dt_ref)
-    declining_products_signal = sales_declining_products_signal(role, id_empresa, id_filial, dt_ref)
+        sales_dt_ini,
+        sales_dt_fim,
+        include_details=False,
+    )
+    sales["commercial_coverage"] = sales_coverage
+    sales["reading_status"] = (
+        "latest_compatible"
+        if sales_coverage.get("mode") == "shifted_latest"
+        else str(sales.get("reading_status") or "mart_snapshot")
+    )
+    peak_hours_signal = sales_peak_hours_signal(role, id_empresa, id_filial, signal_dt_ref)
+    declining_products_signal = sales_declining_products_signal(role, id_empresa, id_filial, signal_dt_ref)
     fraud_operational = {
         "kpis": fraud_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
         "window": fraud_data_window(role, id_empresa, id_filial),
     }
     modeled_risk = {
-        "kpis": risk_kpis(role, id_empresa, id_filial, dt_ini, dt_fim),
-        "window": risk_data_window(role, id_empresa, id_filial),
+        "source_status": modeled_risk_bundle.get("source_status"),
+        "message": modeled_risk_bundle.get("message"),
+        "kpis": modeled_risk_bundle.get("kpis"),
+        "window": modeled_risk_bundle.get("window"),
     }
     churn = customers_churn_bundle(role, id_empresa, id_filial, as_of=dt_ref, min_score=40, limit=10)
     finance_aging = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
     cash_live = _cash_live_now(role, id_empresa, id_filial)
-    payments = payments_overview(role, id_empresa, id_filial, dt_ini, dt_fim, anomaly_limit=5)
+    payments = payments_overview(role, id_empresa, id_filial, sales_dt_ini, sales_dt_fim, anomaly_limit=5)
     notifications_unread = notifications_unread_count(role, id_empresa, id_filial)
     operational_sync = sales.get("operational_sync") or cash_live.get("operational_sync")
     freshness = {
@@ -1036,6 +1212,7 @@ def dashboard_home_bundle(
         "notifications_unread": notifications_unread,
         "operational_sync": operational_sync,
         "freshness": freshness,
+        "commercial_coverage": sales_coverage,
     }
 
 def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> Dict[str, Any]:
@@ -1044,13 +1221,14 @@ def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     params = [id_empresa, ini, fim] + branch_params
 
+    # 2026-04-29: marts are refreshed every operational cycle — read exclusively
+    # from mart.agg_vendas_diaria, no live-day overlay from dw.fact_*.
     sql = f"""
       SELECT
         COALESCE(SUM(faturamento),0) AS faturamento,
         COALESCE(SUM(margem),0) AS margem,
         COALESCE(AVG(ticket_medio),0) AS ticket_medio,
-        COALESCE(SUM(quantidade_itens),0) AS itens,
-        COALESCE(SUM(CASE WHEN COALESCE(ticket_medio, 0) > 0 THEN faturamento / NULLIF(ticket_medio, 0) ELSE 0 END),0) AS sales_count
+        COALESCE(SUM(quantidade_itens),0) AS itens
       FROM mart.agg_vendas_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
@@ -1058,14 +1236,7 @@ def dashboard_kpis(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = dict(conn.execute(sql, params).fetchone() or {})
 
-    live_day = _sales_live_day_in_window(dt_ini, dt_fim, tenant_id=id_empresa)
-    if live_day is None:
-        row.pop("sales_count", None)
-        return row or {"faturamento": 0, "margem": 0, "ticket_medio": 0, "itens": 0}
-
-    live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, live_day, include_rankings=False)
-    merged = _merge_sales_kpis(row, live_bundle)
-    return merged
+    return row or {"faturamento": 0, "margem": 0, "ticket_medio": 0, "itens": 0}
 
 
 def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
@@ -1073,6 +1244,7 @@ def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_in
     fim = _date_key(dt_fim)
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     params = [id_empresa, ini, fim] + branch_params
+    # 2026-04-29: marts refreshed every operational cycle — no live-day overlay.
     sql = f"""
       SELECT data_key, id_filial, faturamento, margem
       FROM mart.agg_vendas_diaria
@@ -1081,15 +1253,7 @@ def dashboard_series(role: str, id_empresa: int, id_filial: Optional[int], dt_in
       ORDER BY data_key, id_filial
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        historical_rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
-
-    live_day = _sales_live_day_in_window(dt_ini, dt_fim, tenant_id=id_empresa)
-    if live_day is None:
-        return historical_rows
-
-    live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, live_day, include_rankings=False)
-    live_rows = live_bundle.get("by_day") or []
-    return _merge_series_rows(historical_rows, live_rows[0] if live_rows else None)
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
 def _sales_live_day_in_window(
@@ -1098,7 +1262,10 @@ def _sales_live_day_in_window(
     as_of: Optional[date] = None,
     tenant_id: Optional[int] = None,
 ) -> Optional[date]:
-    live_day = as_of or business_today(tenant_id)
+    actual_business_today = business_today(tenant_id)
+    if as_of is not None and as_of != actual_business_today:
+        return None
+    live_day = actual_business_today
     if dt_ini <= live_day <= dt_fim:
         return live_day
     return None
@@ -2202,6 +2369,52 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def _sales_historical_bundle_from_marts(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    *,
+    include_details: bool = True,
+) -> Dict[str, Any]:
+    kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim) or {}
+    by_day = dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim)
+    by_hour = sales_by_hour(role, id_empresa, id_filial, dt_ini, dt_fim) if include_details else []
+    top_products = sales_top_products(role, id_empresa, id_filial, dt_ini, dt_fim, limit=15) if include_details else []
+    top_groups = sales_top_groups(role, id_empresa, id_filial, dt_ini, dt_fim, limit=10) if include_details else []
+    top_employees = sales_top_employees(role, id_empresa, id_filial, dt_ini, dt_fim, limit=10) if include_details else []
+
+    return {
+        "kpis": {
+            "faturamento": round(float(kpis.get("faturamento") or 0), 2),
+            "margem": round(float(kpis.get("margem") or 0), 2),
+            "ticket_medio": round(float(kpis.get("ticket_medio") or 0), 2),
+            "devolucoes": 0.0,
+        },
+        "by_day": by_day,
+        "by_hour": by_hour,
+        "top_products": _normalize_sales_top_products_rows(top_products),
+        "top_groups": top_groups,
+        "top_employees": top_employees,
+        "stats": {
+            "vendas": int(sum(int(row.get("vendas") or 0) for row in by_hour)),
+        },
+        "operational_sync": {
+            "last_sync_at": None,
+            "source": "mart.agg_vendas_diaria",
+            "dt_ref": dt_fim.isoformat(),
+        },
+        "freshness": {
+            "mode": "mart_snapshot",
+            "operational_day": None,
+            "live_through_at": None,
+            "historical_through_dt": dt_fim.isoformat(),
+            "source": "mart.agg_vendas_diaria",
+        },
+    }
+
+
 def sales_overview_bundle(
     role: str,
     id_empresa: int,
@@ -2212,59 +2425,44 @@ def sales_overview_bundle(
     *,
     include_details: bool = True,
 ) -> Dict[str, Any]:
-    bundle = sales_operational_range_bundle(
+    sales_coverage = commercial_window_coverage(role, id_empresa, id_filial, dt_ini, dt_fim)
+    effective_dt_ini = sales_coverage.get("effective_dt_ini") or dt_ini
+    effective_dt_fim = sales_coverage.get("effective_dt_fim") or dt_fim
+    # 2026-04-29: marts refreshed every operational cycle — always use marts.
+    bundle = _sales_historical_bundle_from_marts(
         role,
         id_empresa,
         id_filial,
-        dt_ini,
-        dt_fim,
-        include_rankings=include_details,
+        effective_dt_ini,
+        effective_dt_fim,
+        include_details=include_details,
     )
-    if bundle is None:
-        bundle = _empty_sales_overview_bundle()
-    commercial = sales_commercial_overview(role, id_empresa, id_filial, dt_ini, dt_fim)
+    commercial = sales_commercial_overview(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
     bundle["commercial_kpis"] = commercial.get("kpis") or _empty_sales_overview_bundle()["commercial_kpis"]
     bundle["cfop_breakdown"] = commercial.get("cfop_breakdown") or []
     bundle["commercial_by_hour"] = commercial.get("by_hour") or []
     bundle["monthly_evolution"] = commercial.get("monthly_evolution") or []
     bundle["annual_comparison"] = commercial.get("annual_comparison") or _empty_sales_overview_bundle()["annual_comparison"]
+    bundle["commercial_coverage"] = sales_coverage
 
-    live_day = _sales_live_day_in_window(dt_ini, dt_fim, as_of, tenant_id=id_empresa)
     freshness = dict(bundle.get("freshness") or {})
     operational_sync = dict(bundle.get("operational_sync") or {})
-    reading_status = "operational_overlay"
+    reading_status = "mart_snapshot"
 
-    if live_day is None:
-        freshness.update(
-            {
-                "mode": "operational_range",
-                "operational_day": None,
-                "historical_through_dt": dt_fim.isoformat(),
-                "source": "dw.fact_venda",
-            }
-        )
-        operational_sync["dt_ref"] = dt_fim.isoformat()
-    elif dt_ini == dt_fim == live_day:
-        freshness.update(
-            {
-                "mode": "live_day",
-                "operational_day": live_day.isoformat(),
-                "historical_through_dt": None,
-                "source": "dw.fact_venda",
-            }
-        )
-        operational_sync["dt_ref"] = live_day.isoformat()
-        reading_status = "operational_current"
-    else:
-        freshness.update(
-            {
-                "mode": "live_range",
-                "operational_day": live_day.isoformat(),
-                "historical_through_dt": dt_fim.isoformat(),
-                "source": "dw.fact_venda",
-            }
-        )
-        operational_sync["dt_ref"] = dt_fim.isoformat()
+    freshness.update(
+        {
+            "mode": "mart_snapshot",
+            "operational_day": None,
+            "historical_through_dt": effective_dt_fim.isoformat(),
+            "source": "mart.agg_vendas_diaria",
+        }
+    )
+    operational_sync["dt_ref"] = effective_dt_fim.isoformat()
+
+    if sales_coverage.get("mode") == "shifted_latest":
+        reading_status = "latest_compatible"
+        freshness["mode"] = "latest_compatible"
+        operational_sync["dt_ref"] = _iso_or_none(sales_coverage.get("effective_dt_fim"))
 
     bundle["freshness"] = freshness
     bundle["operational_sync"] = operational_sync
@@ -3557,41 +3755,72 @@ def customers_delinquency_overview(
         FROM base
         WHERE valor_aberto > 0
           AND id_cliente <> -1
-      ), ranked AS (
+      ), per_branch_customer AS (
         SELECT
+          o.id_filial,
           o.id_cliente,
-          COALESCE(NULLIF(d.nome, ''), '#ID ' || o.id_cliente::text) AS cliente_nome,
           COUNT(*)::int AS titulos,
           MAX(o.dias_atraso)::int AS max_dias_atraso,
           COALESCE(SUM(o.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 7), 0)::numeric(18,2) AS bucket_1_7,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 8 AND 15), 0)::numeric(18,2) AS bucket_8_15,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 16 AND 30), 0)::numeric(18,2) AS bucket_16_30,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS bucket_31_60,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso > 60), 0)::numeric(18,2) AS bucket_60_plus
+          COUNT(*) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 30)::int AS titulos_30,
+          COUNT(*) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60)::int AS titulos_60,
+          COUNT(*) FILTER (WHERE o.dias_atraso > 60)::int AS titulos_90_plus,
+          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_30,
+          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
+          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus
         FROM open_rows o
+        GROUP BY o.id_filial, o.id_cliente
+      ), named AS (
+        SELECT
+          p.id_cliente,
+          COALESCE(NULLIF(d.nome, ''), '#ID ' || p.id_cliente::text) AS cliente_nome,
+          p.titulos,
+          p.max_dias_atraso,
+          p.valor_aberto,
+          p.titulos_30,
+          p.titulos_60,
+          p.titulos_90_plus,
+          p.valor_30,
+          p.valor_60,
+          p.valor_90_plus
+        FROM per_branch_customer p
         LEFT JOIN LATERAL (
           SELECT d.nome
           FROM dw.dim_cliente d
           WHERE d.id_empresa = %s
-            AND d.id_cliente = o.id_cliente
+            AND d.id_cliente = p.id_cliente
           ORDER BY
-            CASE WHEN d.id_filial = o.id_filial THEN 0 ELSE 1 END,
+            CASE WHEN d.id_filial = p.id_filial THEN 0 ELSE 1 END,
             d.updated_at DESC,
             d.id_filial
           LIMIT 1
         ) d ON true
-        GROUP BY o.id_cliente, d.nome
+      ), ranked AS (
+        SELECT
+          n.id_cliente,
+          MAX(n.cliente_nome) AS cliente_nome,
+          COALESCE(SUM(n.titulos), 0)::int AS titulos,
+          MAX(n.max_dias_atraso)::int AS max_dias_atraso,
+          COALESCE(SUM(n.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
+          COALESCE(SUM(n.titulos_30), 0)::int AS titulos_30,
+          COALESCE(SUM(n.titulos_60), 0)::int AS titulos_60,
+          COALESCE(SUM(n.titulos_90_plus), 0)::int AS titulos_90_plus,
+          COALESCE(SUM(n.valor_30), 0)::numeric(18,2) AS valor_30,
+          COALESCE(SUM(n.valor_60), 0)::numeric(18,2) AS valor_60,
+          COALESCE(SUM(n.valor_90_plus), 0)::numeric(18,2) AS valor_90_plus
+        FROM named n
+        GROUP BY n.id_cliente
       ), totals AS (
         SELECT
           COUNT(DISTINCT id_cliente)::int AS clientes_em_aberto,
           COUNT(*)::int AS titulos_em_aberto,
           COALESCE(SUM(valor_aberto), 0)::numeric(18,2) AS valor_total,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 1 AND 7), 0)::numeric(18,2) AS bucket_1_7,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 8 AND 15), 0)::numeric(18,2) AS bucket_8_15,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 16 AND 30), 0)::numeric(18,2) AS bucket_16_30,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS bucket_31_60,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso > 60), 0)::numeric(18,2) AS bucket_60_plus,
+          COUNT(*) FILTER (WHERE dias_atraso BETWEEN 1 AND 30)::int AS titulos_30,
+          COUNT(*) FILTER (WHERE dias_atraso BETWEEN 31 AND 60)::int AS titulos_60,
+          COUNT(*) FILTER (WHERE dias_atraso > 60)::int AS titulos_90_plus,
+          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_30,
+          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
+          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus,
           COALESCE(MAX(dias_atraso), 0)::int AS max_dias_atraso
         FROM open_rows
       )
@@ -3600,14 +3829,18 @@ def customers_delinquency_overview(
           'clientes_em_aberto', t.clientes_em_aberto,
           'titulos_em_aberto', t.titulos_em_aberto,
           'valor_total', t.valor_total,
+          'titulos_30', t.titulos_30,
+          'titulos_60', t.titulos_60,
+          'titulos_90_plus', t.titulos_90_plus,
+          'valor_30', t.valor_30,
+          'valor_60', t.valor_60,
+          'valor_90_plus', t.valor_90_plus,
           'max_dias_atraso', t.max_dias_atraso
         ) AS summary,
         jsonb_build_array(
-          jsonb_build_object('bucket', '1_7', 'label', '1-7 dias', 'valor', t.bucket_1_7),
-          jsonb_build_object('bucket', '8_15', 'label', '8-15 dias', 'valor', t.bucket_8_15),
-          jsonb_build_object('bucket', '16_30', 'label', '16-30 dias', 'valor', t.bucket_16_30),
-          jsonb_build_object('bucket', '31_60', 'label', '31-60 dias', 'valor', t.bucket_31_60),
-          jsonb_build_object('bucket', '60_plus', 'label', '60+ dias', 'valor', t.bucket_60_plus)
+          jsonb_build_object('bucket', '1_30', 'label', '1-30 dias', 'valor', t.valor_30, 'titulos', t.titulos_30),
+          jsonb_build_object('bucket', '31_60', 'label', '31-60 dias', 'valor', t.valor_60, 'titulos', t.titulos_60),
+          jsonb_build_object('bucket', '61_plus', 'label', '61+ dias', 'valor', t.valor_90_plus, 'titulos', t.titulos_90_plus)
         ) AS buckets,
         COALESCE(
           (
@@ -3618,13 +3851,19 @@ def customers_delinquency_overview(
                 'titulos', r.titulos,
                 'max_dias_atraso', r.max_dias_atraso,
                 'valor_aberto', r.valor_aberto,
+                'titulos_30', r.titulos_30,
+                'titulos_60', r.titulos_60,
+                'titulos_90_plus', r.titulos_90_plus,
+                'valor_30', r.valor_30,
+                'valor_60', r.valor_60,
+                'valor_90_plus', r.valor_90_plus,
+                'titulos_totais', r.titulos,
+                'valor_total', r.valor_aberto,
                 'bucket_label',
                   CASE
-                    WHEN r.bucket_60_plus > 0 THEN '60+ dias'
-                    WHEN r.bucket_31_60 > 0 THEN '31-60 dias'
-                    WHEN r.bucket_16_30 > 0 THEN '16-30 dias'
-                    WHEN r.bucket_8_15 > 0 THEN '8-15 dias'
-                    ELSE '1-7 dias'
+                    WHEN r.valor_90_plus > 0 THEN '61+ dias'
+                    WHEN r.valor_60 > 0 THEN '31-60 dias'
+                    ELSE '1-30 dias'
                   END
               )
               ORDER BY r.valor_aberto DESC, r.max_dias_atraso DESC, r.id_cliente
@@ -3651,6 +3890,12 @@ def customers_delinquency_overview(
             "clientes_em_aberto": int(summary.get("clientes_em_aberto") or 0),
             "titulos_em_aberto": int(summary.get("titulos_em_aberto") or 0),
             "valor_total": round(float(summary.get("valor_total") or 0), 2),
+            "titulos_30": int(summary.get("titulos_30") or 0),
+            "titulos_60": int(summary.get("titulos_60") or 0),
+            "titulos_90_plus": int(summary.get("titulos_90_plus") or 0),
+            "valor_30": round(float(summary.get("valor_30") or 0), 2),
+            "valor_60": round(float(summary.get("valor_60") or 0), 2),
+            "valor_90_plus": round(float(summary.get("valor_90_plus") or 0), 2),
             "max_dias_atraso": int(summary.get("max_dias_atraso") or 0),
         },
         "buckets": [
@@ -3658,6 +3903,7 @@ def customers_delinquency_overview(
                 "bucket": item.get("bucket"),
                 "label": item.get("label"),
                 "valor": round(float(item.get("valor") or 0), 2),
+                "titulos": int(item.get("titulos") or 0),
             }
             for item in buckets
         ],
@@ -3668,11 +3914,164 @@ def customers_delinquency_overview(
                 "titulos": int(item.get("titulos") or 0),
                 "max_dias_atraso": int(item.get("max_dias_atraso") or 0),
                 "valor_aberto": round(float(item.get("valor_aberto") or 0), 2),
+                "titulos_30": int(item.get("titulos_30") or 0),
+                "titulos_60": int(item.get("titulos_60") or 0),
+                "titulos_90_plus": int(item.get("titulos_90_plus") or 0),
+                "valor_30": round(float(item.get("valor_30") or 0), 2),
+                "valor_60": round(float(item.get("valor_60") or 0), 2),
+                "valor_90_plus": round(float(item.get("valor_90_plus") or 0), 2),
+                "titulos_totais": int(item.get("titulos_totais") or item.get("titulos") or 0),
+                "valor_total": round(float(item.get("valor_total") or item.get("valor_aberto") or 0), 2),
                 "bucket_label": item.get("bucket_label"),
             }
             for item in customers
         ],
         "dt_ref": as_of.isoformat(),
+    }
+
+
+def stock_position_summary(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+) -> Dict[str, Any]:
+    fuel_filter = _fuel_filter_expression("g", "p")
+    local_name = _normalized_text_expression("lv.nome")
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        if relation_exists(conn, "mart", "agg_estoque_posicao_atual"):
+            row = conn.execute(
+                f"""
+                  SELECT
+                    COALESCE(SUM(rows), 0)::int AS rows,
+                    MAX(updated_at) AS last_sync_at,
+                    MAX(dt_ref) AS dt_ref,
+                    COALESCE(SUM(qtd_total) FILTER (WHERE estoque_bucket = 'tanques'), 0)::numeric(18,3) AS qtd_tanques,
+                    COALESCE(SUM(valor_estimado) FILTER (WHERE estoque_bucket = 'tanques'), 0)::numeric(18,2) AS valor_tanques,
+                    COALESCE(SUM(qtd_total) FILTER (WHERE estoque_bucket = 'loja'), 0)::numeric(18,3) AS qtd_loja,
+                    COALESCE(SUM(valor_estimado) FILTER (WHERE estoque_bucket = 'loja'), 0)::numeric(18,2) AS valor_loja
+                  FROM mart.agg_estoque_posicao_atual
+                  WHERE id_empresa = %s
+                    {where_filial}
+                """,
+                [id_empresa] + branch_params,
+            ).fetchone() or {}
+        elif relation_exists(conn, "dw", "fact_estoque_atual"):
+            where_dw_filial, dw_branch_params = _branch_scope_clause("e.id_filial", id_filial)
+            sql = f"""
+              WITH enriched AS (
+                SELECT
+                  e.id_filial,
+                  e.id_produto,
+                  e.id_local_venda,
+                  COALESCE(e.qtd_atual, 0)::numeric(18,3) AS qtd_atual,
+                  COALESCE(p.custo_medio, 0)::numeric(18,6) AS custo_unitario,
+                  (COALESCE(e.qtd_atual, 0) * COALESCE(p.custo_medio, 0))::numeric(18,2) AS valor_estimado,
+                  CASE
+                    WHEN ({fuel_filter})
+                      OR {local_name} LIKE '%%PISTA%%'
+                      OR {local_name} LIKE '%%TANQUE%%'
+                      OR {local_name} LIKE '%%BICO%%'
+                    THEN 'tanques'
+                    ELSE 'loja'
+                  END AS estoque_bucket,
+                  e.data_ref,
+                  e.updated_at
+                FROM dw.fact_estoque_atual e
+                LEFT JOIN dw.dim_produto p
+                  ON p.id_empresa = e.id_empresa
+                 AND p.id_filial = e.id_filial
+                 AND p.id_produto = e.id_produto
+                LEFT JOIN dw.dim_grupo_produto g
+                  ON g.id_empresa = p.id_empresa
+                 AND g.id_filial = p.id_filial
+                 AND g.id_grupo_produto = p.id_grupo_produto
+                LEFT JOIN dw.dim_local_venda lv
+                  ON lv.id_empresa = e.id_empresa
+                 AND lv.id_filial = e.id_filial
+                 AND lv.id_local_venda = e.id_local_venda
+                WHERE e.id_empresa = %s
+                  {where_dw_filial}
+              )
+              SELECT
+                COUNT(*)::int AS rows,
+                MAX(updated_at) AS last_sync_at,
+                MAX(data_ref) AS dt_ref,
+                COALESCE(SUM(qtd_atual) FILTER (WHERE estoque_bucket = 'tanques'), 0)::numeric(18,3) AS qtd_tanques,
+                COALESCE(SUM(valor_estimado) FILTER (WHERE estoque_bucket = 'tanques'), 0)::numeric(18,2) AS valor_tanques,
+                COALESCE(SUM(qtd_atual) FILTER (WHERE estoque_bucket = 'loja'), 0)::numeric(18,3) AS qtd_loja,
+                COALESCE(SUM(valor_estimado) FILTER (WHERE estoque_bucket = 'loja'), 0)::numeric(18,2) AS valor_loja
+              FROM enriched
+            """
+            row = conn.execute(sql, [id_empresa] + dw_branch_params).fetchone() or {}
+        else:
+            return {
+                "source_status": "unavailable",
+                "summary": "A trilha de estoque ainda não foi publicada no DW desta base.",
+                "cards": [],
+                "dt_ref": None,
+                "last_sync_at": None,
+                "rows": 0,
+            }
+
+    rows = int(row.get("rows") or 0)
+    dt_ref = row.get("dt_ref")
+    last_sync_at = row.get("last_sync_at")
+    if rows <= 0:
+        return {
+            "source_status": "unavailable",
+            "summary": "Nenhum snapshot de estoque foi ingerido na trilha canônica desta empresa.",
+            "cards": [
+                {
+                    "key": "estoque_tanques",
+                    "label": "Estoque de tanques",
+                    "status": "unavailable",
+                    "amount": None,
+                    "quantity": None,
+                    "detail": "Sem posição canônica de estoque publicada para combustíveis e tanques.",
+                },
+                {
+                    "key": "estoque_loja",
+                    "label": "Estoque de loja",
+                    "status": "unavailable",
+                    "amount": None,
+                    "quantity": None,
+                    "detail": "Sem posição canônica de estoque publicada para a loja e itens de conveniência.",
+                },
+            ],
+            "dt_ref": None,
+            "last_sync_at": None,
+            "rows": 0,
+        }
+
+    return {
+        "source_status": "ok",
+        "summary": (
+            f"Posição de estoque canônica com {rows} item(ns), atualizada até "
+            f"{dt_ref.isoformat() if hasattr(dt_ref, 'isoformat') else dt_ref}."
+        ),
+        "cards": [
+            {
+                "key": "estoque_tanques",
+                "label": "Estoque de tanques",
+                "status": "ready",
+                "amount": round(float(row.get("valor_tanques") or 0), 2),
+                "quantity": round(float(row.get("qtd_tanques") or 0), 3),
+                "detail": "Valor estimado pela posição atual multiplicada pelo custo médio dos produtos de combustível.",
+            },
+            {
+                "key": "estoque_loja",
+                "label": "Estoque de loja",
+                "status": "ready",
+                "amount": round(float(row.get("valor_loja") or 0), 2),
+                "quantity": round(float(row.get("qtd_loja") or 0), 3),
+                "detail": "Valor estimado da posição de conveniência e demais itens fora do bucket de tanques.",
+            },
+        ],
+        "dt_ref": _iso_or_none(dt_ref),
+        "last_sync_at": _iso_or_none(last_sync_at),
+        "rows": rows,
     }
 
 
@@ -3712,6 +4111,7 @@ def cash_dre_summary(
     pagar_futuro = round(float(row.get("pagar_futuro") or 0), 2)
     receber_aberto = round(float(row.get("receber_aberto") or 0), 2)
     saldo_liquido = round(receber_aberto - pagar_futuro, 2)
+    stock_summary = stock_position_summary(role, id_empresa, id_filial)
 
     return {
         "cards": [
@@ -3739,25 +4139,14 @@ def cash_dre_summary(
                 "titles": None,
                 "detail": "Contas a receber menos contas a pagar futuras.",
             },
-        ],
+        ]
+        + list(stock_summary.get("cards") or []),
         "pending": [
             {
                 "key": "notas_lancadas",
                 "label": "Notas lançadas",
                 "status": "pending",
                 "detail": "Base confiável ainda não foi publicada no DW para esta visão.",
-            },
-            {
-                "key": "estoque_tanques",
-                "label": "Estoque de tanques",
-                "status": "pending",
-                "detail": "Estrutura pronta; aguardando base operacional de estoque confiável.",
-            },
-            {
-                "key": "estoque_loja",
-                "label": "Estoque de loja",
-                "status": "pending",
-                "detail": "Estrutura pronta; aguardando base operacional de estoque confiável.",
             },
             {
                 "key": "pagamento_carga_antecipada",
@@ -3778,6 +4167,7 @@ def cash_dre_summary(
                 "detail": "Sem leitura financeira operacional consolidada para caixa físico.",
             },
         ],
+        "stock": stock_summary,
         "dt_ref": as_of.isoformat(),
     }
 
@@ -5261,6 +5651,111 @@ def _cash_historical_overview(
     }
 
 
+def _cash_historical_overview_from_marts(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    commercial = cash_commercial_overview(role, id_empresa, id_filial, dt_ini, dt_fim)
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+
+    sql_payment_mix = f"""
+      SELECT
+        label,
+        category,
+        COALESCE(SUM(total_valor), 0)::numeric(18,2) AS total_valor,
+        COALESCE(SUM(qtd_comprovantes), 0)::int AS qtd_comprovantes,
+        COUNT(DISTINCT data_key)::int AS qtd_turnos
+      FROM mart.agg_pagamentos_diaria
+      WHERE id_empresa = %s
+        AND data_key BETWEEN %s AND %s
+        {where_filial}
+      GROUP BY label, category
+      ORDER BY total_valor DESC, label
+    """
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        payment_mix_rows = [
+            dict(row)
+            for row in conn.execute(sql_payment_mix, [id_empresa, ini, fim] + branch_params).fetchall()
+        ]
+
+    payment_mix = [
+        {
+            "label": row.get("label"),
+            "category": row.get("category"),
+            "total_valor": round(float(row.get("total_valor") or 0), 2),
+            "qtd_comprovantes": int(row.get("qtd_comprovantes") or 0),
+            "qtd_turnos": int(row.get("qtd_turnos") or 0),
+        }
+        for row in payment_mix_rows
+    ]
+    commercial_top_turnos = commercial.get("top_turnos") or []
+    cancelamentos = [
+        {
+            "id_filial": row.get("id_filial"),
+            "filial_label": row.get("filial_label"),
+            "id_turno": row.get("id_turno"),
+            "turno_label": row.get("turno_label"),
+            "usuario_label": row.get("usuario_label"),
+            "total_cancelamentos": round(float(row.get("total_cancelamentos") or 0), 2),
+            "qtd_cancelamentos": int(row.get("qtd_cancelamentos") or 0),
+        }
+        for row in sorted(commercial_top_turnos, key=lambda item: float(item.get("total_cancelamentos") or 0), reverse=True)
+        if float(row.get("total_cancelamentos") or 0) > 0
+    ]
+
+    commercial_kpis = dict(commercial.get("kpis") or {})
+    total_vendas = round(float(commercial_kpis.get("total_vendas") or 0), 2)
+    total_cancelamentos = round(float(commercial_kpis.get("total_cancelamentos") or 0), 2)
+    total_pagamentos = round(float(commercial_kpis.get("total_pagamentos") or 0), 2)
+    caixas_periodo = int(commercial_kpis.get("caixas_periodo") or 0)
+    qtd_vendas = int(commercial_kpis.get("qtd_vendas") or 0)
+    qtd_cancelamentos = int(sum(int(row.get("qtd_cancelamentos") or 0) for row in cancelamentos))
+
+    if caixas_periodo == 0 and total_pagamentos == 0:
+        source_status = "unavailable"
+    elif total_vendas == 0 and total_pagamentos == 0 and total_cancelamentos == 0:
+        source_status = "partial"
+    else:
+        source_status = "ok"
+
+    return {
+        "source_status": source_status,
+        "summary": commercial.get("summary"),
+        "requested_window": {
+            "dt_ini": dt_ini,
+            "dt_fim": dt_fim,
+        },
+        "coverage": {
+            "min_data_key": _date_key(dt_ini),
+            "max_data_key": _date_key(dt_fim),
+        },
+        "kpis": {
+            "caixas_periodo": caixas_periodo,
+            "dias_com_movimento": len(commercial.get("by_day") or []),
+            "ticket_medio": round(total_vendas / qtd_vendas, 2) if qtd_vendas else 0.0,
+            "total_vendas": total_vendas,
+            "total_pagamentos": total_pagamentos,
+            "total_cancelamentos": total_cancelamentos,
+            "qtd_cancelamentos": qtd_cancelamentos,
+            "caixas_com_cancelamento": len(cancelamentos),
+            "total_devolucoes": 0.0,
+            "qtd_devolucoes": 0,
+            "caixas_com_devolucao": 0,
+            "caixa_liquido": cash_net_value(total_vendas, total_cancelamentos, 0.0),
+        },
+        "by_day": commercial.get("by_day") or [],
+        "payment_mix": payment_mix,
+        "top_turnos": commercial.get("top_turnos") or [],
+        "cancelamentos": cancelamentos,
+    }
+
+
 def cash_overview(
     role: str,
     id_empresa: int,
@@ -5270,9 +5765,19 @@ def cash_overview(
 ) -> Dict[str, Any]:
     effective_dt_fim = dt_fim or business_today(id_empresa)
     effective_dt_ini = dt_ini or (effective_dt_fim - timedelta(days=29))
-    historical = _cash_historical_overview(role, id_empresa, id_filial, dt_ini=effective_dt_ini, dt_fim=effective_dt_fim)
-    commercial = cash_commercial_overview(role, id_empresa, id_filial, dt_ini=effective_dt_ini, dt_fim=effective_dt_fim)
-    dre_summary = cash_dre_summary(role, id_empresa, id_filial, as_of=effective_dt_fim)
+    commercial_coverage = commercial_window_coverage(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
+    historical_dt_ini = commercial_coverage.get("effective_dt_ini") or effective_dt_ini
+    historical_dt_fim = commercial_coverage.get("effective_dt_fim") or effective_dt_fim
+    historical = _cash_historical_overview_from_marts(
+        role,
+        id_empresa,
+        id_filial,
+        dt_ini=historical_dt_ini,
+        dt_fim=historical_dt_fim,
+    )
+    commercial = cash_commercial_overview(role, id_empresa, id_filial, dt_ini=historical_dt_ini, dt_fim=historical_dt_fim)
+    commercial["commercial_coverage"] = commercial_coverage
+    dre_summary = cash_dre_summary(role, id_empresa, id_filial, as_of=historical_dt_fim)
     live_now = _cash_live_now(role, id_empresa, id_filial)
     return {
         "source_status": historical.get("source_status"),
@@ -5283,8 +5788,8 @@ def cash_overview(
         "definitions": cash_definitions(),
         "operational_sync": live_now.get("operational_sync"),
         "freshness": {
-            "mode": "historical_plus_live",
-            "historical_through_dt": effective_dt_fim.isoformat(),
+            "mode": "latest_compatible" if commercial_coverage.get("mode") == "shifted_latest" else "historical_plus_live",
+            "historical_through_dt": historical_dt_fim.isoformat(),
             "live_through_at": (live_now.get("operational_sync") or {}).get("last_sync_at"),
             "source": "dw.cash_historical + dw.cash_live",
         },
@@ -5295,6 +5800,7 @@ def cash_overview(
         "payment_mix": historical.get("payment_mix") or [],
         "cancelamentos": historical.get("cancelamentos") or [],
         "alerts": live_now.get("alerts") or [],
+        "commercial_coverage": commercial_coverage,
     }
 
 
@@ -5418,24 +5924,27 @@ def health_score_latest(
 # ========================
 
 def goals_today(role: str, id_empresa: int, id_filial: Any, goal_date: date) -> List[Dict[str, Any]]:
-    """Goals configured for a given date within the selected scope."""
+    """Goals configured for the current month within the selected scope."""
 
+    month_start = _month_start(goal_date)
+    month_end = _next_month_start(month_start) - timedelta(days=1)
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     sql = f"""
       SELECT
         goal_type,
         SUM(target_value)::numeric(18,2) AS target_value,
-        COUNT(*)::int AS branch_goal_count
+        COUNT(*)::int AS branch_goal_count,
+        MIN(goal_date)::date AS goal_month
       FROM app.goals
       WHERE id_empresa = %s
-        AND goal_date = %s
+        AND goal_date BETWEEN %s AND %s
         {where_filial}
       GROUP BY goal_type
       ORDER BY goal_type
     """
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        return list(conn.execute(sql, [id_empresa, goal_date] + branch_params).fetchall())
+        return list(conn.execute(sql, [id_empresa, month_start, month_end] + branch_params).fetchall())
 
 
 def upsert_goal(
@@ -5571,34 +6080,7 @@ def leaderboard_employees(role: str, id_empresa: int, id_filial: Optional[int], 
 
     if dt_fim < dt_ini:
         return []
-
-    sales_window_cte, params, conn_branch_id = _sales_window_fact_cte(
-        id_empresa=id_empresa,
-        id_filial=id_filial,
-        date_predicate_sql="v.data_key BETWEEN %s AND %s",
-        date_params=[_date_key(dt_ini), _date_key(dt_fim)],
-    )
-    sql = sales_window_cte + """
-      SELECT
-        si.id_funcionario,
-        MAX(COALESCE(NULLIF(f.nome, ''), 'Funcionário #' || si.id_funcionario::text)) AS funcionario_nome,
-        COALESCE(SUM(si.total), 0)::numeric(18,2) AS faturamento,
-        COALESCE(SUM(si.margem), 0)::numeric(18,2) AS margem,
-        COUNT(DISTINCT si.doc_key)::int AS vendas
-      FROM sale_items si
-      LEFT JOIN dw.dim_funcionario f
-        ON f.id_empresa = si.id_empresa
-       AND f.id_filial = si.id_filial
-       AND f.id_funcionario = si.id_funcionario
-      WHERE COALESCE(si.id_funcionario, -1) <> -1
-      GROUP BY si.id_funcionario
-      ORDER BY faturamento DESC
-      LIMIT %s
-    """
-
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=conn_branch_id) as conn:
-        conn.execute(f"SET LOCAL statement_timeout = {int(SALES_OPERATIONAL_FALLBACK_TIMEOUT_MS)}")
-        return [dict(row) for row in conn.execute(sql, params + [limit]).fetchall()]
+    return sales_top_employees(role, id_empresa, id_filial, dt_ini, dt_fim, limit=limit)
 
 
 def monthly_goal_projection(
@@ -5607,18 +6089,26 @@ def monthly_goal_projection(
     id_filial: Any,
     as_of: Optional[date] = None,
 ) -> Dict[str, Any]:
-    as_of = as_of or business_today(id_empresa)
-    month_start = _month_start(as_of)
+    requested_as_of = as_of or business_today(id_empresa)
+    commercial_coverage = commercial_window_coverage(
+        role,
+        id_empresa,
+        id_filial,
+        requested_as_of,
+        requested_as_of,
+    )
+    effective_as_of = commercial_coverage.get("effective_dt_fim") or requested_as_of
+    month_start = _month_start(effective_as_of)
     month_end = _next_month_start(month_start) - timedelta(days=1)
     total_days = (month_end - month_start).days + 1
-    days_elapsed = (as_of - month_start).days + 1
+    days_elapsed = (effective_as_of - month_start).days + 1
     remaining_days = max(total_days - days_elapsed, 0)
 
-    historical_end = as_of
+    historical_end = effective_as_of
     live_bundle = None
-    if as_of == business_today(id_empresa):
-        historical_end = as_of - timedelta(days=1)
-        live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, as_of, include_rankings=False)
+    if effective_as_of == requested_as_of == business_today(id_empresa):
+        historical_end = effective_as_of - timedelta(days=1)
+        live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, effective_as_of, include_rankings=False)
 
     daily_rows: List[Dict[str, Any]] = (
         _sales_daily_totals(role, id_empresa, id_filial, month_start, historical_end)
@@ -5633,11 +6123,11 @@ def monthly_goal_projection(
     }
     if live_bundle:
         live_value = float((live_bundle.get("kpis") or {}).get("faturamento") or 0)
-        daily_map[as_of] = live_value
+        daily_map[effective_as_of] = live_value
 
     series: List[Dict[str, Any]] = []
     cursor = month_start
-    while cursor <= as_of:
+    while cursor <= effective_as_of:
         value = round(float(daily_map.get(cursor) or 0), 2)
         series.append(
             {
@@ -5656,8 +6146,8 @@ def monthly_goal_projection(
 
     weekday_history_start = month_start - timedelta(days=84)
     weekday_rows: List[Dict[str, Any]] = (
-        _sales_daily_totals(role, id_empresa, id_filial, weekday_history_start, as_of - timedelta(days=1))
-        if as_of > weekday_history_start
+        _sales_daily_totals(role, id_empresa, id_filial, weekday_history_start, effective_as_of - timedelta(days=1))
+        if effective_as_of > weekday_history_start
         else []
     )
 
@@ -5686,7 +6176,7 @@ def monthly_goal_projection(
             weekday_factor[weekday] = max(0.7, min(1.3, factor))
 
     adjusted_remaining = 0.0
-    future_cursor = as_of + timedelta(days=1)
+    future_cursor = effective_as_of + timedelta(days=1)
     while future_cursor <= month_end:
         factor = weekday_factor.get(future_cursor.weekday(), 1.0)
         adjusted_remaining += avg_daily_mtd * factor
@@ -5730,7 +6220,13 @@ def monthly_goal_projection(
         else None
     )
 
-    if goal_configured and projection_adjusted >= target_value:
+    if commercial_coverage.get("mode") == "shifted_latest":
+        status = "latest_compatible"
+        headline = (
+            f"A base comercial ainda não chegou em {requested_as_of.strftime('%m/%Y')}. "
+            f"A projeção mostra a última referência disponível de {effective_as_of.strftime('%m/%Y')}."
+        )
+    elif goal_configured and projection_adjusted >= target_value:
         status = "above_goal"
         headline = "O ritmo atual projeta fechamento acima da meta mensal."
     elif goal_configured and projection_adjusted < target_value:
@@ -5759,9 +6255,13 @@ def monthly_goal_projection(
     return {
         "month_ref": month_start.isoformat(),
         "month_label": month_start.strftime("%m/%Y"),
+        "requested_as_of": requested_as_of.isoformat(),
+        "effective_as_of": effective_as_of.isoformat(),
+        "requested_month_ref": _month_start(requested_as_of).isoformat(),
         "business_clock": business_clock_payload(id_empresa),
         "status": status,
         "headline": headline,
+        "commercial_coverage": commercial_coverage,
         "summary": {
             "mtd_actual": mtd_actual,
             "avg_daily_mtd": avg_daily_mtd,
@@ -5886,7 +6386,8 @@ def sales_peak_hours_signal(
     id_filial: Optional[int],
     dt_ref: date,
 ) -> Dict[str, Any]:
-    closed_end = dt_ref - timedelta(days=1)
+    effective_ref = commercial_window_coverage(role, id_empresa, id_filial, dt_ref, dt_ref).get("effective_dt_fim") or dt_ref
+    closed_end = effective_ref - timedelta(days=1)
     closed_start = closed_end - timedelta(days=29)
     if closed_end < closed_start:
         return {
@@ -5899,24 +6400,25 @@ def sales_peak_hours_signal(
             "recommendations": {"peak": None, "off_peak": None},
         }
 
-    sales_window_cte, params, conn_branch_id = _sales_window_fact_cte(
-        id_empresa=id_empresa,
-        id_filial=id_filial,
-        date_predicate_sql="v.data_key BETWEEN %s AND %s",
-        date_params=[_date_key(closed_start), _date_key(closed_end)],
-    )
     closed_days = max((closed_end - closed_start).days + 1, 1)
-    timezone_name = business_timezone_name(id_empresa)
-    sql = sales_window_cte + """
-      , hour_dim AS (
+    start_key = _date_key(closed_start)
+    end_key = _date_key(closed_end)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, start_key, end_key] + branch_params + [closed_days, closed_days]
+    conn_branch_id = _conn_branch_id(id_filial)
+    sql = f"""
+      WITH hour_dim AS (
         SELECT generate_series(0, 23)::int AS hora
       ), hourly AS (
         SELECT
-          EXTRACT(HOUR FROM timezone(%s, si.data))::int AS hora,
-          COALESCE(SUM(si.total), 0)::numeric(18,2) AS faturamento_total,
-          COUNT(DISTINCT si.doc_key)::int AS vendas_total
-        FROM sale_items si
-        GROUP BY 1
+          hora,
+          COALESCE(SUM(faturamento), 0)::numeric(18,2) AS faturamento_total,
+          COALESCE(SUM(vendas), 0)::int AS vendas_total
+        FROM mart.agg_vendas_hora
+        WHERE id_empresa = %s
+          AND data_key BETWEEN %s AND %s
+          {where_filial}
+        GROUP BY hora
       )
       SELECT
         h.hora,
@@ -5930,7 +6432,7 @@ def sales_peak_hours_signal(
       ORDER BY h.hora
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=conn_branch_id) as conn:
-        rows = [dict(row) for row in conn.execute(sql, params + [timezone_name, closed_days, closed_days]).fetchall()]
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     active_rows = [row for row in rows if float(row.get("avg_faturamento_dia") or 0) > 0]
     baseline_avg = (
@@ -5985,7 +6487,8 @@ def sales_declining_products_signal(
     *,
     limit: int = 3,
 ) -> Dict[str, Any]:
-    recent_end = dt_ref - timedelta(days=1)
+    effective_ref = commercial_window_coverage(role, id_empresa, id_filial, dt_ref, dt_ref).get("effective_dt_fim") or dt_ref
+    recent_end = effective_ref - timedelta(days=1)
     recent_start = recent_end - timedelta(days=29)
     prior_end = recent_start - timedelta(days=1)
     prior_start = prior_end - timedelta(days=29)
@@ -6124,10 +6627,20 @@ def jarvis_briefing(
 
     dt_ini = dt_ref - timedelta(days=6)
     risk = context.get("modeled_risk") if context else None
-    if not isinstance(risk, dict):
-        risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    try:
+        if not isinstance(risk, dict):
+            risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    except SNAPSHOT_FALLBACK_ERRORS:
+        risk = {}
+    except TimeoutError:
+        risk = {}
 
-    risk_focus = (risk_by_turn_local(role, id_empresa, id_filial, dt_ini, dt_ref, limit=1) or [None])[0]
+    try:
+        risk_focus = (risk_by_turn_local(role, id_empresa, id_filial, dt_ini, dt_ref, limit=1) or [None])[0]
+    except SNAPSHOT_FALLBACK_ERRORS:
+        risk_focus = None
+    except TimeoutError:
+        risk_focus = None
     sales = context.get("sales") if context else None
     if not isinstance(sales, dict):
         sales = sales_overview_bundle(role, id_empresa, id_filial, dt_ini, dt_ref, as_of=dt_ref)
@@ -6374,7 +6887,7 @@ def jarvis_briefing(
         confidence_reasons.append("vendas ainda não confirmaram a trilha operacional")
     elif sales_reading_status != "operational_overlay" and dt_ref == business_today(id_empresa):
         confidence_score -= 1
-        confidence_reasons.append("vendas do dia ainda dependem só da publicação analítica")
+        confidence_reasons.append("vendas do dia ainda aguardam a atualização final")
 
     if finance_status in {"missing", ""}:
         confidence_score -= 2

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent.utils.timezone import business_datetime_iso, ensure_business_datetime
+
 
 @dataclass
 class WatermarkRecord:
@@ -13,6 +15,12 @@ class WatermarkRecord:
     scope: str
     watermark: Optional[str]
     updated_at: str
+
+
+@dataclass(frozen=True)
+class IncrementalCursor:
+    last_watermark: Optional[str]
+    last_pk_tuple: Optional[list[Any]] = None
 
 
 class WatermarkStore:
@@ -24,13 +32,24 @@ class WatermarkStore:
     def _path(self, dataset: str) -> Path:
         return self.tenant_dir / f"{dataset.lower()}.json"
 
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
     def _load(self, dataset: str) -> Dict[str, Any]:
         path = self._path(dataset)
         if not path.exists():
-            return {"dataset": dataset.lower(), "watermarks": {}, "bootstrap": {}, "scope_state": {}}
+            return {
+                "dataset": dataset.lower(),
+                "watermarks": {},
+                "cursors": {},
+                "bootstrap": {},
+                "scope_state": {},
+            }
         data = json.loads(path.read_text(encoding="utf-8"))
         data.setdefault("dataset", dataset.lower())
         data.setdefault("watermarks", {})
+        data.setdefault("cursors", {})
         data.setdefault("bootstrap", {})
         data.setdefault("scope_state", {})
         return data
@@ -39,27 +58,48 @@ class WatermarkStore:
         path = self._path(dataset)
         data.setdefault("dataset", dataset.lower())
         data.setdefault("watermarks", {})
+        data.setdefault("cursors", {})
         data.setdefault("bootstrap", {})
         data.setdefault("scope_state", {})
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["updated_at"] = self._utc_now_iso()
 
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
 
     def get(self, dataset: str, scope: str = "default") -> Optional[str]:
+        return self.get_cursor(dataset, scope=scope).last_watermark
+
+    def get_cursor(self, dataset: str, scope: str = "default") -> IncrementalCursor:
         data = self._load(dataset)
+        cursors = data.get("cursors", {})
+        stored_cursor = cursors.get(scope)
+        if isinstance(stored_cursor, dict):
+            return IncrementalCursor(
+                last_watermark=self.normalize_watermark(stored_cursor.get("last_watermark")),
+                last_pk_tuple=self._deserialize_pk_tuple(stored_cursor.get("last_pk_tuple")),
+            )
+
         watermarks = data.get("watermarks", {})
         if scope in watermarks:
-            return watermarks[scope]
+            return IncrementalCursor(last_watermark=self.normalize_watermark(watermarks[scope]))
         if "watermark" in data:
             # compatibility with initial state shape
-            return self.normalize_watermark(data.get("watermark"))
-        return None
+            return IncrementalCursor(last_watermark=self.normalize_watermark(data.get("watermark")))
+        return IncrementalCursor(last_watermark=None, last_pk_tuple=None)
 
     def set(self, dataset: str, watermark: Optional[str], scope: str = "default") -> None:
+        self.set_cursor(dataset, IncrementalCursor(last_watermark=watermark, last_pk_tuple=None), scope=scope)
+
+    def set_cursor(self, dataset: str, cursor: IncrementalCursor, scope: str = "default") -> None:
         data = self._load(dataset)
-        data["watermarks"][scope] = self.normalize_watermark(watermark)
+        normalized = self.normalize_watermark(cursor.last_watermark)
+        data["watermarks"][scope] = normalized
+        data.setdefault("cursors", {})
+        data["cursors"][scope] = {
+            "last_watermark": normalized,
+            "last_pk_tuple": self._serialize_pk_tuple(cursor.last_pk_tuple),
+        }
         self._save(dataset, data)
 
     def is_bootstrap_complete(self, dataset: str, scope: str = "default") -> bool:
@@ -71,7 +111,7 @@ class WatermarkStore:
         bootstrap = data.setdefault("bootstrap", {})
         bootstrap[scope] = {
             "completed": True,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": self._utc_now_iso(),
         }
         self._save(dataset, data)
 
@@ -135,6 +175,26 @@ class WatermarkStore:
         return migrated
 
     @staticmethod
+    def _serialize_pk_scalar(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return business_datetime_iso(ensure_business_datetime(value), timespec="microseconds")
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        return str(value)
+
+    @classmethod
+    def _serialize_pk_tuple(cls, values: Optional[list[Any]]) -> Optional[list[Any]]:
+        if values is None or len(values) == 0:
+            return None
+        return [cls._serialize_pk_scalar(value) for value in values]
+
+    @staticmethod
+    def _deserialize_pk_tuple(values: Any) -> Optional[list[Any]]:
+        if not isinstance(values, list) or not values:
+            return None
+        return list(values)
+
+    @staticmethod
     def parse_watermark_dt(value: Optional[str]) -> Optional[datetime]:
         if value is None:
             return None
@@ -144,14 +204,14 @@ class WatermarkStore:
 
         # Preferred format: ISO 8601
         try:
-            return datetime.fromisoformat(raw)
+            return ensure_business_datetime(datetime.fromisoformat(raw))
         except ValueError:
             pass
 
         # Common legacy format seen in old state
         for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
             try:
-                return datetime.strptime(raw, fmt)
+                return ensure_business_datetime(datetime.strptime(raw, fmt))
             except ValueError:
                 continue
 
@@ -161,5 +221,5 @@ class WatermarkStore:
     def normalize_watermark(value: Optional[str]) -> Optional[str]:
         dt = WatermarkStore.parse_watermark_dt(value)
         if dt is None:
-            return None if value is None else str(value)
-        return dt.isoformat(timespec="microseconds")
+            return None if value is None else str(value).strip()
+        return business_datetime_iso(dt, timespec="microseconds")

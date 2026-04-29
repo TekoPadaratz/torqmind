@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 import unittest
 
-from agent_bkp.utils.ndjson import to_ndjson_bytes, to_ndjson_lines
+from agent.utils.ndjson import to_ndjson_bytes, to_ndjson_lines
 
 
 class TestNDJSON(unittest.TestCase):

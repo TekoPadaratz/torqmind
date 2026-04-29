@@ -589,6 +589,209 @@ class SalesRetentionTest(unittest.TestCase):
             1,
         )
 
+    def test_itenscomprovantes_maps_vlrtotalitem_into_total_shadow(self) -> None:
+        tenant_id, ingest_key = self._create_tenant("Tenant Itenscomprovantes VlrTotalItem")
+        ref_date = self._current_date().isoformat()
+
+        response = self._post_ndjson(
+            "itenscomprovantes",
+            ingest_key,
+            [
+                {
+                    "ID_FILIAL": 1,
+                    "ID_DB": 1,
+                    "ID_COMPROVANTE": 9103,
+                    "ID_ITENSCOMPROVANTE": 403,
+                    "ID_PRODUTOS": 9903,
+                    "CFOP": 5102,
+                    "QTDE": 3,
+                    "VLRUNITARIO": 19.5,
+                    "VLRTOTALITEM": 58.5,
+                    "DATA": ref_date,
+                }
+            ],
+        )
+
+        self.assertEqual(int(response["inserted_or_updated"]), 1)
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            row = conn.execute(
+                """
+                SELECT total_shadow
+                FROM stg.itenscomprovantes
+                WHERE id_empresa = %s
+                  AND id_filial = 1
+                  AND id_db = 1
+                  AND id_comprovante = 9103
+                  AND id_itemcomprovante = 403
+                """,
+                (tenant_id,),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertAlmostEqual(float(row["total_shadow"]), 58.5, places=2)
+
+    def test_canonical_item_loader_reads_vlrtotalitem_from_stg_without_http_shadow(self) -> None:
+        tenant_id, _ingest_key = self._create_tenant("Tenant Canonical VlrTotalItem Loader")
+        same_day = self._current_date().isoformat()
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute(
+                """
+                INSERT INTO dw.dim_produto (id_empresa, id_filial, id_produto, nome, custo_medio)
+                VALUES (%s, 1, 777, 'Produto VLRTOTALITEM', 12)
+                ON CONFLICT (id_empresa, id_filial, id_produto)
+                DO UPDATE SET nome = EXCLUDED.nome, custo_medio = EXCLUDED.custo_medio
+                """,
+                (tenant_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO stg.comprovantes (
+                  id_empresa,
+                  id_filial,
+                  id_db,
+                  id_comprovante,
+                  payload,
+                  ingested_at,
+                  dt_evento,
+                  received_at,
+                  id_usuario_shadow,
+                  id_turno_shadow,
+                  id_cliente_shadow,
+                  valor_total_shadow,
+                  cancelado_shadow,
+                  situacao_shadow
+                )
+                VALUES (
+                  %s,
+                  1,
+                  1,
+                  2401,
+                  %s::jsonb,
+                  now(),
+                  %s::timestamptz,
+                  now(),
+                  17,
+                  81,
+                  991,
+                  58.50,
+                  false,
+                  1
+                )
+                """,
+                (
+                    tenant_id,
+                    json.dumps(
+                        {
+                            "ID_FILIAL": 1,
+                            "ID_DB": 1,
+                            "ID_COMPROVANTE": 2401,
+                            "ID_USUARIOS": 17,
+                            "ID_TURNOS": 81,
+                            "ID_ENTIDADE": 991,
+                            "VLRTOTAL": 58.5,
+                            "SITUACAO": 1,
+                            "SAIDAS_ENTRADAS": 1,
+                            "DATA": f"{same_day} 09:00:00",
+                        }
+                    ),
+                    f"{same_day} 09:00:00",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO stg.itenscomprovantes (
+                  id_empresa,
+                  id_filial,
+                  id_db,
+                  id_comprovante,
+                  id_itemcomprovante,
+                  payload,
+                  ingested_at,
+                  dt_evento,
+                  received_at,
+                  id_produto_shadow,
+                  cfop_shadow,
+                  qtd_shadow,
+                  valor_unitario_shadow,
+                  total_shadow,
+                  desconto_shadow,
+                  custo_unitario_shadow
+                )
+                VALUES (
+                  %s,
+                  1,
+                  1,
+                  2401,
+                  401,
+                  %s::jsonb,
+                  now(),
+                  %s::timestamptz,
+                  now(),
+                  777,
+                  5102,
+                  3,
+                  19.5,
+                  NULL,
+                  0,
+                  12
+                )
+                """,
+                (
+                    tenant_id,
+                    json.dumps(
+                        {
+                            "ID_FILIAL": 1,
+                            "ID_DB": 1,
+                            "ID_COMPROVANTE": 2401,
+                            "ID_ITENSCOMPROVANTE": 401,
+                            "ID_PRODUTOS": 777,
+                            "CFOP": 5102,
+                            "QTDE": 3,
+                            "VLRUNITARIO": 19.5,
+                            "VLRTOTALITEM": 58.5,
+                            "DATA": f"{same_day} 09:00:00",
+                        }
+                    ),
+                    f"{same_day} 09:00:00",
+                ),
+            )
+            conn.commit()
+
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            conn.execute("SELECT etl.load_fact_comprovante(%s)", (tenant_id,))
+            conn.execute("SELECT etl.load_fact_venda(%s)", (tenant_id,))
+            conn.execute("SELECT etl.load_fact_venda_item(%s)", (tenant_id,))
+            row = conn.execute(
+                """
+                SELECT
+                  s.total_shadow AS stg_total_shadow,
+                  f.total AS fact_total,
+                  f.margem AS fact_margem,
+                  f.custo_total AS fact_custo_total
+                FROM stg.itenscomprovantes s
+                JOIN dw.fact_venda_item f
+                  ON f.id_empresa = s.id_empresa
+                 AND f.id_filial = s.id_filial
+                 AND f.id_db = s.id_db
+                 AND f.id_comprovante = s.id_comprovante
+                 AND f.id_itemcomprovante = s.id_itemcomprovante
+                WHERE s.id_empresa = %s
+                  AND s.id_filial = 1
+                  AND s.id_db = 1
+                  AND s.id_comprovante = 2401
+                  AND s.id_itemcomprovante = 401
+                """,
+                (tenant_id,),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertAlmostEqual(float(row["stg_total_shadow"]), 58.5, places=2)
+        self.assertAlmostEqual(float(row["fact_total"]), 58.5, places=2)
+        self.assertAlmostEqual(float(row["fact_custo_total"]), 36.0, places=2)
+        self.assertAlmostEqual(float(row["fact_margem"]), 22.5, places=2)
+
     def test_itenscomprovantes_rejects_missing_item_pk(self) -> None:
         _tenant_id, ingest_key = self._create_tenant("Tenant Itenscomprovantes Missing PK")
         ref_date = self._current_date().isoformat()

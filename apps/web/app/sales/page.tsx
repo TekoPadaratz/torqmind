@@ -152,16 +152,16 @@ export default function SalesPage() {
 
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-12">
-                <div className="sectionEyebrow">Leitura comercial canônica</div>
-                <h2 style={{ marginTop: 4 }}>Saídas, entradas e cancelamentos por comprovante</h2>
+                <div className="sectionEyebrow">Resumo comercial</div>
+                <h2 style={{ marginTop: 4 }}>Vendas, entradas e cancelamentos por comprovante</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  A camada principal da tela usa comprovantes comerciais por CFOP e cancelamento.
-                  Margem e ticket seguem abaixo como leitura analítica por item.
+                  A tela usa comprovantes comerciais e separa movimentos válidos, entradas e cancelamentos.
+                  Margem e ticket seguem abaixo pela leitura por item.
                 </div>
               </div>
 
               <div className="card kpi col-4">
-                <div className="label">Saídas ativas</div>
+                <div className="label">Vendas normais</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(commercial?.saidas)}
                 </div>
@@ -170,7 +170,7 @@ export default function SalesPage() {
                 </div>
               </div>
               <div className="card kpi col-4">
-                <div className="label">Entradas ativas</div>
+                <div className="label">Entradas registradas</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(commercial?.entradas)}
                 </div>
@@ -237,7 +237,7 @@ export default function SalesPage() {
                 {!loading && !cfopBreakdown.length ? (
                   <EmptyState
                     title="Sem classificação comercial no período."
-                    detail="A classificação aparece quando há comprovantes válidos com CFOP comercial no recorte."
+                    detail="A classificação aparece quando há comprovantes válidos com CFOP comercial no período."
                   />
                 ) : null}
                 <table className="table compact">
@@ -266,7 +266,7 @@ export default function SalesPage() {
                   {loading ? "..." : formatCurrency(data?.kpis?.margem)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Construída na trilha de itens por comprovante, sem depender da leitura comercial por CFOP.
+                  Calculada pelos itens dos comprovantes.
                 </div>
               </div>
               <div className="card kpi col-4">
@@ -284,16 +284,16 @@ export default function SalesPage() {
                   {loading ? "..." : formatCurrency(data?.kpis?.devolucoes)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Valor tratado como devolução na trilha analítica por item.
+                  Valor tratado como devolução na leitura por item.
                 </div>
               </div>
 
               <div className="card col-12 chartCard">
-                <h2>Saídas por hora</h2>
+                <h2>Vendas por hora</h2>
                 {!loading && !hasHourValues ? (
                   <EmptyState
-                    title="Sem saídas horárias no período."
-                    detail="A distribuição por hora aparece quando existem comprovantes de saída ativos no recorte."
+                    title="Sem vendas por hora no período."
+                    detail="A distribuição por hora aparece quando existem vendas normais no período."
                   />
                 ) : null}
                 <div className="chartWrap">
@@ -325,7 +325,7 @@ export default function SalesPage() {
                 {!loading && !(data?.top_products || []).length ? (
                   <EmptyState
                     title="Sem produtos ranqueados."
-                    detail="A camada analítica por item não trouxe produtos ativos para este recorte."
+                    detail="A leitura por item não trouxe produtos ativos para este período."
                   />
                 ) : null}
                 <div className="tableScroll">
@@ -391,8 +391,8 @@ export default function SalesPage() {
               {!loading && !hasCommercialData ? (
                 <div className="card col-12">
                   <EmptyState
-                    title="Sem movimento comercial relevante no recorte."
-                    detail="A leitura por comprovante não encontrou saídas, entradas ou cancelamentos comerciais no período selecionado."
+                    title="Sem movimento comercial relevante no período."
+                    detail="A leitura por comprovante não encontrou vendas, entradas ou cancelamentos comerciais no período selecionado."
                   />
                 </div>
               ) : null}

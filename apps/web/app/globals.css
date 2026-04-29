@@ -113,6 +113,17 @@ h2 { margin: 0; font-size: 18px; }
   border-color: rgba(251, 113, 133, 0.6);
   background: rgba(127, 29, 29, 0.25);
 }
+.readingStatusBanner {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(15, 23, 42, 0.88) 48%, rgba(8, 47, 73, 0.68));
+  color: #f8fafc;
+  line-height: 1.55;
+  box-shadow: 0 12px 24px rgba(5, 10, 18, 0.24);
+}
 
 .bi-grid {
   display: grid;
@@ -698,6 +709,15 @@ body.product-shell .container {
 .tableScroll .table {
   min-width: 680px;
   margin-top: 0;
+}
+.inlinePager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inlinePager .muted {
+  font-size: 12px;
 }
 .table th {
   text-align: left;

@@ -19,6 +19,7 @@ dependencies = [
   "pyodbc==5.2.0",
   "pymssql==2.3.7",
   "bcrypt<4",
+  "clickhouse-connect>=0.6.0",
 ]
 
 [build-system]

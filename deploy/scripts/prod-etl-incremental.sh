@@ -51,13 +51,13 @@ fi
 emit_json_failure() {
   local error_code="$1"
   local message="$2"
-  python3 - "$TRACK" "$error_code" "$message" <<'PY'
+  printf '%s' "$message" | python3 -c '
 import json
 import sys
 
 track = sys.argv[1]
 error_code = sys.argv[2]
-message = sys.argv[3]
+message = sys.stdin.read()
 print(
     json.dumps(
         {
@@ -73,7 +73,7 @@ print(
         ensure_ascii=False,
     )
 )
-PY
+' "$TRACK" "$error_code"
 }
 
 api_running="$(

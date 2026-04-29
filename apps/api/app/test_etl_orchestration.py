@@ -598,7 +598,9 @@ class EtlOrchestrationTest(unittest.TestCase):
             "fact_venda": 11,
             "fact_venda_item": 12,
             "fact_financeiro": 13,
-            "risk_events": 14,
+            # HOTFIX 2026-04-27: step desabilitado em PHASE_SQL_STEPS — reativar com a migration de estoque.
+            # "fact_estoque_atual": 14,
+            "risk_events": 15,
         }
         step_order: list[str] = []
 
@@ -943,6 +945,10 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_refresh,
         mock_post_refresh,
     ) -> None:
+        # 2026-04-29: política antiga adiava o refresh global na track operacional, deixando
+        # mart.agg_vendas_diaria & cia. defasadas. Política nova: OPERATIONAL também publica
+        # as marts globais via etl.refresh_marts em cada ciclo.
+        mock_refresh.return_value = {"ref_date": "2026-03-23", "refreshed_any": True, "sales_marts_refreshed": True}
         mock_post_refresh.return_value = etl_orchestrator._empty_post_meta()
         summary = etl_orchestrator.run_incremental_cycle(
             [1],
@@ -956,17 +962,14 @@ class EtlOrchestrationTest(unittest.TestCase):
         )
 
         self.assertTrue(summary["ok"], summary)
-        mock_refresh.assert_not_called()
+        mock_refresh.assert_called_once()
         self.assertEqual(mock_post_refresh.call_count, 1)
         self.assertEqual(mock_post_refresh.call_args.kwargs["publication_mode"], etl_orchestrator.PUBLICATION_MODE_FAST_PATH)
         self.assertTrue(summary["global_refresh"]["requested"])
-        self.assertTrue(summary["global_refresh"]["deferred"])
-        self.assertEqual(summary["global_refresh"]["recommended_track"], etl_orchestrator.TRACK_RISK)
-        self.assertTrue(summary["global_refresh"]["fast_path_available"])
-        self.assertTrue(summary["global_refresh"]["fast_path_executed"])
-        self.assertEqual(summary["global_refresh"]["fast_path_items"], 1)
-        self.assertFalse(summary["items"][0]["result"]["meta"]["mart_refreshed"])
-        self.assertTrue(summary["items"][0]["result"]["meta"]["publication_deferred"])
+        self.assertFalse(summary["global_refresh"]["deferred"])
+        self.assertTrue(summary["global_refresh"]["refreshed_any"])
+        self.assertTrue(summary["items"][0]["result"]["meta"]["mart_refreshed"])
+        self.assertFalse(summary["items"][0]["result"]["meta"]["publication_deferred"])
         self.assertEqual(
             summary["items"][0]["result"]["meta"]["publication_mode"],
             etl_orchestrator.PUBLICATION_MODE_FAST_PATH,

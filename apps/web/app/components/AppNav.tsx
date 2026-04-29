@@ -8,7 +8,7 @@ import { startTransition, useEffect, useMemo, useState } from 'react';
 import { apiGet } from '../lib/api';
 import { clearAuth } from '../lib/auth';
 import { getVisibleBranches, uniqueBranchIds } from '../lib/branch-state.mjs';
-import { buildQuickShortcutRanges, formatCalendarDate, parseCalendarDate } from '../lib/calendar-date.mjs';
+import { buildQuickShortcutRanges, formatBusinessCalendarDate, parseCalendarDate } from '../lib/calendar-date.mjs';
 import { buildBrowserLocalDefaultScope } from '../lib/local-scope-defaults.mjs';
 import { describeLastSync, describeServerBaseDate, describeSyncMessage } from '../lib/reading-copy.mjs';
 import { clearSessionCache, loadSession, readCachedSession } from '../lib/session';
@@ -217,7 +217,7 @@ export default function AppNav({
   }, [activeScope, initialUnread]);
 
   useEffect(() => {
-    if (initialSyncStatus) return;
+    if (initialSyncStatus?.available === true) return;
     if (!auxiliaryLoadsEnabled) return;
 
     const companyId = activeScope.id_empresa || session?.id_empresa;
@@ -427,7 +427,7 @@ export default function AppNav({
   const allBranchesChecked = !scopeControls.branchLocked && draft.selectionMode === 'all';
 
   const localScopeFallback = useMemo(() => buildBrowserLocalDefaultScope(session), [session]);
-  const shortcutReferenceDateValue = localScopeFallback.dt_ref || formatCalendarDate(new Date());
+  const shortcutReferenceDateValue = localScopeFallback.dt_ref || formatBusinessCalendarDate(new Date());
   const shortcutReferenceDate = parseCalendarDate(shortcutReferenceDateValue) || new Date();
   const quickShortcutRanges = useMemo(
     () => buildQuickShortcutRanges(shortcutReferenceDate),
@@ -498,7 +498,7 @@ export default function AppNav({
           <div className="productBrandTitle">{title}</div>
           <div className="muted">
             {applying
-              ? 'Atualizando o novo recorte antes de liberar os números finais.'
+              ? 'Atualizando os dados antes de liberar os números finais.'
               : 'Os filtros abaixo atualizam a rota atual do produto sem sair do módulo.'}
           </div>
         </div>

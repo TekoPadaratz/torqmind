@@ -1,0 +1,51 @@
+Plaintext
+# ==========================================
+# TorqMind - Token Shield & Agent Ignore
+# ==========================================
+
+# 1. Dependências e Ambientes Virtuais (PESADO)
+node_modules/
+venv/
+.venv/
+env/
+__pycache__/
+
+# 2. Builds e Compilações
+dist/
+build/
+.next/
+out/
+.cache/
+
+# 3. Arquivos de Lock (Gigantes e irrelevantes para a lógica)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+poetry.lock
+Pipfile.lock
+
+# 4. Logs, Dumps e Dados Brutos
+*.log
+*.csv
+*.jsonl
+*.ndjson
+*.sql.gz
+*.tar.gz
+*.zip
+
+# 5. Variáveis de Ambiente e Segredos (Segurança)
+.env
+.env.*
+*.pem
+*.key
+
+# 6. Cobertura de Testes
+coverage/
+.nyc_output/
+
+# 7. Migrations Antigas (Descomente se o agente tentar ler o histórico inteiro)
+# sql/migrations/00*.sql
+# sql/migrations/01*.sql
+# sql/migrations/02*.sql
+# sql/migrations/03*.sql
+# sql/migrations/04*.sql

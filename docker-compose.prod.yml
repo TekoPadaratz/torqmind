@@ -19,6 +19,12 @@ services:
       - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-2GB}
       - -c
       - checkpoint_completion_target=${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=${POSTGRES_MAX_REPLICATION_SLOTS:-10}
+      - -c
+      - max_wal_senders=${POSTGRES_MAX_WAL_SENDERS:-10}
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -35,6 +41,32 @@ services:
       retries: 10
       start_period: 15s
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-torqmind_mart}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-CHANGE_ME_CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    volumes:
+      - chdata_prod:/var/lib/clickhouse
+      - ./deploy/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    expose:
+      - "8123"
+      - "9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   api:
     build:
       context: ./apps/api
@@ -48,6 +80,13 @@ services:
       PG_USER: ${POSTGRES_USER}
       PG_PASSWORD: ${POSTGRES_PASSWORD}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-torqmind_mart}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-CHANGE_ME_CLICKHOUSE_PASSWORD}
+      USE_CLICKHOUSE: ${USE_CLICKHOUSE:-true}
+      DUAL_READ_MODE: ${DUAL_READ_MODE:-false}
       APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-}
       APP_CORS_ORIGIN_REGEX: ${APP_CORS_ORIGIN_REGEX:-}
       API_JWT_SECRET: ${API_JWT_SECRET:-}
@@ -84,6 +123,8 @@ services:
       - ./sql/migrations:/app/sql/migrations:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
     healthcheck:
       test:
@@ -142,3 +183,4 @@ services:
 
 volumes:
   pgdata_prod:
+  chdata_prod:

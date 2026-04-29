@@ -63,12 +63,22 @@ export default function Dashboard() {
       };
     }
 
-    return {
-      available: false,
-      last_sync_at: null,
-      operational: operationalSync || null,
-      message: "A primeira base pronta ainda está sendo preparada.",
-    };
+    const commercialCoverage = homeData?.commercial_coverage;
+    const publishedCoverageDate =
+      commercialCoverage?.latest_available_dt ||
+      commercialCoverage?.effective_dt_fim ||
+      homeData?.freshness?.sales?.historical_through_dt;
+    if (publishedCoverageDate) {
+      return undefined;
+    }
+
+    return operationalSync
+      ? undefined
+      : {
+          available: false,
+          last_sync_at: null,
+          operational: null,
+        };
   }, [homeData]);
 
   const overview = homeData?.overview || {};
@@ -184,6 +194,7 @@ export default function Dashboard() {
               detail={transitionCopy.detail}
               metrics={3}
               panels={3}
+              onRetry={pendingUnavailable ? () => window.location.reload() : undefined}
             />
           </section>
         ) : (

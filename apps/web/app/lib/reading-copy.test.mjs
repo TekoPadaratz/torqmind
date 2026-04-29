@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   describeCacheBanner,
+  describeCommercialCoverage,
   describeDataFreshness,
   describeChurnCoverage,
   describeFinanceCoverage,
@@ -40,7 +41,7 @@ test('cache banner copy is humanized and direct', () => {
   assert.equal(summarizeSourceStatus('value_gap'), 'Em atualização');
 });
 
-test('data freshness copy explains hybrid operational reads without cache jargon', () => {
+test('data freshness copy stays simple for customers', () => {
   assert.equal(
     describeDataFreshness(
       {
@@ -52,7 +53,53 @@ test('data freshness copy explains hybrid operational reads without cache jargon
       },
       'vendas',
     ),
-    'Leitura híbrida ativa em vendas: histórico publicado até 29/03/2026 e trilho operacional do dia até 30/03/2026 15:35.',
+    'Atualizado em 30/03/2026 15:35.',
+  );
+});
+
+test('commercial coverage copy explains latest compatible fallback without raw iso dates', () => {
+  const text = describeCommercialCoverage(
+    {
+      mode: 'shifted_latest',
+      latest_available_dt: '2026-03-31',
+      effective_dt_ini: '2026-03-01',
+      effective_dt_fim: '2026-03-31',
+    },
+    'vendas',
+  );
+  assert.equal(
+    text,
+    'A base comercial de vendas ainda vai ate 31/03/2026. Mostrando o ultimo periodo comparavel entre 01/03/2026 e 31/03/2026.',
+  );
+});
+
+test('data freshness prefers commercial coverage message when the requested window is only partially published', () => {
+  assert.equal(
+    describeDataFreshness(
+      {
+        commercial_coverage: {
+          mode: 'partial_requested',
+          effective_dt_fim: '2026-03-31',
+        },
+      },
+      'clientes',
+    ),
+    'Os dados de clientes estão disponíveis até 31/03/2026. Os dias posteriores ainda estão chegando.',
+  );
+});
+
+test('data freshness reports published commercial coverage instead of preparing first base', () => {
+  assert.equal(
+    describeDataFreshness(
+      {
+        commercial_coverage: {
+          mode: 'exact',
+          latest_available_dt: '2026-04-29',
+        },
+      },
+      'dashboard',
+    ),
+    'Dados disponíveis até 29/04/2026.',
   );
 });
 
@@ -67,21 +114,25 @@ test('last sync copy uses pt-BR date and Sao Paulo clock', () => {
       last_sync_at: '2026-03-27T08:31:00+00:00',
       operational: { last_sync_at: '2026-03-27T09:31:00+00:00' },
     }),
-    '27/03/2026 06:31',
+    'Atualizado em 27/03/2026 06:31',
   );
   assert.equal(
     describeLastSync({ available: true, last_sync_at: '2026-03-27T08:31:00+00:00' }),
-    '27/03/2026 05:31',
+    'Atualizado em 27/03/2026 05:31',
   );
   assert.equal(
     describeLastSync({ available: false, last_sync_at: null }),
-    'A primeira base pronta ainda está sendo preparada.',
+    'Estamos atualizando os dados.',
+  );
+  assert.equal(
+    describeLastSync({ available: false, last_sync_at: null, commercial_coverage: { latest_available_dt: '2026-04-29' } }),
+    'Dados disponíveis até 29/04/2026.',
   );
   assert.equal(
     describeSyncMessage({
       operational: { last_sync_at: '2026-03-27T09:31:00+00:00' },
       analytics: { last_sync_at: '2026-03-27T08:31:00+00:00' },
     }),
-    'Trilho operacional em 27/03/2026 06:31. Publicação analítica mais recente em 27/03/2026 05:31.',
+    'Atualizado em 27/03/2026 05:31.',
   );
 });

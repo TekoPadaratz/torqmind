@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_bkp.state.watermark import WatermarkStore
+from agent.state.watermark import WatermarkStore
 
 
 class TestWatermarkStore(unittest.TestCase):

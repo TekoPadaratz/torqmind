@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from agent_bkp.utils.retry import RetryableError, retry_with_backoff
+from agent.utils.retry import RetryableError, retry_with_backoff
 
 
 class TestRetry(unittest.TestCase):

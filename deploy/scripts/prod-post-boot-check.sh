@@ -11,6 +11,18 @@ source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
 
 tm_require_prod_runtime_env "$ENV_FILE"
 
+compose() {
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+clickhouse_client_args=(clickhouse-client)
+if [[ -n "${CLICKHOUSE_USER:-}" ]]; then
+  clickhouse_client_args+=(--user "$CLICKHOUSE_USER")
+fi
+if [[ -n "${CLICKHOUSE_PASSWORD:-}" ]]; then
+  clickhouse_client_args+=(--password "$CLICKHOUSE_PASSWORD")
+fi
+
 echo "== systemd =="
 systemctl is-enabled docker
 systemctl is-active docker
@@ -23,11 +35,39 @@ crontab -l | grep -F "TorqMind ETL schedule"
 
 echo
 echo "== containers =="
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
+compose ps
+
+if [[ "${USE_CLICKHOUSE:-false}" == "true" ]]; then
+  echo
+  echo "== clickhouse =="
+  compose exec -T clickhouse sh -lc 'wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok'
+  echo "ClickHouse ping OK"
+  echo
+  echo "torqmind_dw tables:"
+  compose exec -T clickhouse "${clickhouse_client_args[@]}" --query "SHOW TABLES FROM torqmind_dw"
+  echo
+  echo "torqmind_mart tables:"
+  compose exec -T clickhouse "${clickhouse_client_args[@]}" --query "SHOW TABLES FROM torqmind_mart"
+  echo
+  echo "torqmind_mart.agg_vendas_diaria count:"
+  compose exec -T clickhouse "${clickhouse_client_args[@]}" --query "SELECT count() FROM torqmind_mart.agg_vendas_diaria"
+  echo
+  echo "analytics smoke:"
+  compose exec -T api python - <<'PY'
+from app.config import settings
+from app.repos_analytics import analytics_backend_inventory
+
+if not settings.use_clickhouse:
+    raise RuntimeError("USE_CLICKHOUSE=false inside API container during ClickHouse post-boot smoke")
+
+inventory = analytics_backend_inventory()
+print({"use_clickhouse": settings.use_clickhouse, "dual_read_mode": settings.dual_read_mode, "functions": len(inventory["functions"])})
+PY
+fi
 
 echo
 echo "== smoke =="
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api env RUN_ETL="$RUN_ETL" python - <<'PY'
+compose exec -T api env RUN_ETL="$RUN_ETL" python - <<'PY'
 from __future__ import annotations
 
 import json

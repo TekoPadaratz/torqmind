@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from agent_bkp.spool import SpoolQueue
+from agent.spool import SpoolQueue
 
 
 class TestSpoolQueue(unittest.TestCase):
