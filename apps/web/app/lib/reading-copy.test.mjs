@@ -88,6 +88,21 @@ test('data freshness prefers commercial coverage message when the requested wind
   );
 });
 
+test('data freshness reports published commercial coverage instead of preparing first base', () => {
+  assert.equal(
+    describeDataFreshness(
+      {
+        commercial_coverage: {
+          mode: 'exact',
+          latest_available_dt: '2026-04-29',
+        },
+      },
+      'dashboard',
+    ),
+    'Última base comercial disponível: 29/04/2026.',
+  );
+});
+
 test('server base date uses pt-BR civil formatting', () => {
   assert.equal(describeServerBaseDate('2026-03-27'), '27/03/2026');
 });
@@ -108,6 +123,10 @@ test('last sync copy uses pt-BR date and Sao Paulo clock', () => {
   assert.equal(
     describeLastSync({ available: false, last_sync_at: null }),
     'A primeira base pronta ainda está sendo preparada.',
+  );
+  assert.equal(
+    describeLastSync({ available: false, last_sync_at: null, commercial_coverage: { latest_available_dt: '2026-04-29' } }),
+    'Última base comercial disponível: 29/04/2026.',
   );
   assert.equal(
     describeSyncMessage({

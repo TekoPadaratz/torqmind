@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildQuickShortcutRanges, formatCalendarDate, normalizeCalendarDate } from './calendar-date.mjs';
+import { buildQuickShortcutRanges, formatBusinessCalendarDate, formatCalendarDate, normalizeCalendarDate } from './calendar-date.mjs';
 
 function rangeById(ranges, id) {
   return ranges.find((entry) => entry.id === id);
@@ -10,6 +10,11 @@ function rangeById(ranges, id) {
 test('formatCalendarDate keeps the local calendar day stable at night', () => {
   const localNight = new Date(2026, 3, 15, 23, 40, 0);
   assert.equal(formatCalendarDate(localNight), '2026-04-15');
+});
+
+test('formatBusinessCalendarDate uses Sao Paulo business day without UTC rollover', () => {
+  const utcAfterSaoPauloNight = new Date('2026-04-16T00:30:00.000Z');
+  assert.equal(formatBusinessCalendarDate(utcAfterSaoPauloNight), '2026-04-15');
 });
 
 test('quick shortcuts keep Hoje and Ontem stable in a Sao Paulo-like late-night scenario', () => {

@@ -7,13 +7,13 @@ selection is handled by ``repos_analytics.py``; this module never falls back to
 PostgreSQL on ClickHouse errors.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import logging
 import math
 from typing import Any, Dict, List, Optional
 
-from app.business_time import business_clock_payload, business_today
+from app.business_time import business_clock_payload, business_timezone, business_today
 from app.db_clickhouse import query_dict
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,21 @@ def _to_int(value: Any) -> int:
 
 def _iso_or_none(value: Any) -> Optional[str]:
     return value.isoformat() if hasattr(value, "isoformat") else None
+
+
+def _iso_from_clickhouse_epoch(epoch: Any, id_empresa: int) -> Optional[str]:
+    try:
+        epoch_value = float(epoch or 0)
+    except (TypeError, ValueError):
+        return None
+    if epoch_value <= 0:
+        return None
+    return (
+        datetime.fromtimestamp(epoch_value, tz=timezone.utc)
+        .astimezone(business_timezone(id_empresa))
+        .replace(microsecond=0)
+        .isoformat()
+    )
 
 
 def _json_obj(value: Any) -> Dict[str, Any]:
@@ -393,6 +408,36 @@ def commercial_window_coverage(
         max_data_key=row.get("max_data_key"),
         source_label="torqmind_mart.agg_vendas_diaria",
     )
+
+
+def _sales_sync_meta(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    branch = _branch_clause("id_filial", id_filial)
+    row = _first(
+        f"""
+        SELECT
+          count() AS row_count,
+          max(data_key) AS max_data_key,
+          toUnixTimestamp(max(updated_at)) AS latest_updated_at_epoch
+        FROM torqmind_mart.agg_vendas_diaria
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {branch}
+        """,
+        {"id_empresa": int(id_empresa), "ini": _date_key(dt_ini), "fim": _date_key(dt_fim)},
+        id_empresa,
+    )
+    row_count = _to_int(row.get("row_count"))
+    max_data_key = _to_int(row.get("max_data_key")) if row_count > 0 else 0
+    max_dt = _date_from_key(max_data_key)
+    last_sync_at = _iso_from_clickhouse_epoch(row.get("latest_updated_at_epoch"), id_empresa) if row_count > 0 else None
+    return {
+        "last_sync_at": last_sync_at,
+        "snapshot_generated_at": last_sync_at,
+        "source": "torqmind_mart.agg_vendas_diaria",
+        "dt_ref": (max_dt or dt_fim).isoformat(),
+        "max_data_key": max_data_key if max_data_key > 0 else None,
+        "row_count": row_count,
+    }
 
 
 def risk_model_coverage(dt_ini: date, dt_fim: date, risk_window: Dict[str, Any]) -> Dict[str, Any]:
@@ -696,6 +741,7 @@ def _sales_historical_bundle_from_marts(
     top_products = sales_top_products(role, id_empresa, id_filial, dt_ini, dt_fim, limit=15) if include_details else []
     top_groups = sales_top_groups(role, id_empresa, id_filial, dt_ini, dt_fim, limit=10) if include_details else []
     top_employees = sales_top_employees(role, id_empresa, id_filial, dt_ini, dt_fim, limit=10) if include_details else []
+    sync_meta = _sales_sync_meta(role, id_empresa, id_filial, dt_ini, dt_fim)
     return {
         "kpis": {
             "faturamento": _to_float(kpis.get("faturamento")),
@@ -709,11 +755,12 @@ def _sales_historical_bundle_from_marts(
         "top_groups": top_groups,
         "top_employees": top_employees,
         "stats": {"vendas": sum(_to_int(row.get("vendas")) for row in by_hour)},
-        "operational_sync": {"last_sync_at": None, "source": "torqmind_mart.agg_vendas_diaria", "dt_ref": dt_fim.isoformat()},
+        "operational_sync": sync_meta,
         "freshness": {
             "mode": "mart_snapshot",
             "operational_day": None,
-            "live_through_at": None,
+            "live_through_at": sync_meta.get("last_sync_at"),
+            "snapshot_generated_at": sync_meta.get("snapshot_generated_at"),
             "historical_through_dt": dt_fim.isoformat(),
             "source": "torqmind_mart.agg_vendas_diaria",
         },
@@ -870,6 +917,8 @@ def sales_overview_bundle(
     freshness["mode"] = reading_status
     freshness["source"] = "torqmind_mart.agg_vendas_diaria"
     freshness["historical_through_dt"] = _iso_or_none(effective_dt_fim)
+    freshness["live_through_at"] = (bundle.get("operational_sync") or {}).get("last_sync_at")
+    freshness["snapshot_generated_at"] = (bundle.get("operational_sync") or {}).get("snapshot_generated_at")
     bundle["freshness"] = freshness
     return bundle
 
@@ -890,6 +939,7 @@ def sales_operational_day_bundle(
     top_products = sales_top_products(role, id_empresa, id_filial, day_ref, day_ref, limit=15) if include_rankings else []
     top_groups = sales_top_groups(role, id_empresa, id_filial, day_ref, day_ref, limit=10) if include_rankings else []
     top_employees = sales_top_employees(role, id_empresa, id_filial, day_ref, day_ref, limit=10) if include_rankings else []
+    sync_meta = _sales_sync_meta(role, id_empresa, id_filial, day_ref, day_ref)
     faturamento = _to_float(kpis.get("faturamento"))
     margem = _to_float(kpis.get("margem"))
     vendas = sum(_to_int(row.get("vendas")) for row in by_hour)
@@ -915,15 +965,12 @@ def sales_operational_day_bundle(
         "top_groups": top_groups,
         "top_employees": top_employees,
         "stats": {"vendas": vendas, "data_key": day_key},
-        "operational_sync": {
-            "last_sync_at": None,
-            "source": "torqmind_mart.agg_vendas_diaria",
-            "dt_ref": day_ref.isoformat(),
-        },
+        "operational_sync": sync_meta,
         "freshness": {
             "mode": "live_day",
             "operational_day": day_ref.isoformat(),
-            "live_through_at": None,
+            "live_through_at": sync_meta.get("last_sync_at"),
+            "snapshot_generated_at": sync_meta.get("snapshot_generated_at"),
             "historical_through_dt": None,
             "source": "torqmind_mart.agg_vendas_diaria",
         },
@@ -953,7 +1000,8 @@ def sales_operational_range_bundle(
         {
             "mode": "live_range",
             "operational_day": dt_fim.isoformat(),
-            "live_through_at": None,
+            "live_through_at": (bundle.get("operational_sync") or {}).get("last_sync_at"),
+            "snapshot_generated_at": (bundle.get("operational_sync") or {}).get("snapshot_generated_at"),
             "historical_through_dt": dt_fim.isoformat(),
             "source": "torqmind_mart.agg_vendas_diaria",
         }
@@ -1884,8 +1932,8 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
           countIf(severity = 'WARN') AS caixas_em_monitoramento,
           sumIf(total_vendas, severity != 'STALE') AS total_vendas_abertas,
           sumIf(total_cancelamentos, severity != 'STALE') AS total_cancelamentos_abertas,
-          max(updated_at) AS snapshot_ts,
-          max(updated_at) AS latest_activity_ts
+          toUnixTimestamp(max(updated_at)) AS snapshot_epoch,
+          toUnixTimestamp(max(updated_at)) AS latest_activity_epoch
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
           {branch}
@@ -1897,7 +1945,10 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         f"""
         SELECT
           id_filial, filial_nome, id_turno, toString(id_turno) AS turno_value, id_usuario, usuario_nome,
-          'turno_id' AS usuario_source, abertura_ts, updated_at AS last_activity_ts, updated_at AS snapshot_ts,
+          'turno_id' AS usuario_source,
+          toUnixTimestamp(abertura_ts) AS abertura_ts_epoch,
+          toUnixTimestamp(updated_at) AS last_activity_ts_epoch,
+          toUnixTimestamp(updated_at) AS snapshot_ts_epoch,
           horas_aberto, 0 AS horas_sem_movimento, severity, status_label, total_vendas, qtd_vendas,
           total_cancelamentos, qtd_cancelamentos, 0 AS total_devolucoes, 0 AS qtd_devolucoes, total_pagamentos
         FROM torqmind_mart.agg_caixa_turno_aberto
@@ -1914,7 +1965,10 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         f"""
         SELECT
           id_filial, filial_nome, id_turno, toString(id_turno) AS turno_value, id_usuario, usuario_nome,
-          'turno_id' AS usuario_source, abertura_ts, updated_at AS last_activity_ts, updated_at AS snapshot_ts,
+          'turno_id' AS usuario_source,
+          toUnixTimestamp(abertura_ts) AS abertura_ts_epoch,
+          toUnixTimestamp(updated_at) AS last_activity_ts_epoch,
+          toUnixTimestamp(updated_at) AS snapshot_ts_epoch,
           horas_aberto, 0 AS horas_sem_movimento, total_vendas, total_cancelamentos, 0 AS total_devolucoes
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
@@ -1940,6 +1994,9 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         id_empresa,
     )
     for row in open_rows:
+        row["abertura_ts"] = _iso_from_clickhouse_epoch(row.pop("abertura_ts_epoch", None), id_empresa)
+        row["last_activity_ts"] = _iso_from_clickhouse_epoch(row.pop("last_activity_ts_epoch", None), id_empresa)
+        row["snapshot_ts"] = _iso_from_clickhouse_epoch(row.pop("snapshot_ts_epoch", None), id_empresa)
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
@@ -1947,6 +2004,9 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         row["caixa_liquido"] = _to_float(row.get("total_vendas")) - _to_float(row.get("total_cancelamentos"))
         row["alert_message"] = f"O turno {row['turno_label']} da {row['filial_label']} segue aberto há {row.get('horas_aberto') or 0} horas."
     for row in stale_rows:
+        row["abertura_ts"] = _iso_from_clickhouse_epoch(row.pop("abertura_ts_epoch", None), id_empresa)
+        row["last_activity_ts"] = _iso_from_clickhouse_epoch(row.pop("last_activity_ts_epoch", None), id_empresa)
+        row["snapshot_ts"] = _iso_from_clickhouse_epoch(row.pop("snapshot_ts_epoch", None), id_empresa)
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
@@ -1974,8 +2034,8 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
     else:
         source_status = "ok"
         summary_text = f"{operational_open_total} caixa(s) permanecem abertos na leitura operacional recente."
-    snapshot_ts = summary.get("snapshot_ts")
-    latest_activity_ts = summary.get("latest_activity_ts")
+    snapshot_ts = _iso_from_clickhouse_epoch(summary.get("snapshot_epoch"), id_empresa) if source_open_total > 0 else None
+    latest_activity_ts = _iso_from_clickhouse_epoch(summary.get("latest_activity_epoch"), id_empresa) if source_open_total > 0 else None
     alerts = [
         {
             "id_filial": row.get("id_filial"),
@@ -2031,8 +2091,8 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
             "stale_window_hours": CASH_STALE_WINDOW_HOURS,
             "schema_mode": "clickhouse_mart",
         },
-        "operational_sync": {"last_sync_at": _iso_or_none(latest_activity_ts) or _iso_or_none(snapshot_ts), "snapshot_generated_at": _iso_or_none(snapshot_ts), "source": "torqmind_mart.agg_caixa_turno_aberto"},
-        "freshness": {"mode": "live_monitor", "live_through_at": _iso_or_none(latest_activity_ts) or _iso_or_none(snapshot_ts), "snapshot_generated_at": _iso_or_none(snapshot_ts), "source": "torqmind_mart.agg_caixa_turno_aberto"},
+        "operational_sync": {"last_sync_at": latest_activity_ts or snapshot_ts, "snapshot_generated_at": snapshot_ts, "source": "torqmind_mart.agg_caixa_turno_aberto"},
+        "freshness": {"mode": "live_monitor", "live_through_at": latest_activity_ts or snapshot_ts, "snapshot_generated_at": snapshot_ts, "source": "torqmind_mart.agg_caixa_turno_aberto"},
         "open_boxes": open_rows,
         "stale_boxes": stale_rows,
         "payment_mix": payment_mix_rows,
@@ -2127,11 +2187,12 @@ def cash_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: Optional[d
 def health_score_latest(role: str, id_empresa: int, id_filial: Any, as_of: Optional[date] = None) -> Dict[str, Any]:
     requested_as_of = as_of or business_today(id_empresa)
     snapshot_meta = _snapshot_meta("health_score_daily", id_empresa, id_filial, requested_as_of, "latest_leq_ref")
+    effective_as_of = snapshot_meta.get("effective_dt_ref") or requested_as_of
     branch = _branch_clause("id_filial", id_filial)
     row = _first(
         f"""
         SELECT
-          max(dt_ref) AS dt_ref,
+          dt_ref,
           avg(final_score) AS score_total,
           avg(health_pct) AS comp_operacao,
           avg(risk_pct) AS comp_fraude,
@@ -2141,10 +2202,11 @@ def health_score_latest(role: str, id_empresa: int, id_filial: Any, as_of: Optio
           avg(health_pct) AS comp_dados
         FROM torqmind_mart.health_score_daily
         WHERE id_empresa = {{id_empresa:Int32}}
-          AND dt_ref <= {{dt_ref:Date}}
+          AND dt_ref = {{dt_ref:Date}}
           {branch}
+        GROUP BY dt_ref
         """,
-        {"id_empresa": int(id_empresa), "dt_ref": requested_as_of},
+        {"id_empresa": int(id_empresa), "dt_ref": effective_as_of},
         id_empresa,
     )
     payload = {
@@ -2342,8 +2404,18 @@ def dashboard_home_bundle(role: str, id_empresa: int, id_filial: Any, dt_ini: da
     from app import repos_mart as _postgres_repos
 
     notifications_unread = _postgres_repos.notifications_unread_count(role, id_empresa, id_filial)
-    operational_sync = sales.get("operational_sync") or cash_live.get("operational_sync")
-    freshness = {"mode": "hybrid_operational_home", "sales": sales.get("freshness"), "cash": cash_live.get("freshness"), "live_through_at": (operational_sync or {}).get("last_sync_at"), "source": "torqmind_mart"}
+    sales_sync = sales.get("operational_sync") or {}
+    cash_sync = cash_live.get("operational_sync") or {}
+    operational_sync = sales_sync if sales_sync.get("last_sync_at") else cash_sync or sales_sync
+    live_through_at = sales_sync.get("last_sync_at") or cash_sync.get("last_sync_at")
+    freshness = {
+        "mode": "hybrid_operational_home",
+        "sales": sales.get("freshness"),
+        "cash": cash_live.get("freshness"),
+        "live_through_at": live_through_at,
+        "snapshot_generated_at": sales_sync.get("snapshot_generated_at") or cash_sync.get("snapshot_generated_at"),
+        "source": "torqmind_mart",
+    }
     branch_id = _conn_branch_id(id_filial)
     context = {
         "fraud_operational": fraud_operational.get("kpis"),

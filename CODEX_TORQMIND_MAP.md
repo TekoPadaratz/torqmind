@@ -10,6 +10,8 @@ Arquivo de contexto rapido para futuras sessoes. Leia este arquivo antes de reau
 - ClickHouse replica o schema `dw` PostgreSQL no banco `torqmind_dw` via `MaterializedPostgreSQL`.
 - ClickHouse serve marts nativas em `torqmind_mart` com tabelas agregadas/desnormalizadas e MVs streaming.
 - O backend analitico usa `app.repos_analytics` como facade ClickHouse-first. As rotas continuam chamando nomes publicos iguais aos de `repos_mart`.
+- Origem canonica de vendas: `stg.comprovantes` e `stg.itenscomprovantes`. `MovProdutos`/`ItensMovProdutos` nao devem voltar ao hot path de vendas; campos DW como `id_movprodutos` podem permanecer apenas como aliases legados preenchidos a partir de comprovantes.
+- Timezone: infraestrutura segue em UTC; negocio e UI usam `America/Sao_Paulo`; filtros trafegam como `YYYY-MM-DD`; timestamps tecnicos da API devem sair ISO 8601 com offset explicito.
 
 ## 2. Rodar local com PostgreSQL + ClickHouse
 
@@ -39,15 +41,19 @@ Atalhos uteis:
 - `make clickhouse-mvs`: cria MVs streaming.
 - `make clickhouse-native-backfill`: popula marts nativas a partir de `torqmind_dw`.
 - `make analytics-smoke`: valida inventory do facade.
+- `make prod-clickhouse-init`: em producao recria `torqmind_dw`, espera tabelas DW e espera `fact_venda`/`fact_venda_item` baterem count/max(data_key) com PostgreSQL antes de backfillar `torqmind_mart`.
+- `make prod-data-reconcile ID_EMPRESA=1 ID_FILIAL=14458`: compara PostgreSQL DW, `torqmind_dw` e marts de vendas sem depender de `stg.movprodutos`.
 
 ## 3. Variaveis de ambiente criticas
 
 - `USE_CLICKHOUSE=true|false`: ativa leitura analitica ClickHouse-first.
 - `DUAL_READ_MODE=true|false`: executa Postgres + ClickHouse em paralelo quando possivel e loga divergencias.
 - `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`: conexao ClickHouse.
+- `CLICKHOUSE_DW_WAIT_ATTEMPTS`, `CLICKHOUSE_REPLICATION_WAIT_ATTEMPTS`: limites de espera do bootstrap ClickHouse de producao.
 - `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: conexao PostgreSQL.
 - `DATABASE_URL`: URL async da API.
 - `JWT_SECRET_KEY`/equivalentes em `config.py`: nunca logar nem commitar.
+- `BUSINESS_TIMEZONE=America/Sao_Paulo`: fuso civil da regra de negocio.
 - Em Docker local, a API usa `PG_PORT=5432` dentro da rede compose e ClickHouse em `clickhouse:8123`.
 
 ## 4. Mapa de arquivos principais
@@ -97,6 +103,8 @@ Deploy:
 - `docker-compose.prod.yml`: stack prod com ClickHouse.
 - `.env.production.example`: variaveis prod esperadas.
 - `deploy/scripts/load_clickhouse_historical.sh`: carga historica CH.
+- `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; nao backfilla marts antes de `torqmind_dw.fact_venda` e `fact_venda_item` atingirem count/max(data_key) do PostgreSQL.
+- `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW vs marts.
 - `Makefile`: fonte unica dos comandos operacionais.
 
 Testes:
@@ -131,9 +139,10 @@ Funcoes ClickHouse implementadas:
 | `sales_top_employees` | `/bi/sales/overview`, goals | `agg_funcionarios_diaria` | ranking funcionarios |
 | `sales_commercial_overview` | `/bi/sales/overview` | vendas/produtos/grupos/funcionarios | objeto comercial |
 | `sales_overview_bundle` | `/bi/sales/overview` | vendas + rankings | payload sales |
-| `sales_operational_current` | sales/cash | `agg_caixa_turno_aberto` | atual operacional |
-| `sales_operational_day_bundle` | sales/cash | vendas + caixa | dia operacional |
-| `sales_operational_range_bundle` | sales/cash | vendas + caixa | periodo operacional |
+| `_sales_sync_meta` | home/sales/cash | `agg_vendas_diaria.updated_at` | publicacao tecnica ISO com offset |
+| `sales_operational_current` | sales/cash | `agg_vendas_diaria` | atual operacional |
+| `sales_operational_day_bundle` | sales/cash | vendas mart | dia operacional |
+| `sales_operational_range_bundle` | sales/cash | vendas mart | periodo operacional |
 | `fraud_kpis` | `/bi/fraud/overview` | `fraude_cancelamentos_diaria` | KPIs fraude |
 | `fraud_series` | `/bi/fraud/overview` | `fraude_cancelamentos_diaria` | serie fraude |
 | `fraud_data_window` | `/bi/fraud/overview` | `fraude_cancelamentos_diaria` | janela dados |
@@ -230,6 +239,9 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - `query_dict()` agora retorna `list[dict]` real usando `column_names`, pois as funcoes usam `row.get(...)`.
 - Docker local/prod tem ClickHouse como servico de primeira classe.
 - `MaterializedPostgreSQL` usa banco `torqmind_dw` replicando schema `dw`; marts vivem separadas em `torqmind_mart`.
+- Frescor operacional ClickHouse separa cobertura comercial (`commercial_coverage.latest_available_dt`), publicacao tecnica (`operational_sync.last_sync_at`) e frescor de tela (`freshness.live_through_at`).
+- `prod-clickhouse-init.sh` deve esperar count/max(data_key) de `torqmind_dw.fact_venda` e `torqmind_dw.fact_venda_item` baterem com PostgreSQL antes de criar/backfillar marts.
+- Frontend nunca deve montar filtro BI com `toISOString().slice(0, 10)`; datas de negocio ficam como string `YYYY-MM-DD`.
 
 ## 8. Pontas soltas resolvidas
 
@@ -244,6 +256,11 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Reparados constraints/indices necessarios para upserts e para `MaterializedPostgreSQL`/replica identity.
 - Reparada sincronizacao de notificacoes de anomalia de pagamento.
 - Sanitizado float nao finito vindo de agregacoes ClickHouse antes de montar JSON.
+- Corrigido frescor de vendas para usar `agg_vendas_diaria.updated_at` com conversao UTC -> `America/Sao_Paulo`.
+- Corrigido caixa para nao devolver `1970-01-01T00:00:00` quando nao ha linha util em `agg_caixa_turno_aberto`.
+- Corrigido frontend para nao fixar sync indisponivel quando existe cobertura comercial publicada.
+- Corrigido bootstrap ClickHouse prod para aguardar replicacao completa de vendas antes do backfill das marts.
+- Adicionado script de reconciliacao `prod-data-reconcile.sh`.
 
 ## 9. Pontas soltas remanescentes
 
@@ -265,6 +282,8 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Atualizar `phase2_mvs_design.sql`, `phase2_mvs_streaming_triggers.sql` e `phase3_native_backfill.sql` juntos quando a mart mudar.
 - Atualizar `CODEX_TORQMIND_MAP.md` quando adicionar/remover funcao ou mart.
 - Rodar pelo menos testes unitarios do facade/ClickHouse, `make lint`, `make clickhouse-smoke` e `make analytics-smoke`.
+- Ao mexer em vendas, confirmar que ETL ativo usa `stg.comprovantes`/`stg.itenscomprovantes`, nao `stg.movprodutos`.
+- Ao mexer em datas no frontend, adicionar teste cobrindo horario noturno em `America/Sao_Paulo`.
 
 ## 11. Comandos validados nesta revisao
 
@@ -283,6 +302,17 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - `docker compose exec -T web npm test`: passou, 69 testes.
 - `make lint`: passou.
 - `make test`: executado; falhou na API com falhas remanescentes documentadas nesta secao.
+- Revisao 2026-04-29: `cd apps/api && python -m unittest app.test_repos_analytics_unit` passou, 14 testes.
+- Revisao 2026-04-29: `cd apps/web && npm test` passou, 74 testes.
+- Revisao 2026-04-29: `docker compose exec -T api python -m unittest app.test_repos_analytics_unit` passou, 14 testes.
+- Revisao 2026-04-29: `docker compose exec -T web npm test` passou, 74 testes.
+- Revisao 2026-04-29: `make migrate`, `make clickhouse-init`, `make clickhouse-mvs`, `make clickhouse-native-backfill`, `make clickhouse-smoke`, `make analytics-smoke` e `make lint` passaram no compose local.
+- Revisao 2026-04-29: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet` passou.
+- Revisao 2026-04-29: chamada direta de `dashboard_home_bundle` retornou `operational_sync.last_sync_at` com offset `-03:00`, cobertura `exact` e caixa sem `1970-01-01T00:00:00`.
+- Revisao 2026-04-29: `prod-data-reconcile.sh` rodou contra compose local com `ID_EMPRESA=1 ID_FILIAL=14458`; expôs `83` itens órfãos em `dw.fact_venda_item`, mas PostgreSQL DW e `torqmind_dw` bateram count/max(data_key).
+- Revisao 2026-04-29: `bash -n deploy/scripts/prod-clickhouse-init.sh deploy/scripts/prod-data-reconcile.sh` passou.
+- Revisao 2026-04-29: funcoes ativas `etl.load_fact_venda` e `etl.load_fact_venda_item_range_detail` confirmadas em PostgreSQL usando `stg.comprovantes` e `stg.itenscomprovantes`.
+- Revisao 2026-04-29: `make test` foi tentado; testes API legados apresentaram multiplas falhas/erros de fixtures/estado e foi interrompido apos ficar sem progresso, retornando `Error 130`.
 
 ## 12. Regras de ouro
 
@@ -292,3 +322,6 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Nao mascarar erro critico com zero silencioso.
 - Manter fallback explicito via `USE_CLICKHOUSE=false`.
 - Atualizar testes junto com contrato, SQL e facade.
+- Nunca reintroduzir `stg.movprodutos` como fonte canonica de vendas.
+- Infra UTC; negocio/UI `America/Sao_Paulo`; filtros sempre `YYYY-MM-DD`; API retorna timestamp tecnico com offset.
+- Bootstrap ClickHouse: esperar DW replicado antes de backfillar marts.

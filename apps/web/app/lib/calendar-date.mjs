@@ -13,8 +13,21 @@ function daysInMonth(year, month) {
 }
 
 export function formatCalendarDate(value) {
-  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return '';
+  if (!value || typeof value.getTime !== 'function' || Number.isNaN(value.getTime())) return '';
   return `${value.getFullYear()}-${padDatePart(value.getMonth() + 1)}-${padDatePart(value.getDate())}`;
+}
+
+export function formatBusinessCalendarDate(value, timeZone = 'America/Sao_Paulo') {
+  const dateValue = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(dateValue.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(dateValue);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
 }
 
 export function normalizeCalendarDate(value) {

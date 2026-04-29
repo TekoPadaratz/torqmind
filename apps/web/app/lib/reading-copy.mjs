@@ -125,10 +125,11 @@ export function describeDataFreshness(payload, moduleLabel = 'esta tela') {
   const cacheBanner = describeCacheBanner(payload?._snapshot_cache, moduleLabel);
   if (cacheBanner) return cacheBanner;
 
+  const commercialCoverage = payload?.commercial_coverage
+    || payload?.commercial?.commercial_coverage
+    || payload?.monthly_projection?.commercial_coverage;
   const coverageBanner = describeCommercialCoverage(
-    payload?.commercial_coverage
-      || payload?.commercial?.commercial_coverage
-      || payload?.monthly_projection?.commercial_coverage,
+    commercialCoverage,
     moduleLabel,
   );
   if (coverageBanner) return coverageBanner;
@@ -169,6 +170,24 @@ export function describeDataFreshness(payload, moduleLabel = 'esta tela') {
     return `Dashboard ancorado no trilho operacional até ${liveThrough}, sem esperar o fechamento completo da publicação analítica.`;
   }
 
+  const publishedAt = formatDateTimeBr(
+    freshness?.snapshot_generated_at
+      || freshness?.sales?.snapshot_generated_at
+      || freshness?.cash?.snapshot_generated_at
+  );
+  if (publishedAt) {
+    return `Base publicada em ${publishedAt}.`;
+  }
+
+  const latestCommercialDate = formatDateOnly(
+    commercialCoverage?.latest_available_dt
+      || commercialCoverage?.effective_dt_fim
+      || freshness?.historical_through_dt
+  ) || historicalThrough;
+  if (latestCommercialDate) {
+    return `Última base comercial disponível: ${latestCommercialDate}.`;
+  }
+
   return null;
 }
 
@@ -179,6 +198,10 @@ export function describeServerBaseDate(value) {
 export function describeLastSync(syncStatus) {
   const operationalSyncAt = syncStatus?.operational?.last_sync_at || syncStatus?.last_sync_at;
   if (!syncStatus?.available || !operationalSyncAt) {
+    const publicationAt = formatDateTimeBr(syncStatus?.publication?.last_sync_at || syncStatus?.analytics?.last_sync_at);
+    if (publicationAt) return `Base publicada em ${publicationAt}.`;
+    const latestCommercialDate = formatDateOnly(syncStatus?.commercial_coverage?.latest_available_dt);
+    if (latestCommercialDate) return `Última base comercial disponível: ${latestCommercialDate}.`;
     return 'A primeira base pronta ainda está sendo preparada.';
   }
   return formatDateTimeBr(operationalSyncAt) || 'A primeira base pronta ainda está sendo preparada.';
