@@ -32,11 +32,14 @@ BEGIN
     WHERE p.id_empresa = p_id_empresa
       AND p.severity = 'CRITICAL'
       AND p.data_key >= to_char((COALESCE(p_ref_date, CURRENT_DATE) - interval '2 day')::date, 'YYYYMMDD')::int
+  ), filtered AS (
+    SELECT *
+    FROM src
+    WHERE insight_id IS NOT NULL
   ), upserted AS (
     INSERT INTO app.notifications (id_empresa, id_filial, insight_id, severity, title, body, url)
     SELECT id_empresa, id_filial, insight_id, severity, title, body, url
-    FROM src
-    WHERE insight_id IS NOT NULL
+    FROM filtered
     ON CONFLICT (id_empresa, id_filial, insight_id)
     WHERE insight_id IS NOT NULL
     DO UPDATE SET

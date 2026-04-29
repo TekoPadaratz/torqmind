@@ -629,6 +629,7 @@ SELECT
     r.id_db,
     r.id_comprovante,
     r.id_movprodutos,
+    r.event_type,
     r.data,
     r.data_key,
     r.id_usuario,
@@ -646,9 +647,7 @@ FROM torqmind_dw.fact_risco_evento r
 LEFT JOIN torqmind_dw.dim_funcionario df
     ON df.id_empresa = r.id_empresa
    AND df.id_filial = r.id_filial
-   AND df.id_funcionario = r.id_funcionario
-ORDER BY r.id_empresa, r.id_filial, r.data
-LIMIT 10000;
+   AND df.id_funcionario = r.id_funcionario;
 
 -- ============================================================================
 -- MATERIALIZED VIEWS (CDC-triggered auto-refresh)

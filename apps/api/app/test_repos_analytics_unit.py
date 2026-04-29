@@ -145,6 +145,25 @@ class ClickHouseQueryScopeUnitTest(unittest.TestCase):
         self.assertNotIn("id_filial =", captured["query"])
         self.assertNotIn("id_filial IN", captured["query"])
 
+    def test_risk_last_events_reads_event_type_from_recent_events_view(self) -> None:
+        captured = {}
+
+        def fake_query(query, parameters=None, tenant_id=None):
+            captured["query"] = query
+            captured["parameters"] = parameters
+            captured["tenant_id"] = tenant_id
+            return []
+
+        with patch.object(repos_mart_clickhouse, "query_dict", side_effect=fake_query):
+            rows = repos_mart_clickhouse.risk_last_events("MASTER", 7, None, date(2026, 4, 1), date(2026, 4, 2), limit=5)
+
+        self.assertEqual(rows, [])
+        self.assertIn("FROM torqmind_mart.risco_eventos_recentes", captured["query"])
+        self.assertIn("event_type", captured["query"])
+        self.assertIn("LIMIT {limit:UInt32}", captured["query"])
+        self.assertEqual(captured["parameters"]["id_empresa"], 7)
+        self.assertEqual(captured["tenant_id"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()

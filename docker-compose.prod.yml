@@ -19,6 +19,12 @@ services:
       - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-2GB}
       - -c
       - checkpoint_completion_target=${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=${POSTGRES_MAX_REPLICATION_SLOTS:-10}
+      - -c
+      - max_wal_senders=${POSTGRES_MAX_WAL_SENDERS:-10}
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -42,8 +48,10 @@ services:
       CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-torqmind_mart}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-CHANGE_ME_CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - chdata_prod:/var/lib/clickhouse
+      - ./deploy/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
     expose:
       - "8123"
       - "9000"

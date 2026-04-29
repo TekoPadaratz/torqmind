@@ -8,8 +8,10 @@ services:
       CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-torqmind_mart}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-torqmind}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - chdata:/var/lib/clickhouse
+      - ./deploy/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
     ulimits:
       nofile:
         soft: 262144

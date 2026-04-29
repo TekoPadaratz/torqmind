@@ -18,7 +18,7 @@ include $(ENV_FILE)
 export
 endif
 
-.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
+.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-init prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -175,6 +175,9 @@ prod-migrate:
 
 prod-seed:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-seed.sh
+
+prod-clickhouse-init:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-clickhouse-init.sh
 
 prod-etl-incremental:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-etl-incremental.sh
