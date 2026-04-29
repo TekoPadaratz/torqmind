@@ -67,7 +67,7 @@ Backend:
 
 - `apps/api/app/config.py`: settings, incluindo `use_clickhouse` e `dual_read_mode`.
 - `apps/api/app/db.py`: pool PostgreSQL.
-- `apps/api/app/db_clickhouse.py`: cliente ClickHouse, `query_dict`, `query_scalar`, batch insert e validadores dual-read.
+- `apps/api/app/db_clickhouse.py`: cliente ClickHouse por contexto/query, `query_dict`, `query_scalar`, batch insert e validadores dual-read.
 - `apps/api/app/repos_mart.py`: repositorio legado PostgreSQL.
 - `apps/api/app/repos_mart_clickhouse.py`: implementacao ClickHouse Smart Marts.
 - `apps/api/app/repos_analytics.py`: facade de selecao ClickHouse/Postgres.
@@ -243,6 +243,7 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - `USE_CLICKHOUSE=true` nao mascara falhas ClickHouse: excecao propaga.
 - Funcoes sem mart equivalente sao divida explicita no facade e geram warning quando usadas com ClickHouse ativo.
 - `query_dict()` agora retorna `list[dict]` real usando `column_names`, pois as funcoes usam `row.get(...)`.
+- `db_clickhouse.py` nao usa singleton global do clickhouse-connect: cada query/insert abre client proprio e fecha no fim. Isso evita erro produtivo `Attempt to execute concurrent queries within the same session` em endpoints BI paralelos.
 - Docker local/prod tem ClickHouse como servico de primeira classe.
 - `MaterializedPostgreSQL` nao e mais caminho produtivo para `torqmind_dw`. Em producao ele deixou `fact_venda_item` vazia/inconsistente apesar do PostgreSQL estar correto e da table function `postgresql(...)` conseguir ler todos os dados.
 - `torqmind_dw` agora e banco ClickHouse nativo (`Atomic`) com tabelas `MergeTree`/`ReplacingMergeTree` gravaveis. O sync controlado e feito por `deploy/scripts/prod-clickhouse-sync-dw.sh`.
@@ -265,6 +266,7 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Reparados constraints/indices necessarios para upserts e compatibilidade de replica identity legada.
 - Reparada sincronizacao de notificacoes de anomalia de pagamento.
 - Sanitizado float nao finito vindo de agregacoes ClickHouse antes de montar JSON.
+- Corrigido client ClickHouse para nao compartilhar a mesma sessao entre threads FastAPI; `query_dict`, `query_scalar` e `insert_batch` usam client independente por contexto.
 - Corrigido frescor de vendas para usar `agg_vendas_diaria.updated_at` com conversao UTC -> `America/Sao_Paulo`.
 - Corrigido caixa para nao devolver `1970-01-01T00:00:00` quando nao ha linha util em `agg_caixa_turno_aberto`.
 - Corrigido frontend para nao fixar sync indisponivel quando existe cobertura comercial publicada.
@@ -293,6 +295,7 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Atualizar `phase2_mvs_design.sql`, `phase2_mvs_streaming_triggers.sql` e `phase3_native_backfill.sql` juntos quando a mart mudar.
 - Atualizar `CODEX_TORQMIND_MAP.md` quando adicionar/remover funcao ou mart.
 - Rodar pelo menos testes unitarios do facade/ClickHouse, `make lint`, `make clickhouse-smoke` e `make analytics-smoke`.
+- Ao mexer em `db_clickhouse.py`, manter teste concorrente com `ThreadPoolExecutor`; nunca reintroduzir client singleton compartilhado.
 - Ao mexer em vendas, confirmar que ETL ativo usa `stg.comprovantes`/`stg.itenscomprovantes`, nao `stg.movprodutos`.
 - Ao mexer em datas no frontend, adicionar teste cobrindo horario noturno em `America/Sao_Paulo`.
 - Nunca usar `DATABASE ENGINE = MaterializedPostgreSQL` no caminho produtivo de `torqmind_dw`; use DW nativo + sync explicito via `postgresql(...)`.
@@ -335,6 +338,9 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Revisao nativa DW 2026-04-29: `docker compose exec -T web npm test` passou, 74 testes.
 - Revisao nativa DW 2026-04-29: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet` passou.
 - Revisao nativa DW 2026-04-29: `make lint` passou com build Next.js.
+- Revisao client CH 2026-04-29: `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit` passou, 19 testes, incluindo concorrencia com `ThreadPoolExecutor`.
+- Revisao client CH 2026-04-29: `make analytics-smoke` passou com 68 funcoes no facade.
+- Revisao client CH 2026-04-29: `make lint` passou com build Next.js.
 
 ## 12. Regras de ouro
 
@@ -347,3 +353,4 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Nunca reintroduzir `stg.movprodutos` como fonte canonica de vendas.
 - Infra UTC; negocio/UI `America/Sao_Paulo`; filtros sempre `YYYY-MM-DD`; API retorna timestamp tecnico com offset.
 - Bootstrap ClickHouse: sincronizar `torqmind_dw` nativo e validar count/max(data_key) contra PostgreSQL antes de backfillar marts.
+- Nunca compartilhar uma instancia global de client clickhouse-connect entre threads; o client carrega estado de sessao.

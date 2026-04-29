@@ -14,7 +14,6 @@ EN:
 from __future__ import annotations
 
 import contextlib
-import threading
 from typing import Iterator, Optional, List, Dict, Any
 import logging
 import re
@@ -25,8 +24,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_pool: clickhouse_connect.driver.client.Client | None = None
-_pool_lock = threading.Lock()
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
 
 
@@ -38,37 +35,25 @@ def _safe_identifier(value: str, *, label: str) -> str:
 
 
 def _get_client() -> clickhouse_connect.driver.client.Client | None:
-    """Get or create ClickHouse client (singleton pattern).
-    
-    PT-BR: Similar a db.py, mantemos um único cliente global para reutilização.
-    EN: Like db.py, we maintain a single global client for reuse.
+    """Create an independent ClickHouse client for one query context.
+
+    clickhouse-connect clients carry session state and must not be shared across
+    concurrent FastAPI worker threads. Each public helper opens its own client
+    and closes it when the query/insert context finishes.
     """
-    global _pool
-    if _pool is not None:
-        return _pool
-
-    with _pool_lock:
-        if _pool is None:
-            try:
-                _pool = clickhouse_connect.get_client(
-                    host=settings.clickhouse_host,
-                    port=settings.clickhouse_port,
-                    database=settings.clickhouse_database,
-                    username=settings.clickhouse_user,
-                    password=settings.clickhouse_password,
-                    connect_timeout=10,
-                    send_receive_timeout=30,
-                )
-                logger.info(
-                    f"ClickHouse client initialized: "
-                    f"{settings.clickhouse_host}:{settings.clickhouse_port}/"
-                    f"{settings.clickhouse_database}"
-                )
-            except Exception as e:
-                logger.error(f"Failed to initialize ClickHouse client: {e}")
-                raise
-
-    return _pool
+    try:
+        return clickhouse_connect.get_client(
+            host=settings.clickhouse_host,
+            port=settings.clickhouse_port,
+            database=settings.clickhouse_database,
+            username=settings.clickhouse_user,
+            password=settings.clickhouse_password,
+            connect_timeout=10,
+            send_receive_timeout=30,
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize ClickHouse client: {e}")
+        raise
 
 
 @contextlib.contextmanager
@@ -104,8 +89,12 @@ def get_clickhouse_client(
         logger.error(f"ClickHouse query error: {e}")
         raise
     finally:
-        # ClickHouse client is stateless; no explicit cleanup needed
-        pass
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as e:  # pragma: no cover - defensive cleanup path
+                logger.warning(f"Failed to close ClickHouse client cleanly: {e}")
 
 
 def query_dict(
