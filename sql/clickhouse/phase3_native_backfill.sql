@@ -8,6 +8,11 @@
 CREATE DATABASE IF NOT EXISTS torqmind_mart;
 USE torqmind_mart;
 
+-- Full historical refresh can touch many tenant/month partitions in a single
+-- INSERT. Keep this scoped to the backfill session instead of changing server
+-- defaults.
+SET max_partitions_per_insert_block = 0;
+
 -- 1) torqmind_mart.agg_vendas_diaria
 INSERT INTO torqmind_mart.agg_vendas_diaria
 SELECT

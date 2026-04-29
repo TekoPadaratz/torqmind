@@ -18,7 +18,7 @@ include $(ENV_FILE)
 export
 endif
 
-.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-init prod-data-reconcile prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
+.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-init prod-data-reconcile prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -112,8 +112,10 @@ operational-truth-validate:
 platform-billing-daily:
 	@$(COMPOSE) exec -T api python -m app.cli.platform_billing daily --as-of "$${AS_OF:-}" --competence-month "$${COMPETENCE_MONTH:-}" --months-ahead "$${MONTHS_AHEAD:-0}" $${TENANT_ID:+--tenant-id "$${TENANT_ID}"}
 
-clickhouse-dw-init:
-	@$(COMPOSE) exec -T clickhouse clickhouse-client --multiquery --query "SET allow_experimental_database_materialized_postgresql=1; CREATE DATABASE IF NOT EXISTS torqmind_dw ENGINE = MaterializedPostgreSQL('$(CLICKHOUSE_PG_HOST):$(CLICKHOUSE_PG_PORT)', '$(CLICKHOUSE_PG_DATABASE)', '$(CLICKHOUSE_PG_USER)', '$(CLICKHOUSE_PG_PASSWORD)') SETTINGS materialized_postgresql_schema = 'dw';"
+clickhouse-sync-dw:
+	@ALLOW_INSECURE_ENV=1 ENV_FILE=$(ENV_FILE) COMPOSE_FILE=docker-compose.yml ./deploy/scripts/prod-clickhouse-sync-dw.sh
+
+clickhouse-dw-init: clickhouse-sync-dw
 
 clickhouse-wait-dw:
 	@for attempt in {1..120}; do \
@@ -124,7 +126,7 @@ clickhouse-wait-dw:
 		fi; \
 		sleep 2; \
 	done; \
-	echo "Timed out waiting for torqmind_dw MaterializedPostgreSQL tables"; \
+	echo "Timed out waiting for native torqmind_dw tables"; \
 	exit 1
 
 clickhouse-marts-init:
@@ -178,6 +180,9 @@ prod-seed:
 
 prod-clickhouse-init:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-clickhouse-init.sh
+
+prod-clickhouse-sync-dw:
+	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-clickhouse-sync-dw.sh
 
 prod-data-reconcile:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-data-reconcile.sh

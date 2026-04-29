@@ -4,25 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
-DW_WAIT_ATTEMPTS="${CLICKHOUSE_DW_WAIT_ATTEMPTS:-120}"
-DW_WAIT_SLEEP="${CLICKHOUSE_DW_WAIT_SLEEP:-2}"
-REPLICATION_WAIT_ATTEMPTS="${CLICKHOUSE_REPLICATION_WAIT_ATTEMPTS:-300}"
-REPLICATION_WAIT_SLEEP="${CLICKHOUSE_REPLICATION_WAIT_SLEEP:-2}"
+ALLOW_INSECURE_ENV="${ALLOW_INSECURE_ENV:-0}"
 
 # shellcheck source=deploy/scripts/lib/prod-env.sh
 source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
 
-tm_require_prod_runtime_env "$ENV_FILE"
+if [[ "$ALLOW_INSECURE_ENV" != "1" ]]; then
+  tm_require_prod_runtime_env "$ENV_FILE"
+fi
 
 cd "$ROOT_DIR"
 
 compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
-}
-
-pg() {
-  local sql="$1"
-  compose exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "$1"' sh "$sql"
 }
 
 clickhouse_client_args=(clickhouse-client)
@@ -37,107 +31,49 @@ ch() {
   compose exec -T clickhouse "${clickhouse_client_args[@]}" "$@"
 }
 
-ch_escape() {
-  local value="$1"
-  value="${value//\\/\\\\}"
-  value="${value//\'/\\\'}"
-  printf "%s" "$value"
+validate_critical_sales_dw() {
+  local venda item
+  venda="$(ch --query "SELECT concat(toString(count()), '|', toString(coalesce(max(data_key), 0))) FROM torqmind_dw.fact_venda")"
+  item="$(ch --query "SELECT concat(toString(count()), '|', toString(coalesce(max(data_key), 0))) FROM torqmind_dw.fact_venda_item")"
+  if [[ "$venda" == "0|0" || "$item" == "0|0" ]]; then
+    echo "ERROR: native torqmind_dw sales facts are empty after sync: fact_venda=${venda} fact_venda_item=${item}" >&2
+    return 1
+  fi
+  echo "fact_venda count|max_data_key=${venda}"
+  echo "fact_venda_item count|max_data_key=${item}"
 }
 
-metric_pg() {
-  local table="$1"
-  pg "SELECT count(*)::bigint || '|' || COALESCE(max(data_key), 0)::bigint FROM dw.${table};"
+validate_marts() {
+  local mart_count mart_max item_max
+  mart_count="$(ch --query "SELECT count() FROM torqmind_mart.agg_vendas_diaria")"
+  mart_max="$(ch --query "SELECT coalesce(max(data_key), 0) FROM torqmind_mart.agg_vendas_diaria")"
+  item_max="$(ch --query "SELECT coalesce(max(data_key), 0) FROM torqmind_dw.fact_venda_item")"
+
+  if [[ "$mart_count" -le 0 ]]; then
+    echo "ERROR: torqmind_mart.agg_vendas_diaria is empty after backfill." >&2
+    return 1
+  fi
+  if [[ "$mart_max" -lt "$item_max" ]]; then
+    echo "ERROR: torqmind_mart.agg_vendas_diaria max(data_key)=${mart_max} is behind torqmind_dw.fact_venda_item max(data_key)=${item_max}" >&2
+    return 1
+  fi
+
+  echo "agg_vendas_diaria rows=${mart_count} max_data_key=${mart_max}"
 }
 
-metric_ch() {
-  local table="$1"
-  ch --query "SELECT concat(toString(count()), '|', toString(coalesce(max(data_key), 0))) FROM torqmind_dw.${table}"
-}
-
-wait_required_dw_tables() {
-  local required_dw_table_sql="'dim_cliente','dim_filial','dim_funcionario','dim_grupo_produto','dim_local_venda','dim_produto','dim_usuario_caixa','fact_caixa_turno','fact_comprovante','fact_financeiro','fact_pagamento_comprovante','fact_risco_evento','fact_venda','fact_venda_item'"
-
-  echo
-  echo "== wait torqmind_dw required tables =="
-  for ((attempt = 1; attempt <= DW_WAIT_ATTEMPTS; attempt++)); do
-    count="$(ch --query "SELECT count() FROM system.tables WHERE database = 'torqmind_dw' AND name IN (${required_dw_table_sql})")"
-    if [[ "$count" -ge 14 ]]; then
-      echo "torqmind_dw ready with $count required tables"
-      return 0
-    fi
-    if [[ "$attempt" -eq "$DW_WAIT_ATTEMPTS" ]]; then
-      echo "Timed out waiting for torqmind_dw required tables; found $count/14" >&2
-      ch --query "SHOW TABLES FROM torqmind_dw" || true
-      return 1
-    fi
-    sleep "$DW_WAIT_SLEEP"
-  done
-}
-
-wait_sales_replication() {
-  echo
-  echo "== wait torqmind_dw sales facts to match PostgreSQL =="
-  local pg_venda pg_item ch_venda ch_item
-  for ((attempt = 1; attempt <= REPLICATION_WAIT_ATTEMPTS; attempt++)); do
-    pg_venda="$(metric_pg fact_venda)"
-    pg_item="$(metric_pg fact_venda_item)"
-    ch_venda="$(metric_ch fact_venda)"
-    ch_item="$(metric_ch fact_venda_item)"
-
-    if [[ "$pg_venda" == "$ch_venda" && "$pg_item" == "$ch_item" ]]; then
-      echo "fact_venda matched PostgreSQL: $ch_venda"
-      echo "fact_venda_item matched PostgreSQL: $ch_item"
-      return 0
-    fi
-
-    if [[ "$attempt" -eq 1 || $((attempt % 10)) -eq 0 ]]; then
-      echo "waiting replication attempt $attempt/$REPLICATION_WAIT_ATTEMPTS"
-      echo "  pg dw.fact_venda=$pg_venda | ch torqmind_dw.fact_venda=$ch_venda"
-      echo "  pg dw.fact_venda_item=$pg_item | ch torqmind_dw.fact_venda_item=$ch_item"
-    fi
-
-    if [[ "$attempt" -eq "$REPLICATION_WAIT_ATTEMPTS" ]]; then
-      echo "Timed out waiting for torqmind_dw sales facts to match PostgreSQL." >&2
-      echo "  pg dw.fact_venda=$pg_venda | ch torqmind_dw.fact_venda=$ch_venda" >&2
-      echo "  pg dw.fact_venda_item=$pg_item | ch torqmind_dw.fact_venda_item=$ch_item" >&2
-      return 1
-    fi
-    sleep "$REPLICATION_WAIT_SLEEP"
-  done
-}
-
-echo "== validate postgres wal_level =="
-wal_level="$(pg "SHOW wal_level")"
-if [[ "$wal_level" != "logical" ]]; then
-  echo "Postgres wal_level precisa ser logical para MaterializedPostgreSQL; atual: $wal_level" >&2
-  exit 1
-fi
-echo "wal_level=$wal_level"
-
-echo
-echo "== validate clickhouse ping =="
+echo "== validate PostgreSQL and ClickHouse =="
+compose exec -T postgres sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null'
 compose exec -T clickhouse sh -lc 'wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok'
-echo "ClickHouse ping OK"
-
-pg_host="$(ch_escape "${CLICKHOUSE_PG_HOST:-postgres}")"
-pg_port="$(ch_escape "${CLICKHOUSE_PG_PORT:-5432}")"
-pg_db="$(ch_escape "${POSTGRES_DB}")"
-pg_user="$(ch_escape "${POSTGRES_USER}")"
-pg_password="$(ch_escape "${POSTGRES_PASSWORD}")"
+echo "Services OK"
 
 echo
-echo "== recreate torqmind_dw MaterializedPostgreSQL =="
-ch --multiquery --query "
-SET allow_experimental_database_materialized_postgresql=1;
-SET allow_experimental_materialized_postgresql_table=1;
-DROP DATABASE IF EXISTS torqmind_dw SYNC;
-CREATE DATABASE torqmind_dw
-ENGINE = MaterializedPostgreSQL('${pg_host}:${pg_port}', '${pg_db}', '${pg_user}', '${pg_password}')
-SETTINGS materialized_postgresql_schema = 'dw';
-"
+echo "== sync native torqmind_dw from PostgreSQL dw =="
+ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" \
+  "$ROOT_DIR/deploy/scripts/prod-clickhouse-sync-dw.sh"
 
-wait_required_dw_tables
-wait_sales_replication
+echo
+echo "== validate native torqmind_dw critical sales facts =="
+validate_critical_sales_dw
 
 echo
 echo "== recreate torqmind_mart tables =="
@@ -145,7 +81,7 @@ ch --query "DROP DATABASE IF EXISTS torqmind_mart SYNC"
 ch --multiquery < "$ROOT_DIR/sql/clickhouse/phase2_mvs_design.sql"
 
 echo
-echo "== run native backfill =="
+echo "== run native mart backfill =="
 ch --multiquery < "$ROOT_DIR/sql/clickhouse/phase3_native_backfill.sql"
 
 echo
@@ -161,8 +97,8 @@ echo "torqmind_mart:"
 ch --query "SHOW TABLES FROM torqmind_mart"
 
 echo
-echo "== validate agg_vendas_diaria count =="
-ch --query "SELECT count() FROM torqmind_mart.agg_vendas_diaria"
+echo "== validate principal marts =="
+validate_marts
 
 echo
-echo "ClickHouse production initialization completed."
+echo "ClickHouse production initialization completed with native torqmind_dw."

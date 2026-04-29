@@ -7,7 +7,7 @@ Arquivo de contexto rapido para futuras sessoes. Leia este arquivo antes de reau
 - `apps/api`: FastAPI + Pydantic + JWT. Rotas BI em `app/routes_bi.py` e rotas historicas de dashboard em `app/routes_dashboard.py`.
 - `apps/web`: Next.js 14 + TypeScript. Paginas BI consomem `/bi/*` via `apps/web/app/lib/api.ts`.
 - PostgreSQL continua sendo fonte da verdade transacional e legado analitico (`stg`, `dw`, `mart`, `app`, `auth`, `billing`).
-- ClickHouse replica o schema `dw` PostgreSQL no banco `torqmind_dw` via `MaterializedPostgreSQL`.
+- ClickHouse mantem uma copia analitica nativa do schema `dw` PostgreSQL no banco `torqmind_dw`, carregada explicitamente por script via table function `postgresql(...)`.
 - ClickHouse serve marts nativas em `torqmind_mart` com tabelas agregadas/desnormalizadas e MVs streaming.
 - O backend analitico usa `app.repos_analytics` como facade ClickHouse-first. As rotas continuam chamando nomes publicos iguais aos de `repos_mart`.
 - Origem canonica de vendas: `stg.comprovantes` e `stg.itenscomprovantes`. `MovProdutos`/`ItensMovProdutos` nao devem voltar ao hot path de vendas; campos DW como `id_movprodutos` podem permanecer apenas como aliases legados preenchidos a partir de comprovantes.
@@ -21,9 +21,10 @@ Fluxo recomendado:
 make setup
 make up
 make migrate
-make clickhouse-init
-make clickhouse-mvs
+make clickhouse-sync-dw
+make clickhouse-marts-init
 make clickhouse-native-backfill
+make clickhouse-mvs
 make clickhouse-smoke
 make analytics-smoke
 make lint
@@ -36,12 +37,15 @@ Atalhos uteis:
 - `make down`: para os servicos.
 - `make logs`: segue logs.
 - `make resetdb RESET_CONFIRM=1 RESET_ENV=dev`: reset destrutivo somente dev/homolog.
-- `make clickhouse-dw-init`: cria `torqmind_dw` usando `MaterializedPostgreSQL`.
+- `make clickhouse-sync-dw`: recria `torqmind_dw` como banco ClickHouse nativo e carrega `dw.*` do PostgreSQL via `postgresql(...)`.
+- `make clickhouse-dw-init`: alias local para `make clickhouse-sync-dw`.
 - `make clickhouse-marts-init`: cria tabelas `torqmind_mart`.
 - `make clickhouse-mvs`: cria MVs streaming.
 - `make clickhouse-native-backfill`: popula marts nativas a partir de `torqmind_dw`.
 - `make analytics-smoke`: valida inventory do facade.
-- `make prod-clickhouse-init`: em producao recria `torqmind_dw`, espera tabelas DW e espera `fact_venda`/`fact_venda_item` baterem count/max(data_key) com PostgreSQL antes de backfillar `torqmind_mart`.
+- `make clickhouse-init`: executa sync DW nativo, espera as 14 tabelas obrigatorias e cria tabelas mart; para refresh completo rode backfill e MVs em seguida.
+- `make prod-clickhouse-sync-dw`: sync produtivo PostgreSQL DW -> ClickHouse DW nativo.
+- `make prod-clickhouse-init`: em producao recria `torqmind_dw` nativo, valida `fact_venda`/`fact_venda_item` contra PostgreSQL, recria `torqmind_mart`, roda backfill e cria MVs streaming nesta ordem.
 - `make prod-data-reconcile ID_EMPRESA=1 ID_FILIAL=14458`: compara PostgreSQL DW, `torqmind_dw` e marts de vendas sem depender de `stg.movprodutos`.
 
 ## 3. Variaveis de ambiente criticas
@@ -49,7 +53,8 @@ Atalhos uteis:
 - `USE_CLICKHOUSE=true|false`: ativa leitura analitica ClickHouse-first.
 - `DUAL_READ_MODE=true|false`: executa Postgres + ClickHouse em paralelo quando possivel e loga divergencias.
 - `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`: conexao ClickHouse.
-- `CLICKHOUSE_DW_WAIT_ATTEMPTS`, `CLICKHOUSE_REPLICATION_WAIT_ATTEMPTS`: limites de espera do bootstrap ClickHouse de producao.
+- `CLICKHOUSE_PG_HOST`, `CLICKHOUSE_PG_PORT`: host/porta PostgreSQL acessiveis pelo ClickHouse para a table function `postgresql(...)`.
+- `CLICKHOUSE_DW_WAIT_ATTEMPTS`: limite de espera local por tabelas DW nativas.
 - `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: conexao PostgreSQL.
 - `DATABASE_URL`: URL async da API.
 - `JWT_SECRET_KEY`/equivalentes em `config.py`: nunca logar nem commitar.
@@ -94,7 +99,7 @@ SQL ClickHouse:
 - `sql/clickhouse/phase2_postgres_to_clickhouse_mapping.md`: mapeamento DW -> CH.
 - `sql/clickhouse/phase2_mvs_design.sql`: tabelas marts.
 - `sql/clickhouse/phase2_mvs_streaming_triggers.sql`: MVs streaming.
-- `sql/clickhouse/phase3_native_backfill.sql`: backfill nativo.
+- `sql/clickhouse/phase3_native_backfill.sql`: backfill nativo; configura `max_partitions_per_insert_block=0` somente na sessao de backfill historico.
 
 Deploy:
 
@@ -103,8 +108,9 @@ Deploy:
 - `docker-compose.prod.yml`: stack prod com ClickHouse.
 - `.env.production.example`: variaveis prod esperadas.
 - `deploy/scripts/load_clickhouse_historical.sh`: carga historica CH.
-- `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; nao backfilla marts antes de `torqmind_dw.fact_venda` e `fact_venda_item` atingirem count/max(data_key) do PostgreSQL.
-- `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW vs marts.
+- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 14 tabelas DW obrigatorias por `postgresql(...)` e valida counts/max(data_key); nao imprime credenciais.
+- `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; executa sync DW nativo, valida vendas, recria marts, roda backfill e depois cria MVs streaming.
+- `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW nativo vs marts; diferencia ERROR critico de WARN de qualidade.
 - `Makefile`: fonte unica dos comandos operacionais.
 
 Testes:
@@ -238,9 +244,12 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Funcoes sem mart equivalente sao divida explicita no facade e geram warning quando usadas com ClickHouse ativo.
 - `query_dict()` agora retorna `list[dict]` real usando `column_names`, pois as funcoes usam `row.get(...)`.
 - Docker local/prod tem ClickHouse como servico de primeira classe.
-- `MaterializedPostgreSQL` usa banco `torqmind_dw` replicando schema `dw`; marts vivem separadas em `torqmind_mart`.
+- `MaterializedPostgreSQL` nao e mais caminho produtivo para `torqmind_dw`. Em producao ele deixou `fact_venda_item` vazia/inconsistente apesar do PostgreSQL estar correto e da table function `postgresql(...)` conseguir ler todos os dados.
+- `torqmind_dw` agora e banco ClickHouse nativo (`Atomic`) com tabelas `MergeTree`/`ReplacingMergeTree` gravaveis. O sync controlado e feito por `deploy/scripts/prod-clickhouse-sync-dw.sh`.
+- Full refresh ClickHouse deve dropar MVs streaming antes de recarregar `torqmind_dw`, recriar tabelas mart, rodar `phase3_native_backfill.sql` e so entao recriar MVs streaming.
 - Frescor operacional ClickHouse separa cobertura comercial (`commercial_coverage.latest_available_dt`), publicacao tecnica (`operational_sync.last_sync_at`) e frescor de tela (`freshness.live_through_at`).
-- `prod-clickhouse-init.sh` deve esperar count/max(data_key) de `torqmind_dw.fact_venda` e `torqmind_dw.fact_venda_item` baterem com PostgreSQL antes de criar/backfillar marts.
+- `prod-clickhouse-init.sh` deve validar count/max(data_key) de `torqmind_dw.fact_venda` e `torqmind_dw.fact_venda_item` contra PostgreSQL antes de criar/backfillar marts.
+- `prod-data-reconcile.sh` retorna exit code `1` apenas para divergencia critica; itens orfaos no DW PostgreSQL sao WARN de qualidade e nao gatilho automatico de rebuild.
 - Frontend nunca deve montar filtro BI com `toISOString().slice(0, 10)`; datas de negocio ficam como string `YYYY-MM-DD`.
 
 ## 8. Pontas soltas resolvidas
@@ -253,13 +262,15 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Compose local/prod agora inclui ClickHouse e variaveis da API.
 - Makefile ganhou init/backfill/smoke ClickHouse.
 - Reset SQL alinhado ate a migration `070`.
-- Reparados constraints/indices necessarios para upserts e para `MaterializedPostgreSQL`/replica identity.
+- Reparados constraints/indices necessarios para upserts e compatibilidade de replica identity legada.
 - Reparada sincronizacao de notificacoes de anomalia de pagamento.
 - Sanitizado float nao finito vindo de agregacoes ClickHouse antes de montar JSON.
 - Corrigido frescor de vendas para usar `agg_vendas_diaria.updated_at` com conversao UTC -> `America/Sao_Paulo`.
 - Corrigido caixa para nao devolver `1970-01-01T00:00:00` quando nao ha linha util em `agg_caixa_turno_aberto`.
 - Corrigido frontend para nao fixar sync indisponivel quando existe cobertura comercial publicada.
-- Corrigido bootstrap ClickHouse prod para aguardar replicacao completa de vendas antes do backfill das marts.
+- Substituido bootstrap ClickHouse produtivo baseado em `MaterializedPostgreSQL` por sync nativo controlado PostgreSQL DW -> ClickHouse DW.
+- Corrigido bootstrap ClickHouse prod para validar `fact_venda` e `fact_venda_item` completas antes do backfill das marts.
+- Corrigido backfill historico para aceitar refresh com muitas particoes em uma sessao controlada.
 - Adicionado script de reconciliacao `prod-data-reconcile.sh`.
 
 ## 9. Pontas soltas remanescentes
@@ -284,6 +295,7 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Rodar pelo menos testes unitarios do facade/ClickHouse, `make lint`, `make clickhouse-smoke` e `make analytics-smoke`.
 - Ao mexer em vendas, confirmar que ETL ativo usa `stg.comprovantes`/`stg.itenscomprovantes`, nao `stg.movprodutos`.
 - Ao mexer em datas no frontend, adicionar teste cobrindo horario noturno em `America/Sao_Paulo`.
+- Nunca usar `DATABASE ENGINE = MaterializedPostgreSQL` no caminho produtivo de `torqmind_dw`; use DW nativo + sync explicito via `postgresql(...)`.
 
 ## 11. Comandos validados nesta revisao
 
@@ -313,6 +325,16 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Revisao 2026-04-29: `bash -n deploy/scripts/prod-clickhouse-init.sh deploy/scripts/prod-data-reconcile.sh` passou.
 - Revisao 2026-04-29: funcoes ativas `etl.load_fact_venda` e `etl.load_fact_venda_item_range_detail` confirmadas em PostgreSQL usando `stg.comprovantes` e `stg.itenscomprovantes`.
 - Revisao 2026-04-29: `make test` foi tentado; testes API legados apresentaram multiplas falhas/erros de fixtures/estado e foi interrompido apos ficar sem progresso, retornando `Error 130`.
+- Revisao nativa DW 2026-04-29: `make clickhouse-init` passou criando `torqmind_dw` nativo com 14 tabelas obrigatorias; `fact_venda_item` bateu PostgreSQL em `4014480|20260429` no compose local.
+- Revisao nativa DW 2026-04-29: `make migrate` passou com 0 novas migrations, 72 ja aplicadas e verificacao de schema OK.
+- Revisao nativa DW 2026-04-29: `make clickhouse-native-backfill` passou apos recriar marts; `phase3_native_backfill.sql` agora permite muitas particoes somente na sessao do backfill.
+- Revisao nativa DW 2026-04-29: `make clickhouse-mvs`, `make clickhouse-smoke` e `make analytics-smoke` passaram; `torqmind_dw=14`, `torqmind_mart=51`, facade com 68 funcoes.
+- Revisao nativa DW 2026-04-29: `ALLOW_INSECURE_ENV=1 ENV_FILE=.env COMPOSE_FILE=docker-compose.yml ./deploy/scripts/prod-clickhouse-init.sh` passou end-to-end com sync DW nativo, backfill mart e MVs.
+- Revisao nativa DW 2026-04-29: `ALLOW_INSECURE_ENV=1 ENV_FILE=.env COMPOSE_FILE=docker-compose.yml ID_EMPRESA=1 ID_FILIAL=14458 ./deploy/scripts/prod-data-reconcile.sh` passou com `errors=0 warnings=1`; os `83` itens orfaos sao WARN.
+- Revisao nativa DW 2026-04-29: `docker compose exec -T api python -m unittest app.test_repos_analytics_unit` passou, 14 testes.
+- Revisao nativa DW 2026-04-29: `docker compose exec -T web npm test` passou, 74 testes.
+- Revisao nativa DW 2026-04-29: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet` passou.
+- Revisao nativa DW 2026-04-29: `make lint` passou com build Next.js.
 
 ## 12. Regras de ouro
 
@@ -324,4 +346,4 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Atualizar testes junto com contrato, SQL e facade.
 - Nunca reintroduzir `stg.movprodutos` como fonte canonica de vendas.
 - Infra UTC; negocio/UI `America/Sao_Paulo`; filtros sempre `YYYY-MM-DD`; API retorna timestamp tecnico com offset.
-- Bootstrap ClickHouse: esperar DW replicado antes de backfillar marts.
+- Bootstrap ClickHouse: sincronizar `torqmind_dw` nativo e validar count/max(data_key) contra PostgreSQL antes de backfillar marts.
