@@ -14,14 +14,12 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
-import ReadingStatusBanner from "../components/ui/ReadingStatusBanner";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { buildUserLabel, formatCurrency } from "../lib/format";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { describeDataFreshness } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -146,10 +144,6 @@ export default function SalesPage() {
           </div>
         ) : (
           <>
-            <ReadingStatusBanner
-              message={describeDataFreshness(data, "vendas")}
-            />
-
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-12">
                 <div className="sectionEyebrow">Resumo comercial</div>

@@ -18,7 +18,6 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
-import ReadingStatusBanner from "../components/ui/ReadingStatusBanner";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
   buildUserLabel,
@@ -30,10 +29,7 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import {
-  describeCacheBanner,
-  describeFinanceCoverage,
-} from "../lib/reading-copy.mjs";
+import { describeFinanceCoverage } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -173,10 +169,6 @@ export default function FinancePage() {
           </div>
         ) : (
           <>
-            <ReadingStatusBanner
-              message={describeCacheBanner(data?._snapshot_cache, "financeiro")}
-            />
-
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-6">
                 <h2>Ação prioritária</h2>

@@ -413,6 +413,17 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Revisao paridade semantica 2026-04-30: `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit app.test_sales_overview_unit app.test_clickhouse_operational_scripts_unit app.test_snapshot_cache` passou, 67 testes, 7 skips.
 - Revisao paridade semantica 2026-04-30: `docker compose exec -T web npm test` passou, 76 testes; `cd apps/web && npm test` passou, 77 testes no host.
 - Revisao paridade semantica 2026-04-30: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet`, `make clickhouse-smoke`, `make analytics-smoke` e `make lint` passaram.
+- Revisao estabilizacao UX/pipeline 2026-04-30: `bash -n` dos scripts de pipeline/sync/refresh/cron passou; `make analytics-smoke` passou; `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit app.test_sales_overview_unit` passou (34 testes); `cd apps/web && npm test` passou (79 testes); `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet` passou; `make lint` falhou localmente por `service "web" is not running`.
+
+## 13. Ajustes operacionais e UX (2026-04-30)
+
+- Pipeline `prod-etl-pipeline.sh` agora publica ClickHouse incremental sempre que o trilho operacional/risk conclui com sucesso, mesmo quando a flag `phase_domains/clock_meta` vier vazia; a detecção final de delta fica no `prod-clickhouse-sync-dw.sh` (janela por `updated_at` + estado em `torqmind_ops.sync_state`).
+- Lock anti-overlap continua com `flock -n` e ganhou log de idade do lock (`age=...s`) para diagnosticar lock stale no host sem destravar na marra.
+- Vendas operacionais não fazem mais shift automático para “ontem”: em `requested_dt_ini > latest_available_dt`, `commercial_window_coverage.mode=requested_outside_coverage` e o recorte efetivo permanece o solicitado.
+- Estado “Todas as filiais” foi estabilizado no frontend com sentinel explícito `branch_scope=all` em URL/estado; ao trocar de aba não expande mais para lista de `id_filiais`.
+- UX cliente: removidos banners/cards de frescor técnico das telas de produto (`dashboard`, `sales`, `cash`, `fraud`, `customers`, `finance`, `pricing`, `goals`). Informações técnicas devem ficar na área de `Plataforma`.
+- Terminologia BR: botão superior “Platform” no produto virou “Plataforma”; labels de papel também foram traduzidos (`Plataforma Master`, `Administrador da Plataforma`, etc).
+- Regras preservadas: origem canônica de vendas continua `stg.comprovantes`/`stg.itenscomprovantes`; nenhum retorno `1970-01-01` foi reintroduzido; fluxo de preço concorrente segue app-owned em PostgreSQL.
 
 ## 12. Regras de ouro
 

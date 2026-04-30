@@ -73,13 +73,13 @@ export function formatRoleLabel(role: any) {
   if (value === 'MASTER') return 'Master';
   if (value === 'OWNER') return 'Diretoria';
   if (value === 'MANAGER') return 'Gerência';
-  if (raw === 'platform_master') return 'Platform Master';
-  if (raw === 'platform_admin') return 'Platform Admin';
+  if (raw === 'platform_master') return 'Plataforma Master';
+  if (raw === 'platform_admin') return 'Administrador da Plataforma';
   if (raw === 'product_global') return 'Produto Global';
   if (raw === 'channel_admin') return 'Canal';
-  if (raw === 'tenant_admin') return 'Tenant Admin';
-  if (raw === 'tenant_manager') return 'Tenant Manager';
-  if (raw === 'tenant_viewer') return 'Tenant Viewer';
+  if (raw === 'tenant_admin') return 'Administrador da Empresa';
+  if (raw === 'tenant_manager') return 'Gestor da Empresa';
+  if (raw === 'tenant_viewer') return 'Leitor da Empresa';
   return value || 'Usuário';
 }
 

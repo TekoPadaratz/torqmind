@@ -302,13 +302,12 @@ def _window_coverage_payload(
     covered_days = max((overlap_end - overlap_start).days + 1, 0) if overlap_end >= overlap_start else 0
 
     if requested_dt_ini > latest_available_dt:
-        effective_dt_fim = latest_available_dt
-        effective_dt_ini = max(earliest_available_dt, latest_available_dt - timedelta(days=requested_days - 1))
-        mode = "shifted_latest"
+        effective_dt_ini = requested_dt_ini
+        effective_dt_fim = requested_dt_fim
+        mode = "requested_outside_coverage"
         message = (
-            f"O recorte pedido vai até {requested_dt_fim.isoformat()}, mas a última base comercial disponível "
-            f"vai até {latest_available_dt.isoformat()}. A tela usa o último período comparável entre "
-            f"{effective_dt_ini.isoformat()} e {effective_dt_fim.isoformat()}."
+            f"O recorte pedido começa em {requested_dt_ini.isoformat()}, mas a última base comercial disponível "
+            f"vai até {latest_available_dt.isoformat()}. Não há vendas publicadas para a data solicitada."
         )
     elif requested_dt_fim > latest_available_dt:
         effective_dt_ini = requested_dt_ini
@@ -911,12 +910,12 @@ def sales_overview_bundle(
     bundle["monthly_evolution"] = commercial.get("monthly_evolution") or []
     bundle["annual_comparison"] = commercial.get("annual_comparison") or {}
     bundle["commercial_coverage"] = sales_coverage
-    reading_status = "latest_compatible" if sales_coverage.get("mode") == "shifted_latest" else "mart_snapshot"
+    reading_status = "unavailable_for_requested_window" if sales_coverage.get("mode") == "requested_outside_coverage" else "mart_snapshot"
     bundle["reading_status"] = reading_status
     freshness = dict(bundle.get("freshness") or {})
     freshness["mode"] = reading_status
     freshness["source"] = "torqmind_mart.agg_vendas_diaria"
-    freshness["historical_through_dt"] = _iso_or_none(effective_dt_fim)
+    freshness["historical_through_dt"] = _iso_or_none(dt_fim)
     freshness["live_through_at"] = (bundle.get("operational_sync") or {}).get("last_sync_at")
     freshness["snapshot_generated_at"] = (bundle.get("operational_sync") or {}).get("snapshot_generated_at")
     bundle["freshness"] = freshness
@@ -2240,8 +2239,8 @@ def cash_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: Optional[d
     effective_dt_fim = dt_fim or business_today(id_empresa)
     effective_dt_ini = dt_ini or (effective_dt_fim - timedelta(days=29))
     commercial_coverage = commercial_window_coverage(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
-    historical_dt_ini = commercial_coverage.get("effective_dt_ini") or effective_dt_ini
-    historical_dt_fim = commercial_coverage.get("effective_dt_fim") or effective_dt_fim
+    historical_dt_ini = effective_dt_ini
+    historical_dt_fim = effective_dt_fim
     historical = cash_commercial_overview(role, id_empresa, id_filial, historical_dt_ini, historical_dt_fim)
     commercial = dict(historical)
     commercial["commercial_coverage"] = commercial_coverage
@@ -2256,7 +2255,7 @@ def cash_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: Optional[d
         "definitions": cash_definitions(),
         "operational_sync": live_now.get("operational_sync"),
         "freshness": {
-            "mode": "latest_compatible" if commercial_coverage.get("mode") == "shifted_latest" else "historical_plus_live",
+            "mode": "requested_window",
             "historical_through_dt": historical_dt_fim.isoformat(),
             "live_through_at": (live_now.get("operational_sync") or {}).get("last_sync_at"),
             "source": "torqmind_mart.cash",

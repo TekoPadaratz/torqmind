@@ -5,12 +5,10 @@ import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
-import ReadingStatusBanner from '../components/ui/ReadingStatusBanner';
 import ScopeTransitionState from '../components/ui/ScopeTransitionState';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
-import { describeDataFreshness } from '../lib/reading-copy.mjs';
 import { buildScopeParams, useScopeQuery } from '../lib/scope';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
 import { apiPost } from '../lib/api';
@@ -89,12 +87,6 @@ export default function GoalsPage() {
     if (status === 'above_history') return 'Acima da média recente';
     return 'Em acompanhamento';
   }, [projection.status]);
-  const goalsBanner =
-    describeDataFreshness(data, 'metas e equipe')
-    || (String(projection.status || '').toLowerCase() === 'latest_compatible'
-      ? projection.headline
-      : null);
-
   useEffect(() => {
     if (Number(projectionGoal.target_value || 0) > 0) {
       setMetaDraft(formatGoalTargetInputFromNumber(projectionGoal.target_value));
@@ -155,9 +147,6 @@ export default function GoalsPage() {
           </div>
         ) : (
           <div className="bi-grid" style={{ marginTop: 12 }}>
-            <div className="col-12">
-              <ReadingStatusBanner message={goalsBanner} />
-            </div>
             <div
               className="card col-12"
               style={{

@@ -28,7 +28,15 @@ fi
 mkdir -p "$(dirname "$LOCK_FILE")" "$STATE_DIR"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-  echo "$(date -Iseconds) TorqMind ETL pipeline skip: execução anterior ainda está ativa. Lock: $LOCK_FILE" >&2
+  lock_age="unknown"
+  if [[ -f "$LOCK_FILE" ]]; then
+    lock_mtime="$(stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)"
+    now_epoch="$(date +%s)"
+    if [[ "$lock_mtime" =~ ^[0-9]+$ && "$lock_mtime" -gt 0 ]]; then
+      lock_age="$((now_epoch - lock_mtime))s"
+    fi
+  fi
+  echo "$(date -Iseconds) TorqMind ETL pipeline skip: execução anterior ainda está ativa. Lock: $LOCK_FILE age=${lock_age}" >&2
   exit 0
 fi
 
@@ -171,6 +179,22 @@ print("false")
 PY
 }
 
+is_clickhouse_incremental_enabled() {
+  [[ "$CLICKHOUSE_INCREMENTAL_ENABLED" == "true" || "$CLICKHOUSE_INCREMENTAL_ENABLED" == "1" ]]
+}
+
+run_clickhouse_incremental_publication() {
+  local stage_label="$1"
+  if ! is_clickhouse_incremental_enabled; then
+    echo "$(date -Iseconds) ClickHouse incremental publication disabled (${stage_label})." >&2
+    return 0
+  fi
+  run_with_timeout "ClickHouse DW incremental sync (${stage_label})" \
+    env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_SYNC_SCRIPT"
+  run_with_timeout "ClickHouse mart incremental refresh (${stage_label})" \
+    env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_REFRESH_MARTS_SCRIPT"
+}
+
 risk_is_due() {
   if [[ "${FORCE_RISK:-false}" == "true" || "${FORCE_RISK:-0}" == "1" ]]; then
     return 0
@@ -220,23 +244,23 @@ echo "$(date -Iseconds) TorqMind ETL pipeline starting" >&2
 operational_summary="$(run_track operational "$SKIP_BUSY_TENANTS")"
 printf '%s\n' "$operational_summary"
 
-if [[ "$(track_succeeded "$operational_summary")" == "true" && "$(track_has_changes "$operational_summary")" == "true" && ( "$CLICKHOUSE_INCREMENTAL_ENABLED" == "true" || "$CLICKHOUSE_INCREMENTAL_ENABLED" == "1" ) ]]; then
-  run_with_timeout "ClickHouse DW incremental sync" \
-    env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_SYNC_SCRIPT"
-  run_with_timeout "ClickHouse mart incremental refresh" \
-    env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_REFRESH_MARTS_SCRIPT"
+if [[ "$(track_succeeded "$operational_summary")" == "true" ]]; then
+  if [[ "$(track_has_changes "$operational_summary")" == "true" ]]; then
+    echo "$(date -Iseconds) Operational track reported changes; publishing ClickHouse incremental." >&2
+  else
+    echo "$(date -Iseconds) Operational track did not report changes; validating DW deltas with ClickHouse incremental sync." >&2
+  fi
+  run_clickhouse_incremental_publication "after-operational"
 else
-  echo "$(date -Iseconds) ClickHouse incremental publication skipped after operational track: no changes or disabled." >&2
+  echo "$(date -Iseconds) ClickHouse incremental publication skipped after operational track: operational failed." >&2
 fi
 
 if risk_is_due; then
+  echo "$(date -Iseconds) TorqMind risk track due." >&2
   risk_summary="$(run_track risk "$RISK_SKIP_BUSY_TENANTS")"
   printf '%s\n' "$risk_summary"
-  if [[ "$(track_succeeded "$risk_summary")" == "true" && "$(track_has_changes "$risk_summary")" == "true" && ( "$CLICKHOUSE_INCREMENTAL_ENABLED" == "true" || "$CLICKHOUSE_INCREMENTAL_ENABLED" == "1" ) ]]; then
-    run_with_timeout "ClickHouse DW incremental sync after risk" \
-      env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_SYNC_SCRIPT"
-    run_with_timeout "ClickHouse mart incremental refresh after risk" \
-      env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_REFRESH_MARTS_SCRIPT"
+  if [[ "$(track_succeeded "$risk_summary")" == "true" ]]; then
+    run_clickhouse_incremental_publication "after-risk"
   fi
   if [[ "$(risk_state_should_advance "$risk_summary")" == "true" ]]; then
     date +%s >"$RISK_STATE_FILE"
