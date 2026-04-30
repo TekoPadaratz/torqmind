@@ -34,3 +34,9 @@ test('sales page uses customer-friendly sales labels', () => {
   assert.ok(!source.includes('Saídas ativas'));
   assert.ok(!source.includes('Saídas normais'));
 });
+
+test('pricing page keeps typed competitor prices while refetching after save', () => {
+  const source = readFileSync(new URL('../pricing/page.tsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('router.replace(buildProductHref'));
+  assert.ok(!source.includes('setPriceInputs({});'));
+});

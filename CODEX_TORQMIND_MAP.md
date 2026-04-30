@@ -54,6 +54,7 @@ Atalhos uteis:
 - `make prod-sales-orphans-report ID_EMPRESA=1 ID_FILIAL=14458`: relata itens orfaos como WARN, sem apagar dados.
 - `make prod-clickhouse-init`: em producao recria `torqmind_dw` nativo, valida `fact_venda`/`fact_venda_item` contra PostgreSQL, recria `torqmind_mart`, roda backfill e cria MVs streaming nesta ordem.
 - `make prod-data-reconcile ID_EMPRESA=1 ID_FILIAL=14458`: compara PostgreSQL DW, `torqmind_dw` e marts de vendas sem depender de `stg.movprodutos`.
+- `make prod-semantic-marts-audit ID_EMPRESA=1 ID_FILIAL=14458`: valida semantica de labels humanos em pagamentos, caixa, antifraude, risco, financeiro e concorrencia.
 
 ## 3. Variaveis de ambiente criticas
 
@@ -120,10 +121,11 @@ Deploy:
 - `docker-compose.prod.yml`: stack prod com ClickHouse.
 - `.env.production.example`: variaveis prod esperadas.
 - `deploy/scripts/load_clickhouse_historical.sh`: carga historica CH.
-- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 14 tabelas DW obrigatorias por `postgresql(...)` e valida counts/max(data_key); nao imprime credenciais.
+- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 14 tabelas DW obrigatorias por `postgresql(...)`, carrega `app.payment_type_map` em `dim_forma_pagamento` e valida counts/max(data_key); nao imprime credenciais.
 - `deploy/scripts/prod-clickhouse-refresh-marts.sh`: modo `full` para bootstrap e `incremental` para republicar janelas afetadas de marts idempotentes.
 - `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; executa sync DW nativo, valida vendas, recria marts, roda backfill e depois cria MVs streaming.
 - `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW nativo vs marts; diferencia ERROR critico de WARN de qualidade.
+- `deploy/scripts/prod-semantic-marts-audit.sh`: auditoria semantica das marts; falha em `FORMA_*`, labels vazios quando ha dimensao, datas 1970 e finance mart ausente com fatos existentes.
 - `deploy/scripts/prod-etl-pipeline.sh`: rotina leve com lock, timeout, ETL operational/risk e publicacao incremental ClickHouse.
 - `deploy/scripts/prod-install-cron.sh`: instala cron `*/${OPERATIONAL_INTERVAL_MINUTES}`; default operacional 2 min e risk 30 min.
 - `deploy/scripts/prod-history-coverage-audit.sh`: auditoria historica por STG canonico, DW PostgreSQL, DW ClickHouse e mart.
@@ -189,6 +191,7 @@ Funcoes ClickHouse implementadas:
 | `finance_kpis` | `/bi/finance/overview` | `financeiro_vencimentos_diaria` | KPIs financeiro |
 | `finance_series` | `/bi/finance/overview` | `financeiro_vencimentos_diaria` | serie financeiro |
 | `finance_aging_overview` | `/bi/finance/overview` | `finance_aging_daily` | aging |
+| `cash_dre_summary` | `/bi/cash/overview` | `finance_aging_daily` | DRE/resumo financeiro sem datas 1970 |
 | `payments_overview_kpis` | `/bi/payments/overview` | `agg_pagamentos_diaria` | KPIs pagamentos |
 | `payments_by_day` | `/bi/payments/overview` | `agg_pagamentos_diaria` | serie pagamentos |
 | `payments_by_turno` | `/bi/payments/overview` | `agg_pagamentos_turno` | turno pagamentos |
@@ -208,6 +211,7 @@ Funcoes estaticas/definicoes tambem existem em CH: `cash_definitions`, `fraud_de
 Funcoes Postgres por desenho:
 
 - `list_filiais`: auth/app scope.
+- `competitor_pricing_overview`: fluxo app de precificacao concorrente; le valores salvos em PostgreSQL e bypassa snapshot.
 - `competitor_pricing_upsert`: escrita OLTP app.
 - `competitor_fuel_product_ids`: dimensao/app para formulario.
 - `goals_today`, `upsert_goal`: app goals.
@@ -218,8 +222,6 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 
 - `stock_position_summary`: falta mart de estoque.
 - `customers_delinquency_overview`: falta mart customer-level de inadimplencia.
-- `cash_dre_summary`: DRE ainda depende de fatos financeiros transacionais.
-- `competitor_pricing_overview`: mistura app competitor table + dimensao combustivel.
 - `monthly_goal_projection`: mistura `app.goals` com serie analitica.
 
 ## 6. Mapa das marts ClickHouse
@@ -233,21 +235,21 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 | `agg_funcionarios_diaria` | funcionarios agregados | `id_funcionario`, `funcionario_nome`, `faturamento`, `margem`, `vendas` | sales, goals |
 | `insights_base_diaria` | indicadores base | `data_key`, `faturamento`, `margem`, `risco_score` | insights |
 | `fraude_cancelamentos_diaria` | fraude cancelamentos | `cancelamentos`, `valor_cancelado`, `usuarios_distintos` | fraud |
-| `fraude_cancelamentos_eventos` | eventos fraude | `id_movprodutos`, `usuario_nome`, `motivo`, `valor` | fraud |
+| `fraude_cancelamentos_eventos` | eventos fraude | `id_filial`, `filial_nome`, `id_usuario`, `usuario_nome`, `usuario_source`, `id_turno`, `turno_value`, `valor_total` | fraud |
 | `agg_risco_diaria` | risco diario | `eventos`, `valor_risco`, `risco_score` | risk |
 | `risco_top_funcionarios_diaria` | risco por funcionario | `id_funcionario`, `funcionario_nome`, `eventos`, `valor_risco` | risk |
-| `risco_turno_local_diaria` | risco por turno/local | `id_turno`, `id_local_venda`, `eventos`, `valor_risco` | risk |
-| `risco_eventos_recentes` | view eventos recentes | `id`, `id_movprodutos`, `funcionario_nome`, `severity`, `score` | risk |
+| `risco_turno_local_diaria` | risco por turno/local | `id_turno`, `turno_value`, `id_local_venda`, `local_nome`, `filial_nome`, `eventos`, `score_medio` | risk |
+| `risco_eventos_recentes` | view eventos recentes | `id`, `id_movprodutos`, `filial_nome`, `funcionario_nome`, `operador_caixa_nome`, `event_type`, `score_risco` | risk |
 | `clientes_churn_risco` | churn legado | `id_cliente`, `cliente_nome`, `score_churn` | customers |
 | `customer_rfm_daily` | RFM cliente | `id_cliente`, `recency_days`, `frequency`, `monetary` | customers |
 | `customer_churn_risk_daily` | churn diario | `id_cliente`, `risk_score`, `risk_bucket` | churn |
 | `financeiro_vencimentos_diaria` | vencimentos | `vencido`, `a_vencer`, `recebido`, `pago` | finance |
 | `finance_aging_daily` | aging financeiro | `bucket`, `valor`, `quantidade` | finance |
-| `agg_pagamentos_diaria` | pagamentos diarios | `forma_pagamento`, `total_valor`, `qtd` | payments |
-| `agg_pagamentos_turno` | pagamentos por turno | `id_turno`, `forma_pagamento`, `total_valor` | payments |
+| `agg_pagamentos_diaria` | pagamentos diarios | `category`, `label`, `total_valor`, `qtd_comprovantes` | payments |
+| `agg_pagamentos_turno` | pagamentos por turno | `id_turno`, `category`, `label`, `total_valor` | payments |
 | `pagamentos_anomalias_diaria` | anomalias pagamento | `event_type`, `severity`, `score`, `insight_id_hash` | payments, notifications sync |
 | `agg_caixa_turno_aberto` | caixa aberto | `id_turno`, `opened_at`, `expected_total`, `observed_total` | cash |
-| `agg_caixa_forma_pagamento` | caixa por forma | `forma_pagamento`, `valor` | cash |
+| `agg_caixa_forma_pagamento` | caixa por forma | `tipo_forma`, `forma_label`, `forma_category`, `total_valor` | cash |
 | `agg_caixa_cancelamentos` | cancelamentos caixa | `valor_cancelado`, `qtd_cancelamentos` | cash |
 | `alerta_caixa_aberto` | alertas caixa | `status`, `hours_open`, `severity` | cash |
 | `anonymous_retention_daily` | retencao anonima | `new_customers`, `returning_customers`, `retention_rate` | retention |
@@ -277,6 +279,10 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Dashboard geral faz auto retry curto para payload instavel: 2s, ate 4 tentativas, cancelando quando o usuario troca filtro.
 - Textos visiveis ao cliente evitam jargoes como mart/snapshot/recorte/trilho; exemplo: `Saidas normais` virou `Vendas normais`.
 - Alertas futuros devem entrar depois do ETL operational e/ou depois da publicacao incremental ClickHouse, usando eventos/marts leves sem full refresh.
+- `app.payment_type_map` e a fonte oficial de nomes/categorias de formas de pagamento. O sync DW carrega essa tabela app em `torqmind_dw.dim_forma_pagamento`; as marts guardam `label`/`category` reais e so usam `Forma nao identificada` quando nao ha mapeamento.
+- Labels humanos de filial, operador, funcionario e local devem ser resolvidos no refresh/backfill das marts, nao por JOIN pesado na API. Objetos enriquecidos: `fraude_cancelamentos_eventos`, `risco_turno_local_diaria` e view `risco_eventos_recentes`.
+- `pricing_competitor_overview` e fluxo app/transacional: continua ligado a PostgreSQL para valores salvos em `app.competitor_fuel_prices` e bypassa snapshot cache para GET apos POST nao devolver payload antigo.
+- `cash_dre_summary` agora tem implementacao ClickHouse baseada em `finance_aging_daily`; ausencia de base retorna cards indisponiveis com `dt_ref=None`, nunca `1970-01-01`.
 
 ## 8. Pontas soltas resolvidas
 
@@ -304,10 +310,15 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Adicionados auditor historico e relatorio de orfaos, ambos baseados em `Comprovantes`/`ItensComprovantes`.
 - Frontend ganhou auto retry para primeira carga sem payload estavel e copy mais simples de frescor.
 - Corrigido `prod-etl-incremental.sh` para nao passar mensagens gigantes como argumento Python; pipeline agora extrai resumo JSON sem estourar `Argument list too long`.
+- Corrigidas marts de pagamentos/caixa para usar labels reais de `app.payment_type_map` via `torqmind_dw.dim_forma_pagamento`, removendo `FORMA_X` do caminho produtivo.
+- Corrigidas marts/view de antifraude e risco para carregar `filial_nome`, `usuario_nome`, `usuario_source`, `turno_value` e `local_nome` quando as dimensoes existem.
+- Corrigido DRE/resumo de caixa ClickHouse para retornar cards financeiros a partir de `finance_aging_daily` e nunca renderizar data 1970 quando nao ha snapshot.
+- Corrigido fluxo de preco concorrente para bypassar snapshot cache no overview e preservar inputs digitados enquanto o frontend refaz a consulta apos salvar.
+- Adicionado `docs/clickhouse_semantic_parity_audit.md` e `prod-semantic-marts-audit.sh` para validar paridade semantica operacional.
 
 ## 9. Pontas soltas remanescentes
 
-- Ainda nao existe mart ClickHouse para estoque, DRE, inadimplencia por cliente, precificacao concorrente e projecao mensal de metas.
+- Ainda nao existe mart ClickHouse para estoque, inadimplencia por cliente, precificacao concorrente analitica e projecao mensal de metas.
 - Alguns testes legados criam dados diretamente no PostgreSQL e esperam leitura imediata em endpoints BI; com `USE_CLICKHOUSE=true`, esses testes precisam popular ClickHouse ou rodar com `USE_CLICKHOUSE=false`.
 - O `make test` completo ainda nao esta verde: restam falhas de ETL/fixtures legadas e smokes que batem no servidor externo com estado diferente do processo de teste.
 - Cobertura e2e Docker com autenticacao real dos endpoints `/bi/*` ainda deve ser consolidada com dados seedados representativos.
@@ -334,6 +345,9 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Nunca usar `DATABASE ENGINE = MaterializedPostgreSQL` no caminho produtivo de `torqmind_dw`; use DW nativo + sync explicito via `postgresql(...)`.
 - Nunca colocar `prod-clickhouse-init.sh` ou `MODE=full` no cron operacional.
 - Ao mexer no pipeline, validar lock, timeout, ausencia de senha em log e que orfaos continuam WARN.
+- Ao mexer em pagamentos/caixa, manter `app.payment_type_map -> torqmind_dw.dim_forma_pagamento -> marts` e rodar `prod-semantic-marts-audit.sh`.
+- Ao mexer em antifraude/risco, preservar labels desnormalizados de filial/operador/local nas marts; fallback "nao identificado" so quando a dimensao realmente nao existir.
+- Preco concorrente e app-owned: POST salva em PostgreSQL e GET nao deve depender de snapshot stale.
 
 ## 11. Comandos validados nesta revisao
 
@@ -389,6 +403,16 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Revisao operacional incremental 2026-04-29: `prod-history-coverage-audit.sh` passou e mostrou STG canonico desde `2025-01-01`, DW/mart de vendas da filial `14458` desde `2025-04-21/2025-04-22`.
 - Revisao operacional incremental 2026-04-29: `prod-sales-orphans-report.sh` passou, reportando `orphan_items=83` sem deletar dados.
 - Revisao operacional incremental 2026-04-29: simulacao de `prod-etl-pipeline.sh` validou timeout/skip; operational local excedeu 20s e risk local falhou por constraint ausente de fixture, sem rodar full refresh nem avancar janela risk.
+- Revisao paridade semantica 2026-04-30: `bash -n deploy/scripts/prod-clickhouse-sync-dw.sh deploy/scripts/prod-clickhouse-refresh-marts.sh deploy/scripts/prod-clickhouse-init.sh deploy/scripts/prod-semantic-marts-audit.sh deploy/scripts/prod-data-reconcile.sh` passou.
+- Revisao paridade semantica 2026-04-30: `MODE=incremental DT_INI=2026-04-29 DT_FIM=2026-04-29 prod-clickhouse-sync-dw.sh` passou em compose local, carregando `dim_forma_pagamento` e validando janelas DW.
+- Revisao paridade semantica 2026-04-30: `MODE=incremental DT_INI=2026-04-29 DT_FIM=2026-04-29 prod-clickhouse-refresh-marts.sh` passou apos corrigir aliases de subquery ClickHouse.
+- Revisao paridade semantica 2026-04-30: `make clickhouse-marts-init && make clickhouse-native-backfill && make clickhouse-mvs` passou e validou o backfill full das marts com labels humanos.
+- Revisao paridade semantica 2026-04-30: `prod-semantic-marts-audit.sh ID_EMPRESA=1 ID_FILIAL=14458` passou com `errors=0 warnings=0`; nenhum `FORMA_*`, filial/usuario perdidos ou data 1970.
+- Revisao paridade semantica 2026-04-30: `prod-data-reconcile.sh ID_EMPRESA=1 ID_FILIAL=14458` passou com `errors=0 warnings=1`; os `83` itens orfaos permanecem WARN.
+- Revisao paridade semantica 2026-04-30: `PYTHONPATH=apps/api python3 -m unittest app.test_clickhouse_operational_scripts_unit app.test_repos_analytics_unit app.test_snapshot_cache` passou, 50 testes.
+- Revisao paridade semantica 2026-04-30: `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit app.test_sales_overview_unit app.test_clickhouse_operational_scripts_unit app.test_snapshot_cache` passou, 67 testes, 7 skips.
+- Revisao paridade semantica 2026-04-30: `docker compose exec -T web npm test` passou, 76 testes; `cd apps/web && npm test` passou, 77 testes no host.
+- Revisao paridade semantica 2026-04-30: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet`, `make clickhouse-smoke`, `make analytics-smoke` e `make lint` passaram.
 
 ## 12. Regras de ouro
 

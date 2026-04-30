@@ -121,7 +121,7 @@ export default function CashPage() {
                   {commercial?.summary || data?.summary}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  {liveNow?.summary || "Monitor operacional indisponível no momento."}
+                  {liveNow?.summary || "Leitura dos turnos indisponível no momento."}
                 </div>
               </div>
 
@@ -344,7 +344,7 @@ export default function CashPage() {
 
               <div className="card col-12">
                 <div className="sectionEyebrow">Caixa agora</div>
-                <h2 style={{ marginTop: 4 }}>Monitor operacional dos turnos em aberto</h2>
+                <h2 style={{ marginTop: 4 }}>Turnos em aberto agora</h2>
               </div>
 
               <div className="card kpi col-3">
@@ -354,7 +354,7 @@ export default function CashPage() {
                 </div>
               </div>
               <div className="card kpi col-3">
-                <div className="label">Caixas stale</div>
+                <div className="label">Caixas a revisar</div>
                 <div className="value">
                   {loading ? "..." : Number(liveKpis.caixas_stale || 0)}
                 </div>

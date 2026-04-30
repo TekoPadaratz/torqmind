@@ -58,7 +58,6 @@ export default function PricingPage() {
     setActionError('');
     setSaveMsg('');
     setFilialLabel('');
-    setPriceInputs({});
   }, [scope.scope_key, scope.scope_epoch]);
 
   const fuelItems = useMemo(() => {

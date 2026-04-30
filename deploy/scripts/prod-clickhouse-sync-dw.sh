@@ -97,15 +97,27 @@ ch_sql_sensitive() {
   fi
 }
 
-pg_table_fn() {
-  local table="$1"
-  printf "postgresql('%s:%s', '%s', '%s', '%s', '%s', 'dw')" \
+pg_table_fn_schema() {
+  local schema="$1"
+  local table="$2"
+  printf "postgresql('%s:%s', '%s', '%s', '%s', '%s', '%s')" \
     "$(ch_escape "$CLICKHOUSE_PG_HOST")" \
     "$(ch_escape "$CLICKHOUSE_PG_PORT")" \
     "$(ch_escape "$POSTGRES_DB")" \
     "$(ch_escape "$table")" \
     "$(ch_escape "$POSTGRES_USER")" \
-    "$(ch_escape "$POSTGRES_PASSWORD")"
+    "$(ch_escape "$POSTGRES_PASSWORD")" \
+    "$(ch_escape "$schema")"
+}
+
+pg_table_fn() {
+  local table="$1"
+  pg_table_fn_schema dw "$table"
+}
+
+pg_app_table_fn() {
+  local table="$1"
+  pg_table_fn_schema app "$table"
 }
 
 required_tables=(
@@ -196,6 +208,56 @@ incremental_dim_tables=(
   dim_local_venda
   dim_usuario_caixa
 )
+
+create_payment_type_map_table() {
+  ch --multiquery --query "
+CREATE TABLE IF NOT EXISTS torqmind_dw.dim_forma_pagamento (
+  id Int64,
+  id_empresa Nullable(Int32),
+  id_empresa_nk Int32,
+  tipo_forma Int32,
+  label String,
+  category String,
+  severity_hint String,
+  active Bool,
+  updated_at DateTime64(6)
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (tipo_forma, id_empresa_nk);
+"
+}
+
+reload_payment_type_map() {
+  local source
+  source="$(pg_app_table_fn payment_type_map)"
+  create_payment_type_map_table
+  ch --query "TRUNCATE TABLE torqmind_dw.dim_forma_pagamento"
+  ch_sql_sensitive "
+INSERT INTO torqmind_dw.dim_forma_pagamento
+SELECT
+  toInt64(id),
+  CAST(id_empresa, 'Nullable(Int32)'),
+  toInt32(id_empresa_nk),
+  toInt32(tipo_forma),
+  ifNull(label, ''),
+  ifNull(category, 'NAO_IDENTIFICADO'),
+  ifNull(severity_hint, ''),
+  toBool(active),
+  CAST(updated_at, 'DateTime64(6)')
+FROM ${source};
+"
+}
+
+validate_payment_type_map() {
+  local pg_count ch_count
+  pg_count="$(pg "SELECT count(*)::bigint FROM app.payment_type_map;")"
+  ch_count="$(ch --query "SELECT count() FROM torqmind_dw.dim_forma_pagamento")"
+  if [[ "$pg_count" != "$ch_count" ]]; then
+    echo "ERROR: torqmind_dw.dim_forma_pagamento count mismatch: postgres=${pg_count} clickhouse=${ch_count}" >&2
+    return 1
+  fi
+  echo "  OK dim_forma_pagamento: rows=${ch_count}"
+}
 
 next_month() {
   local month_key="$1"
@@ -326,7 +388,7 @@ PY
 find_incremental_window() {
   local since="$1"
   if [[ -n "$DT_INI" && -n "$DT_FIM" ]]; then
-    printf "%s|%s|manual" "$(date_to_key "$DT_INI")" "$(date_to_key "$DT_FIM")"
+    printf "%s|%s|1" "$(date_to_key "$DT_INI")" "$(date_to_key "$DT_FIM")"
     return 0
   fi
 
@@ -450,6 +512,8 @@ run_full_sync() {
     echo "  creating ${table}"
     create_native_table "$table"
   done
+  echo "  creating dim_forma_pagamento"
+  create_payment_type_map_table
 
   echo
   echo "== load PostgreSQL dw.* into native ClickHouse torqmind_dw =="
@@ -461,12 +525,15 @@ run_full_sync() {
       load_table_full "$table"
     fi
   done
+  echo "  loading app.payment_type_map -> dim_forma_pagamento"
+  reload_payment_type_map
 
   echo
   echo "== validate native torqmind_dw row counts =="
   for table in "${required_tables[@]}"; do
     validate_table_count "$table"
   done
+  validate_payment_type_map
 
   echo
   echo "== validate critical sales facts =="
@@ -489,6 +556,9 @@ run_incremental_sync() {
     echo "ERROR: torqmind_dw native tables are incomplete; run MODE=full first." >&2
     exit 1
   fi
+  echo "  refreshing app.payment_type_map -> torqmind_dw.dim_forma_pagamento"
+  reload_payment_type_map
+  validate_payment_type_map
 
   local since window dt_ini_key dt_fim_key changed_rows table key_column
   since="$(sync_state_since)"

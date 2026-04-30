@@ -187,15 +187,30 @@ INSERT INTO torqmind_mart.fraude_cancelamentos_eventos
 SELECT
     c.id_empresa,
     c.id_filial,
+    ifNull(df.nome, '') AS filial_nome,
     c.id_db,
     toString(c.id_comprovante) AS id_comprovante,
     c.data,
     c.data_key,
-    c.id_usuario,
+    toInt32(ifNull(c.id_usuario, ifNull(t.id_usuario, -1))) AS id_usuario,
+    ifNull(nullIf(u.nome, ''), '') AS usuario_nome,
+    multiIf(not isNull(c.id_usuario), 'comprovante', not isNull(t.id_usuario), 'turno', 'unknown') AS usuario_source,
     c.id_turno,
+    toString(ifNull(c.id_turno, -1)) AS turno_value,
     toDecimal128(ifNull(c.valor_total, 0), 2) AS valor_total,
     now() AS updated_at
 FROM torqmind_dw.fact_comprovante c
+LEFT JOIN torqmind_dw.dim_filial df
+    ON df.id_empresa = c.id_empresa
+   AND df.id_filial = c.id_filial
+LEFT JOIN torqmind_dw.fact_caixa_turno t
+    ON t.id_empresa = c.id_empresa
+   AND t.id_filial = c.id_filial
+   AND t.id_turno = c.id_turno
+LEFT JOIN torqmind_dw.dim_usuario_caixa u
+    ON u.id_empresa = c.id_empresa
+   AND u.id_filial = c.id_filial
+   AND u.id_usuario = toInt32(ifNull(c.id_usuario, ifNull(t.id_usuario, -1)))
 WHERE ifNull(c.cancelado, 0) = 1;
 
 -- 9) torqmind_mart.agg_risco_diaria
@@ -238,21 +253,31 @@ INSERT INTO torqmind_mart.risco_turno_local_diaria
 SELECT
     r.id_empresa,
     r.id_filial,
+    ifNull(df.nome, '') AS filial_nome,
     r.data_key,
     toInt32(ifNull(r.id_turno, -1)) AS id_turno,
+    toString(ifNull(r.id_turno, -1)) AS turno_value,
     toInt32(ifNull(i.id_local_venda, -1)) AS id_local_venda,
+    ifNull(lv.nome, '') AS local_nome,
     toInt32(count()) AS eventos,
     toInt32(countIf(ifNull(r.score_risco, 0) >= 80)) AS alto_risco,
     toDecimal128(sum(ifNull(r.impacto_estimado, 0)), 2) AS impacto_estimado,
     toDecimal128(avg(ifNull(r.score_risco, 0)), 2) AS score_medio,
     now() AS updated_at
 FROM torqmind_dw.fact_risco_evento r
+LEFT JOIN torqmind_dw.dim_filial df
+    ON df.id_empresa = r.id_empresa
+   AND df.id_filial = r.id_filial
 LEFT JOIN torqmind_dw.fact_venda_item i
     ON i.id_empresa = r.id_empresa
    AND i.id_filial = r.id_filial
    AND i.id_db = r.id_db
    AND i.id_movprodutos = r.id_movprodutos
-GROUP BY r.id_empresa, r.id_filial, r.data_key, toInt32(ifNull(r.id_turno, -1)), toInt32(ifNull(i.id_local_venda, -1));
+LEFT JOIN torqmind_dw.dim_local_venda lv
+    ON lv.id_empresa = i.id_empresa
+   AND lv.id_filial = i.id_filial
+   AND lv.id_local_venda = i.id_local_venda
+GROUP BY r.id_empresa, r.id_filial, ifNull(df.nome, ''), r.data_key, toInt32(ifNull(r.id_turno, -1)), toString(ifNull(r.id_turno, -1)), toInt32(ifNull(i.id_local_venda, -1)), ifNull(lv.nome, '');
 
 -- 12) torqmind_mart.clientes_churn_risco
 INSERT INTO torqmind_mart.clientes_churn_risco
@@ -427,63 +452,80 @@ GROUP BY f.id_empresa, f.id_filial;
 -- 17) torqmind_mart.agg_pagamentos_diaria
 INSERT INTO torqmind_mart.agg_pagamentos_diaria
 SELECT
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
-    multiIf(
-        p.tipo_forma IN (3, 13, 23), 'PIX',
-        p.tipo_forma IN (4, 5, 6), 'CARTAO',
-        p.tipo_forma IN (1), 'DINHEIRO',
-        'NAO_IDENTIFICADO'
-    ) AS category,
-    concat('FORMA_', toString(p.tipo_forma)) AS label,
-    toDecimal128(sum(ifNull(p.valor, 0)), 2) AS total_valor,
-    toInt32(countDistinct(p.referencia)) AS qtd_comprovantes,
+    id_empresa,
+    id_filial,
+    data_key,
+    category,
+    label,
+    toDecimal128(sum(ifNull(valor, 0)), 2) AS total_valor,
+    toInt32(countDistinct(referencia)) AS qtd_comprovantes,
     toDecimal64(0, 2) AS share_percent,
     now() AS updated_at
-FROM torqmind_dw.fact_pagamento_comprovante p
+FROM (
+    SELECT
+        p.id_empresa AS id_empresa,
+        p.id_filial AS id_filial,
+        p.data_key AS data_key,
+        p.valor AS valor,
+        p.referencia AS referencia,
+        ifNull(nullIf(mp_company.category, ''), ifNull(nullIf(mp_global.category, ''), 'NAO_IDENTIFICADO')) AS category,
+        ifNull(nullIf(mp_company.label, ''), ifNull(nullIf(mp_global.label, ''), 'Forma não identificada')) AS label
+    FROM torqmind_dw.fact_pagamento_comprovante p
+    LEFT JOIN torqmind_dw.dim_forma_pagamento mp_company
+        ON mp_company.tipo_forma = p.tipo_forma
+       AND mp_company.active
+       AND mp_company.id_empresa = p.id_empresa
+    LEFT JOIN torqmind_dw.dim_forma_pagamento mp_global
+        ON mp_global.tipo_forma = p.tipo_forma
+       AND mp_global.active
+       AND isNull(mp_global.id_empresa)
+) mapped
 GROUP BY
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
-    multiIf(
-        p.tipo_forma IN (3, 13, 23), 'PIX',
-        p.tipo_forma IN (4, 5, 6), 'CARTAO',
-        p.tipo_forma IN (1), 'DINHEIRO',
-        'NAO_IDENTIFICADO'
-    ),
-    concat('FORMA_', toString(p.tipo_forma));
+    id_empresa,
+    id_filial,
+    data_key,
+    category,
+    label;
 
 -- 18) torqmind_mart.agg_pagamentos_turno
 INSERT INTO torqmind_mart.agg_pagamentos_turno
 SELECT
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
-    toInt32(ifNull(p.id_turno, -1)) AS id_turno,
-    multiIf(
-        p.tipo_forma IN (3, 13, 23), 'PIX',
-        p.tipo_forma IN (4, 5, 6), 'CARTAO',
-        p.tipo_forma IN (1), 'DINHEIRO',
-        'NAO_IDENTIFICADO'
-    ) AS category,
-    concat('FORMA_', toString(p.tipo_forma)) AS label,
-    toDecimal128(sum(ifNull(p.valor, 0)), 2) AS total_valor,
-    toInt32(countDistinct(p.referencia)) AS qtd_comprovantes,
+    id_empresa,
+    id_filial,
+    data_key,
+    id_turno,
+    category,
+    label,
+    toDecimal128(sum(ifNull(valor, 0)), 2) AS total_valor,
+    toInt32(countDistinct(referencia)) AS qtd_comprovantes,
     now() AS updated_at
-FROM torqmind_dw.fact_pagamento_comprovante p
+FROM (
+    SELECT
+        p.id_empresa AS id_empresa,
+        p.id_filial AS id_filial,
+        p.data_key AS data_key,
+        toInt32(ifNull(p.id_turno, -1)) AS id_turno,
+        p.valor AS valor,
+        p.referencia AS referencia,
+        ifNull(nullIf(mp_company.category, ''), ifNull(nullIf(mp_global.category, ''), 'NAO_IDENTIFICADO')) AS category,
+        ifNull(nullIf(mp_company.label, ''), ifNull(nullIf(mp_global.label, ''), 'Forma não identificada')) AS label
+    FROM torqmind_dw.fact_pagamento_comprovante p
+    LEFT JOIN torqmind_dw.dim_forma_pagamento mp_company
+        ON mp_company.tipo_forma = p.tipo_forma
+       AND mp_company.active
+       AND mp_company.id_empresa = p.id_empresa
+    LEFT JOIN torqmind_dw.dim_forma_pagamento mp_global
+        ON mp_global.tipo_forma = p.tipo_forma
+       AND mp_global.active
+       AND isNull(mp_global.id_empresa)
+) mapped
 GROUP BY
-    p.id_empresa,
-    p.id_filial,
-    p.data_key,
-    toInt32(ifNull(p.id_turno, -1)),
-    multiIf(
-        p.tipo_forma IN (3, 13, 23), 'PIX',
-        p.tipo_forma IN (4, 5, 6), 'CARTAO',
-        p.tipo_forma IN (1), 'DINHEIRO',
-        'NAO_IDENTIFICADO'
-    ),
-    concat('FORMA_', toString(p.tipo_forma));
+    id_empresa,
+    id_filial,
+    data_key,
+    id_turno,
+    category,
+    label;
 
 -- 19) torqmind_mart.pagamentos_anomalias_diaria
 INSERT INTO torqmind_mart.pagamentos_anomalias_diaria
@@ -557,34 +599,43 @@ GROUP BY
 -- 21) torqmind_mart.agg_caixa_forma_pagamento
 INSERT INTO torqmind_mart.agg_caixa_forma_pagamento
 SELECT
-    p.id_empresa,
-    p.id_filial,
-    toInt32(ifNull(p.id_turno, -1)) AS id_turno,
-    toInt32(p.tipo_forma) AS tipo_forma,
-    concat('FORMA_', toString(p.tipo_forma)) AS forma_label,
-    multiIf(
-        p.tipo_forma IN (3, 13, 23), 'PIX',
-        p.tipo_forma IN (4, 5, 6), 'CARTAO',
-        p.tipo_forma IN (1), 'DINHEIRO',
-        'NAO_IDENTIFICADO'
-    ) AS forma_category,
-    toDecimal128(sum(ifNull(p.valor, 0)), 2) AS total_valor,
-    toInt32(countDistinct(p.referencia)) AS qtd_comprovantes,
+    id_empresa,
+    id_filial,
+    id_turno,
+    tipo_forma,
+    forma_label,
+    forma_category,
+    toDecimal128(sum(ifNull(valor, 0)), 2) AS total_valor,
+    toInt32(countDistinct(referencia)) AS qtd_comprovantes,
     now() AS updated_at
-FROM torqmind_dw.fact_pagamento_comprovante p
-WHERE p.id_turno IS NOT NULL
+FROM (
+    SELECT
+        p.id_empresa AS id_empresa,
+        p.id_filial AS id_filial,
+        toInt32(ifNull(p.id_turno, -1)) AS id_turno,
+        toInt32(p.tipo_forma) AS tipo_forma,
+        p.valor AS valor,
+        p.referencia AS referencia,
+        ifNull(nullIf(mp_company.label, ''), ifNull(nullIf(mp_global.label, ''), 'Forma não identificada')) AS forma_label,
+        ifNull(nullIf(mp_company.category, ''), ifNull(nullIf(mp_global.category, ''), 'NAO_IDENTIFICADO')) AS forma_category
+    FROM torqmind_dw.fact_pagamento_comprovante p
+    LEFT JOIN torqmind_dw.dim_forma_pagamento mp_company
+        ON mp_company.tipo_forma = p.tipo_forma
+       AND mp_company.active
+       AND mp_company.id_empresa = p.id_empresa
+    LEFT JOIN torqmind_dw.dim_forma_pagamento mp_global
+        ON mp_global.tipo_forma = p.tipo_forma
+       AND mp_global.active
+       AND isNull(mp_global.id_empresa)
+    WHERE p.id_turno IS NOT NULL
+) mapped
 GROUP BY
-    p.id_empresa,
-    p.id_filial,
-    toInt32(ifNull(p.id_turno, -1)),
-    toInt32(p.tipo_forma),
-    concat('FORMA_', toString(p.tipo_forma)),
-    multiIf(
-        p.tipo_forma IN (3, 13, 23), 'PIX',
-        p.tipo_forma IN (4, 5, 6), 'CARTAO',
-        p.tipo_forma IN (1), 'DINHEIRO',
-        'NAO_IDENTIFICADO'
-    );
+    id_empresa,
+    id_filial,
+    id_turno,
+    tipo_forma,
+    forma_label,
+    forma_category;
 
 -- 22) torqmind_mart.agg_caixa_cancelamentos
 INSERT INTO torqmind_mart.agg_caixa_cancelamentos

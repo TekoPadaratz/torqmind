@@ -44,10 +44,11 @@ validate_critical_sales_dw() {
 }
 
 validate_marts() {
-  local mart_count mart_max item_max
+  local mart_count mart_max item_max forma_rows
   mart_count="$(ch --query "SELECT count() FROM torqmind_mart.agg_vendas_diaria")"
   mart_max="$(ch --query "SELECT coalesce(max(data_key), 0) FROM torqmind_mart.agg_vendas_diaria")"
   item_max="$(ch --query "SELECT coalesce(max(data_key), 0) FROM torqmind_dw.fact_venda_item")"
+  forma_rows="$(ch --query "SELECT count() FROM torqmind_mart.agg_pagamentos_diaria WHERE startsWith(label, 'FORMA_')")"
 
   if [[ "$mart_count" -le 0 ]]; then
     echo "ERROR: torqmind_mart.agg_vendas_diaria is empty after backfill." >&2
@@ -55,6 +56,10 @@ validate_marts() {
   fi
   if [[ "$mart_max" -lt "$item_max" ]]; then
     echo "ERROR: torqmind_mart.agg_vendas_diaria max(data_key)=${mart_max} is behind torqmind_dw.fact_venda_item max(data_key)=${item_max}" >&2
+    return 1
+  fi
+  if [[ "$forma_rows" != "0" ]]; then
+    echo "ERROR: payment marts still expose FORMA_* labels after backfill." >&2
     return 1
   fi
 

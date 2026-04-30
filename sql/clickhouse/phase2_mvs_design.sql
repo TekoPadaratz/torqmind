@@ -190,12 +190,16 @@ DROP TABLE IF EXISTS torqmind_mart.fraude_cancelamentos_eventos;
 CREATE TABLE torqmind_mart.fraude_cancelamentos_eventos (
     id_empresa          Int32,
     id_filial           Int32,
+    filial_nome         String,
     id_db               Int32,
     id_comprovante      String,  -- Can be large string
     data                DateTime,
     data_key            Int32,
     id_usuario          Int32,
+    usuario_nome        String,
+    usuario_source      String,
     id_turno            Nullable(Int32),
+    turno_value         String,
     valor_total         Decimal128(2),
     updated_at          DateTime DEFAULT now()
 )
@@ -253,9 +257,12 @@ DROP TABLE IF EXISTS torqmind_mart.risco_turno_local_diaria;
 CREATE TABLE torqmind_mart.risco_turno_local_diaria (
     id_empresa                      Int32,
     id_filial                       Int32,
+    filial_nome                     String,
     data_key                        Int32,
     id_turno                        Int32,
+    turno_value                     String,
     id_local_venda                  Int32,
+    local_nome                      String,
     eventos                         Int32,
     alto_risco                      Int32,
     impacto_estimado                Decimal128(2),
@@ -626,6 +633,7 @@ SELECT
     r.id,
     r.id_empresa,
     r.id_filial,
+    ifNull(dfl.nome, '') AS filial_nome,
     r.id_db,
     r.id_comprovante,
     r.id_movprodutos,
@@ -636,6 +644,11 @@ SELECT
     r.id_funcionario,
     ifNull(df.nome, '(Sem funcionario)') AS funcionario_nome,
     r.id_turno,
+    toString(ifNull(r.id_turno, -1)) AS turno_value,
+    toInt32(if(isNull(r.id_usuario), ifNull(t.id_usuario, -1), r.id_usuario)) AS operador_caixa_id,
+    ifNull(uc.nome, '') AS operador_caixa_nome,
+    multiIf(not isNull(r.id_usuario), 'evento', not isNull(t.id_usuario), 'turno', 'unknown') AS operador_caixa_source,
+    ifNull(lv.nome, '') AS local_nome,
     r.id_cliente,
     r.valor_total,
     r.impacto_estimado,
@@ -644,10 +657,30 @@ SELECT
     r.reasons,
     r.created_at
 FROM torqmind_dw.fact_risco_evento r
+LEFT JOIN torqmind_dw.dim_filial dfl
+    ON dfl.id_empresa = r.id_empresa
+   AND dfl.id_filial = r.id_filial
 LEFT JOIN torqmind_dw.dim_funcionario df
     ON df.id_empresa = r.id_empresa
    AND df.id_filial = r.id_filial
-   AND df.id_funcionario = r.id_funcionario;
+   AND df.id_funcionario = r.id_funcionario
+LEFT JOIN torqmind_dw.fact_caixa_turno t
+    ON t.id_empresa = r.id_empresa
+   AND t.id_filial = r.id_filial
+   AND t.id_turno = r.id_turno
+LEFT JOIN torqmind_dw.dim_usuario_caixa uc
+    ON uc.id_empresa = r.id_empresa
+   AND uc.id_filial = r.id_filial
+   AND uc.id_usuario = toInt32(if(isNull(r.id_usuario), ifNull(t.id_usuario, -1), r.id_usuario))
+LEFT JOIN torqmind_dw.fact_venda_item vi
+    ON vi.id_empresa = r.id_empresa
+   AND vi.id_filial = r.id_filial
+   AND vi.id_db = r.id_db
+   AND vi.id_movprodutos = r.id_movprodutos
+LEFT JOIN torqmind_dw.dim_local_venda lv
+    ON lv.id_empresa = vi.id_empresa
+   AND lv.id_filial = vi.id_filial
+   AND lv.id_local_venda = vi.id_local_venda;
 
 -- ============================================================================
 -- MATERIALIZED VIEWS (CDC-triggered auto-refresh)

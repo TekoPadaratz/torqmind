@@ -102,6 +102,16 @@ class AnalyticsFacadeUnitTest(unittest.TestCase):
         self.assertEqual(result, {"source": "pg"})
         pg_call.assert_called_once()
 
+    def test_competitor_pricing_overview_is_postgres_owned_app_flow(self) -> None:
+        repos_analytics.settings.use_clickhouse = True
+        repos_analytics.settings.dual_read_mode = False
+
+        with patch.object(repos_analytics._postgres, "competitor_pricing_overview", return_value={"source": "pg"}) as pg_call:
+            result = repos_analytics.competitor_pricing_overview("MASTER", 7, 14458, date(2026, 4, 1), date(2026, 4, 2))
+
+        self.assertEqual(result, {"source": "pg"})
+        pg_call.assert_called_once()
+
     def test_inventory_counts_only_repository_functions(self) -> None:
         inventory = repos_analytics.analytics_backend_inventory()
         names = {row["function"] for row in inventory["functions"]}
@@ -281,9 +291,75 @@ class ClickHouseQueryScopeUnitTest(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertIn("FROM torqmind_mart.risco_eventos_recentes", captured["query"])
         self.assertIn("event_type", captured["query"])
+        self.assertIn("filial_nome", captured["query"])
+        self.assertIn("operador_caixa_nome", captured["query"])
         self.assertIn("LIMIT {limit:UInt32}", captured["query"])
         self.assertEqual(captured["parameters"]["id_empresa"], 7)
         self.assertEqual(captured["tenant_id"], 7)
+
+    def test_risk_last_events_preserves_human_operator_and_branch_labels(self) -> None:
+        def fake_query(query, parameters=None, tenant_id=None):
+            return [
+                {
+                    "id": 1,
+                    "id_filial": 14458,
+                    "filial_nome": "Posto Central",
+                    "data_key": 20260429,
+                    "data": datetime(2026, 4, 29, 12, 0, tzinfo=timezone.utc),
+                    "event_type": "CANCELAMENTO_CAIXA",
+                    "id_db": 1,
+                    "id_comprovante": "100",
+                    "id_movprodutos": 100,
+                    "id_usuario": 9,
+                    "id_funcionario": None,
+                    "funcionario_nome": "",
+                    "id_turno": 2,
+                    "turno_value": "2",
+                    "operador_caixa_id": 9,
+                    "operador_caixa_nome": "Maria Caixa",
+                    "operador_caixa_source": "turno",
+                    "id_cliente": None,
+                    "valor_total": 50,
+                    "impacto_estimado": 50,
+                    "score_risco": 85,
+                    "score_level": "HIGH",
+                    "reasons": "{}",
+                }
+            ]
+
+        with patch.object(repos_mart_clickhouse, "query_dict", side_effect=fake_query):
+            rows = repos_mart_clickhouse.risk_last_events("MASTER", 7, None, date(2026, 4, 29), date(2026, 4, 29), limit=5)
+
+        self.assertEqual(rows[0]["filial_label"], "Posto Central")
+        self.assertEqual(rows[0]["operador_caixa_label"], "Maria Caixa")
+        self.assertEqual(rows[0]["responsavel_label"], "Maria Caixa")
+        self.assertEqual(rows[0]["responsavel_kind"], "operador_caixa")
+
+    def test_cash_dre_summary_uses_finance_mart_and_never_epoch_zero(self) -> None:
+        with patch.object(
+            repos_mart_clickhouse,
+            "finance_aging_overview",
+            return_value={
+                "dt_ref": date(2026, 4, 29),
+                "snapshot_rows": 1,
+                "pagar_total_aberto": 1000,
+                "pagar_total_vencido": 250,
+                "receber_total_aberto": 2200,
+            },
+        ):
+            payload = repos_mart_clickhouse.cash_dre_summary("MASTER", 7, None, date(2026, 4, 29))
+
+        self.assertEqual(payload["source_status"], "ok")
+        self.assertEqual(payload["dt_ref"], "2026-04-29")
+        self.assertEqual(payload["cards"][0]["amount"], 750.0)
+        self.assertEqual(payload["cards"][2]["amount"], 1450.0)
+        self.assertNotIn("1970-01-01", str(payload))
+
+        with patch.object(repos_mart_clickhouse, "finance_aging_overview", return_value={"snapshot_rows": 0, "dt_ref": date(1970, 1, 1)}):
+            empty_payload = repos_mart_clickhouse.cash_dre_summary("MASTER", 7, None, date(2026, 4, 29))
+
+        self.assertIsNone(empty_payload["dt_ref"])
+        self.assertNotIn("1970-01-01", str(empty_payload))
 
 
 if __name__ == "__main__":

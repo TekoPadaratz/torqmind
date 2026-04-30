@@ -1090,8 +1090,8 @@ def fraud_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, 
     branch = _branch_clause("id_filial", id_filial)
     rows = _run(
         f"""
-        SELECT id_filial, '' AS filial_nome, id_db, id_comprovante, data, data_key, id_usuario, id_usuario AS id_usuario_documento,
-               'comprovante' AS usuario_source, '' AS usuario_nome, id_turno, toString(id_turno) AS turno_value, valor_total
+        SELECT id_filial, filial_nome, id_db, id_comprovante, data, data_key, id_usuario, id_usuario AS id_usuario_documento,
+               usuario_source, usuario_nome, id_turno, turno_value, valor_total
         FROM torqmind_mart.fraude_cancelamentos_eventos
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
@@ -1116,11 +1116,11 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt
         f"""
         SELECT
           id_usuario,
-          '' AS usuario_nome,
+          max(usuario_nome) AS usuario_nome,
           count() AS cancelamentos,
           sum(valor_total) AS valor_cancelado,
-          0 AS resolvidos_por_turno,
-          count() AS fallback_comprovante
+          countIf(usuario_source = 'turno') AS resolvidos_por_turno,
+          countIf(usuario_source = 'comprovante') AS fallback_comprovante
         FROM torqmind_mart.fraude_cancelamentos_eventos
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
@@ -1230,7 +1230,7 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
         SELECT
           id,
           id_filial,
-          '' AS filial_nome,
+          filial_nome,
           data_key,
           data,
           event_type,
@@ -1241,7 +1241,10 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
           id_funcionario,
           funcionario_nome,
           id_turno,
-          toString(id_turno) AS turno_value,
+          turno_value,
+          operador_caixa_id,
+          operador_caixa_nome,
+          operador_caixa_source,
           id_cliente,
           valor_total,
           impacto_estimado,
@@ -1263,13 +1266,17 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
         row["event_label"] = _event_type_label(row.get("event_type"))
         row["funcionario_label"] = _employee_label(row.get("funcionario_nome"), row.get("id_funcionario"))
-        row["operador_caixa_label"] = _cash_operator_label(None, row.get("id_usuario"))
+        row["operador_caixa_label"] = _cash_operator_label(row.get("operador_caixa_nome"), row.get("operador_caixa_id") or row.get("id_usuario"))
         reasons = _json_obj(row.get("reasons"))
         row["reasons"] = reasons
         row["reasons_humanized"] = [_event_type_label(row.get("event_type"))]
         row["reason_summary"] = row["reasons_humanized"][0]
-        row["responsavel_label"] = row["funcionario_label"]
-        row["responsavel_kind"] = "colaborador_venda"
+        if row.get("operador_caixa_nome") or row.get("operador_caixa_id"):
+            row["responsavel_label"] = row["operador_caixa_label"]
+            row["responsavel_kind"] = "operador_caixa"
+        else:
+            row["responsavel_label"] = row["funcionario_label"]
+            row["responsavel_kind"] = "colaborador_venda"
     return rows
 
 
@@ -1279,11 +1286,11 @@ def risk_by_turn_local(role: str, id_empresa: int, id_filial: Any, dt_ini: date,
         f"""
         SELECT
           id_filial,
-          '' AS filial_nome,
+          max(filial_nome) AS filial_nome,
           id_turno,
-          toString(id_turno) AS turno_value,
+          max(turno_value) AS turno_value,
           id_local_venda,
-          '' AS local_nome,
+          max(local_nome) AS local_nome,
           sum(eventos) AS eventos,
           sum(alto_risco) AS alto_risco,
           sum(impacto_estimado) AS impacto_estimado,
@@ -1743,6 +1750,85 @@ def finance_aging_overview(role: str, id_empresa: int, id_filial: Any, as_of: Op
     }
 
 
+def cash_dre_summary(role: str, id_empresa: int, id_filial: Any, as_of: date) -> Dict[str, Any]:
+    aging = finance_aging_overview(role, id_empresa, id_filial, as_of)
+    has_snapshot = bool(_to_int(aging.get("snapshot_rows")))
+    dt_ref = aging.get("dt_ref") if has_snapshot else None
+    if not has_snapshot:
+        return {
+            "source_status": "unavailable",
+            "summary": "Sem base financeira disponível para o período.",
+            "cards": [
+                {
+                    "key": "contas_pagar_futuro_banco",
+                    "label": "Contas a pagar futuras",
+                    "status": "unavailable",
+                    "amount": None,
+                    "titles": None,
+                    "detail": "Sem base financeira disponível para calcular títulos futuros.",
+                },
+                {
+                    "key": "contas_receber",
+                    "label": "Contas a receber",
+                    "status": "unavailable",
+                    "amount": None,
+                    "titles": None,
+                    "detail": "Sem base financeira disponível para calcular recebíveis em aberto.",
+                },
+                {
+                    "key": "saldo_liquido_aberto",
+                    "label": "Saldo líquido aberto",
+                    "status": "unavailable",
+                    "amount": None,
+                    "titles": None,
+                    "detail": "Sem base financeira disponível para calcular o saldo líquido.",
+                },
+            ],
+            "pending": [],
+            "stock": {"cards": []},
+            "dt_ref": None,
+        }
+
+    pagar_total_aberto = _to_float(aging.get("pagar_total_aberto"))
+    pagar_total_vencido = _to_float(aging.get("pagar_total_vencido"))
+    receber_aberto = _to_float(aging.get("receber_total_aberto"))
+    pagar_futuro = round(max(pagar_total_aberto - pagar_total_vencido, 0.0), 2)
+    saldo_liquido = round(receber_aberto - pagar_futuro, 2)
+    return {
+        "source_status": "ok",
+        "summary": "Resumo financeiro calculado a partir da mart financeira publicada.",
+        "cards": [
+            {
+                "key": "contas_pagar_futuro_banco",
+                "label": "Contas a pagar futuras",
+                "status": "ready",
+                "amount": pagar_futuro,
+                "titles": None,
+                "detail": "Títulos a pagar em aberto, descontando o que já está vencido.",
+            },
+            {
+                "key": "contas_receber",
+                "label": "Contas a receber",
+                "status": "ready",
+                "amount": round(receber_aberto, 2),
+                "titles": None,
+                "detail": "Recebíveis ainda em aberto na rede.",
+            },
+            {
+                "key": "saldo_liquido_aberto",
+                "label": "Saldo líquido aberto",
+                "status": "ready",
+                "amount": saldo_liquido,
+                "titles": None,
+                "detail": "Contas a receber menos contas a pagar futuras.",
+            },
+        ],
+        "pending": [],
+        "stock": {"cards": []},
+        "dt_ref": dt_ref.isoformat() if isinstance(dt_ref, date) else dt_ref,
+    }
+
+
 def payments_overview_kpis(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     days = max((dt_fim - dt_ini).days + 1, 1)
     prev_fim = _date_key(dt_ini) - 1
@@ -2141,6 +2227,7 @@ def cash_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini:
             "qtd_devolucoes": 0,
             "caixas_com_devolucao": 0,
             "caixa_liquido": round(total_vendas - total_cancelamentos, 2),
+            "saldo_comercial": round(total_vendas - total_cancelamentos, 2),
         },
         "by_day": dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim),
         "payment_mix": payments.get("mix") or [],
@@ -2159,12 +2246,13 @@ def cash_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: Optional[d
     commercial = dict(historical)
     commercial["commercial_coverage"] = commercial_coverage
     live_now = _cash_live_now(role, id_empresa, id_filial)
+    dre_summary = cash_dre_summary(role, id_empresa, id_filial, historical_dt_fim)
     return {
         "source_status": historical.get("source_status"),
         "summary": historical.get("summary"),
         "kpis": historical.get("kpis"),
         "commercial": commercial,
-        "dre_summary": {"source_status": "unavailable", "summary": "DRE de caixa ainda depende da mart financeira dedicada.", "items": []},
+        "dre_summary": dre_summary,
         "definitions": cash_definitions(),
         "operational_sync": live_now.get("operational_sync"),
         "freshness": {
