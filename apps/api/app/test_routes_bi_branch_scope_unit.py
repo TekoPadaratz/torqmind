@@ -34,7 +34,7 @@ class BranchScopeRouteUnitTest(unittest.TestCase):
         ):
             body = self._run_cached_route("/bi/dashboard/home?dt_ini=2026-04-01&dt_fim=2026-04-01&id_empresa=7&id_filiais=11&id_filiais=13")
 
-        self.assertEqual(body, {"ok": True})
+        self.assertTrue(body["ok"])
         self.assertEqual(dashboard_home_bundle.call_args.args[2], [11, 13])
 
     def test_sales_overview_passes_multi_branch_scope_into_bundle(self) -> None:
@@ -44,7 +44,7 @@ class BranchScopeRouteUnitTest(unittest.TestCase):
         ):
             body = self._run_cached_route("/bi/sales/overview?dt_ini=2026-04-01&dt_fim=2026-04-01&id_empresa=7&id_filiais=11&id_filiais=13")
 
-        self.assertEqual(body, {"ok": True})
+        self.assertTrue(body["ok"])
         self.assertEqual(sales_overview_bundle.call_args.args[2], [11, 13])
 
     def test_cash_overview_passes_multi_branch_scope_into_repo(self) -> None:
@@ -54,7 +54,7 @@ class BranchScopeRouteUnitTest(unittest.TestCase):
         ):
             body = self._run_cached_route("/bi/cash/overview?dt_ini=2026-04-01&dt_fim=2026-04-01&id_empresa=7&id_filiais=11&id_filiais=13")
 
-        self.assertEqual(body, {"ok": True})
+        self.assertTrue(body["ok"])
         self.assertEqual(cash_overview.call_args.args[2], [11, 13])
 
     def test_fraud_overview_passes_multi_branch_scope_into_operational_and_risk_repos(self) -> None:
@@ -88,7 +88,7 @@ class BranchScopeRouteUnitTest(unittest.TestCase):
         ):
             body = self._run_cached_route("/bi/cash/overview?dt_ini=2026-04-01&dt_fim=2026-04-01&id_empresa=7")
 
-        self.assertEqual(body, {"ok": True})
+        self.assertTrue(body["ok"])
         self.assertEqual(cash_overview.call_args.args[2], [11, 13])
 
 

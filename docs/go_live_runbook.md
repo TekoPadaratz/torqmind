@@ -115,10 +115,19 @@ sudo systemctl enable --now cron
 Preencher no `prod.env` pelo menos:
 - `POSTGRES_PASSWORD`
 - `API_JWT_SECRET`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
+- `INGEST_REQUIRE_KEY=true`
 - `SEED_PASSWORD`
 - `POSTGRES_SHM_SIZE`
 - `POSTGRES_SHARED_BUFFERS`
 - `DB_POOL_MAX_SIZE`
+
+Política obrigatória de segurança antes do deploy:
+- `API_JWT_SECRET` com 32+ caracteres e sem placeholders como `CHANGE_ME`, `default`, `password`, `admin`, `1234`.
+- `CLICKHOUSE_USER` dedicado; `default` é proibido em produção/homolog/staging.
+- `CLICKHOUSE_PASSWORD` forte e sem placeholders.
+- `INGEST_REQUIRE_KEY=true`.
 
 Subir apenas o Postgres:
 
@@ -169,6 +178,19 @@ Subir o restante da stack:
 ENV_FILE="$TM_ENV" ./deploy/scripts/prod-up.sh
 docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" ps
 ```
+
+Validar rebuild do container API antes do smoke:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" build api
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" up -d api
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T api python - <<'PY'
+from app import schemas_bi
+print([name for name in dir(schemas_bi) if name.endswith("Response")])
+PY
+```
+
+Saída esperada: as classes `DashboardHomeResponse`, `SalesOverviewResponse`, `CashOverviewResponse`, `FraudOverviewResponse` e `FinanceOverviewResponse` devem aparecer no container em execução.
 
 ## T-10min: smoke de aplicação
 
@@ -221,6 +243,7 @@ Critério funcional adicional:
 - `cash` deve trazer `historical` e `live_now`;
 - `auth_me` deve apontar `home_path` para `/dashboard?...`, já com o recorte inicial do dia atual, e nunca para `/scope`.
 - escopo sem `id_filial` explícito deve significar somente `auth.filiais` ativas e autorizadas para o usuário; filiais inativas nunca entram em `todas`.
+- o gate de copy do frontend precisa estar verde no `npm test`, bloqueando jargões como `recorte`, `snapshot`, `mart`, `Saídas normais` e `Platform` como label visual.
 
 ## T+1h: validação operacional
 

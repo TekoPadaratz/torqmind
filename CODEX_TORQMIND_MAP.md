@@ -562,6 +562,8 @@ Status: AUDITORIA COMPLETA — documentos criados.
 
 Os 5 endpoints BI principais (`/dashboard/home`, `/sales/overview`, `/cash/overview`, `/fraud/overview`, `/finance/overview`) usam `response_model` com modelos envelope (`CacheMetadata` + campos tipados como `Dict[str, Any]` + `model_config = {"extra": "allow"}`).
 
+No antifraude, o campo externo continua sendo `model_coverage`, mas o schema usa um nome interno com alias para evitar warning de namespace protegido do Pydantic.
+
 **Justificativa Fase 1:** os payloads reais são dinâmicos e variam por contexto de negócio. Os modelos envelope garantem documentação OpenAPI e serialização controlada sem quebrar contratos existentes.
 
 **Fase 2 (futura):** contratos fortes por domínio com schemas aninhados específicos (KPI models, Series models, etc.) quando os payloads estabilizarem.
@@ -579,10 +581,12 @@ Os 5 endpoints BI principais (`/dashboard/home`, `/sales/overview`, `/cash/overv
 Ambientes bloqueados: `prod`, `production`, `homolog`, `homologation`, `staging`.
 
 Validações em `_validate_production_settings()`:
-- JWT secret: rejeita vazio, placeholders (CHANGE_ME*), valores triviais (password, admin, 1234, etc.)
+- JWT secret: rejeita vazio, placeholders (CHANGE_ME*), valores triviais (password, admin, 1234, etc.) e qualquer valor com menos de 32 caracteres.
 - PG password: mesma regra
-- ClickHouse: user=default com senha fraca/vazia é bloqueado; senha vazia/placeholder bloqueada
+- ClickHouse: `CLICKHOUSE_USER=default` é proibido em ambiente produtivo, mesmo com senha forte; `CLICKHOUSE_PASSWORD` vazio/placeholder também é bloqueado.
 - INGEST_REQUIRE_KEY=true obrigatório
+- Em dev/test/local os defaults continuam permitidos, mas com warning explícito para não mascarar risco real.
+- Não há validação artificial para `ETL_INTERNAL_KEY` no startup: o header canônico de ingest continua sendo `X-Ingest-Key`, resolvido por tenant no banco.
 
 ### Quick wins identificados
 
@@ -597,8 +601,21 @@ Teste automatizado `apps/web/app/lib/ui-copy-quality.test.mjs`:
 - Integrado ao `npm test` (roda no pipeline).
 - Escaneia recursivamente `.tsx`, `.ts`, `.mjs`, `.js`.
 - Exclui arquivos de teste (*.test.*, *.spec.*) e diretórios node_modules/.next.
-- Termos proibidos: `recorte`, `não identificado/a/os`.
+- Reporta arquivo, linha, termo, motivo e trecho.
+- Termos proibidos: `recorte`, `não identificado/a/os`, `Saídas normais`, `Frescor operacional`, `FORMA_`, `01/01/1970`, `1970` em texto visível, `mart`, `snapshot`, `trilho operacional`, `publicação analítica` e `Platform` como label visual.
+- Usa heurística específica para `Platform` e allowlist curta para arquivos técnicos internos de leitura/cobertura.
 - Qualquer novo termo proibido detectado falha o build.
+
+### Runtime / Container Validation
+
+Checklist mínimo para garantir que o container API reflete a branch atual:
+- `docker compose build api`
+- `docker compose up -d api`
+- `docker compose exec -T api python - <<'PY'`
+  `from app import schemas_bi`
+  `print([name for name in dir(schemas_bi) if name.endswith("Response")])`
+  `PY`
+- `make analytics-smoke`
 
 ### Cutover streaming: estado
 
@@ -620,5 +637,5 @@ Teste automatizado `apps/web/app/lib/ui-copy-quality.test.mjs`:
 - ClickHouse auth adicionado em todos os scripts.
 - Register Debezium usa Python JSON generation (não sed).
 - CDC_TOPIC_PATTERN corrigido: `^torqmind\..*` (escape simples no YAML).
-- `python3 -m pytest apps/cdc_consumer/tests/ -v`: 23 testes, todos passaram.
+- `python3 -m pytest apps/cdc_consumer/tests/ -v`: 29 testes, todos passaram.
 - Scripts não imprimem senhas (validado com grep).

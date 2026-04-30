@@ -5,6 +5,7 @@ EN   : Everything is env-driven (.env) to keep Docker-friendly deployments.
 """
 
 from datetime import date
+import warnings
 
 from pydantic_settings import BaseSettings
 
@@ -85,13 +86,6 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
-_INSECURE_DEFAULTS = {
-    "api_jwt_secret": "CHANGE_ME_SUPER_SECRET",
-    "pg_password": "1234",
-    "clickhouse_password": "",
-}
-
-# Patterns that indicate a placeholder or trivially insecure value.
 _BLOCKED_PATTERNS = (
     "change_me",
     "changeme",
@@ -105,44 +99,58 @@ _BLOCKED_PATTERNS = (
 _PRODUCTIVE_ENVS = {"prod", "production", "homolog", "homologation", "staging"}
 
 
-def _is_weak_secret(value: str) -> bool:
-    """Return True if the value looks like a placeholder or trivially insecure."""
-    if not value or not value.strip():
+def _is_production_like_env(app_env: str | None) -> bool:
+    return (app_env or "").strip().lower() in _PRODUCTIVE_ENVS
+
+
+def _is_weak_secret(value: str | None, *, min_length: int | None = None) -> bool:
+    """Return True for empty, placeholder, or trivially insecure values."""
+    normalized = str(value or "").strip()
+    if not normalized:
         return True
-    lowered = value.strip().lower()
-    return any(pat in lowered for pat in _BLOCKED_PATTERNS)
+    if min_length is not None and len(normalized) < min_length:
+        return True
+    lowered = normalized.lower()
+    return any(pattern in lowered for pattern in _BLOCKED_PATTERNS)
+
+
+def _collect_security_violations(s: "Settings") -> list[str]:
+    violations: list[str] = []
+
+    if _is_weak_secret(s.api_jwt_secret, min_length=32):
+        violations.append("API_JWT_SECRET must be strong and have at least 32 characters")
+
+    if _is_weak_secret(s.pg_password):
+        violations.append("POSTGRES_PASSWORD/PG_PASSWORD must be strong and cannot use placeholders")
+
+    if str(s.clickhouse_user or "").strip().lower() == "default":
+        violations.append("CLICKHOUSE_USER cannot be 'default' in production-like environments")
+
+    if _is_weak_secret(s.clickhouse_password):
+        violations.append("CLICKHOUSE_PASSWORD must be strong and cannot use placeholders")
+
+    if not s.ingest_require_key:
+        violations.append("INGEST_REQUIRE_KEY must be true in production-like environments")
+
+    return violations
 
 
 def _validate_production_settings(s: "Settings") -> None:
-    """Fail fast if insecure defaults are used in production/homolog/staging."""
-    env = (s.app_env or "").strip().lower()
-    if env not in _PRODUCTIVE_ENVS:
+    """Fail fast in production-like envs and warn in dev/test/local."""
+    violations = _collect_security_violations(s)
+    if _is_production_like_env(s.app_env):
+        if violations:
+            raise SystemExit(
+                f"FATAL: Refusing to start in {s.app_env} with insecure config:\n"
+                + "\n".join(f"  - {violation}" for violation in violations)
+            )
         return
 
-    violations: list[str] = []
-
-    # JWT secret
-    if _is_weak_secret(s.api_jwt_secret):
-        violations.append(f"api_jwt_secret is insecure ('{s.api_jwt_secret[:12]}...')")
-
-    # PostgreSQL password
-    if _is_weak_secret(s.pg_password):
-        violations.append(f"pg_password is insecure")
-
-    # ClickHouse credentials
-    if s.clickhouse_user.strip().lower() == "default" and _is_weak_secret(s.clickhouse_password):
-        violations.append("clickhouse_user='default' with weak/empty password is not allowed")
-    elif _is_weak_secret(s.clickhouse_password):
-        violations.append("clickhouse_password is insecure")
-
-    # Ingest key enforcement
-    if not s.ingest_require_key:
-        violations.append("ingest_require_key must be True in production")
-
     if violations:
-        raise SystemExit(
-            f"FATAL: Refusing to start in {s.app_env} with insecure config:\n"
-            + "\n".join(f"  - {v}" for v in violations)
+        warnings.warn(
+            "Non-production config is using permissive values for: " + ", ".join(violations),
+            RuntimeWarning,
+            stacklevel=2,
         )
 
 

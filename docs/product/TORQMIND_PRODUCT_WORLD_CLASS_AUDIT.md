@@ -175,6 +175,37 @@ Um único ponto de verdade para toda a rede: vendas, caixa, fraude, financeiro, 
 | **ScopeTransitionState** | Bem implementado |
 | **EmptyState** | Padrão consistente, mas usa "recorte" |
 
+### 3.13 Gate de release para copy
+
+O produto agora exige um gate automatizado no frontend para impedir regressão de linguagem visível ao cliente.
+
+Bloqueios mínimos do gate:
+- `recorte`
+- `não identificado/a/os`
+- `Saídas normais`
+- `Frescor operacional`
+- `FORMA_`
+- `01/01/1970` e `1970` em texto visível
+- `mart`
+- `snapshot`
+- `trilho operacional`
+- `publicação analítica`
+- `Platform` como label visual (o label correto é `Plataforma`)
+
+Exceções aceitáveis:
+- testes negativos
+- nomes internos de componente/tipo/import
+- arquivos técnicos internos de leitura/cobertura com allowlist curta e explícita
+
+### 3.14 Segurança de startup
+
+Em `prod`, `production`, `homolog`, `homologation` e `staging`, o startup da API deve falhar se:
+- `API_JWT_SECRET` estiver vazio, placeholder ou tiver menos de 32 caracteres
+- `POSTGRES_PASSWORD` estiver vazio, fraco ou placeholder
+- `CLICKHOUSE_USER=default`
+- `CLICKHOUSE_PASSWORD` estiver vazio, fraco ou placeholder
+- `INGEST_REQUIRE_KEY=false`
+
 ---
 
 ## 4. Auditoria Domínio por Domínio

@@ -63,9 +63,9 @@ class FraudOverviewResponse(CacheMetadata):
     kpis: Dict[str, Any] = Field(default_factory=dict)
     risk_events: List[Dict[str, Any]] = Field(default_factory=list)
     series: Dict[str, Any] = Field(default_factory=dict)
-    model_coverage: Optional[Dict[str, Any]] = None
+    risk_coverage: Optional[Dict[str, Any]] = Field(default=None, alias="model_coverage")
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "allow", "populate_by_name": True}
 
 
 class FinanceOverviewResponse(CacheMetadata):
