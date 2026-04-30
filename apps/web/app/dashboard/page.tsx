@@ -49,36 +49,6 @@ export default function Dashboard() {
     : buildModuleLoadingCopy("o dashboard geral");
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
-  const initialSyncStatus = useMemo(() => {
-    if (!homeData) return undefined;
-
-    const operationalSync = homeData?.operational_sync;
-    if (operationalSync?.last_sync_at) {
-      return {
-        available: true,
-        last_sync_at: operationalSync.last_sync_at,
-        operational: operationalSync,
-      };
-    }
-
-    const commercialCoverage = homeData?.commercial_coverage;
-    const publishedCoverageDate =
-      commercialCoverage?.latest_available_dt ||
-      commercialCoverage?.effective_dt_fim ||
-      homeData?.freshness?.sales?.historical_through_dt;
-    if (publishedCoverageDate) {
-      return undefined;
-    }
-
-    return operationalSync
-      ? undefined
-      : {
-          available: false,
-          last_sync_at: null,
-          operational: null,
-        };
-  }, [homeData]);
-
   const overview = homeData?.overview || {};
   const churnData = homeData?.churn || {};
   const financeData = homeData?.finance || {};
@@ -178,7 +148,6 @@ export default function Dashboard() {
         title="Dashboard Geral"
         userLabel={userLabel}
         initialUnread={homeData?.notifications_unread}
-        initialSyncStatus={initialSyncStatus}
         deferAuxiliaryLoads
       />
 

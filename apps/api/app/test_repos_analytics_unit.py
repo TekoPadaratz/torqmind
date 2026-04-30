@@ -153,6 +153,67 @@ class ClickHouseQueryScopeUnitTest(unittest.TestCase):
         self.assertEqual(captured["parameters"]["id_empresa"], 7)
         self.assertEqual(captured["tenant_id"], 7)
 
+    def test_sales_overview_bundle_keeps_requested_window_when_requested_date_is_outside_coverage(self) -> None:
+        expected = {
+            "kpis": {"faturamento": 0.0, "margem": 0.0, "ticket_medio": 0.0, "devolucoes": 0.0},
+            "commercial_kpis": {"saidas": 0.0, "qtd_saidas": 0, "entradas": 0.0, "qtd_entradas": 0, "cancelamentos": 0.0, "qtd_cancelamentos": 0},
+            "by_day": [],
+            "by_hour": [],
+            "commercial_by_hour": [],
+            "cfop_breakdown": [],
+            "monthly_evolution": [],
+            "annual_comparison": {},
+            "top_products": [],
+            "top_groups": [],
+            "top_employees": [],
+            "stats": {"vendas": 0},
+            "operational_sync": {"last_sync_at": None, "snapshot_generated_at": None},
+            "freshness": {"mode": "historical_snapshot", "source": "torqmind_mart.agg_vendas_diaria"},
+        }
+
+        with patch.object(
+            repos_mart_clickhouse,
+            "commercial_window_coverage",
+            return_value={
+                "mode": "requested_outside_coverage",
+                "effective_dt_ini": date(2026, 4, 30),
+                "effective_dt_fim": date(2026, 4, 30),
+            },
+        ), patch.object(
+            repos_mart_clickhouse,
+            "_sales_historical_bundle_from_marts",
+            return_value=expected,
+        ) as historical_bundle, patch.object(
+            repos_mart_clickhouse,
+            "sales_commercial_overview",
+            return_value={
+                "kpis": expected["commercial_kpis"],
+                "cfop_breakdown": expected["cfop_breakdown"],
+                "by_hour": expected["commercial_by_hour"],
+                "monthly_evolution": expected["monthly_evolution"],
+                "annual_comparison": expected["annual_comparison"],
+            },
+        ):
+            payload = repos_mart_clickhouse.sales_overview_bundle(
+                "MASTER",
+                1,
+                14458,
+                date(2026, 4, 30),
+                date(2026, 4, 30),
+                as_of=date(2026, 4, 30),
+            )
+
+        historical_bundle.assert_called_once_with(
+            "MASTER",
+            1,
+            14458,
+            date(2026, 4, 30),
+            date(2026, 4, 30),
+            include_details=True,
+        )
+        self.assertEqual(payload["reading_status"], "unavailable_for_requested_window")
+        self.assertEqual(payload["freshness"]["historical_through_dt"], "2026-04-30")
+
     def test_cash_live_now_does_not_return_epoch_zero_as_1970(self) -> None:
         responses = [
             [{"caixas_abertos_fonte": 0, "caixas_abertos": 0, "caixas_stale": 0, "snapshot_epoch": 0, "latest_activity_epoch": 0}],
@@ -295,6 +356,23 @@ class ClickHouseQueryScopeUnitTest(unittest.TestCase):
         self.assertIn("operador_caixa_nome", captured["query"])
         self.assertIn("LIMIT {limit:UInt32}", captured["query"])
         self.assertEqual(captured["parameters"]["id_empresa"], 7)
+        self.assertEqual(captured["tenant_id"], 7)
+
+    def test_risk_last_events_applies_branch_filter_against_recent_events_view(self) -> None:
+        captured = {}
+
+        def fake_query(query, parameters=None, tenant_id=None):
+            captured["query"] = query
+            captured["parameters"] = parameters
+            captured["tenant_id"] = tenant_id
+            return []
+
+        with patch.object(repos_mart_clickhouse, "query_dict", side_effect=fake_query):
+            rows = repos_mart_clickhouse.risk_last_events("MASTER", 7, [11, 12], date(2026, 4, 1), date(2026, 4, 2), limit=5)
+
+        self.assertEqual(rows, [])
+        self.assertIn("id_filial IN (11, 12)", captured["query"])
+        self.assertIn("FROM torqmind_mart.risco_eventos_recentes", captured["query"])
         self.assertEqual(captured["tenant_id"], 7)
 
     def test_risk_last_events_preserves_human_operator_and_branch_labels(self) -> None:

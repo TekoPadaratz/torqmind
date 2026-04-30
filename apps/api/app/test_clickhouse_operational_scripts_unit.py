@@ -59,8 +59,23 @@ class ClickHouseOperationalScriptsTest(unittest.TestCase):
         source = read("deploy/scripts/prod-semantic-marts-audit.sh")
         self.assertIn("startsWith(label, 'FORMA_')", source)
         self.assertIn("fraude_cancelamentos_eventos", source)
+        self.assertIn("risco_eventos_recentes", source)
+        self.assertIn("system.columns", source)
+        self.assertIn("id_filial", source)
         self.assertIn("finance_aging_daily", source)
         self.assertIn("app.competitor_fuel_prices", source)
+
+    def test_risk_recent_events_view_contract_keeps_filial_and_updated_at(self) -> None:
+        design_source = read("sql/clickhouse/phase2_mvs_design.sql")
+        refresh_source = read("deploy/scripts/prod-clickhouse-refresh-marts.sh")
+        for source in (design_source, refresh_source):
+            self.assertIn("CREATE OR REPLACE VIEW", source)
+            self.assertIn("risco_eventos_recentes", source)
+            self.assertIn("r.id_filial", source)
+            self.assertIn("AS filial_nome", source)
+            self.assertIn("event_type", source)
+            self.assertIn("operador_caixa_nome", source)
+            self.assertIn("r.created_at AS updated_at", source)
 
     def test_pipeline_runs_incremental_clickhouse_and_never_full_refresh(self) -> None:
         source = read("deploy/scripts/prod-etl-pipeline.sh")

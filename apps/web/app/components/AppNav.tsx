@@ -10,7 +10,7 @@ import { clearAuth } from '../lib/auth';
 import { getVisibleBranches, uniqueBranchIds } from '../lib/branch-state.mjs';
 import { buildQuickShortcutRanges, formatBusinessCalendarDate, parseCalendarDate } from '../lib/calendar-date.mjs';
 import { buildBrowserLocalDefaultScope } from '../lib/local-scope-defaults.mjs';
-import { describeLastSync, describeServerBaseDate, describeSyncMessage } from '../lib/reading-copy.mjs';
+import { describeServerBaseDate } from '../lib/reading-copy.mjs';
 import { clearSessionCache, loadSession, readCachedSession } from '../lib/session';
 import { buildValidatedScope, validateScopeDraft } from '../lib/scope-validation.mjs';
 import { prefetchProductScope, startScopeTransition, useScopeTransitionState } from '../lib/scope-runtime';
@@ -92,13 +92,11 @@ export default function AppNav({
   title,
   userLabel,
   initialUnread,
-  initialSyncStatus,
   deferAuxiliaryLoads = false,
 }: {
   title: string;
   userLabel?: string;
   initialUnread?: number;
-  initialSyncStatus?: any;
   deferAuxiliaryLoads?: boolean;
 }) {
   const router = useRouter();
@@ -117,7 +115,6 @@ export default function AppNav({
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [unread, setUnread] = useState(initialUnread ?? 0);
-  const [syncStatus, setSyncStatus] = useState<any>(initialSyncStatus ?? null);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
 
@@ -145,12 +142,6 @@ export default function AppNav({
       setUnread(initialUnread);
     }
   }, [initialUnread]);
-
-  useEffect(() => {
-    if (initialSyncStatus !== undefined) {
-      setSyncStatus(initialSyncStatus || null);
-    }
-  }, [initialSyncStatus]);
 
   useEffect(() => {
     if (!deferAuxiliaryLoads) {
@@ -219,50 +210,6 @@ export default function AppNav({
       active = false;
     };
   }, [activeScope, initialUnread]);
-
-  useEffect(() => {
-    if (initialSyncStatus?.available === true) return;
-    if (!auxiliaryLoadsEnabled) return;
-
-    const companyId = activeScope.id_empresa || session?.id_empresa;
-    if (!companyId) {
-      setSyncStatus(null);
-      return;
-    }
-
-    let active = true;
-    const loadSyncStatus = async () => {
-      try {
-        const params = buildScopeSearchParams({
-          id_empresa: companyId,
-          id_filial: activeScope.id_filial,
-          id_filiais: activeScope.id_filiais,
-        }).toString();
-        const response = await apiGet(`/bi/sync/status${params ? `?${params}` : ''}`);
-        if (active) setSyncStatus(response);
-      } catch {
-        if (active) {
-          setSyncStatus({
-            available: false,
-            last_sync_at: null,
-            message: 'Não foi possível consultar a última sincronização agora.',
-          });
-        }
-      }
-    };
-
-    loadSyncStatus();
-    return () => {
-      active = false;
-    };
-  }, [
-    activeScope.id_empresa,
-    activeScope.id_filial,
-    activeScope.id_filiais.join(','),
-    auxiliaryLoadsEnabled,
-    initialSyncStatus,
-    session?.id_empresa,
-  ]);
 
   useEffect(() => {
     if (!auxiliaryLoadsEnabled) return;
@@ -679,14 +626,6 @@ export default function AppNav({
           >
             {applying ? 'Aplicando...' : 'Aplicar filtros'}
           </button>
-        </div>
-
-        <div className="productSidebarSection productSyncSection">
-          <div className="productSectionLabel">Frescor operacional</div>
-          <div className="productSyncValue">{describeLastSync(syncStatus)}</div>
-          <div className="muted">
-            {describeSyncMessage(syncStatus)}
-          </div>
         </div>
       </aside>
     </>

@@ -105,6 +105,34 @@ required_ch_tables=(
   "torqmind_mart.finance_aging_daily"
 )
 
+risk_recent_required_columns=(
+  id
+  id_empresa
+  id_filial
+  filial_nome
+  data_key
+  data
+  event_type
+  id_db
+  id_comprovante
+  id_movprodutos
+  id_usuario
+  id_funcionario
+  funcionario_nome
+  id_turno
+  turno_value
+  operador_caixa_id
+  operador_caixa_nome
+  operador_caixa_source
+  id_cliente
+  valor_total
+  impacto_estimado
+  score_risco
+  score_level
+  reasons
+  updated_at
+)
+
 for qualified in "${required_ch_tables[@]}"; do
   db="${qualified%%.*}"
   table="${qualified#*.}"
@@ -119,6 +147,18 @@ if [[ "$errors" -gt 0 ]]; then
   echo
   echo "Semantic audit stopped before data checks because required objects are missing."
   exit 1
+fi
+
+echo
+echo "risk recent-events contract:"
+for column in "${risk_recent_required_columns[@]}"; do
+  column_exists="$(ch --query "SELECT count() FROM system.columns WHERE database = 'torqmind_mart' AND table = 'risco_eventos_recentes' AND name = '${column}'")"
+  if [[ "$column_exists" != "1" ]]; then
+    error "torqmind_mart.risco_eventos_recentes is missing column ${column}"
+  fi
+done
+if [[ "$errors" -eq 0 ]]; then
+  ok "risco_eventos_recentes exposes the expected filial/operator schema"
 fi
 
 echo

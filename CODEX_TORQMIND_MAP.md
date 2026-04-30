@@ -414,6 +414,7 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Revisao paridade semantica 2026-04-30: `docker compose exec -T web npm test` passou, 76 testes; `cd apps/web && npm test` passou, 77 testes no host.
 - Revisao paridade semantica 2026-04-30: `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet`, `make clickhouse-smoke`, `make analytics-smoke` e `make lint` passaram.
 - Revisao estabilizacao UX/pipeline 2026-04-30: `bash -n` dos scripts de pipeline/sync/refresh/cron passou; `make analytics-smoke` passou; `docker compose exec -T api python -m unittest app.test_db_clickhouse_unit app.test_repos_analytics_unit app.test_sales_overview_unit` passou (34 testes); `cd apps/web && npm test` passou (79 testes); `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet` passou; `make lint` falhou localmente por `service "web" is not running`.
+- Revisao antifraude/entrega final 2026-04-30: `docker compose exec -T clickhouse clickhouse-client --query "SHOW CREATE TABLE torqmind_mart.risco_eventos_recentes"` confirmou aliases limpos (`id_filial`, `data_key`, `updated_at` etc.) apos reaplicar a view no DB correto; `docker compose exec -T api python -m unittest app.test_smoke_api.SmokeApiTest.test_fraud_overview_endpoint_returns_contract` passou; `ALLOW_INSECURE_ENV=1 ENV_FILE=.env COMPOSE_FILE=docker-compose.yml ID_EMPRESA=1 ID_FILIAL=14458 ./deploy/scripts/prod-semantic-marts-audit.sh` passou com `errors=0 warnings=0`; `prod-data-reconcile.sh` passou com `errors=0 warnings=1`.
 
 ## 13. Ajustes operacionais e UX (2026-04-30)
 
@@ -421,9 +422,16 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Lock anti-overlap continua com `flock -n` e ganhou log de idade do lock (`age=...s`) para diagnosticar lock stale no host sem destravar na marra.
 - Vendas operacionais não fazem mais shift automático para “ontem”: em `requested_dt_ini > latest_available_dt`, `commercial_window_coverage.mode=requested_outside_coverage` e o recorte efetivo permanece o solicitado.
 - Estado “Todas as filiais” foi estabilizado no frontend com sentinel explícito `branch_scope=all` em URL/estado; ao trocar de aba não expande mais para lista de `id_filiais`.
-- UX cliente: removidos banners/cards de frescor técnico das telas de produto (`dashboard`, `sales`, `cash`, `fraud`, `customers`, `finance`, `pricing`, `goals`). Informações técnicas devem ficar na área de `Plataforma`.
+- UX cliente: removidos banners/cards de frescor técnico das telas de produto (`dashboard`, `sales`, `cash`, `fraud`, `customers`, `finance`, `pricing`, `goals`) e também a seção lateral de `Frescor operacional` do `AppNav`. Informações técnicas devem ficar apenas na área de `Plataforma`.
 - Terminologia BR: botão superior “Platform” no produto virou “Plataforma”; labels de papel também foram traduzidos (`Plataforma Master`, `Administrador da Plataforma`, etc).
 - Regras preservadas: origem canônica de vendas continua `stg.comprovantes`/`stg.itenscomprovantes`; nenhum retorno `1970-01-01` foi reintroduzido; fluxo de preço concorrente segue app-owned em PostgreSQL.
+- Antifraude 500 real: a view `torqmind_mart.risco_eventos_recentes` existia no ClickHouse com nomes de coluna qualificados (`r.id_filial`, `r.data_key`, `r.created_at`) porque o SELECT da view não dava alias explícito para colunas brutas. A API consulta `id_filial`, então `/bi/fraud/overview` quebrava com `UNKNOWN_IDENTIFIER`. O contrato correto agora exige aliases explícitos e colunas: `id`, `id_empresa`, `id_filial`, `filial_nome`, `data_key`, `data`, `event_type`, `id_db`, `id_comprovante`, `id_movprodutos`, `id_usuario`, `id_funcionario`, `funcionario_nome`, `id_turno`, `turno_value`, `operador_caixa_id`, `operador_caixa_nome`, `operador_caixa_source`, `id_cliente`, `valor_total`, `impacto_estimado`, `score_risco`, `score_level`, `reasons`, `created_at`, `updated_at`.
+- Diagnóstico rápido de antifraude em produção/homologação:
+  `SHOW CREATE TABLE torqmind_mart.risco_eventos_recentes`
+  Se aparecerem colunas como `` `r.id_filial` `` ou `` `r.data_key` ``, o schema da view está quebrado e precisa de full init ou reaplicação da view no DB `torqmind_mart`.
+- Mudança de schema da mart/view de risco exige refresh completo recomendado:
+  `ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-clickhouse-init.sh`
+  Depois validar com `prod-data-reconcile.sh` e `prod-semantic-marts-audit.sh`.
 
 ## 12. Regras de ouro
 
