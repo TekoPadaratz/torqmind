@@ -55,6 +55,8 @@ Atalhos uteis:
 - `make prod-clickhouse-init`: em producao recria `torqmind_dw` nativo, valida `fact_venda`/`fact_venda_item` contra PostgreSQL, recria `torqmind_mart`, roda backfill e cria MVs streaming nesta ordem.
 - `make prod-data-reconcile ID_EMPRESA=1 ID_FILIAL=14458`: compara PostgreSQL DW, `torqmind_dw` e marts de vendas sem depender de `stg.movprodutos`.
 - `make prod-semantic-marts-audit ID_EMPRESA=1 ID_FILIAL=14458`: valida semantica de labels humanos em pagamentos, caixa, antifraude, risco, financeiro e concorrencia.
+- `make prod-homologation-apply`: orquestrador unico para homologacao com preflight, pause/resume de cron, build/recreate, migrate, ClickHouse full, audits e post-boot checks.
+- `make prod-homologation-apply-streaming`: mesmo fluxo, mas com bootstrap e validacao do streaming 2.0 em paralelo.
 
 ## 3. Variaveis de ambiente criticas
 
@@ -130,7 +132,12 @@ Deploy:
 - `deploy/scripts/prod-install-cron.sh`: instala cron `*/${OPERATIONAL_INTERVAL_MINUTES}`; default operacional 2 min e risk 30 min.
 - `deploy/scripts/prod-history-coverage-audit.sh`: auditoria historica por STG canonico, DW PostgreSQL, DW ClickHouse e mart.
 - `deploy/scripts/prod-sales-orphans-report.sh`: relatorio de orfaos de venda; nao deleta nada.
+- `deploy/scripts/prod-homologation-apply.sh`: apply unico seguro para homolog/prod; valida env e compose, pausa cron, rebuilda API/Web/Nginx, roda migrate, ClickHouse full ou incremental, audits, streaming opcional, limpeza de `app.snapshot_cache`, post-boot checks e resume cron sem `down -v` nem apagar volumes.
 - `Makefile`: fonte unica dos comandos operacionais.
+
+Runbook do apply unico:
+
+- `docs/HOMOLOGATION_APPLY_RUNBOOK.md`: explica quando usar `--full-clickhouse`, `--with-streaming` e `--streaming-non-blocking`, como acompanhar logs e como fazer rollback basico sem tocar em volumes.
 
 Testes:
 

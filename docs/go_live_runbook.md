@@ -18,6 +18,35 @@ export TM_ENV=/etc/torqmind/prod.env
 cd "$TM_ROOT"
 ```
 
+## Apply unico recomendado
+
+Para homologacao controlada, prefira o orquestrador unico em vez de disparar comandos soltos.
+
+Apply padrao com ClickHouse completo:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --id-empresa 1 --id-filial 14458
+```
+
+Apply com streaming 2.0 em paralelo:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --with-streaming --id-empresa 1 --id-filial 14458
+```
+
+Apply incremental sem streaming:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --no-streaming
+```
+
+Logs:
+
+- apply principal em `/home/deploy/logs/torqmind-homologation-apply-YYYYMMDD_HHMMSS.log`
+- pipeline recorrente em `/home/deploy/logs/torqmind-etl-pipeline.log`
+
+Detalhes completos de flags, dry-run e rollback basico: `docs/HOMOLOGATION_APPLY_RUNBOOK.md`.
+
 ## T-48h: benchmark local com massa real
 
 Contagens por camada:
