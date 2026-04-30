@@ -105,6 +105,26 @@ ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-rebuild-derived-from-stg.s
   - os watermarks do tenant nao sao zerados para evitar salto incorreto em janelas futuras.
   - `--include-dimensions` e bloqueado para evitar purge dimensional sem reset seguro de watermark.
 
+## Integracao com prod-homologation-apply.sh
+
+No fluxo integrado, o apply separa dois conceitos de filial:
+
+- `--id-filial <id>` = escopo de auditoria/validacao (default 14458), usado nos passos de reconcile, semantic audit e history coverage.
+- `--rebuild-id-filial <id>` = escopo do rebuild derivado. Quando omitido, reconstrói todas as filiais do tenant.
+- `--all-filiais` = alias explícito para rebuild de todas as filiais (conflita com `--rebuild-id-filial`).
+
+Exemplo rebuild total (todas as filiais):
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
+```
+
+Exemplo rebuild de uma filial apenas:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --rebuild-id-filial 14458 --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
+```
+
 ## Passo seguinte natural
 
 Depois de um rebuild derivado bem-sucedido, publique ClickHouse com uma destas opcoes:

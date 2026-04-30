@@ -23,6 +23,8 @@ SKIP_CRON=0
 SKIP_AUDITS=0
 ID_EMPRESA=1
 ID_FILIAL=14458
+REBUILD_ID_FILIAL=""
+ALL_FILIAIS=0
 FROM_DATE="${FROM_DATE:-2025-01-01}"
 TO_DATE="${TO_DATE:-}"
 STREAMING_PROFILE="${STREAMING_PROFILE:-prod-lite}"
@@ -87,7 +89,9 @@ Flags:
   --skip-cron
   --skip-audits
   --id-empresa <id>
-  --id-filial <id>
+  --id-filial <id>          (audit/validation scope, default 14458)
+  --rebuild-id-filial <id>  (rebuild scope; omit for all branches)
+  --all-filiais             (explicit: rebuild all branches)
   --help
 
 Examples:
@@ -168,6 +172,14 @@ parse_args() {
         ID_FILIAL="$2"
         shift
         ;;
+      --rebuild-id-filial)
+        [[ $# -ge 2 ]] || { echo "ERROR: --rebuild-id-filial requires a value" >&2; exit 2; }
+        REBUILD_ID_FILIAL="$2"
+        shift
+        ;;
+      --all-filiais)
+        ALL_FILIAIS=1
+        ;;
       --help|-h)
         usage
         exit 0
@@ -189,6 +201,14 @@ parse_args() {
     echo "ERROR: --id-filial must be numeric" >&2
     exit 2
   fi
+  if [[ -n "$REBUILD_ID_FILIAL" && ! "$REBUILD_ID_FILIAL" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --rebuild-id-filial must be numeric" >&2
+    exit 2
+  fi
+  if (( ALL_FILIAIS )) && [[ -n "$REBUILD_ID_FILIAL" ]]; then
+    echo "ERROR: --all-filiais and --rebuild-id-filial cannot be used together" >&2
+    exit 2
+  fi
   if (( FULL_CLICKHOUSE )) && (( SKIP_CLICKHOUSE )); then
     echo "ERROR: --full-clickhouse and --skip-clickhouse cannot be used together" >&2
     exit 2
@@ -203,6 +223,10 @@ parse_args() {
   fi
   if (( INCLUDE_DIMENSIONS )) && (( ! REBUILD_DW_FROM_STG )); then
     echo "ERROR: --include-dimensions requires --rebuild-dw-from-stg" >&2
+    exit 2
+  fi
+  if (( INCLUDE_DIMENSIONS )) && { [[ -n "$REBUILD_ID_FILIAL" ]] || [[ -n "$TO_DATE" ]]; }; then
+    echo "ERROR: --include-dimensions requires tenant-wide open-ended rebuild (omit --rebuild-id-filial and --to-date)" >&2
     exit 2
   fi
   if (( ALLOW_DW_ONLY )) && (( ! REBUILD_DW_FROM_STG )); then
@@ -596,7 +620,7 @@ step_preflight_local() {
   log INFO "commit=$COMMIT_SHORT"
   log INFO "dry_run=$DRY_RUN skip_build=$SKIP_BUILD skip_migrate=$SKIP_MIGRATE rebuild_dw_from_stg=$REBUILD_DW_FROM_STG include_dimensions=$INCLUDE_DIMENSIONS allow_dw_only=$ALLOW_DW_ONLY full_clickhouse=$FULL_CLICKHOUSE skip_clickhouse=$SKIP_CLICKHOUSE with_streaming=$WITH_STREAMING skip_cron=$SKIP_CRON skip_audits=$SKIP_AUDITS"
   if (( REBUILD_DW_FROM_STG )); then
-    log INFO "derived_rebuild_window from_date=$FROM_DATE to_date=${TO_DATE:-aberto} id_empresa=$ID_EMPRESA id_filial=${ID_FILIAL:-todas} include_dimensions=$INCLUDE_DIMENSIONS allow_dw_only=$ALLOW_DW_ONLY"
+    log INFO "derived_rebuild_window from_date=$FROM_DATE to_date=${TO_DATE:-aberto} id_empresa=$ID_EMPRESA audit_filial=${ID_FILIAL:-todas} rebuild_filial=${REBUILD_ID_FILIAL:-todas} include_dimensions=$INCLUDE_DIMENSIONS allow_dw_only=$ALLOW_DW_ONLY"
   fi
 }
 
@@ -702,8 +726,8 @@ step_derived_rebuild() {
   fi
 
   local cmd=(env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" FROM_DATE="$FROM_DATE")
-  if [[ -n "$ID_FILIAL" ]]; then
-    cmd+=(ID_FILIAL="$ID_FILIAL")
+  if [[ -n "$REBUILD_ID_FILIAL" ]]; then
+    cmd+=(ID_FILIAL="$REBUILD_ID_FILIAL")
   fi
   if [[ -n "$TO_DATE" ]]; then
     cmd+=(TO_DATE="$TO_DATE")

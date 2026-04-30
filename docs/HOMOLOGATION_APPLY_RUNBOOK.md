@@ -10,6 +10,7 @@ Atalhos no Makefile:
 
 - `make prod-homologation-apply`
 - `make prod-homologation-apply-streaming`
+- `make prod-homologation-apply-full-stg`
 - `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1`
 
 ## Uso
@@ -32,10 +33,16 @@ Incremental, sem streaming:
 ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --no-streaming
 ```
 
-Rebuild completo desde a STG, seguido de ClickHouse full dentro do apply:
+Rebuild completo desde a STG (todas as filiais):
 
 ```bash
 ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
+```
+
+Rebuild derivado de apenas uma filial (audit permanece 14458):
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --rebuild-id-filial 14458 --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
 ```
 
 Rebuild derivado incluindo dimensoes DW reconstruiveis:
@@ -84,7 +91,9 @@ Observacao: no host real o log continua em `/home/deploy/logs`. Em workstations 
 - `--skip-cron`: nao para nem reinstala o cron do host.
 - `--skip-audits`: pula reconcile, semantic audit, history coverage e orphan report.
 - `--id-empresa <id>`: escopo default para audits e CDC validation. Default `1`.
-- `--id-filial <id>`: escopo default para audits. Default `14458`.
+- `--id-filial <id>`: escopo de auditoria/validacao. Default `14458`. Nao afeta o rebuild.
+- `--rebuild-id-filial <id>`: escopo do rebuild derivado. Quando omitido, reconstrói todas as filiais.
+- `--all-filiais`: alias explícito para rebuild de todas as filiais (conflita com `--rebuild-id-filial`).
 
 ## Ordem executada pelo orquestrador
 
@@ -129,8 +138,10 @@ Guard rails desse modo:
 - rejeita `--skip-migrate`;
 - rejeita `--skip-clickhouse` sem `--allow-dw-only`;
 - exige que a STG cubra `--from-date` ou confirmacao interativa especifica;
-- repassa `--include-dimensions` apenas para rebuild tenant-wide aberto, sem `--id-filial` e sem `--to-date`;
-- em rebuild escopado por `--id-filial` ou `--to-date`, preserva watermarks do tenant e faz varredura controlada da janela sem apagamento amplo;
+- repassa `--include-dimensions` apenas para rebuild tenant-wide aberto, sem `--rebuild-id-filial` e sem `--to-date`;
+- em rebuild escopado por `--rebuild-id-filial` ou `--to-date`, preserva watermarks do tenant e faz varredura controlada da janela sem apagamento amplo;
+- `--all-filiais` e `--rebuild-id-filial` nao podem ser usados juntos;
+- `--id-filial` (audit) e independente de `--rebuild-id-filial` (escopo rebuild);
 - a migration 072 sobrescreve os loaders SQL do hot path para respeitar `from_date`, `to_date`, `branch_id` e `force_full_scan` diretamente no banco.
 
 Use o modo incremental quando:

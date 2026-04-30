@@ -109,6 +109,19 @@ class DerivedRebuildOperationalScriptsTest(unittest.TestCase):
         self.assertIn("cannot be combined with --skip-migrate", source)
         self.assertIn("unless --allow-dw-only is used", source)
 
+    def test_homologation_apply_separates_audit_filial_from_rebuild_filial(self) -> None:
+        source = read("deploy/scripts/prod-homologation-apply.sh")
+        self.assertIn('REBUILD_ID_FILIAL=""', source)
+        self.assertIn("--rebuild-id-filial", source)
+        self.assertIn("--all-filiais", source)
+        self.assertIn("audit_filial=", source)
+        self.assertIn("rebuild_filial=", source)
+        self.assertIn("--all-filiais and --rebuild-id-filial cannot be used together", source)
+        self.assertIn("--rebuild-id-filial must be numeric", source)
+        self.assertIn("--include-dimensions requires tenant-wide open-ended rebuild", source)
+        # step_derived_rebuild passes REBUILD_ID_FILIAL, not ID_FILIAL
+        self.assertIn('ID_FILIAL="$REBUILD_ID_FILIAL"', source)
+
     def test_history_coverage_audit_reports_monthly_stg_dw_clickhouse_and_gaps(self) -> None:
         source = read("deploy/scripts/prod-history-coverage-audit.sh")
         self.assertIn("Monthly counts PostgreSQL STG", source)

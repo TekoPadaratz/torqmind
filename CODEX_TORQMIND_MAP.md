@@ -57,8 +57,14 @@ Atalhos uteis:
 - `make prod-semantic-marts-audit ID_EMPRESA=1 ID_FILIAL=14458`: valida semantica de labels humanos em pagamentos, caixa, antifraude, risco, financeiro e concorrencia.
 - `make prod-homologation-apply`: orquestrador unico para homologacao com preflight, pause/resume de cron, build/recreate, migrate, ClickHouse full, audits e post-boot checks.
 - `make prod-homologation-apply-streaming`: mesmo fluxo, mas com bootstrap e validacao do streaming 2.0 em paralelo.
+- `make prod-homologation-apply-full-stg`: rebuild completo desde STG (todas as filiais) com ClickHouse full, desde 2025-01-01.
 - `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1`: rebuild seguro das camadas derivadas PostgreSQL desde a STG, sem tocar ClickHouse.
 - `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1 INCLUDE_DIMENSIONS=1`: mesma rotina, mas incluindo purge de dimensoes DW reconstruiveis em rebuild tenant-wide aberto.
+
+Nota sobre filiais no apply:
+- `--id-filial` = escopo de auditoria (default 14458). Nao afeta o rebuild.
+- `--rebuild-id-filial` = escopo do rebuild derivado. Omitir = todas as filiais.
+- `--all-filiais` = alias explícito para rebuild de todas as filiais.
 
 ## 3. Variaveis de ambiente criticas
 
@@ -136,7 +142,7 @@ Deploy:
 - `deploy/scripts/prod-history-coverage-audit.sh`: auditoria historica por STG canonico, DW PostgreSQL, DW ClickHouse e mart.
 - `deploy/scripts/prod-rebuild-derived-from-stg.sh`: audita cobertura STG, purga somente fatos derivados seguros, opcionalmente inclui dimensoes DW reconstruiveis com `--include-dimensions`, roda ETL full canônico com janela controlada e `force_full_scan`, e verifica STG vs DW sem tocar ClickHouse.
 - `deploy/scripts/prod-sales-orphans-report.sh`: relatorio de orfaos de venda; nao deleta nada.
-- `deploy/scripts/prod-homologation-apply.sh`: apply unico seguro para homolog/prod; valida env e compose, pausa cron, rebuilda API/Web/Nginx, roda migrate, opcionalmente faz rebuild derivado desde a STG, aceita `--include-dimensions` e o escape hatch explicito `--allow-dw-only --skip-clickhouse`, executa ClickHouse full ou incremental, audits, streaming opcional, limpeza de `app.snapshot_cache`, post-boot checks e resume cron sem `down -v` nem apagar volumes.
+- `deploy/scripts/prod-homologation-apply.sh`: apply unico seguro para homolog/prod; valida env e compose, pausa cron, rebuilda API/Web/Nginx, roda migrate, opcionalmente faz rebuild derivado desde a STG (com `--rebuild-id-filial` para escopo ou todas as filiais por default), aceita `--include-dimensions` e o escape hatch explicito `--allow-dw-only --skip-clickhouse`, executa ClickHouse full ou incremental, audits, streaming opcional, limpeza de `app.snapshot_cache`, post-boot checks e resume cron sem `down -v` nem apagar volumes.
 - `Makefile`: fonte unica dos comandos operacionais.
 
 Runbook do apply unico:

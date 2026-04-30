@@ -18,7 +18,7 @@ include $(ENV_FILE)
 export
 endif
 
-.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-sync-dw-full prod-clickhouse-sync-dw-incremental prod-clickhouse-refresh-marts-full prod-clickhouse-refresh-marts-incremental prod-clickhouse-init prod-data-reconcile prod-semantic-marts-audit prod-history-coverage-audit prod-sales-orphans-report prod-etl-pipeline prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-rebuild-derived-from-stg prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check prod-homologation-apply prod-homologation-apply-streaming streaming-up streaming-down streaming-init-clickhouse streaming-register-debezium streaming-status streaming-validate-cdc streaming-logs streaming-config-check test-cdc-consumer
+.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-sync-dw-full prod-clickhouse-sync-dw-incremental prod-clickhouse-refresh-marts-full prod-clickhouse-refresh-marts-incremental prod-clickhouse-init prod-data-reconcile prod-semantic-marts-audit prod-history-coverage-audit prod-sales-orphans-report prod-etl-pipeline prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-rebuild-derived-from-stg prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check prod-homologation-apply prod-homologation-apply-streaming prod-homologation-apply-full-stg streaming-up streaming-down streaming-init-clickhouse streaming-register-debezium streaming-status streaming-validate-cdc streaming-logs streaming-config-check test-cdc-consumer
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -237,6 +237,9 @@ prod-homologation-apply:
 
 prod-homologation-apply-streaming:
 	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --with-streaming
+
+prod-homologation-apply-full-stg:
+	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01 --full-clickhouse
 
 prod-reconcile-sales:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/prod-check-sales-reconciliation.sh
