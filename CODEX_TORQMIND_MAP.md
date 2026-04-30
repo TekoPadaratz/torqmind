@@ -445,3 +445,93 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Infra UTC; negocio/UI `America/Sao_Paulo`; filtros sempre `YYYY-MM-DD`; API retorna timestamp tecnico com offset.
 - Bootstrap ClickHouse: sincronizar `torqmind_dw` nativo e validar count/max(data_key) contra PostgreSQL antes de backfillar marts.
 - Nunca compartilhar uma instancia global de client clickhouse-connect entre threads; o client carrega estado de sessao.
+
+## 14. Arquitetura Event-Driven Streaming (TorqMind 2.0)
+
+Status: FUNDAÇÃO CRIADA — stack paralela ao sistema atual.
+
+### Decisões arquiteturais
+
+- Broker: Redpanda (Kafka-compatible, single binary, leve em memória).
+- CDC: Debezium PostgreSQL Connector via Debezium Connect.
+- Consumer: serviço Python próprio (`apps/cdc_consumer/`) — controle total sobre mapeamento, idempotência e observabilidade.
+- OLAP: ClickHouse com 4 camadas: `torqmind_raw`, `torqmind_current`, `torqmind_ops`, `torqmind_mart`.
+- NÃO usa MaterializedPostgreSQL.
+- NÃO corta pipeline atual (cron/shell ETL) nesta fase.
+- NÃO troca API para `torqmind_current` ainda.
+
+### Fluxo CDC
+
+```
+PostgreSQL (dw.*, app.*) → Debezium → Redpanda → CDC Consumer → ClickHouse (raw/current/ops)
+```
+
+### Tabelas capturadas (primeiro escopo)
+
+Facts: `fact_venda`, `fact_venda_item`, `fact_pagamento_comprovante`, `fact_caixa_turno`, `fact_comprovante`, `fact_financeiro`, `fact_risco_evento`.
+Dims: `dim_filial`, `dim_produto`, `dim_grupo_produto`, `dim_funcionario`, `dim_usuario_caixa`, `dim_local_venda`, `dim_cliente`.
+App: `payment_type_map`.
+
+### Tópicos Redpanda
+
+Formato: `torqmind.<schema>.<table>` (ex: `torqmind.dw.fact_venda`).
+
+### Idempotência
+
+- Raw: append-only com projeção dedup por (topic, partition, offset).
+- Current: ReplacingMergeTree com version = source_ts_ms; mesma PK com ts_ms menor é descartada no merge.
+- Deletes: marcados com `is_deleted=1`, não há DELETE físico.
+
+### Mapa de arquivos streaming
+
+- `docker-compose.streaming.yml`: stack Redpanda + Console + Debezium + Consumer.
+- `apps/cdc_consumer/`: serviço CDC Consumer Python.
+- `deploy/debezium/connectors/torqmind-postgres-cdc.json`: config do connector.
+- `deploy/scripts/streaming-*.sh`: scripts operacionais.
+- `sql/clickhouse/streaming/001_databases.sql`: cria databases.
+- `sql/clickhouse/streaming/010_raw_events.sql`: tabela raw append-only.
+- `sql/clickhouse/streaming/020_current_tables.sql`: tabelas current (ReplacingMergeTree).
+- `sql/clickhouse/streaming/030_ops_tables.sql`: tabelas operacionais (offsets, lag, erros).
+- `sql/clickhouse/streaming/040_pilot_marts.sql`: marts piloto streaming.
+- `docs/architecture/TORQMIND_EVENT_DRIVEN_2_0.md`: documentação completa.
+
+### Variáveis de ambiente streaming (CDC Consumer)
+
+- `REDPANDA_BROKERS`, `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`
+- `CDC_CONSUMER_GROUP`, `CDC_TOPICS`, `CDC_TOPIC_PATTERN`, `CDC_BATCH_SIZE`, `CDC_FLUSH_INTERVAL_SECONDS`
+- `LOG_LEVEL`
+
+### Comandos Makefile streaming
+
+- `make streaming-up`: sobe stack.
+- `make streaming-down`: para stack.
+- `make streaming-init-clickhouse`: cria schemas ClickHouse.
+- `make streaming-register-debezium`: registra connector.
+- `make streaming-status`: status geral.
+- `make streaming-validate-cdc`: valida pipeline.
+- `make streaming-logs`: tail logs.
+- `make streaming-config-check`: valida compose.
+- `make test-cdc-consumer`: testes unitários do consumer.
+
+### Próximos passos (não implementados nesta rodada)
+
+- CDC rodando em produção com validação completa.
+- API consultando `torqmind_current` para endpoints selecionados.
+- Marts streaming substituindo marts batch.
+- Observabilidade com Prometheus/Grafana.
+- Flink para CEP/aggregation streaming.
+- Temporal para workflows de backfill/onboarding.
+- Agent consumindo eventos para alertas reativos.
+
+### Perfis de deploy
+
+- `local-full`: Redpanda + Console + Debezium + Consumer (dev).
+- `prod-lite`: Redpanda + Debezium + Consumer sem Console (4 CPU / 8 GB).
+
+### Validações executadas (2026-04-30)
+
+- `bash -n deploy/scripts/streaming-*.sh`: passou.
+- `docker compose -f docker-compose.streaming.yml --profile local-full config --quiet`: passou.
+- `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet`: passou (não quebrou).
+- `python3 -m pytest apps/cdc_consumer/tests/ -v`: 23 testes, todos passaram.
+- Scripts não imprimem senhas (validado com grep).
