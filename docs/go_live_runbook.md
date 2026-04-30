@@ -34,6 +34,18 @@ Apply com streaming 2.0 em paralelo:
 ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --with-streaming --id-empresa 1 --id-filial 14458
 ```
 
+Apply com rebuild derivado desde a STG antes do ClickHouse full:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
+```
+
+Apply apenas para reconstruir o DW PostgreSQL, sem republicar ClickHouse:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --allow-dw-only --skip-clickhouse --from-date 2025-01-01 --id-empresa 1
+```
+
 Apply incremental sem streaming:
 
 ```bash
@@ -46,6 +58,8 @@ Logs:
 - pipeline recorrente em `/home/deploy/logs/torqmind-etl-pipeline.log`
 
 Detalhes completos de flags, dry-run e rollback basico: `docs/HOMOLOGATION_APPLY_RUNBOOK.md`.
+Runbook do rebuild derivado puro: `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`.
+Use `--allow-dw-only` apenas para verificacao intermediaria do PostgreSQL DW; para religar o serving analitico da API, o fluxo recomendado continua sendo republicar ClickHouse no mesmo apply.
 
 ## T-48h: benchmark local com massa real
 

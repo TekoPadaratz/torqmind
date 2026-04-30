@@ -11,6 +11,10 @@ ASSUME_YES=0
 DRY_RUN=0
 SKIP_BUILD=0
 SKIP_MIGRATE=0
+REBUILD_DW_FROM_STG=0
+SKIP_DERIVED_REBUILD=0
+INCLUDE_DIMENSIONS=0
+ALLOW_DW_ONLY=0
 FULL_CLICKHOUSE=0
 SKIP_CLICKHOUSE=0
 WITH_STREAMING=0
@@ -19,6 +23,8 @@ SKIP_CRON=0
 SKIP_AUDITS=0
 ID_EMPRESA=1
 ID_FILIAL=14458
+FROM_DATE="${FROM_DATE:-2025-01-01}"
+TO_DATE="${TO_DATE:-}"
 STREAMING_PROFILE="${STREAMING_PROFILE:-prod-lite}"
 STREAMING_VALIDATE_TIMEOUT_SECONDS="${STREAMING_VALIDATE_TIMEOUT_SECONDS:-300}"
 PIPELINE_LOG="${PIPELINE_LOG:-/home/deploy/logs/torqmind-etl-pipeline.log}"
@@ -38,6 +44,7 @@ CH_CONTAINER_ID=""
 
 BUILD_STATUS="PENDING"
 MIGRATE_STATUS="PENDING"
+DERIVED_REBUILD_STATUS="SKIPPED"
 API_STATUS="PENDING"
 WEB_STATUS="PENDING"
 CLICKHOUSE_STATUS="PENDING"
@@ -65,6 +72,12 @@ Flags:
   --dry-run
   --skip-build
   --skip-migrate
+  --rebuild-dw-from-stg
+  --skip-derived-rebuild
+  --include-dimensions
+  --from-date <YYYY-MM-DD>
+  --to-date <YYYY-MM-DD>
+  --allow-dw-only
   --full-clickhouse
   --skip-clickhouse
   --with-streaming
@@ -79,6 +92,9 @@ Flags:
 
 Examples:
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --include-dimensions --from-date 2025-01-01
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --allow-dw-only --skip-clickhouse --from-date 2025-01-01
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --with-streaming
   ENV_FILE=.env.production.example ./deploy/scripts/prod-homologation-apply.sh --dry-run --full-clickhouse --with-streaming --id-empresa 1 --id-filial 14458
 EOF
@@ -99,11 +115,33 @@ parse_args() {
       --skip-migrate)
         SKIP_MIGRATE=1
         ;;
+      --rebuild-dw-from-stg)
+        REBUILD_DW_FROM_STG=1
+        ;;
+      --skip-derived-rebuild)
+        SKIP_DERIVED_REBUILD=1
+        ;;
+      --include-dimensions)
+        INCLUDE_DIMENSIONS=1
+        ;;
+      --from-date)
+        [[ $# -ge 2 ]] || { echo "ERROR: --from-date requires a value" >&2; exit 2; }
+        FROM_DATE="$2"
+        shift
+        ;;
+      --to-date)
+        [[ $# -ge 2 ]] || { echo "ERROR: --to-date requires a value" >&2; exit 2; }
+        TO_DATE="$2"
+        shift
+        ;;
       --full-clickhouse)
         FULL_CLICKHOUSE=1
         ;;
       --skip-clickhouse)
         SKIP_CLICKHOUSE=1
+        ;;
+      --allow-dw-only)
+        ALLOW_DW_ONLY=1
         ;;
       --with-streaming)
         WITH_STREAMING=1
@@ -154,6 +192,29 @@ parse_args() {
   if (( FULL_CLICKHOUSE )) && (( SKIP_CLICKHOUSE )); then
     echo "ERROR: --full-clickhouse and --skip-clickhouse cannot be used together" >&2
     exit 2
+  fi
+  if (( REBUILD_DW_FROM_STG )) && (( SKIP_DERIVED_REBUILD )); then
+    echo "ERROR: --rebuild-dw-from-stg and --skip-derived-rebuild cannot be used together" >&2
+    exit 2
+  fi
+  if (( REBUILD_DW_FROM_STG )) && (( SKIP_MIGRATE )); then
+    echo "ERROR: --rebuild-dw-from-stg cannot be combined with --skip-migrate" >&2
+    exit 2
+  fi
+  if (( INCLUDE_DIMENSIONS )) && (( ! REBUILD_DW_FROM_STG )); then
+    echo "ERROR: --include-dimensions requires --rebuild-dw-from-stg" >&2
+    exit 2
+  fi
+  if (( ALLOW_DW_ONLY )) && (( ! REBUILD_DW_FROM_STG )); then
+    echo "ERROR: --allow-dw-only requires --rebuild-dw-from-stg" >&2
+    exit 2
+  fi
+  if (( REBUILD_DW_FROM_STG )) && (( SKIP_CLICKHOUSE )) && (( ! ALLOW_DW_ONLY )); then
+    echo "ERROR: --rebuild-dw-from-stg cannot be combined with --skip-clickhouse unless --allow-dw-only is used" >&2
+    exit 2
+  fi
+  if (( REBUILD_DW_FROM_STG )) && (( ! SKIP_CLICKHOUSE )); then
+    FULL_CLICKHOUSE=1
   fi
 }
 
@@ -417,6 +478,7 @@ final_report() {
   echo "branch: $BRANCH_NAME"
   echo "api_status: $API_STATUS"
   echo "web_status: $WEB_STATUS"
+  echo "derived_rebuild_status: $DERIVED_REBUILD_STATUS"
   echo "clickhouse_status: $CLICKHOUSE_STATUS"
   echo "reconcile_status: $RECONCILE_STATUS"
   echo "semantic_audit_status: $SEMANTIC_AUDIT_STATUS"
@@ -510,6 +572,7 @@ step_preflight_local() {
   require_file "$ROOT_DIR/deploy/scripts/prod-semantic-marts-audit.sh"
   require_file "$ROOT_DIR/deploy/scripts/prod-post-boot-check.sh"
   require_file "$ROOT_DIR/deploy/scripts/prod-install-cron.sh"
+  require_file "$ROOT_DIR/deploy/scripts/prod-rebuild-derived-from-stg.sh"
   if (( WITH_STREAMING )); then
     require_file "$ROOT_DIR/deploy/scripts/streaming-init-clickhouse.sh"
     require_file "$ROOT_DIR/deploy/scripts/streaming-prepare-postgres.sh"
@@ -531,7 +594,10 @@ step_preflight_local() {
   log INFO "env_file=$ENV_FILE"
   log INFO "branch=$BRANCH_NAME"
   log INFO "commit=$COMMIT_SHORT"
-  log INFO "dry_run=$DRY_RUN skip_build=$SKIP_BUILD skip_migrate=$SKIP_MIGRATE full_clickhouse=$FULL_CLICKHOUSE skip_clickhouse=$SKIP_CLICKHOUSE with_streaming=$WITH_STREAMING skip_cron=$SKIP_CRON skip_audits=$SKIP_AUDITS"
+  log INFO "dry_run=$DRY_RUN skip_build=$SKIP_BUILD skip_migrate=$SKIP_MIGRATE rebuild_dw_from_stg=$REBUILD_DW_FROM_STG include_dimensions=$INCLUDE_DIMENSIONS allow_dw_only=$ALLOW_DW_ONLY full_clickhouse=$FULL_CLICKHOUSE skip_clickhouse=$SKIP_CLICKHOUSE with_streaming=$WITH_STREAMING skip_cron=$SKIP_CRON skip_audits=$SKIP_AUDITS"
+  if (( REBUILD_DW_FROM_STG )); then
+    log INFO "derived_rebuild_window from_date=$FROM_DATE to_date=${TO_DATE:-aberto} id_empresa=$ID_EMPRESA id_filial=${ID_FILIAL:-todas} include_dimensions=$INCLUDE_DIMENSIONS allow_dw_only=$ALLOW_DW_ONLY"
+  fi
 }
 
 step_security_env() {
@@ -629,6 +695,34 @@ step_migrate() {
   MIGRATE_STATUS="$(mark_status OK)"
 }
 
+step_derived_rebuild() {
+  if (( ! REBUILD_DW_FROM_STG )) || (( SKIP_DERIVED_REBUILD )); then
+    DERIVED_REBUILD_STATUS="SKIPPED"
+    return 0
+  fi
+
+  local cmd=(env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" FROM_DATE="$FROM_DATE")
+  if [[ -n "$ID_FILIAL" ]]; then
+    cmd+=(ID_FILIAL="$ID_FILIAL")
+  fi
+  if [[ -n "$TO_DATE" ]]; then
+    cmd+=(TO_DATE="$TO_DATE")
+  fi
+  cmd+=("$ROOT_DIR/deploy/scripts/prod-rebuild-derived-from-stg.sh")
+  if (( ASSUME_YES )); then
+    cmd+=(--yes)
+  fi
+  if (( DRY_RUN )); then
+    cmd+=(--dry-run)
+  fi
+  if (( INCLUDE_DIMENSIONS )); then
+    cmd+=(--include-dimensions)
+  fi
+
+  run "${cmd[@]}"
+  DERIVED_REBUILD_STATUS="$(mark_status OK)"
+}
+
 step_clickhouse() {
   if (( SKIP_CLICKHOUSE )); then
     CLICKHOUSE_STATUS="SKIPPED"
@@ -652,6 +746,15 @@ step_audits() {
     SEMANTIC_AUDIT_STATUS="SKIPPED"
     HISTORY_AUDIT_STATUS="SKIPPED"
     ORPHANS_REPORT_STATUS="SKIPPED"
+    return 0
+  fi
+
+  if (( REBUILD_DW_FROM_STG )) && (( ALLOW_DW_ONLY )) && (( SKIP_CLICKHOUSE )); then
+    RECONCILE_STATUS="SKIPPED"
+    SEMANTIC_AUDIT_STATUS="SKIPPED"
+    HISTORY_AUDIT_STATUS="SKIPPED"
+    ORPHANS_REPORT_STATUS="SKIPPED"
+    record_warning "Audits dependentes de ClickHouse foram pulados porque --allow-dw-only manteve ClickHouse sem republicacao"
     return 0
   fi
 
@@ -824,14 +927,15 @@ main() {
   confirm
   run_step "4" "Build e recreate de API/Web/Nginx" step_build_runtime
   run_step "5" "Migracoes PostgreSQL" step_migrate
-  run_step "6" "ClickHouse full ou incremental" step_clickhouse
-  run_step "7" "Audits" step_audits
-  run_step "8" "Streaming opcional" step_streaming
-  run_step "9" "Limpar snapshot cache" step_snapshot_cache
-  run_step "10" "Post boot check" step_post_boot
-  run_step "11" "Instalar e religar cron" step_enable_cron
+  run_step "6" "Rebuild derivado desde STG" step_derived_rebuild
+  run_step "7" "ClickHouse full ou incremental" step_clickhouse
+  run_step "8" "Audits" step_audits
+  run_step "9" "Streaming opcional" step_streaming
+  run_step "10" "Limpar snapshot cache" step_snapshot_cache
+  run_step "11" "Post boot check" step_post_boot
+  run_step "12" "Instalar e religar cron" step_enable_cron
 
-  CURRENT_STEP_ID="12"
+  CURRENT_STEP_ID="13"
   CURRENT_STEP_LABEL="Relatorio final"
 }
 

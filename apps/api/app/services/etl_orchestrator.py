@@ -66,6 +66,20 @@ RISK_SOURCE_WATERMARK_DATASETS = (
     "formas_pgto_comprovantes",
     "turnos",
 )
+FORCE_FULL_PHASE_WATERMARK_DATASETS = (
+    "grupoprodutos",
+    "produtos",
+    "funcionarios",
+    "entidades",
+    "usuarios",
+    "turnos",
+    "comprovantes",
+    "formas_pgto_comprovantes",
+    "pagamento_comprovante_bridge",
+    "comprovantes_sales_fact",
+    "itenscomprovantes_sales_fact",
+    "financeiro",
+)
 RISK_EVENT_PROPAGATION_DAYS = 30
 RISK_EVENT_BACKSHIFT_DAYS = 1
 
@@ -172,10 +186,33 @@ def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _set_runtime_setting(conn, name: str, value: str | None) -> None:
+    conn.execute("SELECT set_config(%s, %s, false)", (name, value or ""))
+
+
+def _apply_runtime_scope(
+    conn,
+    *,
+    ref_date: date,
+    from_date: date | None,
+    to_date: date | None,
+    branch_id: int | None,
+    force_full: bool,
+) -> None:
+    _set_runtime_setting(conn, "etl.ref_date", ref_date.isoformat())
+    _set_runtime_setting(conn, "etl.from_date", from_date.isoformat() if from_date else None)
+    _set_runtime_setting(conn, "etl.to_date", to_date.isoformat() if to_date else None)
+    _set_runtime_setting(conn, "etl.branch_id", str(int(branch_id)) if branch_id is not None else None)
+    _set_runtime_setting(conn, "etl.force_full_scan", "true" if force_full else None)
+
+
 def run_incremental_cycle(
     tenant_ids: list[int],
     *,
     ref_date: date,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    branch_id: int | None = None,
     refresh_mart: bool = True,
     force_full: bool = False,
     fail_fast: bool = False,
@@ -188,6 +225,8 @@ def run_incremental_cycle(
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     track = normalize_track(track)
+    if from_date and to_date and to_date < from_date:
+        raise ValueError("to_date must be greater than or equal to from_date")
     started_at = datetime.now(timezone.utc)
     tenant_rows = tenant_rows or [{"id_empresa": tenant_id} for tenant_id in tenant_ids]
     tenant_by_id = {int(row["id_empresa"]): row for row in tenant_rows}
@@ -212,6 +251,14 @@ def run_incremental_cycle(
     cycle_started = time.perf_counter()
 
     with get_conn(role=db_role, tenant_id=db_tenant_scope, branch_id=None) as conn:
+        _apply_runtime_scope(
+            conn,
+            ref_date=ref_date,
+            from_date=from_date,
+            to_date=to_date,
+            branch_id=branch_id,
+            force_full=force_full,
+        )
         acquired_cycle_locks: list[tuple[int, int]] = []
         held_tenant_locks: set[int] = set()
         inspect_running_etl_state(conn, tenant_id=db_tenant_scope)
@@ -294,6 +341,9 @@ def run_incremental_cycle(
                         tenant_id,
                         force_full,
                         ref_date,
+                        from_date=from_date,
+                        to_date=to_date,
+                        branch_id=branch_id,
                         track=track,
                         progress_callback=progress_callback,
                     )
@@ -1785,15 +1835,26 @@ def _run_tenant_phase(
     force_full: bool,
     ref_date: date,
     *,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    branch_id: int | None = None,
     track: str = TRACK_FULL,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     track = normalize_track(track)
     started_at = datetime.now(timezone.utc)
     hot_window_days = _hot_window_days(conn)
-    meta: dict[str, Any] = {"force_full": force_full, "track": track}
+    meta: dict[str, Any] = {
+        "force_full": force_full,
+        "track": track,
+        "from_date": from_date.isoformat() if from_date else None,
+        "to_date": to_date.isoformat() if to_date else None,
+        "branch_id": branch_id,
+    }
     try:
-        if force_full and _track_runs_operational(track):
+        tenant_wide_force_full = force_full and branch_id is None and to_date is None
+        if tenant_wide_force_full and _track_runs_operational(track):
+            reset_datasets = list(FORCE_FULL_PHASE_WATERMARK_DATASETS)
             _run_logged_count_step(
                 conn,
                 tenant_id,
@@ -1801,14 +1862,18 @@ def _run_tenant_phase(
                 stage="phase",
                 ref_date=ref_date,
                 operation=lambda: conn.execute(
-                    "DELETE FROM etl.watermark WHERE id_empresa = %s",
-                    (tenant_id,),
+                    "DELETE FROM etl.watermark WHERE id_empresa = %s AND dataset = ANY(%s)",
+                    (tenant_id, reset_datasets),
                 ).rowcount
                 or 0,
-                meta={"force_full": True},
+                meta={"force_full": True, "datasets": reset_datasets},
                 progress_callback=progress_callback,
             )
             meta["watermark_reset"] = True
+            meta["watermark_reset_datasets"] = reset_datasets
+        elif force_full and _track_runs_operational(track):
+            meta["watermark_reset"] = False
+            meta["watermark_reset_skipped_reason"] = "scoped_force_full_scan"
 
         step_count = (len(PHASE_SQL_STEPS) if _track_runs_operational(track) else 0) + int(_track_runs_risk(track))
         step_index = 0

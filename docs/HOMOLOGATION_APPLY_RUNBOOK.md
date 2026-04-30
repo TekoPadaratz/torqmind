@@ -10,6 +10,7 @@ Atalhos no Makefile:
 
 - `make prod-homologation-apply`
 - `make prod-homologation-apply-streaming`
+- `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1`
 
 ## Uso
 
@@ -31,6 +32,30 @@ Incremental, sem streaming:
 ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --no-streaming
 ```
 
+Rebuild completo desde a STG, seguido de ClickHouse full dentro do apply:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
+```
+
+Rebuild derivado incluindo dimensoes DW reconstruiveis:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --include-dimensions --from-date 2025-01-01 --id-empresa 1
+```
+
+Rebuild somente do PostgreSQL DW, sem republicar ClickHouse:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --allow-dw-only --skip-clickhouse --from-date 2025-01-01 --id-empresa 1
+```
+
+Rebuild derivado isolado, sem tocar ClickHouse:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-rebuild-derived-from-stg.sh --yes --id-empresa 1 --from-date 2025-01-01
+```
+
 Dry-run seguro:
 
 ```bash
@@ -46,6 +71,12 @@ Observacao: no host real o log continua em `/home/deploy/logs`. Em workstations 
 - `--skip-build`: nao rebuilda nem recria API/Web/Nginx.
 - `--skip-migrate`: nao roda `prod-migrate.sh`.
 - `--full-clickhouse`: executa `prod-clickhouse-init.sh` e refaz DW nativo + marts completas.
+- `--rebuild-dw-from-stg`: purga apenas camadas derivadas seguras no PostgreSQL, roda o ETL canônico desde a STG e força `--full-clickhouse` no mesmo apply.
+- `--skip-derived-rebuild`: desabilita explicitamente a etapa acima quando o flag de rebuild nao for desejado.
+- `--include-dimensions`: repassa ao rebuild derivado a purge explicita das dimensoes DW reconstruiveis. So use em rebuild tenant-wide aberto.
+- `--from-date <YYYY-MM-DD>`: janela inicial do rebuild derivado. Default `2025-01-01`.
+- `--to-date <YYYY-MM-DD>`: janela final opcional do rebuild derivado.
+- `--allow-dw-only`: permite combinar rebuild derivado com `--skip-clickhouse` para reprocessar apenas o DW PostgreSQL. Nesse modo, audits dependentes de ClickHouse ficam pulados por design.
 - `--skip-clickhouse`: nao roda nenhuma etapa de ClickHouse no apply.
 - `--with-streaming`: sobe e valida o streaming 2.0 em paralelo ao stack principal.
 - `--skip-streaming` e `--no-streaming`: mantem o streaming fora do apply.
@@ -63,13 +94,14 @@ Observacao: no host real o log continua em `/home/deploy/logs`. Em workstations 
 3. Validacao do compose: `docker compose ... config --quiet` para prod e streaming quando solicitado.
 4. Build/recreate: rebuild de API/Web e recreate de API/Web/Nginx.
 5. Migracoes PostgreSQL: usa o script oficial `deploy/scripts/prod-migrate.sh`.
-6. ClickHouse: full com `prod-clickhouse-init.sh` ou incremental com `prod-clickhouse-sync-dw.sh` + `prod-clickhouse-refresh-marts.sh`.
-7. Audits: `prod-data-reconcile.sh`, `prod-semantic-marts-audit.sh` e, quando presentes, `prod-history-coverage-audit.sh` e `prod-sales-orphans-report.sh`.
-8. Streaming opcional: `streaming-init-clickhouse.sh`, `streaming-prepare-postgres.sh`, `streaming-up.sh`, `streaming-register-debezium.sh`, `streaming-validate-cdc.sh` com timeout e `streaming-status.sh`.
-9. Limpeza de cache: `TRUNCATE app.snapshot_cache` via container PostgreSQL.
-10. Post boot check: `prod-post-boot-check.sh` e probe Python dentro do container API para `settings.use_clickhouse`, `schemas_bi`, `SELECT 1` no ClickHouse e inventory do facade analitico.
-11. Cron final: instala o cron oficial com `prod-install-cron.sh`, executa `systemctl enable --now cron` e imprime `crontab -l`.
-12. Relatorio final: commit, branch, status do runtime, caminho dos logs e proximos comandos de acompanhamento.
+6. Rebuild derivado opcional: `prod-rebuild-derived-from-stg.sh` audita a cobertura da STG, purga apenas tabelas derivadas seguras e roda `app.cli.etl_incremental --track full --force-full --from-date ... [--to-date] [--branch-id ...]`.
+7. ClickHouse: full com `prod-clickhouse-init.sh` ou incremental com `prod-clickhouse-sync-dw.sh` + `prod-clickhouse-refresh-marts.sh`.
+8. Audits: `prod-data-reconcile.sh`, `prod-semantic-marts-audit.sh` e, quando presentes, `prod-history-coverage-audit.sh` e `prod-sales-orphans-report.sh`.
+9. Streaming opcional: `streaming-init-clickhouse.sh`, `streaming-prepare-postgres.sh`, `streaming-up.sh`, `streaming-register-debezium.sh`, `streaming-validate-cdc.sh` com timeout e `streaming-status.sh`.
+10. Limpeza de cache: `TRUNCATE app.snapshot_cache` via container PostgreSQL.
+11. Post boot check: `prod-post-boot-check.sh` e probe Python dentro do container API para `settings.use_clickhouse`, `schemas_bi`, `SELECT 1` no ClickHouse e inventory do facade analitico.
+12. Cron final: instala o cron oficial com `prod-install-cron.sh`, executa `systemctl enable --now cron` e imprime `crontab -l`.
+13. Relatorio final: commit, branch, status do runtime, caminho dos logs e proximos comandos de acompanhamento.
 
 ## Quando usar cada modo
 
@@ -78,6 +110,21 @@ Use `--full-clickhouse` quando:
 - for a primeira aplicacao em homolog apos restore ou mudanca estrutural;
 - o DW nativo/marts precisarem ser refeitos por inteiro;
 - uma auditoria tiver pedido rebuild semantico completo.
+
+Use `--rebuild-dw-from-stg` quando:
+
+- o PostgreSQL DW precisar ser refeito a partir das fontes canônicas `stg.comprovantes`, `stg.itenscomprovantes` e `stg.formas_pgto_comprovantes`;
+- voce quiser preservar STG e camadas transacionais, mas reconstruir fatos derivados e republicar depois no ClickHouse;
+- a janela historica desejada comecar em `2025-01-01` ou outra data explicita.
+
+Guard rails desse modo:
+
+- autoativa `--full-clickhouse`, exceto quando `--allow-dw-only --skip-clickhouse` forem passados explicitamente;
+- rejeita `--skip-migrate`;
+- rejeita `--skip-clickhouse` sem `--allow-dw-only`;
+- exige que a STG cubra `--from-date` ou confirmacao interativa especifica;
+- repassa `--include-dimensions` apenas para rebuild tenant-wide aberto, sem `--id-filial` e sem `--to-date`;
+- em rebuild escopado por `--id-filial` ou `--to-date`, preserva watermarks do tenant e faz varredura controlada da janela sem apagamento amplo.
 
 Use o modo incremental quando:
 
