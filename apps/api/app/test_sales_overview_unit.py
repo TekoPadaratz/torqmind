@@ -102,7 +102,7 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
 
     def test_turno_label_falls_back_to_numeric_identifier_when_payload_label_is_missing(self) -> None:
         self.assertEqual(repos_mart._turno_label(None, 356), "356")
-        self.assertEqual(repos_mart._turno_label("", 0), "Turno não identificado")
+        self.assertEqual(repos_mart._turno_label("", 0), "Turno sem cadastro")
 
     def test_commercial_docs_window_cte_uses_comprovantes_as_canonical_source(self) -> None:
         cte, _params, _branch = repos_mart._commercial_docs_window_cte(

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     clickhouse_database: str = "torqmind_mart"
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
-    
+
     # Feature flags for Phase 3 migration
     use_clickhouse: bool = True  # When False, fallback to PostgreSQL dw
     dual_read_mode: bool = False  # When True, validate both sources
@@ -91,23 +91,57 @@ _INSECURE_DEFAULTS = {
     "clickhouse_password": "",
 }
 
+# Patterns that indicate a placeholder or trivially insecure value.
+_BLOCKED_PATTERNS = (
+    "change_me",
+    "changeme",
+    "default",
+    "password",
+    "postgres",
+    "admin",
+    "1234",
+)
+
+_PRODUCTIVE_ENVS = {"prod", "production", "homolog", "homologation", "staging"}
+
+
+def _is_weak_secret(value: str) -> bool:
+    """Return True if the value looks like a placeholder or trivially insecure."""
+    if not value or not value.strip():
+        return True
+    lowered = value.strip().lower()
+    return any(pat in lowered for pat in _BLOCKED_PATTERNS)
+
 
 def _validate_production_settings(s: "Settings") -> None:
-    """Fail fast if insecure defaults are used in production."""
-    if s.app_env not in ("production", "prod"):
+    """Fail fast if insecure defaults are used in production/homolog/staging."""
+    env = (s.app_env or "").strip().lower()
+    if env not in _PRODUCTIVE_ENVS:
         return
 
     violations: list[str] = []
-    for field, insecure_value in _INSECURE_DEFAULTS.items():
-        if getattr(s, field) == insecure_value:
-            violations.append(f"{field} still has insecure default")
 
+    # JWT secret
+    if _is_weak_secret(s.api_jwt_secret):
+        violations.append(f"api_jwt_secret is insecure ('{s.api_jwt_secret[:12]}...')")
+
+    # PostgreSQL password
+    if _is_weak_secret(s.pg_password):
+        violations.append(f"pg_password is insecure")
+
+    # ClickHouse credentials
+    if s.clickhouse_user.strip().lower() == "default" and _is_weak_secret(s.clickhouse_password):
+        violations.append("clickhouse_user='default' with weak/empty password is not allowed")
+    elif _is_weak_secret(s.clickhouse_password):
+        violations.append("clickhouse_password is insecure")
+
+    # Ingest key enforcement
     if not s.ingest_require_key:
         violations.append("ingest_require_key must be True in production")
 
     if violations:
         raise SystemExit(
-            f"FATAL: Refusing to start in production with insecure config:\n"
+            f"FATAL: Refusing to start in {s.app_env} with insecure config:\n"
             + "\n".join(f"  - {v}" for v in violations)
         )
 

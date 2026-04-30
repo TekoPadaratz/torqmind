@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 LOCAL_VENDA_LABELS = {
-    -1: "Canal não identificado",
+    -1: "Canal sem cadastro",
     1: "Pista",
     2: "Loja de conveniência",
     3: "Serviços",
@@ -186,7 +186,7 @@ def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
         return nome
     if id_filial is None:
         return "Todas as filiais"
-    return "Filial não identificada"
+    return "Filial sem cadastro"
 
 
 def _jarvis_shortcut(kind: Any) -> Optional[Dict[str, str]]:
@@ -242,7 +242,7 @@ def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
             return str(int(id_turno))
     except Exception:
         pass
-    return "Turno não identificado"
+    return "Turno sem cadastro"
 
 
 def _event_type_label(event_type: Any) -> str:
@@ -568,14 +568,14 @@ def _employee_label(funcionario_nome: Any, id_funcionario: Any = None) -> str:
     nome = str(funcionario_nome or "").strip()
     if nome and nome.lower() not in {"(sem funcionário)", "sem funcionário", "sem funcionario"}:
         return nome
-    return "Equipe não identificada"
+    return "Equipe sem cadastro"
 
 
 def _cash_operator_label(usuario_nome: Any, id_usuario: Any = None) -> str:
     nome = str(usuario_nome or "").strip()
     if nome:
         return nome
-    return "Operador não identificado"
+    return "Operador sem cadastro"
 
 
 def cash_definitions() -> Dict[str, str]:
@@ -660,12 +660,12 @@ def finance_definitions() -> Dict[str, Dict[str, str]]:
         },
         "payments_total": {
             "label": "Leitura dos pagamentos",
-            "formula": "Soma dos pagamentos conciliados no recorte.",
+            "formula": "Soma dos pagamentos conciliados no período.",
             "source": "mart.agg_pagamentos_turno / dw.fact_pagamento_comprovante",
             "impact": "Mostra por onde o dinheiro entrou e sustenta conferência com caixa.",
         },
         "payments_unknown_share": {
-            "label": "Pagamentos não identificados",
+            "label": "Pagamentos sem classificação",
             "formula": "Valor sem mapeamento oficial dividido pelo valor total conciliado de pagamentos.",
             "source": "app.payment_type_map + mart.agg_pagamentos_turno",
             "impact": "Indica perda de explicabilidade do recebimento.",
@@ -780,7 +780,7 @@ def _window_coverage_payload(
         )
         mode = "shifted_latest"
         message = (
-            f"O recorte pedido vai até {requested_dt_fim.isoformat()}, mas a última base comercial disponível "
+            f"O período solicitado vai até {requested_dt_fim.isoformat()}, mas a última base comercial disponível "
             f"vai até {latest_available_dt.isoformat()}. A tela usa o último período comparável entre "
             f"{effective_dt_ini.isoformat()} e {effective_dt_fim.isoformat()}."
         )
@@ -789,7 +789,7 @@ def _window_coverage_payload(
         effective_dt_fim = latest_available_dt
         mode = "partial_requested"
         message = (
-            f"A base comercial canônica cobre este recorte apenas até {latest_available_dt.isoformat()}. "
+            f"A base comercial canônica cobre este período apenas até {latest_available_dt.isoformat()}. "
             "Os valores posteriores ainda não chegaram da origem."
         )
     else:
@@ -983,7 +983,7 @@ def risk_model_coverage(dt_ini: date, dt_fim: date, risk_window: Dict[str, Any])
         )
     else:
         status = "not_covered"
-        message = "A leitura modelada não cobre este recorte. Os eventos operacionais continuam válidos para o período."
+        message = "A leitura modelada não cobre este período. Os eventos operacionais continuam válidos para o período."
 
     return {
         "status": status,
@@ -4488,13 +4488,13 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Optional[int],
 
     if row_count == 0:
         source_status = "unavailable"
-        summary = "Sem movimento de formas de pagamento no recorte selecionado."
+        summary = "Sem movimento de formas de pagamento no período selecionado."
     elif total_curr <= 0 and nonzero_rows == 0:
         source_status = "value_gap"
         summary = "Os registros de pagamento chegaram, mas os valores ainda precisam de validação da carga para leitura executiva."
     elif unknown_share > 0:
         source_status = "partial"
-        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos não identificados no recorte."
+        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos sem classificação no período."
     else:
         source_status = "ok"
         summary = "Leitura de meios de pagamento alinhada à taxonomia oficial da Xpert."
@@ -6776,10 +6776,10 @@ def jarvis_briefing(
                 "impact_value": float(payment_anomaly.get("impacto_estimado") or 0) if payment_anomaly else float(payments_kpis.get("unknown_valor") or 0),
                 "priority": "Hoje" if payment_anomaly else "Acompanhar",
                 "headline": "Revisar meios de pagamento fora do padrão antes do próximo fechamento.",
-                "cause": "A taxonomia oficial de pagamentos já foi aplicada, mas o recorte ainda mostra anomalia ou valores sem identificação comercial.",
-                "action": "Abrir o bloco de pagamentos, validar o turno mais exposto e corrigir a origem dos meios não identificados ainda neste ciclo.",
+                "cause": "A taxonomia oficial de pagamentos já foi aplicada, mas o período ainda mostra anomalia ou valores sem identificação comercial.",
+                "action": "Abrir o bloco de pagamentos, validar o turno mais exposto e corrigir a origem dos meios sem classificação ainda neste ciclo.",
                 "evidence": [
-                    f"Não identificado: {_format_brl(payments_kpis.get('unknown_valor'))}",
+                    f"Sem classificação: {_format_brl(payments_kpis.get('unknown_valor'))}",
                     payment_anomaly.get("event_label") if payment_anomaly else None,
                     payment_anomaly.get("turno_label") if payment_anomaly else None,
                 ],
@@ -6914,7 +6914,7 @@ def jarvis_briefing(
     if confidence_score >= 3:
         confidence_label = "Alta"
         confidence_level = "high"
-        confidence_reason = "Base pronta e coerente para orientar a decisão deste recorte."
+        confidence_reason = "Base pronta e coerente para orientar a decisão deste período."
     elif confidence_score >= 1:
         confidence_label = "Moderada"
         confidence_level = "medium"
@@ -6933,7 +6933,7 @@ def jarvis_briefing(
             "title": "Copiloto operacional",
             "data_ref": dt_ref.isoformat(),
             "status": "ok",
-            "headline": "Operação estável no recorte atual, sem foco crítico acima da linha de corte.",
+            "headline": "Operação estável no período atual, sem foco crítico acima da linha de corte.",
             "summary": "O momento pede disciplina de execução e acompanhamento dos indicadores líderes, sem ruptura relevante no período.",
             "priority": "Acompanhar",
             "impact_value": 0.0,
@@ -6953,7 +6953,7 @@ def jarvis_briefing(
             "evidence": ["Sem alertas críticos acima do corte", "Ciclo operacional dentro da faixa esperada"],
             "secondary_focus": [],
             "signals": signals,
-            "highlights": ["A operação seguiu estável no recorte.", "Nenhum risco material superou a linha de intervenção imediata."],
+            "highlights": ["A operação seguiu estável no período.", "Nenhum risco material superou a linha de intervenção imediata."],
         }
 
     candidates.sort(key=lambda item: float(item.get("weight") or 0), reverse=True)

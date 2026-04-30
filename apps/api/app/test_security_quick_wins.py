@@ -6,8 +6,35 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.config import _validate_production_settings, Settings
+from app.config import _validate_production_settings, _is_weak_secret, Settings
 from app import scope
+
+
+class TestWeakSecretDetection(unittest.TestCase):
+    """Verify _is_weak_secret catches all placeholder patterns."""
+
+    def test_empty_is_weak(self):
+        self.assertTrue(_is_weak_secret(""))
+        self.assertTrue(_is_weak_secret("   "))
+
+    def test_change_me_variants(self):
+        self.assertTrue(_is_weak_secret("CHANGE_ME_SUPER_SECRET"))
+        self.assertTrue(_is_weak_secret("CHANGE_ME_API_JWT_SECRET"))
+        self.assertTrue(_is_weak_secret("CHANGE_ME_POSTGRES_PASSWORD"))
+        self.assertTrue(_is_weak_secret("CHANGE_ME_CLICKHOUSE_PASSWORD"))
+        self.assertTrue(_is_weak_secret("changeme123"))
+
+    def test_common_weak_values(self):
+        self.assertTrue(_is_weak_secret("1234"))
+        self.assertTrue(_is_weak_secret("password"))
+        self.assertTrue(_is_weak_secret("admin"))
+        self.assertTrue(_is_weak_secret("postgres"))
+        self.assertTrue(_is_weak_secret("default"))
+
+    def test_strong_values(self):
+        self.assertFalse(_is_weak_secret("a-proper-secret-32chars-long!!"))
+        self.assertFalse(_is_weak_secret("xK9#mP2$vL5nQ8rT"))
+        self.assertFalse(_is_weak_secret("torqmind_prod_2026"))
 
 
 class TestConfigFailFast(unittest.TestCase):
@@ -18,30 +45,52 @@ class TestConfigFailFast(unittest.TestCase):
         # Should NOT raise
         _validate_production_settings(s)
 
+    def test_local_allows_insecure_defaults(self):
+        s = Settings(app_env="local")
+        _validate_production_settings(s)
+
     def test_production_rejects_default_jwt_secret(self):
-        s = Settings(app_env="production", pg_password="real", clickhouse_password="real", ingest_require_key=True)
+        s = Settings(app_env="production", pg_password="s3cur3!", clickhouse_user="torqmind", clickhouse_password="ch_s3cur3!", ingest_require_key=True)
         with self.assertRaises(SystemExit) as ctx:
             _validate_production_settings(s)
         self.assertIn("api_jwt_secret", str(ctx.exception))
 
-    def test_production_rejects_default_pg_password(self):
-        s = Settings(app_env="production", api_jwt_secret="real", clickhouse_password="real", ingest_require_key=True)
+    def test_production_rejects_change_me_pg_password(self):
+        s = Settings(app_env="production", api_jwt_secret="real-secret-here!", pg_password="CHANGE_ME_POSTGRES_PASSWORD", clickhouse_user="torqmind", clickhouse_password="ch_s3cur3!", ingest_require_key=True)
         with self.assertRaises(SystemExit) as ctx:
             _validate_production_settings(s)
         self.assertIn("pg_password", str(ctx.exception))
 
     def test_production_rejects_ingest_key_off(self):
-        s = Settings(app_env="production", api_jwt_secret="real", pg_password="real", clickhouse_password="real", ingest_require_key=False)
+        s = Settings(app_env="production", api_jwt_secret="real-secret!", pg_password="s3cur3!", clickhouse_user="torqmind", clickhouse_password="ch_s3cur3!", ingest_require_key=False)
         with self.assertRaises(SystemExit) as ctx:
             _validate_production_settings(s)
         self.assertIn("ingest_require_key", str(ctx.exception))
+
+    def test_homolog_blocks_insecure(self):
+        s = Settings(app_env="homolog", api_jwt_secret="changeme", pg_password="s3cur3!", clickhouse_user="torqmind", clickhouse_password="ch_s3cur3!", ingest_require_key=True)
+        with self.assertRaises(SystemExit) as ctx:
+            _validate_production_settings(s)
+        self.assertIn("api_jwt_secret", str(ctx.exception))
+
+    def test_staging_blocks_insecure(self):
+        s = Settings(app_env="staging", api_jwt_secret="real!", pg_password="s3cur3!", clickhouse_user="default", clickhouse_password="", ingest_require_key=True)
+        with self.assertRaises(SystemExit) as ctx:
+            _validate_production_settings(s)
+        self.assertIn("clickhouse", str(ctx.exception).lower())
+
+    def test_clickhouse_default_user_with_strong_password_passes(self):
+        s = Settings(app_env="production", api_jwt_secret="real-long-secret!", pg_password="s3cur3!", clickhouse_user="default", clickhouse_password="str0ng_ch_p@ss!", ingest_require_key=True)
+        # default user with strong password should pass
+        _validate_production_settings(s)
 
     def test_production_passes_with_all_secure(self):
         s = Settings(
             app_env="production",
             api_jwt_secret="a-proper-secret-32chars-long!!",
             pg_password="s3cur3p@ss",
-            clickhouse_password="ch_pass",
+            clickhouse_user="torqmind",
+            clickhouse_password="ch_pass_strong!",
             ingest_require_key=True,
         )
         # Should NOT raise
@@ -93,6 +142,39 @@ class TestProductGlobalScope(unittest.TestCase):
         claims = self._claims(tenant_ids=[5, 7])
         tenant, filial = scope.resolve_scope(claims)
         self.assertEqual(tenant, 5)
+
+
+class TestIngestKeyPolicy(unittest.TestCase):
+    """Ingest key uses X-Ingest-Key header exclusively.
+
+    Decision: Option A — single canonical header X-Ingest-Key.
+    No aliases (X-TorqMind-Ingest-Key) to avoid confusion.
+    Production enforces INGEST_REQUIRE_KEY=true via fail-fast.
+    """
+
+    def test_ingest_route_declares_x_ingest_key_header(self):
+        """Verify the ingest endpoint declares X-Ingest-Key as the auth header."""
+        import inspect
+        from app import routes_ingest
+        # Find the ingest function signature to confirm header name
+        source = inspect.getsource(routes_ingest)
+        self.assertIn('alias="X-Ingest-Key"', source)
+        # Ensure no alternative alias is declared
+        self.assertNotIn('X-TorqMind-Ingest-Key', source)
+
+    def test_fail_fast_enforces_ingest_key_in_production(self):
+        """Production config must have ingest_require_key=True."""
+        s = Settings(
+            app_env="production",
+            api_jwt_secret="real-secret-long-enough!",
+            pg_password="s3cur3!",
+            clickhouse_user="torqmind",
+            clickhouse_password="ch_str0ng!",
+            ingest_require_key=False,
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            _validate_production_settings(s)
+        self.assertIn("ingest_require_key", str(ctx.exception))
 
 
 if __name__ == "__main__":

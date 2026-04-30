@@ -101,12 +101,12 @@ def finance_definitions() -> Dict[str, Dict[str, str]]:
         },
         "payments_total": {
             "label": "Leitura dos pagamentos",
-            "formula": "Soma dos pagamentos conciliados no recorte.",
+            "formula": "Soma dos pagamentos conciliados no período.",
             "source": "torqmind_mart.agg_pagamentos_turno",
             "impact": "Mostra por onde o dinheiro entrou e sustenta conferência com caixa.",
         },
         "payments_unknown_share": {
-            "label": "Pagamentos não identificados",
+            "label": "Pagamentos sem classificação",
             "formula": "Valor sem mapeamento oficial dividido pelo valor total conciliado de pagamentos.",
             "source": "torqmind_mart.agg_pagamentos_turno",
             "impact": "Indica perda de explicabilidade do recebimento.",
@@ -214,7 +214,7 @@ def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
         return "Todas as filiais"
     if len(branch_ids) > 1:
         return f"{len(branch_ids)} filiais selecionadas"
-    return "Filial não identificada"
+    return "Filial sem cadastro"
 
 
 def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
@@ -223,21 +223,21 @@ def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
         return value
     if id_turno is not None and _to_int(id_turno) > 0:
         return str(_to_int(id_turno))
-    return "Turno não identificado"
+    return "Turno sem cadastro"
 
 
 def _cash_operator_label(usuario_nome: Any, id_usuario: Any = None) -> str:
     nome = str(usuario_nome or "").strip()
     if nome:
         return nome
-    return "Operador não identificado"
+    return "Operador sem cadastro"
 
 
 def _employee_label(funcionario_nome: Any, id_funcionario: Any = None) -> str:
     nome = str(funcionario_nome or "").strip()
     if nome and nome.lower() not in {"(sem funcionário)", "(sem funcionario)", "sem funcionário", "sem funcionario"}:
         return nome
-    return "Equipe não identificada"
+    return "Equipe sem cadastro"
 
 
 def _event_type_label(event_type: Any) -> str:
@@ -306,7 +306,7 @@ def _window_coverage_payload(
         effective_dt_fim = requested_dt_fim
         mode = "requested_outside_coverage"
         message = (
-            f"O recorte pedido começa em {requested_dt_ini.isoformat()}, mas a última base comercial disponível "
+            f"O período solicitado começa em {requested_dt_ini.isoformat()}, mas a última base comercial disponível "
             f"vai até {latest_available_dt.isoformat()}. Não há vendas publicadas para a data solicitada."
         )
     elif requested_dt_fim > latest_available_dt:
@@ -314,7 +314,7 @@ def _window_coverage_payload(
         effective_dt_fim = latest_available_dt
         mode = "partial_requested"
         message = (
-            f"A base comercial canônica cobre este recorte apenas até {latest_available_dt.isoformat()}. "
+            f"A base comercial canônica cobre este período apenas até {latest_available_dt.isoformat()}. "
             "Os valores posteriores ainda não chegaram da origem."
         )
     else:
@@ -479,7 +479,7 @@ def risk_model_coverage(dt_ini: date, dt_fim: date, risk_window: Dict[str, Any])
         )
     else:
         status = "not_covered"
-        message = "A leitura modelada não cobre este recorte. Os eventos operacionais continuam válidos para o período."
+        message = "A leitura modelada não cobre este período. Os eventos operacionais continuam válidos para o período."
 
     return {
         "status": status,
@@ -1884,13 +1884,13 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Any, dt_ini: d
         row["category_label"] = _payment_category_label(row.get("category"), row.get("label"))
     if row_count == 0:
         source_status = "unavailable"
-        summary = "Sem movimento de formas de pagamento no recorte selecionado."
+        summary = "Sem movimento de formas de pagamento no período selecionado."
     elif total_curr <= 0 and nonzero_rows == 0:
         source_status = "value_gap"
         summary = "Os registros de pagamento chegaram, mas os valores ainda precisam de validação da carga para leitura executiva."
     elif unknown_share > 0:
         source_status = "partial"
-        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos não identificados no recorte."
+        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos sem classificação no período."
     else:
         source_status = "ok"
         summary = "Leitura de meios de pagamento alinhada à taxonomia oficial da Xpert."
@@ -2453,7 +2453,7 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Any, dt_ref: date, co
         "title": "Copiloto operacional",
         "data_ref": dt_ref.isoformat(),
         "status": status,
-        "headline": "Priorize as frentes com maior valor em jogo no recorte atual." if exposure > 0 else "Operação estável no recorte atual, sem foco crítico acima da linha de corte.",
+        "headline": "Priorize as frentes com maior valor em jogo no período atual." if exposure > 0 else "Operação estável no período atual, sem foco crítico acima da linha de corte.",
         "summary": "Leitura consolidada em ClickHouse a partir das Smart Marts analíticas.",
         "priority": "Hoje" if exposure > 0 else "Acompanhar",
         "impact_value": round(exposure, 2),

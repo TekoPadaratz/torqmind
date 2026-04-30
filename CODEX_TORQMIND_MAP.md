@@ -550,20 +550,55 @@ Status: AUDITORIA COMPLETA — documentos criados.
 
 ### Achados críticos de produto
 
-1. **"recorte"** em 32 ocorrências no frontend — jargão técnico visível ao cliente.
-2. **"não identificado"** em 8 ocorrências — parece bug quando é falta de cadastro.
-3. JWT secret default aceito silenciosamente em produção (config.py).
-4. `product_global` role não valida tenant_id (cross-tenant risk).
-5. 24 endpoints BI sem response_model tipado.
+1. ~~**"recorte"** em 32 ocorrências no frontend~~ — **RESOLVIDO**: substituído por "período" em todo frontend e backend.
+2. ~~**"não identificado"** em 8 ocorrências~~ — **RESOLVIDO**: substituído por termos contextuais (sem cadastro, sem classificação).
+3. ~~JWT secret default aceito silenciosamente em produção~~ — **RESOLVIDO**: fail-fast bloqueia placeholders + padrões fracos em prod/homolog/staging.
+4. ~~`product_global` role não valida tenant_id~~ — **RESOLVIDO**: valida tenant_ids; sem tenants = 403.
+5. ~~24 endpoints BI sem response_model tipado~~ — **FASE 1 RESOLVIDA**: 5 endpoints principais com envelope tipado (Dict/Any + extra allow). Próxima fase: contratos fortes por domínio.
 6. Falta mart de divergência de caixa, inadimplência por cliente, histórico de preço.
 7. Plataforma admin sem health técnico de CDC/streaming.
 
+### Response Models — Estado atual (Fase 1)
+
+Os 5 endpoints BI principais (`/dashboard/home`, `/sales/overview`, `/cash/overview`, `/fraud/overview`, `/finance/overview`) usam `response_model` com modelos envelope (`CacheMetadata` + campos tipados como `Dict[str, Any]` + `model_config = {"extra": "allow"}`).
+
+**Justificativa Fase 1:** os payloads reais são dinâmicos e variam por contexto de negócio. Os modelos envelope garantem documentação OpenAPI e serialização controlada sem quebrar contratos existentes.
+
+**Fase 2 (futura):** contratos fortes por domínio com schemas aninhados específicos (KPI models, Series models, etc.) quando os payloads estabilizarem.
+
+### Ingest Key — Decisão de Design
+
+- **Header canônico:** `X-Ingest-Key` (único, sem alias).
+- Em produção/homolog/staging: `INGEST_REQUIRE_KEY=true` obrigatório (enforced via fail-fast).
+- Sem chave → 401 "Missing X-Ingest-Key".
+- Chave inválida → 401 "Invalid X-Ingest-Key".
+- Chave válida → resolve `id_empresa` do tenant.
+
+### Security Gates — Ambientes produtivos
+
+Ambientes bloqueados: `prod`, `production`, `homolog`, `homologation`, `staging`.
+
+Validações em `_validate_production_settings()`:
+- JWT secret: rejeita vazio, placeholders (CHANGE_ME*), valores triviais (password, admin, 1234, etc.)
+- PG password: mesma regra
+- ClickHouse: user=default com senha fraca/vazia é bloqueado; senha vazia/placeholder bloqueada
+- INGEST_REQUIRE_KEY=true obrigatório
+
 ### Quick wins identificados
 
-- Replace "recorte" → "período" (32 locais, zero risco).
-- Replace "não identificado" → "Cadastro pendente" (8 locais, zero risco).
-- Fail-fast config.py se JWT secret = default em produção.
-- Validar id_empresa em product_global scope.
+- ~~Replace "recorte" → "período"~~ ✅
+- ~~Replace "não identificado" → termos contextuais~~ ✅
+- ~~Fail-fast config.py se JWT secret = default em produção~~ ✅
+- ~~Validar id_empresa em product_global scope~~ ✅
+
+### UI Copy Quality Gate
+
+Teste automatizado `apps/web/app/lib/ui-copy-quality.test.mjs`:
+- Integrado ao `npm test` (roda no pipeline).
+- Escaneia recursivamente `.tsx`, `.ts`, `.mjs`, `.js`.
+- Exclui arquivos de teste (*.test.*, *.spec.*) e diretórios node_modules/.next.
+- Termos proibidos: `recorte`, `não identificado/a/os`.
+- Qualquer novo termo proibido detectado falha o build.
 
 ### Cutover streaming: estado
 

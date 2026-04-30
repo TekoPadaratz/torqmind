@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --test app/lib/api-base.test.mjs app/lib/api.test.mjs app/lib/login-copy.test.mjs app/lib/username-policy.test.mjs app/lib/product-scope.test.mjs app/lib/pricing-request.test.mjs app/lib/branch-state.test.mjs app/lib/scope-validation.test.mjs app/lib/session-state.test.mjs app/lib/duration-format.test.mjs app/lib/goal-target-input.test.mjs app/lib/currency-format.test.mjs app/lib/reading-copy.test.mjs app/lib/reading-state.test.mjs app/lib/dashboard-home.test.mjs app/lib/calendar-date.test.mjs app/lib/local-scope-defaults.test.mjs app/lib/sync-status-ui-source.test.mjs",
+    "test": "node --test app/lib/api-base.test.mjs app/lib/api.test.mjs app/lib/login-copy.test.mjs app/lib/username-policy.test.mjs app/lib/product-scope.test.mjs app/lib/pricing-request.test.mjs app/lib/branch-state.test.mjs app/lib/scope-validation.test.mjs app/lib/session-state.test.mjs app/lib/duration-format.test.mjs app/lib/goal-target-input.test.mjs app/lib/currency-format.test.mjs app/lib/reading-copy.test.mjs app/lib/reading-state.test.mjs app/lib/dashboard-home.test.mjs app/lib/calendar-date.test.mjs app/lib/local-scope-defaults.test.mjs app/lib/sync-status-ui-source.test.mjs app/lib/ui-copy-quality.test.mjs",
     "test:api-base": "node --test app/lib/api-base.test.mjs",
     "test:product-scope": "node --test app/lib/product-scope.test.mjs",
     "test:branch-state": "node --test app/lib/branch-state.test.mjs",
