@@ -13,7 +13,6 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
-import ReadingStatusBanner from "../components/ui/ReadingStatusBanner";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
   buildUserLabel,
@@ -27,7 +26,6 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { describeDataFreshness } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -102,10 +100,6 @@ export default function CashPage() {
           </div>
         ) : (
           <>
-            <ReadingStatusBanner
-              message={describeDataFreshness(data, "caixa")}
-            />
-
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div
                 className="card col-12"
@@ -121,7 +115,7 @@ export default function CashPage() {
                   {commercial?.summary || data?.summary}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  {liveNow?.summary || "Monitor operacional indisponível no momento."}
+                  {liveNow?.summary || "Leitura dos turnos indisponível no momento."}
                 </div>
               </div>
 
@@ -344,7 +338,7 @@ export default function CashPage() {
 
               <div className="card col-12">
                 <div className="sectionEyebrow">Caixa agora</div>
-                <h2 style={{ marginTop: 4 }}>Monitor operacional dos turnos em aberto</h2>
+                <h2 style={{ marginTop: 4 }}>Turnos em aberto agora</h2>
               </div>
 
               <div className="card kpi col-3">
@@ -354,7 +348,7 @@ export default function CashPage() {
                 </div>
               </div>
               <div className="card kpi col-3">
-                <div className="label">Caixas stale</div>
+                <div className="label">Caixas a revisar</div>
                 <div className="value">
                   {loading ? "..." : Number(liveKpis.caixas_stale || 0)}
                 </div>

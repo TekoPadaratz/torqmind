@@ -302,13 +302,12 @@ def _window_coverage_payload(
     covered_days = max((overlap_end - overlap_start).days + 1, 0) if overlap_end >= overlap_start else 0
 
     if requested_dt_ini > latest_available_dt:
-        effective_dt_fim = latest_available_dt
-        effective_dt_ini = max(earliest_available_dt, latest_available_dt - timedelta(days=requested_days - 1))
-        mode = "shifted_latest"
+        effective_dt_ini = requested_dt_ini
+        effective_dt_fim = requested_dt_fim
+        mode = "requested_outside_coverage"
         message = (
-            f"O recorte pedido vai até {requested_dt_fim.isoformat()}, mas a última base comercial disponível "
-            f"vai até {latest_available_dt.isoformat()}. A tela usa o último período comparável entre "
-            f"{effective_dt_ini.isoformat()} e {effective_dt_fim.isoformat()}."
+            f"O recorte pedido começa em {requested_dt_ini.isoformat()}, mas a última base comercial disponível "
+            f"vai até {latest_available_dt.isoformat()}. Não há vendas publicadas para a data solicitada."
         )
     elif requested_dt_fim > latest_available_dt:
         effective_dt_ini = requested_dt_ini
@@ -911,12 +910,12 @@ def sales_overview_bundle(
     bundle["monthly_evolution"] = commercial.get("monthly_evolution") or []
     bundle["annual_comparison"] = commercial.get("annual_comparison") or {}
     bundle["commercial_coverage"] = sales_coverage
-    reading_status = "latest_compatible" if sales_coverage.get("mode") == "shifted_latest" else "mart_snapshot"
+    reading_status = "unavailable_for_requested_window" if sales_coverage.get("mode") == "requested_outside_coverage" else "mart_snapshot"
     bundle["reading_status"] = reading_status
     freshness = dict(bundle.get("freshness") or {})
     freshness["mode"] = reading_status
     freshness["source"] = "torqmind_mart.agg_vendas_diaria"
-    freshness["historical_through_dt"] = _iso_or_none(effective_dt_fim)
+    freshness["historical_through_dt"] = _iso_or_none(dt_fim)
     freshness["live_through_at"] = (bundle.get("operational_sync") or {}).get("last_sync_at")
     freshness["snapshot_generated_at"] = (bundle.get("operational_sync") or {}).get("snapshot_generated_at")
     bundle["freshness"] = freshness
@@ -1090,8 +1089,8 @@ def fraud_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, 
     branch = _branch_clause("id_filial", id_filial)
     rows = _run(
         f"""
-        SELECT id_filial, '' AS filial_nome, id_db, id_comprovante, data, data_key, id_usuario, id_usuario AS id_usuario_documento,
-               'comprovante' AS usuario_source, '' AS usuario_nome, id_turno, toString(id_turno) AS turno_value, valor_total
+        SELECT id_filial, filial_nome, id_db, id_comprovante, data, data_key, id_usuario, id_usuario AS id_usuario_documento,
+               usuario_source, usuario_nome, id_turno, turno_value, valor_total
         FROM torqmind_mart.fraude_cancelamentos_eventos
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
@@ -1116,11 +1115,11 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt
         f"""
         SELECT
           id_usuario,
-          '' AS usuario_nome,
+          max(usuario_nome) AS usuario_nome,
           count() AS cancelamentos,
           sum(valor_total) AS valor_cancelado,
-          0 AS resolvidos_por_turno,
-          count() AS fallback_comprovante
+          countIf(usuario_source = 'turno') AS resolvidos_por_turno,
+          countIf(usuario_source = 'comprovante') AS fallback_comprovante
         FROM torqmind_mart.fraude_cancelamentos_eventos
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
@@ -1230,7 +1229,7 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
         SELECT
           id,
           id_filial,
-          '' AS filial_nome,
+          filial_nome,
           data_key,
           data,
           event_type,
@@ -1241,7 +1240,10 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
           id_funcionario,
           funcionario_nome,
           id_turno,
-          toString(id_turno) AS turno_value,
+          turno_value,
+          operador_caixa_id,
+          operador_caixa_nome,
+          operador_caixa_source,
           id_cliente,
           valor_total,
           impacto_estimado,
@@ -1263,13 +1265,17 @@ def risk_last_events(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
         row["event_label"] = _event_type_label(row.get("event_type"))
         row["funcionario_label"] = _employee_label(row.get("funcionario_nome"), row.get("id_funcionario"))
-        row["operador_caixa_label"] = _cash_operator_label(None, row.get("id_usuario"))
+        row["operador_caixa_label"] = _cash_operator_label(row.get("operador_caixa_nome"), row.get("operador_caixa_id") or row.get("id_usuario"))
         reasons = _json_obj(row.get("reasons"))
         row["reasons"] = reasons
         row["reasons_humanized"] = [_event_type_label(row.get("event_type"))]
         row["reason_summary"] = row["reasons_humanized"][0]
-        row["responsavel_label"] = row["funcionario_label"]
-        row["responsavel_kind"] = "colaborador_venda"
+        if row.get("operador_caixa_nome") or row.get("operador_caixa_id"):
+            row["responsavel_label"] = row["operador_caixa_label"]
+            row["responsavel_kind"] = "operador_caixa"
+        else:
+            row["responsavel_label"] = row["funcionario_label"]
+            row["responsavel_kind"] = "colaborador_venda"
     return rows
 
 
@@ -1279,11 +1285,11 @@ def risk_by_turn_local(role: str, id_empresa: int, id_filial: Any, dt_ini: date,
         f"""
         SELECT
           id_filial,
-          '' AS filial_nome,
+          max(filial_nome) AS filial_nome,
           id_turno,
-          toString(id_turno) AS turno_value,
+          max(turno_value) AS turno_value,
           id_local_venda,
-          '' AS local_nome,
+          max(local_nome) AS local_nome,
           sum(eventos) AS eventos,
           sum(alto_risco) AS alto_risco,
           sum(impacto_estimado) AS impacto_estimado,
@@ -1743,6 +1749,85 @@ def finance_aging_overview(role: str, id_empresa: int, id_filial: Any, as_of: Op
     }
 
 
+def cash_dre_summary(role: str, id_empresa: int, id_filial: Any, as_of: date) -> Dict[str, Any]:
+    aging = finance_aging_overview(role, id_empresa, id_filial, as_of)
+    has_snapshot = bool(_to_int(aging.get("snapshot_rows")))
+    dt_ref = aging.get("dt_ref") if has_snapshot else None
+    if not has_snapshot:
+        return {
+            "source_status": "unavailable",
+            "summary": "Sem base financeira disponível para o período.",
+            "cards": [
+                {
+                    "key": "contas_pagar_futuro_banco",
+                    "label": "Contas a pagar futuras",
+                    "status": "unavailable",
+                    "amount": None,
+                    "titles": None,
+                    "detail": "Sem base financeira disponível para calcular títulos futuros.",
+                },
+                {
+                    "key": "contas_receber",
+                    "label": "Contas a receber",
+                    "status": "unavailable",
+                    "amount": None,
+                    "titles": None,
+                    "detail": "Sem base financeira disponível para calcular recebíveis em aberto.",
+                },
+                {
+                    "key": "saldo_liquido_aberto",
+                    "label": "Saldo líquido aberto",
+                    "status": "unavailable",
+                    "amount": None,
+                    "titles": None,
+                    "detail": "Sem base financeira disponível para calcular o saldo líquido.",
+                },
+            ],
+            "pending": [],
+            "stock": {"cards": []},
+            "dt_ref": None,
+        }
+
+    pagar_total_aberto = _to_float(aging.get("pagar_total_aberto"))
+    pagar_total_vencido = _to_float(aging.get("pagar_total_vencido"))
+    receber_aberto = _to_float(aging.get("receber_total_aberto"))
+    pagar_futuro = round(max(pagar_total_aberto - pagar_total_vencido, 0.0), 2)
+    saldo_liquido = round(receber_aberto - pagar_futuro, 2)
+    return {
+        "source_status": "ok",
+        "summary": "Resumo financeiro calculado a partir da mart financeira publicada.",
+        "cards": [
+            {
+                "key": "contas_pagar_futuro_banco",
+                "label": "Contas a pagar futuras",
+                "status": "ready",
+                "amount": pagar_futuro,
+                "titles": None,
+                "detail": "Títulos a pagar em aberto, descontando o que já está vencido.",
+            },
+            {
+                "key": "contas_receber",
+                "label": "Contas a receber",
+                "status": "ready",
+                "amount": round(receber_aberto, 2),
+                "titles": None,
+                "detail": "Recebíveis ainda em aberto na rede.",
+            },
+            {
+                "key": "saldo_liquido_aberto",
+                "label": "Saldo líquido aberto",
+                "status": "ready",
+                "amount": saldo_liquido,
+                "titles": None,
+                "detail": "Contas a receber menos contas a pagar futuras.",
+            },
+        ],
+        "pending": [],
+        "stock": {"cards": []},
+        "dt_ref": dt_ref.isoformat() if isinstance(dt_ref, date) else dt_ref,
+    }
+
+
 def payments_overview_kpis(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     days = max((dt_fim - dt_ini).days + 1, 1)
     prev_fim = _date_key(dt_ini) - 1
@@ -2141,6 +2226,7 @@ def cash_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini:
             "qtd_devolucoes": 0,
             "caixas_com_devolucao": 0,
             "caixa_liquido": round(total_vendas - total_cancelamentos, 2),
+            "saldo_comercial": round(total_vendas - total_cancelamentos, 2),
         },
         "by_day": dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim),
         "payment_mix": payments.get("mix") or [],
@@ -2153,22 +2239,23 @@ def cash_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: Optional[d
     effective_dt_fim = dt_fim or business_today(id_empresa)
     effective_dt_ini = dt_ini or (effective_dt_fim - timedelta(days=29))
     commercial_coverage = commercial_window_coverage(role, id_empresa, id_filial, effective_dt_ini, effective_dt_fim)
-    historical_dt_ini = commercial_coverage.get("effective_dt_ini") or effective_dt_ini
-    historical_dt_fim = commercial_coverage.get("effective_dt_fim") or effective_dt_fim
+    historical_dt_ini = effective_dt_ini
+    historical_dt_fim = effective_dt_fim
     historical = cash_commercial_overview(role, id_empresa, id_filial, historical_dt_ini, historical_dt_fim)
     commercial = dict(historical)
     commercial["commercial_coverage"] = commercial_coverage
     live_now = _cash_live_now(role, id_empresa, id_filial)
+    dre_summary = cash_dre_summary(role, id_empresa, id_filial, historical_dt_fim)
     return {
         "source_status": historical.get("source_status"),
         "summary": historical.get("summary"),
         "kpis": historical.get("kpis"),
         "commercial": commercial,
-        "dre_summary": {"source_status": "unavailable", "summary": "DRE de caixa ainda depende da mart financeira dedicada.", "items": []},
+        "dre_summary": dre_summary,
         "definitions": cash_definitions(),
         "operational_sync": live_now.get("operational_sync"),
         "freshness": {
-            "mode": "latest_compatible" if commercial_coverage.get("mode") == "shifted_latest" else "historical_plus_live",
+            "mode": "requested_window",
             "historical_through_dt": historical_dt_fim.isoformat(),
             "live_through_at": (live_now.get("operational_sync") or {}).get("last_sync_at"),
             "source": "torqmind_mart.cash",

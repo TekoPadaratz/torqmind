@@ -86,6 +86,7 @@ class SnapshotCacheTests(unittest.TestCase):
     def test_hot_bi_routes_use_snapshot_cache(self):
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
+        self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("pricing_competitor_overview"))
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("noncritical_probe"))
 
     def test_with_cached_response_prefers_snapshot_during_etl(self):
@@ -566,7 +567,10 @@ class SnapshotCacheTests(unittest.TestCase):
         mock_conn.execute.side_effect = [snapshot_cursor, phase_cursor, analytics_cursor]
         mock_conn.__enter__.return_value = mock_conn
 
-        with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):
+        with (
+            patch("app.services.snapshot_cache.get_conn", return_value=mock_conn),
+            patch("app.services.snapshot_cache._clickhouse_publication_status", return_value=None),
+        ):
             result = snapshot_cache.last_consolidated_sync(tenant_id=1, branch_id=None)
 
         self.assertTrue(result["available"])
@@ -593,7 +597,10 @@ class SnapshotCacheTests(unittest.TestCase):
         mock_conn.execute.side_effect = [snapshot_cursor, phase_cursor, analytics_cursor]
         mock_conn.__enter__.return_value = mock_conn
 
-        with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):
+        with (
+            patch("app.services.snapshot_cache.get_conn", return_value=mock_conn),
+            patch("app.services.snapshot_cache._clickhouse_publication_status", return_value=None),
+        ):
             result = snapshot_cache.last_consolidated_sync(tenant_id=1, branch_id=None)
 
         self.assertTrue(result["available"])
@@ -619,14 +626,17 @@ class SnapshotCacheTests(unittest.TestCase):
         mock_conn.execute.side_effect = [snapshot_cursor, phase_cursor, analytics_cursor]
         mock_conn.__enter__.return_value = mock_conn
 
-        with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):
+        with (
+            patch("app.services.snapshot_cache.get_conn", return_value=mock_conn),
+            patch("app.services.snapshot_cache._clickhouse_publication_status", return_value=None),
+        ):
             result = snapshot_cache.last_consolidated_sync(tenant_id=1, branch_id=None)
 
         self.assertTrue(result["available"])
         self.assertEqual(result["source"], "etl_publication_fast_path")
         self.assertEqual(result["analytics"]["source"], "etl_publication_fast_path")
         self.assertEqual(result["analytics"]["mode"], "fast_path")
-        self.assertIn("Publicação rápida por tenant", result["message"])
+        self.assertIn("Base atualizada em", result["message"])
 
     def test_sales_overview_uses_same_snapshot_policy_as_other_hot_routes(self):
         claims = {"role": "MASTER"}

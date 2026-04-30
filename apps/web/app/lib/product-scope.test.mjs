@@ -71,6 +71,7 @@ test("legacy and repeated branch filters remain readable for compatibility", () 
     id_empresa: "3",
     id_filial: "9",
     id_filiais: ["9"],
+    branch_scope: "",
     scope_epoch: "epoch-legacy",
     scope_key: legacyScopeKey,
   });
@@ -93,6 +94,7 @@ test("legacy and repeated branch filters remain readable for compatibility", () 
     id_empresa: "3",
     id_filial: null,
     id_filiais: ["9", "11"],
+    branch_scope: "",
     scope_epoch: `legacy:${multiScopeKey}`,
     scope_key: multiScopeKey,
   });
@@ -119,6 +121,7 @@ test("csv branch fallbacks from auth home_path remain readable", () => {
     id_empresa: "3",
     id_filial: null,
     id_filiais: ["9", "11"],
+    branch_scope: "",
     scope_epoch: `legacy:${scopeKey}`,
     scope_key: scopeKey,
   });
@@ -141,6 +144,23 @@ test("scope parser preserves explicit scope epoch and computes deterministic sco
       id_filiais: ["14458"],
     }),
   );
+});
+
+test("all-branches selection is preserved as sentinel across links", () => {
+  const params = buildScopeSearchParams({
+    dt_ini: "2026-04-01",
+    dt_fim: "2026-04-30",
+    dt_ref: "2026-04-30",
+    id_empresa: 12,
+    branch_scope: "all",
+  });
+  assert.match(params.toString(), /branch_scope=all/);
+  assert.ok(!params.toString().includes("id_filial="));
+  assert.ok(!params.toString().includes("id_filiais="));
+
+  const parsed = readScopeFromSearch(new URLSearchParams(params.toString()));
+  assert.equal(parsed.branch_scope, "all");
+  assert.deepEqual(parsed.id_filiais, []);
 });
 
 test("scope controls distinguish platform master, owner and branch manager", () => {

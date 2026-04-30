@@ -10,7 +10,7 @@ import { clearAuth } from '../lib/auth';
 import { getVisibleBranches, uniqueBranchIds } from '../lib/branch-state.mjs';
 import { buildQuickShortcutRanges, formatBusinessCalendarDate, parseCalendarDate } from '../lib/calendar-date.mjs';
 import { buildBrowserLocalDefaultScope } from '../lib/local-scope-defaults.mjs';
-import { describeLastSync, describeServerBaseDate, describeSyncMessage } from '../lib/reading-copy.mjs';
+import { describeServerBaseDate } from '../lib/reading-copy.mjs';
 import { clearSessionCache, loadSession, readCachedSession } from '../lib/session';
 import { buildValidatedScope, validateScopeDraft } from '../lib/scope-validation.mjs';
 import { prefetchProductScope, startScopeTransition, useScopeTransitionState } from '../lib/scope-runtime';
@@ -66,6 +66,7 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
     id_empresa: fallbackCompany,
     id_filial: fallbackBranchIds.length === 1 ? fallbackBranchIds[0] : null,
     id_filiais: fallbackBranchIds,
+    branch_scope: parsed.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'),
   };
 }
 
@@ -91,13 +92,11 @@ export default function AppNav({
   title,
   userLabel,
   initialUnread,
-  initialSyncStatus,
   deferAuxiliaryLoads = false,
 }: {
   title: string;
   userLabel?: string;
   initialUnread?: number;
-  initialSyncStatus?: any;
   deferAuxiliaryLoads?: boolean;
 }) {
   const router = useRouter();
@@ -116,7 +115,6 @@ export default function AppNav({
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [unread, setUnread] = useState(initialUnread ?? 0);
-  const [syncStatus, setSyncStatus] = useState<any>(initialSyncStatus ?? null);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
 
@@ -144,12 +142,6 @@ export default function AppNav({
       setUnread(initialUnread);
     }
   }, [initialUnread]);
-
-  useEffect(() => {
-    if (initialSyncStatus !== undefined) {
-      setSyncStatus(initialSyncStatus || null);
-    }
-  }, [initialSyncStatus]);
 
   useEffect(() => {
     if (!deferAuxiliaryLoads) {
@@ -181,18 +173,21 @@ export default function AppNav({
 
   useEffect(() => {
     const nextBranchIds = uniqueBranchIds(activeScope.id_filiais || []);
+    const selectionMode: 'all' | 'selected' =
+      scopeControls.branchLocked ? 'selected' : (activeScope.branch_scope === 'all' ? 'all' : (nextBranchIds.length ? 'selected' : 'all'));
     setDraft({
       dt_ini: activeScope.dt_ini || '',
       dt_fim: activeScope.dt_fim || '',
       id_empresa: activeScope.id_empresa || '',
       id_filiais: nextBranchIds,
-      selectionMode: scopeControls.branchLocked || nextBranchIds.length ? 'selected' : 'all',
+      selectionMode,
     });
   }, [
     activeScope.dt_ini,
     activeScope.dt_fim,
     activeScope.id_empresa,
     (activeScope.id_filiais || []).join(','),
+    activeScope.branch_scope,
     scopeControls.branchLocked,
   ]);
 
@@ -215,50 +210,6 @@ export default function AppNav({
       active = false;
     };
   }, [activeScope, initialUnread]);
-
-  useEffect(() => {
-    if (initialSyncStatus?.available === true) return;
-    if (!auxiliaryLoadsEnabled) return;
-
-    const companyId = activeScope.id_empresa || session?.id_empresa;
-    if (!companyId) {
-      setSyncStatus(null);
-      return;
-    }
-
-    let active = true;
-    const loadSyncStatus = async () => {
-      try {
-        const params = buildScopeSearchParams({
-          id_empresa: companyId,
-          id_filial: activeScope.id_filial,
-          id_filiais: activeScope.id_filiais,
-        }).toString();
-        const response = await apiGet(`/bi/sync/status${params ? `?${params}` : ''}`);
-        if (active) setSyncStatus(response);
-      } catch {
-        if (active) {
-          setSyncStatus({
-            available: false,
-            last_sync_at: null,
-            message: 'Não foi possível consultar a última sincronização agora.',
-          });
-        }
-      }
-    };
-
-    loadSyncStatus();
-    return () => {
-      active = false;
-    };
-  }, [
-    activeScope.id_empresa,
-    activeScope.id_filial,
-    activeScope.id_filiais.join(','),
-    auxiliaryLoadsEnabled,
-    initialSyncStatus,
-    session?.id_empresa,
-  ]);
 
   useEffect(() => {
     if (!auxiliaryLoadsEnabled) return;
@@ -360,6 +311,7 @@ export default function AppNav({
         id_empresa: scopeTransition.scope.id_empresa || activeScope.id_empresa,
         id_filial: scopeTransition.scope.id_filial || activeScope.id_filial,
         id_filiais: scopeTransition.scope.id_filiais || activeScope.id_filiais,
+        branch_scope: scopeTransition.scope.branch_scope || activeScope.branch_scope,
       }
     : {
         dt_ini: activeScope.dt_ini,
@@ -369,6 +321,7 @@ export default function AppNav({
         id_empresa: activeScope.id_empresa,
         id_filial: activeScope.id_filial,
         id_filiais: activeScope.id_filiais,
+        branch_scope: activeScope.branch_scope,
       };
   const applying = scopeTransition.active;
 
@@ -482,7 +435,7 @@ export default function AppNav({
             {currentUserLabel ? <div className="pill productUserPill">{currentUserLabel}</div> : null}
             {session?.access?.platform ? (
               <Link className="btn" href="/platform">
-                Platform
+                Plataforma
               </Link>
             ) : null}
             <button className="btn" onClick={onLogout} aria-label="Sair da conta">
@@ -673,14 +626,6 @@ export default function AppNav({
           >
             {applying ? 'Aplicando...' : 'Aplicar filtros'}
           </button>
-        </div>
-
-        <div className="productSidebarSection productSyncSection">
-          <div className="productSectionLabel">Frescor operacional</div>
-          <div className="productSyncValue">{describeLastSync(syncStatus)}</div>
-          <div className="muted">
-            {describeSyncMessage(syncStatus)}
-          </div>
         </div>
       </aside>
     </>

@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
-import ReadingStatusBanner from '../components/ui/ReadingStatusBanner';
 import ScopeTransitionState from '../components/ui/ScopeTransitionState';
 import { apiGet, apiPost } from '../lib/api';
 import { extractApiError } from '../lib/errors';
@@ -13,7 +12,6 @@ import { buildUserLabel, formatCurrency, formatDateOnly, formatFilialLabel } fro
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { resolvePricingOverviewRequest } from '../lib/pricing-request.mjs';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
-import { describeCacheBanner } from '../lib/reading-copy.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
 import { useScopeQuery } from '../lib/scope';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
@@ -58,7 +56,6 @@ export default function PricingPage() {
     setActionError('');
     setSaveMsg('');
     setFilialLabel('');
-    setPriceInputs({});
   }, [scope.scope_key, scope.scope_epoch]);
 
   const fuelItems = useMemo(() => {
@@ -175,8 +172,6 @@ export default function PricingPage() {
           </div>
         ) : data ? (
           <>
-            <ReadingStatusBanner message={describeCacheBanner(data?._snapshot_cache, 'preço da concorrência')} />
-
           <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card kpi col-3">
                 <div className="label">Tipos de combustível</div>

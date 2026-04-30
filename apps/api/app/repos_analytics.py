@@ -38,6 +38,7 @@ _DISPATCH_CACHE: dict[str, Callable[..., Any]] = {}
 # operations or app-owned serving tables, not ClickHouse analytical marts.
 _POSTGRES_OWNED_FUNCTIONS = {
     "list_filiais",
+    "competitor_pricing_overview",
     "competitor_pricing_upsert",
     "competitor_fuel_product_ids",
     "goals_today",
@@ -53,8 +54,6 @@ _POSTGRES_OWNED_FUNCTIONS = {
 _CLICKHOUSE_DEBT_FUNCTIONS = {
     "stock_position_summary": "estoque mart is not present in sql/clickhouse yet",
     "customers_delinquency_overview": "finance delinquency drilldown needs a customer-level mart",
-    "cash_dre_summary": "DRE still depends on transactional finance facts",
-    "competitor_pricing_overview": "pricing simulation needs fuel product dimension and competitor app table",
     "monthly_goal_projection": "goal projection mixes app.goals with analytical sales series",
 }
 

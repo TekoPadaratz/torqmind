@@ -35,7 +35,7 @@ export default function PlatformShell({ title, subtitle, me, children }: Platfor
         <div className="platformBrand">
           <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={28} height={28} priority />
           <div>
-            <div className="platformBrandEyebrow">TorqMind Platform</div>
+            <div className="platformBrandEyebrow">TorqMind Plataforma</div>
             <div className="platformBrandTitle">Gestão interna da plataforma</div>
           </div>
         </div>
@@ -73,7 +73,7 @@ export default function PlatformShell({ title, subtitle, me, children }: Platfor
       <div className="container">
         <div className="platformHero">
           <div>
-            <div className="platformHeroEyebrow">{me?.role_label || me?.user_role || 'Platform'}</div>
+            <div className="platformHeroEyebrow">{me?.role_label || me?.user_role || 'Plataforma'}</div>
             <h1>{title}</h1>
             {subtitle ? <p className="platformSubtitle">{subtitle}</p> : null}
           </div>

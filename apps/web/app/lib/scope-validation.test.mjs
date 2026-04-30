@@ -115,6 +115,7 @@ test('buildValidatedScope persists only the validated effective branches', () =>
       dt_fim: '2026-04-14',
       id_empresa: '5',
       id_filiais: ['11', '999'],
+      selectionMode: 'selected',
     },
     activeScope: {
       dt_ref: '2026-04-14',
@@ -148,6 +149,7 @@ test('buildValidatedScope keeps the locked branch after validation', () => {
       dt_fim: '2026-04-14',
       id_empresa: '9',
       id_filiais: ['11'],
+      selectionMode: 'selected',
     },
     activeScope: {
       dt_ref: '2026-04-14',
@@ -162,4 +164,29 @@ test('buildValidatedScope keeps the locked branch after validation', () => {
   assert.equal(scope.id_filial, '77');
   assert.equal(params.includes('11'), false);
   assert.match(params, /id_filial=77/);
+});
+
+test('buildValidatedScope preserves all-branches sentinel without expanding ids in params', () => {
+  const scope = buildValidatedScope({
+    draft: {
+      dt_ini: '2026-04-01',
+      dt_fim: '2026-04-14',
+      id_empresa: '9',
+      id_filiais: [],
+      selectionMode: 'all',
+    },
+    activeScope: {
+      dt_ref: '2026-04-14',
+      id_empresa: '9',
+    },
+    effectiveBranchIds: ['11', '13'],
+    scopeEpoch: 'scope-all',
+  });
+
+  const params = buildScopeSearchParams(scope).toString();
+  assert.equal(scope.branch_scope, 'all');
+  assert.deepEqual(scope.id_filiais, []);
+  assert.equal(scope.id_filial, null);
+  assert.match(params, /branch_scope=all/);
+  assert.equal(params.includes('id_filiais='), false);
 });

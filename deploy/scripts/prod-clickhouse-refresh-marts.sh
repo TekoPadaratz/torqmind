@@ -121,6 +121,54 @@ delete_tenant_table() {
   fi
 }
 
+ensure_semantic_columns() {
+  ch --multiquery --query "
+ALTER TABLE torqmind_mart.fraude_cancelamentos_eventos ADD COLUMN IF NOT EXISTS filial_nome String DEFAULT '' AFTER id_filial;
+ALTER TABLE torqmind_mart.fraude_cancelamentos_eventos ADD COLUMN IF NOT EXISTS usuario_nome String DEFAULT '' AFTER id_usuario;
+ALTER TABLE torqmind_mart.fraude_cancelamentos_eventos ADD COLUMN IF NOT EXISTS usuario_source String DEFAULT 'unknown' AFTER usuario_nome;
+ALTER TABLE torqmind_mart.fraude_cancelamentos_eventos ADD COLUMN IF NOT EXISTS turno_value String DEFAULT '' AFTER id_turno;
+ALTER TABLE torqmind_mart.risco_turno_local_diaria ADD COLUMN IF NOT EXISTS filial_nome String DEFAULT '' AFTER id_filial;
+ALTER TABLE torqmind_mart.risco_turno_local_diaria ADD COLUMN IF NOT EXISTS turno_value String DEFAULT '' AFTER id_turno;
+ALTER TABLE torqmind_mart.risco_turno_local_diaria ADD COLUMN IF NOT EXISTS local_nome String DEFAULT '' AFTER id_local_venda;
+CREATE OR REPLACE VIEW torqmind_mart.risco_eventos_recentes AS
+SELECT
+    r.id AS id,
+    r.id_empresa AS id_empresa,
+    r.id_filial AS id_filial,
+    ifNull(dfl.nome, '') AS filial_nome,
+    r.id_db AS id_db,
+    r.id_comprovante AS id_comprovante,
+    r.id_movprodutos AS id_movprodutos,
+    r.event_type AS event_type,
+    r.data AS data,
+    r.data_key AS data_key,
+    r.id_usuario AS id_usuario,
+    r.id_funcionario AS id_funcionario,
+    ifNull(df.nome, '(Sem funcionario)') AS funcionario_nome,
+    r.id_turno AS id_turno,
+    toString(ifNull(r.id_turno, -1)) AS turno_value,
+    toInt32(if(isNull(r.id_usuario), ifNull(t.id_usuario, -1), r.id_usuario)) AS operador_caixa_id,
+    ifNull(uc.nome, '') AS operador_caixa_nome,
+    multiIf(not isNull(r.id_usuario), 'evento', not isNull(t.id_usuario), 'turno', 'unknown') AS operador_caixa_source,
+    ifNull(lv.nome, '') AS local_nome,
+    r.id_cliente AS id_cliente,
+    r.valor_total AS valor_total,
+    r.impacto_estimado AS impacto_estimado,
+    r.score_risco AS score_risco,
+    r.score_level AS score_level,
+    r.reasons AS reasons,
+    r.created_at AS created_at,
+    r.created_at AS updated_at
+FROM torqmind_dw.fact_risco_evento r
+LEFT JOIN torqmind_dw.dim_filial dfl ON dfl.id_empresa = r.id_empresa AND dfl.id_filial = r.id_filial
+LEFT JOIN torqmind_dw.dim_funcionario df ON df.id_empresa = r.id_empresa AND df.id_filial = r.id_filial AND df.id_funcionario = r.id_funcionario
+LEFT JOIN torqmind_dw.fact_caixa_turno t ON t.id_empresa = r.id_empresa AND t.id_filial = r.id_filial AND t.id_turno = r.id_turno
+LEFT JOIN torqmind_dw.dim_usuario_caixa uc ON uc.id_empresa = r.id_empresa AND uc.id_filial = r.id_filial AND uc.id_usuario = toInt32(if(isNull(r.id_usuario), ifNull(t.id_usuario, -1), r.id_usuario))
+LEFT JOIN torqmind_dw.fact_venda_item vi ON vi.id_empresa = r.id_empresa AND vi.id_filial = r.id_filial AND vi.id_db = r.id_db AND vi.id_movprodutos = r.id_movprodutos
+LEFT JOIN torqmind_dw.dim_local_venda lv ON lv.id_empresa = vi.id_empresa AND lv.id_filial = vi.id_filial AND lv.id_local_venda = vi.id_local_venda;
+"
+}
+
 run_incremental_refresh() {
   ensure_ops_metadata
   local window dt_ini_key dt_fim_key dt_ini_date dt_fim_date tenant_filter_v tenant_filter_i tenant_filter_p tenant_filter_c tenant_filter_t tenant_filter_f tenant_filter_r tenant_filter_output
@@ -153,6 +201,7 @@ run_incremental_refresh() {
   fi
 
   echo "== refresh torqmind_mart incremental window ${dt_ini_key}-${dt_fim_key} =="
+  ensure_semantic_columns
 
   for table in \
     agg_vendas_diaria agg_vendas_hora agg_produtos_diaria agg_grupos_diaria agg_funcionarios_diaria insights_base_diaria \
@@ -224,8 +273,11 @@ WHERE c.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_c} AND i
 GROUP BY c.id_empresa, c.id_filial, c.data_key;
 
 INSERT INTO torqmind_mart.fraude_cancelamentos_eventos
-SELECT c.id_empresa, c.id_filial, c.id_db, toString(c.id_comprovante), c.data, c.data_key, c.id_usuario, c.id_turno, toDecimal128(ifNull(c.valor_total, 0), 2), now()
+SELECT c.id_empresa, c.id_filial, ifNull(df.nome, ''), c.id_db, toString(c.id_comprovante), c.data, c.data_key, toInt32(ifNull(c.id_usuario, ifNull(t.id_usuario, -1))), ifNull(nullIf(u.nome, ''), ''), multiIf(not isNull(c.id_usuario), 'comprovante', not isNull(t.id_usuario), 'turno', 'unknown'), c.id_turno, toString(ifNull(c.id_turno, -1)), toDecimal128(ifNull(c.valor_total, 0), 2), now()
 FROM torqmind_dw.fact_comprovante c
+LEFT JOIN torqmind_dw.dim_filial df ON df.id_empresa = c.id_empresa AND df.id_filial = c.id_filial
+LEFT JOIN torqmind_dw.fact_caixa_turno t ON t.id_empresa = c.id_empresa AND t.id_filial = c.id_filial AND t.id_turno = c.id_turno
+LEFT JOIN torqmind_dw.dim_usuario_caixa u ON u.id_empresa = c.id_empresa AND u.id_filial = c.id_filial AND u.id_usuario = toInt32(ifNull(c.id_usuario, ifNull(t.id_usuario, -1)))
 WHERE c.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_c} AND ifNull(c.cancelado, 0) = 1;
 
 INSERT INTO torqmind_mart.agg_risco_diaria
@@ -242,11 +294,13 @@ WHERE r.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_r}
 GROUP BY r.id_empresa, r.id_filial, r.data_key, toInt32(ifNull(r.id_funcionario, -1)), ifNull(df.nome, '(Sem funcionario)');
 
 INSERT INTO torqmind_mart.risco_turno_local_diaria
-SELECT r.id_empresa, r.id_filial, r.data_key, toInt32(ifNull(r.id_turno, -1)), toInt32(ifNull(i.id_local_venda, -1)), toInt32(count()), toInt32(countIf(ifNull(r.score_risco, 0) >= 80)), toDecimal128(sum(ifNull(r.impacto_estimado, 0)), 2), toDecimal128(avg(ifNull(r.score_risco, 0)), 2), now()
+SELECT r.id_empresa, r.id_filial, ifNull(df.nome, ''), r.data_key, toInt32(ifNull(r.id_turno, -1)), toString(ifNull(r.id_turno, -1)), toInt32(ifNull(i.id_local_venda, -1)), ifNull(lv.nome, ''), toInt32(count()), toInt32(countIf(ifNull(r.score_risco, 0) >= 80)), toDecimal128(sum(ifNull(r.impacto_estimado, 0)), 2), toDecimal128(avg(ifNull(r.score_risco, 0)), 2), now()
 FROM torqmind_dw.fact_risco_evento r
+LEFT JOIN torqmind_dw.dim_filial df ON df.id_empresa = r.id_empresa AND df.id_filial = r.id_filial
 LEFT JOIN torqmind_dw.fact_venda_item i ON i.id_empresa = r.id_empresa AND i.id_filial = r.id_filial AND i.id_db = r.id_db AND i.id_movprodutos = r.id_movprodutos
+LEFT JOIN torqmind_dw.dim_local_venda lv ON lv.id_empresa = i.id_empresa AND lv.id_filial = i.id_filial AND lv.id_local_venda = i.id_local_venda
 WHERE r.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_r}
-GROUP BY r.id_empresa, r.id_filial, r.data_key, toInt32(ifNull(r.id_turno, -1)), toInt32(ifNull(i.id_local_venda, -1));
+GROUP BY r.id_empresa, r.id_filial, ifNull(df.nome, ''), r.data_key, toInt32(ifNull(r.id_turno, -1)), toString(ifNull(r.id_turno, -1)), toInt32(ifNull(i.id_local_venda, -1)), ifNull(lv.nome, '');
 
 INSERT INTO torqmind_mart.financeiro_vencimentos_diaria
 SELECT f.id_empresa, f.id_filial, f.data_key_venc, toInt8(f.tipo_titulo), toDecimal128(sum(ifNull(f.valor, 0)), 2), toDecimal128(sum(ifNull(f.valor_pago, 0)), 2), toDecimal128(sum(if(isNull(f.data_pagamento), greatest(ifNull(f.valor, 0) - ifNull(f.valor_pago, 0), 0), 0)), 2), now()
@@ -255,16 +309,30 @@ WHERE f.data_key_venc BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_f}
 GROUP BY f.id_empresa, f.id_filial, f.data_key_venc, toInt8(f.tipo_titulo);
 
 INSERT INTO torqmind_mart.agg_pagamentos_diaria
-SELECT p.id_empresa, p.id_filial, p.data_key, multiIf(p.tipo_forma IN (3, 13, 23), 'PIX', p.tipo_forma IN (4, 5, 6), 'CARTAO', p.tipo_forma IN (1), 'DINHEIRO', 'NAO_IDENTIFICADO'), concat('FORMA_', toString(p.tipo_forma)), toDecimal128(sum(ifNull(p.valor, 0)), 2), toInt32(countDistinct(p.referencia)), toDecimal64(0, 2), now()
-FROM torqmind_dw.fact_pagamento_comprovante p
-WHERE p.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_p}
-GROUP BY p.id_empresa, p.id_filial, p.data_key, multiIf(p.tipo_forma IN (3, 13, 23), 'PIX', p.tipo_forma IN (4, 5, 6), 'CARTAO', p.tipo_forma IN (1), 'DINHEIRO', 'NAO_IDENTIFICADO'), concat('FORMA_', toString(p.tipo_forma));
+SELECT id_empresa, id_filial, data_key, category, label, toDecimal128(sum(ifNull(valor, 0)), 2), toInt32(countDistinct(referencia)), toDecimal64(0, 2), now()
+FROM (
+  SELECT p.id_empresa AS id_empresa, p.id_filial AS id_filial, p.data_key AS data_key, p.valor AS valor, p.referencia AS referencia,
+    ifNull(nullIf(mp_company.category, ''), ifNull(nullIf(mp_global.category, ''), 'NAO_IDENTIFICADO')) AS category,
+    ifNull(nullIf(mp_company.label, ''), ifNull(nullIf(mp_global.label, ''), 'Forma não identificada')) AS label
+  FROM torqmind_dw.fact_pagamento_comprovante p
+  LEFT JOIN torqmind_dw.dim_forma_pagamento mp_company ON mp_company.tipo_forma = p.tipo_forma AND mp_company.active AND mp_company.id_empresa = p.id_empresa
+  LEFT JOIN torqmind_dw.dim_forma_pagamento mp_global ON mp_global.tipo_forma = p.tipo_forma AND mp_global.active AND isNull(mp_global.id_empresa)
+  WHERE p.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_p}
+) mapped
+GROUP BY id_empresa, id_filial, data_key, category, label;
 
 INSERT INTO torqmind_mart.agg_pagamentos_turno
-SELECT p.id_empresa, p.id_filial, p.data_key, toInt32(ifNull(p.id_turno, -1)), multiIf(p.tipo_forma IN (3, 13, 23), 'PIX', p.tipo_forma IN (4, 5, 6), 'CARTAO', p.tipo_forma IN (1), 'DINHEIRO', 'NAO_IDENTIFICADO'), concat('FORMA_', toString(p.tipo_forma)), toDecimal128(sum(ifNull(p.valor, 0)), 2), toInt32(countDistinct(p.referencia)), now()
-FROM torqmind_dw.fact_pagamento_comprovante p
-WHERE p.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_p}
-GROUP BY p.id_empresa, p.id_filial, p.data_key, toInt32(ifNull(p.id_turno, -1)), multiIf(p.tipo_forma IN (3, 13, 23), 'PIX', p.tipo_forma IN (4, 5, 6), 'CARTAO', p.tipo_forma IN (1), 'DINHEIRO', 'NAO_IDENTIFICADO'), concat('FORMA_', toString(p.tipo_forma));
+SELECT id_empresa, id_filial, data_key, id_turno, category, label, toDecimal128(sum(ifNull(valor, 0)), 2), toInt32(countDistinct(referencia)), now()
+FROM (
+  SELECT p.id_empresa AS id_empresa, p.id_filial AS id_filial, p.data_key AS data_key, toInt32(ifNull(p.id_turno, -1)) AS id_turno, p.valor AS valor, p.referencia AS referencia,
+    ifNull(nullIf(mp_company.category, ''), ifNull(nullIf(mp_global.category, ''), 'NAO_IDENTIFICADO')) AS category,
+    ifNull(nullIf(mp_company.label, ''), ifNull(nullIf(mp_global.label, ''), 'Forma não identificada')) AS label
+  FROM torqmind_dw.fact_pagamento_comprovante p
+  LEFT JOIN torqmind_dw.dim_forma_pagamento mp_company ON mp_company.tipo_forma = p.tipo_forma AND mp_company.active AND mp_company.id_empresa = p.id_empresa
+  LEFT JOIN torqmind_dw.dim_forma_pagamento mp_global ON mp_global.tipo_forma = p.tipo_forma AND mp_global.active AND isNull(mp_global.id_empresa)
+  WHERE p.data_key BETWEEN ${dt_ini_key} AND ${dt_fim_key}${tenant_filter_p}
+) mapped
+GROUP BY id_empresa, id_filial, data_key, id_turno, category, label;
 
 INSERT INTO torqmind_mart.pagamentos_anomalias_diaria
 SELECT p.id_empresa, p.id_filial, p.data_key, toInt32(ifNull(p.id_turno, -1)), 'PAYMENT_PATTERN', multiIf(sum(ifNull(p.valor, 0)) >= 100000, 'CRITICAL', sum(ifNull(p.valor, 0)) >= 30000, 'WARN', 'INFO'), toDecimal64(least(100, greatest(0, sum(ifNull(p.valor, 0)) / 1000)), 2), concat('PAY|', toString(p.id_empresa), '|', toString(p.id_filial), '|', toString(p.data_key), '|', toString(toInt32(ifNull(p.id_turno, -1)))), toInt32(if(countDistinct(p.tipo_forma) >= 3, countDistinct(p.referencia), 0)), toInt32(countDistinct(p.referencia)), toDecimal128(sum(ifNull(p.valor, 0)), 2), toDecimal64(avg(toFloat64(ifNull(p.tipo_forma, 0))), 2), now()
@@ -289,10 +357,17 @@ WHERE ifNull(t.is_aberto, 0) = 1 AND t.abertura_ts IS NOT NULL${tenant_filter_t}
 GROUP BY t.id_empresa, t.id_filial, ifNull(df.nome, ''), t.id_turno, toInt32(ifNull(t.id_usuario, -1)), ifNull(u.nome, concat('Usuario ', toString(ifNull(t.id_usuario, -1)))), t.abertura_ts, t.fechamento_ts, multiIf(dateDiff('hour', t.abertura_ts, now()) >= 24, 'CRITICAL', dateDiff('hour', t.abertura_ts, now()) >= 12, 'HIGH', dateDiff('hour', t.abertura_ts, now()) >= 6, 'WARN', 'OK'), multiIf(dateDiff('hour', t.abertura_ts, now()) >= 24, 'Critico', dateDiff('hour', t.abertura_ts, now()) >= 12, 'Atencao alta', dateDiff('hour', t.abertura_ts, now()) >= 6, 'Monitorar', 'Dentro da janela');
 
 INSERT INTO torqmind_mart.agg_caixa_forma_pagamento
-SELECT p.id_empresa, p.id_filial, toInt32(ifNull(p.id_turno, -1)), toInt32(p.tipo_forma), concat('FORMA_', toString(p.tipo_forma)), multiIf(p.tipo_forma IN (3, 13, 23), 'PIX', p.tipo_forma IN (4, 5, 6), 'CARTAO', p.tipo_forma IN (1), 'DINHEIRO', 'NAO_IDENTIFICADO'), toDecimal128(sum(ifNull(p.valor, 0)), 2), toInt32(countDistinct(p.referencia)), now()
-FROM torqmind_dw.fact_pagamento_comprovante p
-WHERE p.id_turno IS NOT NULL${tenant_filter_p}
-GROUP BY p.id_empresa, p.id_filial, toInt32(ifNull(p.id_turno, -1)), toInt32(p.tipo_forma), concat('FORMA_', toString(p.tipo_forma)), multiIf(p.tipo_forma IN (3, 13, 23), 'PIX', p.tipo_forma IN (4, 5, 6), 'CARTAO', p.tipo_forma IN (1), 'DINHEIRO', 'NAO_IDENTIFICADO');
+SELECT id_empresa, id_filial, id_turno, tipo_forma, forma_label, forma_category, toDecimal128(sum(ifNull(valor, 0)), 2), toInt32(countDistinct(referencia)), now()
+FROM (
+  SELECT p.id_empresa AS id_empresa, p.id_filial AS id_filial, toInt32(ifNull(p.id_turno, -1)) AS id_turno, toInt32(p.tipo_forma) AS tipo_forma, p.valor AS valor, p.referencia AS referencia,
+    ifNull(nullIf(mp_company.label, ''), ifNull(nullIf(mp_global.label, ''), 'Forma não identificada')) AS forma_label,
+    ifNull(nullIf(mp_company.category, ''), ifNull(nullIf(mp_global.category, ''), 'NAO_IDENTIFICADO')) AS forma_category
+  FROM torqmind_dw.fact_pagamento_comprovante p
+  LEFT JOIN torqmind_dw.dim_forma_pagamento mp_company ON mp_company.tipo_forma = p.tipo_forma AND mp_company.active AND mp_company.id_empresa = p.id_empresa
+  LEFT JOIN torqmind_dw.dim_forma_pagamento mp_global ON mp_global.tipo_forma = p.tipo_forma AND mp_global.active AND isNull(mp_global.id_empresa)
+  WHERE p.id_turno IS NOT NULL${tenant_filter_p}
+) mapped
+GROUP BY id_empresa, id_filial, id_turno, tipo_forma, forma_label, forma_category;
 
 INSERT INTO torqmind_mart.agg_caixa_cancelamentos
 SELECT c.id_empresa, c.id_filial, toInt32(ifNull(c.id_turno, -1)), ifNull(df.nome, ''), toDecimal128(sum(ifNull(c.valor_total, 0)), 2), toInt32(count()), now()

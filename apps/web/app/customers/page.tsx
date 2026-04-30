@@ -13,17 +13,12 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
-import ReadingStatusBanner from "../components/ui/ReadingStatusBanner";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import {
-  describeDataFreshness,
-  describeChurnCoverage,
-} from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -115,12 +110,6 @@ export default function CustomersPage() {
     const start = safePage * delinquencyPageSize;
     return delinquencyCustomers.slice(start, start + delinquencyPageSize);
   }, [delinquencyCustomers, delinquencyPage, delinquencyPageCount]);
-  const customersBanner =
-    describeDataFreshness(data, "clientes")
-    || (String(churnSnapshot?.snapshot_status || "").toLowerCase() === "exact"
-      ? null
-      : describeChurnCoverage(churnSnapshot));
-
   useEffect(() => {
     setDelinquencyPage(0);
   }, [data?.commercial_coverage?.effective_dt_fim, delinquencyCustomers.length]);
@@ -142,10 +131,6 @@ export default function CustomersPage() {
           </div>
         ) : (
           <>
-            <ReadingStatusBanner
-              message={customersBanner}
-            />
-
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card kpi col-3">
                 <div className="label">Clientes identificados</div>

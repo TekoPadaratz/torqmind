@@ -12,7 +12,6 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { describeDataFreshness } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import {
@@ -23,7 +22,6 @@ import {
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
 import HeroMoneyCard from "../components/ui/HeroMoneyCard";
-import ReadingStatusBanner from "../components/ui/ReadingStatusBanner";
 import RiskBadge from "../components/ui/RiskBadge";
 import Skeleton from "../components/ui/Skeleton";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
@@ -51,36 +49,6 @@ export default function Dashboard() {
     : buildModuleLoadingCopy("o dashboard geral");
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
-  const initialSyncStatus = useMemo(() => {
-    if (!homeData) return undefined;
-
-    const operationalSync = homeData?.operational_sync;
-    if (operationalSync?.last_sync_at) {
-      return {
-        available: true,
-        last_sync_at: operationalSync.last_sync_at,
-        operational: operationalSync,
-      };
-    }
-
-    const commercialCoverage = homeData?.commercial_coverage;
-    const publishedCoverageDate =
-      commercialCoverage?.latest_available_dt ||
-      commercialCoverage?.effective_dt_fim ||
-      homeData?.freshness?.sales?.historical_through_dt;
-    if (publishedCoverageDate) {
-      return undefined;
-    }
-
-    return operationalSync
-      ? undefined
-      : {
-          available: false,
-          last_sync_at: null,
-          operational: null,
-        };
-  }, [homeData]);
-
   const overview = homeData?.overview || {};
   const churnData = homeData?.churn || {};
   const financeData = homeData?.finance || {};
@@ -180,7 +148,6 @@ export default function Dashboard() {
         title="Dashboard Geral"
         userLabel={userLabel}
         initialUnread={homeData?.notifications_unread}
-        initialSyncStatus={initialSyncStatus}
         deferAuxiliaryLoads
       />
 
@@ -199,10 +166,6 @@ export default function Dashboard() {
           </section>
         ) : (
           <>
-            <ReadingStatusBanner
-              message={describeDataFreshness(homeData, "o dashboard geral")}
-            />
-
             {scopeOutdatedForRisk ? (
               <div
                 className="card homeBlock"
