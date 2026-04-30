@@ -492,8 +492,9 @@ Formato: `torqmind.<schema>.<table>` (ex: `torqmind.dw.fact_venda`).
 - `sql/clickhouse/streaming/010_raw_events.sql`: tabela raw append-only.
 - `sql/clickhouse/streaming/020_current_tables.sql`: tabelas current (ReplacingMergeTree).
 - `sql/clickhouse/streaming/030_ops_tables.sql`: tabelas operacionais (offsets, lag, erros).
-- `sql/clickhouse/streaming/040_pilot_marts.sql`: marts piloto streaming.
 - `docs/architecture/TORQMIND_EVENT_DRIVEN_2_0.md`: documentação completa.
+- `docs/architecture/TORQMIND_2_0_CUTOVER_PLAN.md`: plano de migração batch → streaming.
+- `docs/product/TORQMIND_PRODUCT_WORLD_CLASS_AUDIT.md`: auditoria world-class de produto.
 
 ### Variáveis de ambiente streaming (CDC Consumer)
 
@@ -533,5 +534,56 @@ Formato: `torqmind.<schema>.<table>` (ex: `torqmind.dw.fact_venda`).
 - `bash -n deploy/scripts/streaming-*.sh`: passou.
 - `docker compose -f docker-compose.streaming.yml --profile local-full config --quiet`: passou.
 - `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet`: passou (não quebrou).
+- `python3 -m pytest apps/cdc_consumer/tests/ -v`: 29 testes + 15 subtestes passaram.
+- DDL alignment tests verificam que 010/020/030 SQL correspondem exatamente ao que `clickhouse_writer.py` insere.
+- Rede Docker corrigida: `torqmind_default` (external) em vez de rede isolada.
+- Scripts de streaming com auth ClickHouse e env POSTGRES_* padronizado.
+
+## 15. Auditoria de Produto World-Class (2026-04-30)
+
+Status: AUDITORIA COMPLETA — documentos criados.
+
+### Documentos produzidos
+
+- `docs/product/TORQMIND_PRODUCT_WORLD_CLASS_AUDIT.md`: auditoria tela por tela, domínio por domínio, personas, quick wins, roadmap.
+- `docs/architecture/TORQMIND_2_0_CUTOVER_PLAN.md`: plano de migração batch → streaming em 7 fases com rollback e checklists.
+
+### Achados críticos de produto
+
+1. **"recorte"** em 32 ocorrências no frontend — jargão técnico visível ao cliente.
+2. **"não identificado"** em 8 ocorrências — parece bug quando é falta de cadastro.
+3. JWT secret default aceito silenciosamente em produção (config.py).
+4. `product_global` role não valida tenant_id (cross-tenant risk).
+5. 24 endpoints BI sem response_model tipado.
+6. Falta mart de divergência de caixa, inadimplência por cliente, histórico de preço.
+7. Plataforma admin sem health técnico de CDC/streaming.
+
+### Quick wins identificados
+
+- Replace "recorte" → "período" (32 locais, zero risco).
+- Replace "não identificado" → "Cadastro pendente" (8 locais, zero risco).
+- Fail-fast config.py se JWT secret = default em produção.
+- Validar id_empresa em product_global scope.
+
+### Cutover streaming: estado
+
+| Fase | Status |
+|------|--------|
+| 1 - CDC Paralelo | ✅ Completa |
+| 2 - Validação em staging | Próxima |
+| 3 - Mart piloto streaming | Planejada |
+| 4 - API feature flag | Planejada |
+| 5 - Dashboards migrados | Planejada |
+| 6 - Alertas | Planejada |
+| 7 - Agent/Jarvis | Planejada |
+
+### Correção técnica (streaming)
+
+- `040_pilot_marts.sql` removido do disco (não existia mais); referência mantida no Section 14 como histórico.
+- Rede Docker streaming corrigida para `external: true` com `torqmind_default`.
+- Env vars padronizados para POSTGRES_* com fallback PG_*.
+- ClickHouse auth adicionado em todos os scripts.
+- Register Debezium usa Python JSON generation (não sed).
+- CDC_TOPIC_PATTERN corrigido: `^torqmind\..*` (escape simples no YAML).
 - `python3 -m pytest apps/cdc_consumer/tests/ -v`: 23 testes, todos passaram.
 - Scripts não imprimem senhas (validado com grep).
