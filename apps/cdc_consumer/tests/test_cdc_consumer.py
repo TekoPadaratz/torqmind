@@ -256,5 +256,94 @@ class TestConsumerState(unittest.TestCase):
         self.assertEqual(state.events_errors, 1)
 
 
+class TestDDLAlignment(unittest.TestCase):
+    """Verify that SQL DDL contains all columns the writer will insert."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Load the DDL files once."""
+        import pathlib
+        repo = pathlib.Path(__file__).resolve().parents[3]
+        cls.raw_ddl = (repo / "sql/clickhouse/streaming/010_raw_events.sql").read_text()
+        cls.current_ddl = (repo / "sql/clickhouse/streaming/020_current_tables.sql").read_text()
+        cls.ops_ddl = (repo / "sql/clickhouse/streaming/030_ops_tables.sql").read_text()
+
+    def test_raw_events_has_all_columns(self):
+        """Raw DDL must have the columns the writer inserts."""
+        raw_columns = [
+            "topic", "kafka_partition", "kafka_offset", "op",
+            "source_ts_ms", "table_schema", "table_name",
+            "id_empresa", "data_key", "key_json", "before_json", "after_json",
+        ]
+        for col in raw_columns:
+            self.assertIn(col, self.raw_ddl, f"Raw DDL missing column: {col}")
+        # Also verify ingested_at with DateTime64(6)
+        self.assertIn("ingested_at", self.raw_ddl)
+        self.assertIn("DateTime64(6", self.raw_ddl)
+
+    def test_raw_events_engine(self):
+        """Raw table must use ReplacingMergeTree(ingested_at)."""
+        self.assertIn("ReplacingMergeTree(ingested_at)", self.raw_ddl)
+        self.assertIn("ORDER BY (topic, kafka_partition, kafka_offset)", self.raw_ddl)
+
+    def test_current_tables_have_mapping_columns(self):
+        """Each current table DDL must contain all columns from mappings + is_deleted + source_ts_ms."""
+        for key, mapping in TABLE_MAPPINGS.items():
+            with self.subTest(table=key):
+                # Find the CREATE TABLE block for this table
+                self.assertIn(f"torqmind_current.{mapping.ch_table}", self.current_ddl,
+                              f"DDL missing table definition for {mapping.ch_table}")
+                for col in mapping.columns:
+                    self.assertIn(col, self.current_ddl,
+                                  f"DDL for {mapping.ch_table} missing column: {col}")
+                # Meta columns
+                self.assertIn("is_deleted", self.current_ddl)
+                self.assertIn("source_ts_ms", self.current_ddl)
+                self.assertIn("ingested_at", self.current_ddl)
+
+    def test_ops_state_has_writer_columns(self):
+        """Ops cdc_table_state must have columns the writer inserts."""
+        state_columns = [
+            "table_schema", "table_name", "id_empresa",
+            "last_source_ts_ms", "last_op", "events_total",
+        ]
+        for col in state_columns:
+            self.assertIn(col, self.ops_ddl, f"Ops DDL missing state column: {col}")
+
+    def test_ops_errors_has_writer_columns(self):
+        """Ops cdc_errors must have columns the writer inserts."""
+        error_columns = [
+            "consumer_group", "topic", "kafka_partition", "kafka_offset",
+            "table_schema", "table_name", "error_type", "error_message",
+            "event_payload",
+        ]
+        for col in error_columns:
+            self.assertIn(col, self.ops_ddl, f"Ops DDL missing error column: {col}")
+
+    def test_debezium_parser_handles_no_schema_envelope(self):
+        """With value.converter.schemas.enable=false, payload comes directly."""
+        import json
+        # Format WITHOUT schema wrapping (schemas.enable=false on value)
+        value = {
+            "op": "c",
+            "before": None,
+            "after": {"id_empresa": 1, "id_filial": 1, "id_db": 1, "id_movprodutos": 1, "data_key": 20260101},
+            "source": {"schema": "dw", "table": "fact_venda", "ts_ms": 1714500000000},
+        }
+        # Format WITH schema wrapping on key (schemas.enable=true on key)
+        key = {
+            "schema": {"type": "struct", "fields": []},
+            "payload": {"id_empresa": 1, "id_filial": 1, "id_db": 1, "id_movprodutos": 1},
+        }
+        event = parse_debezium_event(
+            "torqmind.dw.fact_venda", 0, 200,
+            json.dumps(key).encode(), json.dumps(value).encode(),
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event.op, "c")
+        self.assertEqual(event.id_empresa, 1)
+        self.assertEqual(event.key, {"id_empresa": 1, "id_filial": 1, "id_db": 1, "id_movprodutos": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

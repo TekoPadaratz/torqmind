@@ -19,6 +19,14 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
+: "${CLICKHOUSE_USER:=torqmind}"
+: "${CLICKHOUSE_PASSWORD:=}"
+
+CH_AUTH_ARGS=(--user "$CLICKHOUSE_USER")
+if [[ -n "$CLICKHOUSE_PASSWORD" ]]; then
+    CH_AUTH_ARGS+=(--password "$CLICKHOUSE_PASSWORD")
+fi
+
 echo "=========================================="
 echo " TorqMind Streaming Status"
 echo "=========================================="
@@ -83,22 +91,22 @@ fi
 
 if [[ -n "$CH_CONTAINER" ]]; then
     echo "  Raw events:"
-    docker exec "$CH_CONTAINER" clickhouse-client --query "SELECT count() as total_events FROM torqmind_raw.cdc_events" 2>/dev/null || echo "    (table not ready)"
+    docker exec "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --query "SELECT count() as total_events FROM torqmind_raw.cdc_events" 2>/dev/null || echo "    (table not ready)"
 
     echo "  Events by table (top 15):"
-    docker exec "$CH_CONTAINER" clickhouse-client --query "SELECT table_schema, table_name, count() as events FROM torqmind_raw.cdc_events GROUP BY table_schema, table_name ORDER BY events DESC LIMIT 15" 2>/dev/null || echo "    (no data)"
+    docker exec "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --query "SELECT table_schema, table_name, count() as events FROM torqmind_raw.cdc_events GROUP BY table_schema, table_name ORDER BY events DESC LIMIT 15" 2>/dev/null || echo "    (no data)"
 
     echo ""
     echo "  Current state tables:"
-    docker exec "$CH_CONTAINER" clickhouse-client --query "SELECT database, name, total_rows FROM system.tables WHERE database = 'torqmind_current' ORDER BY name" 2>/dev/null || echo "    (not ready)"
+    docker exec "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --query "SELECT database, name, total_rows FROM system.tables WHERE database = 'torqmind_current' ORDER BY name" 2>/dev/null || echo "    (not ready)"
 
     echo ""
     echo "  CDC Table State (ops):"
-    docker exec "$CH_CONTAINER" clickhouse-client --query "SELECT table_schema, table_name, id_empresa, events_total, last_event_at FROM torqmind_ops.cdc_table_state FINAL ORDER BY last_event_at DESC LIMIT 15" 2>/dev/null || echo "    (no state data)"
+    docker exec "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --query "SELECT table_schema, table_name, id_empresa, events_total, last_event_at FROM torqmind_ops.cdc_table_state FINAL ORDER BY last_event_at DESC LIMIT 15" 2>/dev/null || echo "    (no state data)"
 
     echo ""
     echo "  Recent Errors:"
-    docker exec "$CH_CONTAINER" clickhouse-client --query "SELECT created_at, error_type, table_name, substring(error_message, 1, 100) as msg FROM torqmind_ops.cdc_errors ORDER BY created_at DESC LIMIT 5" 2>/dev/null || echo "    (no errors)"
+    docker exec "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --query "SELECT created_at, error_type, table_name, substring(error_message, 1, 100) as msg FROM torqmind_ops.cdc_errors ORDER BY created_at DESC LIMIT 5" 2>/dev/null || echo "    (no errors)"
 else
     echo "  ClickHouse container not found"
 fi

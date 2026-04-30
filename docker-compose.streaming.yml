@@ -130,7 +130,7 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-torqmind}
       CDC_CONSUMER_GROUP: ${CDC_CONSUMER_GROUP:-torqmind-cdc-consumer}
       CDC_TOPICS: ${CDC_TOPICS:-}
-      CDC_TOPIC_PATTERN: ${CDC_TOPIC_PATTERN:-^torqmind\\..*}
+      CDC_TOPIC_PATTERN: ${CDC_TOPIC_PATTERN:-^torqmind\..*}
       CDC_BATCH_SIZE: ${CDC_BATCH_SIZE:-500}
       CDC_FLUSH_INTERVAL_SECONDS: ${CDC_FLUSH_INTERVAL_SECONDS:-5}
       LOG_LEVEL: ${CDC_LOG_LEVEL:-INFO}
@@ -146,8 +146,8 @@ services:
 
 networks:
   default:
-    name: torqmind-streaming
-    driver: bridge
+    name: ${STREAMING_NETWORK:-torqmind_default}
+    external: true
 
 volumes:
   redpanda_data:

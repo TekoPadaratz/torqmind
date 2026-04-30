@@ -17,11 +17,11 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
-: "${PG_USER:=postgres}"
-: "${PG_DATABASE:=torqmind}"
+: "${POSTGRES_USER:=${PG_USER:-postgres}}"
+: "${POSTGRES_DB:=${PG_DATABASE:-torqmind}}"
 
 echo "=== TorqMind Streaming: Prepare PostgreSQL ==="
-echo "  Database: $PG_DATABASE"
+echo "  Database: $POSTGRES_DB"
 echo ""
 
 PG_CONTAINER=$(docker compose -f "$REPO_ROOT/$COMPOSE_FILE" --env-file "$ENV_FILE" ps -q postgres 2>/dev/null || true)
@@ -32,7 +32,7 @@ if [[ -z "$PG_CONTAINER" ]]; then
 fi
 
 echo "Checking wal_level..."
-WAL_LEVEL=$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DATABASE" -tAc "SHOW wal_level;" 2>/dev/null || echo "unknown")
+WAL_LEVEL=$(docker exec "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SHOW wal_level;" 2>/dev/null || echo "unknown")
 echo "  wal_level=$WAL_LEVEL"
 if [[ "$WAL_LEVEL" != "logical" ]]; then
     echo "  ERROR: wal_level must be 'logical'. Update postgresql.conf and restart."
@@ -42,7 +42,7 @@ fi
 echo ""
 echo "Creating Debezium support objects..."
 
-docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DATABASE" -v ON_ERROR_STOP=0 <<'SQL'
+docker exec "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=0 <<'SQL'
 -- Heartbeat table for Debezium
 CREATE TABLE IF NOT EXISTS app.debezium_heartbeat (
     id integer PRIMARY KEY DEFAULT 1,

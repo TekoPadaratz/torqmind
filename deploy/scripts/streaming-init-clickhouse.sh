@@ -18,6 +18,14 @@ if [[ -f "$ENV_FILE" ]]; then
     set +a
 fi
 
+: "${CLICKHOUSE_USER:=torqmind}"
+: "${CLICKHOUSE_PASSWORD:=}"
+
+CH_AUTH_ARGS=(--user "$CLICKHOUSE_USER")
+if [[ -n "$CLICKHOUSE_PASSWORD" ]]; then
+    CH_AUTH_ARGS+=(--password "$CLICKHOUSE_PASSWORD")
+fi
+
 # Determine ClickHouse container
 if [[ -z "$CH_CONTAINER" ]]; then
     # Try main compose first
@@ -40,14 +48,14 @@ for sql_file in "$SQL_DIR"/0*.sql; do
     if [[ -f "$sql_file" ]]; then
         filename=$(basename "$sql_file")
         echo "  Applying: $filename"
-        docker exec -i "$CH_CONTAINER" clickhouse-client --multiquery < "$sql_file"
+        docker exec -i "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --multiquery < "$sql_file"
     fi
 done
 
 echo ""
 echo "Verifying databases..."
 for db in torqmind_raw torqmind_current torqmind_ops; do
-    count=$(docker exec "$CH_CONTAINER" clickhouse-client --query "SELECT count() FROM system.tables WHERE database = '$db'" 2>/dev/null || echo "0")
+    count=$(docker exec "$CH_CONTAINER" clickhouse-client "${CH_AUTH_ARGS[@]}" --query "SELECT count() FROM system.tables WHERE database = '$db'" 2>/dev/null || echo "0")
     echo "  $db: $count tables"
 done
 

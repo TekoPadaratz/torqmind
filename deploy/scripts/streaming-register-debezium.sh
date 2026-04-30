@@ -45,13 +45,29 @@ for i in $(seq 1 60); do
     sleep 2
 done
 
-# Build connector config with env substitution
-CONNECTOR_CONFIG=$(cat "$CONNECTOR_TEMPLATE" | \
-    sed "s|\${POSTGRES_HOST:-postgres}|$POSTGRES_HOST|g" | \
-    sed "s|\${POSTGRES_PORT:-5432}|$POSTGRES_PORT|g" | \
-    sed "s|\${POSTGRES_USER}|$POSTGRES_USER|g" | \
-    sed "s|\${POSTGRES_PASSWORD}|$POSTGRES_PASSWORD|g" | \
-    sed "s|\${POSTGRES_DB:-torqmind}|$POSTGRES_DB|g")
+# Build connector config with safe Python JSON substitution (no sed fragility)
+CONNECTOR_CONFIG=$(python3 -c "
+import json, os, sys
+
+template_path = '$CONNECTOR_TEMPLATE'
+with open(template_path) as f:
+    config = json.load(f)
+
+# Substitute placeholders in config values
+subs = {
+    '\${POSTGRES_HOST:-postgres}': os.environ.get('POSTGRES_HOST', 'postgres'),
+    '\${POSTGRES_PORT:-5432}': os.environ.get('POSTGRES_PORT', '5432'),
+    '\${POSTGRES_USER}': os.environ.get('POSTGRES_USER', 'postgres'),
+    '\${POSTGRES_PASSWORD}': os.environ.get('POSTGRES_PASSWORD', ''),
+    '\${POSTGRES_DB:-torqmind}': os.environ.get('POSTGRES_DB', 'torqmind'),
+}
+
+for key, val in config.get('config', {}).items():
+    if isinstance(val, str) and val in subs:
+        config['config'][key] = subs[val]
+
+print(json.dumps(config))
+")
 
 CONNECTOR_NAME=$(echo "$CONNECTOR_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")
 
