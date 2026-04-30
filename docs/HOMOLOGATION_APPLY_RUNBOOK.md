@@ -111,6 +111,12 @@ Use `--full-clickhouse` quando:
 - o DW nativo/marts precisarem ser refeitos por inteiro;
 - uma auditoria tiver pedido rebuild semantico completo.
 
+Semântica exata:
+
+- `--full-clickhouse` reconstrói ClickHouse a partir do DW PostgreSQL que ja existe naquele momento;
+- `--rebuild-dw-from-stg` reconstrói primeiro o DW PostgreSQL a partir da STG canônica e depois republica ClickHouse;
+- `force_full_scan` nao apaga STG nem vira reset amplo de ingestao: ele so manda os loaders relerem a janela/filial pedida, ignorando watermark apenas na selecao daquele recorte.
+
 Use `--rebuild-dw-from-stg` quando:
 
 - o PostgreSQL DW precisar ser refeito a partir das fontes canônicas `stg.comprovantes`, `stg.itenscomprovantes` e `stg.formas_pgto_comprovantes`;
@@ -124,7 +130,8 @@ Guard rails desse modo:
 - rejeita `--skip-clickhouse` sem `--allow-dw-only`;
 - exige que a STG cubra `--from-date` ou confirmacao interativa especifica;
 - repassa `--include-dimensions` apenas para rebuild tenant-wide aberto, sem `--id-filial` e sem `--to-date`;
-- em rebuild escopado por `--id-filial` ou `--to-date`, preserva watermarks do tenant e faz varredura controlada da janela sem apagamento amplo.
+- em rebuild escopado por `--id-filial` ou `--to-date`, preserva watermarks do tenant e faz varredura controlada da janela sem apagamento amplo;
+- a migration 072 sobrescreve os loaders SQL do hot path para respeitar `from_date`, `to_date`, `branch_id` e `force_full_scan` diretamente no banco.
 
 Use o modo incremental quando:
 

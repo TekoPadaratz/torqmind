@@ -16,6 +16,10 @@ def read(path: str) -> str:
     return (repo_root() / path).read_text(encoding="utf-8")
 
 
+def mode(path: str) -> int:
+    return (repo_root() / path).stat().st_mode & 0o777
+
+
 class DerivedRebuildOperationalScriptsTest(unittest.TestCase):
     def test_incremental_wrapper_exposes_controlled_rebuild_flags(self) -> None:
         source = read("deploy/scripts/prod-etl-incremental.sh")
@@ -37,6 +41,9 @@ class DerivedRebuildOperationalScriptsTest(unittest.TestCase):
         self.assertNotIn("DELETE FROM stg.comprovantes", source)
         self.assertNotIn("DELETE FROM stg.itenscomprovantes", source)
 
+    def test_rebuild_script_is_executable(self) -> None:
+        self.assertEqual(mode("deploy/scripts/prod-rebuild-derived-from-stg.sh"), 0o755)
+
     def test_rebuild_script_has_safety_and_verification_flags(self) -> None:
         source = read("deploy/scripts/prod-rebuild-derived-from-stg.sh")
         self.assertIn("--include-dimensions", source)
@@ -51,6 +58,10 @@ class DerivedRebuildOperationalScriptsTest(unittest.TestCase):
 
     def test_runtime_scope_migration_adds_window_and_branch_helpers(self) -> None:
         source = read("sql/migrations/072_derived_rebuild_runtime_scope.sql")
+        self.assertIn("current_setting('etl.from_date', true)", source)
+        self.assertIn("current_setting('etl.to_date', true)", source)
+        self.assertIn("current_setting('etl.branch_id', true)", source)
+        self.assertIn("current_setting('etl.force_full_scan', true)", source)
         self.assertIn("runtime_from_date", source)
         self.assertIn("runtime_to_date", source)
         self.assertIn("runtime_branch_id", source)
@@ -60,6 +71,30 @@ class DerivedRebuildOperationalScriptsTest(unittest.TestCase):
         self.assertIn("runtime_business_date_in_range", source)
         self.assertIn("etl.sales_cutoff_date", source)
         self.assertNotIn("stg.movprodutos", source)
+
+    def test_runtime_scope_migration_overrides_public_sales_wrappers(self) -> None:
+        source = read("sql/migrations/072_derived_rebuild_runtime_scope.sql")
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_pagamento_comprovante_detail", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_pagamento_comprovante(p_id_empresa int)", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_venda_item_detail", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_venda_item(p_id_empresa int)", source)
+        self.assertIn("etl.load_fact_pagamento_comprovante_range_detail", source)
+        self.assertIn("etl.load_fact_venda_item_range_detail", source)
+        self.assertIn("etl.runtime_watermark_updates_enabled()", source)
+
+    def test_runtime_scope_migration_uses_window_filters_in_hot_path_queries(self) -> None:
+        source = read("sql/migrations/072_derived_rebuild_runtime_scope.sql")
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_comprovante", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_venda", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.fact_venda_item_pending_bounds", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_venda_item_range_detail", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.fact_pagamento_comprovante_pending_bounds", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_pagamento_comprovante_range_detail", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_caixa_turno", source)
+        self.assertIn("CREATE OR REPLACE FUNCTION etl.load_fact_financeiro", source)
+        self.assertIn("etl.runtime_business_date_in_range(", source)
+        self.assertIn("etl.runtime_branch_matches(", source)
+        self.assertIn("etl.runtime_force_full_scan()", source)
 
     def test_homologation_apply_integrates_derived_rebuild_guard_rails(self) -> None:
         source = read("deploy/scripts/prod-homologation-apply.sh")

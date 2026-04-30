@@ -110,7 +110,7 @@ SQL PostgreSQL:
 
 - `sql/migrations/*.sql`: cadeia versionada.
 - `sql/torqmind_reset_db_v2.sql`: reset dev/homolog alinhado ate a migration `071`.
-- `sql/migrations/072_derived_rebuild_runtime_scope.sql`: helpers de runtime (`etl.from_date`, `etl.to_date`, `etl.branch_id`, `etl.force_full_scan`) e redefs das funcoes ETL ativas para rebuild derivado controlado.
+- `sql/migrations/072_derived_rebuild_runtime_scope.sql`: helpers de runtime (`etl.from_date`, `etl.to_date`, `etl.branch_id`, `etl.force_full_scan`) e redefs das funcoes ETL ativas para rebuild derivado controlado, incluindo os wrappers publicos `load_fact_pagamento_comprovante*` e `load_fact_venda_item*`.
 
 SQL ClickHouse:
 
@@ -134,7 +134,7 @@ Deploy:
 - `deploy/scripts/prod-etl-pipeline.sh`: rotina leve com lock, timeout, ETL operational/risk e publicacao incremental ClickHouse.
 - `deploy/scripts/prod-install-cron.sh`: instala cron `*/${OPERATIONAL_INTERVAL_MINUTES}`; default operacional 2 min e risk 30 min.
 - `deploy/scripts/prod-history-coverage-audit.sh`: auditoria historica por STG canonico, DW PostgreSQL, DW ClickHouse e mart.
-- `deploy/scripts/prod-rebuild-derived-from-stg.sh`: audita cobertura STG, purga somente fatos derivados seguros, opcionalmente inclui dimensoes DW reconstruiveis com `--include-dimensions`, roda ETL full canônico com janela controlada e verifica STG vs DW sem tocar ClickHouse.
+- `deploy/scripts/prod-rebuild-derived-from-stg.sh`: audita cobertura STG, purga somente fatos derivados seguros, opcionalmente inclui dimensoes DW reconstruiveis com `--include-dimensions`, roda ETL full canônico com janela controlada e `force_full_scan`, e verifica STG vs DW sem tocar ClickHouse.
 - `deploy/scripts/prod-sales-orphans-report.sh`: relatorio de orfaos de venda; nao deleta nada.
 - `deploy/scripts/prod-homologation-apply.sh`: apply unico seguro para homolog/prod; valida env e compose, pausa cron, rebuilda API/Web/Nginx, roda migrate, opcionalmente faz rebuild derivado desde a STG, aceita `--include-dimensions` e o escape hatch explicito `--allow-dw-only --skip-clickhouse`, executa ClickHouse full ou incremental, audits, streaming opcional, limpeza de `app.snapshot_cache`, post-boot checks e resume cron sem `down -v` nem apagar volumes.
 - `Makefile`: fonte unica dos comandos operacionais.
@@ -142,7 +142,7 @@ Deploy:
 Runbook do apply unico:
 
 - `docs/HOMOLOGATION_APPLY_RUNBOOK.md`: explica quando usar `--full-clickhouse`, `--with-streaming` e `--streaming-non-blocking`, como acompanhar logs e como fazer rollback basico sem tocar em volumes.
-- `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`: explica quando usar o rebuild derivado puro e a semantica segura de watermarks em rebuild tenant-wide vs rebuild escopado.
+- `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`: explica quando usar o rebuild derivado puro, a diferenca entre STG -> DW e DW -> ClickHouse, e a semantica segura de `force_full_scan` em rebuild tenant-wide vs rebuild escopado.
 
 Testes:
 

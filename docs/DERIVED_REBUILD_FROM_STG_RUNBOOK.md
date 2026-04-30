@@ -41,11 +41,19 @@ Atalho no Makefile:
 5. roda `deploy/scripts/prod-etl-incremental.sh` com `TRACK=full`, `FORCE_FULL=true`, `FROM_DATE`, `TO_DATE` opcional e `BRANCH_ID` opcional;
 6. imprime um snapshot de verificacao STG vs DW dentro da janela solicitada.
 
+Como o runtime scope funciona:
+
+- a migration `072_derived_rebuild_runtime_scope.sql` instala helpers que leem `current_setting('etl.from_date', true)`, `current_setting('etl.to_date', true)`, `current_setting('etl.branch_id', true)` e `current_setting('etl.force_full_scan', true)`;
+- quando `etl.force_full_scan=true`, os loaders operacionais relêem a STG dentro da janela pedida, mesmo com watermarks avancados;
+- quando `etl.force_full_scan=false`, o comportamento incremental normal continua governado por watermark e hot window;
+- em rebuild escopado, os watermarks ficam preservados e o full scan vale apenas para a selecao da janela, nao como reset global do tenant.
+
 Importante:
 
 - o script nao apaga `stg.comprovantes`, `stg.itenscomprovantes` nem `stg.formas_pgto_comprovantes`;
 - o script nao publica ClickHouse; use o apply integrado ou rode o bootstrap de ClickHouse depois;
 - a origem canônica de vendas permanece `comprovantes`/`itenscomprovantes`; `movprodutos` e `itensmovprodutos` nao entram nesse rebuild.
+- `--full-clickhouse` e outra coisa: ele republica ClickHouse a partir do DW atual. O rebuild derivado deste runbook reconstrói primeiro o DW PostgreSQL a partir da STG.
 
 ## Uso
 
