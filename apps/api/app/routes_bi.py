@@ -18,7 +18,14 @@ from app import repos_auth
 from app.services import snapshot_cache
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
 from app.services.telegram import send_telegram_alert
-from app.schemas_bi import GoalTargetRequest
+from app.schemas_bi import (
+    GoalTargetRequest,
+    CashOverviewResponse,
+    DashboardHomeResponse,
+    FinanceOverviewResponse,
+    FraudOverviewResponse,
+    SalesOverviewResponse,
+)
 
 router = APIRouter(prefix="/bi", tags=["bi"])
 logger = logging.getLogger(__name__)
@@ -1016,7 +1023,7 @@ def dashboard_overview(
     }
 
 
-@router.get("/dashboard/home")
+@router.get("/dashboard/home", response_model=DashboardHomeResponse)
 def dashboard_home(
     dt_ini: date,
     dt_fim: date,
@@ -1046,7 +1053,7 @@ def dashboard_home(
 # Vendas & Stores
 # ------------------------
 
-@router.get("/sales/overview")
+@router.get("/sales/overview", response_model=SalesOverviewResponse)
 def sales_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1081,7 +1088,7 @@ def sales_overview(
 # Anti-fraude
 # ------------------------
 
-@router.get("/fraud/overview")
+@router.get("/fraud/overview", response_model=FraudOverviewResponse)
 def fraud_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1334,7 +1341,7 @@ def clients_retention_anonymous(
 # Financeiro
 # ------------------------
 
-@router.get("/finance/overview")
+@router.get("/finance/overview", response_model=FinanceOverviewResponse)
 def finance_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1406,7 +1413,7 @@ def payments_overview(
 # Caixa
 # ------------------------
 
-@router.get("/cash/overview")
+@router.get("/cash/overview", response_model=CashOverviewResponse)
 def cash_overview(
     dt_ini: date,
     dt_fim: date,

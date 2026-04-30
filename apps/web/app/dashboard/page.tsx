@@ -191,7 +191,7 @@ export default function Dashboard() {
                   subtitle={
                     heroRecoverable > 0
                       ? "Montante que pode ser protegido ao agir hoje em fraude operacional, retenção de clientes e pressão de caixa."
-                      : "Sem exposição crítica material no recorte. A home segue como leitura rápida para ritmo comercial, disciplina de caixa e sinais precoces."
+                      : "Sem exposição crítica material no período. A home segue como leitura rápida para ritmo comercial, disciplina de caixa e sinais precoces."
                   }
                 />
               )}
@@ -208,7 +208,7 @@ export default function Dashboard() {
                     ? "..."
                     : fraudeImpacto > 0 || riscoModeladoImpacto > 0
                       ? `${fraudeCancelamentos} cancelamento(s) materiais no período. Risco modelado: ${formatCurrency(riscoModeladoImpacto)}.`
-                      : "Sem cancelamentos ou eventos de alto risco acima da linha de intervenção no recorte."}
+                      : "Sem cancelamentos ou eventos de alto risco acima da linha de intervenção no período."}
                 </div>
               </article>
               <article className="card kpi">
@@ -219,7 +219,7 @@ export default function Dashboard() {
                 <div className="muted">
                   {revenueAtRisk > 0
                     ? "Receita estimada em risco entre clientes que saíram do padrão."
-                    : "Nenhum grupo material de clientes saiu do padrão de retorno neste recorte."}
+                    : "Nenhum grupo material de clientes saiu do padrão de retorno neste período."}
                 </div>
               </article>
               <article className="card kpi">
@@ -230,7 +230,7 @@ export default function Dashboard() {
                 <div className="muted">
                   {caixaRisco > 0
                     ? "Recebíveis e obrigações vencidas já pedem cobrança, renegociação ou reordenação de pagamentos."
-                    : "Sem vencidos materiais no recorte; o monitor de turnos e caixas abertos segue no módulo de Caixa."}
+                    : "Sem vencidos materiais no período; o monitor de turnos e caixas abertos segue no módulo de Caixa."}
                 </div>
               </article>
             </section>

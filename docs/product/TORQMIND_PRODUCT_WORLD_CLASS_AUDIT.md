@@ -1,8 +1,8 @@
 # TorqMind — Auditoria de Produto World-Class
 
-**Data:** 2026-04-30  
-**Autor:** Principal Product & Architecture Team  
-**Versão:** 1.0  
+**Data:** 2026-04-30
+**Autor:** Principal Product & Architecture Team
+**Versão:** 1.0
 **Branch:** nova-branch-limpa
 
 ---

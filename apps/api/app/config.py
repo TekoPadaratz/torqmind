@@ -85,4 +85,32 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
+_INSECURE_DEFAULTS = {
+    "api_jwt_secret": "CHANGE_ME_SUPER_SECRET",
+    "pg_password": "1234",
+    "clickhouse_password": "",
+}
+
+
+def _validate_production_settings(s: "Settings") -> None:
+    """Fail fast if insecure defaults are used in production."""
+    if s.app_env not in ("production", "prod"):
+        return
+
+    violations: list[str] = []
+    for field, insecure_value in _INSECURE_DEFAULTS.items():
+        if getattr(s, field) == insecure_value:
+            violations.append(f"{field} still has insecure default")
+
+    if not s.ingest_require_key:
+        violations.append("ingest_require_key must be True in production")
+
+    if violations:
+        raise SystemExit(
+            f"FATAL: Refusing to start in production with insecure config:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+        )
+
+
 settings = Settings()
+_validate_production_settings(settings)

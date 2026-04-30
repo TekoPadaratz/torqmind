@@ -117,7 +117,7 @@ export default function FinancePage() {
         ? "Reordene pagamentos, preserve caixa operacional e trate os maiores vencidos primeiro."
         : top5Concentration >= 45
           ? "Os maiores títulos já pesam demais na exposição atual e pedem ação preventiva."
-          : "Sem ruptura material no recorte, mas o cockpit continua focado em pressão, atraso e concentração.";
+          : "Sem ruptura material no período, mas o cockpit continua focado em pressão, atraso e concentração.";
   const paymentMixPreview = (paymentsKpis?.mix || [])
     .slice(0, 3)
     .map(
@@ -218,7 +218,7 @@ export default function FinancePage() {
                       ? "Vencidos que já exigem cobrança, renegociação ou reordenação de pagamentos."
                       : aging?.data_gaps
                         ? "A leitura mostrada não encontrou exposição aberta relevante na referência efetiva."
-                        : "Sem concentração crítica de vencidos no recorte analisado."}
+                        : "Sem concentração crítica de vencidos no período analisado."}
                   </div>
                 ) : null}
               </div>
@@ -246,7 +246,7 @@ export default function FinancePage() {
                   <div className="muted" style={{ marginTop: 8 }}>
                     {paymentsKpis.summary ||
                       paymentMixPreview ||
-                      "Sem movimento financeiro conciliado no recorte."}
+                      "Sem movimento financeiro conciliado no período."}
                   </div>
                 ) : null}
               </div>
@@ -310,7 +310,7 @@ export default function FinancePage() {
                 ) : null}
               </div>
               <div className="card kpi col-4" id="payment-mapping">
-                <div className="label">Pagamentos não identificados</div>
+                <div className="label">Pagamentos sem classificação</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -360,7 +360,7 @@ export default function FinancePage() {
                 !paymentsByDay.length ? (
                   <EmptyState
                     title="Sem pagamentos recebidos no período."
-                    detail="A consolidação diária de pagamentos ainda não trouxe movimento para este recorte."
+                    detail="A consolidação diária de pagamentos ainda não trouxe movimento para este período."
                   />
                 ) : null}
                 <div className="chartWrap">
@@ -405,7 +405,7 @@ export default function FinancePage() {
                 !paymentMixChart.length ? (
                   <EmptyState
                     title="Sem mix conciliado no período."
-                    detail="A legenda aparece quando há pagamentos monetizados no recorte."
+                    detail="A legenda aparece quando há pagamentos monetizados no período."
                   />
                 ) : null}
                 <div className="chartWrap" style={{ height: 230 }}>
@@ -461,7 +461,7 @@ export default function FinancePage() {
               <div className="card col-7">
                 <h2>Turnos e formas com maior exposição</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Ranking consolidado do recorte, sem repetir uma linha por dia.
+                  Ranking consolidado do período, sem repetir uma linha por dia.
                 </div>
                 {!loading && paymentsStatus === "value_gap" ? (
                   <EmptyState
@@ -474,7 +474,7 @@ export default function FinancePage() {
                 !paymentsByTurno.length ? (
                   <EmptyState
                     title="Sem leitura por turno no período."
-                    detail="A fonte de pagamentos por turno ainda não retornou registros para o recorte selecionado."
+                    detail="A fonte de pagamentos por turno ainda não retornou registros para o período selecionado."
                   />
                 ) : null}
                 <div className="tableScroll">
@@ -522,7 +522,7 @@ export default function FinancePage() {
                 !paymentsAnomalies.length ? (
                   <EmptyState
                     title="Sem anomalias relevantes no período."
-                    detail="A leitura de pagamentos seguiu estável neste recorte."
+                    detail="A leitura de pagamentos seguiu estável neste período."
                   />
                 ) : null}
                 <table className="table compact">

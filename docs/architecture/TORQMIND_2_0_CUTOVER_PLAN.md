@@ -1,7 +1,7 @@
 # TorqMind 2.0 — Cutover Plan: Batch → Streaming
 
-**Data:** 2026-04-30  
-**Status:** Fase 1 completa (fundação CDC paralela)  
+**Data:** 2026-04-30
+**Status:** Fase 1 completa (fundação CDC paralela)
 **Branch:** nova-branch-limpa
 
 ---
@@ -185,7 +185,7 @@ API pode ler de `torqmind_current` ou `torqmind_mart_streaming` sem quebrar clie
 class Settings:
     # Existing
     use_clickhouse: bool = True
-    
+
     # New - Streaming 2.0
     streaming_read_enabled: bool = False  # Master switch
     streaming_marts: list[str] = []       # Marts migradas ["agg_vendas_diaria"]

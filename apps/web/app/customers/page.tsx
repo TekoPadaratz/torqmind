@@ -261,7 +261,7 @@ export default function CustomersPage() {
                 <h2>Buckets por atraso</h2>
                 {!loading && !delinquencyChart.length ? (
                   <EmptyState
-                    title="Sem inadimplência relevante no recorte."
+                    title="Sem inadimplência relevante no período."
                     detail="Os buckets aparecem assim que houver contas a receber vencidas na rede."
                   />
                 ) : null}
@@ -385,7 +385,7 @@ export default function CustomersPage() {
                 {!loading && !(data?.churn_top || []).length ? (
                   <EmptyState
                     title="Nenhum cliente em risco relevante."
-                    detail="A base identificada não trouxe sinais fortes de churn para este recorte."
+                    detail="A base identificada não trouxe sinais fortes de churn para este período."
                   />
                 ) : null}
                 <table className="table compact">
@@ -429,7 +429,7 @@ export default function CustomersPage() {
                 {!loading && !topChart.length ? (
                   <EmptyState
                     title="Sem clientes identificados com faturamento."
-                    detail="A filial não trouxe clientes nomeados para este recorte."
+                    detail="A filial não trouxe clientes nomeados para este período."
                   />
                 ) : null}
                 <div className="chartWrap">
@@ -496,7 +496,7 @@ export default function CustomersPage() {
                 </div>
                 {!loading && !(anon?.breakdown_dow || []).length ? (
                   <EmptyState
-                    title="Sem leitura anônima suficiente neste recorte."
+                    title="Sem leitura anônima suficiente neste período."
                     detail="A integração ainda não trouxe volume confiável para comparar recorrência sem identificação nominal."
                   />
                 ) : null}
