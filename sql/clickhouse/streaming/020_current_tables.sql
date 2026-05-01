@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda (
     id_db             Int32 NOT NULL,
     id_movprodutos    Int32 NOT NULL,
     data_key          Int32 NOT NULL DEFAULT 0,
+    data              Nullable(DateTime64(6, 'UTC')),
     id_usuario        Nullable(Int32),
     id_cliente        Nullable(Int32),
     id_comprovante    Nullable(Int32),
@@ -138,6 +139,9 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda (
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id_empresa, id_filial, id_db, id_movprodutos)
 SETTINGS index_granularity = 8192;
+
+ALTER TABLE torqmind_current.fact_venda
+    ADD COLUMN IF NOT EXISTS data Nullable(DateTime64(6, 'UTC')) AFTER data_key;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda_item (
     id_empresa         Int32 NOT NULL,

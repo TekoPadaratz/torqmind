@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +140,49 @@ class TestSignatureParity:
                     f"{name}: limit default {rt_limit.default} != {ch_limit.default}"
                 )
 
+    def test_facade_routes_to_realtime_without_argument_shift(self, monkeypatch: pytest.MonkeyPatch):
+        """repos_analytics must pass role/id_empresa/id_filial through unchanged."""
+        from app import repos_analytics
+        from app import repos_mart_realtime
+
+        repos_analytics._DISPATCH_CACHE.clear()
+        monkeypatch.setattr(repos_analytics.settings, "use_realtime_marts", True)
+        monkeypatch.setattr(repos_analytics.settings, "realtime_marts_fallback", False)
+
+        def fake_dashboard_kpis(
+            role: str,
+            id_empresa: int,
+            id_filial: Any,
+            dt_ini: date,
+            dt_fim: date,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            return {
+                "role": role,
+                "id_empresa": id_empresa,
+                "id_filial": id_filial,
+                "dt_ini": dt_ini,
+                "dt_fim": dt_fim,
+                "kwargs": kwargs,
+            }
+
+        monkeypatch.setattr(repos_mart_realtime, "dashboard_kpis", fake_dashboard_kpis)
+
+        result = getattr(repos_analytics, "dashboard_kpis")(
+            "admin",
+            123,
+            456,
+            date(2026, 4, 1),
+            date(2026, 4, 30),
+            probe=True,
+        )
+
+        assert result["role"] == "admin"
+        assert result["id_empresa"] == 123
+        assert result["id_filial"] == 456
+        assert result["role"] != result["id_empresa"]
+        assert result["kwargs"] == {"probe": True}
+
 
 # ============================================================
 # DDL vs MART BUILDER ALIGNMENT
@@ -150,12 +194,44 @@ class TestDDLMartBuilderAlignment:
     @pytest.fixture(autouse=True)
     def _load_paths(self):
         self.root = Path(__file__).parent.parent.parent.parent
+        self.ddl_db_path = self.root / "sql" / "clickhouse" / "streaming" / "040_mart_rt_database.sql"
         self.ddl_path = self.root / "sql" / "clickhouse" / "streaming" / "041_mart_rt_tables.sql"
         self.builder_path = self.root / "apps" / "cdc_consumer" / "torqmind_cdc_consumer" / "mart_builder.py"
+        self.realtime_repo_path = self.root / "apps" / "api" / "app" / "repos_mart_realtime.py"
+
+    def _ddl_text(self) -> str:
+        return self.ddl_db_path.read_text() + "\n" + self.ddl_path.read_text()
+
+    def _split_top_level_commas(self, text: str) -> list[str]:
+        parts: list[str] = []
+        start = 0
+        depth = 0
+        quote: str | None = None
+        for i, ch in enumerate(text):
+            if quote:
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in {"'", '"'}:
+                quote = ch
+                continue
+            if ch == "(":
+                depth += 1
+                continue
+            if ch == ")":
+                depth -= 1
+                continue
+            if ch == "," and depth == 0:
+                parts.append(text[start:i].strip())
+                start = i + 1
+        tail = text[start:].strip()
+        if tail:
+            parts.append(tail)
+        return parts
 
     def _parse_ddl_columns(self, table_name: str) -> list[str]:
         """Extract column names from CREATE TABLE statement."""
-        ddl = self.ddl_path.read_text()
+        ddl = self._ddl_text()
         # Find the CREATE TABLE for this table
         pattern = rf"CREATE TABLE IF NOT EXISTS torqmind_mart_rt\.{table_name}\s*\((.*?)\)\s*ENGINE"
         match = re.search(pattern, ddl, re.DOTALL)
@@ -163,42 +239,79 @@ class TestDDLMartBuilderAlignment:
             return []
         body = match.group(1)
         columns = []
-        for line in body.strip().split("\n"):
-            line = line.strip().rstrip(",")
-            if line and not line.startswith("--"):
-                parts = line.split()
-                if parts and not parts[0].upper().startswith(("ENGINE", "ORDER", "PARTITION", "SETTINGS", "TTL")):
-                    col_name = parts[0]
-                    if col_name.isidentifier():
-                        columns.append(col_name)
+        for expr in self._split_top_level_commas(body):
+            line = expr.strip()
+            if not line or line.startswith("--"):
+                continue
+            col_name = line.split()[0]
+            if col_name.isidentifier():
+                columns.append(col_name)
         return columns
 
-    def _parse_builder_insert_columns(self, mart_name: str) -> list[str]:
+    def _select_part_for_insert(self, mart_name: str) -> str:
         """Extract SELECT column aliases from INSERT INTO statement for a mart."""
         code = self.builder_path.read_text()
-        # Find INSERT INTO {db}.{mart_name} SELECT ... pattern
-        pattern = rf"INSERT INTO.*?\.{mart_name}\s+SELECT\s+(.*?)(?:FROM)"
+        pattern = rf"INSERT INTO\s+\{{self\.mart_rt_db\}}\.{mart_name}\s+SELECT\s+"
         match = re.search(pattern, code, re.DOTALL)
         if not match:
-            return []
-        select_part = match.group(1)
-        # Extract column aliases (AS name) or final column names
+            return ""
+        start = match.end()
+        depth = 0
+        quote: str | None = None
+        i = start
+        while i < len(code):
+            ch = code[i]
+            if quote:
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in {"'", '"'}:
+                quote = ch
+                i += 1
+                continue
+            if ch == "(":
+                depth += 1
+                i += 1
+                continue
+            if ch == ")":
+                depth -= 1
+                i += 1
+                continue
+            if depth == 0 and code[i : i + 4].upper() == "FROM":
+                before = code[i - 1] if i > 0 else " "
+                after = code[i + 4] if i + 4 < len(code) else " "
+                if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+                    return code[start:i].strip()
+            i += 1
+        return ""
+
+    def _parse_builder_insert_columns(self, mart_name: str) -> list[str]:
+        """Extract SELECT output column names from an INSERT INTO ... SELECT."""
+        select_part = self._select_part_for_insert(mart_name)
         columns = []
-        for expr in select_part.split(","):
+        for expr in self._split_top_level_commas(select_part):
             expr = expr.strip()
             # Look for "AS column_name"
             as_match = re.search(r'\bAS\s+(\w+)\s*$', expr, re.IGNORECASE)
             if as_match:
                 columns.append(as_match.group(1))
             else:
-                # Last word (e.g. v.id_empresa → id_empresa, or now64(6))
-                parts = expr.split(".")
-                last = parts[-1].strip()
-                # Handle function calls
-                if "(" in last:
+                qualified = re.search(r"\b\w+\.(\w+)\s*$", expr)
+                if qualified:
+                    columns.append(qualified.group(1))
                     continue
-                columns.append(last)
+                if re.match(r"^\w+$", expr):
+                    columns.append(expr)
         return columns
+
+    def _builder_insert_tables(self) -> set[str]:
+        code = self.builder_path.read_text()
+        return set(re.findall(r"\{self\.mart_rt_db\}\.([A-Za-z0-9_]+)", code))
+
+    def _realtime_repo_tables(self) -> set[str]:
+        code = self.realtime_repo_path.read_text()
+        return set(re.findall(r"\{MART_RT_DB\}\.([A-Za-z0-9_]+)", code))
 
     @pytest.mark.parametrize("table", [
         "sales_daily_rt",
@@ -216,6 +329,68 @@ class TestDDLMartBuilderAlignment:
         """Every mart table refreshed by builder must exist in DDL."""
         columns = self._parse_ddl_columns(table)
         assert len(columns) > 0, f"Table {table} not found in DDL file"
+
+    def test_all_required_cutover_tables_exist_in_ddl(self):
+        """The operational cutover table contract must exist in tracked DDL."""
+        required = {
+            "dashboard_home_rt",
+            "sales_daily_rt",
+            "sales_hourly_rt",
+            "sales_products_rt",
+            "sales_groups_rt",
+            "payments_by_type_rt",
+            "cash_overview_rt",
+            "fraud_daily_rt",
+            "risk_recent_events_rt",
+            "finance_overview_rt",
+            "source_freshness",
+            "mart_publication_log",
+        }
+        for table in sorted(required):
+            assert self._parse_ddl_columns(table), f"Required table {table} missing from DDL"
+
+    def test_builder_tables_exist_in_ddl(self):
+        """Every table written by MartBuilder must exist in mart_rt DDL."""
+        for table in sorted(self._builder_insert_tables()):
+            assert self._parse_ddl_columns(table), f"MartBuilder writes {table}, but DDL does not create it"
+
+    def test_realtime_repo_tables_exist_in_ddl(self):
+        """Every mart_rt table read by repos_mart_realtime.py must exist in DDL."""
+        for table in sorted(self._realtime_repo_tables()):
+            assert self._parse_ddl_columns(table), f"repos_mart_realtime reads {table}, but DDL does not create it"
+
+    @pytest.mark.parametrize("table", [
+        "sales_daily_rt",
+        "sales_hourly_rt",
+        "sales_products_rt",
+        "sales_groups_rt",
+        "payments_by_type_rt",
+        "cash_overview_rt",
+        "fraud_daily_rt",
+        "risk_recent_events_rt",
+        "finance_overview_rt",
+        "dashboard_home_rt",
+        "source_freshness",
+    ])
+    def test_builder_insert_columns_match_ddl_order(self, table: str):
+        """INSERT ... SELECT without a column list must match DDL columns by position."""
+        ddl_cols = self._parse_ddl_columns(table)
+        insert_cols = self._parse_builder_insert_columns(table)
+        assert insert_cols == ddl_cols, (
+            f"{table}: MartBuilder INSERT columns must match DDL order\n"
+            f"insert={insert_cols}\n"
+            f"ddl={ddl_cols}"
+        )
+
+    def test_publication_log_insert_columns_exist(self):
+        """client.insert(column_names=...) into mart_publication_log must reference DDL columns."""
+        code = self.builder_path.read_text()
+        match = re.search(r"column_names=\[(.*?)\]", code, re.DOTALL)
+        assert match is not None, "MartBuilder publication log insert must specify column_names"
+        inserted = re.findall(r'"([A-Za-z0-9_]+)"', match.group(1))
+        ddl_cols = set(self._parse_ddl_columns("mart_publication_log"))
+        assert inserted
+        assert set(inserted).issubset(ddl_cols)
 
     @pytest.mark.parametrize("table", [
         "sales_daily_rt",
@@ -244,7 +419,7 @@ class TestDDLMartBuilderAlignment:
     ])
     def test_ddl_uses_replacing_merge_tree(self, table: str):
         """All mart_rt tables must use ReplacingMergeTree for idempotency."""
-        ddl = self.ddl_path.read_text()
+        ddl = self._ddl_text()
         pattern = rf"CREATE TABLE IF NOT EXISTS torqmind_mart_rt\.{table}.*?ENGINE\s*=\s*(\w+)"
         match = re.search(pattern, ddl, re.DOTALL)
         assert match is not None, f"Cannot find ENGINE for {table}"

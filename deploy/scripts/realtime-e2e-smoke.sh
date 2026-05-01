@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Realtime E2E Smoke Test
-# Validates the full realtime pipeline from ingestion through to API response.
+# Validates the current DW-origin realtime pipeline from ingestion through API response.
 #
 # Prerequisites:
 #   - Docker Compose stack running (prod + streaming)
@@ -10,7 +10,7 @@ set -Eeuo pipefail
 #   - ClickHouse mart_rt tables initialized
 #
 # What it does:
-#   1. Inserts a synthetic test sale into PostgreSQL DW (via API container)
+#   1. Inserts a synthetic test sale into PostgreSQL DW (Option B source)
 #   2. Waits for the CDC event to appear in torqmind_raw
 #   3. Confirms the event in torqmind_current
 #   4. Triggers mart builder refresh
@@ -24,13 +24,14 @@ PROD_COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 STREAMING_COMPOSE_FILE="${STREAMING_COMPOSE_FILE:-docker-compose.streaming.yml}"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 
-# Load environment
-if [[ -f "$ENV_FILE" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "ERROR: ENV_FILE=$ENV_FILE not found" >&2
+  exit 1
 fi
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
 
 CH_USER="${CLICKHOUSE_USER:-torqmind}"
 CH_PASS="${CLICKHOUSE_PASSWORD:-}"
@@ -94,26 +95,26 @@ step_check_prerequisites() {
     exit 1
   fi
 
-  # Check mart_rt tables exist
   local table_count
-  table_count="$(ch_query "SELECT count() FROM system.tables WHERE database='torqmind_mart_rt'")"
+  table_count="$(ch_query "SELECT count() FROM system.tables WHERE database='torqmind_mart_rt' AND name IN ('dashboard_home_rt','sales_daily_rt','sales_hourly_rt','sales_products_rt','sales_groups_rt','payments_by_type_rt','cash_overview_rt','fraud_daily_rt','risk_recent_events_rt','finance_overview_rt','source_freshness','mart_publication_log')")"
   table_count="${table_count//[[:space:]]/}"
-  if (( table_count < 10 )); then
-    log "ERROR: mart_rt tables not initialized (found $table_count, need >=10)"
+  if (( table_count != 12 )); then
+    log "ERROR: mart_rt tables not initialized (found $table_count mandatory tables, need 12)"
     exit 1
   fi
 
-  log "Prerequisites OK (debezium=RUNNING, mart_rt_tables=$table_count)"
+  log "Prerequisites OK (debezium=RUNNING, mandatory_mart_rt_tables=$table_count)"
 }
 
 step_insert_test_sale() {
   log "=== Step 1: Insert synthetic test sale ==="
 
-  # Insert into dw.fact_venda (will be captured by Debezium)
+  # Insert into dw.fact_venda (the current realtime source; STG-direct is not implemented yet).
   pg_exec "
-    INSERT INTO dw.fact_venda (id_empresa, id_filial, id_db, id_movprodutos, data_key, id_usuario, id_turno, total_venda, cancelado, saidas_entradas)
-    VALUES ($TEST_ID_EMPRESA, $TEST_ID_FILIAL, 999999, 999999, $TEST_DATA_KEY, 1, 1, 42.50, 0, 'S')
-    ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos) DO UPDATE SET total_venda = 42.50, cancelado = 0;
+    INSERT INTO dw.fact_venda (id_empresa, id_filial, id_db, id_movprodutos, data_key, data, id_usuario, id_turno, total_venda, cancelado, saidas_entradas)
+    VALUES ($TEST_ID_EMPRESA, $TEST_ID_FILIAL, 999999, 999999, $TEST_DATA_KEY, TIMESTAMP '2999-12-31 10:30:00', 1, 1, 42.50, 0, 1)
+    ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos)
+    DO UPDATE SET data_key = $TEST_DATA_KEY, data = TIMESTAMP '2999-12-31 10:30:00', total_venda = 42.50, cancelado = 0;
   "
 
   pg_exec "
@@ -134,7 +135,7 @@ step_wait_raw_event() {
 
   while (( elapsed < max_wait )); do
     local raw_count
-    raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_name='fact_venda' AND JSONExtractInt(after, 'data_key')=$TEST_DATA_KEY")"
+    raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='dw' AND table_name='fact_venda' AND JSONExtractInt(after_json, 'data_key')=$TEST_DATA_KEY")"
     raw_count="${raw_count//[[:space:]]/}"
     if (( raw_count > 0 )); then
       log "Raw event found after ${elapsed}s"
@@ -144,8 +145,8 @@ step_wait_raw_event() {
     elapsed=$((elapsed + interval))
   done
 
-  log "WARNING: No raw event found after ${max_wait}s (may use debezium initial snapshot mode)"
-  log "  Checking if current table already has data from snapshot..."
+  log "ERROR: No raw event found after ${max_wait}s"
+  exit 1
 }
 
 step_wait_current() {
@@ -230,14 +231,13 @@ step_verify_api() {
 import os
 os.environ['USE_REALTIME_MARTS'] = 'true'
 os.environ['REALTIME_MARTS_FALLBACK'] = 'false'
-# Re-import to pick up env
-from importlib import reload
-from app import config
-reload(config)
-from app.repos_mart_realtime import dashboard_kpis
 from datetime import date
+from app.config import settings
+assert settings.use_realtime_marts is True
+assert settings.realtime_marts_fallback is False
+from app import repos_analytics
 # Query for our test date (2999-12-31)
-result = dashboard_kpis('admin', 1, None, date(2999, 12, 1), date(2999, 12, 31))
+result = getattr(repos_analytics, 'dashboard_kpis')('admin', 1, None, date(2999, 12, 1), date(2999, 12, 31))
 fat = float(result.get('faturamento', 0))
 print(f'faturamento={fat}')
 if fat >= 42:
@@ -249,9 +249,8 @@ else:
   if [[ "$api_result" == *"API_OK"* ]]; then
     log "API smoke PASSED: $api_result"
   else
-    log "WARNING: API smoke inconclusive (may need reload): $api_result"
-    log "  This is expected if the API was not restarted with new env vars."
-    log "  The important thing is the mart_rt data exists and functions have correct signatures."
+    log "ERROR: API smoke FAILED with fallback=false: $api_result"
+    exit 1
   fi
 }
 
@@ -260,7 +259,8 @@ step_report() {
   log "  E2E SMOKE TEST COMPLETE"
   log "============================================"
   log "Pipeline validated:"
-  log "  PostgreSQL DW INSERT → Debezium CDC → Redpanda → CDC Consumer → ClickHouse current → MartBuilder → mart_rt"
+  log "  PostgreSQL DW INSERT -> Debezium CDC -> Redpanda -> CDC Consumer -> ClickHouse current -> MartBuilder -> mart_rt -> API facade"
+  log "  Current origin: DW (Option B), not STG-direct."
   log ""
   log "Test parameters:"
   log "  id_empresa=$TEST_ID_EMPRESA"

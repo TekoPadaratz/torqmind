@@ -86,7 +86,7 @@ _register(TableMapping(
     ch_database="torqmind_current", ch_table="fact_venda",
     primary_key=("id_empresa", "id_filial", "id_db", "id_movprodutos"),
     columns=("id_empresa", "id_filial", "id_db", "id_movprodutos", "data_key",
-             "id_usuario", "id_cliente", "id_comprovante", "id_turno",
+             "data", "id_usuario", "id_cliente", "id_comprovante", "id_turno",
              "saidas_entradas", "total_venda", "cancelado"),
 ))
 

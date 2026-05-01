@@ -214,41 +214,58 @@ class MartBuilder:
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_daily_rt
         SELECT
-            v.id_empresa,
-            v.id_filial,
-            v.data_key,
-            toDate(toString(v.data_key), '%Y%m%d') AS dt,
-            sumIf(v.total_venda, v.cancelado = 0) AS faturamento,
-            if(countIf(v.cancelado = 0) > 0, sumIf(v.total_venda, v.cancelado = 0) / countIf(v.cancelado = 0), 0) AS ticket_medio,
-            countIf(v.cancelado = 0) AS qtd_vendas,
-            toUInt32(sumIf(vi_cnt.cnt, v.cancelado = 0)) AS qtd_itens,
-            countIf(v.cancelado = 1) AS qtd_canceladas,
-            sumIf(v.total_venda, v.cancelado = 1) AS valor_cancelado,
-            sum(vi_agg.desc_total) AS desconto_total,
-            sum(vi_agg.custo) AS custo_total,
-            sum(vi_agg.margem) AS margem_total,
+            base.id_empresa,
+            base.id_filial,
+            base.data_key,
+            toDate(toString(base.data_key), '%Y%m%d') AS dt,
+            base.faturamento,
+            if(base.qtd_vendas > 0, base.faturamento / base.qtd_vendas, 0) AS ticket_medio,
+            base.qtd_vendas,
+            base.qtd_itens,
+            coalesce(cancel.qtd_canceladas, 0) AS qtd_canceladas,
+            coalesce(cancel.valor_cancelado, 0) AS valor_cancelado,
+            base.desconto_total,
+            base.custo_total,
+            base.margem_total,
             now64(6) AS published_at
-        FROM {self.current_db}.fact_venda FINAL AS v
+        FROM (
+            SELECT
+                v.id_empresa,
+                v.id_filial,
+                v.data_key,
+                sum(coalesce(vi.total, 0)) AS faturamento,
+                toUInt32(uniqExactIf(v.id_comprovante, v.id_comprovante IS NOT NULL)) AS qtd_vendas,
+                toUInt32(count()) AS qtd_itens,
+                sum(coalesce(vi.desconto, 0)) AS desconto_total,
+                sum(coalesce(vi.custo_total, 0)) AS custo_total,
+                sum(coalesce(vi.margem, 0)) AS margem_total
+            FROM {self.current_db}.fact_venda FINAL AS v
+            INNER JOIN {self.current_db}.fact_venda_item FINAL AS vi
+                ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
+                AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
+            WHERE v.data_key IN ({keys_str})
+              AND v.is_deleted = 0
+              AND vi.is_deleted = 0
+              AND v.cancelado = 0
+              AND coalesce(vi.cfop, 0) >= 5000
+            GROUP BY v.id_empresa, v.id_filial, v.data_key
+        ) AS base
         LEFT JOIN (
-            SELECT id_empresa, id_filial, id_db, id_movprodutos,
-                   count() AS cnt
-            FROM {self.current_db}.fact_venda_item FINAL
-            WHERE data_key IN ({keys_str}) AND is_deleted = 0
-            GROUP BY id_empresa, id_filial, id_db, id_movprodutos
-        ) AS vi_cnt ON v.id_empresa = vi_cnt.id_empresa AND v.id_filial = vi_cnt.id_filial
-            AND v.id_db = vi_cnt.id_db AND v.id_movprodutos = vi_cnt.id_movprodutos
-        LEFT JOIN (
-            SELECT id_empresa, id_filial, id_db, id_movprodutos,
-                   sum(coalesce(desconto, 0)) AS desc_total,
-                   sum(coalesce(custo_total, 0)) AS custo,
-                   sum(coalesce(margem, 0)) AS margem
-            FROM {self.current_db}.fact_venda_item FINAL
-            WHERE data_key IN ({keys_str}) AND is_deleted = 0
-            GROUP BY id_empresa, id_filial, id_db, id_movprodutos
-        ) AS vi_agg ON v.id_empresa = vi_agg.id_empresa AND v.id_filial = vi_agg.id_filial
-            AND v.id_db = vi_agg.id_db AND v.id_movprodutos = vi_agg.id_movprodutos
-        WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-        GROUP BY v.id_empresa, v.id_filial, v.data_key
+            SELECT
+                id_empresa,
+                id_filial,
+                data_key,
+                toUInt32(count()) AS qtd_canceladas,
+                sum(coalesce(valor_total, 0)) AS valor_cancelado
+            FROM {self.current_db}.fact_comprovante FINAL
+            WHERE data_key IN ({keys_str})
+              AND is_deleted = 0
+              AND cancelado = 1
+            GROUP BY id_empresa, id_filial, data_key
+        ) AS cancel
+            ON base.id_empresa = cancel.id_empresa
+           AND base.id_filial = cancel.id_filial
+           AND base.data_key = cancel.data_key
         """
         rows = client.command(sql)
         duration = int((time.time() - t0) * 1000)
@@ -261,18 +278,25 @@ class MartBuilder:
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_hourly_rt
         SELECT
-            vi.id_empresa,
-            vi.id_filial,
-            vi.data_key,
-            toDate(toString(vi.data_key), '%Y%m%d') AS dt,
-            toUInt8(toHour(vi.ingested_at)) AS hora,
+            v.id_empresa,
+            v.id_filial,
+            v.data_key,
+            toDate(toString(v.data_key), '%Y%m%d') AS dt,
+            toUInt8(toHour(coalesce(v.data, vi.ingested_at))) AS hora,
             sum(coalesce(vi.total, 0)) AS faturamento,
-            count(DISTINCT (vi.id_db, vi.id_movprodutos)) AS qtd_vendas,
-            count() AS qtd_itens,
+            toUInt32(uniqExactIf(v.id_comprovante, v.id_comprovante IS NOT NULL)) AS qtd_vendas,
+            toUInt32(count()) AS qtd_itens,
             now64(6) AS published_at
         FROM {self.current_db}.fact_venda_item FINAL AS vi
-        WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-        GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, hora
+        INNER JOIN {self.current_db}.fact_venda FINAL AS v
+            ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
+            AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
+        WHERE v.data_key IN ({keys_str})
+          AND v.is_deleted = 0
+          AND vi.is_deleted = 0
+          AND v.cancelado = 0
+          AND coalesce(vi.cfop, 0) >= 5000
+        GROUP BY v.id_empresa, v.id_filial, v.data_key, hora
         """
         rows = client.command(sql)
         duration = int((time.time() - t0) * 1000)
@@ -298,12 +322,19 @@ class MartBuilder:
             sum(coalesce(vi.margem, 0)) AS margem,
             now64(6) AS published_at
         FROM {self.current_db}.fact_venda_item FINAL AS vi
+        INNER JOIN {self.current_db}.fact_venda FINAL AS v
+            ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
+            AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
         LEFT JOIN {self.current_db}.dim_produto FINAL AS p
             ON vi.id_empresa = p.id_empresa AND vi.id_filial = p.id_filial AND vi.id_produto = p.id_produto
         LEFT JOIN {self.current_db}.dim_grupo_produto FINAL AS g
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial
             AND vi.id_grupo_produto = g.id_grupo_produto
-        WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
+        WHERE vi.data_key IN ({keys_str})
+          AND vi.is_deleted = 0
+          AND v.is_deleted = 0
+          AND v.cancelado = 0
+          AND coalesce(vi.cfop, 0) >= 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_produto, p.nome, vi.id_grupo_produto, g.nome
         """
         rows = client.command(sql)
@@ -328,10 +359,17 @@ class MartBuilder:
             sum(coalesce(vi.margem, 0)) AS margem,
             now64(6) AS published_at
         FROM {self.current_db}.fact_venda_item FINAL AS vi
+        INNER JOIN {self.current_db}.fact_venda FINAL AS v
+            ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
+            AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
         LEFT JOIN {self.current_db}.dim_grupo_produto FINAL AS g
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial
             AND coalesce(vi.id_grupo_produto, 0) = g.id_grupo_produto
-        WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
+        WHERE vi.data_key IN ({keys_str})
+          AND vi.is_deleted = 0
+          AND v.is_deleted = 0
+          AND v.cancelado = 0
+          AND coalesce(vi.cfop, 0) >= 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_grupo_produto, g.nome
         """
         rows = client.command(sql)
@@ -450,7 +488,6 @@ class MartBuilder:
             ON r.id_empresa = f.id_empresa AND r.id_filial = f.id_filial AND r.id_funcionario = f.id_funcionario
         WHERE r.is_deleted = 0
         ORDER BY r.id DESC
-        LIMIT 1000
         """
         rows = client.command(sql)
         duration = int((time.time() - t0) * 1000)
@@ -490,20 +527,52 @@ class MartBuilder:
         sql = f"""
         INSERT INTO {self.mart_rt_db}.dashboard_home_rt
         SELECT
-            v.id_empresa,
-            v.id_filial,
-            v.data_key,
-            toDate(toString(v.data_key), '%Y%m%d') AS dt,
-            sumIf(v.total_venda, v.cancelado = 0) AS faturamento,
-            if(countIf(v.cancelado = 0) > 0, sumIf(v.total_venda, v.cancelado = 0) / countIf(v.cancelado = 0), 0) AS ticket_medio,
-            countIf(v.cancelado = 0) AS qtd_vendas,
-            toUInt32(uniqExactIf(v.id_cliente, v.cancelado = 0 AND v.id_cliente IS NOT NULL)) AS qtd_clientes,
-            countIf(v.cancelado = 1) AS qtd_cancelamentos,
-            sumIf(v.total_venda, v.cancelado = 1) AS valor_cancelado,
+            base.id_empresa,
+            base.id_filial,
+            base.data_key,
+            toDate(toString(base.data_key), '%Y%m%d') AS dt,
+            base.faturamento,
+            if(base.qtd_vendas > 0, base.faturamento / base.qtd_vendas, 0) AS ticket_medio,
+            base.qtd_vendas,
+            base.qtd_clientes,
+            coalesce(cancel.qtd_cancelamentos, 0) AS qtd_cancelamentos,
+            coalesce(cancel.valor_cancelado, 0) AS valor_cancelado,
             now64(6) AS published_at
-        FROM {self.current_db}.fact_venda FINAL AS v
-        WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-        GROUP BY v.id_empresa, v.id_filial, v.data_key
+        FROM (
+            SELECT
+                v.id_empresa,
+                v.id_filial,
+                v.data_key,
+                sum(coalesce(vi.total, 0)) AS faturamento,
+                toUInt32(uniqExactIf(v.id_comprovante, v.id_comprovante IS NOT NULL)) AS qtd_vendas,
+                toUInt32(uniqExactIf(v.id_cliente, v.id_cliente IS NOT NULL)) AS qtd_clientes
+            FROM {self.current_db}.fact_venda FINAL AS v
+            INNER JOIN {self.current_db}.fact_venda_item FINAL AS vi
+                ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
+                AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
+            WHERE v.data_key IN ({keys_str})
+              AND v.is_deleted = 0
+              AND vi.is_deleted = 0
+              AND v.cancelado = 0
+              AND coalesce(vi.cfop, 0) >= 5000
+            GROUP BY v.id_empresa, v.id_filial, v.data_key
+        ) AS base
+        LEFT JOIN (
+            SELECT
+                id_empresa,
+                id_filial,
+                data_key,
+                toUInt32(count()) AS qtd_cancelamentos,
+                sum(coalesce(valor_total, 0)) AS valor_cancelado
+            FROM {self.current_db}.fact_comprovante FINAL
+            WHERE data_key IN ({keys_str})
+              AND is_deleted = 0
+              AND cancelado = 1
+            GROUP BY id_empresa, id_filial, data_key
+        ) AS cancel
+            ON base.id_empresa = cancel.id_empresa
+           AND base.id_filial = cancel.id_filial
+           AND base.data_key = cancel.data_key
         """
         rows = client.command(sql)
         duration = int((time.time() - t0) * 1000)

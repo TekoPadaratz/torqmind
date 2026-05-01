@@ -61,6 +61,72 @@ Detalhes completos de flags, dry-run e rollback basico: `docs/HOMOLOGATION_APPLY
 Runbook do rebuild derivado puro: `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`.
 Use `--allow-dw-only` apenas para verificacao intermediaria do PostgreSQL DW; para religar o serving analitico da API, o fluxo recomendado continua sendo republicar ClickHouse no mesmo apply.
 
+## Cutover realtime DW-origin
+
+O cutover realtime atual e **DW-origin (Opção B)**:
+
+```text
+STG -> ETL STG->DW -> Debezium(dw.*) -> Redpanda -> CDC Consumer -> torqmind_current -> torqmind_mart_rt -> API
+```
+
+Ele reduz a dependencia do sync batch DW->ClickHouse mart, mas ainda depende do ETL STG->DW para novos eventos. Nao tratar esta etapa como corte final STG-direto.
+
+Auditoria obrigatoria dos DDLs antes do cutover:
+
+```bash
+git ls-files sql/clickhouse/streaming | sort
+find sql/clickhouse/streaming -maxdepth 1 -type f | sort
+```
+
+Os dois outputs precisam conter:
+
+```text
+sql/clickhouse/streaming/040_mart_rt_database.sql
+sql/clickhouse/streaming/041_mart_rt_tables.sql
+```
+
+Inicializar mart_rt com validacao de credenciais e tabelas:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/streaming-init-mart-rt.sh
+```
+
+Rodar cutover one-command:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill --id-empresa 1
+```
+
+O script so ativa `USE_REALTIME_MARTS=true` depois de validar:
+- DDL mart_rt aplicado;
+- Redpanda, Debezium e CDC consumer em `RUNNING`;
+- raw/current com dados para tabelas DW que possuem dados do tenant;
+- mart_rt com dados;
+- `realtime-validate-cutover.sh` retornando zero;
+- smoke da API com `REALTIME_MARTS_FALLBACK=false`.
+
+Validacao isolada:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-validate-cutover.sh
+```
+
+Smoke e2e da trilha atual:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-e2e-smoke.sh
+```
+
+Esse smoke insere fixture em `dw.fact_venda`/`dw.fact_venda_item`. Ele prova DW -> Debezium -> Redpanda -> CDC -> current -> mart_rt -> API, mas nao prova evento novo STG sem ETL.
+
+Rollback:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
+```
+
+Risco remanescente: a migracao para STG-direto exige Debezium em `stg.comprovantes`, `stg.itenscomprovantes`, `stg.formas_pgto_comprovantes` e cadastros, mais transformador streaming que replique as regras canonicas de data de negocio, cancelamento, CFOP, ponte de pagamentos e isolamento tenant/filial.
+
 ## T-48h: benchmark local com massa real
 
 Contagens por camada:

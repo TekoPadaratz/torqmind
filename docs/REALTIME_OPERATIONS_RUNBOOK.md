@@ -4,115 +4,119 @@
 
 | Command | What it does |
 |---------|--------------|
-| `make realtime-cutover` | Full cutover (builds, migrates, backfills, validates, activates) |
-| `make realtime-validate` | Compare legacy vs mart_rt (bloqueante) |
-| `make realtime-backfill` | Rebuild mart_rt from current data |
-| `make realtime-rollback` | Disable realtime, revert to legacy batch marts |
-| `make realtime-e2e-smoke` | Insert test sale → verify full pipeline |
-| `make streaming-status` | Show Debezium/Redpanda/CDC consumer status |
-| `make streaming-init-mart-rt` | Apply/re-apply mart_rt DDLs |
+| `make streaming-init-mart-rt` | Applies tracked `040/041` mart_rt DDL and verifies mandatory tables |
+| `make realtime-cutover` | Full guarded DW-origin cutover candidate |
+| `make realtime-validate` | Blocking parity/API validation with fallback disabled |
+| `make realtime-backfill` | Rebuilds mart_rt from `torqmind_current` |
+| `make realtime-e2e-smoke` | Inserts a DW fixture and verifies raw/current/MartBuilder/API |
+| `make realtime-rollback` | Sets `USE_REALTIME_MARTS=false` and restarts API |
+| `make streaming-status` | Shows Debezium/Redpanda/CDC status |
 
-## Architecture (Production)
+## Current Architecture
 
-```
-Agent → PostgreSQL STG → (cron 2min) → PostgreSQL DW
-                                              │
-                                     Debezium CDC (<1s)
-                                              │
-                                          Redpanda
-                                              │
-                                     CDC Consumer
-                                              │
-                              ┌───────────────┴───────────────┐
-                              ▼                               ▼
-                     ClickHouse raw/current           MartBuilder (<1s)
-                                                              │
-                                                              ▼
-                                                    ClickHouse mart_rt
-                                                              │
-                                                              ▼
-                                                     FastAPI → Frontend
+```text
+Agent/API -> PostgreSQL STG -> ETL STG->DW -> Debezium(dw.*)
+  -> Redpanda -> CDC Consumer -> ClickHouse torqmind_raw/torqmind_current
+  -> MartBuilder -> ClickHouse torqmind_mart_rt -> FastAPI -> Frontend
 ```
 
-Total latency: ~2 minutes (dominated by STG→DW cron).
+This is **Option B: realtime from DW**. The STG->DW cron/ETL still normalizes source events and remains operationally required. Do not describe this as final STG-direct cutover.
+
+## Artifact Audit
+
+Before cutover, prove the DDLs are in Git:
+
+```bash
+git ls-files sql/clickhouse/streaming | sort
+find sql/clickhouse/streaming -maxdepth 1 -type f | sort
+```
+
+Both outputs must include:
+
+```text
+sql/clickhouse/streaming/040_mart_rt_database.sql
+sql/clickhouse/streaming/041_mart_rt_tables.sql
+```
+
+`streaming-init-mart-rt.sh` fails if either glob is missing and then verifies these mandatory tables:
+
+```text
+dashboard_home_rt, sales_daily_rt, sales_hourly_rt, sales_products_rt,
+sales_groups_rt, payments_by_type_rt, cash_overview_rt, fraud_daily_rt,
+risk_recent_events_rt, finance_overview_rt, source_freshness,
+mart_publication_log
+```
+
+## Cutover
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env make realtime-cutover
+```
+
+The cutover is blocking. It does not activate `USE_REALTIME_MARTS=true` until:
+
+- mart_rt DDL init succeeds;
+- Redpanda, Debezium and CDC consumer are running;
+- PostgreSQL DW source tables with tenant data have matching raw/current data;
+- `torqmind_mart_rt.sales_daily_rt` has tenant data;
+- `realtime-validate-cutover.sh` exits zero;
+- API facade smoke succeeds with `REALTIME_MARTS_FALLBACK=false`.
+
+## Validation
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env make realtime-validate
+```
+
+Validation fails on:
+
+- ClickHouse connection errors;
+- missing mandatory mart_rt tables;
+- empty realtime marts when legacy/source has data;
+- divergence above `DECIMAL_TOLERANCE` (default `0.001`);
+- API facade failure with `USE_REALTIME_MARTS=true` and `REALTIME_MARTS_FALLBACK=false`.
+
+Compared domains:
+
+- sales daily: rows, `faturamento`, `qtd_vendas`;
+- sales hourly: rows, `faturamento`, `qtd_vendas`;
+- products/groups: rows and sums;
+- payments: total and grouped sum by `category|label`;
+- risk/fraud: event counts and impact;
+- finance: source current count, total, paid total.
+
+## E2E Smoke
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env make realtime-e2e-smoke
+```
+
+The smoke inserts a synthetic fixture into `dw.fact_venda` and `dw.fact_venda_item`, waits for `torqmind_raw.cdc_events`, verifies `torqmind_current`, triggers MartBuilder, verifies `torqmind_mart_rt.sales_daily_rt`, and calls the API facade with fallback disabled.
+
+It proves the current DW-origin pipeline only. It does not prove a new STG event bypasses ETL.
+
+## Rollback
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env make realtime-rollback
+```
+
+Rollback sets `USE_REALTIME_MARTS=false` and recreates the API. Keep `REALTIME_MARTS_FALLBACK=false` for validation; use rollback instead of silent fallback to avoid masking realtime failures.
 
 ## Monitoring
 
-### Source Freshness
 ```bash
-# Via API (platform admin)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:18000/platform/streaming-health
-
-# Direct ClickHouse
-docker compose -f docker-compose.prod.yml exec clickhouse clickhouse-client \
-  --user torqmind --password $CH_PASS \
+docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T clickhouse \
+  clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
   -q "SELECT * FROM torqmind_mart_rt.source_freshness FINAL ORDER BY domain"
 ```
 
-### CDC Lag
 ```bash
-docker compose -f docker-compose.streaming.yml exec clickhouse clickhouse-client \
-  --user torqmind --password $CH_PASS \
-  -q "SELECT * FROM torqmind_ops.cdc_table_state FINAL ORDER BY table_name"
+docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T clickhouse \
+  clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
+  -q "SELECT table_name, events_total, last_event_at FROM torqmind_ops.cdc_table_state FINAL ORDER BY table_name"
 ```
 
-### Debezium Status
-```bash
-docker compose -f docker-compose.streaming.yml exec debezium-connect \
-  curl -s http://localhost:8083/connectors/torqmind-postgres-cdc/status | jq
-```
+## Remaining Risk
 
-## Troubleshooting
-
-### mart_rt has stale data (lag > 5 minutes)
-1. Check Debezium connector status
-2. Check CDC consumer logs: `docker compose -f docker-compose.streaming.yml logs cdc-consumer --tail=50`
-3. Check if Redpanda has messages: `make streaming-status`
-4. If connector is FAILED, restart: `make streaming-register-debezium`
-
-### Validation shows DIVERGENT
-1. Run `make realtime-validate` to see which metrics diverge
-2. Check if legacy mart was refreshed more recently
-3. Run backfill for affected period: `make realtime-backfill`
-4. Re-validate
-
-### API returns legacy data despite USE_REALTIME_MARTS=true
-1. Check `REALTIME_MARTS_FALLBACK=true` — if set, failures silently fall back
-2. Check API logs for "Realtime mart read failed" warnings
-3. Verify mart_rt has data: query ClickHouse directly
-4. Set `REALTIME_MARTS_FALLBACK=false` to force errors instead of silent fallback
-
-### Rollback to Legacy
-```bash
-make realtime-rollback
-```
-This sets USE_REALTIME_MARTS=false and restarts the API. Instant. No data loss.
-
-## Feature Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `USE_REALTIME_MARTS` | false | Master switch for realtime path |
-| `REALTIME_MARTS_DOMAINS` | all | Comma-separated domains to serve from mart_rt |
-| `REALTIME_MARTS_FALLBACK` | true | Fall back to legacy on realtime errors |
-| `ENABLE_MART_BUILDER` | true | CDC consumer builds marts after each flush |
-
-## Backfill
-
-Full backfill from current data (all history):
-```bash
-docker compose -f docker-compose.streaming.yml exec cdc-consumer \
-  python -m torqmind_cdc_consumer.cli backfill --from-date 2025-01-01 --id-empresa 1
-```
-
-Backfill specific filial:
-```bash
-docker compose -f docker-compose.streaming.yml exec cdc-consumer \
-  python -m torqmind_cdc_consumer.cli backfill --from-date 2025-04-01 --id-empresa 1 --id-filial 2
-```
-
-Check backfill status:
-```bash
-docker compose -f docker-compose.streaming.yml exec cdc-consumer \
-  python -m torqmind_cdc_consumer.cli status
-```
+The main residual risk is the STG->DW dependency. The migration to STG-direct requires a new streaming transformer that reproduces the canonical ETL semantics for business date, cancelamento, CFOP, payment bridge, dimensions, tenant isolation and reconciliation before Debezium can safely move from `dw.*` to `stg.*`.

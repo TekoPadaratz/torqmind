@@ -9,6 +9,7 @@ Arquivo de contexto rapido para futuras sessoes. Leia este arquivo antes de reau
 - PostgreSQL continua sendo fonte da verdade transacional e legado analitico (`stg`, `dw`, `mart`, `app`, `auth`, `billing`).
 - ClickHouse mantem uma copia analitica nativa do schema `dw` PostgreSQL no banco `torqmind_dw`, carregada explicitamente por script via table function `postgresql(...)`.
 - ClickHouse serve marts nativas em `torqmind_mart` com tabelas agregadas/desnormalizadas e MVs streaming.
+- O realtime 2.0 atual e um candidato de cutover com origem DW: `STG -> ETL STG->DW -> Debezium(dw.*) -> Redpanda -> CDC Consumer -> torqmind_current -> torqmind_mart_rt`. Ele nao e STG-direto; o cron/ETL STG->DW ainda e dependencia operacional.
 - Operacao normal: ETL incremental atualiza PostgreSQL DW, depois `prod-clickhouse-sync-dw.sh MODE=incremental` publica `torqmind_dw` nativo e `prod-clickhouse-refresh-marts.sh MODE=incremental` republica janelas afetadas nas marts.
 - O backend analitico usa `app.repos_analytics` como facade ClickHouse-first. As rotas continuam chamando nomes publicos iguais aos de `repos_mart`.
 - Origem canonica de vendas: `stg.comprovantes` e `stg.itenscomprovantes`. `MovProdutos`/`ItensMovProdutos` nao devem voltar ao hot path de vendas; campos DW como `id_movprodutos` podem permanecer apenas como aliases legados preenchidos a partir de comprovantes.
@@ -82,6 +83,7 @@ Nota sobre filiais no apply:
 - `REALTIME_MARTS_DOMAINS=dashboard,sales,cash,fraud,finance,payments`: domínios servidos pelo mart_rt.
 - `REALTIME_MARTS_FALLBACK=true`: se true, falhas no mart_rt caem silenciosamente para batch. No cutover final, deve ser false.
 - `ENABLE_MART_BUILDER=true`: CDC Consumer dispara MartBuilder após cada flush.
+- Origem realtime atual: Debezium captura `dw.fact_*`, `dw.dim_*` e `app.payment_type_map`; nao captura `stg.comprovantes`/`stg.itenscomprovantes`/`stg.formas_pgto_comprovantes` para transformar diretamente em mart_rt.
 - `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: conexao PostgreSQL.
 - `DATABASE_URL`: URL async da API.
 - `JWT_SECRET_KEY`/equivalentes em `config.py`: nunca logar nem commitar.
@@ -128,6 +130,8 @@ SQL ClickHouse:
 - `sql/clickhouse/phase2_mvs_design.sql`: tabelas marts.
 - `sql/clickhouse/phase2_mvs_streaming_triggers.sql`: MVs streaming.
 - `sql/clickhouse/phase3_native_backfill.sql`: backfill nativo; configura `max_partitions_per_insert_block=0` somente na sessao de backfill historico.
+- `sql/clickhouse/streaming/040_mart_rt_database.sql`: cria `torqmind_mart_rt` e `mart_publication_log`; deve aparecer em `git ls-files`.
+- `sql/clickhouse/streaming/041_mart_rt_tables.sql`: cria as tabelas mart_rt obrigatorias; deve aparecer em `git ls-files`.
 
 Deploy:
 
@@ -147,6 +151,10 @@ Deploy:
 - `deploy/scripts/prod-rebuild-derived-from-stg.sh`: audita cobertura STG, purga somente fatos derivados seguros, opcionalmente inclui dimensoes DW reconstruiveis com `--include-dimensions`, roda ETL full canônico com janela controlada e `force_full_scan`, e verifica STG vs DW sem tocar ClickHouse.
 - `deploy/scripts/prod-sales-orphans-report.sh`: relatorio de orfaos de venda; nao deleta nada.
 - `deploy/scripts/prod-homologation-apply.sh`: apply unico seguro para homolog/prod; valida env e compose, pausa cron, rebuilda API/Web/Nginx, roda migrate, opcionalmente faz rebuild derivado desde a STG (com `--rebuild-id-filial` para escopo ou todas as filiais por default), aceita `--include-dimensions` e o escape hatch explicito `--allow-dw-only --skip-clickhouse`, executa ClickHouse full ou incremental, audits, streaming opcional, limpeza de `app.snapshot_cache`, post-boot checks e resume cron sem `down -v` nem apagar volumes.
+- `deploy/scripts/streaming-init-mart-rt.sh`: aplica 040/041 com credenciais ClickHouse e falha se qualquer DDL ou tabela obrigatoria estiver ausente.
+- `deploy/scripts/realtime-validate-cutover.sh`: validacao bloqueante de mart_rt, divergencias e API facade com `USE_REALTIME_MARTS=true` e `REALTIME_MARTS_FALLBACK=false`.
+- `deploy/scripts/prod-realtime-cutover-apply.sh`: cutover one-command; so ativa realtime depois de init, readiness de Redpanda/Debezium/CDC/current/raw, dados em mart_rt, validacao bloqueante e smoke fallback=false.
+- `deploy/scripts/realtime-e2e-smoke.sh`: smoke DW-origin com fixture em `dw.fact_venda`/`dw.fact_venda_item`, raw/current/mart_rt e API facade; nao prova STG-direto.
 - `Makefile`: fonte unica dos comandos operacionais.
 
 Runbook do apply unico:
