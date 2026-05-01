@@ -348,6 +348,10 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Corrigido DRE/resumo de caixa ClickHouse para retornar cards financeiros a partir de `finance_aging_daily` e nunca renderizar data 1970 quando nao ha snapshot.
 - Corrigido fluxo de preco concorrente para bypassar snapshot cache no overview e preservar inputs digitados enquanto o frontend refaz a consulta apos salvar.
 - Adicionado `docs/clickhouse_semantic_parity_audit.md` e `prod-semantic-marts-audit.sh` para validar paridade semantica operacional.
+- Corrigido MartBuilder (CDC consumer) para aplicar `toTimezone(dt_evento, 'America/Sao_Paulo')` antes de extrair `data_key` e `hora`, evitando atribuicao de vendas noturnas (21h-23h59 BRT) ao dia UTC seguinte.
+- Corrigido `ch_query()`/`pg_scalar()` no cutover script para logar erros reais em vez de mascarar com `2>/dev/null`.
+- Adicionada tolerancia de 0.1% no validate-cutover para contas inteiras com drift de fronteira de fuso.
+- Adicionado `deploy/scripts/realtime-sales-data-profile.sh` para profiling operacional de qualidade de dados STG/current/mart_rt.
 
 ## 9. Pontas soltas remanescentes
 

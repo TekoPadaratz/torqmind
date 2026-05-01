@@ -105,3 +105,14 @@ Rollback sets `USE_REALTIME_MARTS=false` and recreates the API container. Use ro
 - Physical `stg.clientes` is absent; cliente realtime uses `stg.entidades` until a dedicated table is introduced.
 - STG JSON date parsing is implemented in ClickHouse best-effort expressions; production acceptance must run `realtime-e2e-smoke.sh` and `realtime-validate-cutover.sh --source stg` against real data.
 - DW reconciliation remains necessary during the transition to prove long-window semantic parity, but it is not part of the realtime hot path.
+
+## Timezone Handling
+
+All STG `dt_evento` columns store UTC timestamps. The MartBuilder converts to `America/Sao_Paulo` before computing:
+- `data_key` (YYYYMMDD): `formatDateTime(toTimezone(dt_evento, 'America/Sao_Paulo'), '%Y%m%d')`
+- `hora` (0-23): `toHour(toTimezone(dt_evento, 'America/Sao_Paulo'))`
+- Cash `abertura`/`fechamento`: converted with null-safety
+
+This was fixed to prevent sales occurring at 21:00-23:59 BRT from being attributed to the next UTC day.
+
+The validation script uses `COUNT_TOLERANCE=0.001` for minor TZ boundary drift in count comparisons.

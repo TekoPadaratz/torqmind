@@ -635,7 +635,12 @@ class MartBuilder:
     # STG-DIRECT MART REFRESH IMPLEMENTATIONS
     # ================================================================
 
+    # All STG timestamps are stored in UTC. For Brazilian operations,
+    # data_key (YYYYMMDD) and hora must be in America/Sao_Paulo.
+    _BUSINESS_TZ = "America/Sao_Paulo"
+
     def _stg_ts_expr(self, alias: str) -> str:
+        """Raw UTC timestamp expression from STG comprovantes."""
         return (
             f"coalesce({alias}.dt_evento, "
             f"parseDateTime64BestEffortOrNull(JSONExtractString({alias}.payload, 'TORQMIND_DT_EVENTO')), "
@@ -645,8 +650,17 @@ class MartBuilder:
             f"{alias}.received_at, {alias}.ingested_at, now64(6))"
         )
 
+    def _stg_ts_local_expr(self, alias: str) -> str:
+        """Timestamp converted to local business timezone (America/Sao_Paulo)."""
+        return f"toTimezone({self._stg_ts_expr(alias)}, '{self._BUSINESS_TZ}')"
+
     def _stg_data_key_expr(self, alias: str) -> str:
-        return f"toInt32(formatDateTime({self._stg_ts_expr(alias)}, '%Y%m%d'))"
+        """data_key (YYYYMMDD int) in local business timezone."""
+        return f"toInt32(formatDateTime({self._stg_ts_local_expr(alias)}, '%Y%m%d'))"
+
+    def _stg_hora_expr(self, alias: str) -> str:
+        """Hour of day (0-23) in local business timezone."""
+        return f"toUInt8(toHour({self._stg_ts_local_expr(alias)}))"
 
     def _stg_keys_filter(self, expr: str, data_keys: list[int]) -> str:
         keys = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
@@ -758,7 +772,7 @@ class MartBuilder:
     def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         t0 = time.time()
         data_key = self._stg_data_key_expr("c")
-        ts = self._stg_ts_expr("c")
+        hora = self._stg_hora_expr("c")
         key_filter = self._stg_keys_filter(data_key, data_keys)
         cancel = self._stg_cancel_expr("c")
         total = self._stg_item_total_expr()
@@ -769,7 +783,7 @@ class MartBuilder:
             c.id_filial,
             {data_key} AS data_key,
             toDate(toString(data_key), '%Y%m%d') AS dt,
-            toUInt8(toHour({ts})) AS hora,
+            {hora} AS hora,
             sum({total}) AS faturamento,
             toUInt32(uniqExact(c.id_comprovante)) AS qtd_vendas,
             toUInt32(count()) AS qtd_itens,
@@ -904,18 +918,23 @@ class MartBuilder:
 
     def _refresh_cash_overview_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         t0 = time.time()
+        tz = self._BUSINESS_TZ
         abertura = (
-            "coalesce("
+            f"toTimezone(coalesce("
             "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTABERTURA')), "
             "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAABERTURA')), "
             "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRABERTURA')), "
-            f"{self._stg_ts_expr('t')})"
+            f"{self._stg_ts_expr('t')}), '{tz}')"
         )
         fechamento = (
-            "coalesce("
+            f"if(coalesce("
             "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTFECHAMENTO')), "
             "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')), "
-            "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO')))"
+            "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO'))) IS NOT NULL, "
+            f"toTimezone(coalesce("
+            "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTFECHAMENTO')), "
+            "parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')), "
+            f"parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO'))), '{tz}'), NULL)"
         )
         id_usuario = f"coalesce({self._json_int('t', 'ID_USUARIOS')}, {self._json_int('t', 'ID_USUARIO')})"
         is_aberto = f"if({self._json_int('t', 'ENCERRANTEFECHAMENTO')} = 0 AND fechamento_ts IS NULL, 1, 0)"

@@ -119,6 +119,27 @@ docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T clickho
   -q "SELECT * FROM torqmind_mart_rt.source_freshness FINAL ORDER BY domain"
 ```
 
+## Timezone Model
+
+All timestamps in STG (`dt_evento`) are stored in **UTC** (both PostgreSQL and ClickHouse).
+Business logic (day boundaries, hourly aggregations, data_key extraction) uses `America/Sao_Paulo`.
+
+The MartBuilder applies `toTimezone(dt_evento, 'America/Sao_Paulo')` before:
+- Extracting `data_key` (YYYYMMDD in BRT)
+- Computing `hora` for hourly aggregations
+- Deriving `abertura`/`fechamento` in cash overview
+
+This ensures a sale at 23:30 BRT (02:30 UTC next day) is correctly attributed to the BRT calendar day.
+
+## Data Profile
+
+```bash
+ENV_FILE=.env.e2e.local COMPOSE_FILE=docker-compose.prod.yml \
+  bash deploy/scripts/realtime-sales-data-profile.sh --id-empresa 1
+```
+
+Shows: date range, daily volume, hourly distribution, filial breakdown, payment types, cash/fraud/finance summaries.
+
 ## Remaining Risk
 
 The STG-direct path is implemented in code and scripts, but production acceptance still requires running the E2E smoke and blocking validation against the target environment. If either cannot run, the release is not operationally concluded.

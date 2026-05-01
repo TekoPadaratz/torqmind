@@ -132,6 +132,17 @@ ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to
 
 Risco remanescente: a aceitacao operacional depende de executar o smoke E2E e a validacao bloqueante no ambiente alvo. Se esses comandos nao rodarem, o cutover nao deve ser declarado concluido.
 
+### Timezone
+
+O MartBuilder aplica `toTimezone(dt_evento, 'America/Sao_Paulo')` antes de extrair `data_key` e `hora`. Isso garante que vendas noturnas (21h-23h59 BRT = 00h-02h59 UTC) sejam atribuidas ao dia correto.
+
+Para validar a distribuicao horaria pos-cutover:
+
+```bash
+ENV_FILE="$TM_ENV" COMPOSE_FILE=docker-compose.prod.yml \
+  bash deploy/scripts/realtime-sales-data-profile.sh --id-empresa 1
+```
+
 ## T-48h: benchmark local com massa real
 
 Contagens por camada:

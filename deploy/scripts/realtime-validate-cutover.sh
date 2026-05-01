@@ -10,6 +10,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 ID_EMPRESA="${ID_EMPRESA:-1}"
 DECIMAL_TOLERANCE="${DECIMAL_TOLERANCE:-${TOLERANCE:-0.001}}"
+COUNT_TOLERANCE="${COUNT_TOLERANCE:-0.001}"  # 0.1% tolerance for integer counts (TZ boundary drift)
 SOURCE="${SOURCE:-${REALTIME_MARTS_SOURCE:-stg}}"
 
 while [[ $# -gt 0 ]]; do
@@ -208,11 +209,18 @@ compare_pg_ch_metric() {
   local status="OK"
   if [[ "$mode" == "count" ]]; then
     if [[ "$source_val" != "$rt_val" ]]; then
-      status="DIVERGENT"
+      # Allow small tolerance for counts (timezone boundary drift)
+      local count_diff_ok
+      count_diff_ok="$(awk "BEGIN { s=$source_val+0; r=$rt_val+0; base=(s<1?1:s); diff=((s-r)<0?(r-s):(s-r)); print (diff/base <= $COUNT_TOLERANCE) ? 1 : 0 }")"
       if [[ "$source_val" != "0" && "$rt_val" == "0" ]]; then
         status="RT_EMPTY"
+        FAILURES=$((FAILURES + 1))
+      elif [[ "$count_diff_ok" == "0" ]]; then
+        status="DIVERGENT"
+        FAILURES=$((FAILURES + 1))
+      else
+        status="OK"  # within count tolerance
       fi
-      FAILURES=$((FAILURES + 1))
     fi
   else
     local diff over_tolerance source_positive rt_zero

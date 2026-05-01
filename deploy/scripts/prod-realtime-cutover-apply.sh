@@ -173,25 +173,39 @@ compose_streaming() {
 
 ch_query() {
   local sql="$1"
-  local out
+  local out err_out
+  local err_file="/tmp/ch_query_err_$$.txt"
   if ! out="$(compose_prod exec -T clickhouse clickhouse-client \
     --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
-    --format=TabSeparated -q "$sql" 2>/dev/null)"; then
+    --format=TabSeparated --send_logs_level=error -q "$sql" 2>"$err_file")"; then
+    local err_msg
+    err_msg="$(head -3 "$err_file" 2>/dev/null || echo 'unknown error')"
+    rm -f "$err_file"
+    log ERROR "ClickHouse query failed: $err_msg"
+    log ERROR "  SQL: $sql"
     printf '__ERROR__'
     return 0
   fi
+  rm -f "$err_file"
   printf '%s' "${out//[[:space:]]/}"
 }
 
 pg_scalar() {
   local sql="$1"
   local out
+  local err_file="/tmp/pg_query_err_$$.txt"
   if ! out="$(compose_prod exec -T postgres psql \
     -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-TORQMIND}" \
-    -tAc "$sql" 2>/dev/null)"; then
+    -tAc "$sql" 2>"$err_file")"; then
+    local err_msg
+    err_msg="$(head -3 "$err_file" 2>/dev/null || echo 'unknown error')"
+    rm -f "$err_file"
+    log ERROR "PostgreSQL query failed: $err_msg"
+    log ERROR "  SQL: $sql"
     printf '__ERROR__'
     return 0
   fi
+  rm -f "$err_file"
   printf '%s' "${out//[[:space:]]/}"
 }
 
@@ -322,7 +336,7 @@ _comment_legacy_cron_lines() {
   done
 
   awk -v tag="# TORQMIND_LEGACY_ETL_DISABLED_${ts} " -v re="$awk_regex" \
-    '{ if ($0 ~ re && $0 !~ /^[[:space:]]*#/) { print tag $0 } else { print } }' 
+    '{ if ($0 ~ re && $0 !~ /^[[:space:]]*#/) { print tag $0 } else { print } }'
 }
 
 step_neutralize_legacy_etl() {
