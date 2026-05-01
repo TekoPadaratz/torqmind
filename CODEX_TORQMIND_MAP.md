@@ -78,6 +78,10 @@ Nota sobre filiais no apply:
 - `RISK_INTERVAL_MINUTES=30`: intervalo default do trilho risk.
 - `PIPELINE_TIMEOUT_SECONDS`, `PIPELINE_WARN_SECONDS`, `PIPELINE_TRACK_LOG_MAX_BYTES`: limites de tempo/log do ciclo operacional.
 - `CLICKHOUSE_INCREMENTAL_ENABLED=true`: habilita sync DW + refresh marts apos tracks com mudancas.
+- `USE_REALTIME_MARTS=false`: ativa leitura de marts via torqmind_mart_rt (CDC-fed). Quando true, repos_analytics rota para repos_mart_realtime.
+- `REALTIME_MARTS_DOMAINS=dashboard,sales,cash,fraud,finance,payments`: domínios servidos pelo mart_rt.
+- `REALTIME_MARTS_FALLBACK=true`: se true, falhas no mart_rt caem silenciosamente para batch. No cutover final, deve ser false.
+- `ENABLE_MART_BUILDER=true`: CDC Consumer dispara MartBuilder após cada flush.
 - `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: conexao PostgreSQL.
 - `DATABASE_URL`: URL async da API.
 - `JWT_SECRET_KEY`/equivalentes em `config.py`: nunca logar nem commitar.
@@ -525,6 +529,7 @@ Formato: `torqmind.<schema>.<table>` (ex: `torqmind.dw.fact_venda`).
 - `make streaming-up`: sobe stack.
 - `make streaming-down`: para stack.
 - `make streaming-init-clickhouse`: cria schemas ClickHouse.
+- `make streaming-init-mart-rt`: aplica DDLs 040/041 das marts realtime.
 - `make streaming-register-debezium`: registra connector.
 - `make streaming-status`: status geral.
 - `make streaming-validate-cdc`: valida pipeline.
@@ -532,11 +537,17 @@ Formato: `torqmind.<schema>.<table>` (ex: `torqmind.dw.fact_venda`).
 - `make streaming-config-check`: valida compose.
 - `make test-cdc-consumer`: testes unitários do consumer.
 
+### Comandos Makefile realtime cutover
+
+- `make realtime-cutover`: cutover completo (build, migrate, backfill, validate, activate).
+- `make realtime-validate`: compara marts batch vs mart_rt (bloqueante, exit 1 se divergente).
+- `make realtime-backfill`: reconstrói mart_rt a partir de torqmind_current.
+- `make realtime-rollback`: desativa realtime, volta para batch.
+- `make realtime-e2e-smoke`: teste ponta-a-ponta (insere venda → confirma na API).
+
 ### Próximos passos (não implementados nesta rodada)
 
-- CDC rodando em produção com validação completa.
-- API consultando `torqmind_current` para endpoints selecionados.
-- Marts streaming substituindo marts batch.
+- Opção A (STG direto): CDC capturando stg.comprovantes sem cron intermediário.
 - Observabilidade com Prometheus/Grafana.
 - Flink para CEP/aggregation streaming.
 - Temporal para workflows de backfill/onboarding.

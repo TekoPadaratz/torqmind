@@ -2,7 +2,7 @@
 
 Reads from torqmind_mart_rt (fed by CDC Mart Builder) instead of
 torqmind_mart (fed by batch sync). Function signatures mirror
-repos_mart_clickhouse.py for transparent switching via repos_analytics.py.
+repos_mart_clickhouse.py EXACTLY for transparent switching via repos_analytics.py.
 
 Feature flag: USE_REALTIME_MARTS=true activates this module.
 """
@@ -22,18 +22,34 @@ MART_RT_DB = "torqmind_mart_rt"
 CURRENT_DB = "torqmind_current"
 
 
-def _filial_filter(id_filial: Optional[int], alias: str = "") -> str:
-    prefix = f"{alias}." if alias else ""
-    if id_filial:
-        return f" AND {prefix}id_filial = {id_filial}"
-    return ""
+def _branch_ids(id_filial: Any) -> Optional[List[int]]:
+    """Parse id_filial into a list of branch IDs (mirrors repos_mart_clickhouse)."""
+    if id_filial is None or id_filial == -1:
+        return None
+    if isinstance(id_filial, (list, tuple, set)):
+        values = sorted({int(v) for v in id_filial if v is not None and int(v) != -1})
+        return values if values else None
+    value = int(id_filial)
+    return None if value == -1 else [value]
 
 
-def _date_range_filter(dt_ini: date, dt_fim: date, alias: str = "") -> str:
-    prefix = f"{alias}." if alias else ""
+def _branch_clause(column: str, id_filial: Any) -> str:
+    """Build WHERE clause for filial filtering (mirrors repos_mart_clickhouse)."""
+    branch_ids = _branch_ids(id_filial)
+    if branch_ids is None:
+        return ""
+    if not branch_ids:
+        return " AND 0"
+    if len(branch_ids) == 1:
+        return f" AND {column} = {int(branch_ids[0])}"
+    values = ", ".join(str(int(v)) for v in branch_ids)
+    return f" AND {column} IN ({values})"
+
+
+def _date_range_filter(dt_ini: date, dt_fim: date, col: str = "data_key") -> str:
     from_key = int(dt_ini.strftime("%Y%m%d"))
     to_key = int(dt_fim.strftime("%Y%m%d"))
-    return f" AND {prefix}data_key >= {from_key} AND {prefix}data_key <= {to_key}"
+    return f" AND {col} >= {from_key} AND {col} <= {to_key}"
 
 
 # ================================================================
@@ -41,14 +57,15 @@ def _date_range_filter(dt_ini: date, dt_fim: date, alias: str = "") -> str:
 # ================================================================
 
 def dashboard_kpis(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """KPIs for the main dashboard."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     rows = query_dict(f"""
@@ -69,14 +86,15 @@ def dashboard_kpis(
 
 
 def dashboard_series(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Daily series for dashboard chart."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     return query_dict(f"""
@@ -93,15 +111,17 @@ def dashboard_series(
 
 
 def dashboard_home_bundle(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
+    dt_ref: date = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Full dashboard home payload."""
-    kpis = dashboard_kpis(id_empresa, dt_ini, dt_fim, id_filial)
-    series = dashboard_series(id_empresa, dt_ini, dt_fim, id_filial)
+    kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
+    series = dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim)
     return {"kpis": kpis, "series": series, "source": "realtime"}
 
 
@@ -110,14 +130,18 @@ def dashboard_home_bundle(
 # ================================================================
 
 def sales_overview_bundle(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
+    as_of: Optional[date] = None,
+    *,
+    include_details: bool = True,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Sales overview with KPIs, series, and top rankings."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     kpis_rows = query_dict(f"""
@@ -149,14 +173,15 @@ def sales_overview_bundle(
 
 
 def sales_by_hour(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Hourly sales breakdown."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     return query_dict(f"""
@@ -168,15 +193,16 @@ def sales_by_hour(
 
 
 def sales_top_products(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
-    limit: int = 20,
+    limit: int = 15,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Top products by revenue."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     return query_dict(f"""
@@ -192,15 +218,16 @@ def sales_top_products(
 
 
 def sales_top_groups(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
-    limit: int = 20,
+    limit: int = 10,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Top product groups by revenue."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     return query_dict(f"""
@@ -220,14 +247,16 @@ def sales_top_groups(
 # ================================================================
 
 def payments_overview(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
+    anomaly_limit: int = 20,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Payments overview with breakdown by type."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     by_type = query_dict(f"""
@@ -239,7 +268,7 @@ def payments_overview(
         ORDER BY valor_total DESC
     """, parameters={"id_empresa": id_empresa})
 
-    total = sum(r.get("valor_total", 0) or 0 for r in by_type)
+    total = sum(float(r.get("valor_total", 0) or 0) for r in by_type)
     return {
         "total": total,
         "by_type": by_type,
@@ -252,14 +281,15 @@ def payments_overview(
 # ================================================================
 
 def cash_overview(
+    role: str,
     id_empresa: int,
-    dt_ini: date,
-    dt_fim: date,
-    id_filial: Optional[int] = None,
+    id_filial: Any,
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Cash/shift overview."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
 
     turnos = query_dict(f"""
         SELECT id_filial, id_turno, id_usuario, nome_operador,
@@ -280,14 +310,15 @@ def cash_overview(
 
 
 def open_cash_monitor(
+    role: str,
     id_empresa: int,
-    id_filial: Optional[int] = None,
+    id_filial: Any,
     **kwargs: Any,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """Open cash shifts monitor."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
 
-    return query_dict(f"""
+    turnos = query_dict(f"""
         SELECT id_filial, id_turno, id_usuario, nome_operador,
                abertura_ts, faturamento_turno, qtd_vendas_turno
         FROM {MART_RT_DB}.cash_overview_rt FINAL
@@ -296,20 +327,27 @@ def open_cash_monitor(
         ORDER BY abertura_ts DESC
     """, parameters={"id_empresa": id_empresa})
 
+    return {
+        "turnos_abertos": turnos,
+        "qtd_abertos": len(turnos),
+        "source": "realtime",
+    }
+
 
 # ================================================================
 # FRAUD / RISK
 # ================================================================
 
 def fraud_kpis(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Fraud/risk KPIs."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     rows = query_dict(f"""
@@ -325,20 +363,24 @@ def fraud_kpis(
 
 
 def fraud_last_events(
+    role: str,
     id_empresa: int,
-    id_filial: Optional[int] = None,
-    limit: int = 50,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 30,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Recent risk events with operator/employee names."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
 
     return query_dict(f"""
         SELECT id, id_filial, data_key, event_type, source,
                nome_operador, nome_funcionario, valor_total,
                impacto_estimado, score_risco, score_level, reasons
         FROM {MART_RT_DB}.risk_recent_events_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
         ORDER BY id DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
@@ -349,14 +391,15 @@ def fraud_last_events(
 # ================================================================
 
 def finance_kpis(
+    role: str,
     id_empresa: int,
+    id_filial: Any,
     dt_ini: date,
     dt_fim: date,
-    id_filial: Optional[int] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Finance aging KPIs."""
-    filial = _filial_filter(id_filial)
+    filial = _branch_clause("id_filial", id_filial)
 
     rows = query_dict(f"""
         SELECT

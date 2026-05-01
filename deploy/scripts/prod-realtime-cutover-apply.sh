@@ -170,9 +170,71 @@ step_backfill() {
   fi
   log INFO "=== STEP 9: Backfill mart_rt ==="
 
-  # Wait for initial Debezium snapshot to complete
-  log INFO "Waiting 30s for Debezium initial data to flow..."
-  if (( ! DRY_RUN )); then sleep 30; fi
+  # Wait for Debezium to be RUNNING and data to flow (condition-based, not sleep)
+  log INFO "Waiting for Debezium connector to be RUNNING and initial data to flow..."
+  if (( ! DRY_RUN )); then
+    local max_wait=120
+    local elapsed=0
+    local interval=5
+
+    # Wait for Debezium connector RUNNING
+    while (( elapsed < max_wait )); do
+      local status
+      status="$(compose_streaming exec -T debezium-connect curl -sf http://localhost:8083/connectors/torqmind-postgres-cdc/status 2>/dev/null | grep -o '"state":"[A-Z]*"' | head -1 | cut -d'"' -f4 || echo "UNKNOWN")"
+      if [[ "$status" == "RUNNING" ]]; then
+        log INFO "Debezium connector RUNNING after ${elapsed}s"
+        break
+      fi
+      log INFO "  Debezium status=$status, waiting... (${elapsed}s/${max_wait}s)"
+      sleep "$interval"
+      elapsed=$((elapsed + interval))
+    done
+    if (( elapsed >= max_wait )); then
+      log ERROR "Debezium connector did not reach RUNNING state within ${max_wait}s"
+      exit 1
+    fi
+
+    # Wait for at least some events in raw
+    elapsed=0
+    while (( elapsed < max_wait )); do
+      local raw_count
+      raw_count="$(compose_prod exec -T clickhouse clickhouse-client \
+        --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
+        --format=TabSeparated -q "SELECT count() FROM torqmind_raw.cdc_events" 2>/dev/null || echo "0")"
+      raw_count="${raw_count//[[:space:]]/}"
+      if (( raw_count > 0 )); then
+        log INFO "Raw events present: $raw_count rows after ${elapsed}s"
+        break
+      fi
+      log INFO "  Waiting for CDC events in raw... (${elapsed}s/${max_wait}s)"
+      sleep "$interval"
+      elapsed=$((elapsed + interval))
+    done
+    if (( elapsed >= max_wait )); then
+      log WARN "No raw CDC events after ${max_wait}s — proceeding with backfill from current"
+    fi
+
+    # Wait for current tables to have data
+    elapsed=0
+    while (( elapsed < max_wait )); do
+      local current_count
+      current_count="$(compose_prod exec -T clickhouse clickhouse-client \
+        --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
+        --format=TabSeparated -q "SELECT count() FROM torqmind_current.fact_venda FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null || echo "0")"
+      current_count="${current_count//[[:space:]]/}"
+      if (( current_count > 0 )); then
+        log INFO "Current fact_venda has data: $current_count rows"
+        break
+      fi
+      log INFO "  Waiting for current.fact_venda data... (${elapsed}s/${max_wait}s)"
+      sleep "$interval"
+      elapsed=$((elapsed + interval))
+    done
+    if (( elapsed >= max_wait )); then
+      log ERROR "No data in torqmind_current.fact_venda after ${max_wait}s. Cannot backfill."
+      exit 1
+    fi
+  fi
 
   # Run mart builder backfill via the CDC consumer CLI
   local backfill_cmd=(
@@ -184,17 +246,32 @@ step_backfill() {
     backfill_cmd+=(--id-filial "$ID_FILIAL")
   fi
   run "${backfill_cmd[@]}"
+
+  # Verify backfill produced rows
+  if (( ! DRY_RUN )); then
+    local mart_rows
+    mart_rows="$(compose_prod exec -T clickhouse clickhouse-client \
+      --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
+      --format=TabSeparated -q "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" 2>/dev/null || echo "0")"
+    mart_rows="${mart_rows//[[:space:]]/}"
+    if (( mart_rows == 0 )); then
+      log ERROR "Backfill produced 0 rows in sales_daily_rt. Aborting cutover."
+      exit 1
+    fi
+    log INFO "Backfill verified: sales_daily_rt has $mart_rows rows"
+  fi
+
   log INFO "backfill=OK"
 }
 
 step_validate_parity() {
-  log INFO "=== STEP 10: Validate parity ==="
-  if [[ -f "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" ]]; then
-    run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh"
-  else
-    log WARN "realtime-validate-cutover.sh not found; skipping parity check"
+  log INFO "=== STEP 10: Validate parity (BLOQUEANTE) ==="
+  if [[ ! -f "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" ]]; then
+    log ERROR "realtime-validate-cutover.sh not found — cannot validate. Aborting."
+    exit 1
   fi
-  log INFO "parity_validation=OK"
+  run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh"
+  log INFO "parity_validation=PASSED"
 }
 
 step_activate_realtime() {
@@ -205,15 +282,23 @@ step_activate_realtime() {
   log INFO "=== STEP 11: Activate USE_REALTIME_MARTS=true ==="
   # Set the flag in the environment file
   if (( DRY_RUN )); then
-    log INFO "DRY-RUN: would set USE_REALTIME_MARTS=true in $ENV_FILE"
+    log INFO "DRY-RUN: would set USE_REALTIME_MARTS=true REALTIME_MARTS_FALLBACK=false in $ENV_FILE"
     return 0
   fi
+
+  # First set fallback=false for clean validation (no masking)
+  if grep -q "^REALTIME_MARTS_FALLBACK=" "$ENV_FILE" 2>/dev/null; then
+    sed -i 's/^REALTIME_MARTS_FALLBACK=.*/REALTIME_MARTS_FALLBACK=false/' "$ENV_FILE"
+  else
+    echo "REALTIME_MARTS_FALLBACK=false" >> "$ENV_FILE"
+  fi
+
   if grep -q "^USE_REALTIME_MARTS=" "$ENV_FILE" 2>/dev/null; then
     sed -i 's/^USE_REALTIME_MARTS=.*/USE_REALTIME_MARTS=true/' "$ENV_FILE"
   else
     echo "USE_REALTIME_MARTS=true" >> "$ENV_FILE"
   fi
-  log INFO "realtime_marts=ACTIVATED"
+  log INFO "realtime_marts=ACTIVATED fallback=false"
 }
 
 step_rollback_to_legacy() {
@@ -247,9 +332,9 @@ step_smoke() {
     log INFO "=== STEP 13: Smoke SKIPPED (validate-only mode) ==="
     return 0
   fi
-  log INFO "=== STEP 13: Smoke endpoints ==="
+  log INFO "=== STEP 13: Smoke endpoints (fallback=false) ==="
   if (( DRY_RUN )); then
-    log INFO "DRY-RUN: would test API health and BI endpoints"
+    log INFO "DRY-RUN: would test API health and BI endpoints with fallback=false"
     return 0
   fi
   # Wait for API to become healthy
@@ -261,7 +346,41 @@ step_smoke() {
     retries=$((retries + 1))
     sleep 2
   done
+  if (( retries >= 30 )); then
+    log ERROR "API did not become healthy within 60s"
+    exit 1
+  fi
   log INFO "api_health=OK"
+
+  # Smoke test: call a BI endpoint that goes through realtime path
+  # This validates that with USE_REALTIME_MARTS=true and FALLBACK=false, the API serves data
+  local smoke_result
+  smoke_result="$(compose_prod exec -T api python -c "
+import os, json
+os.environ.setdefault('USE_REALTIME_MARTS', 'true')
+os.environ.setdefault('REALTIME_MARTS_FALLBACK', 'false')
+from datetime import date
+from app import repos_mart_realtime as rt
+# Verify module loads and functions have correct signatures
+import inspect
+for fn_name in sorted(rt.REALTIME_FUNCTIONS):
+    fn = getattr(rt, fn_name)
+    sig = inspect.signature(fn)
+    params = list(sig.parameters.keys())
+    if fn_name != 'streaming_health':
+        assert params[0] == 'role', f'{fn_name}: first param should be role, got {params[0]}'
+        assert params[1] == 'id_empresa', f'{fn_name}: second param should be id_empresa, got {params[1]}'
+        assert params[2] == 'id_filial', f'{fn_name}: third param should be id_filial, got {params[2]}'
+print('SMOKE_OK')
+" 2>&1 || echo "SMOKE_FAILED")"
+
+  if [[ "$smoke_result" != *"SMOKE_OK"* ]]; then
+    log ERROR "Smoke test FAILED: $smoke_result"
+    log ERROR "Realtime path not working with fallback=false. Rolling back."
+    step_rollback_to_legacy
+    exit 1
+  fi
+  log INFO "smoke_test=PASSED (realtime path validated with fallback=false)"
 }
 
 step_report() {

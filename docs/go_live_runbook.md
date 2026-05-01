@@ -468,3 +468,42 @@ ENV_FILE="$TM_ENV" ./deploy/scripts/prod-post-boot-check.sh
 cat backup_pre_release.dump | docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T postgres \
   pg_restore -U postgres -d TORQMIND -j 4 --clean --if-exists
 ```
+
+---
+
+## Realtime Marts (Cutover Pós Go-Live)
+
+> Pré-requisito: stack batch já estável em produção.
+
+### Ativação
+
+```bash
+# Dry-run primeiro (não muda nada, apenas valida fluxo)
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill
+
+# Execução real
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --with-backfill
+```
+
+### Validação isolada (não ativa realtime)
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only
+```
+
+### Rollback para batch
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
+```
+
+### E2E Smoke Test
+
+```bash
+make realtime-e2e-smoke
+```
+
+### Documentação detalhada
+
+- Arquitetura e decisões: `docs/architecture/TORQMIND_REALTIME_CUTOVER_FINAL.md`
+- Operações e troubleshooting: `docs/REALTIME_OPERATIONS_RUNBOOK.md`
