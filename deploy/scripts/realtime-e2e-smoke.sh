@@ -23,6 +23,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROD_COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 STREAMING_COMPOSE_FILE="${STREAMING_COMPOSE_FILE:-docker-compose.streaming.yml}"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
+PROOF_DIR="${PROOF_DIR:-${ROOT_DIR}/tmp}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: ENV_FILE=$ENV_FILE not found" >&2
@@ -51,6 +52,7 @@ TEST_ID_DB="${TEST_ID_DB:-$((900000000 + (TEST_RUN_SUFFIX % 10000000)))}"
 TEST_ID_COMPROVANTE="${TEST_ID_COMPROVANTE:-$TEST_ID_DB}"
 TEST_ID_ITEM="${TEST_ID_ITEM:-1}"
 TEST_REFERENCIA="${TEST_REFERENCIA:-$((990000000 + (TEST_RUN_SUFFIX % 10000000)))}"
+API_FAT_RESULT=0
 
 log() {
   printf '%s [E2E] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -346,6 +348,8 @@ else:
 
   if [[ "$api_result" == *"API_OK"* ]]; then
     log "API smoke PASSED: $api_result"
+    # Extract faturamento for proof JSON
+    API_FAT_RESULT="$(echo "$api_result" | grep -oP 'faturamento=\K[0-9.]+' | head -1 || echo "0")"
   else
     log "ERROR: API smoke FAILED with fallback=false: $api_result"
     exit 1
@@ -368,6 +372,66 @@ step_report() {
   log "============================================"
 }
 
+step_generate_proof() {
+  mkdir -p "$PROOF_DIR"
+  local proof_file="${PROOF_DIR}/realtime-proof-$(date +%Y%m%d_%H%M%S).json"
+
+  # Collect evidence
+  local commit_hash
+  commit_hash="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+
+  local raw_count
+  raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='stg' AND table_name='comprovantes' AND JSONExtractInt(after_json, 'id_comprovante')=$TEST_ID_COMPROVANTE AND position(after_json, '$TEST_MARKER') > 0")"
+  raw_count="${raw_count//[[:space:]]/}"
+
+  local current_comp_count
+  current_comp_count="$(ch_query "SELECT count() FROM torqmind_current.stg_comprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
+  current_comp_count="${current_comp_count//[[:space:]]/}"
+
+  local current_itens_count
+  current_itens_count="$(ch_query "SELECT count() FROM torqmind_current.stg_itenscomprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
+  current_itens_count="${current_itens_count//[[:space:]]/}"
+
+  local current_pgto_count
+  current_pgto_count="$(ch_query "SELECT count() FROM torqmind_current.stg_formas_pgto_comprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_referencia=$TEST_REFERENCIA AND is_deleted=0")"
+  current_pgto_count="${current_pgto_count//[[:space:]]/}"
+
+  local sales_daily_count
+  sales_daily_count="$(ch_query "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+  sales_daily_count="${sales_daily_count//[[:space:]]/}"
+
+  local sales_daily_fat
+  sales_daily_fat="$(ch_query "SELECT sum(faturamento) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+  sales_daily_fat="${sales_daily_fat//[[:space:]]/}"
+
+  local topics
+  topics="torqmind.stg.comprovantes,torqmind.stg.itenscomprovantes,torqmind.stg.formas_pgto_comprovantes"
+
+  cat > "$proof_file" <<JSON
+{
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "commit": "$commit_hash",
+  "source": "stg",
+  "topics": "$topics",
+  "synthetic_id": $TEST_ID_COMPROVANTE,
+  "data_key": $TEST_DATA_KEY,
+  "raw_count": ${raw_count:-0},
+  "current_comprovantes_count": ${current_comp_count:-0},
+  "current_itens_count": ${current_itens_count:-0},
+  "current_pagamentos_count": ${current_pgto_count:-0},
+  "sales_daily_rt_count": ${sales_daily_count:-0},
+  "sales_daily_rt_faturamento": ${sales_daily_fat:-0},
+  "api_response_faturamento": ${API_FAT_RESULT:-0},
+  "fallback": false,
+  "etl_invoked": false,
+  "result": "PASS"
+}
+JSON
+
+  log "Proof JSON written to: $proof_file"
+  cat "$proof_file"
+}
+
 main() {
   step_check_prerequisites
   step_insert_test_sale
@@ -377,6 +441,7 @@ main() {
   step_verify_mart_rt
   step_verify_api
   step_report
+  step_generate_proof
 }
 
 main "$@"

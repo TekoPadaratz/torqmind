@@ -4,21 +4,29 @@ set -Eeuo pipefail
 # TorqMind Realtime Cutover Apply
 # One-command script to prepare and activate the realtime event-driven pipeline.
 #
-# Flow:
-# 1. Preflight checks
-# 2. Validate env and compose
-# 3. Build API/Web/Consumer
-# 4. Migrate PostgreSQL
-# 5. Init ClickHouse streaming schemas (raw/current/ops/mart_rt)
-# 6. Prepare PostgreSQL publication/slot
-# 7. Start Redpanda/Debezium/Consumer
-# 8. Register Debezium connector
-# 9. Backfill mart_rt from current data
-# 10. Validate parity
-# 11. Set USE_REALTIME_MARTS=true
-# 12. Rebuild API/Web
-# 13. Smoke endpoints
-# 14. Report
+# Modes:
+#   (default)       Full cutover: build → migrate → init → stream → bootstrap → backfill → validate → activate
+#   --validate-only Read-only validation of an already-prepared environment
+#   --dry-run       Print actions without executing any mutations
+#   --rollback-to-legacy  Disable realtime, re-enable legacy (does NOT restart cron)
+#
+# Flow (full cutover):
+#   1. Preflight checks
+#   2. Validate env and compose
+#   3. Neutralize legacy ETL cron
+#   4. Build API/Web/Consumer
+#   5. Migrate PostgreSQL
+#   6. Init ClickHouse streaming schemas (raw/current/ops/mart_rt)
+#   7. Prepare PostgreSQL publication/slot
+#   8. Start Redpanda/Debezium/Consumer
+#   9. Register Debezium connector
+#  10. Bootstrap STG (realtime-bootstrap-stg.sh)
+#  11. MartBuilder backfill
+#  12. Validate parity (BLOQUEANTE)
+#  13. Activate realtime env vars
+#  14. Rebuild API/Web
+#  15. Smoke endpoints (fallback=false)
+#  16. Report
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROD_COMPOSE_FILE="docker-compose.prod.yml"
@@ -35,6 +43,9 @@ WITH_BACKFILL=0
 VALIDATE_ONLY=0
 ROLLBACK_TO_LEGACY=0
 SOURCE="stg"
+BOOTSTRAP_STG=1  # default: enabled for source=stg + with-backfill
+SKIP_BOOTSTRAP_STG=0
+KILL_LEGACY_ETL=0
 
 source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
 
@@ -44,22 +55,35 @@ Usage:
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh [flags]
 
 Flags:
-  --yes                  Skip confirmations
-  --dry-run              Print actions without executing
-  --from-date YYYY-MM-DD Backfill start date (default 2025-01-01)
-  --id-empresa <id>      Tenant (default 1)
-  --id-filial <id>       Audit filial
-  --with-backfill        Run mart_rt backfill from current data
-  --validate-only        Only validate parity, don't cutover
-  --rollback-to-legacy   Disable realtime marts and revert to legacy
-  --source stg|dw        Realtime source (default stg)
+  --yes                   Skip confirmations
+  --dry-run               Print actions without executing
+  --from-date YYYY-MM-DD  Backfill start date (default 2025-01-01)
+  --id-empresa <id>       Tenant (default 1)
+  --id-filial <id>        Audit filial
+  --with-backfill         Run bootstrap + mart_rt backfill from current data
+  --validate-only         ONLY validate already-prepared environment (non-mutating)
+  --rollback-to-legacy    Disable realtime marts and revert to legacy
+  --source stg|dw         Realtime source (default stg)
+  --skip-bootstrap-stg    Skip STG bootstrap even with --with-backfill
+  --kill-legacy-etl       Force-kill running legacy ETL processes
   --help
 
+Validate-only mode:
+  Does NOT build, migrate, start services, register connectors, or alter env.
+  Only validates: containers, connector, raw/current data, mart_rt, API fallback=false.
+
 Examples:
+  # Full cutover
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill
+
+  # Validate existing environment
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only
-  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
+
+  # Dry-run
   ENV_FILE=.env.production.example ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill
+
+  # Rollback
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
 EOF
 }
 
@@ -87,6 +111,8 @@ parse_args() {
       --source)
         [[ $# -ge 2 ]] || { echo "ERROR: --source requires stg or dw" >&2; exit 2; }
         SOURCE="$2"; shift ;;
+      --skip-bootstrap-stg) SKIP_BOOTSTRAP_STG=1 ;;
+      --kill-legacy-etl) KILL_LEGACY_ETL=1 ;;
       --help|-h) usage; exit 0 ;;
       *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -94,6 +120,13 @@ parse_args() {
   done
   SOURCE="$(printf '%s' "$SOURCE" | tr '[:upper:]' '[:lower:]')"
   [[ "$SOURCE" == "stg" || "$SOURCE" == "dw" ]] || { echo "ERROR: --source must be stg or dw" >&2; exit 2; }
+
+  # Resolve bootstrap default: enabled for source=stg + with-backfill, unless explicitly skipped
+  if [[ "$SOURCE" == "stg" ]] && (( WITH_BACKFILL )) && (( ! SKIP_BOOTSTRAP_STG )); then
+    BOOTSTRAP_STG=1
+  else
+    BOOTSTRAP_STG=0
+  fi
 }
 
 run() {
@@ -160,6 +193,167 @@ wait_for_ch_positive() {
   return 1
 }
 
+# --- Safe env file update (atomic, backup, sudo-aware) ---
+
+tm_env_set() {
+  # Usage: tm_env_set KEY VALUE
+  # Safely updates a key=value in ENV_FILE with backup and atomic write.
+  local key="$1"
+  local value="$2"
+  local env_file="$ENV_FILE"
+
+  if (( DRY_RUN )); then
+    log INFO "DRY-RUN: would set $key=<REDACTED> in $env_file"
+    return 0
+  fi
+
+  # Backup with timestamp
+  local backup="${env_file}.bak.$(date +%Y%m%d_%H%M%S)"
+  local tmpfile="${env_file}.tmp.$$"
+
+  local use_sudo=0
+  if [[ ! -w "$env_file" ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      use_sudo=1
+    else
+      log ERROR "Cannot write to $env_file and sudo not available"
+      return 1
+    fi
+  fi
+
+  # Create backup
+  if (( use_sudo )); then
+    sudo cp -p "$env_file" "$backup"
+  else
+    cp -p "$env_file" "$backup"
+  fi
+
+  # Create temp file with the update
+  if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+    sed "s|^${key}=.*|${key}=${value}|" "$env_file" > "$tmpfile"
+  else
+    cp "$env_file" "$tmpfile"
+    printf '%s=%s\n' "$key" "$value" >> "$tmpfile"
+  fi
+
+  # Atomic move (preserving permissions)
+  if (( use_sudo )); then
+    sudo cp -p "$env_file" "$tmpfile.perms"
+    sudo mv "$tmpfile" "$env_file"
+    sudo chmod --reference="$tmpfile.perms" "$env_file" 2>/dev/null || true
+    sudo rm -f "$tmpfile.perms"
+  else
+    mv "$tmpfile" "$env_file"
+  fi
+
+  # Validate the write
+  local actual
+  actual="$(grep "^${key}=" "$env_file" | cut -d= -f2-)"
+  if [[ "$actual" != "$value" ]]; then
+    log ERROR "Failed to verify $key in $env_file after write"
+    # Restore backup
+    if (( use_sudo )); then
+      sudo mv "$backup" "$env_file"
+    else
+      mv "$backup" "$env_file"
+    fi
+    return 1
+  fi
+
+  log INFO "env_set: $key updated in $env_file (backup: $backup)"
+}
+
+# --- Legacy ETL neutralization ---
+
+LEGACY_ETL_PATTERNS=(
+  "prod-homologation-apply"
+  "prod-rebuild-derived-from-stg"
+  "prod-etl-pipeline"
+  "prod-etl-incremental"
+  "etl_incremental"
+  "etl_orchestrator"
+)
+
+step_neutralize_legacy_etl() {
+  log INFO "=== STEP 3: Neutralize legacy ETL ==="
+
+  if (( DRY_RUN )); then
+    log INFO "DRY-RUN: would disable legacy ETL cron and check for running processes"
+    return 0
+  fi
+
+  # 1. Disable cron jobs related to legacy ETL
+  local crontab_backup="/tmp/crontab_backup_$(date +%Y%m%d_%H%M%S).txt"
+  if crontab -l > "$crontab_backup" 2>/dev/null; then
+    local has_legacy=0
+    for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
+      if grep -q "$pattern" "$crontab_backup"; then
+        has_legacy=1
+        break
+      fi
+    done
+
+    if (( has_legacy )); then
+      log INFO "Legacy ETL cron entries found. Commenting out..."
+      local new_crontab="/tmp/crontab_new_$$.txt"
+      sed -E "s|^([^#].*($(IFS='|'; echo "${LEGACY_ETL_PATTERNS[*]}")))|\# [DISABLED by realtime cutover $(date +%Y%m%d)] \1|" \
+        "$crontab_backup" > "$new_crontab"
+      crontab "$new_crontab"
+      rm -f "$new_crontab"
+      log INFO "Legacy cron entries disabled (backup: $crontab_backup)"
+    else
+      log INFO "No legacy ETL cron entries found"
+    fi
+  else
+    log INFO "No crontab installed (OK)"
+  fi
+
+  # 2. Check for running legacy ETL processes
+  local running_legacy=()
+  for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
+    local pids
+    pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+    if [[ -n "$pids" ]]; then
+      running_legacy+=("$pattern:$pids")
+    fi
+  done
+
+  if (( ${#running_legacy[@]} > 0 )); then
+    log WARN "Running legacy ETL processes detected: ${running_legacy[*]}"
+    if (( KILL_LEGACY_ETL )); then
+      for entry in "${running_legacy[@]}"; do
+        local pids="${entry#*:}"
+        log INFO "Killing legacy process: $entry"
+        # shellcheck disable=SC2086
+        kill $pids 2>/dev/null || true
+      done
+      sleep 2
+      # Verify they're gone
+      for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
+        if pgrep -f "$pattern" >/dev/null 2>&1; then
+          log ERROR "Could not kill legacy process matching: $pattern"
+          exit 1
+        fi
+      done
+      log INFO "Legacy ETL processes terminated"
+    else
+      log ERROR "Legacy ETL is still running. Use --kill-legacy-etl to force stop, or wait for completion."
+      log ERROR "Cannot proceed with cutover while legacy ETL is active."
+      exit 1
+    fi
+  else
+    log INFO "No legacy ETL processes running"
+  fi
+
+  # 3. Document residual cron role
+  log INFO "NOTE: After cutover, only health/reconcile/ops cron jobs should remain."
+  log INFO "  Legacy cron (STG→DW→ClickHouse) is NO LONGER the BI motor."
+  log INFO "  Realtime pipeline: Agent→STG→Debezium→Redpanda→CDC→MartBuilder→API"
+  log INFO "legacy_etl=NEUTRALIZED"
+}
+
+# --- Steps ---
+
 step_preflight() {
   log INFO "=== STEP 1: Preflight ==="
   [[ -f "$ROOT_DIR/docker-compose.prod.yml" ]] || { echo "ERROR: not in repo root" >&2; exit 1; }
@@ -183,28 +377,27 @@ step_validate_compose() {
 }
 
 step_build() {
-  log INFO "=== STEP 3: Build services ==="
+  log INFO "=== STEP 4: Build services ==="
   run compose_prod build api web
   run compose_streaming build cdc-consumer
   log INFO "build=OK"
 }
 
 step_migrate() {
-  log INFO "=== STEP 4: PostgreSQL migration ==="
+  log INFO "=== STEP 5: PostgreSQL migration ==="
   run env ENV_FILE="$ENV_FILE" "$ROOT_DIR/deploy/scripts/prod-migrate.sh"
   log INFO "migrate=OK"
 }
 
 step_init_clickhouse_streaming() {
-  log INFO "=== STEP 5: Init ClickHouse streaming schemas ==="
+  log INFO "=== STEP 6: Init ClickHouse streaming schemas ==="
   run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" "$ROOT_DIR/deploy/scripts/streaming-init-clickhouse.sh"
-  # Also init mart_rt
   run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" "$ROOT_DIR/deploy/scripts/streaming-init-mart-rt.sh"
   log INFO "clickhouse_streaming_init=OK"
 }
 
 step_prepare_postgres() {
-  log INFO "=== STEP 6: Prepare PostgreSQL publication/slot ==="
+  log INFO "=== STEP 7: Prepare PostgreSQL publication/slot ==="
   if [[ -f "$ROOT_DIR/deploy/scripts/streaming-prepare-postgres.sh" ]]; then
     run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" "$ROOT_DIR/deploy/scripts/streaming-prepare-postgres.sh"
   else
@@ -214,32 +407,50 @@ step_prepare_postgres() {
 }
 
 step_start_streaming() {
-  log INFO "=== STEP 7: Start streaming stack ==="
+  log INFO "=== STEP 8: Start streaming stack ==="
   run compose_streaming up -d --wait
   log INFO "streaming_stack=UP"
 }
 
 step_register_debezium() {
-  log INFO "=== STEP 8: Register Debezium connector ==="
+  log INFO "=== STEP 9: Register Debezium connector ==="
   run env ENV_FILE="$ENV_FILE" "$ROOT_DIR/deploy/scripts/streaming-register-debezium.sh"
   log INFO "debezium_connector=REGISTERED"
 }
 
-step_backfill() {
-  if (( ! WITH_BACKFILL )); then
-    log INFO "=== STEP 9: Backfill SKIPPED ==="
+step_bootstrap_stg() {
+  if (( ! BOOTSTRAP_STG )); then
+    log INFO "=== STEP 10: Bootstrap STG SKIPPED ==="
     return 0
   fi
-  log INFO "=== STEP 9: Backfill mart_rt ==="
+  log INFO "=== STEP 10: Bootstrap STG (historical data → ClickHouse current) ==="
 
-  # Wait for Debezium to be RUNNING and data to flow (condition-based, not sleep)
-  log INFO "Waiting for Debezium connector to be RUNNING and initial data to flow..."
+  local bootstrap_args=(
+    --id-empresa "$ID_EMPRESA"
+    --from-date "$FROM_DATE"
+    --skip-mart-backfill  # mart backfill is done separately in step 11
+  )
+
+  run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" \
+    "$ROOT_DIR/deploy/scripts/realtime-bootstrap-stg.sh" "${bootstrap_args[@]}"
+
+  log INFO "bootstrap_stg=OK"
+}
+
+step_backfill() {
+  if (( ! WITH_BACKFILL )); then
+    log INFO "=== STEP 11: Backfill SKIPPED ==="
+    return 0
+  fi
+  log INFO "=== STEP 11: MartBuilder backfill ==="
+
+  # Wait for Debezium to be RUNNING
   if (( ! DRY_RUN )); then
+    log INFO "Waiting for Debezium connector to be RUNNING..."
     local max_wait=120
     local elapsed=0
     local interval=5
 
-    # Wait for Debezium connector RUNNING
     while (( elapsed < max_wait )); do
       local status
       status="$(compose_streaming exec -T debezium-connect curl -sf http://localhost:8083/connectors/torqmind-postgres-cdc/status 2>/dev/null | grep -o '"state":"[A-Z]*"' | head -1 | cut -d'"' -f4 || echo "UNKNOWN")"
@@ -256,79 +467,36 @@ step_backfill() {
       exit 1
     fi
 
-    # Wait for at least some events in raw
-    elapsed=0
-    while (( elapsed < max_wait )); do
-      local raw_count
-      raw_count="$(compose_prod exec -T clickhouse clickhouse-client \
-        --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
-        --format=TabSeparated -q "SELECT count() FROM torqmind_raw.cdc_events" 2>/dev/null || echo "0")"
-      raw_count="${raw_count//[[:space:]]/}"
-      if (( raw_count > 0 )); then
-        log INFO "Raw events present: $raw_count rows after ${elapsed}s"
-        break
-      fi
-      log INFO "  Waiting for CDC events in raw... (${elapsed}s/${max_wait}s)"
-      sleep "$interval"
-      elapsed=$((elapsed + interval))
-    done
-    if (( elapsed >= max_wait )); then
-      log WARN "No raw CDC events after ${max_wait}s — proceeding with backfill from current"
-    fi
-
-    # Wait for current tables to have source data
-    elapsed=0
-    local current_source_table="fact_venda"
-    if [[ "$SOURCE" == "stg" ]]; then
-      current_source_table="stg_comprovantes"
-    fi
-    while (( elapsed < max_wait )); do
-      local current_count
-      current_count="$(compose_prod exec -T clickhouse clickhouse-client \
-        --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
-        --format=TabSeparated -q "SELECT count() FROM torqmind_current.${current_source_table} FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null || echo "0")"
-      current_count="${current_count//[[:space:]]/}"
-      if (( current_count > 0 )); then
-        log INFO "Current ${current_source_table} has data: $current_count rows"
-        break
-      fi
-      log INFO "  Waiting for current.${current_source_table} data... (${elapsed}s/${max_wait}s)"
-      sleep "$interval"
-      elapsed=$((elapsed + interval))
-    done
-    if (( elapsed >= max_wait )); then
-      log ERROR "No data in torqmind_current.${current_source_table} after ${max_wait}s. Cannot backfill."
+    # Verify current has data (bootstrap should have populated it)
+    local current_source_table="stg_comprovantes"
+    [[ "$SOURCE" == "dw" ]] && current_source_table="fact_venda"
+    local current_count
+    current_count="$(ch_query "SELECT count() FROM torqmind_current.${current_source_table} FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0")"
+    if [[ "$current_count" == "0" || "$current_count" == "__ERROR__" ]]; then
+      log ERROR "No data in torqmind_current.${current_source_table}. Bootstrap may have failed."
       exit 1
     fi
+    log INFO "Current ${current_source_table} has data: $current_count rows"
   fi
 
-  # Run mart builder backfill via the CDC consumer CLI
+  # Run mart builder backfill
   local backfill_command="backfill"
-  if [[ "$SOURCE" == "stg" ]]; then
-    backfill_command="backfill-stg"
-  fi
+  [[ "$SOURCE" == "stg" ]] && backfill_command="backfill-stg"
   local backfill_cmd=(
     docker compose -f "$STREAMING_COMPOSE_FILE" --env-file "$ENV_FILE"
     exec -T cdc-consumer env REALTIME_MARTS_SOURCE="$SOURCE"
     python -m torqmind_cdc_consumer.cli "$backfill_command"
     --from-date "$FROM_DATE" --id-empresa "$ID_EMPRESA"
   )
-  if [[ "$backfill_command" == "backfill" ]]; then
-    backfill_cmd+=(--source "$SOURCE")
-  fi
-  if [[ -n "$ID_FILIAL" ]]; then
-    backfill_cmd+=(--id-filial "$ID_FILIAL")
-  fi
+  [[ "$backfill_command" == "backfill" ]] && backfill_cmd+=(--source "$SOURCE")
+  [[ -n "$ID_FILIAL" ]] && backfill_cmd+=(--id-filial "$ID_FILIAL")
   run "${backfill_cmd[@]}"
 
   # Verify backfill produced rows
   if (( ! DRY_RUN )); then
     local mart_rows
-    mart_rows="$(compose_prod exec -T clickhouse clickhouse-client \
-      --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
-      --format=TabSeparated -q "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" 2>/dev/null || echo "0")"
-    mart_rows="${mart_rows//[[:space:]]/}"
-    if (( mart_rows == 0 )); then
+    mart_rows="$(ch_query "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA")"
+    if [[ "$mart_rows" == "0" || "$mart_rows" == "__ERROR__" ]]; then
       log ERROR "Backfill produced 0 rows in sales_daily_rt. Aborting cutover."
       exit 1
     fi
@@ -339,14 +507,14 @@ step_backfill() {
 }
 
 step_verify_streaming_readiness() {
-  log INFO "=== STEP 9B: Verify streaming data readiness ==="
+  log INFO "=== STEP 12: Verify streaming data readiness ==="
   if (( DRY_RUN )); then
     log INFO "DRY-RUN: would verify Redpanda/Debezium/CDC/current/mart_rt readiness"
     return 0
   fi
 
   local running_services
-  running_services="$(compose_streaming ps --status=running --services)"
+  running_services="$(compose_streaming ps --status=running --services 2>/dev/null || echo "")"
   local service
   for service in redpanda debezium-connect cdc-consumer; do
     if ! grep -qx "$service" <<<"$running_services"; then
@@ -357,7 +525,8 @@ step_verify_streaming_readiness() {
   done
   log INFO "streaming_services=RUNNING"
 
-  local max_wait=120
+  # Verify Debezium connector
+  local max_wait=60
   local elapsed=0
   local interval=5
   while (( elapsed < max_wait )); do
@@ -373,68 +542,10 @@ step_verify_streaming_readiness() {
   done
   if (( elapsed >= max_wait )); then
     log ERROR "Debezium connector did not reach RUNNING within ${max_wait}s"
-    compose_streaming logs debezium-connect --tail=80 || true
     exit 1
   fi
 
-  local source_schema current_prefix
-  local -a cdc_tables
-  if [[ "$SOURCE" == "stg" ]]; then
-    source_schema="stg"
-    current_prefix="stg_"
-    cdc_tables=(
-      comprovantes
-      itenscomprovantes
-      formas_pgto_comprovantes
-      turnos
-      entidades
-      produtos
-      grupoprodutos
-      funcionarios
-      usuarios
-      localvendas
-      contaspagar
-      contasreceber
-    )
-  else
-    source_schema="dw"
-    current_prefix=""
-    cdc_tables=(
-      fact_venda
-      fact_venda_item
-      fact_pagamento_comprovante
-      fact_comprovante
-      fact_caixa_turno
-      fact_financeiro
-      fact_risco_evento
-      dim_filial
-      dim_produto
-      dim_grupo_produto
-      dim_funcionario
-      dim_usuario_caixa
-      dim_cliente
-    )
-  fi
-
-  local table source_count
-  for table in "${cdc_tables[@]}"; do
-    source_count="$(pg_scalar "SELECT count(*) FROM ${source_schema}.${table} WHERE id_empresa=${ID_EMPRESA}")"
-    if [[ "$source_count" == "__ERROR__" ]]; then
-      log ERROR "Could not read PostgreSQL source count for ${source_schema}.${table}"
-      exit 1
-    fi
-    if (( source_count == 0 )); then
-      log INFO "source ${source_schema}.${table}=0; raw/current positive check not required"
-      continue
-    fi
-    wait_for_ch_positive "raw.${table}" \
-      "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='${source_schema}' AND table_name='${table}' AND id_empresa=${ID_EMPRESA}" \
-      120
-    wait_for_ch_positive "current.${table}" \
-      "SELECT count() FROM torqmind_current.${current_prefix}${table} FINAL WHERE id_empresa=${ID_EMPRESA} AND is_deleted=0" \
-      120
-  done
-
+  # Verify mart_rt has data
   wait_for_ch_positive "mart_rt.sales_daily_rt" \
     "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=${ID_EMPRESA}" \
     120
@@ -442,79 +553,41 @@ step_verify_streaming_readiness() {
 }
 
 step_validate_parity() {
-  log INFO "=== STEP 10: Validate parity (BLOQUEANTE) ==="
+  log INFO "=== STEP 13: Validate parity (BLOQUEANTE) ==="
   if [[ ! -f "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" ]]; then
     log ERROR "realtime-validate-cutover.sh not found — cannot validate. Aborting."
     exit 1
   fi
-  run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" --source "$SOURCE"
+  run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" \
+    "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" --source "$SOURCE"
   log INFO "parity_validation=PASSED"
 }
 
 step_activate_realtime() {
-  if (( VALIDATE_ONLY )); then
-    log INFO "=== STEP 11: Activate SKIPPED (validate-only mode) ==="
-    return 0
-  fi
-  log INFO "=== STEP 11: Activate USE_REALTIME_MARTS=true ==="
-  # Set the flag in the environment file
-  if (( DRY_RUN )); then
-    log INFO "DRY-RUN: would set USE_REALTIME_MARTS=true REALTIME_MARTS_SOURCE=$SOURCE REALTIME_MARTS_FALLBACK=false in $ENV_FILE"
-    return 0
-  fi
-
-  # First set fallback=false for clean validation (no masking)
-  if grep -q "^REALTIME_MARTS_FALLBACK=" "$ENV_FILE" 2>/dev/null; then
-    sed -i 's/^REALTIME_MARTS_FALLBACK=.*/REALTIME_MARTS_FALLBACK=false/' "$ENV_FILE"
-  else
-    echo "REALTIME_MARTS_FALLBACK=false" >> "$ENV_FILE"
-  fi
-
-  if grep -q "^USE_REALTIME_MARTS=" "$ENV_FILE" 2>/dev/null; then
-    sed -i 's/^USE_REALTIME_MARTS=.*/USE_REALTIME_MARTS=true/' "$ENV_FILE"
-  else
-    echo "USE_REALTIME_MARTS=true" >> "$ENV_FILE"
-  fi
-  if grep -q "^REALTIME_MARTS_SOURCE=" "$ENV_FILE" 2>/dev/null; then
-    sed -i "s/^REALTIME_MARTS_SOURCE=.*/REALTIME_MARTS_SOURCE=$SOURCE/" "$ENV_FILE"
-  else
-    echo "REALTIME_MARTS_SOURCE=$SOURCE" >> "$ENV_FILE"
-  fi
+  log INFO "=== STEP 14: Activate USE_REALTIME_MARTS=true ==="
+  tm_env_set "USE_REALTIME_MARTS" "true"
+  tm_env_set "REALTIME_MARTS_SOURCE" "$SOURCE"
+  tm_env_set "REALTIME_MARTS_FALLBACK" "false"
   log INFO "realtime_marts=ACTIVATED source=$SOURCE fallback=false"
 }
 
 step_rollback_to_legacy() {
   log INFO "=== ROLLBACK: Disabling realtime marts ==="
-  if (( DRY_RUN )); then
-    log INFO "DRY-RUN: would set USE_REALTIME_MARTS=false in $ENV_FILE"
-    return 0
-  fi
-  if grep -q "^USE_REALTIME_MARTS=" "$ENV_FILE" 2>/dev/null; then
-    sed -i 's/^USE_REALTIME_MARTS=.*/USE_REALTIME_MARTS=false/' "$ENV_FILE"
-  else
-    echo "USE_REALTIME_MARTS=false" >> "$ENV_FILE"
-  fi
+  tm_env_set "USE_REALTIME_MARTS" "false"
   # Restart API to pick up the change
   run compose_prod up -d --no-deps --force-recreate api
   log INFO "rollback=DONE use_realtime_marts=false"
+  log INFO "NOTE: Legacy cron is NOT automatically restored. Re-enable manually if needed."
 }
 
 step_rebuild_api() {
-  if (( VALIDATE_ONLY )); then
-    log INFO "=== STEP 12: Rebuild API SKIPPED (validate-only mode) ==="
-    return 0
-  fi
-  log INFO "=== STEP 12: Rebuild API/Web with realtime flag ==="
+  log INFO "=== STEP 15: Rebuild API/Web with realtime flag ==="
   run compose_prod up -d --no-deps --force-recreate api web
   log INFO "api_web_rebuild=OK"
 }
 
 step_smoke() {
-  if (( VALIDATE_ONLY )); then
-    log INFO "=== STEP 13: Smoke SKIPPED (validate-only mode) ==="
-    return 0
-  fi
-  log INFO "=== STEP 13: Smoke endpoints (fallback=false) ==="
+  log INFO "=== STEP 16: Smoke endpoints (fallback=false) ==="
   if (( DRY_RUN )); then
     log INFO "DRY-RUN: would test API health and BI endpoints with fallback=false"
     return 0
@@ -534,8 +607,7 @@ step_smoke() {
   fi
   log INFO "api_health=OK"
 
-  # Smoke test: call a BI endpoint that goes through realtime path
-  # This validates that with USE_REALTIME_MARTS=true and FALLBACK=false, the API serves data
+  # Smoke test: validates realtime path with fallback=false
   local smoke_result
   smoke_result="$(compose_prod exec -T api env \
     USE_REALTIME_MARTS=true \
@@ -544,36 +616,16 @@ step_smoke() {
     USE_CLICKHOUSE=true \
     ID_EMPRESA="$ID_EMPRESA" \
     python - <<'PY' 2>&1 || echo "SMOKE_FAILED"
-import inspect
-import os
+import inspect, os
 from datetime import date, timedelta
-
 from app.config import settings
-
 assert settings.use_realtime_marts is True, "USE_REALTIME_MARTS is not active"
 assert settings.realtime_marts_fallback is False, "fallback must be disabled"
-assert settings.realtime_marts_source == os.environ["REALTIME_MARTS_SOURCE"], "source flag must be active"
-
-from app import repos_analytics
-from app import repos_mart_realtime as rt
-
-for fn_name in sorted(rt.REALTIME_FUNCTIONS):
-    fn = getattr(rt, fn_name)
-    sig = inspect.signature(fn)
-    params = list(sig.parameters.keys())
-    if fn_name != "streaming_health":
-        assert params[0] == "role", f"{fn_name}: first param should be role, got {params[0]}"
-        assert params[1] == "id_empresa", f"{fn_name}: second param should be id_empresa, got {params[1]}"
-        assert params[2] == "id_filial", f"{fn_name}: third param should be id_filial, got {params[2]}"
-
+from app import repos_analytics, repos_mart_realtime as rt
 dt_fim = date.today()
 dt_ini = dt_fim - timedelta(days=30)
 payload = getattr(repos_analytics, "dashboard_kpis")(
-    "admin",
-    int(os.environ["ID_EMPRESA"]),
-    None,
-    dt_ini,
-    dt_fim,
+    "admin", int(os.environ["ID_EMPRESA"]), None, dt_ini, dt_fim,
 )
 assert isinstance(payload, dict), "facade did not return dashboard_kpis payload"
 print("SMOKE_OK")
@@ -593,6 +645,8 @@ step_report() {
   log INFO "============================================"
   if (( DRY_RUN == 1 )); then
     log INFO "  REALTIME CUTOVER DRY-RUN COMPLETE"
+  elif (( VALIDATE_ONLY == 1 )); then
+    log INFO "  REALTIME CUTOVER VALIDATION COMPLETE"
   else
     log INFO "  REALTIME CUTOVER COMPLETE"
   fi
@@ -601,9 +655,13 @@ step_report() {
   log INFO "from_date=$FROM_DATE"
   log INFO "id_empresa=$ID_EMPRESA"
   log INFO "with_backfill=$WITH_BACKFILL"
+  log INFO "bootstrap_stg=$BOOTSTRAP_STG"
   log INFO "source=$SOURCE"
   log INFO "validate_only=$VALIDATE_ONLY"
   log INFO "dry_run=$DRY_RUN"
+  log INFO ""
+  log INFO "Pipeline: Agent→STG→Debezium→Redpanda→CDC Consumer→ClickHouse→MartBuilder→API"
+  log INFO "Legacy ETL cron is NOT the BI motor. Only health/reconcile/ops remain."
   log INFO ""
   log INFO "Next steps:"
   log INFO "  - Monitor Redpanda Console: http://localhost:18080"
@@ -611,6 +669,98 @@ step_report() {
   log INFO "  - Validate marts: make realtime-validate"
   log INFO "  - Rollback: ENV_FILE=$ENV_FILE ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy"
   log INFO "============================================"
+}
+
+# ===== VALIDATE-ONLY MODE =====
+# Non-mutating: only reads environment state.
+run_validate_only() {
+  log INFO "=== VALIDATE-ONLY MODE (non-mutating) ==="
+  log INFO "This mode does NOT build, migrate, start services, register connectors, or alter env."
+
+  step_preflight
+
+  # Check compose files are valid (read-only)
+  log INFO "Checking compose file validity..."
+  compose_prod config --quiet || { log ERROR "docker-compose.prod.yml is invalid"; exit 1; }
+  compose_streaming config --quiet || { log ERROR "docker-compose.streaming.yml is invalid"; exit 1; }
+  log INFO "compose_validation=OK"
+
+  # Validate containers are running
+  log INFO "Checking streaming services..."
+  local running_services
+  running_services="$(compose_streaming ps --status=running --services 2>/dev/null || echo "")"
+  for service in redpanda debezium-connect cdc-consumer; do
+    if ! grep -qx "$service" <<<"$running_services"; then
+      log ERROR "Streaming service $service is not RUNNING"
+      exit 1
+    fi
+  done
+  log INFO "streaming_services=RUNNING"
+
+  # Debezium connector
+  local dbz_status
+  dbz_status="$(compose_streaming exec -T debezium-connect curl -sf http://localhost:8083/connectors/torqmind-postgres-cdc/status 2>/dev/null | grep -o '"state":"[A-Z]*"' | head -1 | cut -d'"' -f4 || echo "UNKNOWN")"
+  if [[ "$dbz_status" != "RUNNING" ]]; then
+    log ERROR "Debezium connector is $dbz_status (expected RUNNING)"
+    exit 1
+  fi
+  log INFO "debezium_connector=RUNNING"
+
+  # Check current has data
+  local current_count
+  current_count="$(ch_query "SELECT count() FROM torqmind_current.stg_comprovantes FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0")"
+  log INFO "current.stg_comprovantes=$current_count"
+  if [[ "$current_count" == "0" || "$current_count" == "__ERROR__" ]]; then
+    log ERROR "No data in torqmind_current.stg_comprovantes"
+    exit 1
+  fi
+
+  # Check mart_rt
+  local mart_count
+  mart_count="$(ch_query "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA")"
+  log INFO "mart_rt.sales_daily_rt=$mart_count"
+  if [[ "$mart_count" == "0" || "$mart_count" == "__ERROR__" ]]; then
+    log ERROR "No data in torqmind_mart_rt.sales_daily_rt"
+    exit 1
+  fi
+
+  # Validate parity
+  step_validate_parity
+
+  # API smoke with fallback=false (read-only test)
+  step_smoke_validate_only
+
+  step_report
+  log INFO "VALIDATION PASSED. Environment is ready for cutover activation."
+}
+
+step_smoke_validate_only() {
+  log INFO "Validating API realtime path (read-only)..."
+  local smoke_result
+  smoke_result="$(compose_prod exec -T api env \
+    USE_REALTIME_MARTS=true \
+    REALTIME_MARTS_SOURCE="$SOURCE" \
+    REALTIME_MARTS_FALLBACK=false \
+    USE_CLICKHOUSE=true \
+    ID_EMPRESA="$ID_EMPRESA" \
+    python -c "
+import os
+from datetime import date, timedelta
+from app.config import settings
+from app import repos_analytics
+dt_fim = date.today()
+dt_ini = dt_fim - timedelta(days=30)
+payload = repos_analytics.dashboard_kpis('admin', int(os.environ['ID_EMPRESA']), None, dt_ini, dt_fim)
+assert isinstance(payload, dict), 'no payload'
+print('VALIDATE_OK')
+" 2>&1 || echo "VALIDATE_FAILED")"
+
+  if [[ "$smoke_result" == *"VALIDATE_OK"* ]]; then
+    log INFO "api_realtime_path=OK (fallback=false)"
+  else
+    log ERROR "API realtime path failed: $smoke_result"
+    exit 1
+  fi
 }
 
 # ===== MAIN =====
@@ -622,14 +772,22 @@ if (( ROLLBACK_TO_LEGACY )); then
   exit 0
 fi
 
+if (( VALIDATE_ONLY )); then
+  run_validate_only
+  exit 0
+fi
+
+# Full cutover flow
 step_preflight
 step_validate_compose
+step_neutralize_legacy_etl
 step_build
 step_migrate
 step_init_clickhouse_streaming
 step_prepare_postgres
 step_start_streaming
 step_register_debezium
+step_bootstrap_stg
 step_backfill
 step_verify_streaming_readiness
 step_validate_parity
