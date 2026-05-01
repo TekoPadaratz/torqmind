@@ -131,6 +131,61 @@ The MartBuilder applies `toTimezone(dt_evento, 'America/Sao_Paulo')` before:
 
 This ensures a sale at 23:30 BRT (02:30 UTC next day) is correctly attributed to the BRT calendar day.
 
+## Slim Typed Layer (Memory-Safe Architecture)
+
+The MartBuilder uses a **two-phase architecture** to avoid MEMORY_LIMIT_EXCEEDED on 8 GB servers:
+
+1. **Slim population**: reads `stg_comprovantes` payload ONCE per batch, extracts typed fields into `stg_*_slim` tables (~100 bytes/row vs ~2KB with payload).
+2. **Mart aggregation**: reads ONLY from slim tables. No `JSONExtractString`, no heavy `FINAL` on multi-million row tables with payload.
+
+Slim tables (`sql/clickhouse/streaming/025_slim_tables.sql`):
+- `torqmind_current.stg_comprovantes_slim`
+- `torqmind_current.stg_itenscomprovantes_slim`
+- `torqmind_current.stg_formas_pgto_slim`
+
+**Why payload can't be in mart queries**: On 3M+ rows, each row's `payload` is ~2KB of JSON. `FINAL` forces deduplication of the entire table in memory. With payload: `3M × 2KB = 6+ GB` which exceeds 8 GB server limits. With slim (no payload): `3M × 100B = 300 MB`.
+
+### Backfill Strategy
+
+Backfill processes data in batches of 7 `data_keys` (~1 week) to limit memory working set:
+```bash
+docker exec torqmind-cdc-consumer python -m torqmind_cdc_consumer.cli backfill-stg \
+  --from-date 2025-01-01 --id-empresa 1
+```
+
+Memory budget per query: `max_memory_usage = 3 GB`, `max_threads = 2`.
+
+### Diagnosing MEMORY_LIMIT_EXCEEDED
+
+```bash
+# Check ClickHouse error log
+docker exec torqmind-clickhouse-1 grep "MEMORY_LIMIT_EXCEEDED" /var/log/clickhouse-server/clickhouse-server.err.log
+
+# Check peak memory of recent queries
+docker exec torqmind-clickhouse-1 clickhouse-client --user torqmind --password torqmind \
+  -q "SELECT formatReadableSize(memory_usage), substring(query,1,80) FROM system.query_log
+      WHERE type='QueryFinish' ORDER BY memory_usage DESC LIMIT 5"
+
+# Run stability check
+ENV_FILE=.env.e2e.local COMPOSE_FILE=docker-compose.prod.yml bash deploy/scripts/clickhouse-stability-check.sh
+```
+
+### Recovery if slim tables are empty or corrupted
+
+```bash
+# Truncate and re-populate slim from STG
+docker exec torqmind-clickhouse-1 clickhouse-client --user torqmind --password torqmind \
+  -q "TRUNCATE TABLE torqmind_current.stg_comprovantes_slim"
+docker exec torqmind-clickhouse-1 clickhouse-client --user torqmind --password torqmind \
+  -q "TRUNCATE TABLE torqmind_current.stg_itenscomprovantes_slim"
+docker exec torqmind-clickhouse-1 clickhouse-client --user torqmind --password torqmind \
+  -q "TRUNCATE TABLE torqmind_current.stg_formas_pgto_slim"
+
+# Re-run backfill (will re-populate slim then rebuild marts)
+docker exec torqmind-cdc-consumer python -m torqmind_cdc_consumer.cli backfill-stg \
+  --from-date 2025-01-01 --id-empresa 1
+```
+
 ## Data Profile
 
 ```bash

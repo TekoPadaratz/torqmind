@@ -193,15 +193,27 @@ def _do_flush(writer: ClickHouseWriter, consumer: Consumer, state: ConsumerState
                 processed_total=state.events_processed,
                 errors_total=state.events_errors,
             )
-            # Refresh realtime marts for affected windows
+            # Refresh realtime marts for affected windows.
+            # MartBuilder has internal circuit breaker with exponential backoff.
+            # We catch all exceptions here to avoid crashing the consumer loop
+            # if ClickHouse is temporarily overloaded (MEMORY_LIMIT_EXCEEDED etc).
             try:
                 results = mart_builder.refresh_if_needed()
                 if results:
                     refreshed = [r.mart_name for r in results if r.error is None]
+                    errors = [r for r in results if r.error is not None]
                     if refreshed:
                         logger.info("marts_refreshed", marts=refreshed)
+                    if errors:
+                        logger.warning(
+                            "mart_refresh_partial_failure",
+                            failed=[r.mart_name for r in errors],
+                            error=errors[0].error[:200] if errors else "",
+                        )
             except Exception as e:
-                logger.warning("mart_refresh_failed", error=str(e))
+                # Never crash the consumer for mart failures.
+                # MartBuilder tracks failures internally and backs off.
+                logger.warning("mart_refresh_failed", error=str(e)[:200])
     except Exception as e:
         logger.error("flush_failed", error=str(e))
         raise
