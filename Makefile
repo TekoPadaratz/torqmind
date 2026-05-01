@@ -289,13 +289,13 @@ streaming-init-mart-rt:
 	@ENV_FILE=$(PROD_ENV_FILE) COMPOSE_FILE=docker-compose.prod.yml ./deploy/scripts/streaming-init-mart-rt.sh
 
 realtime-cutover:
-	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill
+	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill --source stg
 
 realtime-validate:
-	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" COMPOSE_FILE=docker-compose.prod.yml ./deploy/scripts/realtime-validate-cutover.sh
+	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" COMPOSE_FILE=docker-compose.prod.yml ./deploy/scripts/realtime-validate-cutover.sh --source stg
 
 realtime-backfill:
-	@docker compose -f $(STREAMING_COMPOSE) --env-file $(ENV_FILE) exec -T cdc-consumer python -m torqmind_cdc_consumer.cli backfill --from-date 2025-01-01 --id-empresa 1
+	@docker compose -f $(STREAMING_COMPOSE) --env-file $(ENV_FILE) exec -T cdc-consumer python -m torqmind_cdc_consumer.cli backfill-stg --from-date 2025-01-01 --id-empresa 1
 
 realtime-rollback:
 	@ENV_FILE="$${ENV_FILE:-$(PROD_ENV_FILE)}" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy

@@ -34,6 +34,7 @@ ID_FILIAL=""
 WITH_BACKFILL=0
 VALIDATE_ONLY=0
 ROLLBACK_TO_LEGACY=0
+SOURCE="stg"
 
 source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
 
@@ -51,6 +52,7 @@ Flags:
   --with-backfill        Run mart_rt backfill from current data
   --validate-only        Only validate parity, don't cutover
   --rollback-to-legacy   Disable realtime marts and revert to legacy
+  --source stg|dw        Realtime source (default stg)
   --help
 
 Examples:
@@ -82,11 +84,16 @@ parse_args() {
       --with-backfill) WITH_BACKFILL=1 ;;
       --validate-only) VALIDATE_ONLY=1 ;;
       --rollback-to-legacy) ROLLBACK_TO_LEGACY=1 ;;
+      --source)
+        [[ $# -ge 2 ]] || { echo "ERROR: --source requires stg or dw" >&2; exit 2; }
+        SOURCE="$2"; shift ;;
       --help|-h) usage; exit 0 ;;
       *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
     shift
   done
+  SOURCE="$(printf '%s' "$SOURCE" | tr '[:upper:]' '[:lower:]')"
+  [[ "$SOURCE" == "stg" || "$SOURCE" == "dw" ]] || { echo "ERROR: --source must be stg or dw" >&2; exit 2; }
 }
 
 run() {
@@ -165,7 +172,7 @@ step_preflight() {
   command -v docker >/dev/null 2>&1 || { echo "ERROR: docker not found" >&2; exit 1; }
   run docker compose version
   run find "$ROOT_DIR/deploy/scripts" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
-  log INFO "preflight=OK env_file=$ENV_FILE from_date=$FROM_DATE id_empresa=$ID_EMPRESA"
+  log INFO "preflight=OK env_file=$ENV_FILE from_date=$FROM_DATE id_empresa=$ID_EMPRESA source=$SOURCE"
 }
 
 step_validate_compose() {
@@ -269,34 +276,46 @@ step_backfill() {
       log WARN "No raw CDC events after ${max_wait}s — proceeding with backfill from current"
     fi
 
-    # Wait for current tables to have data
+    # Wait for current tables to have source data
     elapsed=0
+    local current_source_table="fact_venda"
+    if [[ "$SOURCE" == "stg" ]]; then
+      current_source_table="stg_comprovantes"
+    fi
     while (( elapsed < max_wait )); do
       local current_count
       current_count="$(compose_prod exec -T clickhouse clickhouse-client \
         --user "${CLICKHOUSE_USER:-torqmind}" --password "${CLICKHOUSE_PASSWORD:-}" \
-        --format=TabSeparated -q "SELECT count() FROM torqmind_current.fact_venda FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null || echo "0")"
+        --format=TabSeparated -q "SELECT count() FROM torqmind_current.${current_source_table} FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null || echo "0")"
       current_count="${current_count//[[:space:]]/}"
       if (( current_count > 0 )); then
-        log INFO "Current fact_venda has data: $current_count rows"
+        log INFO "Current ${current_source_table} has data: $current_count rows"
         break
       fi
-      log INFO "  Waiting for current.fact_venda data... (${elapsed}s/${max_wait}s)"
+      log INFO "  Waiting for current.${current_source_table} data... (${elapsed}s/${max_wait}s)"
       sleep "$interval"
       elapsed=$((elapsed + interval))
     done
     if (( elapsed >= max_wait )); then
-      log ERROR "No data in torqmind_current.fact_venda after ${max_wait}s. Cannot backfill."
+      log ERROR "No data in torqmind_current.${current_source_table} after ${max_wait}s. Cannot backfill."
       exit 1
     fi
   fi
 
   # Run mart builder backfill via the CDC consumer CLI
+  local backfill_command="backfill"
+  if [[ "$SOURCE" == "stg" ]]; then
+    backfill_command="backfill-stg"
+  fi
   local backfill_cmd=(
     docker compose -f "$STREAMING_COMPOSE_FILE" --env-file "$ENV_FILE"
-    exec -T cdc-consumer python -m torqmind_cdc_consumer.cli backfill
+    exec -T cdc-consumer env REALTIME_MARTS_SOURCE="$SOURCE"
+    python -m torqmind_cdc_consumer.cli "$backfill_command"
     --from-date "$FROM_DATE" --id-empresa "$ID_EMPRESA"
   )
+  if [[ "$backfill_command" == "backfill" ]]; then
+    backfill_cmd+=(--source "$SOURCE")
+  fi
   if [[ -n "$ID_FILIAL" ]]; then
     backfill_cmd+=(--id-filial "$ID_FILIAL")
   fi
@@ -358,38 +377,61 @@ step_verify_streaming_readiness() {
     exit 1
   fi
 
-  local cdc_tables=(
-    fact_venda
-    fact_venda_item
-    fact_pagamento_comprovante
-    fact_comprovante
-    fact_caixa_turno
-    fact_financeiro
-    fact_risco_evento
-    dim_filial
-    dim_produto
-    dim_grupo_produto
-    dim_funcionario
-    dim_usuario_caixa
-    dim_cliente
-  )
+  local source_schema current_prefix
+  local -a cdc_tables
+  if [[ "$SOURCE" == "stg" ]]; then
+    source_schema="stg"
+    current_prefix="stg_"
+    cdc_tables=(
+      comprovantes
+      itenscomprovantes
+      formas_pgto_comprovantes
+      turnos
+      entidades
+      produtos
+      grupoprodutos
+      funcionarios
+      usuarios
+      localvendas
+      contaspagar
+      contasreceber
+    )
+  else
+    source_schema="dw"
+    current_prefix=""
+    cdc_tables=(
+      fact_venda
+      fact_venda_item
+      fact_pagamento_comprovante
+      fact_comprovante
+      fact_caixa_turno
+      fact_financeiro
+      fact_risco_evento
+      dim_filial
+      dim_produto
+      dim_grupo_produto
+      dim_funcionario
+      dim_usuario_caixa
+      dim_cliente
+    )
+  fi
 
   local table source_count
   for table in "${cdc_tables[@]}"; do
-    source_count="$(pg_scalar "SELECT count(*) FROM dw.${table} WHERE id_empresa=${ID_EMPRESA}")"
+    source_count="$(pg_scalar "SELECT count(*) FROM ${source_schema}.${table} WHERE id_empresa=${ID_EMPRESA}")"
     if [[ "$source_count" == "__ERROR__" ]]; then
-      log ERROR "Could not read PostgreSQL source count for dw.${table}"
+      log ERROR "Could not read PostgreSQL source count for ${source_schema}.${table}"
       exit 1
     fi
     if (( source_count == 0 )); then
-      log INFO "source dw.${table}=0; raw/current positive check not required"
+      log INFO "source ${source_schema}.${table}=0; raw/current positive check not required"
       continue
     fi
     wait_for_ch_positive "raw.${table}" \
-      "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='dw' AND table_name='${table}' AND id_empresa=${ID_EMPRESA}" \
+      "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='${source_schema}' AND table_name='${table}' AND id_empresa=${ID_EMPRESA}" \
       120
     wait_for_ch_positive "current.${table}" \
-      "SELECT count() FROM torqmind_current.${table} FINAL WHERE id_empresa=${ID_EMPRESA} AND is_deleted=0" \
+      "SELECT count() FROM torqmind_current.${current_prefix}${table} FINAL WHERE id_empresa=${ID_EMPRESA} AND is_deleted=0" \
       120
   done
 
@@ -405,7 +447,7 @@ step_validate_parity() {
     log ERROR "realtime-validate-cutover.sh not found — cannot validate. Aborting."
     exit 1
   fi
-  run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh"
+  run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" --source "$SOURCE"
   log INFO "parity_validation=PASSED"
 }
 
@@ -417,7 +459,7 @@ step_activate_realtime() {
   log INFO "=== STEP 11: Activate USE_REALTIME_MARTS=true ==="
   # Set the flag in the environment file
   if (( DRY_RUN )); then
-    log INFO "DRY-RUN: would set USE_REALTIME_MARTS=true REALTIME_MARTS_FALLBACK=false in $ENV_FILE"
+    log INFO "DRY-RUN: would set USE_REALTIME_MARTS=true REALTIME_MARTS_SOURCE=$SOURCE REALTIME_MARTS_FALLBACK=false in $ENV_FILE"
     return 0
   fi
 
@@ -433,7 +475,12 @@ step_activate_realtime() {
   else
     echo "USE_REALTIME_MARTS=true" >> "$ENV_FILE"
   fi
-  log INFO "realtime_marts=ACTIVATED fallback=false"
+  if grep -q "^REALTIME_MARTS_SOURCE=" "$ENV_FILE" 2>/dev/null; then
+    sed -i "s/^REALTIME_MARTS_SOURCE=.*/REALTIME_MARTS_SOURCE=$SOURCE/" "$ENV_FILE"
+  else
+    echo "REALTIME_MARTS_SOURCE=$SOURCE" >> "$ENV_FILE"
+  fi
+  log INFO "realtime_marts=ACTIVATED source=$SOURCE fallback=false"
 }
 
 step_rollback_to_legacy() {
@@ -492,6 +539,7 @@ step_smoke() {
   local smoke_result
   smoke_result="$(compose_prod exec -T api env \
     USE_REALTIME_MARTS=true \
+    REALTIME_MARTS_SOURCE="$SOURCE" \
     REALTIME_MARTS_FALLBACK=false \
     USE_CLICKHOUSE=true \
     ID_EMPRESA="$ID_EMPRESA" \
@@ -504,6 +552,7 @@ from app.config import settings
 
 assert settings.use_realtime_marts is True, "USE_REALTIME_MARTS is not active"
 assert settings.realtime_marts_fallback is False, "fallback must be disabled"
+assert settings.realtime_marts_source == os.environ["REALTIME_MARTS_SOURCE"], "source flag must be active"
 
 from app import repos_analytics
 from app import repos_mart_realtime as rt
@@ -542,12 +591,17 @@ PY
 
 step_report() {
   log INFO "============================================"
-  log INFO "  REALTIME CUTOVER COMPLETE"
+  if (( DRY_RUN == 1 )); then
+    log INFO "  REALTIME CUTOVER DRY-RUN COMPLETE"
+  else
+    log INFO "  REALTIME CUTOVER COMPLETE"
+  fi
   log INFO "============================================"
   log INFO "env_file=$ENV_FILE"
   log INFO "from_date=$FROM_DATE"
   log INFO "id_empresa=$ID_EMPRESA"
   log INFO "with_backfill=$WITH_BACKFILL"
+  log INFO "source=$SOURCE"
   log INFO "validate_only=$VALIDATE_ONLY"
   log INFO "dry_run=$DRY_RUN"
   log INFO ""

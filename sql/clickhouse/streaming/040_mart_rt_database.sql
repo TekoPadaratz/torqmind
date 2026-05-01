@@ -19,5 +19,5 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_publication_log (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(published_at)
 ORDER BY (mart_name, id_empresa, published_at)
-TTL published_at + INTERVAL 30 DAY
+TTL toDateTime(published_at) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;

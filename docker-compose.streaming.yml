@@ -42,7 +42,7 @@ services:
         limits:
           memory: 768M
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'HEALTHY'"]
+      test: ["CMD-SHELL", "rpk cluster health | grep -qi '^Healthy:[[:space:]]*true'"]
       interval: 15s
       timeout: 10s
       retries: 10
@@ -134,6 +134,7 @@ services:
       CDC_BATCH_SIZE: ${CDC_BATCH_SIZE:-500}
       CDC_FLUSH_INTERVAL_SECONDS: ${CDC_FLUSH_INTERVAL_SECONDS:-5}
       ENABLE_MART_BUILDER: ${ENABLE_MART_BUILDER:-true}
+      REALTIME_MARTS_SOURCE: ${REALTIME_MARTS_SOURCE:-stg}
       LOG_LEVEL: ${CDC_LOG_LEVEL:-INFO}
     depends_on:
       redpanda:

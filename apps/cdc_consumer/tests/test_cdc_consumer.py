@@ -102,6 +102,24 @@ class TestDebeziumParsing(unittest.TestCase):
         self.assertEqual(event.id_empresa, 5)
         self.assertEqual(event.data_key, 20260101)
 
+    def test_extract_data_key_from_stg_dt_evento(self):
+        after = {
+            "id_empresa": 1,
+            "id_filial": 14458,
+            "id_db": 9,
+            "id_comprovante": 77,
+            "dt_evento": "2026-04-30T13:45:00Z",
+            "payload": {"VLRTOTAL": "42.50"},
+        }
+        value_bytes, key_bytes = self._make_event(
+            op="c", schema="stg", table="comprovantes", after=after
+        )
+        event = parse_debezium_event("torqmind.stg.comprovantes", 0, 300, key_bytes, value_bytes)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.table_schema, "stg")
+        self.assertEqual(event.table_name, "comprovantes")
+        self.assertEqual(event.data_key, 20260430)
+
 
 class TestMappings(unittest.TestCase):
     """Test table mappings."""
@@ -113,6 +131,10 @@ class TestMappings(unittest.TestCase):
             "dw.fact_risco_evento", "dw.dim_filial", "dw.dim_produto",
             "dw.dim_grupo_produto", "dw.dim_funcionario", "dw.dim_usuario_caixa",
             "dw.dim_local_venda", "dw.dim_cliente", "app.payment_type_map",
+            "stg.comprovantes", "stg.itenscomprovantes", "stg.formas_pgto_comprovantes",
+            "stg.turnos", "stg.entidades", "stg.produtos", "stg.grupoprodutos",
+            "stg.funcionarios", "stg.usuarios", "stg.localvendas",
+            "stg.contaspagar", "stg.contasreceber", "stg.financeiro",
         ]
         for table in expected_tables:
             self.assertIn(table, TABLE_MAPPINGS, f"Missing mapping for {table}")
@@ -134,6 +156,15 @@ class TestMappings(unittest.TestCase):
     def test_payment_type_map_key(self):
         m = get_mapping("app", "payment_type_map")
         self.assertEqual(m.primary_key, ("id",))
+
+    def test_stg_canonical_sales_keys(self):
+        comprovantes = get_mapping("stg", "comprovantes")
+        itens = get_mapping("stg", "itenscomprovantes")
+        pagamentos = get_mapping("stg", "formas_pgto_comprovantes")
+        self.assertEqual(comprovantes.ch_table, "stg_comprovantes")
+        self.assertEqual(comprovantes.primary_key, ("id_empresa", "id_filial", "id_db", "id_comprovante"))
+        self.assertEqual(itens.primary_key, ("id_empresa", "id_filial", "id_db", "id_comprovante", "id_itemcomprovante"))
+        self.assertEqual(pagamentos.primary_key, ("id_empresa", "id_filial", "id_referencia", "tipo_forma"))
 
 
 class TestClickHouseWriter(unittest.TestCase):
@@ -300,6 +331,22 @@ class TestDDLAlignment(unittest.TestCase):
                 self.assertIn("is_deleted", self.current_ddl)
                 self.assertIn("source_ts_ms", self.current_ddl)
                 self.assertIn("ingested_at", self.current_ddl)
+
+    def test_current_mapping_columns_exist_in_target_table_block(self):
+        """A mapping must not reference a column absent from its ClickHouse target table."""
+        import re
+
+        for key, mapping in TABLE_MAPPINGS.items():
+            with self.subTest(table=key):
+                pattern = rf"CREATE TABLE IF NOT EXISTS torqmind_current\.{mapping.ch_table}\s*\((.*?)\)\s*ENGINE"
+                match = re.search(pattern, self.current_ddl, re.DOTALL)
+                self.assertIsNotNone(match, f"DDL missing table definition for {mapping.ch_table}")
+                body = match.group(1) if match else ""
+                ddl_cols = {line.strip().split()[0] for line in body.splitlines() if line.strip() and not line.strip().startswith("--")}
+                missing = set(mapping.columns) - ddl_cols
+                self.assertFalse(missing, f"{mapping.ch_table} missing mapped columns: {sorted(missing)}")
+                self.assertIn("is_deleted", ddl_cols)
+                self.assertIn("source_ts_ms", ddl_cols)
 
     def test_ops_state_has_writer_columns(self):
         """Ops cdc_table_state must have columns the writer inserts."""

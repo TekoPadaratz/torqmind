@@ -1,7 +1,8 @@
 """CLI entry point for TorqMind CDC Consumer mart builder operations.
 
 Usage:
-  python -m torqmind_cdc_consumer.cli backfill --from-date 2025-01-01 --id-empresa 1
+  python -m torqmind_cdc_consumer.cli backfill-stg --from-date 2025-01-01 --id-empresa 1
+  python -m torqmind_cdc_consumer.cli backfill --source dw --from-date 2025-01-01 --id-empresa 1
   python -m torqmind_cdc_consumer.cli status
 """
 
@@ -26,6 +27,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         to_date=args.to_date,
         id_empresa=args.id_empresa,
         id_filial=args.id_filial,
+        source=args.source,
     )
 
     builder = MartBuilder(
@@ -33,6 +35,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         clickhouse_port=settings.clickhouse_port,
         clickhouse_user=settings.clickhouse_user,
         clickhouse_password=settings.clickhouse_password,
+        source=args.source,
     )
 
     results = builder.backfill(
@@ -62,6 +65,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         clickhouse_port=settings.clickhouse_port,
         clickhouse_user=settings.clickhouse_user,
         clickhouse_password=settings.clickhouse_password,
+        source=settings.realtime_marts_source,
     )
 
     client = builder._get_client()
@@ -88,12 +92,20 @@ def main() -> None:
     bp.add_argument("--to-date", default=None, help="End date YYYY-MM-DD (optional)")
     bp.add_argument("--id-empresa", type=int, default=1, help="Tenant ID")
     bp.add_argument("--id-filial", type=int, default=None, help="Branch ID (optional, all if omitted)")
+    bp.add_argument("--source", choices=("stg", "dw"), default=settings.realtime_marts_source, help="Realtime source")
+
+    stg_bp = subparsers.add_parser("backfill-stg", help="Backfill mart_rt from STG CDC current tables")
+    stg_bp.add_argument("--from-date", default="2025-01-01", help="Start date YYYY-MM-DD")
+    stg_bp.add_argument("--to-date", default=None, help="End date YYYY-MM-DD (optional)")
+    stg_bp.add_argument("--id-empresa", type=int, default=1, help="Tenant ID")
+    stg_bp.add_argument("--id-filial", type=int, default=None, help="Branch ID (optional, all if omitted)")
+    stg_bp.set_defaults(source="stg")
 
     # status
     subparsers.add_parser("status", help="Show mart builder status")
 
     args = parser.parse_args()
-    if args.command == "backfill":
+    if args.command in {"backfill", "backfill-stg"}:
         cmd_backfill(args)
     elif args.command == "status":
         cmd_status(args)

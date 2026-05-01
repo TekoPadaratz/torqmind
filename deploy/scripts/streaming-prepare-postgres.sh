@@ -42,7 +42,7 @@ fi
 echo ""
 echo "Creating Debezium support objects..."
 
-docker exec "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=0 <<'SQL'
+docker exec -i "$PG_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 <<'SQL'
 -- Heartbeat table for Debezium
 CREATE TABLE IF NOT EXISTS app.debezium_heartbeat (
     id integer PRIMARY KEY DEFAULT 1,
@@ -58,29 +58,78 @@ CREATE TABLE IF NOT EXISTS app.debezium_signal (
     data varchar(2048) NULL
 );
 
--- Create publication for CDC (idempotent)
+-- Create/update publication for CDC (idempotent).
+-- STG tables are mandatory for the final realtime hot path. DW tables remain
+-- published only for reconciliation and emergency rollback.
 DO $$
+DECLARE
+    required_tables text[] := ARRAY[
+        'stg.comprovantes',
+        'stg.itenscomprovantes',
+        'stg.formas_pgto_comprovantes',
+        'stg.turnos',
+        'stg.entidades',
+        'stg.produtos',
+        'stg.grupoprodutos',
+        'stg.funcionarios',
+        'stg.usuarios',
+        'stg.localvendas',
+        'stg.contaspagar',
+        'stg.contasreceber',
+        'app.payment_type_map'
+    ];
+    optional_tables text[] := ARRAY[
+        'stg.clientes',
+        'stg.filiais',
+        'app.competitor_fuel_prices',
+        'app.goals',
+        'dw.fact_venda',
+        'dw.fact_venda_item',
+        'dw.fact_pagamento_comprovante',
+        'dw.fact_caixa_turno',
+        'dw.fact_comprovante',
+        'dw.fact_financeiro',
+        'dw.fact_risco_evento',
+        'dw.dim_filial',
+        'dw.dim_produto',
+        'dw.dim_grupo_produto',
+        'dw.dim_funcionario',
+        'dw.dim_usuario_caixa',
+        'dw.dim_local_venda',
+        'dw.dim_cliente'
+    ];
+    table_name text;
+    publication_tables text := '';
+    missing_required text[];
 BEGIN
+    SELECT array_agg(t)
+      INTO missing_required
+    FROM unnest(required_tables) AS t
+    WHERE to_regclass(t) IS NULL;
+
+    IF missing_required IS NOT NULL THEN
+        RAISE EXCEPTION 'Cannot prepare STG-direct CDC publication. Missing required table(s): %', missing_required;
+    END IF;
+
+    FOR table_name IN
+        SELECT t FROM unnest(required_tables || optional_tables) AS t
+        WHERE to_regclass(t) IS NOT NULL
+        ORDER BY t
+    LOOP
+        publication_tables := publication_tables
+            || CASE WHEN publication_tables = '' THEN '' ELSE ', ' END
+            || to_regclass(table_name)::text;
+
+        -- Required for update/delete events on tables without a stable PK in STG.
+        EXECUTE format('ALTER TABLE %s REPLICA IDENTITY FULL', to_regclass(table_name));
+    END LOOP;
+
     IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'torqmind_cdc_publication') THEN
-        EXECUTE 'CREATE PUBLICATION torqmind_cdc_publication FOR TABLE
-            dw.fact_venda,
-            dw.fact_venda_item,
-            dw.fact_pagamento_comprovante,
-            dw.fact_caixa_turno,
-            dw.fact_comprovante,
-            dw.fact_financeiro,
-            dw.fact_risco_evento,
-            dw.dim_filial,
-            dw.dim_produto,
-            dw.dim_grupo_produto,
-            dw.dim_funcionario,
-            dw.dim_usuario_caixa,
-            dw.dim_local_venda,
-            dw.dim_cliente,
-            app.payment_type_map';
+        EXECUTE 'CREATE PUBLICATION torqmind_cdc_publication FOR TABLE ' || publication_tables;
         RAISE NOTICE 'Publication torqmind_cdc_publication created';
     ELSE
-        RAISE NOTICE 'Publication torqmind_cdc_publication already exists';
+        EXECUTE 'ALTER PUBLICATION torqmind_cdc_publication SET TABLE ' || publication_tables;
+        RAISE NOTICE 'Publication torqmind_cdc_publication updated';
     END IF;
 END $$;
 

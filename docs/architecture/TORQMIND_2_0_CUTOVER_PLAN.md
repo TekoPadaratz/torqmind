@@ -1,7 +1,7 @@
 # TorqMind 2.0 — Cutover Plan: Batch → Streaming
 
 **Data:** 2026-04-30
-**Status:** Fase 1 completa (fundação CDC paralela)
+**Status:** STG-direct cutover candidate implemented; pending environment E2E acceptance
 **Branch:** nova-branch-limpa
 
 ---
@@ -21,12 +21,12 @@
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    STREAMING 2.0 (PARALELO, AINDA NÃO CORTA)             │
+│                    STREAMING 2.0 (STG-DIRETO)                             │
 │                                                                           │
-│  PostgreSQL (dw.*) → Debezium → Redpanda → CDC Consumer                 │
-│                                    → ClickHouse raw/current/ops          │
+│  PostgreSQL (stg.*) → Debezium → Redpanda → CDC Consumer                │
+│                                    → ClickHouse raw/current.stg_*/ops    │
 │                                                                           │
-│  Status: fundação criada, não validada em produção.                      │
+│  Status: implementado em código/scripts; exige E2E no ambiente alvo.      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,16 +50,16 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         PRODUÇÃO ALVO (STREAMING-FIRST)                   │
 │                                                                           │
-│  Agent → NDJSON → FastAPI Ingest → stg.* → ETL → dw.*                   │
+│  Agent → NDJSON → FastAPI Ingest → stg.*                                │
 │                                                                           │
-│  dw.* → Debezium CDC → Redpanda → CDC Consumer                          │
+│  stg.* → Debezium CDC → Redpanda → CDC Consumer                         │
 │       → ClickHouse raw → current → streaming marts → API BI → Next.js   │
 │                                                                           │
 │  Latência: < 10 segundos (CDC + consumer + query)                        │
 │                                                                           │
 │  Agent/Jarvis: consome eventos para alertas reativos sub-segundo         │
 │                                                                           │
-│  Batch ETL: mantido como safety net com intervalo relaxado (30min)       │
+│  Batch ETL/DW: mantido para auditoria, reconciliação e rollback          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,14 +102,14 @@ make test-cdc-consumer         # 29 testes passam
 ## 4. Fase 2: Raw/Current Validado
 
 ### Objetivo
-Validar que `torqmind_current` reflete fielmente o estado de `dw.*` no PostgreSQL.
+Validar que `torqmind_current.stg_*` reflete fielmente o estado de `stg.*` no PostgreSQL.
 
 ### Tarefas
 
 | # | Tarefa | Critério de aceite |
 |---|--------|-------------------|
 | 1 | Deploy streaming em staging/homolog | Stack rodando 48h sem crash |
-| 2 | Snapshot completo (Debezium initial) | Count de cada tabela current = count DW PG |
+| 2 | Snapshot completo (Debezium initial) | Count de cada tabela current STG = count STG PG |
 | 3 | CDC contínuo 48h | Lag < 5s sustentado |
 | 4 | Reconciliação automática | Script compara PG vs CH current por tenant/tabela |
 | 5 | Stress test com ingest simultâneo | ETL batch + CDC simultâneo não gera inconsistência |
@@ -336,7 +336,7 @@ docker compose restart api
 
 - [ ] `make streaming-status` mostra todos containers healthy
 - [ ] Debezium connector status = RUNNING
-- [ ] `rpk topic list` mostra tópicos `torqmind.dw.*`
+- [ ] `rpk topic list` mostra tópicos `torqmind.stg.*`
 - [ ] Consumer group lag < 100 mensagens
 - [ ] `streaming-validate-cdc.sh` mostra raw_count > 0
 - [ ] `streaming-validate-cdc.sh` mostra current tables com dados

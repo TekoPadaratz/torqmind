@@ -307,3 +307,280 @@ CREATE TABLE IF NOT EXISTS torqmind_current.payment_type_map (
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id)
 SETTINGS index_granularity = 8192;
+
+-- ============================================================
+-- STG CANONICAL SOURCE CURRENT TABLES
+-- ============================================================
+-- These tables are the STG-direct hot path for TorqMind 2.0 realtime.
+-- They keep the latest Debezium state for canonical PostgreSQL stg.* rows.
+-- DW-origin current tables above remain for reconciliation and rollback only.
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_filiais (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_funcionarios (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_funcionario    Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_funcionario)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_usuarios (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_usuario        Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_usuario)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_entidades (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_entidade       Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_entidade)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_clientes (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_cliente        Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_cliente)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_grupoprodutos (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_grupoprodutos  Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_grupoprodutos)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_localvendas (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_localvendas    Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_localvendas)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_produtos (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_produto        Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_produto)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_turnos (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_turno          Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_turno)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_comprovantes (
+    id_empresa          Int32 NOT NULL,
+    id_filial           Int32 NOT NULL,
+    id_db               Int32 NOT NULL,
+    id_comprovante      Int32 NOT NULL,
+    payload             String NOT NULL DEFAULT '{}',
+    ingested_at         Nullable(DateTime64(6, 'UTC')),
+    dt_evento           Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow        Nullable(Int64),
+    id_chave_natural    Nullable(String),
+    received_at         Nullable(DateTime64(6, 'UTC')),
+    referencia_shadow   Nullable(Int64),
+    id_usuario_shadow   Nullable(Int32),
+    id_turno_shadow     Nullable(Int32),
+    id_cliente_shadow   Nullable(Int32),
+    valor_total_shadow  Nullable(Decimal(18,2)),
+    cancelado_shadow    Nullable(UInt8),
+    situacao_shadow     Nullable(Int32),
+    is_deleted          UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms        Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_comprovante)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_itenscomprovantes (
+    id_empresa               Int32 NOT NULL,
+    id_filial                Int32 NOT NULL,
+    id_db                    Int32 NOT NULL,
+    id_comprovante           Int32 NOT NULL,
+    id_itemcomprovante       Int32 NOT NULL,
+    payload                  String NOT NULL DEFAULT '{}',
+    ingested_at              Nullable(DateTime64(6, 'UTC')),
+    dt_evento                Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow             Nullable(Int64),
+    id_chave_natural         Nullable(String),
+    received_at              Nullable(DateTime64(6, 'UTC')),
+    id_produto_shadow        Nullable(Int32),
+    id_grupo_produto_shadow  Nullable(Int32),
+    id_local_venda_shadow    Nullable(Int32),
+    id_funcionario_shadow    Nullable(Int32),
+    cfop_shadow              Nullable(Int32),
+    qtd_shadow               Nullable(Decimal(18,3)),
+    valor_unitario_shadow    Nullable(Decimal(18,6)),
+    total_shadow             Nullable(Decimal(18,2)),
+    desconto_shadow          Nullable(Decimal(18,2)),
+    custo_unitario_shadow    Nullable(Decimal(18,6)),
+    is_deleted               UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms             Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_formas_pgto_comprovantes (
+    id_empresa          Int32 NOT NULL,
+    id_filial           Int32 NOT NULL,
+    id_referencia       Int64 NOT NULL,
+    tipo_forma          Int32 NOT NULL,
+    payload             String NOT NULL DEFAULT '{}',
+    ingested_at         Nullable(DateTime64(6, 'UTC')),
+    dt_evento           Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow        Nullable(Int64),
+    id_chave_natural    Nullable(String),
+    received_at         Nullable(DateTime64(6, 'UTC')),
+    valor_shadow        Nullable(Decimal(18,2)),
+    nsu_shadow          Nullable(String),
+    autorizacao_shadow  Nullable(String),
+    bandeira_shadow     Nullable(String),
+    rede_shadow         Nullable(String),
+    tef_shadow          Nullable(String),
+    is_deleted          UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms        Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_referencia, tipo_forma)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_contaspagar (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_db             Int32 NOT NULL,
+    id_contaspagar    Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_contaspagar)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_contasreceber (
+    id_empresa         Int32 NOT NULL,
+    id_filial          Int32 NOT NULL,
+    id_db              Int32 NOT NULL,
+    id_contasreceber   Int32 NOT NULL,
+    payload            String NOT NULL DEFAULT '{}',
+    ingested_at        Nullable(DateTime64(6, 'UTC')),
+    dt_evento          Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow       Nullable(Int64),
+    id_chave_natural   Nullable(String),
+    received_at        Nullable(DateTime64(6, 'UTC')),
+    is_deleted         UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms       Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_contasreceber)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_financeiro (
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    id_db             Int32 NOT NULL,
+    tipo_titulo       Int32 NOT NULL,
+    id_titulo         Int32 NOT NULL,
+    payload           String NOT NULL DEFAULT '{}',
+    ingested_at       Nullable(DateTime64(6, 'UTC')),
+    dt_evento         Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow      Nullable(Int64),
+    id_chave_natural  Nullable(String),
+    received_at       Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, tipo_titulo, id_titulo)
+SETTINGS index_granularity = 8192;

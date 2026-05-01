@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     # Feature flags for realtime/event-driven pipeline
     use_realtime_marts: bool = False  # When True, BI reads from torqmind_mart_rt (CDC-fed)
+    realtime_marts_source: str = "stg"  # stg is the accepted realtime source; dw is legacy/reconciliation only
     realtime_marts_domains: str = "dashboard,sales,cash,fraud,finance,payments"  # Comma-separated domains using realtime
     realtime_marts_fallback: bool = True  # When True, fallback to legacy mart on realtime error
 

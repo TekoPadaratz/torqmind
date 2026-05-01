@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     enable_current_writes: bool = True
     enable_ops_writes: bool = True
     enable_mart_builder: bool = True
+    realtime_marts_source: str = "stg"  # stg is the final hot path; dw is compatibility/reconciliation.
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 

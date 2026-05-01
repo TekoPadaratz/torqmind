@@ -97,7 +97,7 @@ class ClickHouseWriter:
         for col in mapping.columns:
             val = record.get(col)
             # Handle boolean→int conversion for ClickHouse UInt8
-            if col in ("cancelado", "is_aberto", "active"):
+            if col in ("cancelado", "cancelado_shadow", "is_aberto", "active"):
                 val = 1 if val else 0
             # Handle jsonb fields stored as strings
             if col in ("payload", "reasons") and isinstance(val, dict):

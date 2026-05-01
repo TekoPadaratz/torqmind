@@ -251,15 +251,15 @@ O Agent consumirá:
 
 ## 16. Plano de cutover em fases
 
-### Fase 0 (esta rodada) ✓
+### Fase 0 (base) ✓
 - Stack paralela: Redpanda + Debezium + Consumer + ClickHouse schemas
 - Sem impacto no sistema atual
 - Validação de ponta a ponta
 
-### Fase 1 (próxima)
-- CDC rodando em produção com snapshot completo
-- Validação de paridade com DW atual
-- Monitoramento estável por 1-2 semanas
+### Fase 1 (STG-direto)
+- CDC rodando com snapshot completo das tabelas STG canonicas
+- MartBuilder com `source=stg`
+- Validacao STG vs mart_rt e smoke E2E sem ETL STG->DW
 
 ### Fase 2
 - API consulta torqmind_current para endpoints selecionados (ex: caixa aberto)
@@ -338,27 +338,28 @@ docker-compose.streaming.yml        # Streaming stack compose
 | CDC_TOPIC_PATTERN | ^torqmind\\..* | Regex pattern for auto-subscribe |
 | CDC_BATCH_SIZE | 500 | Flush after N events |
 | CDC_FLUSH_INTERVAL_SECONDS | 5 | Flush every N seconds |
+| REALTIME_MARTS_SOURCE | stg | MartBuilder source; `stg` is final hot path, `dw` is compatibility |
 | LOG_LEVEL | INFO | Log verbosity |
 
 ### Debezium Topics (generated)
 
 | Topic | Source Table |
 |---|---|
-| torqmind.dw.fact_venda | dw.fact_venda |
-| torqmind.dw.fact_venda_item | dw.fact_venda_item |
-| torqmind.dw.fact_pagamento_comprovante | dw.fact_pagamento_comprovante |
-| torqmind.dw.fact_caixa_turno | dw.fact_caixa_turno |
-| torqmind.dw.fact_comprovante | dw.fact_comprovante |
-| torqmind.dw.fact_financeiro | dw.fact_financeiro |
-| torqmind.dw.fact_risco_evento | dw.fact_risco_evento |
-| torqmind.dw.dim_filial | dw.dim_filial |
-| torqmind.dw.dim_produto | dw.dim_produto |
-| torqmind.dw.dim_grupo_produto | dw.dim_grupo_produto |
-| torqmind.dw.dim_funcionario | dw.dim_funcionario |
-| torqmind.dw.dim_usuario_caixa | dw.dim_usuario_caixa |
-| torqmind.dw.dim_local_venda | dw.dim_local_venda |
-| torqmind.dw.dim_cliente | dw.dim_cliente |
+| torqmind.stg.comprovantes | stg.comprovantes |
+| torqmind.stg.itenscomprovantes | stg.itenscomprovantes |
+| torqmind.stg.formas_pgto_comprovantes | stg.formas_pgto_comprovantes |
+| torqmind.stg.turnos | stg.turnos |
+| torqmind.stg.entidades | stg.entidades (clientes no schema atual) |
+| torqmind.stg.produtos | stg.produtos |
+| torqmind.stg.grupoprodutos | stg.grupoprodutos |
+| torqmind.stg.funcionarios | stg.funcionarios |
+| torqmind.stg.usuarios | stg.usuarios |
+| torqmind.stg.localvendas | stg.localvendas |
+| torqmind.stg.contaspagar | stg.contaspagar |
+| torqmind.stg.contasreceber | stg.contasreceber |
 | torqmind.app.payment_type_map | app.payment_type_map |
+
+DW topics can still exist for reconciliation and rollback, but they are not the accepted realtime BI hot path.
 
 ### Natural Keys (idempotency)
 

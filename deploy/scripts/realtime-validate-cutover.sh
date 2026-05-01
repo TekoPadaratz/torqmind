@@ -10,6 +10,29 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.env}"
 ID_EMPRESA="${ID_EMPRESA:-1}"
 DECIMAL_TOLERANCE="${DECIMAL_TOLERANCE:-${TOLERANCE:-0.001}}"
+SOURCE="${SOURCE:-${REALTIME_MARTS_SOURCE:-stg}}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source)
+      [[ $# -ge 2 ]] || { echo "ERROR: --source requires stg or dw" >&2; exit 2; }
+      SOURCE="$2"; shift ;;
+    --id-empresa)
+      [[ $# -ge 2 ]] || { echo "ERROR: --id-empresa requires a value" >&2; exit 2; }
+      ID_EMPRESA="$2"; shift ;;
+    --help|-h)
+      echo "Usage: ENV_FILE=/etc/torqmind/prod.env $0 [--source stg|dw] [--id-empresa 1]" >&2
+      exit 0 ;;
+    *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+SOURCE="$(printf '%s' "$SOURCE" | tr '[:upper:]' '[:lower:]')"
+if [[ "$SOURCE" != "stg" && "$SOURCE" != "dw" ]]; then
+  echo "ERROR: SOURCE must be stg or dw (got '$SOURCE')" >&2
+  exit 2
+fi
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: ENV_FILE=$ENV_FILE not found" >&2
@@ -23,6 +46,8 @@ set +a
 
 : "${CLICKHOUSE_USER:=torqmind}"
 : "${CLICKHOUSE_PASSWORD:=}"
+: "${POSTGRES_USER:=${PG_USER:-postgres}}"
+: "${POSTGRES_DB:=${PG_DATABASE:-torqmind}}"
 
 FAILURES=0
 CHECKS=0
@@ -41,6 +66,18 @@ ch_query() {
   if ! out="$(compose_prod exec -T clickhouse clickhouse-client \
     --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
     --format=TabSeparated -q "$sql" 2>&1)"; then
+    printf '__ERROR__:%s' "$out"
+    return 0
+  fi
+  printf '%s' "$out"
+}
+
+pg_query() {
+  local sql="$1"
+  local out
+  if ! out="$(compose_prod exec -T postgres psql \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -tAc "$sql" 2>&1)"; then
     printf '__ERROR__:%s' "$out"
     return 0
   fi
@@ -144,6 +181,57 @@ compare_metric() {
   printf '  %-48s legacy=%-14s rt=%-14s [%s]\n' "$label" "$legacy_val" "$rt_val" "$status"
 }
 
+compare_pg_ch_metric() {
+  local label="$1"
+  local pg_sql="$2"
+  local rt_sql="$3"
+  local mode="${4:-decimal}"
+
+  CHECKS=$((CHECKS + 1))
+
+  local source_val rt_val
+  source_val="$(pg_query "$pg_sql")"
+  rt_val="$(ch_query "$rt_sql")"
+
+  if [[ "$source_val" == __ERROR__* ]]; then
+    record_failure "$label" "STG_QUERY_FAILED"
+    return
+  fi
+  if [[ "$rt_val" == __ERROR__* ]]; then
+    record_failure "$label" "RT_QUERY_FAILED"
+    return
+  fi
+
+  source_val="$(normalize_number "$source_val")"
+  rt_val="$(normalize_number "$rt_val")"
+
+  local status="OK"
+  if [[ "$mode" == "count" ]]; then
+    if [[ "$source_val" != "$rt_val" ]]; then
+      status="DIVERGENT"
+      if [[ "$source_val" != "0" && "$rt_val" == "0" ]]; then
+        status="RT_EMPTY"
+      fi
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    local diff over_tolerance source_positive rt_zero
+    diff="$(awk "BEGIN { l=$source_val+0; r=$rt_val+0; base=(l<0?-l:l); if(base<0.01) base=0.01; print ((l-r)<0 ? (r-l) : (l-r)) / base }")"
+    over_tolerance="$(awk "BEGIN { print ($diff > $DECIMAL_TOLERANCE) ? 1 : 0 }")"
+    source_positive="$(awk "BEGIN { print ($source_val+0 > 0) ? 1 : 0 }")"
+    rt_zero="$(awk "BEGIN { print ($rt_val+0 == 0) ? 1 : 0 }")"
+    if [[ "$source_positive" == "1" && "$rt_zero" == "1" ]]; then
+      status="RT_EMPTY"
+      FAILURES=$((FAILURES + 1))
+    elif [[ "$over_tolerance" == "1" ]]; then
+      status="DIVERGENT(delta=${diff})"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+
+  printf '  %-48s stg=%-17s rt=%-14s [%s]\n' "$label" "$source_val" "$rt_val" "$status"
+}
+
 compare_grouped_sum() {
   local label="$1"
   local legacy_sql="$2"
@@ -186,6 +274,7 @@ validate_api_realtime() {
   local result
   if ! result="$(compose_prod exec -T api env \
     USE_REALTIME_MARTS=true \
+    REALTIME_MARTS_SOURCE="$SOURCE" \
     REALTIME_MARTS_FALLBACK=false \
     USE_CLICKHOUSE=true \
     ID_EMPRESA="$ID_EMPRESA" \
@@ -197,6 +286,7 @@ from app.config import settings
 
 assert settings.use_realtime_marts is True, "USE_REALTIME_MARTS is not effective"
 assert settings.realtime_marts_fallback is False, "REALTIME_MARTS_FALLBACK must be false"
+assert settings.realtime_marts_source == os.environ["REALTIME_MARTS_SOURCE"], "REALTIME_MARTS_SOURCE is not effective"
 
 from app import repos_analytics
 
@@ -228,7 +318,7 @@ PY
 
 main() {
   log "=== Realtime Cutover Validation (BLOCKING) ==="
-  log "id_empresa=$ID_EMPRESA decimal_tolerance=$DECIMAL_TOLERANCE env_file=$ENV_FILE"
+  log "id_empresa=$ID_EMPRESA source=$SOURCE decimal_tolerance=$DECIMAL_TOLERANCE env_file=$ENV_FILE"
   log ""
 
   log "ClickHouse connectivity:"
@@ -256,6 +346,75 @@ main() {
   done
   log ""
 
+  if [[ "$SOURCE" == "stg" ]]; then
+  log "STG canonical source vs mart_rt:"
+  local stg_sales_source="
+    SELECT COALESCE(sum(COALESCE(i.total_shadow, etl.safe_numeric(i.payload->>'TOTAL')::numeric(18,2))), 0)
+    FROM stg.itenscomprovantes i
+    JOIN stg.comprovantes c
+      ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+    WHERE i.id_empresa=$ID_EMPRESA
+      AND NOT etl.comprovante_is_cancelled(
+        COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false),
+        COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))
+      )
+      AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) >= 5000
+  "
+  local stg_sales_docs="
+    SELECT COALESCE(count(DISTINCT (c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)), 0)
+    FROM stg.comprovantes c
+    JOIN stg.itenscomprovantes i
+      ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+    WHERE c.id_empresa=$ID_EMPRESA
+      AND NOT etl.comprovante_is_cancelled(
+        COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false),
+        COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))
+      )
+      AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) >= 5000
+  "
+  compare_pg_ch_metric "stg.sales.faturamento" \
+    "$stg_sales_source" \
+    "SELECT sum(faturamento) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA"
+  compare_pg_ch_metric "stg.sales.qtd_vendas" \
+    "$stg_sales_docs" \
+    "SELECT sum(qtd_vendas) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
+    "count"
+  compare_pg_ch_metric "stg.items.rows" \
+    "SELECT count(*) FROM stg.itenscomprovantes i JOIN stg.comprovantes c ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante WHERE i.id_empresa=$ID_EMPRESA AND NOT etl.comprovante_is_cancelled(COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false), COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))) AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) >= 5000" \
+    "SELECT sum(qtd_itens) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
+    "count"
+  log ""
+
+  log "STG payments:"
+  compare_pg_ch_metric "stg.payments.total" \
+    "SELECT COALESCE(sum(COALESCE(valor_shadow, etl.safe_numeric(payload->>'VALOR')::numeric(18,2))), 0) FROM stg.formas_pgto_comprovantes WHERE id_empresa=$ID_EMPRESA" \
+    "SELECT sum(valor_total) FROM torqmind_mart_rt.payments_by_type_rt FINAL WHERE id_empresa=$ID_EMPRESA"
+  compare_pg_ch_metric "stg.payments.types" \
+    "SELECT count(DISTINCT tipo_forma) FROM stg.formas_pgto_comprovantes WHERE id_empresa=$ID_EMPRESA" \
+    "SELECT count(DISTINCT tipo_forma) FROM torqmind_mart_rt.payments_by_type_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
+    "count"
+  log ""
+
+  log "STG risk/fraud:"
+  compare_pg_ch_metric "stg.cancelados.count" \
+    "SELECT count(*) FROM stg.comprovantes c WHERE c.id_empresa=$ID_EMPRESA AND etl.comprovante_is_cancelled(COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false), COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO')))" \
+    "SELECT sum(qtd_eventos) FROM torqmind_mart_rt.fraud_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
+    "count"
+  compare_pg_ch_metric "stg.cancelados.valor" \
+    "SELECT COALESCE(sum(COALESCE(valor_total_shadow, etl.safe_numeric(payload->>'VLRTOTAL')::numeric(18,2))), 0) FROM stg.comprovantes c WHERE c.id_empresa=$ID_EMPRESA AND etl.comprovante_is_cancelled(COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false), COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO')))" \
+    "SELECT sum(impacto_total) FROM torqmind_mart_rt.fraud_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA"
+  log ""
+
+  log "STG finance:"
+  compare_pg_ch_metric "stg.finance.count" \
+    "SELECT (SELECT count(*) FROM stg.financeiro WHERE id_empresa=$ID_EMPRESA) + (SELECT count(*) FROM stg.contaspagar WHERE id_empresa=$ID_EMPRESA) + (SELECT count(*) FROM stg.contasreceber WHERE id_empresa=$ID_EMPRESA)" \
+    "SELECT sum(qtd_titulos) FROM torqmind_mart_rt.finance_overview_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
+    "count"
+  compare_pg_ch_metric "stg.finance.valor" \
+    "SELECT COALESCE((SELECT sum(etl.safe_numeric(payload->>'VALOR')::numeric(18,2)) FROM stg.financeiro WHERE id_empresa=$ID_EMPRESA),0) + COALESCE((SELECT sum(etl.safe_numeric(payload->>'VALOR')::numeric(18,2)) FROM stg.contaspagar WHERE id_empresa=$ID_EMPRESA),0) + COALESCE((SELECT sum(etl.safe_numeric(payload->>'VALOR')::numeric(18,2)) FROM stg.contasreceber WHERE id_empresa=$ID_EMPRESA),0)" \
+    "SELECT sum(valor_total) FROM torqmind_mart_rt.finance_overview_rt FINAL WHERE id_empresa=$ID_EMPRESA"
+  log ""
+  else
   log "Sales daily:"
   compare_metric "sales_daily.rows" \
     "SELECT count() FROM torqmind_mart.agg_vendas_diaria WHERE id_empresa=$ID_EMPRESA" \
@@ -339,6 +498,7 @@ main() {
     "SELECT sum(coalesce(valor_pago, 0)) FROM torqmind_current.fact_financeiro FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" \
     "SELECT sum(valor_pago_total) FROM torqmind_mart_rt.finance_overview_rt FINAL WHERE id_empresa=$ID_EMPRESA"
   log ""
+  fi
 
   log "API realtime facade:"
   validate_api_realtime

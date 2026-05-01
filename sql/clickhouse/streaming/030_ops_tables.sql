@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS torqmind_ops.cdc_errors (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (consumer_group, created_at)
-TTL created_at + INTERVAL 30 DAY
+TTL toDateTime(created_at) + INTERVAL 30 DAY
 SETTINGS index_granularity = 8192;
 
 CREATE TABLE IF NOT EXISTS torqmind_ops.cdc_lag (
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS torqmind_ops.cdc_lag (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(measured_at)
 ORDER BY (consumer_group, topic, kafka_partition, measured_at)
-TTL measured_at + INTERVAL 7 DAY
+TTL toDateTime(measured_at) + INTERVAL 7 DAY
 SETTINGS index_granularity = 8192;
 
 -- Summary view for monitoring dashboards

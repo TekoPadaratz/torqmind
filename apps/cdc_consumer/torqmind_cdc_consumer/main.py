@@ -73,6 +73,7 @@ def run() -> None:
         clickhouse_user=settings.clickhouse_user,
         clickhouse_password=settings.clickhouse_password,
         enabled=getattr(settings, "enable_mart_builder", True),
+        source=getattr(settings, "realtime_marts_source", "stg"),
     )
 
     # Subscribe

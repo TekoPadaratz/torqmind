@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from datetime import date
 from pathlib import Path
@@ -480,3 +481,44 @@ class TestMartBuilderIdempotency:
         builder.mark_affected(1, 1, 20250401, "fact_venda")
         # Should still result in single data_key in the set
         assert builder.state.affected_data_keys == {20250401}
+
+    def test_default_source_is_stg(self):
+        from torqmind_cdc_consumer.mart_builder import MartBuilder
+        builder = MartBuilder(enabled=False)
+        assert builder.source == "stg"
+
+
+class TestSTGDirectContract:
+    """Release contract for the STG-direct realtime path."""
+
+    @pytest.fixture(autouse=True)
+    def _load_paths(self):
+        self.root = Path(__file__).parent.parent.parent.parent
+        self.connector_path = self.root / "deploy" / "debezium" / "connectors" / "torqmind-postgres-cdc.json"
+        self.builder_path = self.root / "apps" / "cdc_consumer" / "torqmind_cdc_consumer" / "mart_builder.py"
+
+    def test_connector_includes_canonical_stg_tables(self):
+        config = json.loads(self.connector_path.read_text())["config"]
+        include_list = set(config["table.include.list"].split(","))
+        required = {
+            "stg.comprovantes",
+            "stg.itenscomprovantes",
+            "stg.formas_pgto_comprovantes",
+            "stg.turnos",
+            "stg.produtos",
+            "stg.grupoprodutos",
+            "stg.funcionarios",
+            "stg.usuarios",
+            "stg.localvendas",
+            "stg.contaspagar",
+            "stg.contasreceber",
+            "app.payment_type_map",
+        }
+        assert required.issubset(include_list)
+
+    def test_mart_builder_has_stg_direct_refreshes(self):
+        code = self.builder_path.read_text()
+        for table in ("stg_comprovantes", "stg_itenscomprovantes", "stg_formas_pgto_comprovantes"):
+            assert f"{'{'}self.current_db{'}'}.{table}" in code
+        assert "fact_venda FINAL" in code  # DW compatibility remains present.
+        assert "self.source == \"stg\"" in code

@@ -5,26 +5,26 @@
 | Command | What it does |
 |---------|--------------|
 | `make streaming-init-mart-rt` | Applies tracked `040/041` mart_rt DDL and verifies mandatory tables |
-| `make realtime-cutover` | Full guarded DW-origin cutover candidate |
-| `make realtime-validate` | Blocking parity/API validation with fallback disabled |
-| `make realtime-backfill` | Rebuilds mart_rt from `torqmind_current` |
-| `make realtime-e2e-smoke` | Inserts a DW fixture and verifies raw/current/MartBuilder/API |
+| `make realtime-cutover` | Guarded STG-direct cutover (`--source stg`) |
+| `make realtime-validate` | Blocking STG vs mart_rt/API validation with fallback disabled |
+| `make realtime-backfill` | Rebuilds mart_rt from `torqmind_current.stg_*` |
+| `make realtime-e2e-smoke` | Inserts an STG fixture and verifies raw/current/MartBuilder/API |
 | `make realtime-rollback` | Sets `USE_REALTIME_MARTS=false` and restarts API |
-| `make streaming-status` | Shows Debezium/Redpanda/CDC status |
+| `make streaming-status` | Shows Debezium/Redpanda/CDC status and STG topics |
 
-## Current Architecture
+## Architecture
 
 ```text
-Agent/API -> PostgreSQL STG -> ETL STG->DW -> Debezium(dw.*)
-  -> Redpanda -> CDC Consumer -> ClickHouse torqmind_raw/torqmind_current
-  -> MartBuilder -> ClickHouse torqmind_mart_rt -> FastAPI -> Frontend
+Agent/API -> PostgreSQL STG -> Debezium(stg.*)
+  -> Redpanda -> CDC Consumer -> ClickHouse torqmind_raw/torqmind_current.stg_*
+  -> MartBuilder(source=stg) -> ClickHouse torqmind_mart_rt -> FastAPI -> Frontend
 ```
 
-This is **Option B: realtime from DW**. The STG->DW cron/ETL still normalizes source events and remains operationally required. Do not describe this as final STG-direct cutover.
+DW PostgreSQL remains for audit, reconciliation, compatibility and emergency rollback. It is not the realtime BI engine when `REALTIME_MARTS_SOURCE=stg`.
+
+Clientes compatibility: this repo currently stores `clientes` ingestion in `stg.entidades`. `stg.clientes` is optional in the connector/publication and will be included when a physical table exists.
 
 ## Artifact Audit
-
-Before cutover, prove the DDLs are in Git:
 
 ```bash
 git ls-files sql/clickhouse/streaming | sort
@@ -38,72 +38,71 @@ sql/clickhouse/streaming/040_mart_rt_database.sql
 sql/clickhouse/streaming/041_mart_rt_tables.sql
 ```
 
-`streaming-init-mart-rt.sh` fails if either glob is missing and then verifies these mandatory tables:
-
-```text
-dashboard_home_rt, sales_daily_rt, sales_hourly_rt, sales_products_rt,
-sales_groups_rt, payments_by_type_rt, cash_overview_rt, fraud_daily_rt,
-risk_recent_events_rt, finance_overview_rt, source_freshness,
-mart_publication_log
-```
+`020_current_tables.sql` must include STG current tables such as `stg_comprovantes`, `stg_itenscomprovantes` and `stg_formas_pgto_comprovantes`.
 
 ## Cutover
 
 ```bash
-ENV_FILE=/etc/torqmind/prod.env make realtime-cutover
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --yes --with-backfill --source stg --from-date 2025-01-01 --id-empresa 1
 ```
 
-The cutover is blocking. It does not activate `USE_REALTIME_MARTS=true` until:
+The cutover is blocking and only activates realtime after:
 
-- mart_rt DDL init succeeds;
-- Redpanda, Debezium and CDC consumer are running;
-- PostgreSQL DW source tables with tenant data have matching raw/current data;
-- `torqmind_mart_rt.sales_daily_rt` has tenant data;
-- `realtime-validate-cutover.sh` exits zero;
-- API facade smoke succeeds with `REALTIME_MARTS_FALLBACK=false`.
+- ClickHouse raw/current/ops/mart_rt DDL init succeeds.
+- PostgreSQL publication includes required STG tables.
+- Redpanda, Debezium and CDC consumer are running.
+- PostgreSQL STG source tables with tenant data have matching raw/current STG data.
+- `backfill-stg` publishes rows into `torqmind_mart_rt`.
+- `realtime-validate-cutover.sh --source stg` exits zero.
+- API facade smoke succeeds with `USE_REALTIME_MARTS=true`, `REALTIME_MARTS_SOURCE=stg` and `REALTIME_MARTS_FALLBACK=false`.
 
 ## Validation
 
 ```bash
-ENV_FILE=/etc/torqmind/prod.env make realtime-validate
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/realtime-validate-cutover.sh --source stg
 ```
 
 Validation fails on:
 
-- ClickHouse connection errors;
-- missing mandatory mart_rt tables;
-- empty realtime marts when legacy/source has data;
-- divergence above `DECIMAL_TOLERANCE` (default `0.001`);
-- API facade failure with `USE_REALTIME_MARTS=true` and `REALTIME_MARTS_FALLBACK=false`.
+- ClickHouse connection errors.
+- Missing mandatory `torqmind_mart_rt` tables.
+- Empty realtime marts while STG has data.
+- Divergence above `DECIMAL_TOLERANCE` (default `0.001`).
+- API facade failure with fallback disabled.
+- Effective API source different from `stg`.
 
-Compared domains:
-
-- sales daily: rows, `faturamento`, `qtd_vendas`;
-- sales hourly: rows, `faturamento`, `qtd_vendas`;
-- products/groups: rows and sums;
-- payments: total and grouped sum by `category|label`;
-- risk/fraud: event counts and impact;
-- finance: source current count, total, paid total.
+Compared domains include canonical STG sales totals/counts, item totals, payments, cancellations/risk and finance counts/sums.
 
 ## E2E Smoke
 
 ```bash
-ENV_FILE=/etc/torqmind/prod.env make realtime-e2e-smoke
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/realtime-e2e-smoke.sh
 ```
 
-The smoke inserts a synthetic fixture into `dw.fact_venda` and `dw.fact_venda_item`, waits for `torqmind_raw.cdc_events`, verifies `torqmind_current`, triggers MartBuilder, verifies `torqmind_mart_rt.sales_daily_rt`, and calls the API facade with fallback disabled.
+The smoke inserts into:
 
-It proves the current DW-origin pipeline only. It does not prove a new STG event bypasses ETL.
+```text
+stg.comprovantes
+stg.itenscomprovantes
+stg.formas_pgto_comprovantes
+```
+
+Then it waits for raw/current STG CDC, triggers MartBuilder with `source=stg`, verifies `sales_daily_rt`, and calls the API facade with fallback disabled. It does not run STG->DW ETL.
 
 ## Rollback
 
 ```bash
-ENV_FILE=/etc/torqmind/prod.env make realtime-rollback
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
 ```
 
-Rollback sets `USE_REALTIME_MARTS=false` and recreates the API. Keep `REALTIME_MARTS_FALLBACK=false` for validation; use rollback instead of silent fallback to avoid masking realtime failures.
+Rollback sets `USE_REALTIME_MARTS=false` and recreates API. Do not enable fallback as an acceptance mechanism; fallback is emergency behavior, not proof.
 
 ## Monitoring
+
+```bash
+ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/streaming-status.sh
+```
 
 ```bash
 docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T clickhouse \
@@ -111,12 +110,6 @@ docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T clickho
   -q "SELECT * FROM torqmind_mart_rt.source_freshness FINAL ORDER BY domain"
 ```
 
-```bash
-docker compose -f docker-compose.prod.yml --env-file "$ENV_FILE" exec -T clickhouse \
-  clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
-  -q "SELECT table_name, events_total, last_event_at FROM torqmind_ops.cdc_table_state FINAL ORDER BY table_name"
-```
-
 ## Remaining Risk
 
-The main residual risk is the STG->DW dependency. The migration to STG-direct requires a new streaming transformer that reproduces the canonical ETL semantics for business date, cancelamento, CFOP, payment bridge, dimensions, tenant isolation and reconciliation before Debezium can safely move from `dw.*` to `stg.*`.
+The STG-direct path is implemented in code and scripts, but production acceptance still requires running the E2E smoke and blocking validation against the target environment. If either cannot run, the release is not operationally concluded.

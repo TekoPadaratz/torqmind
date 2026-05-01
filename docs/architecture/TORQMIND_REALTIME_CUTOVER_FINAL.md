@@ -1,89 +1,88 @@
-# TorqMind Realtime Cutover Artifacts
+# TorqMind Realtime Cutover Final
 
 ## Status
 
-Implemented as a **DW-origin realtime cutover candidate**. This is not the final STG-direct architecture.
+Implemented as an **STG-direct realtime cutover candidate**.
 
-Current path:
-
-```text
-Agent/API -> PostgreSQL STG -> ETL STG->DW -> Debezium(dw.*) -> Redpanda
-  -> CDC Consumer -> ClickHouse torqmind_raw/torqmind_current
-  -> MartBuilder -> ClickHouse torqmind_mart_rt -> FastAPI repos_analytics
-```
-
-Desired final path:
+Final hot path:
 
 ```text
 Agent/API -> PostgreSQL STG -> Debezium(stg.*) -> Redpanda
-  -> CDC Consumer STG transformer -> ClickHouse current/mart_rt -> FastAPI
+  -> CDC Consumer -> ClickHouse torqmind_raw/torqmind_current.stg_*
+  -> MartBuilder(source=stg) -> ClickHouse torqmind_mart_rt -> FastAPI
 ```
 
-The ETL STG->DW cron remains an operational dependency in the current implementation. If it stops, fresh STG events do not reach Debezium because Debezium is subscribed to `dw.*`, not `stg.*`.
+DW remains available for audit, reconciliation, rollback and compatibility. It is not the operational realtime BI source when `REALTIME_MARTS_SOURCE=stg`.
+
+Schema compatibility note: the current PostgreSQL model does not have a physical `stg.clientes` table. The API ingest maps the `clientes` dataset into `stg.entidades`; the connector lists `stg.clientes` for future deployments and the publication script includes it only when it exists.
 
 ## Versioned DDL Artifacts
 
-The realtime mart DDL lives in tracked ClickHouse streaming SQL:
+Tracked ClickHouse streaming DDL:
 
 ```bash
 git ls-files sql/clickhouse/streaming | sort
 ```
 
-Required files:
+Mandatory mart files:
 
 ```text
 sql/clickhouse/streaming/040_mart_rt_database.sql
 sql/clickhouse/streaming/041_mart_rt_tables.sql
 ```
 
-`040_mart_rt_database.sql` creates `torqmind_mart_rt` and `mart_publication_log`.
-`041_mart_rt_tables.sql` creates the dashboard/domain tables.
+`020_current_tables.sql` also creates the STG current tables consumed by the MartBuilder, including `stg_comprovantes`, `stg_itenscomprovantes`, `stg_formas_pgto_comprovantes`, dimensions, cash and finance STG state.
 
-Mandatory runtime tables:
+## Captured STG Tables
+
+Debezium `table.include.list` now includes:
 
 ```text
-torqmind_mart_rt.dashboard_home_rt
-torqmind_mart_rt.sales_daily_rt
-torqmind_mart_rt.sales_hourly_rt
-torqmind_mart_rt.sales_products_rt
-torqmind_mart_rt.sales_groups_rt
-torqmind_mart_rt.payments_by_type_rt
-torqmind_mart_rt.cash_overview_rt
-torqmind_mart_rt.fraud_daily_rt
-torqmind_mart_rt.risk_recent_events_rt
-torqmind_mart_rt.finance_overview_rt
-torqmind_mart_rt.source_freshness
-torqmind_mart_rt.mart_publication_log
+stg.comprovantes
+stg.itenscomprovantes
+stg.formas_pgto_comprovantes
+stg.turnos
+stg.entidades
+stg.clientes (optional when present)
+stg.produtos
+stg.grupoprodutos
+stg.funcionarios
+stg.usuarios
+stg.localvendas
+stg.contaspagar
+stg.contasreceber
+stg.filiais (optional when present)
+app.payment_type_map
+app.competitor_fuel_prices / app.goals when present
 ```
 
-`customers_churn_rt` may also exist as an extra mart table, but it is not part of the blocking cutover contract yet.
+`dw.*` remains in the connector for reconciliation and rollback only.
 
-## Blocking Guards
+## Guards
 
-`deploy/scripts/streaming-init-mart-rt.sh`:
+`deploy/scripts/prod-realtime-cutover-apply.sh --source stg` is the default. It prepares STG publication, starts streaming, runs `backfill-stg`, waits on raw/current/mart conditions, runs blocking validation, then activates:
 
-- requires `ENV_FILE`;
-- uses `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD`;
-- never prints the password;
-- fails if no `040_*.sql` or no `041_*.sql` exists;
-- verifies all 12 mandatory `torqmind_mart_rt` tables after applying DDL.
+```text
+USE_REALTIME_MARTS=true
+REALTIME_MARTS_SOURCE=stg
+REALTIME_MARTS_FALLBACK=false
+```
 
-`deploy/scripts/realtime-validate-cutover.sh`:
+`deploy/scripts/realtime-validate-cutover.sh --source stg` compares canonical STG/PostgreSQL metrics against `torqmind_mart_rt` and exits non-zero on missing tables, empty marts with source data, divergence, ClickHouse failure or API fallback failure.
 
-- fails on ClickHouse connection errors;
-- fails on missing mandatory mart_rt tables;
-- fails when realtime marts are empty while source/legacy has data;
-- compares sales daily/hourly, products, groups, payments by label, risk/fraud, and finance;
-- executes the API facade with `USE_REALTIME_MARTS=true` and `REALTIME_MARTS_FALLBACK=false`.
+`deploy/scripts/realtime-e2e-smoke.sh` inserts a synthetic sale into STG canonical tables, waits for Debezium/current, triggers MartBuilder in `source=stg` mode and calls the API facade with fallback disabled. It does not call the STG->DW ETL.
 
-`deploy/scripts/prod-realtime-cutover-apply.sh` only activates `USE_REALTIME_MARTS=true` after:
+## Backfill
 
-- mart_rt DDL init passes;
-- Redpanda, Debezium and CDC consumer are running;
-- raw/current contain data for source DW tables that have tenant data;
-- mart_rt has data;
-- blocking validation returns zero;
-- API smoke passes with fallback disabled.
+The supported command is:
+
+```bash
+docker compose -f docker-compose.streaming.yml --env-file "$ENV_FILE" \
+  exec -T cdc-consumer python -m torqmind_cdc_consumer.cli backfill-stg \
+  --from-date 2025-01-01 --id-empresa 1
+```
+
+Backfill reads ClickHouse `torqmind_current.stg_*`, which is populated by Debezium initial snapshot/streaming from PostgreSQL STG, and rebuilds `torqmind_mart_rt`. No DW table is required for mart publication in `source=stg` mode.
 
 ## Rollback
 
@@ -91,16 +90,10 @@ torqmind_mart_rt.mart_publication_log
 ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
 ```
 
-Rollback sets `USE_REALTIME_MARTS=false` and recreates the API container. Data remains in ClickHouse and can be inspected/backfilled again.
+Rollback sets `USE_REALTIME_MARTS=false` and recreates the API container. Use rollback instead of fallback for production acceptance so realtime failures are not masked.
 
-## STG-Direct Migration Plan
+## Residual Risks
 
-To make this a true final STG-direct cutover:
-
-1. Register Debezium for `stg.comprovantes`, `stg.itenscomprovantes`, `stg.formas_pgto_comprovantes`, `stg.turnos`, `stg.financeiro`, and required cadastro STG tables.
-2. Add `torqmind_current` STG-shaped current tables or a transformer that emits the existing current facts from STG events.
-3. Port the canonical ETL semantics into deterministic streaming transforms: business date, cancelamento, CFOP commercial filter, payment bridge, dimensions, and tenant/filial boundaries.
-4. Dual-run STG-direct current vs DW-origin current and compare row counts, sales totals, payments, risk events, and finance balances.
-5. Switch Debezium table include list from `dw.*` to `stg.*` only after parity is proven and documented.
-
-Until those steps are complete, this release is a DW-origin realtime cutover candidate, not the final STG-direct architecture.
+- Physical `stg.clientes` is absent; cliente realtime uses `stg.entidades` until a dedicated table is introduced.
+- STG JSON date parsing is implemented in ClickHouse best-effort expressions; production acceptance must run `realtime-e2e-smoke.sh` and `realtime-validate-cutover.sh --source stg` against real data.
+- DW reconciliation remains necessary during the transition to prove long-window semantic parity, but it is not part of the realtime hot path.

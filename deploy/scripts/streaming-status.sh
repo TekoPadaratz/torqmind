@@ -73,6 +73,11 @@ echo ""
 echo "--- Redpanda Topics ---"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T redpanda rpk topic list 2>/dev/null || echo "  (unable to list topics)"
 echo ""
+echo "--- Canonical STG Topics ---"
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T redpanda rpk topic list 2>/dev/null \
+  | grep -E 'torqmind\.stg\.(comprovantes|itenscomprovantes|formas_pgto_comprovantes|turnos|produtos|grupoprodutos|funcionarios|usuarios|localvendas|contaspagar|contasreceber|entidades|clientes|filiais)' \
+  || echo "  (no STG topics found yet)"
+echo ""
 
 # --- Consumer Group Lag ---
 echo "--- Consumer Group Lag ---"

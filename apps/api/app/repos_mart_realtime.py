@@ -14,12 +14,17 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from app.business_time import business_today
+from app.config import settings
 from app.db_clickhouse import query_dict, query_scalar
 
 logger = logging.getLogger(__name__)
 
 MART_RT_DB = "torqmind_mart_rt"
 CURRENT_DB = "torqmind_current"
+
+
+def _realtime_source() -> str:
+    return str(getattr(settings, "realtime_marts_source", "stg") or "stg").lower()
 
 
 def _branch_ids(id_filial: Any) -> Optional[List[int]]:
@@ -122,7 +127,7 @@ def dashboard_home_bundle(
     """Full dashboard home payload."""
     kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
     series = dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim)
-    return {"kpis": kpis, "series": series, "source": "realtime"}
+    return {"kpis": kpis, "series": series, "source": "realtime", "realtime_source": _realtime_source()}
 
 
 # ================================================================
@@ -169,6 +174,7 @@ def sales_overview_bundle(
         "kpis": kpis_rows[0] if kpis_rows else {},
         "series": series,
         "source": "realtime",
+        "realtime_source": _realtime_source(),
     }
 
 
@@ -273,6 +279,7 @@ def payments_overview(
         "total": total,
         "by_type": by_type,
         "source": "realtime",
+        "realtime_source": _realtime_source(),
     }
 
 
@@ -306,6 +313,7 @@ def cash_overview(
         "turnos_abertos": turnos,
         "qtd_abertos": len(turnos),
         "source": "realtime",
+        "realtime_source": _realtime_source(),
     }
 
 
@@ -331,6 +339,7 @@ def open_cash_monitor(
         "turnos_abertos": turnos,
         "qtd_abertos": len(turnos),
         "source": "realtime",
+        "realtime_source": _realtime_source(),
     }
 
 
@@ -413,7 +422,7 @@ def finance_kpis(
         GROUP BY tipo_titulo, faixa
     """, parameters={"id_empresa": id_empresa})
 
-    return {"aging": rows, "source": "realtime"}
+    return {"aging": rows, "source": "realtime", "realtime_source": _realtime_source()}
 
 
 # ================================================================
@@ -468,6 +477,7 @@ def streaming_health(id_empresa: int = 0, **kwargs: Any) -> Dict[str, Any]:
         "lag": lag,
         "mart_publications": publications,
         "source": "realtime",
+        "realtime_source": _realtime_source(),
     }
 
 

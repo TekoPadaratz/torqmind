@@ -413,6 +413,7 @@ def streaming_health(claims=Depends(get_current_claims)):
         health = {"error": str(e), "source_freshness": [], "cdc_state": [], "recent_errors": [], "lag": [], "mart_publications": []}
 
     health["use_realtime_marts"] = _settings.use_realtime_marts
+    health["realtime_marts_source"] = _settings.realtime_marts_source
     health["realtime_marts_domains"] = _settings.realtime_marts_domains
     health["realtime_marts_fallback"] = _settings.realtime_marts_fallback
     return health

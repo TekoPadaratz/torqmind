@@ -61,15 +61,17 @@ Detalhes completos de flags, dry-run e rollback basico: `docs/HOMOLOGATION_APPLY
 Runbook do rebuild derivado puro: `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`.
 Use `--allow-dw-only` apenas para verificacao intermediaria do PostgreSQL DW; para religar o serving analitico da API, o fluxo recomendado continua sendo republicar ClickHouse no mesmo apply.
 
-## Cutover realtime DW-origin
+## Cutover realtime STG-direto
 
-O cutover realtime atual e **DW-origin (Opção B)**:
+O cutover realtime final usa STG como origem operacional:
 
 ```text
-STG -> ETL STG->DW -> Debezium(dw.*) -> Redpanda -> CDC Consumer -> torqmind_current -> torqmind_mart_rt -> API
+Agent/API -> STG -> Debezium(stg.*) -> Redpanda -> CDC Consumer -> torqmind_current.stg_* -> mart_rt -> API
 ```
 
-Ele reduz a dependencia do sync batch DW->ClickHouse mart, mas ainda depende do ETL STG->DW para novos eventos. Nao tratar esta etapa como corte final STG-direto.
+DW permanece para auditoria, reconciliacao, backfill legado e rollback emergencial. Ele nao e o motor operacional do BI realtime quando `REALTIME_MARTS_SOURCE=stg`.
+
+Nota de schema: `stg.clientes` nao existe fisicamente no schema atual; o dataset `clientes` entra por `stg.entidades`. O connector lista `stg.clientes` e a publication inclui essa tabela apenas quando ela existir.
 
 Auditoria obrigatoria dos DDLs antes do cutover:
 
@@ -94,30 +96,30 @@ ENV_FILE="$TM_ENV" ./deploy/scripts/streaming-init-mart-rt.sh
 Rodar cutover one-command:
 
 ```bash
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill --id-empresa 1
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill --source stg --id-empresa 1
 ```
 
 O script so ativa `USE_REALTIME_MARTS=true` depois de validar:
 - DDL mart_rt aplicado;
 - Redpanda, Debezium e CDC consumer em `RUNNING`;
-- raw/current com dados para tabelas DW que possuem dados do tenant;
+- raw/current com dados para tabelas STG canonicas que possuem dados do tenant;
 - mart_rt com dados;
-- `realtime-validate-cutover.sh` retornando zero;
-- smoke da API com `REALTIME_MARTS_FALLBACK=false`.
+- `realtime-validate-cutover.sh --source stg` retornando zero;
+- smoke da API com `REALTIME_MARTS_SOURCE=stg` e `REALTIME_MARTS_FALLBACK=false`.
 
 Validacao isolada:
 
 ```bash
-ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-validate-cutover.sh
+ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-validate-cutover.sh --source stg
 ```
 
-Smoke e2e da trilha atual:
+Smoke e2e STG-direto:
 
 ```bash
 ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-e2e-smoke.sh
 ```
 
-Esse smoke insere fixture em `dw.fact_venda`/`dw.fact_venda_item`. Ele prova DW -> Debezium -> Redpanda -> CDC -> current -> mart_rt -> API, mas nao prova evento novo STG sem ETL.
+Esse smoke insere fixture em `stg.comprovantes`, `stg.itenscomprovantes` e `stg.formas_pgto_comprovantes`. Ele prova STG -> Debezium -> Redpanda -> CDC -> current -> mart_rt -> API sem rodar ETL STG->DW.
 
 Rollback:
 
@@ -125,7 +127,7 @@ Rollback:
 ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
 ```
 
-Risco remanescente: a migracao para STG-direto exige Debezium em `stg.comprovantes`, `stg.itenscomprovantes`, `stg.formas_pgto_comprovantes` e cadastros, mais transformador streaming que replique as regras canonicas de data de negocio, cancelamento, CFOP, ponte de pagamentos e isolamento tenant/filial.
+Risco remanescente: a aceitacao operacional depende de executar o smoke E2E e a validacao bloqueante no ambiente alvo. Se esses comandos nao rodarem, o cutover nao deve ser declarado concluido.
 
 ## T-48h: benchmark local com massa real
 
@@ -539,22 +541,22 @@ cat backup_pre_release.dump | docker compose -f docker-compose.prod.yml --env-fi
 
 ## Realtime Marts (Cutover Pós Go-Live)
 
-> Pré-requisito: stack batch já estável em produção.
+> Pré-requisito: stack streaming e STG canônica estáveis em produção.
 
 ### Ativação
 
 ```bash
 # Dry-run primeiro (não muda nada, apenas valida fluxo)
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill --source stg
 
 # Execução real
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --with-backfill
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --with-backfill --source stg
 ```
 
 ### Validação isolada (não ativa realtime)
 
 ```bash
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only --source stg
 ```
 
 ### Rollback para batch

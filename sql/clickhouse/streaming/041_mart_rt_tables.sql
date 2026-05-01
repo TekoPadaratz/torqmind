@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.risk_recent_events_rt (
     id_filial         Int32 NOT NULL,
     data_key          Int32 NOT NULL,
     event_type        LowCardinality(String) NOT NULL,
-    source            LowCardinality(String) NOT NULL DEFAULT 'DW',
+    source            LowCardinality(String) NOT NULL DEFAULT 'STG',
     id_usuario        Nullable(Int32),
     nome_operador     String NOT NULL DEFAULT '',
     id_funcionario    Nullable(Int32),

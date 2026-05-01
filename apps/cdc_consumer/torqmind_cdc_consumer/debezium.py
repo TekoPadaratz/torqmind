@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import orjson
@@ -72,7 +73,7 @@ def parse_debezium_event(
     # Extract id_empresa and data_key from the active record
     record = after if after else before
     id_empresa = _extract_int(record, "id_empresa")
-    data_key = _extract_int(record, "data_key")
+    data_key = _extract_data_key(record)
 
     return DebeziumEvent(
         topic=topic,
@@ -101,3 +102,82 @@ def _extract_int(record: dict[str, Any] | None, field: str) -> int:
         return int(val)
     except (ValueError, TypeError):
         return 0
+
+
+def _extract_data_key(record: dict[str, Any] | None) -> int:
+    """Extract YYYYMMDD from DW data_key or from STG event timestamps."""
+    direct = _extract_int(record, "data_key")
+    if direct > 0:
+        return direct
+    if not record:
+        return 0
+
+    for field in ("data_key_shadow", "DATA_KEY", "dataKey"):
+        val = _extract_int(record, field)
+        if val > 0:
+            return val
+
+    payload = record.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = orjson.loads(payload)
+        except (orjson.JSONDecodeError, TypeError):
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    candidates = [
+        record.get("dt_evento"),
+        record.get("datarepl"),
+        payload.get("TORQMIND_DT_EVENTO"),
+        payload.get("DT_EVENTO"),
+        payload.get("DATAHORA"),
+        payload.get("DATA"),
+        payload.get("DTHR"),
+        payload.get("DATAREPL"),
+    ]
+    for candidate in candidates:
+        key = _date_key_from_any(candidate)
+        if key > 0:
+            return key
+    return 0
+
+
+def _date_key_from_any(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, datetime):
+        return int(value.strftime("%Y%m%d"))
+    if isinstance(value, (int, float)):
+        # Debezium may expose timestamps as millis or micros depending on type.
+        raw = float(value)
+        if raw <= 0:
+            return 0
+        if raw > 10_000_000_000_000:
+            raw = raw / 1_000_000
+        elif raw > 10_000_000_000:
+            raw = raw / 1_000
+        try:
+            return int(datetime.fromtimestamp(raw, tz=timezone.utc).strftime("%Y%m%d"))
+        except (OverflowError, OSError, ValueError):
+            return 0
+
+    text = str(value).strip()
+    if not text:
+        return 0
+    if len(text) >= 8 and text[:8].isdigit():
+        return int(text[:8])
+
+    normalized = text.replace("Z", "+00:00")
+    for parser in (
+        lambda s: datetime.fromisoformat(s),
+        lambda s: datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S"),
+        lambda s: datetime.strptime(s[:10], "%Y-%m-%d"),
+        lambda s: datetime.strptime(s[:10], "%d/%m/%Y"),
+    ):
+        try:
+            parsed = parser(normalized)
+            return int(parsed.strftime("%Y%m%d"))
+        except (TypeError, ValueError):
+            continue
+    return 0

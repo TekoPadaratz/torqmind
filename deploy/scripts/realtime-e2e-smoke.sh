@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 # Realtime E2E Smoke Test
-# Validates the current DW-origin realtime pipeline from ingestion through API response.
+# Validates the STG-direct realtime pipeline from ingestion through API response.
 #
 # Prerequisites:
 #   - Docker Compose stack running (prod + streaming)
@@ -10,7 +10,7 @@ set -Eeuo pipefail
 #   - ClickHouse mart_rt tables initialized
 #
 # What it does:
-#   1. Inserts a synthetic test sale into PostgreSQL DW (Option B source)
+#   1. Inserts a synthetic test sale into PostgreSQL STG canonical tables
 #   2. Waits for the CDC event to appear in torqmind_raw
 #   3. Confirms the event in torqmind_current
 #   4. Triggers mart builder refresh
@@ -40,9 +40,17 @@ PG_PASS="${POSTGRES_PASSWORD:-torqmind}"
 PG_DB="${POSTGRES_DB:-torqmind}"
 TEST_ID_EMPRESA="${TEST_ID_EMPRESA:-1}"
 TEST_ID_FILIAL="${TEST_ID_FILIAL:-1}"
-# Use a deterministic test data_key far in the future to avoid collisions
-TEST_DATA_KEY=29991231
-TEST_MARKER="__E2E_SMOKE_TEST__"
+TEST_RUN_SUFFIX="${TEST_RUN_SUFFIX:-$(date +%s)}"
+TEST_DAY="$(printf '%02d' "$(( (TEST_RUN_SUFFIX % 28) + 1 ))")"
+# Use an isolated future business date and natural keys to avoid stale raw/mart matches.
+TEST_DATA_KEY="${TEST_DATA_KEY:-229912${TEST_DAY}}"
+TEST_DATE_ISO="${TEST_DATE_ISO:-2299-12-${TEST_DAY}T10:30:00Z}"
+TEST_TS_SQL="${TEST_TS_SQL:-2299-12-${TEST_DAY} 10:30:00+00}"
+TEST_MARKER="${TEST_MARKER:-__E2E_SMOKE_TEST_${TEST_RUN_SUFFIX}__}"
+TEST_ID_DB="${TEST_ID_DB:-$((900000000 + (TEST_RUN_SUFFIX % 10000000)))}"
+TEST_ID_COMPROVANTE="${TEST_ID_COMPROVANTE:-$TEST_ID_DB}"
+TEST_ID_ITEM="${TEST_ID_ITEM:-1}"
+TEST_REFERENCIA="${TEST_REFERENCIA:-$((990000000 + (TEST_RUN_SUFFIX % 10000000)))}"
 
 log() {
   printf '%s [E2E] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -68,8 +76,9 @@ ch_query() {
 
 cleanup() {
   log "Cleaning up test data (data_key=$TEST_DATA_KEY)..."
-  pg_exec "DELETE FROM dw.fact_venda WHERE data_key=$TEST_DATA_KEY AND id_empresa=$TEST_ID_EMPRESA;" 2>/dev/null || true
-  pg_exec "DELETE FROM dw.fact_venda_item WHERE data_key=$TEST_DATA_KEY AND id_empresa=$TEST_ID_EMPRESA;" 2>/dev/null || true
+  pg_exec "DELETE FROM stg.formas_pgto_comprovantes WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_referencia=$TEST_REFERENCIA;" 2>/dev/null || true
+  pg_exec "DELETE FROM stg.itenscomprovantes WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE;" 2>/dev/null || true
+  pg_exec "DELETE FROM stg.comprovantes WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE;" 2>/dev/null || true
   log "Cleanup done."
 }
 
@@ -109,21 +118,86 @@ step_check_prerequisites() {
 step_insert_test_sale() {
   log "=== Step 1: Insert synthetic test sale ==="
 
-  # Insert into dw.fact_venda (the current realtime source; STG-direct is not implemented yet).
+  # Insert into canonical STG tables. No STG->DW ETL is called by this smoke.
   pg_exec "
-    INSERT INTO dw.fact_venda (id_empresa, id_filial, id_db, id_movprodutos, data_key, data, id_usuario, id_turno, total_venda, cancelado, saidas_entradas)
-    VALUES ($TEST_ID_EMPRESA, $TEST_ID_FILIAL, 999999, 999999, $TEST_DATA_KEY, TIMESTAMP '2999-12-31 10:30:00', 1, 1, 42.50, 0, 1)
-    ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos)
-    DO UPDATE SET data_key = $TEST_DATA_KEY, data = TIMESTAMP '2999-12-31 10:30:00', total_venda = 42.50, cancelado = 0;
+    INSERT INTO stg.comprovantes (
+      id_empresa, id_filial, id_db, id_comprovante, payload, dt_evento,
+      referencia_shadow, id_usuario_shadow, id_turno_shadow, valor_total_shadow,
+      cancelado_shadow, situacao_shadow, received_at
+    )
+    VALUES (
+      $TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_ID_DB, $TEST_ID_COMPROVANTE,
+      jsonb_build_object(
+        'TORQMIND_MARKER', '$TEST_MARKER',
+        'ID_FILIAL', $TEST_ID_FILIAL,
+        'ID_DB', $TEST_ID_DB,
+        'ID_COMPROVANTE', $TEST_ID_COMPROVANTE,
+        'REFERENCIA', $TEST_REFERENCIA,
+        'ID_USUARIOS', 1,
+        'ID_TURNOS', 1,
+        'VLRTOTAL', '42.50',
+        'SITUACAO', 3,
+        'CANCELADO', false,
+        'DATA', '$TEST_DATE_ISO'
+      ),
+      TIMESTAMPTZ '$TEST_TS_SQL',
+      $TEST_REFERENCIA, 1, 1, 42.50, false, 3, now()
+    )
+    ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante)
+    DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento,
+      referencia_shadow = EXCLUDED.referencia_shadow,
+      valor_total_shadow = EXCLUDED.valor_total_shadow,
+      cancelado_shadow = EXCLUDED.cancelado_shadow,
+      situacao_shadow = EXCLUDED.situacao_shadow,
+      received_at = now();
   "
 
   pg_exec "
-    INSERT INTO dw.fact_venda_item (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos, data_key, id_produto, id_grupo_produto, qtd, valor_unitario, total, custo_total, margem)
-    VALUES ($TEST_ID_EMPRESA, $TEST_ID_FILIAL, 999999, 999999, 1, $TEST_DATA_KEY, 1, 1, 1.0, 42.50, 42.50, 20.00, 22.50)
-    ON CONFLICT (id_empresa, id_filial, id_db, id_movprodutos, id_itensmovprodutos) DO UPDATE SET total = 42.50;
+    INSERT INTO stg.itenscomprovantes (
+      id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante, payload,
+      dt_evento, id_produto_shadow, id_grupo_produto_shadow, id_local_venda_shadow,
+      id_funcionario_shadow, cfop_shadow, qtd_shadow, valor_unitario_shadow,
+      total_shadow, desconto_shadow, custo_unitario_shadow, received_at
+    )
+    VALUES (
+      $TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_ID_DB, $TEST_ID_COMPROVANTE, $TEST_ID_ITEM,
+      jsonb_build_object(
+        'TORQMIND_MARKER', '$TEST_MARKER',
+        'ID_PRODUTOS', 1,
+        'ID_GRUPOPRODUTOS', 1,
+        'CFOP', 5102,
+        'QTDE', '1',
+        'VLRUNITARIO', '42.50',
+        'TOTAL', '42.50',
+        'VLRDESCONTO', '0'
+      ),
+      TIMESTAMPTZ '$TEST_TS_SQL',
+      1, 1, 1, 1, 5102, 1.000, 42.500000, 42.50, 0.00, 20.000000, now()
+    )
+    ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante)
+    DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento,
+      cfop_shadow = EXCLUDED.cfop_shadow, qtd_shadow = EXCLUDED.qtd_shadow,
+      total_shadow = EXCLUDED.total_shadow, received_at = now();
   "
 
-  log "Test sale inserted (data_key=$TEST_DATA_KEY, total=42.50)"
+  pg_exec "
+    INSERT INTO stg.formas_pgto_comprovantes (
+      id_empresa, id_filial, id_referencia, tipo_forma, id_db_shadow, dt_evento,
+      valor_shadow, payload, received_at
+    )
+    VALUES (
+      $TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_REFERENCIA, 0, $TEST_ID_DB,
+      TIMESTAMPTZ '$TEST_TS_SQL',
+      42.50,
+      jsonb_build_object('TORQMIND_MARKER', '$TEST_MARKER', 'VALOR', '42.50', 'TIPO_FORMA', 0),
+      now()
+    )
+    ON CONFLICT (id_empresa, id_filial, id_referencia, tipo_forma)
+    DO UPDATE SET payload = EXCLUDED.payload, dt_evento = EXCLUDED.dt_evento,
+      valor_shadow = EXCLUDED.valor_shadow, received_at = now();
+  "
+
+  log "STG test sale inserted (data_key=$TEST_DATA_KEY, total=42.50)"
 }
 
 step_wait_raw_event() {
@@ -135,7 +209,7 @@ step_wait_raw_event() {
 
   while (( elapsed < max_wait )); do
     local raw_count
-    raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='dw' AND table_name='fact_venda' AND JSONExtractInt(after_json, 'data_key')=$TEST_DATA_KEY")"
+    raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='stg' AND table_name='comprovantes' AND JSONExtractInt(after_json, 'id_comprovante')=$TEST_ID_COMPROVANTE AND position(after_json, '$TEST_MARKER') > 0")"
     raw_count="${raw_count//[[:space:]]/}"
     if (( raw_count > 0 )); then
       log "Raw event found after ${elapsed}s"
@@ -158,10 +232,10 @@ step_wait_current() {
 
   while (( elapsed < max_wait )); do
     local current_count
-    current_count="$(ch_query "SELECT count() FROM torqmind_current.fact_venda FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY AND is_deleted=0")"
+    current_count="$(ch_query "SELECT count() FROM torqmind_current.stg_comprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
     current_count="${current_count//[[:space:]]/}"
     if (( current_count > 0 )); then
-      log "Current fact_venda confirmed (count=$current_count) after ${elapsed}s"
+      log "Current stg_comprovantes confirmed (count=$current_count) after ${elapsed}s"
       return 0
     fi
     sleep "$interval"
@@ -184,13 +258,16 @@ builder = MartBuilder(
     clickhouse_port=settings.clickhouse_port,
     clickhouse_user=settings.clickhouse_user,
     clickhouse_password=settings.clickhouse_password,
+    source='stg',
 )
-builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'fact_venda')
-builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'fact_venda_item')
+builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'comprovantes')
+builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'itenscomprovantes')
+builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'formas_pgto_comprovantes')
 results = builder.refresh_if_needed()
 for r in results:
     print(f'  {r.mart_name}: rows={r.rows_written} ms={r.duration_ms} err={r.error}')
-assert any(r.rows_written > 0 for r in results), 'No rows written by mart builder!'
+errors = [r for r in results if r.error]
+assert not errors, f'Mart builder returned errors: {errors!r}'
 print('MART_BUILD_OK')
 "
 
@@ -230,14 +307,16 @@ step_verify_api() {
   api_result="$(compose_prod exec -T api python -c "
 import os
 os.environ['USE_REALTIME_MARTS'] = 'true'
+os.environ['REALTIME_MARTS_SOURCE'] = 'stg'
 os.environ['REALTIME_MARTS_FALLBACK'] = 'false'
-from datetime import date
+from datetime import datetime
 from app.config import settings
 assert settings.use_realtime_marts is True
+assert settings.realtime_marts_source == 'stg'
 assert settings.realtime_marts_fallback is False
 from app import repos_analytics
-# Query for our test date (2999-12-31)
-result = getattr(repos_analytics, 'dashboard_kpis')('admin', 1, None, date(2999, 12, 1), date(2999, 12, 31))
+dt = datetime.strptime('$TEST_DATA_KEY', '%Y%m%d').date()
+result = getattr(repos_analytics, 'dashboard_kpis')('admin', $TEST_ID_EMPRESA, None, dt.replace(day=1), dt)
 fat = float(result.get('faturamento', 0))
 print(f'faturamento={fat}')
 if fat >= 42:
@@ -259,8 +338,8 @@ step_report() {
   log "  E2E SMOKE TEST COMPLETE"
   log "============================================"
   log "Pipeline validated:"
-  log "  PostgreSQL DW INSERT -> Debezium CDC -> Redpanda -> CDC Consumer -> ClickHouse current -> MartBuilder -> mart_rt -> API facade"
-  log "  Current origin: DW (Option B), not STG-direct."
+  log "  PostgreSQL STG INSERT -> Debezium CDC -> Redpanda -> CDC Consumer -> ClickHouse current -> MartBuilder -> mart_rt -> API facade"
+  log "  Current origin: STG direct. No STG->DW ETL was invoked by this smoke."
   log ""
   log "Test parameters:"
   log "  id_empresa=$TEST_ID_EMPRESA"

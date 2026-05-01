@@ -145,6 +145,151 @@ _register(TableMapping(
              "impacto_estimado", "score_risco", "score_level", "reasons"),
 ))
 
+# ---------- STG canonical source ----------
+
+_STG_COMMON = (
+    "payload",
+    "ingested_at",
+    "dt_evento",
+    "id_db_shadow",
+    "id_chave_natural",
+    "received_at",
+)
+
+
+def _stg_columns(*pk: str, extra: tuple[str, ...] = ()) -> tuple[str, ...]:
+    return (*pk, *_STG_COMMON, *extra)
+
+
+_register(TableMapping(
+    source_schema="stg", source_table="filiais",
+    ch_database="torqmind_current", ch_table="stg_filiais",
+    primary_key=("id_empresa", "id_filial"),
+    columns=_stg_columns("id_empresa", "id_filial"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="funcionarios",
+    ch_database="torqmind_current", ch_table="stg_funcionarios",
+    primary_key=("id_empresa", "id_filial", "id_funcionario"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_funcionario"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="usuarios",
+    ch_database="torqmind_current", ch_table="stg_usuarios",
+    primary_key=("id_empresa", "id_filial", "id_usuario"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_usuario"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="entidades",
+    ch_database="torqmind_current", ch_table="stg_entidades",
+    primary_key=("id_empresa", "id_filial", "id_entidade"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_entidade"),
+))
+
+# Future-proof mapping for deployments that add a physical stg.clientes table.
+# The current API ingest aliases clientes into stg.entidades.
+_register(TableMapping(
+    source_schema="stg", source_table="clientes",
+    ch_database="torqmind_current", ch_table="stg_clientes",
+    primary_key=("id_empresa", "id_filial", "id_cliente"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_cliente"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="grupoprodutos",
+    ch_database="torqmind_current", ch_table="stg_grupoprodutos",
+    primary_key=("id_empresa", "id_filial", "id_grupoprodutos"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_grupoprodutos"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="localvendas",
+    ch_database="torqmind_current", ch_table="stg_localvendas",
+    primary_key=("id_empresa", "id_filial", "id_localvendas"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_localvendas"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="produtos",
+    ch_database="torqmind_current", ch_table="stg_produtos",
+    primary_key=("id_empresa", "id_filial", "id_produto"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_produto"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="turnos",
+    ch_database="torqmind_current", ch_table="stg_turnos",
+    primary_key=("id_empresa", "id_filial", "id_turno"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_turno"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="comprovantes",
+    ch_database="torqmind_current", ch_table="stg_comprovantes",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_comprovante"),
+    columns=_stg_columns(
+        "id_empresa", "id_filial", "id_db", "id_comprovante",
+        extra=(
+            "referencia_shadow", "id_usuario_shadow", "id_turno_shadow",
+            "id_cliente_shadow", "valor_total_shadow", "cancelado_shadow",
+            "situacao_shadow",
+        ),
+    ),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="itenscomprovantes",
+    ch_database="torqmind_current", ch_table="stg_itenscomprovantes",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_comprovante", "id_itemcomprovante"),
+    columns=_stg_columns(
+        "id_empresa", "id_filial", "id_db", "id_comprovante", "id_itemcomprovante",
+        extra=(
+            "id_produto_shadow", "id_grupo_produto_shadow", "id_local_venda_shadow",
+            "id_funcionario_shadow", "cfop_shadow", "qtd_shadow",
+            "valor_unitario_shadow", "total_shadow", "desconto_shadow",
+            "custo_unitario_shadow",
+        ),
+    ),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="formas_pgto_comprovantes",
+    ch_database="torqmind_current", ch_table="stg_formas_pgto_comprovantes",
+    primary_key=("id_empresa", "id_filial", "id_referencia", "tipo_forma"),
+    columns=_stg_columns(
+        "id_empresa", "id_filial", "id_referencia", "tipo_forma",
+        extra=(
+            "valor_shadow", "nsu_shadow", "autorizacao_shadow", "bandeira_shadow",
+            "rede_shadow", "tef_shadow",
+        ),
+    ),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="contaspagar",
+    ch_database="torqmind_current", ch_table="stg_contaspagar",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_contaspagar"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "id_contaspagar"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="contasreceber",
+    ch_database="torqmind_current", ch_table="stg_contasreceber",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_contasreceber"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "id_contasreceber"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="financeiro",
+    ch_database="torqmind_current", ch_table="stg_financeiro",
+    primary_key=("id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"),
+))
+
+
 # ---------- App / Config ----------
 
 _register(TableMapping(

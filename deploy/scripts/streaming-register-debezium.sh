@@ -24,6 +24,8 @@ fi
 : "${POSTGRES_USER:=${PG_USER:-postgres}}"
 : "${POSTGRES_PASSWORD:=${PG_PASSWORD:-postgres}}"
 : "${POSTGRES_DB:=${PG_DATABASE:-torqmind}}"
+: "${DEBEZIUM_SNAPSHOT_MODE:=}"
+export POSTGRES_HOST POSTGRES_PORT POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DEBEZIUM_SNAPSHOT_MODE
 
 echo "=== TorqMind Streaming: Register Debezium Connector ==="
 echo "  Debezium Connect URL: $DEBEZIUM_URL"
@@ -66,6 +68,10 @@ for key, val in config.get('config', {}).items():
     if isinstance(val, str) and val in subs:
         config['config'][key] = subs[val]
 
+snapshot_mode = os.environ.get('DEBEZIUM_SNAPSHOT_MODE')
+if snapshot_mode:
+    config['config']['snapshot.mode'] = snapshot_mode
+
 print(json.dumps(config))
 ")
 
@@ -79,17 +85,21 @@ EXISTING_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "$DEBEZIUM_URL/connect
 if [[ "$EXISTING_STATUS" == "200" ]]; then
     echo "  Connector exists. Updating configuration..."
     CONFIG_ONLY=$(echo "$CONNECTOR_CONFIG" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['config']))")
-    RESPONSE=$(curl -sS -X PUT \
+    RESPONSE_FILE="$(mktemp)"
+    HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X PUT \
         -H "Content-Type: application/json" \
         -d "$CONFIG_ONLY" \
         "$DEBEZIUM_URL/connectors/$CONNECTOR_NAME/config")
 else
     echo "  Registering new connector..."
-    RESPONSE=$(curl -sS -X POST \
+    RESPONSE_FILE="$(mktemp)"
+    HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" -X POST \
         -H "Content-Type: application/json" \
         -d "$CONNECTOR_CONFIG" \
         "$DEBEZIUM_URL/connectors")
 fi
+RESPONSE="$(cat "$RESPONSE_FILE")"
+rm -f "$RESPONSE_FILE"
 
 echo ""
 echo "Response:"
@@ -105,23 +115,52 @@ except:
     print(sys.stdin.read())
 " 2>/dev/null || echo "$RESPONSE"
 
+if [[ ! "$HTTP_STATUS" =~ ^2 ]]; then
+    echo ""
+    echo "ERROR: Debezium connector registration failed (HTTP $HTTP_STATUS)"
+    exit 1
+fi
+
 echo ""
 
 # Check connector status
-sleep 3
 echo "Connector status:"
-STATUS=$(curl -sS "$DEBEZIUM_URL/connectors/$CONNECTOR_NAME/status" 2>/dev/null || echo "{}")
-echo "$STATUS" | python3 -c "
+STATUS="{}"
+for i in $(seq 1 60); do
+    STATUS=$(curl -sS "$DEBEZIUM_URL/connectors/$CONNECTOR_NAME/status" 2>/dev/null || echo "{}")
+    if echo "$STATUS" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+connector = data.get('connector', {}).get('state')
+tasks = [t.get('state') for t in data.get('tasks', [])]
+ok = connector == 'RUNNING' and tasks and all(t == 'RUNNING' for t in tasks)
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+        break
+    fi
+    if [[ "$i" -eq 60 ]]; then
+        echo "$STATUS" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    state = data.get('connector', {}).get('state', 'UNKNOWN')
-    tasks = data.get('tasks', [])
-    print(f'  Connector state: {state}')
-    for t in tasks:
-        print(f'  Task {t.get(\"id\", \"?\")}: {t.get(\"state\", \"UNKNOWN\")}')
-except:
-    print('  Unable to parse status')
+    print(json.dumps(data, indent=2))
+except Exception:
+    print(sys.stdin.read())
+" 2>/dev/null || echo "$STATUS"
+        echo "ERROR: Debezium connector did not reach RUNNING state"
+        exit 1
+    fi
+    sleep 2
+done
+
+echo "$STATUS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+state = data.get('connector', {}).get('state', 'UNKNOWN')
+tasks = data.get('tasks', [])
+print(f'  Connector state: {state}')
+for t in tasks:
+    print(f'  Task {t.get(\"id\", \"?\")}: {t.get(\"state\", \"UNKNOWN\")}')
 " 2>/dev/null || echo "  Unable to fetch status"
 
 echo ""
