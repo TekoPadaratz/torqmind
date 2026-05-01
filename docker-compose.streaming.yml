@@ -133,6 +133,7 @@ services:
       CDC_TOPIC_PATTERN: ${CDC_TOPIC_PATTERN:-^torqmind\..*}
       CDC_BATCH_SIZE: ${CDC_BATCH_SIZE:-500}
       CDC_FLUSH_INTERVAL_SECONDS: ${CDC_FLUSH_INTERVAL_SECONDS:-5}
+      ENABLE_MART_BUILDER: ${ENABLE_MART_BUILDER:-true}
       LOG_LEVEL: ${CDC_LOG_LEVEL:-INFO}
     depends_on:
       redpanda:

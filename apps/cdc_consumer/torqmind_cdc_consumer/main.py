@@ -12,6 +12,7 @@ from .clickhouse_writer import ClickHouseWriter
 from .config import settings
 from .debezium import parse_debezium_event
 from .logging import get_logger, setup_logging
+from .mart_builder import MartBuilder
 from .state import ConsumerState
 
 logger = get_logger("main")
@@ -66,6 +67,13 @@ def run() -> None:
     consumer = create_consumer()
     writer = ClickHouseWriter()
     state = ConsumerState()
+    mart_builder = MartBuilder(
+        clickhouse_host=settings.clickhouse_host,
+        clickhouse_port=settings.clickhouse_port,
+        clickhouse_user=settings.clickhouse_user,
+        clickhouse_password=settings.clickhouse_password,
+        enabled=getattr(settings, "enable_mart_builder", True),
+    )
 
     # Subscribe
     topics = get_topics()
@@ -84,7 +92,7 @@ def run() -> None:
             if msg is None:
                 # No message; check if we should flush
                 if writer.should_flush() and writer.buffer_size > 0:
-                    _do_flush(writer, consumer, state)
+                    _do_flush(writer, consumer, state, mart_builder)
                 continue
 
             error = msg.error()
@@ -127,6 +135,14 @@ def run() -> None:
                 writer.process_event(event)
                 state.record_offset(event.topic, event.partition, event.offset)
                 state.increment_processed()
+                # Track affected data for mart builder
+                _record = event.after or event.before or {}
+                mart_builder.mark_affected(
+                    id_empresa=event.id_empresa,
+                    id_filial=int(_record.get("id_filial", 0) or 0),
+                    data_key=event.data_key,
+                    table=event.table_name or "",
+                )
             except Exception as e:
                 state.increment_errors()
                 writer.record_error(
@@ -144,7 +160,7 @@ def run() -> None:
 
             # Flush if batch is ready
             if writer.should_flush():
-                _do_flush(writer, consumer, state)
+                _do_flush(writer, consumer, state, mart_builder)
 
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt")
@@ -152,7 +168,7 @@ def run() -> None:
         # Final flush
         if writer.buffer_size > 0:
             try:
-                _do_flush(writer, consumer, state)
+                _do_flush(writer, consumer, state, mart_builder)
             except Exception as e:
                 logger.error("final_flush_failed", error=str(e))
 
@@ -164,8 +180,8 @@ def run() -> None:
         )
 
 
-def _do_flush(writer: ClickHouseWriter, consumer: Consumer, state: ConsumerState) -> None:
-    """Flush buffers and commit offsets."""
+def _do_flush(writer: ClickHouseWriter, consumer: Consumer, state: ConsumerState, mart_builder: MartBuilder) -> None:
+    """Flush buffers, commit offsets, and refresh affected marts."""
     try:
         rows = writer.flush()
         consumer.commit(asynchronous=False)
@@ -176,6 +192,15 @@ def _do_flush(writer: ClickHouseWriter, consumer: Consumer, state: ConsumerState
                 processed_total=state.events_processed,
                 errors_total=state.events_errors,
             )
+            # Refresh realtime marts for affected windows
+            try:
+                results = mart_builder.refresh_if_needed()
+                if results:
+                    refreshed = [r.mart_name for r in results if r.error is None]
+                    if refreshed:
+                        logger.info("marts_refreshed", marts=refreshed)
+            except Exception as e:
+                logger.warning("mart_refresh_failed", error=str(e))
     except Exception as e:
         logger.error("flush_failed", error=str(e))
         raise

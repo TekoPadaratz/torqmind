@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     dual_read_mode: bool = False  # When True, validate both sources
     refresh_legacy_pg_marts: bool = False  # Legacy PostgreSQL mart refresh is off in ClickHouse-first production
 
+    # Feature flags for realtime/event-driven pipeline
+    use_realtime_marts: bool = False  # When True, BI reads from torqmind_mart_rt (CDC-fed)
+    realtime_marts_domains: str = "dashboard,sales,cash,fraud,finance,payments"  # Comma-separated domains using realtime
+    realtime_marts_fallback: bool = True  # When True, fallback to legacy mart on realtime error
+
     # Business clock
     business_timezone: str = "America/Sao_Paulo"
     business_tenant_timezones: str = ""

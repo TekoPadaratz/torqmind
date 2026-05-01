@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from app import repos_mart as _postgres
 from app import repos_mart_clickhouse as _clickhouse
+from app import repos_mart_realtime as _realtime
 from app.config import settings
 from app.db_clickhouse import get_dual_read_validator
 
@@ -70,6 +71,16 @@ def _clickhouse_function(name: str) -> Callable[..., Any] | None:
     return value if callable(value) else None
 
 
+def _realtime_function(name: str) -> Callable[..., Any] | None:
+    """Get function from realtime mart repos if available."""
+    if not settings.use_realtime_marts:
+        return None
+    if name not in _realtime.REALTIME_FUNCTIONS:
+        return None
+    value = getattr(_realtime, name, None)
+    return value if callable(value) else None
+
+
 def _compare_dual_read(name: str, pg_result: Any, ch_result: Any) -> None:
     try:
         get_dual_read_validator().compare(name, pg_result, ch_result)
@@ -92,6 +103,17 @@ def _dispatch(name: str) -> Callable[..., Any]:
 
         if name in _POSTGRES_OWNED_FUNCTIONS:
             return legacy(*args, **kwargs)
+
+        # Try realtime marts first when enabled
+        realtime = _realtime_function(name)
+        if realtime is not None:
+            try:
+                return realtime(*args, **kwargs)
+            except Exception as exc:
+                if settings.realtime_marts_fallback:
+                    logger.warning("Realtime mart read failed for %s, falling back to legacy: %s", name, exc)
+                else:
+                    raise
 
         if clickhouse is None:
             if use_clickhouse and name in _CLICKHOUSE_DEBT_FUNCTIONS:

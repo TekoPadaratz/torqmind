@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     enable_raw_writes: bool = True
     enable_current_writes: bool = True
     enable_ops_writes: bool = True
+    enable_mart_builder: bool = True
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 
