@@ -17,6 +17,7 @@ export type ScopeQuery = {
   id_filiais: string[];
   id_filiais_key: string;
   id_empresa: string | null;
+  branch_scope?: "all" | "selected" | string;
   ready: boolean;
 };
 

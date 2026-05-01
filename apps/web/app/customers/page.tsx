@@ -19,6 +19,7 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
+import { describeChurnCoverage } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
