@@ -38,7 +38,9 @@ DRY_RUN=0
 ASSUME_YES=0
 FROM_DATE="2025-01-01"
 ID_EMPRESA=1
-ID_FILIAL=""
+ID_FILIAL=""            # audit/smoke/validation filial (does NOT limit backfill)
+BACKFILL_ID_FILIAL=""   # optional: limit backfill to specific filial
+ALL_FILIAIS=0           # explicit flag: backfill all filiais (default behavior)
 WITH_BACKFILL=0
 VALIDATE_ONLY=0
 ROLLBACK_TO_LEGACY=0
@@ -55,32 +57,42 @@ Usage:
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh [flags]
 
 Flags:
-  --yes                   Skip confirmations
-  --dry-run               Print actions without executing
-  --from-date YYYY-MM-DD  Backfill start date (default 2025-01-01)
-  --id-empresa <id>       Tenant (default 1)
-  --id-filial <id>        Audit filial
-  --with-backfill         Run bootstrap + mart_rt backfill from current data
-  --validate-only         ONLY validate already-prepared environment (non-mutating)
-  --rollback-to-legacy    Disable realtime marts and revert to legacy
-  --source stg|dw         Realtime source (default stg)
-  --skip-bootstrap-stg    Skip STG bootstrap even with --with-backfill
-  --kill-legacy-etl       Force-kill running legacy ETL processes
+  --yes                       Skip confirmations
+  --dry-run                   Print actions without executing
+  --from-date YYYY-MM-DD      Backfill start date (default 2025-01-01)
+  --id-empresa <id>           Tenant (default 1)
+  --id-filial <id>            Audit/smoke filial (does NOT limit backfill)
+  --backfill-id-filial <id>   Limit backfill to specific filial (default: all)
+  --all-filiais               Explicit: backfill covers all filiais (default)
+  --with-backfill             Run bootstrap + mart_rt backfill from current data
+  --validate-only             ONLY validate already-prepared environment (non-mutating)
+  --rollback-to-legacy        Disable realtime marts and revert to legacy
+  --source stg|dw             Realtime source (default stg)
+  --skip-bootstrap-stg        Skip STG bootstrap even with --with-backfill
+  --kill-legacy-etl           Force-kill running legacy ETL processes
   --help
+
+  NOTE: --id-filial is for audit/validation/smoke only. It does NOT scope
+  the bootstrap or MartBuilder backfill. Use --backfill-id-filial to limit
+  the backfill to a specific branch. For full production cutover, do NOT
+  pass --backfill-id-filial (all filiais are processed by default).
 
 Validate-only mode:
   Does NOT build, migrate, start services, register connectors, or alter env.
   Only validates: containers, connector, raw/current data, mart_rt, API fallback=false.
 
 Examples:
-  # Full cutover
-  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill
+  # Full cutover (all filiais)
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill --all-filiais
 
-  # Validate existing environment
-  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only
+  # Cutover with backfill limited to one filial (testing)
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --with-backfill --backfill-id-filial 14458
+
+  # Validate existing environment (audit focused on specific filial)
+  ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only --id-filial 14458
 
   # Dry-run
-  ENV_FILE=.env.production.example ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill
+  ENV_FILE=.env.production.example ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill --id-filial 14458 --all-filiais
 
   # Rollback
   ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
@@ -105,6 +117,10 @@ parse_args() {
       --id-filial)
         [[ $# -ge 2 ]] || { echo "ERROR: --id-filial requires a value" >&2; exit 2; }
         ID_FILIAL="$2"; shift ;;
+      --backfill-id-filial)
+        [[ $# -ge 2 ]] || { echo "ERROR: --backfill-id-filial requires a value" >&2; exit 2; }
+        BACKFILL_ID_FILIAL="$2"; shift ;;
+      --all-filiais) ALL_FILIAIS=1 ;;
       --with-backfill) WITH_BACKFILL=1 ;;
       --validate-only) VALIDATE_ONLY=1 ;;
       --rollback-to-legacy) ROLLBACK_TO_LEGACY=1 ;;
@@ -120,6 +136,18 @@ parse_args() {
   done
   SOURCE="$(printf '%s' "$SOURCE" | tr '[:upper:]' '[:lower:]')"
   [[ "$SOURCE" == "stg" || "$SOURCE" == "dw" ]] || { echo "ERROR: --source must be stg or dw" >&2; exit 2; }
+
+  # Validate --backfill-id-filial is numeric if set
+  if [[ -n "$BACKFILL_ID_FILIAL" ]] && ! [[ "$BACKFILL_ID_FILIAL" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: --backfill-id-filial must be numeric, got: $BACKFILL_ID_FILIAL" >&2
+    exit 2
+  fi
+
+  # Conflict: --all-filiais and --backfill-id-filial cannot be used together
+  if (( ALL_FILIAIS )) && [[ -n "$BACKFILL_ID_FILIAL" ]]; then
+    echo "ERROR: --all-filiais and --backfill-id-filial are mutually exclusive" >&2
+    exit 2
+  fi
 
   # Resolve bootstrap default: enabled for source=stg + with-backfill, unless explicitly skipped
   if [[ "$SOURCE" == "stg" ]] && (( WITH_BACKFILL )) && (( ! SKIP_BOOTSTRAP_STG )); then
@@ -366,7 +394,11 @@ step_preflight() {
   command -v docker >/dev/null 2>&1 || { echo "ERROR: docker not found" >&2; exit 1; }
   run docker compose version
   run find "$ROOT_DIR/deploy/scripts" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
+  # Resolve display labels for filial scope
+  local audit_filial_label="${ID_FILIAL:-nenhuma}"
+  local backfill_filial_label="${BACKFILL_ID_FILIAL:-todas}"
   log INFO "preflight=OK env_file=$ENV_FILE from_date=$FROM_DATE id_empresa=$ID_EMPRESA source=$SOURCE"
+  log INFO "audit_filial=$audit_filial_label backfill_filial=$backfill_filial_label"
 }
 
 step_validate_compose() {
@@ -489,7 +521,7 @@ step_backfill() {
     --from-date "$FROM_DATE" --id-empresa "$ID_EMPRESA"
   )
   [[ "$backfill_command" == "backfill" ]] && backfill_cmd+=(--source "$SOURCE")
-  [[ -n "$ID_FILIAL" ]] && backfill_cmd+=(--id-filial "$ID_FILIAL")
+  [[ -n "$BACKFILL_ID_FILIAL" ]] && backfill_cmd+=(--id-filial "$BACKFILL_ID_FILIAL")
   run "${backfill_cmd[@]}"
 
   # Verify backfill produced rows
@@ -654,6 +686,8 @@ step_report() {
   log INFO "env_file=$ENV_FILE"
   log INFO "from_date=$FROM_DATE"
   log INFO "id_empresa=$ID_EMPRESA"
+  log INFO "audit_filial=${ID_FILIAL:-nenhuma}"
+  log INFO "backfill_filial=${BACKFILL_ID_FILIAL:-todas}"
   log INFO "with_backfill=$WITH_BACKFILL"
   log INFO "bootstrap_stg=$BOOTSTRAP_STG"
   log INFO "source=$SOURCE"

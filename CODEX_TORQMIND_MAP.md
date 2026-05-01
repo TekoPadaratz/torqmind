@@ -63,9 +63,11 @@ Atalhos uteis:
 - `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1 INCLUDE_DIMENSIONS=1`: mesma rotina, mas incluindo purge de dimensoes DW reconstruiveis em rebuild tenant-wide aberto.
 
 Nota sobre filiais no apply:
-- `--id-filial` = escopo de auditoria (default 14458). Nao afeta o rebuild.
+- `--id-filial` = escopo de auditoria/smoke (default 14458). Nao afeta rebuild nem backfill.
 - `--rebuild-id-filial` = escopo do rebuild derivado. Omitir = todas as filiais.
-- `--all-filiais` = alias explícito para rebuild de todas as filiais.
+- `--backfill-id-filial` = escopo do backfill realtime (MartBuilder). Omitir = todas as filiais.
+- `--all-filiais` = alias explícito para rebuild/backfill de todas as filiais.
+- Conflito: `--all-filiais` e `--backfill-id-filial` sao mutuamente exclusivos (exit 2).
 
 ## 3. Variaveis de ambiente criticas
 

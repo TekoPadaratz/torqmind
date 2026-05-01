@@ -77,12 +77,20 @@ REALTIME_MARTS_FALLBACK=false
 The supported command is:
 
 ```bash
+# All filiais (production default — no --id-filial):
 docker compose -f docker-compose.streaming.yml --env-file "$ENV_FILE" \
   exec -T cdc-consumer python -m torqmind_cdc_consumer.cli backfill-stg \
   --from-date 2025-01-01 --id-empresa 1
+
+# Scoped to specific filial (testing/audit only):
+docker compose -f docker-compose.streaming.yml --env-file "$ENV_FILE" \
+  exec -T cdc-consumer python -m torqmind_cdc_consumer.cli backfill-stg \
+  --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
 ```
 
 Backfill reads ClickHouse `torqmind_current.stg_*`, which is populated by Debezium initial snapshot/streaming from PostgreSQL STG, and rebuilds `torqmind_mart_rt`. No DW table is required for mart publication in `source=stg` mode.
+
+**Important:** In the orchestrator (`prod-realtime-cutover-apply.sh`), the `--id-filial` flag is for audit/smoke/validation only — it does NOT scope the backfill. Use `--backfill-id-filial` to limit the MartBuilder scope, or omit it for all filiais (production default). `--all-filiais` makes this explicit.
 
 ## Rollback
 

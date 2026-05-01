@@ -96,7 +96,10 @@ ENV_FILE="$TM_ENV" ./deploy/scripts/streaming-init-mart-rt.sh
 Rodar cutover one-command:
 
 ```bash
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --yes --with-backfill --source stg --id-empresa 1
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --yes --with-backfill --source stg --id-empresa 1 --all-filiais
+# NOTE: --id-filial (se usado) é apenas para audit/smoke. Não limita o backfill.
+# Para cutover completo de produção, NÃO use --backfill-id-filial.
 ```
 
 O script so ativa `USE_REALTIME_MARTS=true` depois de validar:
@@ -547,10 +550,13 @@ cat backup_pre_release.dump | docker compose -f docker-compose.prod.yml --env-fi
 
 ```bash
 # Dry-run primeiro (não muda nada, apenas valida fluxo)
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --dry-run --with-backfill --source stg
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --dry-run --with-backfill --source stg --id-empresa 1 --id-filial 14458 --all-filiais
 
-# Execução real
-ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --with-backfill --source stg
+# Execução real (all filiais — produção)
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --yes --with-backfill --source stg --id-empresa 1 --all-filiais
+# NOTE: --id-filial = apenas audit/smoke. --backfill-id-filial para escopo parcial.
 ```
 
 ### Validação isolada (não ativa realtime)

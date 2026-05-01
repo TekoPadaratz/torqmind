@@ -43,8 +43,17 @@ sql/clickhouse/streaming/041_mart_rt_tables.sql
 ## Cutover
 
 ```bash
+# Full cutover (all filiais — production default)
 ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh \
-  --yes --with-backfill --source stg --from-date 2025-01-01 --id-empresa 1
+  --yes --with-backfill --source stg --from-date 2025-01-01 --id-empresa 1 --all-filiais
+
+# Scoped cutover (specific filial — testing/homologation only)
+# ENV_FILE=/etc/torqmind/prod.env ./deploy/scripts/prod-realtime-cutover-apply.sh \
+#   --yes --with-backfill --source stg --from-date 2025-01-01 --id-empresa 1 \
+#   --id-filial 14458 --backfill-id-filial 14458
+#
+# NOTE: --id-filial = audit/smoke scope. --backfill-id-filial = MartBuilder scope.
+# Without --backfill-id-filial, backfill covers ALL filiais.
 ```
 
 The cutover is blocking and only activates realtime after:
