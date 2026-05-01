@@ -75,14 +75,22 @@ def dashboard_kpis(
 
     rows = query_dict(f"""
         SELECT
-            sum(faturamento) AS faturamento,
-            sum(qtd_vendas) AS qtd_vendas,
-            if(sum(qtd_vendas) > 0, sum(faturamento) / sum(qtd_vendas), 0) AS ticket_medio,
-            sum(qtd_clientes) AS qtd_clientes,
-            sum(qtd_cancelamentos) AS qtd_cancelamentos,
-            sum(valor_cancelado) AS valor_cancelado
-        FROM {MART_RT_DB}.dashboard_home_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            s_fat AS faturamento,
+            s_vendas AS qtd_vendas,
+            if(s_vendas > 0, s_fat / s_vendas, 0) AS ticket_medio,
+            s_clientes AS qtd_clientes,
+            s_cancel AS qtd_cancelamentos,
+            s_val_cancel AS valor_cancelado
+        FROM (
+            SELECT
+                sum(faturamento) AS s_fat,
+                sum(qtd_vendas) AS s_vendas,
+                sum(qtd_clientes) AS s_clientes,
+                sum(qtd_cancelamentos) AS s_cancel,
+                sum(valor_cancelado) AS s_val_cancel
+            FROM {MART_RT_DB}.dashboard_home_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        )
     """, parameters={"id_empresa": id_empresa})
 
     if not rows:
@@ -105,12 +113,18 @@ def dashboard_series(
     return query_dict(f"""
         SELECT
             dt,
-            sum(faturamento) AS faturamento,
-            sum(qtd_vendas) AS qtd_vendas,
-            if(sum(qtd_vendas) > 0, sum(faturamento) / sum(qtd_vendas), 0) AS ticket_medio
-        FROM {MART_RT_DB}.dashboard_home_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-        GROUP BY dt
+            s_fat AS faturamento,
+            s_vendas AS qtd_vendas,
+            if(s_vendas > 0, s_fat / s_vendas, 0) AS ticket_medio
+        FROM (
+            SELECT
+                dt,
+                sum(faturamento) AS s_fat,
+                sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.dashboard_home_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY dt
+        )
         ORDER BY dt
     """, parameters={"id_empresa": id_empresa})
 
@@ -151,16 +165,26 @@ def sales_overview_bundle(
 
     kpis_rows = query_dict(f"""
         SELECT
-            sum(faturamento) AS faturamento,
-            sum(qtd_vendas) AS qtd_vendas,
-            if(sum(qtd_vendas) > 0, sum(faturamento) / sum(qtd_vendas), 0) AS ticket_medio,
-            sum(qtd_itens) AS qtd_itens,
-            sum(qtd_canceladas) AS qtd_canceladas,
-            sum(valor_cancelado) AS valor_cancelado,
-            sum(desconto_total) AS desconto_total,
-            sum(margem_total) AS margem_total
-        FROM {MART_RT_DB}.sales_daily_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            s_fat AS faturamento,
+            s_vendas AS qtd_vendas,
+            if(s_vendas > 0, s_fat / s_vendas, 0) AS ticket_medio,
+            s_itens AS qtd_itens,
+            s_cancel AS qtd_canceladas,
+            s_val_cancel AS valor_cancelado,
+            s_desc AS desconto_total,
+            s_margem AS margem_total
+        FROM (
+            SELECT
+                sum(faturamento) AS s_fat,
+                sum(qtd_vendas) AS s_vendas,
+                sum(qtd_itens) AS s_itens,
+                sum(qtd_canceladas) AS s_cancel,
+                sum(valor_cancelado) AS s_val_cancel,
+                sum(desconto_total) AS s_desc,
+                sum(margem_total) AS s_margem
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        )
     """, parameters={"id_empresa": id_empresa})
 
     series = query_dict(f"""

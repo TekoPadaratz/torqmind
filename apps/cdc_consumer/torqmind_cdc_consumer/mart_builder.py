@@ -657,6 +657,10 @@ class MartBuilder:
     def _json_int(self, alias: str, field: str) -> str:
         return f"toInt32OrZero(JSONExtractString({alias}.payload, '{field}'))"
 
+    def _json_int_dotted(self, alias: str, field: str) -> str:
+        """Parse integer from JSON field that may have dot as thousands separator (e.g. '5.102' → 5102)."""
+        return f"toInt32OrZero(replaceAll(JSONExtractString({alias}.payload, '{field}'), '.', ''))"
+
     def _json_int64(self, alias: str, field: str) -> str:
         return f"toInt64OrZero(JSONExtractString({alias}.payload, '{field}'))"
 
@@ -728,7 +732,7 @@ class MartBuilder:
               AND c.is_deleted = 0
               AND i.is_deleted = 0
               AND {cancel} = 0
-              AND ifNull(i.cfop_shadow, {self._json_int('i', 'CFOP')}) >= 5000
+              AND ifNull(i.cfop_shadow, {self._json_int_dotted('i', 'CFOP')}) >= 5000
             GROUP BY c.id_empresa, c.id_filial, data_key
         ) AS base
         LEFT JOIN (
@@ -778,7 +782,7 @@ class MartBuilder:
           AND c.is_deleted = 0
           AND i.is_deleted = 0
           AND {cancel} = 0
-          AND ifNull(i.cfop_shadow, {self._json_int('i', 'CFOP')}) >= 5000
+          AND ifNull(i.cfop_shadow, {self._json_int_dotted('i', 'CFOP')}) >= 5000
         GROUP BY c.id_empresa, c.id_filial, data_key, hora
         """
         rows = client.command(sql)
@@ -822,7 +826,7 @@ class MartBuilder:
           AND i.is_deleted = 0
           AND c.is_deleted = 0
           AND {cancel} = 0
-          AND ifNull(i.cfop_shadow, {self._json_int('i', 'CFOP')}) >= 5000
+          AND ifNull(i.cfop_shadow, {self._json_int_dotted('i', 'CFOP')}) >= 5000
         GROUP BY i.id_empresa, i.id_filial, data_key, id_produto, nome_produto, id_grupo_produto, nome_grupo
         """
         rows = client.command(sql)
@@ -860,7 +864,7 @@ class MartBuilder:
           AND i.is_deleted = 0
           AND c.is_deleted = 0
           AND {cancel} = 0
-          AND ifNull(i.cfop_shadow, {self._json_int('i', 'CFOP')}) >= 5000
+          AND ifNull(i.cfop_shadow, {self._json_int_dotted('i', 'CFOP')}) >= 5000
         GROUP BY i.id_empresa, i.id_filial, data_key, id_grupo_produto, nome_grupo
         """
         rows = client.command(sql)
@@ -1115,7 +1119,7 @@ class MartBuilder:
               AND c.is_deleted = 0
               AND i.is_deleted = 0
               AND {cancel} = 0
-              AND ifNull(i.cfop_shadow, {self._json_int('i', 'CFOP')}) >= 5000
+              AND ifNull(i.cfop_shadow, {self._json_int_dotted('i', 'CFOP')}) >= 5000
             GROUP BY c.id_empresa, c.id_filial, data_key
         ) AS base
         LEFT JOIN (
