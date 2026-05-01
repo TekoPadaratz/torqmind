@@ -294,49 +294,101 @@ tm_env_set() {
 # --- Legacy ETL neutralization ---
 
 LEGACY_ETL_PATTERNS=(
-  "prod-homologation-apply"
-  "prod-rebuild-derived-from-stg"
-  "prod-etl-pipeline"
-  "prod-etl-incremental"
+  "prod-etl-pipeline.sh"
+  "prod-etl-incremental.sh"
+  "prod-homologation-apply.sh"
+  "prod-rebuild-derived-from-stg.sh"
   "etl_incremental"
   "etl_orchestrator"
 )
 
+# Disable legacy ETL cron entries using awk (safe with any path characters).
+# Reads crontab from stdin, writes modified crontab to stdout.
+# Only comments lines that are NOT already commented and match a pattern.
+_comment_legacy_cron_lines() {
+  local ts="$1"
+  shift
+  local patterns=("$@")
+
+  # Build a single awk-compatible regex from patterns (escape dots for literal match)
+  local awk_regex=""
+  for p in "${patterns[@]}"; do
+    local escaped="${p//./[.]}"
+    if [[ -n "$awk_regex" ]]; then
+      awk_regex="${awk_regex}|${escaped}"
+    else
+      awk_regex="$escaped"
+    fi
+  done
+
+  awk -v tag="# TORQMIND_LEGACY_ETL_DISABLED_${ts} " -v re="$awk_regex" \
+    '{ if ($0 ~ re && $0 !~ /^[[:space:]]*#/) { print tag $0 } else { print } }' 
+}
+
 step_neutralize_legacy_etl() {
   log INFO "=== STEP 3: Neutralize legacy ETL ==="
 
-  if (( DRY_RUN )); then
-    log INFO "DRY-RUN: would disable legacy ETL cron and check for running processes"
-    return 0
-  fi
+  local ts
+  ts="$(date +%Y%m%d_%H%M%S)"
+  local crontab_backup="${LOG_DIR}/crontab_backup_${ts}.txt"
 
   # 1. Disable cron jobs related to legacy ETL
-  local crontab_backup="/tmp/crontab_backup_$(date +%Y%m%d_%H%M%S).txt"
-  if crontab -l > "$crontab_backup" 2>/dev/null; then
+  if ! crontab -l > "$crontab_backup" 2>/dev/null; then
+    log INFO "No crontab installed (OK)"
+    # Still check for running processes below
+  else
+    # Detect active legacy entries (not already commented)
     local has_legacy=0
     for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
-      if grep -q "$pattern" "$crontab_backup"; then
+      if grep -v '^\s*#' "$crontab_backup" | grep -qF "$pattern"; then
         has_legacy=1
         break
       fi
     done
 
     if (( has_legacy )); then
-      log INFO "Legacy ETL cron entries found. Commenting out..."
-      local new_crontab="/tmp/crontab_new_$$.txt"
-      sed -E "s|^([^#].*($(IFS='|'; echo "${LEGACY_ETL_PATTERNS[*]}")))|\# [DISABLED by realtime cutover $(date +%Y%m%d)] \1|" \
-        "$crontab_backup" > "$new_crontab"
-      crontab "$new_crontab"
-      rm -f "$new_crontab"
-      log INFO "Legacy cron entries disabled (backup: $crontab_backup)"
+      if (( DRY_RUN )); then
+        log INFO "DRY-RUN: would comment legacy cron entries:"
+        for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
+          grep -v '^\s*#' "$crontab_backup" | grep -F "$pattern" | while IFS= read -r line; do
+            log INFO "  [would disable] $line"
+          done
+        done
+      else
+        log INFO "Legacy ETL cron entries found. Commenting out..."
+        local new_crontab="/tmp/crontab_new_$$.txt"
+        _comment_legacy_cron_lines "$ts" "${LEGACY_ETL_PATTERNS[@]}" \
+          < "$crontab_backup" > "$new_crontab"
+
+        crontab "$new_crontab"
+        rm -f "$new_crontab"
+        log INFO "Legacy cron entries disabled (backup: $crontab_backup)"
+
+        # Validate no active legacy remains
+        local post_cron="/tmp/crontab_verify_$$.txt"
+        crontab -l > "$post_cron" 2>/dev/null || true
+        for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
+          if grep -v '^\s*#' "$post_cron" 2>/dev/null | grep -qF "$pattern"; then
+            log ERROR "Legacy cron entry still active after neutralization: $pattern"
+            rm -f "$post_cron"
+            exit 1
+          fi
+        done
+        rm -f "$post_cron"
+        log INFO "Verified: no active legacy ETL cron entries remain"
+      fi
     else
-      log INFO "No legacy ETL cron entries found"
+      log INFO "No active legacy ETL cron entries found"
     fi
-  else
-    log INFO "No crontab installed (OK)"
   fi
 
   # 2. Check for running legacy ETL processes
+  if (( DRY_RUN )); then
+    log INFO "DRY-RUN: would check for running legacy ETL processes"
+    log INFO "legacy_etl=DRY_RUN_OK"
+    return 0
+  fi
+
   local running_legacy=()
   for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
     local pids
