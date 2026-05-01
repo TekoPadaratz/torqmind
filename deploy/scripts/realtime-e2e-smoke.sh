@@ -230,19 +230,38 @@ step_wait_current() {
   local elapsed=0
   local interval=3
 
+  # Wait for comprovantes
   while (( elapsed < max_wait )); do
     local current_count
     current_count="$(ch_query "SELECT count() FROM torqmind_current.stg_comprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
     current_count="${current_count//[[:space:]]/}"
     if (( current_count > 0 )); then
       log "Current stg_comprovantes confirmed (count=$current_count) after ${elapsed}s"
+      break
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  if (( elapsed >= max_wait )); then
+    log "ERROR: stg_comprovantes not found in torqmind_current after ${max_wait}s"
+    exit 1
+  fi
+
+  # Also wait for itenscomprovantes (needed for INNER JOIN in mart builder)
+  while (( elapsed < max_wait )); do
+    local itens_count
+    itens_count="$(ch_query "SELECT count() FROM torqmind_current.stg_itenscomprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
+    itens_count="${itens_count//[[:space:]]/}"
+    if (( itens_count > 0 )); then
+      log "Current stg_itenscomprovantes confirmed (count=$itens_count) after ${elapsed}s"
       return 0
     fi
     sleep "$interval"
     elapsed=$((elapsed + interval))
   done
 
-  log "ERROR: Data not found in torqmind_current after ${max_wait}s"
+  log "ERROR: stg_itenscomprovantes not found in torqmind_current after ${max_wait}s"
   exit 1
 }
 
