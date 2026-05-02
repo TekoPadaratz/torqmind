@@ -556,7 +556,7 @@ class MartBuilder:
         id_grupo = f"ifNull(i.id_grupo_produto_shadow, toInt32OrZero(JSONExtractString(i.payload, 'ID_GRUPOPRODUTOS')))"
         cfop = f"ifNull(i.cfop_shadow, toInt32OrZero(replaceAll(JSONExtractString(i.payload, 'CFOP'), '.', '')))"
         qtd = f"ifNull(i.qtd_shadow, toDecimal64OrZero(JSONExtractString(i.payload, 'QTDE'), 3))"
-        total = f"ifNull(i.total_shadow, toDecimal64OrZero(JSONExtractString(i.payload, 'TOTAL'), 2))"
+        total = self._stg_item_total_expr("i")
         desconto = f"ifNull(i.desconto_shadow, toDecimal64OrZero(JSONExtractString(i.payload, 'VLRDESCONTO'), 2))"
         custo = f"ifNull(i.custo_unitario_shadow, toDecimal64(0, 6)) * {qtd}"
 
@@ -650,6 +650,27 @@ class MartBuilder:
             return "1 = 1"
         return f"{expr} IN ({keys})"
 
+    def _json_decimal_or_null(self, alias: str, key: str, scale: int) -> str:
+        return (
+            f"if(JSONHas({alias}.payload, '{key}'), "
+            f"toNullable(toDecimal64OrZero(JSONExtractString({alias}.payload, '{key}'), {scale})), "
+            f"CAST(NULL, 'Nullable(Decimal(18,{scale}))'))"
+        )
+
+    def _stg_item_total_expr(self, alias: str) -> str:
+        """Canonical STG item revenue value.
+
+        Mirrors PostgreSQL etl.resolve_item_total(total_shadow, payload):
+        total_shadow, then VLRTOTALITEM, then legacy TOTAL, then VLRTOTAL.
+        """
+        return (
+            f"coalesce({alias}.total_shadow, "
+            f"{self._json_decimal_or_null(alias, 'VLRTOTALITEM', 2)}, "
+            f"{self._json_decimal_or_null(alias, 'TOTAL', 2)}, "
+            f"{self._json_decimal_or_null(alias, 'VLRTOTAL', 2)}, "
+            f"toDecimal64(0, 2))"
+        )
+
     # ================================================================
     # STG-DIRECT MART QUERIES (read from SLIM tables - no payload!)
     # ================================================================
@@ -666,7 +687,7 @@ class MartBuilder:
         """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
 
         Canonical rules:
-        - faturamento = sum of item totals for valid items (cfop >= 5000)
+        - faturamento = sum of item totals for valid items (cfop > 5000)
         - qtd_vendas = distinct comprovantes with at least one valid item
         - qtd_itens = count of valid item rows
         - cancelados = comprovantes with cancelado=1 (encodes PG etl.comprovante_is_cancelled)
@@ -701,7 +722,7 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-              AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
+              AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
         LEFT JOIN (
@@ -740,7 +761,7 @@ class MartBuilder:
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
+          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
         client.command(sql, settings=_QUERY_SETTINGS)
@@ -775,7 +796,7 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.stg_grupoprodutos AS g FINAL
             ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
+          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, i.id_grupo_produto, nome_grupo
         """
         client.command(sql, settings=_QUERY_SETTINGS)
@@ -806,7 +827,7 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.stg_grupoprodutos AS g FINAL
             ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
+          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_grupo_produto, nome_grupo
         """
         client.command(sql, settings=_QUERY_SETTINGS)
@@ -1015,7 +1036,7 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-              AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
+              AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
         LEFT JOIN (
@@ -1065,7 +1086,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) >= 5000
+              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -1097,7 +1118,7 @@ class MartBuilder:
             ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
             AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
         WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-          AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) >= 5000
+          AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY v.id_empresa, v.id_filial, v.data_key, hora
         """
         client.command(sql, settings=_QUERY_SETTINGS)
@@ -1124,7 +1145,7 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.dim_grupo_produto AS g FINAL
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial AND vi.id_grupo_produto = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) >= 5000
+          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_produto, p.nome, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=_QUERY_SETTINGS)
@@ -1150,7 +1171,7 @@ class MartBuilder:
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial
             AND coalesce(vi.id_grupo_produto, 0) = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) >= 5000
+          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=_QUERY_SETTINGS)
@@ -1273,7 +1294,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) >= 5000
+              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (

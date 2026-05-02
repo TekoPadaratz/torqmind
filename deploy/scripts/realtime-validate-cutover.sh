@@ -301,38 +301,191 @@ stg_diagnostics() {
   FROM torqmind_current.stg_formas_pgto_slim
   FORMAT PrettyCompact" || true
   log ""
-  log "Top 10 data_key by faturamento divergence (PG stg vs CH slim):"
+  log "Top 20 data_key by faturamento divergence (STG slim vs RT + payments sanity):"
   ch_query "
-  WITH ch AS (
+  WITH stg AS (
     SELECT c.data_key,
-      sum(i.total) AS fat
+      sum(i.total) AS stg_faturamento
     FROM torqmind_current.stg_comprovantes_slim AS c
     INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
       ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
-    WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND i.is_deleted=0 AND c.cancelado=0 AND i.cfop>=5000
+    WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND i.is_deleted=0 AND c.cancelado=0 AND i.cfop > 5000
     GROUP BY c.data_key
+  ),
+  rt AS (
+    SELECT data_key, sum(faturamento) AS rt_faturamento
+    FROM torqmind_mart_rt.sales_daily_rt FINAL
+    WHERE id_empresa=$ID_EMPRESA
+    GROUP BY data_key
+  ),
+  pay AS (
+    SELECT data_key, sum(valor_total) AS payments_total
+    FROM torqmind_mart_rt.payments_by_type_rt FINAL
+    WHERE id_empresa=$ID_EMPRESA
+    GROUP BY data_key
   )
-  SELECT data_key, fat AS slim_fat
-  FROM ch ORDER BY fat DESC LIMIT 10
+  SELECT
+    coalesce(stg.data_key, rt.data_key, pay.data_key) AS data_key,
+    coalesce(stg.stg_faturamento, 0) AS stg_faturamento,
+    coalesce(rt.rt_faturamento, 0) AS rt_faturamento,
+    coalesce(pay.payments_total, 0) AS payments_total,
+    coalesce(rt.rt_faturamento, 0) - coalesce(stg.stg_faturamento, 0) AS delta_rt_stg
+  FROM stg
+  FULL OUTER JOIN rt ON stg.data_key = rt.data_key
+  FULL OUTER JOIN pay ON coalesce(stg.data_key, rt.data_key) = pay.data_key
+  ORDER BY abs(toFloat64(delta_rt_stg)) DESC, data_key DESC
+  LIMIT 20
+  SETTINGS max_memory_usage=3000000000, max_threads=2, join_algorithm='partial_merge'
   FORMAT PrettyCompact" || true
   log ""
-  log "Cancelados check (slim unique comprovantes):"
+  log "Top 20 filiais by faturamento divergence (STG slim vs RT + payments sanity):"
+  ch_query "
+  WITH stg AS (
+    SELECT c.id_filial,
+      sum(i.total) AS stg_faturamento
+    FROM torqmind_current.stg_comprovantes_slim AS c
+    INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+      ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+    WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND i.is_deleted=0 AND c.cancelado=0 AND i.cfop > 5000
+    GROUP BY c.id_filial
+  ),
+  rt AS (
+    SELECT id_filial, sum(faturamento) AS rt_faturamento
+    FROM torqmind_mart_rt.sales_daily_rt FINAL
+    WHERE id_empresa=$ID_EMPRESA
+    GROUP BY id_filial
+  ),
+  pay AS (
+    SELECT id_filial, sum(valor_total) AS payments_total
+    FROM torqmind_mart_rt.payments_by_type_rt FINAL
+    WHERE id_empresa=$ID_EMPRESA
+    GROUP BY id_filial
+  )
+  SELECT
+    coalesce(stg.id_filial, rt.id_filial, pay.id_filial) AS id_filial,
+    coalesce(stg.stg_faturamento, 0) AS stg_faturamento,
+    coalesce(rt.rt_faturamento, 0) AS rt_faturamento,
+    coalesce(pay.payments_total, 0) AS payments_total,
+    coalesce(rt.rt_faturamento, 0) - coalesce(stg.stg_faturamento, 0) AS delta_rt_stg
+  FROM stg
+  FULL OUTER JOIN rt ON stg.id_filial = rt.id_filial
+  FULL OUTER JOIN pay ON coalesce(stg.id_filial, rt.id_filial) = pay.id_filial
+  ORDER BY abs(toFloat64(delta_rt_stg)) DESC, id_filial
+  LIMIT 20
+  SETTINGS max_memory_usage=3000000000, max_threads=2, join_algorithm='partial_merge'
+  FORMAT PrettyCompact" || true
+  log ""
+  log "Top 50 comprovantes by item/header/payment divergence:"
+  ch_query "
+  WITH item_docs AS (
+    SELECT id_empresa, id_filial, id_db, id_comprovante,
+      sumIf(total, is_deleted = 0 AND cfop > 5000) AS item_total,
+      countIf(is_deleted = 0 AND cfop > 5000) AS item_rows
+    FROM torqmind_current.stg_itenscomprovantes_slim
+    WHERE id_empresa=$ID_EMPRESA
+    GROUP BY id_empresa, id_filial, id_db, id_comprovante
+  ),
+  payment_docs AS (
+    SELECT c.id_empresa, c.id_filial, c.id_db, c.id_comprovante,
+      sum(p.valor) AS payment_total
+    FROM torqmind_current.stg_comprovantes_slim AS c
+    INNER JOIN torqmind_current.stg_formas_pgto_slim AS p
+      ON p.id_empresa=c.id_empresa AND p.id_filial=c.id_filial AND p.id_referencia=c.referencia
+    WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND p.is_deleted=0
+    GROUP BY c.id_empresa, c.id_filial, c.id_db, c.id_comprovante
+  )
+  SELECT
+    c.data_key,
+    c.id_filial,
+    c.id_db,
+    c.id_comprovante,
+    c.valor_total AS header_total,
+    coalesce(i.item_total, 0) AS item_total,
+    coalesce(p.payment_total, 0) AS payment_total,
+    coalesce(i.item_rows, 0) AS item_rows,
+    coalesce(i.item_total, 0) - c.valor_total AS item_minus_header,
+    coalesce(p.payment_total, 0) - c.valor_total AS payment_minus_header
+  FROM torqmind_current.stg_comprovantes_slim AS c
+  LEFT JOIN item_docs AS i
+    ON i.id_empresa=c.id_empresa AND i.id_filial=c.id_filial AND i.id_db=c.id_db AND i.id_comprovante=c.id_comprovante
+  LEFT JOIN payment_docs AS p
+    ON p.id_empresa=c.id_empresa AND p.id_filial=c.id_filial AND p.id_db=c.id_db AND p.id_comprovante=c.id_comprovante
+  WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND c.cancelado=0
+  ORDER BY greatest(abs(toFloat64(item_minus_header)), abs(toFloat64(payment_minus_header))) DESC
+  LIMIT 50
+  SETTINGS max_memory_usage=3000000000, max_threads=2, join_algorithm='partial_merge'
+  FORMAT PrettyCompact" || true
+  log ""
+  log "Item payload value-field sample:"
   ch_query "
   SELECT
-    count() AS raw_cancelled,
-    uniqExact(id_empresa, id_filial, id_db, id_comprovante) AS unique_cancelled
-  FROM torqmind_current.stg_comprovantes_slim
-  WHERE id_empresa=$ID_EMPRESA AND is_deleted=0 AND cancelado=1
+    id_filial, id_db, id_comprovante, id_itemcomprovante,
+    JSONExtractRaw(payload, 'VLRTOTALITEM') AS VLRTOTALITEM,
+    JSONExtractRaw(payload, 'TOTAL') AS TOTAL,
+    JSONExtractRaw(payload, 'VLRTOTAL') AS VLRTOTAL,
+    JSONExtractRaw(payload, 'VALOR_TOTAL') AS VALOR_TOTAL,
+    JSONExtractRaw(payload, 'VLRLIQUIDO') AS VLRLIQUIDO,
+    JSONExtractRaw(payload, 'SUBTOTAL') AS SUBTOTAL,
+    JSONExtractRaw(payload, 'QTDE') AS QTDE,
+    JSONExtractRaw(payload, 'VLRUNITARIO') AS VLRUNITARIO,
+    total_shadow
+  FROM torqmind_current.stg_itenscomprovantes FINAL
+  WHERE id_empresa=$ID_EMPRESA
+    AND (JSONHas(payload, 'VLRTOTALITEM') OR JSONHas(payload, 'TOTAL') OR JSONHas(payload, 'VLRTOTAL'))
+  LIMIT 20
+  SETTINGS max_memory_usage=1000000000, max_threads=2
   FORMAT PrettyCompact" || true
   log ""
-  log "Top 10 filiais by faturamento (slim):"
+  log "CFOP distribution and faturamento impact:"
   ch_query "
-  SELECT c.id_filial, sum(i.total) AS fat, uniqExact(c.id_empresa,c.id_filial,c.id_db,c.id_comprovante) AS docs
-  FROM torqmind_current.stg_comprovantes_slim AS c
-  INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+  SELECT
+    i.cfop,
+    count() AS item_rows,
+    sum(i.qtd) AS qtd,
+    sum(i.total) AS total_all,
+    sumIf(i.total, c.cancelado=0) AS total_not_cancelled,
+    sumIf(i.total, c.cancelado=1) AS total_cancelled
+  FROM torqmind_current.stg_itenscomprovantes_slim AS i
+  INNER JOIN torqmind_current.stg_comprovantes_slim AS c
     ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
-  WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND i.is_deleted=0 AND c.cancelado=0 AND i.cfop>=5000
-  GROUP BY c.id_filial ORDER BY fat DESC LIMIT 10
+  WHERE i.id_empresa=$ID_EMPRESA AND i.is_deleted=0 AND c.is_deleted=0
+  GROUP BY i.cfop
+  ORDER BY total_not_cancelled DESC
+  LIMIT 50
+  SETTINGS max_memory_usage=3000000000, max_threads=2, join_algorithm='partial_merge'
+  FORMAT PrettyCompact" || true
+  log ""
+  log "id_db and repeated comprovantes diagnostics:"
+  ch_query "
+  SELECT 'itens_id_db_zero' AS metric, toInt64(countIf(id_db=0)) AS value
+  FROM torqmind_current.stg_itenscomprovantes FINAL
+  WHERE id_empresa=$ID_EMPRESA AND is_deleted=0
+  UNION ALL
+  SELECT 'comprovantes_id_db_zero', toInt64(countIf(id_db=0))
+  FROM torqmind_current.stg_comprovantes FINAL
+  WHERE id_empresa=$ID_EMPRESA AND is_deleted=0
+  UNION ALL
+  SELECT 'comprovantes_repeated_without_id_db', toInt64(count())
+  FROM (
+    SELECT id_empresa, id_filial, id_comprovante, count() AS c
+    FROM torqmind_current.stg_comprovantes FINAL
+    WHERE id_empresa=$ID_EMPRESA AND is_deleted=0
+    GROUP BY id_empresa, id_filial, id_comprovante
+    HAVING c > 1
+  )
+  UNION ALL
+  SELECT 'comprovantes_repeated_with_id_db', toInt64(count())
+  FROM (
+    SELECT id_empresa, id_filial, id_db, id_comprovante, count() AS c
+    FROM torqmind_current.stg_comprovantes FINAL
+    WHERE id_empresa=$ID_EMPRESA AND is_deleted=0
+    GROUP BY id_empresa, id_filial, id_db, id_comprovante
+    HAVING c > 1
+  )
+  UNION ALL
+  SELECT 'itens_raw_minus_dedup_slim', toInt64(count()) - toInt64(uniqExact(id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante))
+  FROM torqmind_current.stg_itenscomprovantes_slim
+  WHERE id_empresa=$ID_EMPRESA
   FORMAT PrettyCompact" || true
   log ""
 }
@@ -384,6 +537,12 @@ PY
   printf '  %-48s OK\n' "api.realtime.facade"
 }
 
+emit_proof_json() {
+  local result="$1"
+  printf '{"proof":"realtime-validate-cutover","source":"%s","id_empresa":%s,"result":"%s","checks":%s,"failures":%s}\n' \
+    "$SOURCE" "$ID_EMPRESA" "$result" "$CHECKS" "$FAILURES"
+}
+
 main() {
   log "=== Realtime Cutover Validation (BLOCKING) ==="
   log "id_empresa=$ID_EMPRESA source=$SOURCE decimal_tolerance=$DECIMAL_TOLERANCE env_file=$ENV_FILE"
@@ -417,7 +576,7 @@ main() {
   if [[ "$SOURCE" == "stg" ]]; then
   log "STG canonical source vs mart_rt:"
   local stg_sales_source="
-    SELECT COALESCE(sum(COALESCE(i.total_shadow, etl.safe_numeric(i.payload->>'TOTAL')::numeric(18,2))), 0)
+    SELECT COALESCE(sum(etl.resolve_item_total(i.total_shadow, i.payload)::numeric(18,2)), 0)
     FROM stg.itenscomprovantes i
     JOIN stg.comprovantes c
       ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
@@ -426,7 +585,7 @@ main() {
         COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false),
         COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))
       )
-      AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) >= 5000
+      AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) > 5000
   "
   local stg_sales_docs="
     SELECT COALESCE(count(DISTINCT (c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)), 0)
@@ -438,7 +597,7 @@ main() {
         COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false),
         COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))
       )
-      AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) >= 5000
+      AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) > 5000
   "
   compare_pg_ch_metric "stg.sales.faturamento" \
     "$stg_sales_source" \
@@ -448,7 +607,7 @@ main() {
     "SELECT sum(qtd_vendas) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
     "count"
   compare_pg_ch_metric "stg.items.rows" \
-    "SELECT count(*) FROM stg.itenscomprovantes i JOIN stg.comprovantes c ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante WHERE i.id_empresa=$ID_EMPRESA AND NOT etl.comprovante_is_cancelled(COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false), COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))) AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) >= 5000" \
+    "SELECT count(DISTINCT (i.id_empresa, i.id_filial, i.id_db, i.id_comprovante, i.id_itemcomprovante)) FROM stg.itenscomprovantes i JOIN stg.comprovantes c ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante WHERE i.id_empresa=$ID_EMPRESA AND NOT etl.comprovante_is_cancelled(COALESCE(c.cancelado_shadow, etl.to_bool(c.payload->>'CANCELADO'), false), COALESCE(c.situacao_shadow, etl.safe_int(c.payload->>'SITUACAO'))) AND COALESCE(i.cfop_shadow, etl.safe_int(i.payload->>'CFOP'), 0) > 5000" \
     "SELECT sum(qtd_itens) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA" \
     "count"
   log ""
@@ -589,9 +748,11 @@ main() {
   log "CHECKS=$CHECKS  FAILURES=$FAILURES"
   if (( FAILURES > 0 )); then
     log "RESULT: FAILED - cutover BLOCKED."
+    emit_proof_json "FAIL"
     exit 1
   fi
   log "RESULT: PASSED - all checks within tolerance."
+  emit_proof_json "PASS"
   log "============================================"
 }
 

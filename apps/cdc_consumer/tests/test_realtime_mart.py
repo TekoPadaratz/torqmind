@@ -597,12 +597,95 @@ class TestMartBuilderDedupSemantics:
         body = self.code[idx:next_def]
         assert "sum(i.total)" in body, "Faturamento must be sum of item totals"
 
+    def test_item_total_canonical_fallback_order(self):
+        """Realtime slim item value must mirror etl.resolve_item_total."""
+        idx = self.code.index("def _stg_item_total_expr")
+        next_def = self.code.index("\n    def ", idx + 10)
+        body = self.code[idx:next_def]
+        assert "total_shadow" in body
+        assert body.index("'VLRTOTALITEM'") < body.index("'TOTAL'") < body.index("'VLRTOTAL'")
+
+    def test_sales_filters_use_commercial_cfop_exit_rule(self):
+        """Sales marts must use CFOP > 5000, matching the API sales semantics."""
+        sales_methods = [
+            "_refresh_sales_daily_stg",
+            "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg",
+            "_refresh_sales_groups_stg",
+            "_refresh_dashboard_home_stg",
+        ]
+        for method in sales_methods:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            assert "i.cfop > 5000" in body, f"{method} must use i.cfop > 5000"
+            assert "i.cfop >= 5000" not in body, f"{method} must not use >= 5000"
+
+    def test_sales_item_joins_include_id_db(self):
+        """All realtime STG sales/item joins must include id_db in the natural key."""
+        sales_methods = [
+            "_populate_slim_itens",
+            "_refresh_sales_daily_stg",
+            "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg",
+            "_refresh_sales_groups_stg",
+            "_refresh_dashboard_home_stg",
+        ]
+        for method in sales_methods:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            assert "c.id_db = i.id_db" in body, f"{method} must join comprovantes/items with id_db"
+
     def test_cancelados_counted_by_unique_comprovante(self):
         """Cancelled counts must use uniqExact on full natural key."""
         idx = self.code.index("def _refresh_fraud_daily_stg")
         next_def = self.code.index("\n    def ", idx + 10)
         body = self.code[idx:next_def]
         assert "uniqExact" in body, "Fraud daily must count unique cancelled comprovantes"
+
+
+class TestRealtimeValidateCutoverSemantics:
+    """Static contract for the blocking cutover validator."""
+
+    @pytest.fixture(autouse=True)
+    def _load_script(self):
+        self.script_path = (
+            Path(__file__).parent.parent.parent.parent
+            / "deploy"
+            / "scripts"
+            / "realtime-validate-cutover.sh"
+        )
+        self.script = self.script_path.read_text()
+
+    def test_validator_uses_canonical_item_total(self):
+        assert "etl.resolve_item_total(i.total_shadow, i.payload)" in self.script
+        assert "i.payload->>'TOTAL')::numeric" not in self.script
+
+    def test_validator_counts_deduped_item_key_with_id_db(self):
+        assert (
+            "count(DISTINCT (i.id_empresa, i.id_filial, i.id_db, "
+            "i.id_comprovante, i.id_itemcomprovante))"
+        ) in self.script
+
+    def test_validator_sales_joins_include_id_db(self):
+        join_fragment = (
+            "c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial "
+            "AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante"
+        )
+        assert join_fragment in self.script
+
+    def test_validator_emits_required_diagnostics_and_proof_json(self):
+        for marker in (
+            "Top 20 data_key",
+            "Top 20 filiais",
+            "Top 50 comprovantes",
+            "Item payload value-field sample",
+            "CFOP distribution",
+            "id_db and repeated comprovantes diagnostics",
+            "emit_proof_json \"PASS\"",
+        ):
+            assert marker in self.script
 
 
 # ============================================================

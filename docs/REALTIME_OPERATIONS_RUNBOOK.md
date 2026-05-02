@@ -143,6 +143,8 @@ Slim tables (`sql/clickhouse/streaming/025_slim_tables.sql`):
 - `torqmind_current.stg_itenscomprovantes_slim`
 - `torqmind_current.stg_formas_pgto_slim`
 
+Canonical STG-direct sales revenue is item-based: `total_shadow`, then payload `VLRTOTALITEM`, then legacy `TOTAL`, then `VLRTOTAL`, matching PostgreSQL `etl.resolve_item_total`. Commercial sales marts include only non-cancelled comprovantes and item `CFOP > 5000`; CFOP entradas/devolucoes stay out of positive faturamento and are exposed through diagnostics/reconciliation rather than being used as a payment substitute.
+
 **Why payload can't be in mart queries**: On 3M+ rows, each row's `payload` is ~2KB of JSON. `FINAL` forces deduplication of the entire table in memory. With payload: `3M × 2KB = 6+ GB` which exceeds 8 GB server limits. With slim (no payload): `3M × 100B = 300 MB`.
 
 ### Backfill Strategy
