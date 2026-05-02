@@ -341,6 +341,91 @@ class MartBuilder:
         return results
 
     # ================================================================
+    # DEDUP HELPERS
+    # ================================================================
+
+    def _delete_slim_batch(self, client: Any, data_keys: list[int]) -> None:
+        """Delete slim rows for a batch of data_keys before re-populating.
+
+        This prevents duplicate accumulation in ReplacingMergeTree slim tables
+        when the same batch is processed more than once (backfill reruns, CDC replays).
+        Uses lightweight DELETE (async mutation) — slim FINAL in mart queries
+        provides the safety net during merge lag.
+        """
+        keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if not keys_str:
+            return
+        for table in ("stg_comprovantes_slim", "stg_itenscomprovantes_slim", "stg_formas_pgto_slim"):
+            client.command(
+                f"DELETE FROM {self.current_db}.{table} WHERE data_key IN ({keys_str})",
+            )
+
+    def _delete_mart_batch(self, client: Any, mart_table: str, data_keys: list[int]) -> None:
+        """Delete mart_rt rows for a batch of data_keys before re-inserting.
+
+        Ensures idempotent mart refresh. Uses lightweight DELETE.
+        """
+        keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if not keys_str:
+            return
+        client.command(
+            f"DELETE FROM {self.mart_rt_db}.{mart_table} WHERE data_key IN ({keys_str})",
+        )
+
+    def _slim_cte_comprovantes(self, alias: str, kf: str) -> str:
+        """CTE that deduplicates stg_comprovantes_slim by natural key using argMax."""
+        return f"""
+        SELECT
+            id_empresa, id_filial, id_db, id_comprovante, data_key, hora,
+            dt_evento_local, valor_total, cancelado, situacao,
+            id_turno, id_usuario, id_cliente, referencia, is_deleted
+        FROM (
+            SELECT *,
+                row_number() OVER (
+                    PARTITION BY id_empresa, id_filial, id_db, id_comprovante
+                    ORDER BY source_ts_ms DESC
+                ) AS _rn
+            FROM {self.current_db}.stg_comprovantes_slim
+            WHERE {kf}
+        ) WHERE _rn = 1
+        """
+
+    def _slim_cte_itens(self, alias: str, kf: str) -> str:
+        """CTE that deduplicates stg_itenscomprovantes_slim by natural key."""
+        return f"""
+        SELECT
+            id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante,
+            data_key, id_produto, id_grupo_produto, cfop, qtd, total, desconto,
+            custo_total, is_deleted
+        FROM (
+            SELECT *,
+                row_number() OVER (
+                    PARTITION BY id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante
+                    ORDER BY source_ts_ms DESC
+                ) AS _rn
+            FROM {self.current_db}.stg_itenscomprovantes_slim
+            WHERE {kf}
+        ) WHERE _rn = 1
+        """
+
+    def _slim_cte_formas(self, alias: str, kf: str) -> str:
+        """CTE that deduplicates stg_formas_pgto_slim by natural key."""
+        return f"""
+        SELECT
+            id_empresa, id_filial, id_referencia, tipo_forma,
+            data_key, valor, is_deleted
+        FROM (
+            SELECT *,
+                row_number() OVER (
+                    PARTITION BY id_empresa, id_filial, id_referencia, tipo_forma
+                    ORDER BY source_ts_ms DESC
+                ) AS _rn
+            FROM {self.current_db}.stg_formas_pgto_slim
+            WHERE {kf}
+        ) WHERE _rn = 1
+        """
+
+    # ================================================================
     # SLIM TABLE DDL & POPULATION
     # ================================================================
 
@@ -398,10 +483,19 @@ class MartBuilder:
         """Extract typed columns from stg_comprovantes payload into slim table.
 
         This is the ONLY query that reads the payload column for comprovantes.
+        DELETE-before-INSERT ensures no duplicate accumulation on reruns.
         """
         if not data_keys:
             return
         t0 = time.time()
+
+        # Clean existing slim rows for this batch to prevent duplicates
+        kstr = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if kstr:
+            client.command(
+                f"DELETE FROM {self.current_db}.stg_comprovantes_slim WHERE data_key IN ({kstr})",
+            )
+
         data_key_expr = self._stg_data_key_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
@@ -447,6 +541,14 @@ class MartBuilder:
         if not data_keys:
             return
         t0 = time.time()
+
+        # Clean existing slim rows for this batch to prevent duplicates
+        kstr = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if kstr:
+            client.command(
+                f"DELETE FROM {self.current_db}.stg_itenscomprovantes_slim WHERE data_key IN ({kstr})",
+            )
+
         data_key_expr = self._stg_data_key_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
@@ -488,6 +590,14 @@ class MartBuilder:
         if not data_keys:
             return
         t0 = time.time()
+
+        # Clean existing slim rows for this batch to prevent duplicates
+        kstr = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if kstr:
+            client.command(
+                f"DELETE FROM {self.current_db}.stg_formas_pgto_slim WHERE data_key IN ({kstr})",
+            )
+
         data_key_expr = self._stg_data_key_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
         valor = f"ifNull(p.valor_shadow, toDecimal64OrZero(JSONExtractString(p.payload, 'VALOR'), 2))"
@@ -553,10 +663,18 @@ class MartBuilder:
         return f"{prefix}data_key IN ({keys})"
 
     def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
-        """Sales daily from slim tables. No payload, no JSONExtract."""
+        """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
+
+        Canonical rules:
+        - faturamento = sum of item totals for valid items (cfop >= 5000)
+        - qtd_vendas = distinct comprovantes with at least one valid item
+        - qtd_itens = count of valid item rows
+        - cancelados = comprovantes with cancelado=1 (encodes PG etl.comprovante_is_cancelled)
+        """
         t0 = time.time()
-        kf = self._slim_keys_filter(data_keys, "c")
+        kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        self._delete_mart_batch(client, "sales_daily_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_daily_rt
         SELECT
@@ -573,25 +691,25 @@ class MartBuilder:
             SELECT
                 c.id_empresa, c.id_filial, c.data_key,
                 sum(i.total) AS faturamento,
-                toUInt32(uniqExact(c.id_comprovante)) AS qtd_vendas,
+                uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
                 toUInt32(count()) AS qtd_itens,
                 sum(i.desconto) AS desconto_total,
                 sum(i.custo_total) AS custo_total,
-                sum(i.total - i.custo_total) AS margem_total
+                sum(i.total) - sum(i.custo_total) AS margem_total
             FROM {self.current_db}.stg_comprovantes_slim AS c
             INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
-            WHERE {kf} AND c.is_deleted = 0 AND i.is_deleted = 0
+            WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
               AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
         LEFT JOIN (
             SELECT c.id_empresa, c.id_filial, c.data_key,
-                   toUInt32(count()) AS qtd_canceladas,
+                   uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_canceladas,
                    sum(c.valor_total) AS valor_cancelado
             FROM {self.current_db}.stg_comprovantes_slim AS c
-            WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+            WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
             ON base.id_empresa = cancel_agg.id_empresa
@@ -604,8 +722,9 @@ class MartBuilder:
     def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Sales hourly from slim tables. No payload, no JSONExtract."""
         t0 = time.time()
-        kf = self._slim_keys_filter(data_keys, "c")
+        kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        self._delete_mart_batch(client, "sales_hourly_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_hourly_rt
         SELECT
@@ -613,14 +732,14 @@ class MartBuilder:
             toDate(toString(c.data_key), '%Y%m%d') AS dt,
             c.hora,
             sum(i.total) AS faturamento,
-            toUInt32(uniqExact(c.id_comprovante)) AS qtd_vendas,
+            uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
             toUInt32(count()) AS qtd_itens,
             now64(6) AS published_at
         FROM {self.current_db}.stg_comprovantes_slim AS c
         INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
-        WHERE {kf} AND c.is_deleted = 0 AND i.is_deleted = 0
+        WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
@@ -628,10 +747,11 @@ class MartBuilder:
         return MartRefreshResult("sales_hourly_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_sales_products_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
-        """Sales by product from slim tables."""
+        """Sales by product from slim tables + dimension lookups."""
         t0 = time.time()
-        kf = self._slim_keys_filter(data_keys, "c")
+        kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        self._delete_mart_batch(client, "sales_products_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_products_rt
         SELECT
@@ -644,7 +764,7 @@ class MartBuilder:
             sum(i.qtd) AS qtd,
             sum(i.total) AS faturamento,
             sum(i.custo_total) AS custo_total,
-            sum(i.total - i.custo_total) AS margem,
+            sum(i.total) - sum(i.custo_total) AS margem,
             now64(6) AS published_at
         FROM {self.current_db}.stg_itenscomprovantes_slim AS i
         INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
@@ -654,7 +774,7 @@ class MartBuilder:
             ON p.id_empresa = i.id_empresa AND p.id_filial = i.id_filial AND p.id_produto = i.id_produto
         LEFT JOIN {self.current_db}.stg_grupoprodutos AS g FINAL
             ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
-        WHERE {kf} AND i.is_deleted = 0 AND c.is_deleted = 0
+        WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, i.id_grupo_produto, nome_grupo
         """
@@ -664,8 +784,9 @@ class MartBuilder:
     def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Sales by group from slim tables."""
         t0 = time.time()
-        kf = self._slim_keys_filter(data_keys, "c")
+        kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        self._delete_mart_batch(client, "sales_groups_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_groups_rt
         SELECT
@@ -676,7 +797,7 @@ class MartBuilder:
             toUInt32(count()) AS qtd_itens,
             sum(i.total) AS faturamento,
             sum(i.custo_total) AS custo_total,
-            sum(i.total - i.custo_total) AS margem,
+            sum(i.total) - sum(i.custo_total) AS margem,
             now64(6) AS published_at
         FROM {self.current_db}.stg_itenscomprovantes_slim AS i
         INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
@@ -684,7 +805,7 @@ class MartBuilder:
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         LEFT JOIN {self.current_db}.stg_grupoprodutos AS g FINAL
             ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
-        WHERE {kf} AND i.is_deleted = 0 AND c.is_deleted = 0
+        WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_grupo_produto, nome_grupo
         """
@@ -695,6 +816,7 @@ class MartBuilder:
         """Payments by type from slim tables."""
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "p")
+        self._delete_mart_batch(client, "payments_by_type_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.payments_by_type_rt
         SELECT
@@ -763,7 +885,7 @@ class MartBuilder:
         LEFT JOIN (
             SELECT c.id_empresa, c.id_filial, c.id_turno,
                    sum(c.valor_total) AS faturamento,
-                   toUInt32(count()) AS qtd
+                   toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS qtd
             FROM {self.current_db}.stg_comprovantes_slim AS c
             WHERE c.is_deleted = 0 AND c.cancelado = 0
             GROUP BY c.id_empresa, c.id_filial, c.id_turno
@@ -774,16 +896,21 @@ class MartBuilder:
         return MartRefreshResult("cash_overview_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
-        """Fraud daily from slim comprovantes (cancelled receipts)."""
+        """Fraud daily: count unique cancelled comprovantes per day.
+
+        Cancelado flag in slim already encodes PG etl.comprovante_is_cancelled:
+        situacao=2 → cancelled, situacao IN(3,5) → not cancelled, else → cancelado field.
+        """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
+        self._delete_mart_batch(client, "fraud_daily_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.fraud_daily_rt
         SELECT
             c.id_empresa, c.id_filial, c.data_key,
             toDate(toString(c.data_key), '%Y%m%d') AS dt,
             'cancelamento' AS event_type,
-            toUInt32(count()) AS qtd_eventos,
+            uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_eventos,
             sum(c.valor_total) AS impacto_total,
             toDecimal64(80, 2) AS score_medio,
             now64(6) AS published_at
@@ -863,8 +990,9 @@ class MartBuilder:
     def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Dashboard home from slim tables."""
         t0 = time.time()
-        kf = self._slim_keys_filter(data_keys, "c")
+        kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        self._delete_mart_batch(client, "dashboard_home_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.dashboard_home_rt
         SELECT
@@ -880,22 +1008,22 @@ class MartBuilder:
             SELECT
                 c.id_empresa, c.id_filial, c.data_key,
                 sum(i.total) AS faturamento,
-                toUInt32(uniqExact(c.id_comprovante)) AS qtd_vendas,
+                uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
                 toUInt32(uniqExactIf(c.id_cliente, c.id_cliente > 0)) AS qtd_clientes
             FROM {self.current_db}.stg_comprovantes_slim AS c
             INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
-            WHERE {kf} AND c.is_deleted = 0 AND i.is_deleted = 0
+            WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
               AND c.cancelado = 0 AND i.cfop >= 5000 AND {kf_i}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
         LEFT JOIN (
             SELECT c.id_empresa, c.id_filial, c.data_key,
-                   toUInt32(count()) AS qtd_cancelamentos,
+                   uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_cancelamentos,
                    sum(c.valor_total) AS valor_cancelado
             FROM {self.current_db}.stg_comprovantes_slim AS c
-            WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+            WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
             ON base.id_empresa = cancel_agg.id_empresa

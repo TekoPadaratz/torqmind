@@ -522,3 +522,117 @@ class TestSTGDirectContract:
             assert f"{'{'}self.current_db{'}'}.{table}" in code
         assert "fact_venda FINAL" in code  # DW compatibility remains present.
         assert "self.source == \"stg\"" in code
+
+
+# ============================================================
+# DEDUP & SEMANTICS TESTS
+# ============================================================
+
+class TestMartBuilderDedupSemantics:
+    """Verify that mart queries use correct dedup strategy and business rules."""
+
+    @pytest.fixture(autouse=True)
+    def _load_builder(self):
+        self.builder_path = Path(__file__).parent.parent / "torqmind_cdc_consumer" / "mart_builder.py"
+        self.code = self.builder_path.read_text()
+
+    def test_slim_population_deletes_before_insert(self):
+        """Slim populate must DELETE old rows before INSERT to prevent duplicates."""
+        for method in ("_populate_slim_comprovantes", "_populate_slim_itens", "_populate_slim_formas"):
+            # Find the method body
+            idx = self.code.index(f"def {method}")
+            method_body = self.code[idx:self.code.index("\n    def ", idx + 10)]
+            assert "DELETE FROM" in method_body and "data_key IN" in method_body, \
+                f"{method} must DELETE slim rows before INSERT"
+
+    def test_mart_refresh_deletes_before_insert(self):
+        """Mart refresh methods must DELETE old rows to ensure idempotent writes."""
+        batched_marts = [
+            "_refresh_sales_daily_stg", "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg", "_refresh_sales_groups_stg",
+            "_refresh_payments_by_type_stg", "_refresh_fraud_daily_stg",
+            "_refresh_dashboard_home_stg",
+        ]
+        for method in batched_marts:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            method_body = self.code[idx:next_def]
+            assert "_delete_mart_batch" in method_body, \
+                f"{method} must call _delete_mart_batch before INSERT"
+
+    def test_no_payload_in_heavy_stg_mart_queries(self):
+        """Heavy STG mart queries must not access payload or JSONExtractString
+        on comprovantes/itens/formas tables. Only small dimension tables allowed."""
+        heavy_methods = [
+            "_refresh_sales_daily_stg", "_refresh_sales_hourly_stg",
+            "_refresh_fraud_daily_stg", "_refresh_dashboard_home_stg",
+        ]
+        for method in heavy_methods:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            # Extract only the SQL string (between triple quotes or f-string)
+            # Check that the SQL INSERT INTO ... SELECT part has no payload
+            sql_parts = [line for line in body.split("\n") if "sql" in line.lower() or "INSERT" in line
+                         or "FROM" in line or "SELECT" in line or "WHERE" in line or "JOIN" in line]
+            sql_text = "\n".join(sql_parts)
+            assert ".payload" not in sql_text, f"{method} SQL must not reference .payload"
+            assert "JSONExtractString" not in sql_text, f"{method} SQL must not use JSONExtractString"
+
+    def test_cancelado_uses_canonical_pg_rule(self):
+        """Slim population must encode PG etl.comprovante_is_cancelled logic:
+        situacao=2 → cancelled, situacao IN(3,5) → not cancelled, else → cancelado field."""
+        idx = self.code.index("def _populate_slim_comprovantes")
+        next_def = self.code.index("\n    def ", idx + 10)
+        body = self.code[idx:next_def]
+        # Must contain multiIf with situacao=2 and situacao IN(3,5)
+        assert "situacao" in body
+        assert "= 2, 1" in body or "= 2,1" in body, "Must map situacao=2 to cancelled=1"
+        assert "IN (3, 5), 0" in body or "IN (3,5), 0" in body, "Must map situacao IN(3,5) to cancelled=0"
+
+    def test_faturamento_is_sum_of_items(self):
+        """Faturamento must be sum(i.total) from items, not sum of header."""
+        idx = self.code.index("def _refresh_sales_daily_stg")
+        next_def = self.code.index("\n    def ", idx + 10)
+        body = self.code[idx:next_def]
+        assert "sum(i.total)" in body, "Faturamento must be sum of item totals"
+
+    def test_cancelados_counted_by_unique_comprovante(self):
+        """Cancelled counts must use uniqExact on full natural key."""
+        idx = self.code.index("def _refresh_fraud_daily_stg")
+        next_def = self.code.index("\n    def ", idx + 10)
+        body = self.code[idx:next_def]
+        assert "uniqExact" in body, "Fraud daily must count unique cancelled comprovantes"
+
+
+# ============================================================
+# SETTINGS TESTS
+# ============================================================
+
+class TestRealtimeSettings:
+    """Verify that API Settings exposes realtime fields."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        import sys, os
+        api_path = str(Path(__file__).parent.parent.parent / "api")
+        if api_path not in sys.path:
+            sys.path.insert(0, api_path)
+        # Set env vars before importing
+        os.environ["USE_REALTIME_MARTS"] = "true"
+        os.environ["REALTIME_MARTS_SOURCE"] = "stg"
+        os.environ["REALTIME_MARTS_FALLBACK"] = "false"
+
+    def test_settings_has_realtime_fields(self):
+        from app.config import Settings
+        s = Settings()
+        assert hasattr(s, "use_realtime_marts")
+        assert hasattr(s, "realtime_marts_source")
+        assert hasattr(s, "realtime_marts_fallback")
+
+    def test_settings_reads_env_vars(self):
+        from app.config import Settings
+        s = Settings()
+        assert s.use_realtime_marts is True
+        assert s.realtime_marts_source == "stg"
+        assert s.realtime_marts_fallback is False

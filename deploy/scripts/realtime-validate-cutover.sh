@@ -277,6 +277,66 @@ compare_grouped_sum() {
   printf '  %-48s OK\n' "$label"
 }
 
+stg_diagnostics() {
+  # Diagnostic breakdown when STG divergences are detected
+  log ""
+  log "=== DIAGNOSTIC BREAKDOWN ==="
+  log ""
+  log "Slim dedup check:"
+  ch_query "SELECT
+    'comprovantes_slim' AS tbl,
+    count() AS raw_rows,
+    uniqExact(id_empresa, id_filial, id_db, id_comprovante) AS unique_keys,
+    count() - uniqExact(id_empresa, id_filial, id_db, id_comprovante) AS duplicates
+  FROM torqmind_current.stg_comprovantes_slim
+  UNION ALL
+  SELECT 'itens_slim', count(),
+    uniqExact(id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante),
+    count() - uniqExact(id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante)
+  FROM torqmind_current.stg_itenscomprovantes_slim
+  UNION ALL
+  SELECT 'formas_slim', count(),
+    uniqExact(id_empresa, id_filial, id_referencia, tipo_forma),
+    count() - uniqExact(id_empresa, id_filial, id_referencia, tipo_forma)
+  FROM torqmind_current.stg_formas_pgto_slim
+  FORMAT PrettyCompact" || true
+  log ""
+  log "Top 10 data_key by faturamento divergence (PG stg vs CH slim):"
+  ch_query "
+  WITH ch AS (
+    SELECT c.data_key,
+      sum(i.total) AS fat
+    FROM torqmind_current.stg_comprovantes_slim AS c
+    INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+      ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+    WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND i.is_deleted=0 AND c.cancelado=0 AND i.cfop>=5000
+    GROUP BY c.data_key
+  )
+  SELECT data_key, fat AS slim_fat
+  FROM ch ORDER BY fat DESC LIMIT 10
+  FORMAT PrettyCompact" || true
+  log ""
+  log "Cancelados check (slim unique comprovantes):"
+  ch_query "
+  SELECT
+    count() AS raw_cancelled,
+    uniqExact(id_empresa, id_filial, id_db, id_comprovante) AS unique_cancelled
+  FROM torqmind_current.stg_comprovantes_slim
+  WHERE id_empresa=$ID_EMPRESA AND is_deleted=0 AND cancelado=1
+  FORMAT PrettyCompact" || true
+  log ""
+  log "Top 10 filiais by faturamento (slim):"
+  ch_query "
+  SELECT c.id_filial, sum(i.total) AS fat, uniqExact(c.id_empresa,c.id_filial,c.id_db,c.id_comprovante) AS docs
+  FROM torqmind_current.stg_comprovantes_slim AS c
+  INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+    ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+  WHERE c.id_empresa=$ID_EMPRESA AND c.is_deleted=0 AND i.is_deleted=0 AND c.cancelado=0 AND i.cfop>=5000
+  GROUP BY c.id_filial ORDER BY fat DESC LIMIT 10
+  FORMAT PrettyCompact" || true
+  log ""
+}
+
 validate_api_realtime() {
   CHECKS=$((CHECKS + 1))
   local result
@@ -422,6 +482,11 @@ main() {
     "SELECT COALESCE((SELECT sum(etl.safe_numeric(payload->>'VALOR')::numeric(18,2)) FROM stg.financeiro WHERE id_empresa=$ID_EMPRESA),0) + COALESCE((SELECT sum(etl.safe_numeric(payload->>'VALOR')::numeric(18,2)) FROM stg.contaspagar WHERE id_empresa=$ID_EMPRESA),0) + COALESCE((SELECT sum(etl.safe_numeric(payload->>'VALOR')::numeric(18,2)) FROM stg.contasreceber WHERE id_empresa=$ID_EMPRESA),0)" \
     "SELECT sum(valor_total) FROM torqmind_mart_rt.finance_overview_rt FINAL WHERE id_empresa=$ID_EMPRESA"
   log ""
+
+  # If any STG divergence found, print diagnostic breakdown
+  if (( FAILURES > 0 )); then
+    stg_diagnostics
+  fi
   else
   log "Sales daily:"
   compare_metric "sales_daily.rows" \
