@@ -215,6 +215,75 @@ ORDER BY slim.data_key
 "
 
 echo ""
+echo "=== 10. data_key=0 prohibition check ==="
+ch "
+SELECT 'sales_daily_rt' AS mart, countIf(data_key=0) AS dk0_rows FROM torqmind_mart_rt.sales_daily_rt WHERE id_empresa=$ID_EMPRESA
+UNION ALL SELECT 'sales_hourly_rt', countIf(data_key=0) FROM torqmind_mart_rt.sales_hourly_rt WHERE id_empresa=$ID_EMPRESA
+UNION ALL SELECT 'sales_products_rt', countIf(data_key=0) FROM torqmind_mart_rt.sales_products_rt WHERE id_empresa=$ID_EMPRESA
+UNION ALL SELECT 'sales_groups_rt', countIf(data_key=0) FROM torqmind_mart_rt.sales_groups_rt WHERE id_empresa=$ID_EMPRESA
+UNION ALL SELECT 'payments_by_type_rt', countIf(data_key=0) FROM torqmind_mart_rt.payments_by_type_rt WHERE id_empresa=$ID_EMPRESA
+UNION ALL SELECT 'fraud_daily_rt', countIf(data_key=0) FROM torqmind_mart_rt.fraud_daily_rt WHERE id_empresa=$ID_EMPRESA
+"
+
+echo ""
+echo "=== 11. Divergence % — slim vs mart_rt per data_key ==="
+ch "
+WITH slim AS (
+  SELECT c.data_key,
+    countIf(c.cancelado=0) AS slim_vendas,
+    sumIf(i.total, c.cancelado=0 AND i.cfop > 5000 AND i.is_deleted=0) AS slim_fat
+  FROM torqmind_current.stg_comprovantes_slim AS c
+  INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+    ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+  WHERE c.id_empresa=$ID_EMPRESA $FILIAL_CH AND c.is_deleted=0
+    AND c.data_key BETWEEN $START_KEY AND $END_KEY
+  GROUP BY c.data_key
+),
+mart AS (
+  SELECT data_key, sum(qtd_vendas) AS mart_vendas, sum(faturamento) AS mart_fat
+  FROM torqmind_mart_rt.sales_daily_rt FINAL
+  WHERE id_empresa=$ID_EMPRESA $FILIAL_CH AND data_key BETWEEN $START_KEY AND $END_KEY
+  GROUP BY data_key
+)
+SELECT
+  coalesce(s.data_key, m.data_key) AS data_key,
+  coalesce(s.slim_vendas, 0) AS slim_vendas,
+  coalesce(m.mart_vendas, 0) AS mart_vendas,
+  coalesce(s.slim_fat, 0) AS slim_fat,
+  coalesce(m.mart_fat, 0) AS mart_fat,
+  if(coalesce(s.slim_fat, 0) > 0,
+    round((coalesce(m.mart_fat, 0) - coalesce(s.slim_fat, 0)) / coalesce(s.slim_fat, 0) * 100, 2),
+    if(coalesce(m.mart_fat, 0) > 0, 999.99, 0)
+  ) AS fat_diff_pct
+FROM slim AS s
+FULL OUTER JOIN mart AS m ON s.data_key = m.data_key
+WHERE coalesce(s.slim_fat, 0) != coalesce(m.mart_fat, 0)
+ORDER BY abs(toFloat64(coalesce(m.mart_fat, 0) - coalesce(s.slim_fat, 0))) DESC
+LIMIT 20
+SETTINGS max_memory_usage=3000000000, max_threads=2, join_algorithm='partial_merge'
+"
+
+echo ""
+echo "=== 12. Date 20260430 specific check ==="
+ch "
+SELECT 'comprovantes_slim' AS layer, count() AS rows, sumIf(valor_total, cancelado=0) AS fat_nao_cancelado
+FROM torqmind_current.stg_comprovantes_slim
+WHERE id_empresa=$ID_EMPRESA $FILIAL_CH AND data_key=20260430 AND is_deleted=0
+UNION ALL
+SELECT 'sales_daily_rt', count(), sum(faturamento)
+FROM torqmind_mart_rt.sales_daily_rt FINAL
+WHERE id_empresa=$ID_EMPRESA $FILIAL_CH AND data_key=20260430
+UNION ALL
+SELECT 'sales_hourly_rt', count(), sum(faturamento)
+FROM torqmind_mart_rt.sales_hourly_rt FINAL
+WHERE id_empresa=$ID_EMPRESA $FILIAL_CH AND data_key=20260430
+UNION ALL
+SELECT 'payments_by_type_rt', count(), sum(valor_total)
+FROM torqmind_mart_rt.payments_by_type_rt FINAL
+WHERE id_empresa=$ID_EMPRESA $FILIAL_CH AND data_key=20260430
+"
+
+echo ""
 echo "============================================"
 echo " Profile complete"
 echo "============================================"

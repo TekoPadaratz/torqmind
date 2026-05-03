@@ -31,17 +31,29 @@ import clickhouse_connect
 
 logger = logging.getLogger(__name__)
 
-# Conservative ClickHouse settings for mart queries on 8 GB servers.
-_QUERY_SETTINGS = {
-    "max_memory_usage": 3_000_000_000,  # 3 GB hard limit per query
-    "max_threads": 2,
-    "join_algorithm": "partial_merge",
-    "max_bytes_before_external_group_by": 500_000_000,
-    "max_bytes_before_external_sort": 500_000_000,
-}
+# Default ClickHouse settings for mart queries on 8 GB servers.
+_DEFAULT_MAX_MEMORY = 3_000_000_000  # 3 GB hard limit per query
+_DEFAULT_MAX_THREADS = 2
+_DEFAULT_BATCH_SIZE = 7  # ~1 week at a time
+
+
+def _build_query_settings(
+    max_memory_usage: int = _DEFAULT_MAX_MEMORY,
+    max_threads: int = _DEFAULT_MAX_THREADS,
+) -> dict[str, Any]:
+    return {
+        "max_memory_usage": max_memory_usage,
+        "max_threads": max_threads,
+        "join_algorithm": "partial_merge",
+        "max_bytes_before_external_group_by": 500_000_000,
+        "max_bytes_before_external_sort": 500_000_000,
+    }
+
+
+_QUERY_SETTINGS = _build_query_settings()
 
 # Backfill batch size: number of data_keys processed per iteration.
-_BACKFILL_BATCH_SIZE = 7  # ~1 week at a time
+_BACKFILL_BATCH_SIZE = _DEFAULT_BATCH_SIZE
 
 
 @dataclass
@@ -85,6 +97,18 @@ class MartBuilder:
     # data_key (YYYYMMDD) and hora must be in America/Sao_Paulo.
     _BUSINESS_TZ = "America/Sao_Paulo"
 
+    # All mart_rt tables that must exist after rebuild
+    REQUIRED_MART_TABLES = [
+        "sales_daily_rt", "sales_hourly_rt", "sales_products_rt", "sales_groups_rt",
+        "payments_by_type_rt", "dashboard_home_rt", "fraud_daily_rt",
+        "risk_recent_events_rt", "cash_overview_rt", "finance_overview_rt",
+        "source_freshness", "mart_publication_log",
+    ]
+
+    REQUIRED_SLIM_TABLES = [
+        "stg_comprovantes_slim", "stg_itenscomprovantes_slim", "stg_formas_pgto_slim",
+    ]
+
     def __init__(
         self,
         clickhouse_host: str = "clickhouse",
@@ -96,6 +120,9 @@ class MartBuilder:
         ops_db: str = "torqmind_ops",
         enabled: bool = True,
         source: str = "stg",
+        batch_size: int = _DEFAULT_BATCH_SIZE,
+        max_threads: int = _DEFAULT_MAX_THREADS,
+        max_memory_usage: int = _DEFAULT_MAX_MEMORY,
     ):
         self.clickhouse_host = clickhouse_host
         self.clickhouse_port = clickhouse_port
@@ -108,6 +135,10 @@ class MartBuilder:
         self.source = source.lower().strip()
         if self.source not in {"stg", "dw"}:
             raise ValueError("MartBuilder source must be 'stg' or 'dw'")
+        self.batch_size = batch_size
+        self.max_threads = max_threads
+        self.max_memory_usage = max_memory_usage
+        self._query_settings = _build_query_settings(max_memory_usage, max_threads)
         self.state = BuilderState()
         self._consecutive_failures = 0
         self._max_consecutive_failures = 5
@@ -216,46 +247,111 @@ class MartBuilder:
         self.state.clear()
         return results
 
+    def _validate_slim_exists(self, client: Any, id_empresa: int, from_key: int, to_key: int, filial_filter: str) -> None:
+        """Fail fast if required slim tables don't exist or are empty for the given scope."""
+        for table in self.REQUIRED_SLIM_TABLES:
+            exists_result = client.query(
+                f"SELECT count() FROM system.tables WHERE database = '{self.current_db}' AND name = '{table}'"
+            )
+            if not exists_result.result_rows or exists_result.result_rows[0][0] == 0:
+                raise RuntimeError(f"Required slim table {self.current_db}.{table} does not exist. Run full backfill first.")
+
+        # Check comprovantes_slim has data for this empresa/period
+        count_result = client.query(
+            f"SELECT count() FROM {self.current_db}.stg_comprovantes_slim "
+            f"WHERE id_empresa = {{id_empresa:Int32}} "
+            f"AND data_key >= {{from_key:Int32}} AND data_key <= {{to_key:Int32}} "
+            f"AND data_key > 0 {filial_filter}",
+            parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
+        )
+        count = count_result.result_rows[0][0] if count_result.result_rows else 0
+        if count == 0:
+            raise RuntimeError(
+                f"stg_comprovantes_slim is empty for id_empresa={id_empresa} "
+                f"data_key range [{from_key}, {to_key}]. Cannot do mart-only rebuild."
+            )
+
+        count_result = client.query(
+            f"SELECT count() FROM {self.current_db}.stg_itenscomprovantes_slim "
+            f"WHERE id_empresa = {{id_empresa:Int32}} "
+            f"AND data_key >= {{from_key:Int32}} AND data_key <= {{to_key:Int32}} "
+            f"AND data_key > 0 {filial_filter}",
+            parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
+        )
+        count = count_result.result_rows[0][0] if count_result.result_rows else 0
+        if count == 0:
+            raise RuntimeError(
+                f"stg_itenscomprovantes_slim is empty for id_empresa={id_empresa} "
+                f"data_key range [{from_key}, {to_key}]. Cannot do mart-only rebuild."
+            )
+
+        logger.info("Slim tables validated: exist and contain data for the requested scope.")
+
     def backfill(
         self,
         from_date: str = "2025-01-01",
         to_date: Optional[str] = None,
         id_empresa: int = 1,
         id_filial: Optional[int] = None,
+        mart_only: bool = False,
+        skip_batch_deletes: bool = False,
     ) -> list[MartRefreshResult]:
-        """Full backfill of all marts from current tables via slim layer.
+        """Backfill marts from current tables via slim layer.
 
-        Process:
-        1. Populate slim tables from raw STG (payload extraction).
-        2. Discover publishable data_keys from SLIM (canonical join).
-        3. For each batch of data_keys: build all mart_rt tables.
-        4. Non-data_key marts (cash, finance, risk) built at end.
-        5. Validate completeness: every slim data_key must appear in marts.
+        Modes:
+        - Normal (mart_only=False):
+          1. Populate slim tables from raw STG (payload extraction).
+          2. Discover publishable data_keys from SLIM (canonical join).
+          3. Build all mart_rt tables in batches.
+          4. Non-data_key marts (cash, finance, risk) built at end.
+
+        - Mart-only (mart_only=True):
+          1. Validate slim tables exist and contain data.
+          2. Skip slim population entirely — no payload reads, no STG access.
+          3. Discover publishable data_keys from SLIM (canonical join).
+          4. Rebuild all mart_rt tables from slim.
+
+        Args:
+            mart_only: If True, skip slim population and read directly from slim.
+                       Requires source=stg and slim tables already populated.
+            skip_batch_deletes: If True, skip DELETE mutations before each INSERT.
+                       Use when marts have been truncated/drop-recreated.
         """
+        batch_size = self.batch_size
+
+        mode_label = "mart-only" if mart_only else "full"
         logger.info(
-            f"Mart builder backfill: from={from_date} to={to_date or 'now'} "
+            f"Mart builder backfill ({mode_label}): from={from_date} to={to_date or 'now'} "
             f"empresa={id_empresa} filial={id_filial or 'all'} "
-            f"batch_size={_BACKFILL_BATCH_SIZE}"
+            f"batch_size={batch_size} max_threads={self.max_threads} "
+            f"max_memory={self.max_memory_usage} skip_batch_deletes={skip_batch_deletes}"
         )
+
+        if mart_only and self.source != "stg":
+            raise ValueError("--mart-only requires source=stg")
 
         from_key = int(from_date.replace("-", ""))
         if to_date:
             to_key = int(to_date.replace("-", ""))
         else:
-            # Cap at today + 30 days to exclude corrupt future dates (2299xxxx)
             from datetime import date, timedelta
             cap = date.today() + timedelta(days=30)
             to_key = int(cap.strftime("%Y%m%d"))
 
         client = self._get_client()
         results: list[MartRefreshResult] = []
+        t0_global = time.time()
         try:
-            # Ensure slim tables exist
-            self._ensure_slim_ddl(client)
-
             filial_filter = f"AND id_filial = {id_filial}" if id_filial else ""
 
-            if self.source == "stg":
+            if mart_only:
+                # Mart-only: validate slim, skip population
+                self._validate_slim_exists(client, id_empresa, from_key, to_key, filial_filter)
+            else:
+                # Full backfill: ensure DDL and populate slim
+                self._ensure_slim_ddl(client)
+
+            if self.source == "stg" and not mart_only:
                 # Phase 1: Discover data_keys from raw STG for slim population
                 data_key_expr = self._stg_data_key_expr("c")
                 raw_keys_rows = client.query(
@@ -267,7 +363,7 @@ class MartBuilder:
                     f"AND c.is_deleted = 0 {filial_filter} "
                     f"ORDER BY dk",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
-                    settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},
+                    settings={"max_memory_usage": self.max_memory_usage, "max_threads": self.max_threads},
                 )
                 raw_data_keys = [row[0] for row in (raw_keys_rows.result_rows or []) if row[0] > 0]
 
@@ -278,15 +374,14 @@ class MartBuilder:
                 logger.info(f"Backfill phase 1 (slim): {len(raw_data_keys)} data_keys")
 
                 # Populate slim tables in batches (payload extraction)
-                for i in range(0, len(raw_data_keys), _BACKFILL_BATCH_SIZE):
-                    chunk = raw_data_keys[i:i + _BACKFILL_BATCH_SIZE]
+                for i in range(0, len(raw_data_keys), batch_size):
+                    chunk = raw_data_keys[i:i + batch_size]
                     self._populate_slim_comprovantes(client, chunk)
                     self._populate_slim_itens(client, chunk)
                     self._populate_slim_formas(client, chunk)
 
+            if self.source == "stg":
                 # Phase 2: Discover publishable data_keys from SLIM (canonical join)
-                # This is the authoritative list — only data_keys with valid sales
-                # (cancelado=0, cfop>5000, joined items) will be published.
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT c.data_key "
                     f"FROM {self.current_db}.stg_comprovantes_slim AS c "
@@ -304,7 +399,7 @@ class MartBuilder:
                     f"  {filial_filter} "
                     f"ORDER BY c.data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
-                    settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},
+                    settings={"max_memory_usage": self.max_memory_usage, "max_threads": self.max_threads},
                 )
                 data_keys = [row[0] for row in (data_keys_rows.result_rows or []) if row[0] > 0]
             else:
@@ -322,28 +417,29 @@ class MartBuilder:
                 return results
 
             logger.info(
-                f"Backfill phase 2 (mart): {len(data_keys)} publishable data_keys "
-                f"in batches of {_BACKFILL_BATCH_SIZE}"
+                f"Backfill phase {'2' if not mart_only else '1'} (mart): "
+                f"{len(data_keys)} publishable data_keys "
+                f"in batches of {batch_size}"
             )
 
             # Phase 3: Build marts from slim in small batches
-            for i in range(0, len(data_keys), _BACKFILL_BATCH_SIZE):
-                chunk = data_keys[i:i + _BACKFILL_BATCH_SIZE]
-                batch_num = (i // _BACKFILL_BATCH_SIZE) + 1
-                total_batches = (len(data_keys) + _BACKFILL_BATCH_SIZE - 1) // _BACKFILL_BATCH_SIZE
+            for i in range(0, len(data_keys), batch_size):
+                chunk = data_keys[i:i + batch_size]
+                batch_num = (i // batch_size) + 1
+                total_batches = (len(data_keys) + batch_size - 1) // batch_size
                 logger.info(
                     f"Backfill batch {batch_num}/{total_batches}: "
                     f"data_keys {chunk[0]}..{chunk[-1]} ({len(chunk)} keys)"
                 )
 
                 if self.source == "stg":
-                    results.append(self._refresh_sales_daily_stg(client, chunk))
-                    results.append(self._refresh_sales_hourly_stg(client, chunk))
-                    results.append(self._refresh_sales_products_stg(client, chunk))
-                    results.append(self._refresh_sales_groups_stg(client, chunk))
-                    results.append(self._refresh_payments_by_type_stg(client, chunk))
-                    results.append(self._refresh_dashboard_home_stg(client, chunk))
-                    results.append(self._refresh_fraud_daily_stg(client, chunk))
+                    results.append(self._refresh_sales_daily_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_hourly_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_products_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_groups_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_payments_by_type_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_dashboard_home_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_fraud_daily_stg(client, chunk, skip_delete=skip_batch_deletes))
                 else:
                     results.append(self._refresh_sales_daily_dw(client, chunk))
                     results.append(self._refresh_sales_hourly_dw(client, chunk))
@@ -368,11 +464,12 @@ class MartBuilder:
         finally:
             client.close()
 
+        elapsed_s = time.time() - t0_global
         total_rows = sum(r.rows_written for r in results)
         errors = [r for r in results if r.error]
         logger.info(
-            f"Backfill complete: {len(results)} refreshes, {total_rows} rows, "
-            f"{len(errors)} errors"
+            f"Backfill complete ({mode_label}): {len(results)} refreshes, {total_rows} rows, "
+            f"{len(errors)} errors, {elapsed_s:.1f}s total"
         )
         return results
 
@@ -568,7 +665,7 @@ class MartBuilder:
         FROM {self.current_db}.stg_comprovantes AS c FINAL
         WHERE {key_filter}
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         elapsed = int((time.time() - t0) * 1000)
         logger.debug(f"Populated slim comprovantes for {len(data_keys)} keys in {elapsed}ms")
 
@@ -617,7 +714,7 @@ class MartBuilder:
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {key_filter}
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         elapsed = int((time.time() - t0) * 1000)
         logger.debug(f"Populated slim itens for {len(data_keys)} keys in {elapsed}ms")
 
@@ -653,7 +750,7 @@ class MartBuilder:
             AND {ref} = p.id_referencia
         WHERE {key_filter}
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         elapsed = int((time.time() - t0) * 1000)
         logger.debug(f"Populated slim formas for {len(data_keys)} keys in {elapsed}ms")
 
@@ -720,12 +817,8 @@ class MartBuilder:
         return f"{prefix}data_key IN ({keys})"
 
     def _insert_and_count(self, client: Any, mart_table: str, sql: str, data_keys: list[int]) -> int:
-        """Execute INSERT INTO mart and return actual rows written.
-
-        Uses a count query on the mart table for the affected data_keys
-        after the INSERT to determine rows_written.
-        """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        """Execute INSERT INTO mart and return actual rows written."""
+        client.command(sql, settings=self._query_settings)
         keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
         if not keys_str:
             return 0
@@ -738,7 +831,16 @@ class MartBuilder:
         except Exception:
             return 0
 
-    def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _insert_and_count_nokey(self, client: Any, mart_table: str, sql: str) -> int:
+        """Execute INSERT INTO mart and return actual rows written (for tables without data_key)."""
+        client.command(sql, settings=self._query_settings)
+        try:
+            result = client.query(f"SELECT count() FROM {self.mart_rt_db}.{mart_table}")
+            return int(result.result_rows[0][0]) if result.result_rows else 0
+        except Exception:
+            return 0
+
+    def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
         """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
 
         Canonical rules:
@@ -750,7 +852,8 @@ class MartBuilder:
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
-        self._delete_mart_batch(client, "sales_daily_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "sales_daily_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_daily_rt
         SELECT
@@ -795,12 +898,13 @@ class MartBuilder:
         rows = self._insert_and_count(client, "sales_daily_rt", sql, data_keys)
         return MartRefreshResult("sales_daily_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
         """Sales hourly from slim tables. No payload, no JSONExtract."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
-        self._delete_mart_batch(client, "sales_hourly_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "sales_hourly_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_hourly_rt
         SELECT
@@ -822,12 +926,13 @@ class MartBuilder:
         rows = self._insert_and_count(client, "sales_hourly_rt", sql, data_keys)
         return MartRefreshResult("sales_hourly_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_sales_products_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _refresh_sales_products_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
         """Sales by product from slim tables + dimension lookups."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
-        self._delete_mart_batch(client, "sales_products_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "sales_products_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_products_rt
         SELECT
@@ -857,12 +962,13 @@ class MartBuilder:
         rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys)
         return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
         """Sales by group from slim tables."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
-        self._delete_mart_batch(client, "sales_groups_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "sales_groups_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_groups_rt
         SELECT
@@ -888,11 +994,12 @@ class MartBuilder:
         rows = self._insert_and_count(client, "sales_groups_rt", sql, data_keys)
         return MartRefreshResult("sales_groups_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_payments_by_type_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _refresh_payments_by_type_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
         """Payments by type from slim tables."""
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "p")
-        self._delete_mart_batch(client, "payments_by_type_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "payments_by_type_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.payments_by_type_rt
         SELECT
@@ -910,8 +1017,8 @@ class MartBuilder:
         WHERE {kf} AND p.is_deleted = 0
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("payments_by_type_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "payments_by_type_rt", sql, data_keys)
+        return MartRefreshResult("payments_by_type_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_cash_overview_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Cash overview. Reads turnos payload (small table) + slim comprovantes."""
@@ -968,18 +1075,15 @@ class MartBuilder:
         ) AS vendas ON turnos.id_empresa = vendas.id_empresa AND turnos.id_filial = vendas.id_filial
             AND turnos.id_turno = vendas.id_turno
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("cash_overview_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count_nokey(client, "cash_overview_rt", sql)
+        return MartRefreshResult("cash_overview_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
-        """Fraud daily: count unique cancelled comprovantes per day.
-
-        Cancelado flag in slim already encodes PG etl.comprovante_is_cancelled:
-        situacao=2 → cancelled, situacao IN(3,5) → not cancelled, else → cancelado field.
-        """
+    def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+        """Fraud daily: count unique cancelled comprovantes per day."""
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
-        self._delete_mart_batch(client, "fraud_daily_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "fraud_daily_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.fraud_daily_rt
         SELECT
@@ -994,8 +1098,8 @@ class MartBuilder:
         WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
         GROUP BY c.id_empresa, c.id_filial, c.data_key
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("fraud_daily_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "fraud_daily_rt", sql, data_keys)
+        return MartRefreshResult("fraud_daily_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_risk_recent_events_stg(self, client: Any) -> MartRefreshResult:
         """Risk events from slim comprovantes + usuarios (small dim)."""
@@ -1020,8 +1124,8 @@ class MartBuilder:
         WHERE c.is_deleted = 0 AND c.cancelado = 1
         ORDER BY c.data_key DESC, id DESC
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("risk_recent_events_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count_nokey(client, "risk_recent_events_rt", sql)
+        return MartRefreshResult("risk_recent_events_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_finance_overview_stg(self, client: Any) -> MartRefreshResult:
         """Finance overview. Reads payload from finance tables (small volume)."""
@@ -1060,15 +1164,16 @@ class MartBuilder:
         FROM src
         GROUP BY id_empresa, id_filial, tipo_titulo, faixa
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("finance_overview_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql)
+        return MartRefreshResult("finance_overview_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
         """Dashboard home from slim tables."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
-        self._delete_mart_batch(client, "dashboard_home_rt", data_keys)
+        if not skip_delete:
+            self._delete_mart_batch(client, "dashboard_home_rt", data_keys)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.dashboard_home_rt
         SELECT
@@ -1106,8 +1211,8 @@ class MartBuilder:
            AND base.id_filial = cancel_agg.id_filial
            AND base.data_key = cancel_agg.data_key
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("dashboard_home_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "dashboard_home_rt", sql, data_keys)
+        return MartRefreshResult("dashboard_home_rt", rows, int((time.time() - t0) * 1000))
 
     # ================================================================
     # DW-ORIGIN MART QUERIES (already typed, no payload)
@@ -1154,7 +1259,7 @@ class MartBuilder:
         ) AS cancel ON base.id_empresa = cancel.id_empresa
            AND base.id_filial = cancel.id_filial AND base.data_key = cancel.data_key
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("sales_daily_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_sales_hourly_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1176,7 +1281,7 @@ class MartBuilder:
           AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY v.id_empresa, v.id_filial, v.data_key, hora
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("sales_hourly_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_sales_products_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1203,7 +1308,7 @@ class MartBuilder:
           AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_produto, p.nome, vi.id_grupo_produto, g.nome
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("sales_products_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_sales_groups_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1229,7 +1334,7 @@ class MartBuilder:
           AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_grupo_produto, g.nome
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("sales_groups_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_payments_by_type_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1248,7 +1353,7 @@ class MartBuilder:
         WHERE p.data_key IN ({keys_str}) AND p.is_deleted = 0
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("payments_by_type_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_cash_overview_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1273,7 +1378,7 @@ class MartBuilder:
             AND ct.id_turno = vendas.id_turno
         WHERE ct.is_deleted = 0
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("cash_overview_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_fraud_daily_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1289,7 +1394,7 @@ class MartBuilder:
         WHERE r.data_key IN ({keys_str}) AND r.is_deleted = 0
         GROUP BY r.id_empresa, r.id_filial, r.data_key, r.event_type
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("fraud_daily_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_risk_recent_events_dw(self, client: Any) -> MartRefreshResult:
@@ -1308,7 +1413,7 @@ class MartBuilder:
             ON r.id_empresa = f.id_empresa AND r.id_filial = f.id_filial AND r.id_funcionario = f.id_funcionario
         WHERE r.is_deleted = 0 ORDER BY r.id DESC
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("risk_recent_events_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_finance_overview_dw(self, client: Any) -> MartRefreshResult:
@@ -1325,7 +1430,7 @@ class MartBuilder:
         FROM {self.current_db}.fact_financeiro AS f FINAL WHERE f.is_deleted = 0
         GROUP BY f.id_empresa, f.id_filial, f.tipo_titulo, faixa
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("finance_overview_rt", 0, int((time.time() - t0) * 1000))
 
     def _refresh_dashboard_home_dw(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
@@ -1361,7 +1466,7 @@ class MartBuilder:
         ) AS cancel ON base.id_empresa = cancel.id_empresa
            AND base.id_filial = cancel.id_filial AND base.data_key = cancel.data_key
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
+        client.command(sql, settings=self._query_settings)
         return MartRefreshResult("dashboard_home_rt", 0, int((time.time() - t0) * 1000))
 
     # ================================================================

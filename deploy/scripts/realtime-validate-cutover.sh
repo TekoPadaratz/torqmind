@@ -726,6 +726,37 @@ main() {
   done
   log ""
 
+  log "Critical date 20260430 validation:"
+  local has_20260430_in_slim
+  has_20260430_in_slim="$(ch_query "
+    SELECT count() FROM (
+      SELECT DISTINCT c.data_key
+      FROM torqmind_current.stg_comprovantes_slim AS c
+      INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+        ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial
+        AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+      WHERE c.id_empresa=$ID_EMPRESA AND c.data_key=20260430
+        AND c.cancelado=0 AND c.is_deleted=0 AND i.is_deleted=0 AND i.cfop > 5000
+    )
+  ")"
+  has_20260430_in_slim="$(normalize_number "$has_20260430_in_slim")"
+  if [[ "$has_20260430_in_slim" != "0" ]]; then
+    for mart_table in sales_daily_rt sales_hourly_rt sales_products_rt sales_groups_rt payments_by_type_rt; do
+      CHECKS=$((CHECKS + 1))
+      local dk_present
+      dk_present="$(ch_query "SELECT count() FROM torqmind_mart_rt.$mart_table WHERE id_empresa=$ID_EMPRESA AND data_key=20260430")"
+      dk_present="$(normalize_number "$dk_present")"
+      if [[ "$dk_present" == "0" ]]; then
+        record_failure "${mart_table}.20260430_present" "MISSING_IN_MART (exists_in_slim)"
+      else
+        printf '  %-48s OK (rows=%s)\n' "${mart_table}.20260430_present" "$dk_present"
+      fi
+    done
+  else
+    printf '  %-48s SKIPPED (no data in slim for 20260430)\n' "date_20260430"
+  fi
+  log ""
+
   else
   log "Sales daily:"
   compare_metric "sales_daily.rows" \
@@ -825,6 +856,31 @@ main() {
   log ""
 
   log "============================================"
+  log "Per-mart row summary:"
+  local summary_tables=(
+    "sales_daily_rt"
+    "sales_hourly_rt"
+    "sales_products_rt"
+    "sales_groups_rt"
+    "payments_by_type_rt"
+    "dashboard_home_rt"
+    "fraud_daily_rt"
+    "risk_recent_events_rt"
+    "cash_overview_rt"
+    "finance_overview_rt"
+  )
+  for st in "${summary_tables[@]}"; do
+    local row_count data_keys_count
+    row_count="$(ch_query "SELECT count() FROM torqmind_mart_rt.$st FINAL WHERE id_empresa=$ID_EMPRESA")"
+    row_count="$(normalize_number "$row_count")"
+    data_keys_count="$(ch_query "SELECT uniqExact(data_key) FROM torqmind_mart_rt.$st FINAL WHERE id_empresa=$ID_EMPRESA")"
+    data_keys_count="$(normalize_number "$data_keys_count")"
+    local mart_status="OK"
+    [[ "$row_count" == "0" ]] && mart_status="EMPTY"
+    printf '  %-36s rows=%-10s data_keys=%-6s [%s]\n' "$st" "$row_count" "$data_keys_count" "$mart_status"
+  done
+  log ""
+
   log "CHECKS=$CHECKS  FAILURES=$FAILURES"
   if (( FAILURES > 0 )); then
     log "RESULT: FAILED - cutover BLOCKED."

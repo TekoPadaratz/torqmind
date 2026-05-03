@@ -48,6 +48,12 @@ SOURCE="stg"
 BOOTSTRAP_STG=1  # default: enabled for source=stg + with-backfill
 SKIP_BOOTSTRAP_STG=0
 KILL_LEGACY_ETL=0
+MART_ONLY=0
+SKIP_SLIM=0
+RESET_MART_RT=""
+BACKFILL_BATCH_SIZE=""
+BACKFILL_MAX_THREADS=""
+BACKFILL_MAX_MEMORY_GB=""
 
 source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
 
@@ -129,6 +135,19 @@ parse_args() {
         SOURCE="$2"; shift ;;
       --skip-bootstrap-stg) SKIP_BOOTSTRAP_STG=1 ;;
       --kill-legacy-etl) KILL_LEGACY_ETL=1 ;;
+      --mart-only) MART_ONLY=1 ;;
+      --skip-slim) SKIP_SLIM=1 ;;
+      --reset-mart-rt) RESET_MART_RT="truncate" ;;
+      --drop-recreate-mart-rt) RESET_MART_RT="drop-recreate" ;;
+      --backfill-batch-size)
+        [[ $# -ge 2 ]] || { echo "ERROR: --backfill-batch-size requires a value" >&2; exit 2; }
+        BACKFILL_BATCH_SIZE="$2"; shift ;;
+      --backfill-max-threads)
+        [[ $# -ge 2 ]] || { echo "ERROR: --backfill-max-threads requires a value" >&2; exit 2; }
+        BACKFILL_MAX_THREADS="$2"; shift ;;
+      --backfill-max-memory-gb)
+        [[ $# -ge 2 ]] || { echo "ERROR: --backfill-max-memory-gb requires a value" >&2; exit 2; }
+        BACKFILL_MAX_MEMORY_GB="$2"; shift ;;
       --help|-h) usage; exit 0 ;;
       *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -577,6 +596,14 @@ step_backfill() {
     log INFO "Current ${current_source_table} has data: $current_count rows"
   fi
 
+  # Reset mart_rt if requested
+  if [[ -n "$RESET_MART_RT" ]]; then
+    log INFO "Resetting mart_rt ($RESET_MART_RT) before backfill..."
+    local reset_flags="--$RESET_MART_RT --yes"
+    run env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$PROD_COMPOSE_FILE" \
+      bash "$ROOT_DIR/deploy/scripts/realtime-reset-mart-rt.sh" $reset_flags
+  fi
+
   # Run mart builder backfill
   local backfill_command="backfill"
   [[ "$SOURCE" == "stg" ]] && backfill_command="backfill-stg"
@@ -588,6 +615,16 @@ step_backfill() {
   )
   [[ "$backfill_command" == "backfill" ]] && backfill_cmd+=(--source "$SOURCE")
   [[ -n "$BACKFILL_ID_FILIAL" ]] && backfill_cmd+=(--id-filial "$BACKFILL_ID_FILIAL")
+  # mart-only / skip-slim flags
+  if (( MART_ONLY || SKIP_SLIM )); then
+    backfill_cmd+=(--mart-only)
+    # skip batch deletes when mart was just reset
+    [[ -n "$RESET_MART_RT" ]] && backfill_cmd+=(--skip-batch-deletes)
+  fi
+  # Performance tuning
+  [[ -n "$BACKFILL_BATCH_SIZE" ]] && backfill_cmd+=(--batch-size "$BACKFILL_BATCH_SIZE")
+  [[ -n "$BACKFILL_MAX_THREADS" ]] && backfill_cmd+=(--max-threads "$BACKFILL_MAX_THREADS")
+  [[ -n "$BACKFILL_MAX_MEMORY_GB" ]] && backfill_cmd+=(--max-memory-gb "$BACKFILL_MAX_MEMORY_GB")
   run "${backfill_cmd[@]}"
 
   # Verify backfill produced rows
