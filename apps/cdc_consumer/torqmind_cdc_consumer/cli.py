@@ -56,6 +56,52 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Validate slim→mart completeness for sales marts."""
+    setup_logging(settings.log_level)
+    logger.info(
+        "validate_start",
+        from_date=args.from_date,
+        to_date=args.to_date,
+        id_empresa=args.id_empresa,
+    )
+
+    builder = MartBuilder(
+        clickhouse_host=settings.clickhouse_host,
+        clickhouse_port=settings.clickhouse_port,
+        clickhouse_user=settings.clickhouse_user,
+        clickhouse_password=settings.clickhouse_password,
+        source="stg",
+    )
+
+    result = builder.validate_completeness(
+        id_empresa=args.id_empresa,
+        from_date=args.from_date,
+        to_date=args.to_date,
+    )
+
+    print(f"Slim data_keys: {result['slim_data_keys_count']}")
+    print(f"Missing from marts: {len(result['missing'])}")
+    print(f"data_key=0 violations: {len(result['data_key_zero'])}")
+
+    if result['missing']:
+        print("\nMISSING DATA_KEYS:")
+        for m in result['missing'][:50]:
+            print(f"  {m['mart']}: data_key={m['data_key']}")
+
+    if result['data_key_zero']:
+        print("\nDATA_KEY=0 VIOLATIONS:")
+        for v in result['data_key_zero']:
+            print(f"  {v['mart']}: {v['rows_with_zero']} rows")
+
+    if result['pass']:
+        print("\nRESULT: PASS")
+        sys.exit(0)
+    else:
+        print("\nRESULT: FAIL")
+        sys.exit(1)
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     """Check mart builder status."""
     setup_logging(settings.log_level)
@@ -104,11 +150,19 @@ def main() -> None:
     # status
     subparsers.add_parser("status", help="Show mart builder status")
 
+    # validate
+    vp = subparsers.add_parser("validate", help="Validate slim→mart completeness")
+    vp.add_argument("--from-date", default="2025-01-01", help="Start date YYYY-MM-DD")
+    vp.add_argument("--to-date", default=None, help="End date YYYY-MM-DD (optional)")
+    vp.add_argument("--id-empresa", type=int, default=1, help="Tenant ID")
+
     args = parser.parse_args()
     if args.command in {"backfill", "backfill-stg"}:
         cmd_backfill(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "validate":
+        cmd_validate(args)
     else:
         parser.print_help()
         sys.exit(1)

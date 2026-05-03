@@ -199,7 +199,8 @@ class MartBuilder:
                         results.append(self._refresh_finance_overview_dw(client))
 
                 # Log publication
-                self._log_publications(client, results)
+                id_empresa = next(iter(self.state.affected_empresas), 0)
+                self._log_publications(client, results, id_empresa=id_empresa, data_keys=data_keys)
                 self._update_source_freshness(client)
                 self._consecutive_failures = 0  # Reset on success
 
@@ -225,11 +226,11 @@ class MartBuilder:
         """Full backfill of all marts from current tables via slim layer.
 
         Process:
-        1. Discover data_keys in range.
-        2. For each batch of data_keys:
-           a. Populate slim tables (payload -> typed, one-time extraction).
-           b. Build all mart_rt tables from slim (no payload access).
-        3. Non-data_key marts (cash, finance, risk) built at end.
+        1. Populate slim tables from raw STG (payload extraction).
+        2. Discover publishable data_keys from SLIM (canonical join).
+        3. For each batch of data_keys: build all mart_rt tables.
+        4. Non-data_key marts (cash, finance, risk) built at end.
+        5. Validate completeness: every slim data_key must appear in marts.
         """
         logger.info(
             f"Mart builder backfill: from={from_date} to={to_date or 'now'} "
@@ -255,9 +256,9 @@ class MartBuilder:
             filial_filter = f"AND id_filial = {id_filial}" if id_filial else ""
 
             if self.source == "stg":
-                # Get distinct data_keys from comprovantes using dt_evento
+                # Phase 1: Discover data_keys from raw STG for slim population
                 data_key_expr = self._stg_data_key_expr("c")
-                data_keys_rows = client.query(
+                raw_keys_rows = client.query(
                     f"SELECT DISTINCT {data_key_expr} AS dk "
                     f"FROM {self.current_db}.stg_comprovantes AS c FINAL "
                     f"WHERE c.id_empresa = {{id_empresa:Int32}} "
@@ -268,6 +269,44 @@ class MartBuilder:
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                     settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},
                 )
+                raw_data_keys = [row[0] for row in (raw_keys_rows.result_rows or []) if row[0] > 0]
+
+                if not raw_data_keys:
+                    logger.warning("No data_keys found for backfill range")
+                    return results
+
+                logger.info(f"Backfill phase 1 (slim): {len(raw_data_keys)} data_keys")
+
+                # Populate slim tables in batches (payload extraction)
+                for i in range(0, len(raw_data_keys), _BACKFILL_BATCH_SIZE):
+                    chunk = raw_data_keys[i:i + _BACKFILL_BATCH_SIZE]
+                    self._populate_slim_comprovantes(client, chunk)
+                    self._populate_slim_itens(client, chunk)
+                    self._populate_slim_formas(client, chunk)
+
+                # Phase 2: Discover publishable data_keys from SLIM (canonical join)
+                # This is the authoritative list — only data_keys with valid sales
+                # (cancelado=0, cfop>5000, joined items) will be published.
+                data_keys_rows = client.query(
+                    f"SELECT DISTINCT c.data_key "
+                    f"FROM {self.current_db}.stg_comprovantes_slim AS c "
+                    f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i "
+                    f"  ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial "
+                    f"  AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante "
+                    f"WHERE c.id_empresa = {{id_empresa:Int32}} "
+                    f"  AND c.data_key >= {{from_key:Int32}} "
+                    f"  AND c.data_key <= {{to_key:Int32}} "
+                    f"  AND c.data_key > 0 "
+                    f"  AND c.cancelado = 0 "
+                    f"  AND c.is_deleted = 0 "
+                    f"  AND i.is_deleted = 0 "
+                    f"  AND i.cfop > 5000 "
+                    f"  {filial_filter} "
+                    f"ORDER BY c.data_key",
+                    parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
+                    settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},
+                )
+                data_keys = [row[0] for row in (data_keys_rows.result_rows or []) if row[0] > 0]
             else:
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT data_key FROM {self.current_db}.fact_venda FINAL "
@@ -276,15 +315,18 @@ class MartBuilder:
                     f"ORDER BY data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                 )
-            data_keys = [row[0] for row in (data_keys_rows.result_rows or [])]
+                data_keys = [row[0] for row in (data_keys_rows.result_rows or []) if row[0] > 0]
 
             if not data_keys:
-                logger.warning("No data_keys found for backfill range")
+                logger.warning("No publishable data_keys found after slim population")
                 return results
 
-            logger.info(f"Backfill: {len(data_keys)} data_keys to process in batches of {_BACKFILL_BATCH_SIZE}")
+            logger.info(
+                f"Backfill phase 2 (mart): {len(data_keys)} publishable data_keys "
+                f"in batches of {_BACKFILL_BATCH_SIZE}"
+            )
 
-            # Process in small batches for memory safety
+            # Phase 3: Build marts from slim in small batches
             for i in range(0, len(data_keys), _BACKFILL_BATCH_SIZE):
                 chunk = data_keys[i:i + _BACKFILL_BATCH_SIZE]
                 batch_num = (i // _BACKFILL_BATCH_SIZE) + 1
@@ -295,12 +337,6 @@ class MartBuilder:
                 )
 
                 if self.source == "stg":
-                    # Step 1: Populate slim tables for this batch
-                    self._populate_slim_comprovantes(client, chunk)
-                    self._populate_slim_itens(client, chunk)
-                    self._populate_slim_formas(client, chunk)
-
-                    # Step 2: Build marts from slim
                     results.append(self._refresh_sales_daily_stg(client, chunk))
                     results.append(self._refresh_sales_hourly_stg(client, chunk))
                     results.append(self._refresh_sales_products_stg(client, chunk))
@@ -327,7 +363,7 @@ class MartBuilder:
                 results.append(self._refresh_risk_recent_events_dw(client))
                 results.append(self._refresh_finance_overview_dw(client))
 
-            self._log_publications(client, results)
+            self._log_publications(client, results, id_empresa=id_empresa, data_keys=data_keys)
             self._update_source_freshness(client)
         finally:
             client.close()
@@ -683,6 +719,25 @@ class MartBuilder:
             return "1 = 1"
         return f"{prefix}data_key IN ({keys})"
 
+    def _insert_and_count(self, client: Any, mart_table: str, sql: str, data_keys: list[int]) -> int:
+        """Execute INSERT INTO mart and return actual rows written.
+
+        Uses a count query on the mart table for the affected data_keys
+        after the INSERT to determine rows_written.
+        """
+        client.command(sql, settings=_QUERY_SETTINGS)
+        keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if not keys_str:
+            return 0
+        try:
+            result = client.query(
+                f"SELECT count() FROM {self.mart_rt_db}.{mart_table} "
+                f"WHERE data_key IN ({keys_str})"
+            )
+            return int(result.result_rows[0][0]) if result.result_rows else 0
+        except Exception:
+            return 0
+
     def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
 
@@ -737,8 +792,8 @@ class MartBuilder:
            AND base.id_filial = cancel_agg.id_filial
            AND base.data_key = cancel_agg.data_key
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("sales_daily_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "sales_daily_rt", sql, data_keys)
+        return MartRefreshResult("sales_daily_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Sales hourly from slim tables. No payload, no JSONExtract."""
@@ -764,8 +819,8 @@ class MartBuilder:
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("sales_hourly_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "sales_hourly_rt", sql, data_keys)
+        return MartRefreshResult("sales_hourly_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_sales_products_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Sales by product from slim tables + dimension lookups."""
@@ -799,8 +854,8 @@ class MartBuilder:
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, i.id_grupo_produto, nome_grupo
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("sales_products_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys)
+        return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Sales by group from slim tables."""
@@ -830,8 +885,8 @@ class MartBuilder:
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_grupo_produto, nome_grupo
         """
-        client.command(sql, settings=_QUERY_SETTINGS)
-        return MartRefreshResult("sales_groups_rt", 0, int((time.time() - t0) * 1000))
+        rows = self._insert_and_count(client, "sales_groups_rt", sql, data_keys)
+        return MartRefreshResult("sales_groups_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_payments_by_type_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
         """Payments by type from slim tables."""
@@ -1313,20 +1368,38 @@ class MartBuilder:
     # UTILITY METHODS
     # ================================================================
 
-    def _log_publications(self, client: Any, results: list[MartRefreshResult]) -> None:
-        """Log successful publications to mart_publication_log."""
+    def _log_publications(
+        self,
+        client: Any,
+        results: list[MartRefreshResult],
+        id_empresa: int = 0,
+        data_keys: Optional[list[int]] = None,
+    ) -> None:
+        """Log successful publications to mart_publication_log with real values."""
         from datetime import date as _date
         successful = [r for r in results if r.error is None]
         if not successful:
             return
+
+        # Derive real window from data_keys
+        valid_keys = sorted(k for k in (data_keys or []) if k > 0)
+        if valid_keys:
+            ws = str(valid_keys[0])
+            we = str(valid_keys[-1])
+            window_start = _date(int(ws[:4]), int(ws[4:6]), int(ws[6:8]))
+            window_end = _date(int(we[:4]), int(we[4:6]), int(we[6:8]))
+        else:
+            window_start = _date.today()
+            window_end = _date.today()
+
         try:
             rows = []
             for r in successful:
                 rows.append([
                     r.mart_name,
-                    0,
-                    _date(1970, 1, 2),
-                    _date(2099, 12, 31),
+                    id_empresa,
+                    window_start,
+                    window_end,
                     r.rows_written or 0,
                     r.duration_ms or 0,
                 ])
@@ -1355,6 +1428,89 @@ class MartBuilder:
             client.command(sql)
         except Exception as e:
             logger.warning(f"Failed to update source freshness: {e}")
+
+    def validate_completeness(
+        self,
+        id_empresa: int = 1,
+        from_date: str = "2025-01-01",
+        to_date: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Validate that every data_key with valid sales in slim is present in all sales marts.
+
+        Returns dict with 'pass' (bool), 'missing' (list of failures), 'data_key_zero' (violations).
+        Raises no exception — caller decides if failures are blocking.
+        """
+        from datetime import date as _date, timedelta
+
+        from_key = int(from_date.replace("-", ""))
+        if to_date:
+            to_key = int(to_date.replace("-", ""))
+        else:
+            cap = _date.today() + timedelta(days=30)
+            to_key = int(cap.strftime("%Y%m%d"))
+
+        client = self._get_client()
+        try:
+            # Get data_keys with valid sales in slim (canonical join)
+            slim_rows = client.query(
+                f"SELECT DISTINCT c.data_key "
+                f"FROM {self.current_db}.stg_comprovantes_slim AS c "
+                f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i "
+                f"  ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial "
+                f"  AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante "
+                f"WHERE c.id_empresa = {{id_empresa:Int32}} "
+                f"  AND c.data_key >= {{from_key:Int32}} "
+                f"  AND c.data_key <= {{to_key:Int32}} "
+                f"  AND c.data_key > 0 "
+                f"  AND c.cancelado = 0 "
+                f"  AND c.is_deleted = 0 "
+                f"  AND i.is_deleted = 0 "
+                f"  AND i.cfop > 5000 "
+                f"ORDER BY c.data_key",
+                parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
+                settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},
+            )
+            slim_data_keys = set(row[0] for row in (slim_rows.result_rows or []))
+
+            # Check each sales mart for coverage
+            sales_marts = ["sales_daily_rt", "sales_hourly_rt", "sales_products_rt", "sales_groups_rt"]
+            missing: list[dict[str, Any]] = []
+            data_key_zero: list[dict[str, Any]] = []
+
+            for mart in sales_marts:
+                # Get data_keys present in this mart
+                mart_rows = client.query(
+                    f"SELECT DISTINCT data_key FROM {self.mart_rt_db}.{mart} "
+                    f"WHERE id_empresa = {{id_empresa:Int32}} "
+                    f"AND data_key >= {{from_key:Int32}} AND data_key <= {{to_key:Int32}}",
+                    parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
+                )
+                mart_data_keys = set(row[0] for row in (mart_rows.result_rows or []))
+
+                # Check for missing data_keys
+                absent = slim_data_keys - mart_data_keys
+                for dk in sorted(absent):
+                    missing.append({"mart": mart, "data_key": dk, "in_slim": True, "in_mart": False})
+
+                # Check for data_key=0 violations
+                zero_rows = client.query(
+                    f"SELECT count() FROM {self.mart_rt_db}.{mart} "
+                    f"WHERE id_empresa = {{id_empresa:Int32}} AND data_key = 0",
+                    parameters={"id_empresa": id_empresa},
+                )
+                zero_count = int(zero_rows.result_rows[0][0]) if zero_rows.result_rows else 0
+                if zero_count > 0:
+                    data_key_zero.append({"mart": mart, "rows_with_zero": zero_count})
+
+            passed = len(missing) == 0 and len(data_key_zero) == 0
+            return {
+                "pass": passed,
+                "slim_data_keys_count": len(slim_data_keys),
+                "missing": missing,
+                "data_key_zero": data_key_zero,
+            }
+        finally:
+            client.close()
 
 
 def _parse_insert_count(result: Any) -> int:

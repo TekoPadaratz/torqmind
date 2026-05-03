@@ -646,6 +646,86 @@ main() {
   if (( FAILURES > 0 )); then
     stg_diagnostics
   fi
+
+  log "Sales mart data_key coverage (slim→mart completeness):"
+  # Check that every data_key with valid sales in slim appears in all 4 sales marts
+  local coverage_result
+  coverage_result="$(ch_query "
+    WITH slim_keys AS (
+      SELECT DISTINCT c.data_key
+      FROM torqmind_current.stg_comprovantes_slim AS c
+      INNER JOIN torqmind_current.stg_itenscomprovantes_slim AS i
+        ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial
+        AND c.id_db=i.id_db AND c.id_comprovante=i.id_comprovante
+      WHERE c.id_empresa=$ID_EMPRESA AND c.data_key > 0
+        AND c.cancelado=0 AND c.is_deleted=0 AND i.is_deleted=0 AND i.cfop > 5000
+    ),
+    daily_keys AS (SELECT DISTINCT data_key FROM torqmind_mart_rt.sales_daily_rt WHERE id_empresa=$ID_EMPRESA),
+    hourly_keys AS (SELECT DISTINCT data_key FROM torqmind_mart_rt.sales_hourly_rt WHERE id_empresa=$ID_EMPRESA),
+    products_keys AS (SELECT DISTINCT data_key FROM torqmind_mart_rt.sales_products_rt WHERE id_empresa=$ID_EMPRESA),
+    groups_keys AS (SELECT DISTINCT data_key FROM torqmind_mart_rt.sales_groups_rt WHERE id_empresa=$ID_EMPRESA)
+    SELECT
+      countIf(sk.data_key NOT IN (SELECT data_key FROM daily_keys)) AS missing_daily,
+      countIf(sk.data_key NOT IN (SELECT data_key FROM hourly_keys)) AS missing_hourly,
+      countIf(sk.data_key NOT IN (SELECT data_key FROM products_keys)) AS missing_products,
+      countIf(sk.data_key NOT IN (SELECT data_key FROM groups_keys)) AS missing_groups
+    FROM slim_keys AS sk
+    SETTINGS max_memory_usage=3000000000, max_threads=2
+  ")"
+  if [[ "$coverage_result" == __ERROR__* ]]; then
+    record_failure "sales.data_key_coverage" "QUERY_FAILED"
+  else
+    local missing_daily missing_hourly missing_products missing_groups
+    missing_daily="$(echo "$coverage_result" | cut -f1)"
+    missing_hourly="$(echo "$coverage_result" | cut -f2)"
+    missing_products="$(echo "$coverage_result" | cut -f3)"
+    missing_groups="$(echo "$coverage_result" | cut -f4)"
+    missing_daily="$(normalize_number "$missing_daily")"
+    missing_hourly="$(normalize_number "$missing_hourly")"
+    missing_products="$(normalize_number "$missing_products")"
+    missing_groups="$(normalize_number "$missing_groups")"
+
+    CHECKS=$((CHECKS + 1))
+    if [[ "$missing_daily" != "0" ]]; then
+      record_failure "sales_daily_rt.data_key_coverage" "MISSING_KEYS=$missing_daily"
+    else
+      printf '  %-48s OK\n' "sales_daily_rt.data_key_coverage"
+    fi
+    CHECKS=$((CHECKS + 1))
+    if [[ "$missing_hourly" != "0" ]]; then
+      record_failure "sales_hourly_rt.data_key_coverage" "MISSING_KEYS=$missing_hourly"
+    else
+      printf '  %-48s OK\n' "sales_hourly_rt.data_key_coverage"
+    fi
+    CHECKS=$((CHECKS + 1))
+    if [[ "$missing_products" != "0" ]]; then
+      record_failure "sales_products_rt.data_key_coverage" "MISSING_KEYS=$missing_products"
+    else
+      printf '  %-48s OK\n' "sales_products_rt.data_key_coverage"
+    fi
+    CHECKS=$((CHECKS + 1))
+    if [[ "$missing_groups" != "0" ]]; then
+      record_failure "sales_groups_rt.data_key_coverage" "MISSING_KEYS=$missing_groups"
+    else
+      printf '  %-48s OK\n' "sales_groups_rt.data_key_coverage"
+    fi
+  fi
+  log ""
+
+  log "Sales mart data_key=0 prohibition:"
+  local zero_check
+  for mart_table in sales_daily_rt sales_hourly_rt sales_products_rt sales_groups_rt; do
+    CHECKS=$((CHECKS + 1))
+    zero_check="$(ch_query "SELECT count() FROM torqmind_mart_rt.$mart_table WHERE id_empresa=$ID_EMPRESA AND data_key=0")"
+    zero_check="$(normalize_number "$zero_check")"
+    if [[ "$zero_check" != "0" ]]; then
+      record_failure "${mart_table}.data_key_zero" "ROWS_WITH_ZERO=$zero_check"
+    else
+      printf '  %-48s OK\n' "${mart_table}.no_data_key_zero"
+    fi
+  done
+  log ""
+
   else
   log "Sales daily:"
   compare_metric "sales_daily.rows" \
