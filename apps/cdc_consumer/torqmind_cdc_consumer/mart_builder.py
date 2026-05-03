@@ -342,11 +342,14 @@ class MartBuilder:
         results: list[MartRefreshResult] = []
         t0_global = time.time()
         try:
-            filial_filter = f"AND id_filial = {id_filial}" if id_filial else ""
+            # Use aliased filter for queries with joins (always qualify by table alias)
+            filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
+            # Plain filter for single-table queries (no alias needed)
+            filial_filter_plain = f"AND id_filial = {int(id_filial)}" if id_filial else ""
 
             if mart_only:
                 # Mart-only: validate slim, skip population
-                self._validate_slim_exists(client, id_empresa, from_key, to_key, filial_filter)
+                self._validate_slim_exists(client, id_empresa, from_key, to_key, filial_filter_plain)
             else:
                 # Full backfill: ensure DDL and populate slim
                 self._ensure_slim_ddl(client)
@@ -360,7 +363,7 @@ class MartBuilder:
                     f"WHERE c.id_empresa = {{id_empresa:Int32}} "
                     f"AND {data_key_expr} >= {{from_key:Int32}} "
                     f"AND {data_key_expr} <= {{to_key:Int32}} "
-                    f"AND c.is_deleted = 0 {filial_filter} "
+                    f"AND c.is_deleted = 0 {filial_filter_c} "
                     f"ORDER BY dk",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                     settings={"max_memory_usage": self.max_memory_usage, "max_threads": self.max_threads},
@@ -396,7 +399,7 @@ class MartBuilder:
                     f"  AND c.is_deleted = 0 "
                     f"  AND i.is_deleted = 0 "
                     f"  AND i.cfop > 5000 "
-                    f"  {filial_filter} "
+                    f"  {filial_filter_c} "
                     f"ORDER BY c.data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                     settings={"max_memory_usage": self.max_memory_usage, "max_threads": self.max_threads},
@@ -406,7 +409,7 @@ class MartBuilder:
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT data_key FROM {self.current_db}.fact_venda FINAL "
                     f"WHERE id_empresa = {{id_empresa:Int32}} AND data_key >= {{from_key:Int32}} "
-                    f"AND data_key <= {{to_key:Int32}} AND is_deleted = 0 {filial_filter} "
+                    f"AND data_key <= {{to_key:Int32}} AND is_deleted = 0 {filial_filter_plain} "
                     f"ORDER BY data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                 )
@@ -433,13 +436,13 @@ class MartBuilder:
                 )
 
                 if self.source == "stg":
-                    results.append(self._refresh_sales_daily_stg(client, chunk, skip_delete=skip_batch_deletes))
-                    results.append(self._refresh_sales_hourly_stg(client, chunk, skip_delete=skip_batch_deletes))
-                    results.append(self._refresh_sales_products_stg(client, chunk, skip_delete=skip_batch_deletes))
-                    results.append(self._refresh_sales_groups_stg(client, chunk, skip_delete=skip_batch_deletes))
-                    results.append(self._refresh_payments_by_type_stg(client, chunk, skip_delete=skip_batch_deletes))
-                    results.append(self._refresh_dashboard_home_stg(client, chunk, skip_delete=skip_batch_deletes))
-                    results.append(self._refresh_fraud_daily_stg(client, chunk, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_daily_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_hourly_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_products_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_sales_groups_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_payments_by_type_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_dashboard_home_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_fraud_daily_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
                 else:
                     results.append(self._refresh_sales_daily_dw(client, chunk))
                     results.append(self._refresh_sales_hourly_dw(client, chunk))
@@ -451,9 +454,9 @@ class MartBuilder:
 
             # Non-batched marts (no data_key dependency)
             if self.source == "stg":
-                results.append(self._refresh_cash_overview_stg(client, data_keys))
-                results.append(self._refresh_risk_recent_events_stg(client))
-                results.append(self._refresh_finance_overview_stg(client))
+                results.append(self._refresh_cash_overview_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
+                results.append(self._refresh_risk_recent_events_stg(client, id_empresa=id_empresa, id_filial=id_filial))
+                results.append(self._refresh_finance_overview_stg(client, id_empresa=id_empresa, id_filial=id_filial))
             else:
                 results.append(self._refresh_cash_overview_dw(client, data_keys))
                 results.append(self._refresh_risk_recent_events_dw(client))
@@ -493,16 +496,22 @@ class MartBuilder:
                 f"DELETE FROM {self.current_db}.{table} WHERE data_key IN ({keys_str})",
             )
 
-    def _delete_mart_batch(self, client: Any, mart_table: str, data_keys: list[int]) -> None:
+    def _delete_mart_batch(self, client: Any, mart_table: str, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None) -> None:
         """Delete mart_rt rows for a batch of data_keys before re-inserting.
 
-        Ensures idempotent mart refresh. Uses lightweight DELETE.
+        Ensures idempotent mart refresh scoped to the correct tenant.
+        Uses lightweight DELETE.
         """
         keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
         if not keys_str:
             return
+        where = f"data_key IN ({keys_str})"
+        if id_empresa:
+            where += f" AND id_empresa = {int(id_empresa)}"
+        if id_filial:
+            where += f" AND id_filial = {int(id_filial)}"
         client.command(
-            f"DELETE FROM {self.mart_rt_db}.{mart_table} WHERE data_key IN ({keys_str})",
+            f"DELETE FROM {self.mart_rt_db}.{mart_table} WHERE {where}",
         )
 
     def _slim_cte_comprovantes(self, alias: str, kf: str) -> str:
@@ -816,31 +825,40 @@ class MartBuilder:
             return "1 = 1"
         return f"{prefix}data_key IN ({keys})"
 
-    def _insert_and_count(self, client: Any, mart_table: str, sql: str, data_keys: list[int]) -> int:
-        """Execute INSERT INTO mart and return actual rows written."""
+    def _insert_and_count(self, client: Any, mart_table: str, sql: str, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None) -> int:
+        """Execute INSERT INTO mart and return actual rows written for the scoped tenant."""
         client.command(sql, settings=self._query_settings)
         keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
         if not keys_str:
             return 0
         try:
+            where = f"data_key IN ({keys_str})"
+            if id_empresa:
+                where += f" AND id_empresa = {int(id_empresa)}"
+            if id_filial:
+                where += f" AND id_filial = {int(id_filial)}"
             result = client.query(
-                f"SELECT count() FROM {self.mart_rt_db}.{mart_table} "
-                f"WHERE data_key IN ({keys_str})"
+                f"SELECT count() FROM {self.mart_rt_db}.{mart_table} WHERE {where}"
             )
             return int(result.result_rows[0][0]) if result.result_rows else 0
         except Exception:
             return 0
 
-    def _insert_and_count_nokey(self, client: Any, mart_table: str, sql: str) -> int:
+    def _insert_and_count_nokey(self, client: Any, mart_table: str, sql: str, id_empresa: int = 0, id_filial: Optional[int] = None) -> int:
         """Execute INSERT INTO mart and return actual rows written (for tables without data_key)."""
         client.command(sql, settings=self._query_settings)
         try:
-            result = client.query(f"SELECT count() FROM {self.mart_rt_db}.{mart_table}")
+            where = "1=1"
+            if id_empresa:
+                where = f"id_empresa = {int(id_empresa)}"
+            if id_filial:
+                where += f" AND id_filial = {int(id_filial)}"
+            result = client.query(f"SELECT count() FROM {self.mart_rt_db}.{mart_table} WHERE {where}")
             return int(result.result_rows[0][0]) if result.result_rows else 0
         except Exception:
             return 0
 
-    def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
 
         Canonical rules:
@@ -852,8 +870,11 @@ class MartBuilder:
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        empresa_filter_i = f"AND i.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "sales_daily_rt", data_keys)
+            self._delete_mart_batch(client, "sales_daily_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_daily_rt
         SELECT
@@ -881,6 +902,7 @@ class MartBuilder:
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
               AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+              {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
         LEFT JOIN (
@@ -889,22 +911,25 @@ class MartBuilder:
                    sum(c.valor_total) AS valor_cancelado
             FROM {self.current_db}.stg_comprovantes_slim AS c
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
+              {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
             ON base.id_empresa = cancel_agg.id_empresa
            AND base.id_filial = cancel_agg.id_filial
            AND base.data_key = cancel_agg.data_key
         """
-        rows = self._insert_and_count(client, "sales_daily_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "sales_daily_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_daily_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_sales_hourly_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Sales hourly from slim tables. No payload, no JSONExtract."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "sales_hourly_rt", data_keys)
+            self._delete_mart_batch(client, "sales_hourly_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_hourly_rt
         SELECT
@@ -921,18 +946,23 @@ class MartBuilder:
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+          {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
-        rows = self._insert_and_count(client, "sales_hourly_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "sales_hourly_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_hourly_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_sales_products_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_sales_products_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Sales by product from slim tables + dimension lookups."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        empresa_filter_i = f"AND i.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
+        filial_filter_i = f"AND i.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "sales_products_rt", data_keys)
+            self._delete_mart_batch(client, "sales_products_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_products_rt
         SELECT
@@ -957,18 +987,21 @@ class MartBuilder:
             ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+          {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, i.id_grupo_produto, nome_grupo
         """
-        rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Sales by group from slim tables."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        empresa_filter_i = f"AND i.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_i = f"AND i.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "sales_groups_rt", data_keys)
+            self._delete_mart_batch(client, "sales_groups_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_groups_rt
         SELECT
@@ -989,17 +1022,20 @@ class MartBuilder:
             ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+          {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_grupo_produto, nome_grupo
         """
-        rows = self._insert_and_count(client, "sales_groups_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "sales_groups_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_groups_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_payments_by_type_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_payments_by_type_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Payments by type from slim tables."""
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "p")
+        empresa_filter_p = f"AND p.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_p = f"AND p.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "payments_by_type_rt", data_keys)
+            self._delete_mart_batch(client, "payments_by_type_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.payments_by_type_rt
         SELECT
@@ -1015,12 +1051,13 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
             ON p.tipo_forma = m.tipo_forma AND m.id_empresa = p.id_empresa
         WHERE {kf} AND p.is_deleted = 0
+          {empresa_filter_p} {filial_filter_p}
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
         """
-        rows = self._insert_and_count(client, "payments_by_type_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "payments_by_type_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("payments_by_type_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_cash_overview_stg(self, client: Any, data_keys: list[int]) -> MartRefreshResult:
+    def _refresh_cash_overview_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
         """Cash overview. Reads turnos payload (small table) + slim comprovantes."""
         t0 = time.time()
         tz = self._BUSINESS_TZ
@@ -1043,6 +1080,10 @@ class MartBuilder:
         )
         id_usuario = "coalesce(toInt32OrZero(JSONExtractString(t.payload, 'ID_USUARIOS')), toInt32OrZero(JSONExtractString(t.payload, 'ID_USUARIO')))"
         is_aberto = "if(toInt32OrZero(JSONExtractString(t.payload, 'ENCERRANTEFECHAMENTO')) = 0 AND fechamento_ts IS NULL, 1, 0)"
+        empresa_filter_t = f"AND t.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_t = f"AND t.id_filial = {int(id_filial)}" if id_filial else ""
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         sql = f"""
         INSERT INTO {self.mart_rt_db}.cash_overview_rt
         SELECT
@@ -1061,7 +1102,7 @@ class MartBuilder:
                 toInt32(formatDateTime(abertura_ts, '%Y%m%d')) AS data_key_abertura,
                 {is_aberto} AS is_aberto
             FROM {self.current_db}.stg_turnos AS t FINAL
-            WHERE t.is_deleted = 0
+            WHERE t.is_deleted = 0 {empresa_filter_t} {filial_filter_t}
         ) AS turnos
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON turnos.id_empresa = u.id_empresa AND turnos.id_filial = u.id_filial AND turnos.id_usuario = u.id_usuario
@@ -1070,20 +1111,22 @@ class MartBuilder:
                    sum(c.valor_total) AS faturamento,
                    toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS qtd
             FROM {self.current_db}.stg_comprovantes_slim AS c
-            WHERE c.is_deleted = 0 AND c.cancelado = 0
+            WHERE c.is_deleted = 0 AND c.cancelado = 0 {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.id_turno
         ) AS vendas ON turnos.id_empresa = vendas.id_empresa AND turnos.id_filial = vendas.id_filial
             AND turnos.id_turno = vendas.id_turno
         """
-        rows = self._insert_and_count_nokey(client, "cash_overview_rt", sql)
+        rows = self._insert_and_count_nokey(client, "cash_overview_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("cash_overview_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Fraud daily: count unique cancelled comprovantes per day."""
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "fraud_daily_rt", data_keys)
+            self._delete_mart_batch(client, "fraud_daily_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.fraud_daily_rt
         SELECT
@@ -1096,14 +1139,17 @@ class MartBuilder:
             now64(6) AS published_at
         FROM {self.current_db}.stg_comprovantes_slim AS c
         WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+          {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key
         """
-        rows = self._insert_and_count(client, "fraud_daily_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "fraud_daily_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("fraud_daily_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_risk_recent_events_stg(self, client: Any) -> MartRefreshResult:
+    def _refresh_risk_recent_events_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
         """Risk events from slim comprovantes + usuarios (small dim)."""
         t0 = time.time()
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         sql = f"""
         INSERT INTO {self.mart_rt_db}.risk_recent_events_rt
         SELECT
@@ -1122,14 +1168,17 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
         WHERE c.is_deleted = 0 AND c.cancelado = 1
+          {empresa_filter_c} {filial_filter_c}
         ORDER BY c.data_key DESC, id DESC
         """
-        rows = self._insert_and_count_nokey(client, "risk_recent_events_rt", sql)
+        rows = self._insert_and_count_nokey(client, "risk_recent_events_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("risk_recent_events_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_finance_overview_stg(self, client: Any) -> MartRefreshResult:
+    def _refresh_finance_overview_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
         """Finance overview. Reads payload from finance tables (small volume)."""
         t0 = time.time()
+        empresa_filter = f"AND id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter = f"AND id_filial = {int(id_filial)}" if id_filial else ""
         sql = f"""
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
         WITH src AS (
@@ -1138,21 +1187,21 @@ class MartBuilder:
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
                 toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
                 toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_financeiro FINAL WHERE is_deleted = 0
+            FROM {self.current_db}.stg_financeiro FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
             UNION ALL
             SELECT id_empresa, id_filial, 0 AS tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
                 toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
                 toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_contaspagar FINAL WHERE is_deleted = 0
+            FROM {self.current_db}.stg_contaspagar FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
             UNION ALL
             SELECT id_empresa, id_filial, 1 AS tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
                 toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
                 toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_contasreceber FINAL WHERE is_deleted = 0
+            FROM {self.current_db}.stg_contasreceber FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
         )
         SELECT id_empresa, id_filial, tipo_titulo,
             multiIf(data_pagamento IS NOT NULL, 'pago', vencimento < today(), 'vencido',
@@ -1164,16 +1213,18 @@ class MartBuilder:
         FROM src
         GROUP BY id_empresa, id_filial, tipo_titulo, faixa
         """
-        rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql)
+        rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("finance_overview_rt", rows, int((time.time() - t0) * 1000))
 
-    def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int], skip_delete: bool = False) -> MartRefreshResult:
+    def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Dashboard home from slim tables."""
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
-            self._delete_mart_batch(client, "dashboard_home_rt", data_keys)
+            self._delete_mart_batch(client, "dashboard_home_rt", data_keys, id_empresa, id_filial)
         sql = f"""
         INSERT INTO {self.mart_rt_db}.dashboard_home_rt
         SELECT
@@ -1197,6 +1248,7 @@ class MartBuilder:
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
               AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+              {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
         LEFT JOIN (
@@ -1205,13 +1257,14 @@ class MartBuilder:
                    sum(c.valor_total) AS valor_cancelado
             FROM {self.current_db}.stg_comprovantes_slim AS c
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
+              {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
             ON base.id_empresa = cancel_agg.id_empresa
            AND base.id_filial = cancel_agg.id_filial
            AND base.data_key = cancel_agg.data_key
         """
-        rows = self._insert_and_count(client, "dashboard_home_rt", sql, data_keys)
+        rows = self._insert_and_count(client, "dashboard_home_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("dashboard_home_rt", rows, int((time.time() - t0) * 1000))
 
     # ================================================================

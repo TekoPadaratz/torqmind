@@ -104,6 +104,11 @@ log() { printf '%s [rebuild] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOGFILE="$LOG_DIR/realtime-mart-rebuild-$(date +%Y%m%d_%H%M%S).log"
 
+# All stdout+stderr go to both terminal and LOGFILE
+exec > >(tee -a "$LOGFILE") 2>&1
+
+VALIDATE_RESULT="NOT_RUN"
+
 log "=== TorqMind Mart RT Rebuild from Slim ==="
 log "ENV_FILE=$ENV_FILE"
 log "COMPOSE_FILE=$COMPOSE_FILE"
@@ -195,19 +200,23 @@ log ""
 log "Step 5/6: Validating mart_rt..."
 if $DRY_RUN; then
   log "[DRY-RUN] Would run validate-cutover and stability-check"
+  VALIDATE_RESULT="DRY_RUN"
 else
-  # Run validate-cutover
-  ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" \
-    bash "$SCRIPT_DIR/realtime-validate-cutover.sh" --source stg 2>&1 || {
-      log "WARNING: Validate cutover did not PASS."
-      log "Realtime will NOT be enabled."
-      ENABLE_AFTER_PASS=false
-    }
+  # Run validate-cutover (blocking)
+  if ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ID_EMPRESA="$ID_EMPRESA" \
+    bash "$SCRIPT_DIR/realtime-validate-cutover.sh" --source stg; then
+    VALIDATE_RESULT="PASS"
+    log "Validation PASSED."
+  else
+    VALIDATE_RESULT="FAIL"
+    log "ERROR: Validate cutover FAILED."
+    log "Realtime will NOT be enabled."
+  fi
 
-  # Run stability check
+  # Run stability check (non-blocking, informational only)
   ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" \
     bash "$SCRIPT_DIR/clickhouse-stability-check.sh" 2>&1 || {
-      log "WARNING: ClickHouse stability check did not pass."
+      log "WARNING: ClickHouse stability check did not pass (non-blocking)."
     }
 fi
 log ""
@@ -226,6 +235,7 @@ if ! $DRY_RUN; then
 {
   "proof": "realtime-rebuild-mart-rt-from-slim",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "result": "$VALIDATE_RESULT",
   "id_empresa": $ID_EMPRESA,
   "from_date": "$FROM_DATE",
   "to_date": "${TO_DATE:-null}",
@@ -239,16 +249,6 @@ PROOF
   log "Proof saved: $PROOF_FILE"
 fi
 
-# ---- Optional: Enable realtime ----
-if $ENABLE_AFTER_PASS; then
-  log "Realtime enable requested (--enable-after-pass)."
-  log "Set USE_REALTIME_MARTS=true and REALTIME_MARTS_FALLBACK=false in $ENV_FILE"
-  log "Then restart API: docker compose -f $COMPOSE_FILE --env-file $ENV_FILE restart api"
-else
-  log "Realtime NOT enabled automatically."
-  log "Validate manually, then set USE_REALTIME_MARTS=true if satisfied."
-fi
-
 # ---- Restart CDC consumer ----
 if $STOP_WRITERS && ! $DRY_RUN; then
   log "Restarting CDC consumer..."
@@ -256,6 +256,33 @@ if $STOP_WRITERS && ! $DRY_RUN; then
     start cdc-consumer 2>/dev/null || log "Could not restart cdc-consumer"
 fi
 
+# ---- Optional: Enable realtime (only on PASS) ----
+if $ENABLE_AFTER_PASS && [[ "$VALIDATE_RESULT" == "PASS" ]]; then
+  log "Enabling realtime (--enable-after-pass + validate PASS)..."
+  # Backup current env
+  cp "$ENV_FILE" "${ENV_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+  # Apply realtime settings
+  sed -i 's/^USE_REALTIME_MARTS=.*/USE_REALTIME_MARTS=true/' "$ENV_FILE"
+  grep -q '^USE_REALTIME_MARTS=' "$ENV_FILE" || echo 'USE_REALTIME_MARTS=true' >> "$ENV_FILE"
+  sed -i 's/^REALTIME_MARTS_SOURCE=.*/REALTIME_MARTS_SOURCE=stg/' "$ENV_FILE"
+  grep -q '^REALTIME_MARTS_SOURCE=' "$ENV_FILE" || echo 'REALTIME_MARTS_SOURCE=stg' >> "$ENV_FILE"
+  sed -i 's/^REALTIME_MARTS_FALLBACK=.*/REALTIME_MARTS_FALLBACK=false/' "$ENV_FILE"
+  grep -q '^REALTIME_MARTS_FALLBACK=' "$ENV_FILE" || echo 'REALTIME_MARTS_FALLBACK=false' >> "$ENV_FILE"
+  # Recreate api, web, nginx to pick up new env
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --force-recreate api web nginx
+  log "Realtime ENABLED. Backup: ${ENV_FILE}.bak.*"
+elif $ENABLE_AFTER_PASS && [[ "$VALIDATE_RESULT" != "PASS" ]]; then
+  log "--enable-after-pass requested but validate did not PASS. Realtime NOT enabled."
+else
+  log "Realtime NOT enabled automatically."
+  log "Validate manually, then set USE_REALTIME_MARTS=true if satisfied."
+fi
+
 log ""
-log "=== Rebuild Complete ==="
+if [[ "$VALIDATE_RESULT" == "FAIL" ]]; then
+  log "=== Rebuild FAILED (validation did not pass) ==="
+  log "Log: $LOGFILE"
+  exit 1
+fi
+log "=== Rebuild Complete (result=$VALIDATE_RESULT) ==="
 log "Log: $LOGFILE"

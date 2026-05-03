@@ -234,7 +234,7 @@ class TestSkipBatchDeletes:
 
         with patch.object(builder, "_delete_mart_batch") as mock_delete:
             builder._refresh_sales_daily_stg(mock_client, [20260430], skip_delete=False)
-            mock_delete.assert_called_once_with(mock_client, "sales_daily_rt", [20260430])
+            mock_delete.assert_called_once_with(mock_client, "sales_daily_rt", [20260430], 0, None)
 
     def test_all_stg_refreshes_accept_skip_delete(self):
         """All STG refresh methods that take data_keys must accept skip_delete."""
@@ -464,3 +464,171 @@ class TestRequiredTables:
         required = MartBuilder.REQUIRED_SLIM_TABLES
         for t in ["stg_comprovantes_slim", "stg_itenscomprovantes_slim", "stg_formas_pgto_slim"]:
             assert t in required, f"{t} must be in REQUIRED_SLIM_TABLES"
+
+
+# ============================================================
+# TENANT SCOPE TESTS
+# ============================================================
+
+class TestTenantScope:
+    """Verify tenant (id_empresa/id_filial) scope propagation in MartBuilder."""
+
+    @pytest.fixture(autouse=True)
+    def _load_code(self):
+        self.builder_path = Path(__file__).parent.parent / "torqmind_cdc_consumer" / "mart_builder.py"
+        self.code = self.builder_path.read_text()
+
+    def test_all_stg_refreshes_accept_id_empresa_id_filial(self):
+        """All STG refresh methods must accept id_empresa and id_filial parameters."""
+        methods = [
+            "_refresh_sales_daily_stg",
+            "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg",
+            "_refresh_sales_groups_stg",
+            "_refresh_payments_by_type_stg",
+            "_refresh_dashboard_home_stg",
+            "_refresh_fraud_daily_stg",
+            "_refresh_cash_overview_stg",
+            "_refresh_risk_recent_events_stg",
+            "_refresh_finance_overview_stg",
+        ]
+        for method in methods:
+            idx = self.code.index(f"def {method}")
+            sig_end = self.code.index("):", idx) + 1
+            signature = self.code[idx:sig_end]
+            assert "id_empresa" in signature, f"{method} must accept id_empresa"
+            assert "id_filial" in signature, f"{method} must accept id_filial"
+
+    def test_refresh_methods_build_empresa_filter(self):
+        """All STG refresh methods must construct empresa_filter for SQL."""
+        methods = [
+            "_refresh_sales_daily_stg",
+            "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg",
+            "_refresh_sales_groups_stg",
+            "_refresh_payments_by_type_stg",
+            "_refresh_dashboard_home_stg",
+            "_refresh_fraud_daily_stg",
+            "_refresh_cash_overview_stg",
+            "_refresh_risk_recent_events_stg",
+            "_refresh_finance_overview_stg",
+        ]
+        for method in methods:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            assert "empresa_filter" in body, (
+                f"{method} must build empresa_filter for tenant scope"
+            )
+
+    def test_refresh_methods_build_filial_filter(self):
+        """All STG refresh methods must construct filial_filter for SQL."""
+        methods = [
+            "_refresh_sales_daily_stg",
+            "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg",
+            "_refresh_sales_groups_stg",
+            "_refresh_payments_by_type_stg",
+            "_refresh_dashboard_home_stg",
+            "_refresh_fraud_daily_stg",
+            "_refresh_cash_overview_stg",
+            "_refresh_risk_recent_events_stg",
+            "_refresh_finance_overview_stg",
+        ]
+        for method in methods:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            assert "filial_filter" in body, (
+                f"{method} must build filial_filter for tenant scope"
+            )
+
+    def test_delete_mart_batch_accepts_tenant_scope(self):
+        """_delete_mart_batch must accept id_empresa and id_filial."""
+        idx = self.code.index("def _delete_mart_batch")
+        sig_end = self.code.index("):", idx) + 1
+        signature = self.code[idx:sig_end]
+        assert "id_empresa" in signature
+        assert "id_filial" in signature
+
+    def test_delete_mart_batch_filters_by_empresa(self):
+        """_delete_mart_batch must include id_empresa in WHERE clause."""
+        builder = make_builder()
+        mock_client = MagicMock()
+        builder._delete_mart_batch(mock_client, "sales_daily_rt", [20260430], id_empresa=99)
+        call_args = mock_client.command.call_args[0][0]
+        assert "id_empresa = 99" in call_args
+
+    def test_delete_mart_batch_filters_by_filial(self):
+        """_delete_mart_batch must include id_filial in WHERE clause when provided."""
+        builder = make_builder()
+        mock_client = MagicMock()
+        builder._delete_mart_batch(mock_client, "sales_daily_rt", [20260430], id_empresa=1, id_filial=14458)
+        call_args = mock_client.command.call_args[0][0]
+        assert "id_filial = 14458" in call_args
+
+    def test_delete_mart_batch_no_filial_when_none(self):
+        """_delete_mart_batch must NOT filter by id_filial when it's None."""
+        builder = make_builder()
+        mock_client = MagicMock()
+        builder._delete_mart_batch(mock_client, "sales_daily_rt", [20260430], id_empresa=1, id_filial=None)
+        call_args = mock_client.command.call_args[0][0]
+        assert "id_filial" not in call_args
+
+    def test_insert_and_count_accepts_tenant_scope(self):
+        """_insert_and_count must accept id_empresa and id_filial."""
+        idx = self.code.index("def _insert_and_count")
+        sig_end = self.code.index("):", idx) + 1
+        signature = self.code[idx:sig_end]
+        assert "id_empresa" in signature
+        assert "id_filial" in signature
+
+    def test_insert_and_count_nokey_accepts_tenant_scope(self):
+        """_insert_and_count_nokey must accept id_empresa and id_filial."""
+        idx = self.code.index("def _insert_and_count_nokey")
+        sig_end = self.code.index("):", idx) + 1
+        signature = self.code[idx:sig_end]
+        assert "id_empresa" in signature
+        assert "id_filial" in signature
+
+    def test_backfill_passes_tenant_to_refresh_calls(self):
+        """backfill() batch loop must pass id_empresa/id_filial to refresh methods."""
+        idx = self.code.index("# Phase 3: Build marts from slim")
+        next_section = self.code.index("# Non-batched marts", idx)
+        batch_loop = self.code[idx:next_section]
+        assert "id_empresa=id_empresa" in batch_loop
+        assert "id_filial=id_filial" in batch_loop
+
+    def test_backfill_passes_tenant_to_non_batched_refreshes(self):
+        """backfill() non-batched mart calls must pass id_empresa/id_filial."""
+        idx = self.code.index("# Non-batched marts")
+        next_section = self.code.index("self._log_publications", idx)
+        non_batched = self.code[idx:next_section]
+        assert "id_empresa=id_empresa" in non_batched
+        assert "id_filial=id_filial" in non_batched
+
+    def test_filial_filter_uses_alias_in_join_queries(self):
+        """filial_filter in joined queries must use table alias (c.id_filial, not id_filial)."""
+        idx = self.code.index("stg_comprovantes_slim AS c")
+        end_idx = self.code.index("ORDER BY c.data_key", idx)
+        join_query = self.code[idx:end_idx]
+        assert "filial_filter_c" in join_query or "c.id_filial" in join_query
+
+    def test_validate_slim_uses_plain_filial_filter(self):
+        """_validate_slim_exists must NOT use aliased filial filter (no table alias)."""
+        idx = self.code.index("def _validate_slim_exists")
+        next_def = self.code.index("\n    def ", idx + 10)
+        body = self.code[idx:next_def]
+        assert "filial_filter" in body
+        # Verify the queries are single-table (no alias needed)
+        assert "c.id_filial" not in body, (
+            "_validate_slim_exists queries are single-table, must not use c. alias"
+        )
+
+    def test_backfill_builds_filial_filter_plain(self):
+        """backfill() must build filial_filter_plain for single-table queries."""
+        idx = self.code.index("def backfill(")
+        next_def = self.code.index("\n    def ", idx + 10)
+        body = self.code[idx:next_def]
+        assert "filial_filter_plain" in body
+        assert "filial_filter_c" in body

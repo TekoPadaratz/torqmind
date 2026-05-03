@@ -76,6 +76,13 @@ Flags:
   --source stg|dw             Realtime source (default stg)
   --skip-bootstrap-stg        Skip STG bootstrap even with --with-backfill
   --kill-legacy-etl           Force-kill running legacy ETL processes
+  --mart-only                 Skip slim population, rebuild marts from existing slim
+  --skip-slim                 Alias for --mart-only (skip slim ingest)
+  --reset-mart-rt             Truncate mart_rt tables before rebuild
+  --drop-recreate-mart-rt     Drop and recreate mart_rt tables before rebuild
+  --backfill-batch-size <n>   Number of data_keys per batch (default: 50)
+  --backfill-max-threads <n>  Max ClickHouse threads for backfill queries
+  --backfill-max-memory-gb <n> Max memory (GB) for backfill queries
   --help
 
   NOTE: --id-filial is for audit/validation/smoke only. It does NOT scope
