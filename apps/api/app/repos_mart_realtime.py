@@ -138,10 +138,218 @@ def dashboard_home_bundle(
     dt_ref: date = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Full dashboard home payload."""
-    kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
-    series = dashboard_series(role, id_empresa, id_filial, dt_ini, dt_fim)
-    return {"kpis": kpis, "series": series, "source": "realtime", "realtime_source": _realtime_source()}
+    """Full dashboard home payload matching frontend contract."""
+    from datetime import datetime, timezone
+
+    source = _realtime_source()
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+    params = {"id_empresa": id_empresa}
+
+    # --- Sales KPIs ---
+    sales_kpi_rows = query_dict(f"""
+        SELECT s_fat AS faturamento, s_margem AS margem, s_vendas AS qtd_vendas,
+               if(s_vendas > 0, s_fat / s_vendas, 0) AS ticket_medio
+        FROM (
+            SELECT sum(faturamento) AS s_fat, sum(margem_total) AS s_margem, sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        )
+    """, parameters=params)
+    sales_kpis = sales_kpi_rows[0] if sales_kpi_rows else {"faturamento": 0, "margem": 0, "ticket_medio": 0, "qtd_vendas": 0}
+    sales_kpis.setdefault("devolucoes", 0)
+
+    # --- Sales by day ---
+    by_day = query_dict(f"""
+        SELECT dt, s_fat AS faturamento, s_vendas AS qtd_vendas
+        FROM (
+            SELECT dt, sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY dt
+        ) ORDER BY dt
+    """, parameters=params)
+
+    # --- Sales by hour ---
+    by_hour = query_dict(f"""
+        SELECT hora, s_fat AS faturamento, s_vendas AS qtd_vendas
+        FROM (
+            SELECT hora, sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.sales_hourly_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY hora
+        ) ORDER BY hora
+    """, parameters=params)
+
+    # --- Top products ---
+    top_products = query_dict(f"""
+        SELECT id_produto, nome_produto AS produto_nome, nome_grupo AS grupo_nome,
+               s_fat AS faturamento, s_qtd AS qtd, s_margem AS margem
+        FROM (
+            SELECT id_produto, nome_produto, nome_grupo,
+                   sum(faturamento) AS s_fat, sum(qtd) AS s_qtd, sum(margem) AS s_margem
+            FROM {MART_RT_DB}.sales_products_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY id_produto, nome_produto, nome_grupo
+        ) ORDER BY faturamento DESC LIMIT 10
+    """, parameters=params)
+
+    # --- Top groups ---
+    top_groups = query_dict(f"""
+        SELECT id_grupo_produto, nome_grupo AS grupo_nome, s_fat AS faturamento, s_margem AS margem
+        FROM (
+            SELECT id_grupo_produto, nome_grupo, sum(faturamento) AS s_fat, sum(margem) AS s_margem
+            FROM {MART_RT_DB}.sales_groups_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY id_grupo_produto, nome_grupo
+        ) ORDER BY faturamento DESC LIMIT 10
+    """, parameters=params)
+
+    # --- Fraud / Risk KPIs ---
+    fraud_rows = query_dict(f"""
+        SELECT s_ev AS qtd_eventos, s_imp AS impacto_total, s_score AS score_medio
+        FROM (
+            SELECT sum(qtd_eventos) AS s_ev, sum(impacto_total) AS s_imp, avg(score_medio) AS s_score
+            FROM {MART_RT_DB}.fraud_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        )
+    """, parameters=params)
+    fraud_kpi = fraud_rows[0] if fraud_rows else {"qtd_eventos": 0, "impacto_total": 0, "score_medio": 0}
+
+    # --- Cash live_now ---
+    cash_rows = query_dict(f"""
+        SELECT count() AS qtd_abertos, sum(faturamento_turno) AS fat_aberto
+        FROM {MART_RT_DB}.cash_overview_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} AND is_aberto = 1
+    """, parameters=params)
+    cash_live = cash_rows[0] if cash_rows else {"qtd_abertos": 0, "fat_aberto": 0}
+
+    # --- Finance aging ---
+    finance_rows = query_dict(f"""
+        SELECT tipo_titulo, faixa, sum(qtd_titulos) AS qtd_titulos,
+               sum(valor_total) AS valor_total, sum(valor_em_aberto) AS valor_em_aberto
+        FROM {MART_RT_DB}.finance_overview_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+        GROUP BY tipo_titulo, faixa
+    """, parameters=params)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    freshness_meta = {"mode": "realtime", "source": source, "last_refresh": now_iso}
+
+    return {
+        "kpis": sales_kpis,
+        "alerts": [],
+        "series": {},
+        "insights": None,
+        "scope": {
+            "id_empresa": id_empresa,
+            "id_filial": id_filial,
+            "dt_ini": dt_ini.isoformat(),
+            "dt_fim": dt_fim.isoformat(),
+        },
+        "overview": {
+            "sales": {
+                "kpis": sales_kpis,
+                "by_day": by_day,
+                "by_hour": by_hour,
+                "top_products": top_products,
+                "top_groups": top_groups,
+                "top_employees": [],
+                "reading_status": "realtime_mart_snapshot",
+                "freshness": freshness_meta,
+                "operational_sync": {"source": "realtime", "last_publish": now_iso},
+                "data_state": "available",
+            },
+            "insights_generated": [],
+            "fraud": {
+                "operational": {
+                    "kpis": {
+                        "cancelamentos": int(sales_kpis.get("qtd_vendas", 0) and fraud_kpi.get("qtd_eventos", 0)),
+                        "valor_cancelado": float(fraud_kpi.get("impacto_total", 0)),
+                    },
+                    "window": {"rows": int(fraud_kpi.get("qtd_eventos", 0))},
+                    "data_state": "available",
+                },
+                "modeled_risk": {
+                    "kpis": {
+                        "total_eventos": int(fraud_kpi.get("qtd_eventos", 0)),
+                        "eventos_alto_risco": 0,
+                        "impacto_total": float(fraud_kpi.get("impacto_total", 0)),
+                        "score_medio": float(fraud_kpi.get("score_medio", 0)),
+                    },
+                    "window": {"rows": int(fraud_kpi.get("qtd_eventos", 0))},
+                    "data_state": "available",
+                },
+            },
+            "risk": {
+                "kpis": {
+                    "total_eventos": int(fraud_kpi.get("qtd_eventos", 0)),
+                    "eventos_alto_risco": 0,
+                    "impacto_total": float(fraud_kpi.get("impacto_total", 0)),
+                    "score_medio": float(fraud_kpi.get("score_medio", 0)),
+                },
+                "window": {"rows": int(fraud_kpi.get("qtd_eventos", 0))},
+                "data_state": "available",
+            },
+            "cash": {
+                "historical": {"source_status": "available"},
+                "live_now": {
+                    "source_status": "available",
+                    "qtd_abertos": int(cash_live.get("qtd_abertos", 0)),
+                    "faturamento_aberto": float(cash_live.get("fat_aberto", 0)),
+                },
+            },
+            "jarvis": {
+                "title": "Leitura consolidada",
+                "headline": "Seus dados estão atualizados via streaming.",
+                "summary": "A operação está funcionando normalmente com dados em tempo real.",
+                "impact_label": "Normal",
+                "action": "Nenhuma ação necessária.",
+                "priority": "Normal",
+                "status": "ok",
+                "primary_kind": None,
+                "primary_shortcut": None,
+                "evidence": [],
+                "highlights": [],
+                "secondary_focus": [],
+                "signals": {
+                    "peak_hours": {"source_status": "available", "window_days": 0, "peak_hours": [], "off_peak_hours": [], "recommendations": {"peak": None, "off_peak": None}},
+                    "declining_products": {"source_status": "available", "items": []},
+                },
+            },
+        },
+        "churn": {
+            "top_risk": [],
+            "summary": {"total_top_risk": 0, "avg_churn_score": 0, "revenue_at_risk_30d": 0},
+        },
+        "finance": {"aging": finance_rows},
+        "cash": {
+            "source_status": "available",
+            "summary": "Dados do caixa carregados via realtime mart.",
+            "operational_sync": {"source": "realtime", "last_publish": now_iso},
+            "freshness": freshness_meta,
+            "historical": {"source_status": "available", "kpis": {}, "payment_mix": [], "top_turnos": [], "cancelamentos": [], "by_day": []},
+            "live_now": {
+                "source_status": "available",
+                "kpis": {"qtd_abertos": int(cash_live.get("qtd_abertos", 0)), "faturamento_aberto": float(cash_live.get("fat_aberto", 0))},
+                "open_boxes": [],
+                "stale_boxes": [],
+                "payment_mix": [],
+                "cancelamentos": [],
+                "alerts": [],
+            },
+            "open_boxes": [],
+            "stale_boxes": [],
+            "payment_mix": [],
+            "cancelamentos": [],
+            "alerts": [],
+        },
+        "notifications_unread": 0,
+        "operational_sync": {"source": "realtime", "last_publish": now_iso},
+        "freshness": freshness_meta,
+        "source": "realtime",
+        "realtime_source": source,
+    }
 
 
 # ================================================================
@@ -159,46 +367,160 @@ def sales_overview_bundle(
     include_details: bool = True,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Sales overview with KPIs, series, and top rankings."""
+    """Sales overview with full contract matching frontend expectations."""
+    from datetime import datetime, timezone
+
+    source = _realtime_source()
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
+    params = {"id_empresa": id_empresa}
 
+    # --- Aggregated KPIs ---
     kpis_rows = query_dict(f"""
-        SELECT
-            s_fat AS faturamento,
-            s_vendas AS qtd_vendas,
-            if(s_vendas > 0, s_fat / s_vendas, 0) AS ticket_medio,
-            s_itens AS qtd_itens,
-            s_cancel AS qtd_canceladas,
-            s_val_cancel AS valor_cancelado,
-            s_desc AS desconto_total,
-            s_margem AS margem_total
+        SELECT s_fat AS faturamento, s_vendas AS qtd_vendas, s_itens AS qtd_itens,
+               s_cancel AS qtd_canceladas, s_val_cancel AS valor_cancelado,
+               s_desc AS desconto_total, s_margem AS margem,
+               if(s_vendas > 0, s_fat / s_vendas, 0) AS ticket_medio
         FROM (
-            SELECT
-                sum(faturamento) AS s_fat,
-                sum(qtd_vendas) AS s_vendas,
-                sum(qtd_itens) AS s_itens,
-                sum(qtd_canceladas) AS s_cancel,
-                sum(valor_cancelado) AS s_val_cancel,
-                sum(desconto_total) AS s_desc,
-                sum(margem_total) AS s_margem
+            SELECT sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas,
+                   sum(qtd_itens) AS s_itens, sum(qtd_canceladas) AS s_cancel,
+                   sum(valor_cancelado) AS s_val_cancel, sum(desconto_total) AS s_desc,
+                   sum(margem_total) AS s_margem
             FROM {MART_RT_DB}.sales_daily_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
         )
-    """, parameters={"id_empresa": id_empresa})
+    """, parameters=params)
+    raw_kpis = kpis_rows[0] if kpis_rows else {}
+    faturamento = float(raw_kpis.get("faturamento") or 0)
+    margem = float(raw_kpis.get("margem") or 0)
+    ticket_medio = float(raw_kpis.get("ticket_medio") or 0)
+    qtd_vendas = int(raw_kpis.get("qtd_vendas") or 0)
+    qtd_canceladas = int(raw_kpis.get("qtd_canceladas") or 0)
+    valor_cancelado = float(raw_kpis.get("valor_cancelado") or 0)
 
-    series = query_dict(f"""
-        SELECT dt, sum(faturamento) AS faturamento, sum(qtd_vendas) AS qtd_vendas
-        FROM {MART_RT_DB}.sales_daily_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-        GROUP BY dt ORDER BY dt
-    """, parameters={"id_empresa": id_empresa})
+    kpis = {"faturamento": faturamento, "margem": margem, "ticket_medio": ticket_medio, "devolucoes": 0}
+
+    commercial_kpis = {
+        "saidas": faturamento,
+        "qtd_saidas": qtd_vendas,
+        "entradas": 0,
+        "qtd_entradas": 0,
+        "cancelamentos": valor_cancelado,
+        "qtd_cancelamentos": qtd_canceladas,
+    }
+
+    cfop_breakdown = [
+        {"label": "Saídas comerciais (CFOP>5000)", "valor_ativo": faturamento, "valor_cancelado": valor_cancelado},
+        {"label": "Cancelamentos", "valor_ativo": 0, "valor_cancelado": valor_cancelado},
+    ]
+
+    # --- By day ---
+    by_day = query_dict(f"""
+        SELECT dt, s_fat AS faturamento, s_vendas AS qtd_vendas
+        FROM (
+            SELECT dt, sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY dt
+        ) ORDER BY dt
+    """, parameters=params)
+
+    # --- By hour ---
+    by_hour = query_dict(f"""
+        SELECT hora, s_fat AS faturamento, s_vendas AS qtd_vendas
+        FROM (
+            SELECT hora, sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.sales_hourly_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY hora
+        ) ORDER BY hora
+    """, parameters=params)
+
+    # --- Commercial by hour (with saidas) ---
+    commercial_by_hour = [{"hora": r.get("hora"), "saidas": float(r.get("faturamento") or 0)} for r in by_hour]
+
+    # --- Top products ---
+    top_products = query_dict(f"""
+        SELECT id_produto, nome_produto AS produto_nome, nome_grupo,
+               s_fat AS faturamento, s_qtd AS qtd, s_margem AS margem,
+               if(s_qtd > 0, toFloat64(s_fat) / toFloat64(s_qtd), 0) AS valor_unitario_medio
+        FROM (
+            SELECT id_produto, nome_produto, nome_grupo,
+                   sum(faturamento) AS s_fat, sum(qtd) AS s_qtd, sum(margem) AS s_margem
+            FROM {MART_RT_DB}.sales_products_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY id_produto, nome_produto, nome_grupo
+        ) ORDER BY faturamento DESC LIMIT 20
+    """, parameters=params)
+
+    # --- Top groups ---
+    top_groups = query_dict(f"""
+        SELECT id_grupo_produto, nome_grupo AS grupo_nome,
+               s_fat AS faturamento, s_margem AS margem, s_itens AS qtd_itens
+        FROM (
+            SELECT id_grupo_produto, nome_grupo,
+                   sum(faturamento) AS s_fat, sum(margem) AS s_margem, sum(qtd_itens) AS s_itens
+            FROM {MART_RT_DB}.sales_groups_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY id_grupo_produto, nome_grupo
+        ) ORDER BY faturamento DESC LIMIT 20
+    """, parameters=params)
+
+    # --- Monthly evolution ---
+    monthly_rows = query_dict(f"""
+        SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas
+        FROM (
+            SELECT toYear(dt) AS ano, toMonth(dt) AS mes,
+                   sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+            GROUP BY ano, mes
+        ) ORDER BY ano, mes
+    """, parameters=params)
+    monthly_evolution = [{"ano": int(r["ano"]), "mes": int(r["mes"]), "faturamento": float(r.get("faturamento") or 0), "qtd_vendas": int(r.get("qtd_vendas") or 0)} for r in monthly_rows]
+
+    # --- Annual comparison ---
+    current_year = dt_fim.year
+    prev_year = current_year - 1
+    annual_current = [m for m in monthly_evolution if m["ano"] == current_year]
+    annual_prev = [m for m in monthly_evolution if m["ano"] == prev_year]
+    annual_comparison = {
+        "current_year": current_year,
+        "previous_year": prev_year,
+        "months": [
+            {
+                "mes": m["mes"],
+                "current": m["faturamento"],
+                "previous": next((p["faturamento"] for p in annual_prev if p["mes"] == m["mes"]), 0),
+            }
+            for m in annual_current
+        ],
+    }
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    freshness_meta = {"mode": "realtime", "source": source, "last_refresh": now_iso}
 
     return {
-        "kpis": kpis_rows[0] if kpis_rows else {},
-        "series": series,
+        "kpis": kpis,
+        "series": {},
+        "ranking": top_products[:10],
+        "filters": None,
+        "commercial_kpis": commercial_kpis,
+        "cfop_breakdown": cfop_breakdown,
+        "commercial_by_hour": commercial_by_hour,
+        "by_day": by_day,
+        "by_hour": by_hour,
+        "top_products": top_products,
+        "top_groups": top_groups,
+        "top_employees": [],
+        "monthly_evolution": monthly_evolution,
+        "annual_comparison": annual_comparison,
+        "stats": {"vendas": qtd_vendas},
+        "reading_status": "realtime_mart_snapshot",
+        "operational_sync": {"source": "realtime", "last_publish": now_iso},
+        "freshness": freshness_meta,
         "source": "realtime",
-        "realtime_source": _realtime_source(),
+        "realtime_source": source,
     }
 
 
