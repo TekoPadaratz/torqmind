@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from app.business_time import business_today
 from app.config import settings
 from app.db_clickhouse import query_dict, query_scalar
+from app.repos_mart import _cash_operator_label, _filial_label, _turno_label
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,113 @@ def _date_range_filter(dt_ini: date, dt_fim: date, col: str = "data_key") -> str
     from_key = int(dt_ini.strftime("%Y%m%d"))
     to_key = int(dt_fim.strftime("%Y%m%d"))
     return f" AND {col} >= {from_key} AND {col} <= {to_key}"
+
+
+def _sales_product_meta_subquery() -> str:
+    return f"""
+        SELECT
+            id_empresa,
+            id_produto,
+            argMax(nullIf(JSONExtractString(payload, 'UNIDADE'), ''), source_ts_ms) AS unidade
+        FROM {CURRENT_DB}.stg_produtos FINAL
+        WHERE is_deleted = 0
+        GROUP BY id_empresa, id_produto
+    """
+
+
+def _sales_quantity_kind_sql(product_expr: str, group_expr: str) -> str:
+    return (
+        "multiIf("
+        f"positionCaseInsensitiveUTF8(ifNull({group_expr}, ''), 'COMBUST') > 0 OR "
+        f"positionCaseInsensitiveUTF8(ifNull({group_expr}, ''), 'GNV') > 0 OR "
+        f"positionCaseInsensitiveUTF8(ifNull({product_expr}, ''), 'GASOL') > 0 OR "
+        f"positionCaseInsensitiveUTF8(ifNull({product_expr}, ''), 'DIESEL') > 0 OR "
+        f"positionCaseInsensitiveUTF8(ifNull({product_expr}, ''), 'ETANOL') > 0 OR "
+        f"positionCaseInsensitiveUTF8(ifNull({product_expr}, ''), 'ALCOOL') > 0 OR "
+        f"positionCaseInsensitiveUTF8(ifNull({product_expr}, ''), 'GNV') > 0, "
+        "'fuel', 'unit')"
+    )
+
+
+def _load_current_filial_names(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[int, str]:
+    branch_ids = sorted(
+        {
+            int(row["id_filial"])
+            for row in rows
+            if row.get("id_filial") is not None
+        }
+    )
+    if not branch_ids:
+        return {}
+
+    values = ", ".join(str(branch_id) for branch_id in branch_ids)
+    result = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            argMax(
+                coalesce(
+                    nullIf(JSONExtractString(payload, 'NOMEFILIAL'), ''),
+                    nullIf(JSONExtractString(payload, 'NOME'), ''),
+                    nullIf(JSONExtractString(payload, 'RAZAOSOCIALFILIAL'), '')
+                ),
+                source_ts_ms
+            ) AS filial_nome
+        FROM {CURRENT_DB}.stg_filiais FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND id_filial IN ({values})
+        GROUP BY id_filial
+        """,
+        parameters={"id_empresa": id_empresa},
+    )
+    return {
+        int(row["id_filial"]): str(row.get("filial_nome") or "").strip()
+        for row in result
+    }
+
+
+def _load_current_turno_values(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple[int, int], str]:
+    turno_pairs = sorted(
+        {
+            (int(row["id_filial"]), int(row["id_turno"]))
+            for row in rows
+            if row.get("id_filial") is not None and row.get("id_turno") is not None
+        }
+    )
+    if not turno_pairs:
+        return {}
+
+    values = ", ".join(f"({id_filial}, {id_turno})" for id_filial, id_turno in turno_pairs)
+    result = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            id_turno,
+            argMax(
+                coalesce(
+                    nullIf(JSONExtractString(payload, 'TURNO'), ''),
+                    nullIf(JSONExtractString(payload, 'NO_TURNO'), ''),
+                    nullIf(JSONExtractString(payload, 'NUMTURNO'), ''),
+                    nullIf(JSONExtractString(payload, 'NR_TURNO'), ''),
+                    nullIf(JSONExtractString(payload, 'NROTURNO'), ''),
+                    nullIf(JSONExtractString(payload, 'TURNO_CAIXA'), ''),
+                    nullIf(JSONExtractString(payload, 'TURNOCAIXA'), '')
+                ),
+                source_ts_ms
+            ) AS turno_value
+        FROM {CURRENT_DB}.stg_turnos FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND (id_filial, id_turno) IN ({values})
+        GROUP BY id_filial, id_turno
+        """,
+        parameters={"id_empresa": id_empresa},
+    )
+    return {
+        (int(row["id_filial"]), int(row["id_turno"])): str(row.get("turno_value") or "").strip()
+        for row in result
+    }
 
 
 # ================================================================
@@ -142,6 +250,7 @@ def dashboard_home_bundle(
     from datetime import datetime, timezone
 
     source = _realtime_source()
+    product_meta_sql = _sales_product_meta_subquery()
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
     params = {"id_empresa": id_empresa}
@@ -183,15 +292,28 @@ def dashboard_home_bundle(
 
     # --- Top products ---
     top_products = query_dict(f"""
-        SELECT id_produto, nome_produto AS produto_nome, nome_grupo AS grupo_nome,
-               s_fat AS faturamento, s_qtd AS qtd, s_margem AS margem
+        SELECT
+            ranked.id_produto,
+            ranked.nome_produto,
+            ranked.nome_produto AS produto_nome,
+            ranked.nome_grupo,
+            ranked.nome_grupo AS grupo_nome,
+            meta.unidade AS unidade,
+            {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
+            ranked.faturamento,
+            ranked.qtd,
+            ranked.margem
         FROM (
             SELECT id_produto, nome_produto, nome_grupo,
-                   sum(faturamento) AS s_fat, sum(qtd) AS s_qtd, sum(margem) AS s_margem
+                   sum(faturamento) AS faturamento, sum(qtd) AS qtd, sum(margem) AS margem
             FROM {MART_RT_DB}.sales_products_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
             GROUP BY id_produto, nome_produto, nome_grupo
-        ) ORDER BY faturamento DESC LIMIT 10
+        ) AS ranked
+        LEFT JOIN ({product_meta_sql}) AS meta
+            ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = ranked.id_produto
+        ORDER BY ranked.faturamento DESC
+        LIMIT 10
     """, parameters=params)
 
     # --- Top groups ---
@@ -408,6 +530,7 @@ def sales_overview_bundle(
     from datetime import datetime, timezone
 
     source = _realtime_source()
+    product_meta_sql = _sales_product_meta_subquery()
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
     params = {"id_empresa": id_empresa}
@@ -478,18 +601,31 @@ def sales_overview_bundle(
 
     # --- Top products ---
     top_products = query_dict(f"""
-        SELECT id_produto, nome_produto AS produto_nome, nome_grupo,
-               s_fat AS faturamento, s_qtd AS qtd, s_margem AS margem,
-               s_custo AS custo_total,
-               if(s_qtd > 0, toFloat64(s_fat) / toFloat64(s_qtd), 0) AS valor_unitario_medio
+        SELECT
+            ranked.id_produto,
+            ranked.nome_produto,
+            ranked.nome_produto AS produto_nome,
+            ranked.nome_grupo,
+            ranked.nome_grupo AS grupo_nome,
+            meta.unidade AS unidade,
+            {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
+            ranked.faturamento,
+            ranked.qtd,
+            ranked.margem,
+            ranked.custo_total,
+            if(ranked.qtd > 0, toFloat64(ranked.faturamento) / toFloat64(ranked.qtd), 0) AS valor_unitario_medio
         FROM (
             SELECT id_produto, nome_produto, nome_grupo,
-                   sum(faturamento) AS s_fat, sum(qtd) AS s_qtd, sum(margem) AS s_margem,
-                   sum(custo_total) AS s_custo
+                   sum(faturamento) AS faturamento, sum(qtd) AS qtd, sum(margem) AS margem,
+                   sum(custo_total) AS custo_total
             FROM {MART_RT_DB}.sales_products_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
             GROUP BY id_produto, nome_produto, nome_grupo
-        ) ORDER BY faturamento DESC LIMIT 20
+        ) AS ranked
+        LEFT JOIN ({product_meta_sql}) AS meta
+            ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = ranked.id_produto
+        ORDER BY ranked.faturamento DESC
+        LIMIT 20
     """, parameters=params)
 
     # --- Top groups ---
@@ -615,15 +751,31 @@ def sales_top_products(
     """Top products by revenue."""
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
+    product_meta_sql = _sales_product_meta_subquery()
 
     return query_dict(f"""
-        SELECT id_produto, nome_produto, nome_grupo,
-               sum(faturamento) AS faturamento, sum(qtd) AS qtd,
-               sum(margem) AS margem
-        FROM {MART_RT_DB}.sales_products_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-        GROUP BY id_produto, nome_produto, nome_grupo
-        ORDER BY faturamento DESC
+        SELECT
+            ranked.id_produto,
+            ranked.nome_produto,
+            ranked.nome_produto AS produto_nome,
+            ranked.nome_grupo,
+            ranked.nome_grupo AS grupo_nome,
+            meta.unidade AS unidade,
+            {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
+            ranked.faturamento,
+            ranked.qtd,
+            ranked.margem
+        FROM (
+            SELECT id_produto, nome_produto, nome_grupo,
+                   sum(faturamento) AS faturamento, sum(qtd) AS qtd,
+                   sum(margem) AS margem
+            FROM {MART_RT_DB}.sales_products_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+            GROUP BY id_produto, nome_produto, nome_grupo
+        ) AS ranked
+        LEFT JOIN ({product_meta_sql}) AS meta
+            ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = ranked.id_produto
+        ORDER BY ranked.faturamento DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
 
@@ -692,12 +844,25 @@ def payments_overview(
 # CASH / CAIXA
 # ================================================================
 
-def _enrich_open_turno(t: Dict[str, Any]) -> Dict[str, Any]:
+def _enrich_open_turno(
+    t: Dict[str, Any],
+    filial_names: Dict[int, str],
+    turno_values: Dict[tuple[int, int], str],
+) -> Dict[str, Any]:
     """Add frontend-expected fields to turno data."""
     from datetime import datetime, timezone
+
     fat = float(t.get("faturamento_turno") or 0)
-    op = t.get("nome_operador") or ""
     abertura = t.get("abertura_ts")
+    id_filial = int(t["id_filial"]) if t.get("id_filial") is not None else None
+    id_turno = int(t["id_turno"]) if t.get("id_turno") is not None else None
+    filial_nome = filial_names.get(id_filial or -1)
+    turno_value = (
+        turno_values.get((id_filial, id_turno))
+        if id_filial is not None and id_turno is not None
+        else None
+    )
+    usuario_nome = str(t.get("nome_operador") or "").strip()
     horas_aberto = None
     if abertura:
         try:
@@ -707,9 +872,12 @@ def _enrich_open_turno(t: Dict[str, Any]) -> Dict[str, Any]:
             pass
     return {
         **t,
-        "filial_label": f"Filial {t.get('id_filial', '?')}",
-        "turno_label": f"Turno {t.get('id_turno', '?')}",
-        "usuario_label": op if op else f"Operador #{t.get('id_usuario', '?')}",
+        "filial_nome": filial_nome,
+        "filial_label": _filial_label(id_filial, filial_nome),
+        "turno_value": turno_value,
+        "turno_label": _turno_label(turno_value, id_turno),
+        "usuario_nome": usuario_nome,
+        "usuario_label": _cash_operator_label(usuario_nome, t.get("id_usuario")),
         "total_vendas": fat,
         "total_cancelamentos": 0,
         "total_pagamentos": fat,
@@ -742,7 +910,6 @@ def cash_overview(
         ORDER BY abertura_ts DESC
         LIMIT 50
     """, parameters=params)
-    turnos = [_enrich_open_turno(t) for t in turnos_raw]
 
     # Top commercial turnos (all shifts in period)
     all_turnos_raw = query_dict(f"""
@@ -755,7 +922,12 @@ def cash_overview(
         LIMIT 50
     """, parameters=params)
 
-    all_turnos = [_enrich_open_turno(t) for t in all_turnos_raw]
+    label_source_rows = turnos_raw + all_turnos_raw
+    filial_names = _load_current_filial_names(id_empresa, label_source_rows)
+    turno_values = _load_current_turno_values(id_empresa, label_source_rows)
+
+    turnos = [_enrich_open_turno(t, filial_names, turno_values) for t in turnos_raw]
+    all_turnos = [_enrich_open_turno(t, filial_names, turno_values) for t in all_turnos_raw]
 
     # Commercial KPIs from sales_daily_rt
     sales_rows = query_dict(f"""

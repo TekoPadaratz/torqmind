@@ -29,7 +29,7 @@ except ModuleNotFoundError:
     sys.modules["clickhouse_connect.driver"] = fake_clickhouse.driver
     sys.modules["clickhouse_connect.driver.exceptions"] = fake_clickhouse.driver.exceptions
 
-from app.schemas_bi import DashboardHomeResponse, SalesOverviewResponse
+from app.schemas_bi import CashOverviewResponse, DashboardHomeResponse, SalesOverviewResponse
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ _FAKE_SALES_DAILY_KPI = [{"faturamento": Decimal("100000.00"), "margem": Decimal
 _FAKE_SALES_DAILY_KPI_FULL = [{"faturamento": Decimal("100000.00"), "qtd_vendas": 500, "qtd_itens": 2000, "qtd_canceladas": 5, "valor_cancelado": Decimal("1500.00"), "desconto_total": Decimal("800.00"), "margem": Decimal("20000.00"), "ticket_medio": Decimal("200.00")}]
 _FAKE_SALES_BY_DAY = [{"dt": "2026-04-01", "faturamento": Decimal("5000.00"), "qtd_vendas": 20}]
 _FAKE_SALES_BY_HOUR = [{"hora": 10, "faturamento": Decimal("3000.00"), "qtd_vendas": 15}]
-_FAKE_TOP_PRODUCTS = [{"id_produto": 1, "produto_nome": "Produto A", "nome_grupo": "Grupo X", "faturamento": Decimal("5000.00"), "qtd": Decimal("100.000"), "margem": Decimal("1000.00"), "custo_total": Decimal("4000.00"), "valor_unitario_medio": 50.0}]
+_FAKE_TOP_PRODUCTS = [{"id_produto": 1, "nome_produto": "Produto A", "produto_nome": "Produto A", "nome_grupo": "Grupo X", "grupo_nome": "Grupo X", "unidade": "LT", "quantity_kind": "fuel", "faturamento": Decimal("5000.00"), "qtd": Decimal("100.000"), "margem": Decimal("1000.00"), "custo_total": Decimal("4000.00"), "valor_unitario_medio": 50.0}]
 _FAKE_TOP_GROUPS = [{"id_grupo_produto": 1, "grupo_nome": "Grupo X", "faturamento": Decimal("8000.00"), "margem": Decimal("2000.00"), "qtd_itens": 300}]
 _FAKE_FRAUD = [{"qtd_eventos": 10, "impacto_total": Decimal("500.00"), "score_medio": 0.45}]
 _FAKE_CASH = [{"qtd_abertos": 3, "fat_aberto": Decimal("12000.00")}]
@@ -228,9 +228,12 @@ class TestSalesOverviewBundleContract(unittest.TestCase):
         if tp:
             self.assertIn("custo_total", tp[0])
             self.assertIn("produto_nome", tp[0])
+            self.assertIn("grupo_nome", tp[0])
             self.assertIn("faturamento", tp[0])
             self.assertIn("margem", tp[0])
             self.assertIn("valor_unitario_medio", tp[0])
+            self.assertIn("unidade", tp[0])
+            self.assertIn("quantity_kind", tp[0])
 
         # top_groups
         self.assertIsInstance(result["top_groups"], list)
@@ -314,6 +317,68 @@ class TestFallbackDisabled(unittest.TestCase):
                 role="ADMIN", id_empresa=1, id_filial=None,
                 dt_ini=date(2026, 4, 1), dt_fim=date(2026, 4, 30),
             )
+
+
+class TestCashOverviewRealtimeLabels(unittest.TestCase):
+    @patch("app.repos_mart_realtime.query_dict")
+    def test_cash_uses_real_labels_when_current_dimensions_exist(self, mock_qd: MagicMock):
+        def side_effect(query: str, parameters=None):
+            q = query.lower()
+            if "from torqmind_mart_rt.cash_overview_rt" in q and "order by abertura_ts desc" in q:
+                return [{
+                    "id_filial": 10169,
+                    "id_turno": 7134,
+                    "id_usuario": 9,
+                    "nome_operador": "Camila S",
+                    "abertura_ts": datetime(2026, 4, 30, 10, 0, tzinfo=timezone.utc),
+                    "fechamento_ts": None,
+                    "is_aberto": 1,
+                    "faturamento_turno": Decimal("950.00"),
+                    "qtd_vendas_turno": 12,
+                }]
+            if "from torqmind_mart_rt.cash_overview_rt" in q and "order by faturamento_turno desc" in q:
+                return [{
+                    "id_filial": 10169,
+                    "id_turno": 7134,
+                    "id_usuario": 9,
+                    "nome_operador": "Camila S",
+                    "abertura_ts": datetime(2026, 4, 30, 10, 0, tzinfo=timezone.utc),
+                    "fechamento_ts": None,
+                    "is_aberto": 1,
+                    "faturamento_turno": Decimal("950.00"),
+                    "qtd_vendas_turno": 12,
+                }]
+            if "from torqmind_current.stg_filiais" in q:
+                return [{"id_filial": 10169, "filial_nome": "AUTO POSTO VR 07"}]
+            if "from torqmind_current.stg_turnos" in q:
+                return [{"id_filial": 10169, "id_turno": 7134, "turno_value": "3"}]
+            if "from torqmind_mart_rt.sales_daily_rt" in q and "group by dt" in q:
+                return [{"dt": "2026-04-30", "faturamento": Decimal("950.00"), "qtd_vendas": 12}]
+            if "from torqmind_mart_rt.sales_daily_rt" in q and "s_cancel_qtd" in q:
+                return [{"total_vendas": Decimal("950.00"), "total_cancelamentos": Decimal("50.00"), "qtd_vendas": 12, "qtd_cancelamentos": 1}]
+            if "from torqmind_mart_rt.payments_by_type_rt" in q:
+                return [{"label": "DINHEIRO", "category": "DINHEIRO", "valor_total": Decimal("900.00"), "qtd_transacoes": 10}]
+            return []
+
+        mock_qd.side_effect = side_effect
+
+        from app.repos_mart_realtime import cash_overview
+
+        result = cash_overview(
+            role="ADMIN",
+            id_empresa=1,
+            id_filial=None,
+            dt_ini=date(2026, 4, 1),
+            dt_fim=date(2026, 4, 30),
+        )
+
+        validated = CashOverviewResponse.model_validate(result)
+        turno = validated.turnos[0]
+        self.assertEqual(turno["filial_label"], "AUTO POSTO VR 07")
+        self.assertEqual(turno["turno_label"], "3")
+        self.assertEqual(turno["usuario_label"], "Camila S")
+        self.assertNotEqual(turno["filial_label"], "Filial 10169")
+        self.assertNotEqual(turno["usuario_label"], "Operador #9")
 
 
 if __name__ == "__main__":
