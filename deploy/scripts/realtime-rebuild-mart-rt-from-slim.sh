@@ -183,7 +183,16 @@ if $DRY_RUN; then
 else
   T0=$(date +%s)
   docker compose -f "$STREAMING_COMPOSE_FILE" --env-file "$ENV_FILE" \
-    run --rm cdc-consumer $BACKFILL_CMD || {
+    run --rm --entrypoint python cdc-consumer -m torqmind_cdc_consumer.cli backfill-stg \
+      --mart-only \
+      --from-date "$FROM_DATE" \
+      --id-empresa "$ID_EMPRESA" \
+      --batch-size "$BATCH_SIZE" \
+      --max-threads "$MAX_THREADS" \
+      --max-memory-gb "$MAX_MEMORY_GB" \
+      --skip-batch-deletes \
+      ${TO_DATE:+--to-date "$TO_DATE"} \
+      ${ID_FILIAL:+--id-filial "$ID_FILIAL"} || {
       log "ERROR: Mart backfill failed."
       log "System is in safe state: mart_rt was reset but not populated."
       log "Realtime remains disabled (fallback=true)."
