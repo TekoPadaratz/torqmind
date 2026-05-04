@@ -233,6 +233,31 @@ def dashboard_home_bundle(
         GROUP BY tipo_titulo, faixa
     """, parameters=params)
 
+    # Build finance aging summary dict
+    receber_vencido = sum(float(r.get("valor_em_aberto") or 0) for r in finance_rows if int(r.get("tipo_titulo") or 0) == 1 and str(r.get("faixa", "")).startswith("vencid"))
+    pagar_vencido = sum(float(r.get("valor_em_aberto") or 0) for r in finance_rows if int(r.get("tipo_titulo") or 0) == 0 and str(r.get("faixa", "")).startswith("vencid"))
+    total_em_aberto = sum(float(r.get("valor_em_aberto") or 0) for r in finance_rows)
+    top5_pct = 0.0
+    finance_aging = {
+        "receber_total_vencido": receber_vencido,
+        "pagar_total_vencido": pagar_vencido,
+        "total_em_aberto": total_em_aberto,
+        "top5_concentration_pct": top5_pct,
+    }
+
+    # --- Sales KPIs for fraud operational ---
+    cancel_kpis_rows = query_dict(f"""
+        SELECT s_cancel AS qtd_canceladas, s_val_cancel AS valor_cancelado
+        FROM (
+            SELECT sum(qtd_canceladas) AS s_cancel, sum(valor_cancelado) AS s_val_cancel
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        )
+    """, parameters=params)
+    cancel_kpis = cancel_kpis_rows[0] if cancel_kpis_rows else {"qtd_canceladas": 0, "valor_cancelado": 0}
+    qtd_cancelamentos = int(cancel_kpis.get("qtd_canceladas") or 0)
+    valor_cancelado_total = float(cancel_kpis.get("valor_cancelado") or 0)
+
     now_iso = datetime.now(timezone.utc).isoformat()
     freshness_meta = {"mode": "realtime", "source": source, "last_refresh": now_iso}
 
@@ -264,8 +289,8 @@ def dashboard_home_bundle(
             "fraud": {
                 "operational": {
                     "kpis": {
-                        "cancelamentos": int(sales_kpis.get("qtd_vendas", 0) and fraud_kpi.get("qtd_eventos", 0)),
-                        "valor_cancelado": float(fraud_kpi.get("impacto_total", 0)),
+                        "cancelamentos": qtd_cancelamentos,
+                        "valor_cancelado": valor_cancelado_total,
                     },
                     "window": {"rows": int(fraud_kpi.get("qtd_eventos", 0))},
                     "data_state": "available",
@@ -295,8 +320,14 @@ def dashboard_home_bundle(
                 "historical": {"source_status": "available"},
                 "live_now": {
                     "source_status": "available",
-                    "qtd_abertos": int(cash_live.get("qtd_abertos", 0)),
-                    "faturamento_aberto": float(cash_live.get("fat_aberto", 0)),
+                    "kpis": {
+                        "caixas_abertos": int(cash_live.get("qtd_abertos", 0)),
+                        "caixas_criticos": 0,
+                        "caixas_em_monitoramento": 0,
+                        "caixas_alto_risco": 0,
+                        "total_vendas_abertas": float(cash_live.get("fat_aberto", 0)),
+                    },
+                    "open_boxes": [],
                 },
             },
             "jarvis": {
@@ -322,7 +353,7 @@ def dashboard_home_bundle(
             "top_risk": [],
             "summary": {"total_top_risk": 0, "avg_churn_score": 0, "revenue_at_risk_30d": 0},
         },
-        "finance": {"aging": finance_rows},
+        "finance": {"aging": finance_aging, "aging_rows": finance_rows},
         "cash": {
             "source_status": "available",
             "summary": "Dados do caixa carregados via realtime mart.",
@@ -331,7 +362,13 @@ def dashboard_home_bundle(
             "historical": {"source_status": "available", "kpis": {}, "payment_mix": [], "top_turnos": [], "cancelamentos": [], "by_day": []},
             "live_now": {
                 "source_status": "available",
-                "kpis": {"qtd_abertos": int(cash_live.get("qtd_abertos", 0)), "faturamento_aberto": float(cash_live.get("fat_aberto", 0))},
+                "kpis": {
+                    "caixas_abertos": int(cash_live.get("qtd_abertos", 0)),
+                    "caixas_criticos": 0,
+                    "caixas_em_monitoramento": 0,
+                    "caixas_alto_risco": 0,
+                    "total_vendas_abertas": float(cash_live.get("fat_aberto", 0)),
+                },
                 "open_boxes": [],
                 "stale_boxes": [],
                 "payment_mix": [],
@@ -410,7 +447,7 @@ def sales_overview_bundle(
     }
 
     cfop_breakdown = [
-        {"label": "Saídas comerciais (CFOP>5000)", "valor_ativo": faturamento, "valor_cancelado": valor_cancelado},
+        {"label": "Vendas normais", "valor_ativo": faturamento, "valor_cancelado": valor_cancelado},
         {"label": "Cancelamentos", "valor_ativo": 0, "valor_cancelado": valor_cancelado},
     ]
 
@@ -443,10 +480,12 @@ def sales_overview_bundle(
     top_products = query_dict(f"""
         SELECT id_produto, nome_produto AS produto_nome, nome_grupo,
                s_fat AS faturamento, s_qtd AS qtd, s_margem AS margem,
+               s_custo AS custo_total,
                if(s_qtd > 0, toFloat64(s_fat) / toFloat64(s_qtd), 0) AS valor_unitario_medio
         FROM (
             SELECT id_produto, nome_produto, nome_grupo,
-                   sum(faturamento) AS s_fat, sum(qtd) AS s_qtd, sum(margem) AS s_margem
+                   sum(faturamento) AS s_fat, sum(qtd) AS s_qtd, sum(margem) AS s_margem,
+                   sum(custo_total) AS s_custo
             FROM {MART_RT_DB}.sales_products_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
             GROUP BY id_produto, nome_produto, nome_grupo
@@ -468,32 +507,52 @@ def sales_overview_bundle(
 
     # --- Monthly evolution ---
     monthly_rows = query_dict(f"""
-        SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas
+        SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas,
+               s_val_cancel AS valor_cancelado
         FROM (
             SELECT toYear(dt) AS ano, toMonth(dt) AS mes,
-                   sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas
+                   sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas,
+                   sum(valor_cancelado) AS s_val_cancel
             FROM {MART_RT_DB}.sales_daily_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial}
             GROUP BY ano, mes
         ) ORDER BY ano, mes
     """, parameters=params)
-    monthly_evolution = [{"ano": int(r["ano"]), "mes": int(r["mes"]), "faturamento": float(r.get("faturamento") or 0), "qtd_vendas": int(r.get("qtd_vendas") or 0)} for r in monthly_rows]
+    monthly_evolution = [
+        {
+            "ano": int(r["ano"]),
+            "mes": int(r["mes"]),
+            "month_ref": f"{int(r['ano'])}-{int(r['mes']):02d}-01",
+            "saidas": float(r.get("faturamento") or 0),
+            "entradas": 0,
+            "cancelamentos": float(r.get("valor_cancelado") or 0),
+            "faturamento": float(r.get("faturamento") or 0),
+            "qtd_vendas": int(r.get("qtd_vendas") or 0),
+        }
+        for r in monthly_rows
+    ]
 
     # --- Annual comparison ---
     current_year = dt_fim.year
     prev_year = current_year - 1
-    annual_current = [m for m in monthly_evolution if m["ano"] == current_year]
-    annual_prev = [m for m in monthly_evolution if m["ano"] == prev_year]
+    annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
+    annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
     annual_comparison = {
         "current_year": current_year,
         "previous_year": prev_year,
         "months": [
             {
-                "mes": m["mes"],
-                "current": m["faturamento"],
-                "previous": next((p["faturamento"] for p in annual_prev if p["mes"] == m["mes"]), 0),
+                "mes": mes,
+                "saidas_atual": annual_current.get(mes, {}).get("saidas", 0),
+                "saidas_anterior": annual_prev.get(mes, {}).get("saidas", 0),
+                "entradas_atual": 0,
+                "entradas_anterior": 0,
+                "cancelamentos_atual": annual_current.get(mes, {}).get("cancelamentos", 0),
+                "cancelamentos_anterior": annual_prev.get(mes, {}).get("cancelamentos", 0),
+                "month_ref_atual": f"{current_year}-{mes:02d}-01",
+                "month_ref_anterior": f"{prev_year}-{mes:02d}-01",
             }
-            for m in annual_current
+            for mes in range(1, 13)
         ],
     }
 
