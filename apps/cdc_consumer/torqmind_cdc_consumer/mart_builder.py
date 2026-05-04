@@ -969,9 +969,9 @@ class MartBuilder:
             i.id_empresa, i.id_filial, i.data_key,
             toDate(toString(i.data_key), '%Y%m%d') AS dt,
             i.id_produto,
-            coalesce(nullIf(JSONExtractString(p.payload, 'NOME'), ''), nullIf(JSONExtractString(p.payload, 'DESCRICAO'), ''), '') AS nome_produto,
-            i.id_grupo_produto,
-            coalesce(nullIf(JSONExtractString(g.payload, 'NOME'), ''), nullIf(JSONExtractString(g.payload, 'DESCRICAO'), ''), '') AS nome_grupo,
+            coalesce(nullIf(p.nome_produto, ''), 'Produto sem cadastro') AS nome_produto,
+            coalesce(p.id_grupo_produto, i.id_grupo_produto) AS id_grupo_produto_resolved,
+            coalesce(nullIf(g.nome_grupo, ''), 'Grupo sem cadastro') AS nome_grupo,
             sum(i.qtd) AS qtd,
             sum(i.total) AS faturamento,
             sum(i.custo_total) AS custo_total,
@@ -981,14 +981,23 @@ class MartBuilder:
         INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
-        LEFT JOIN {self.current_db}.stg_produtos AS p FINAL
-            ON p.id_empresa = i.id_empresa AND p.id_filial = i.id_filial AND p.id_produto = i.id_produto
-        LEFT JOIN {self.current_db}.stg_grupoprodutos AS g FINAL
-            ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
+        LEFT JOIN (
+            SELECT id_empresa, id_produto,
+                   argMax(JSONExtractString(payload, 'NOMEPRODUTO'), source_ts_ms) AS nome_produto,
+                   argMax(toInt32OrZero(JSONExtractString(payload, 'ID_GRUPOPRODUTOS')), source_ts_ms) AS id_grupo_produto
+            FROM {self.current_db}.stg_produtos
+            GROUP BY id_empresa, id_produto
+        ) AS p ON p.id_empresa = i.id_empresa AND p.id_produto = i.id_produto
+        LEFT JOIN (
+            SELECT id_empresa, id_grupoprodutos,
+                   argMax(JSONExtractString(payload, 'NOMEGRUPOPRODUTOS'), source_ts_ms) AS nome_grupo
+            FROM {self.current_db}.stg_grupoprodutos
+            GROUP BY id_empresa, id_grupoprodutos
+        ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
-        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, i.id_grupo_produto, nome_grupo
+        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto_resolved, nome_grupo
         """
         rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))
@@ -1007,8 +1016,8 @@ class MartBuilder:
         SELECT
             i.id_empresa, i.id_filial, i.data_key,
             toDate(toString(i.data_key), '%Y%m%d') AS dt,
-            i.id_grupo_produto,
-            coalesce(nullIf(JSONExtractString(g.payload, 'NOME'), ''), nullIf(JSONExtractString(g.payload, 'DESCRICAO'), ''), '') AS nome_grupo,
+            coalesce(p.id_grupo_produto, i.id_grupo_produto) AS id_grupo_produto,
+            coalesce(nullIf(g.nome_grupo, ''), 'Grupo sem cadastro') AS nome_grupo,
             toUInt32(count()) AS qtd_itens,
             sum(i.total) AS faturamento,
             sum(i.custo_total) AS custo_total,
@@ -1018,12 +1027,22 @@ class MartBuilder:
         INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
-        LEFT JOIN {self.current_db}.stg_grupoprodutos AS g FINAL
-            ON g.id_empresa = i.id_empresa AND g.id_filial = i.id_filial AND g.id_grupoprodutos = i.id_grupo_produto
+        LEFT JOIN (
+            SELECT id_empresa, id_produto,
+                   argMax(toInt32OrZero(JSONExtractString(payload, 'ID_GRUPOPRODUTOS')), source_ts_ms) AS id_grupo_produto
+            FROM {self.current_db}.stg_produtos
+            GROUP BY id_empresa, id_produto
+        ) AS p ON p.id_empresa = i.id_empresa AND p.id_produto = i.id_produto
+        LEFT JOIN (
+            SELECT id_empresa, id_grupoprodutos,
+                   argMax(JSONExtractString(payload, 'NOMEGRUPOPRODUTOS'), source_ts_ms) AS nome_grupo
+            FROM {self.current_db}.stg_grupoprodutos
+            GROUP BY id_empresa, id_grupoprodutos
+        ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
-        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_grupo_produto, nome_grupo
+        GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
         """
         rows = self._insert_and_count(client, "sales_groups_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_groups_rt", rows, int((time.time() - t0) * 1000))
@@ -1049,7 +1068,7 @@ class MartBuilder:
             now64(6) AS published_at
         FROM {self.current_db}.stg_formas_pgto_slim AS p
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
-            ON p.tipo_forma = m.tipo_forma AND m.id_empresa = p.id_empresa
+            ON p.tipo_forma = m.tipo_forma
         WHERE {kf} AND p.is_deleted = 0
           {empresa_filter_p} {filial_filter_p}
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category

@@ -692,6 +692,32 @@ def payments_overview(
 # CASH / CAIXA
 # ================================================================
 
+def _enrich_open_turno(t: Dict[str, Any]) -> Dict[str, Any]:
+    """Add frontend-expected fields to turno data."""
+    from datetime import datetime, timezone
+    fat = float(t.get("faturamento_turno") or 0)
+    op = t.get("nome_operador") or ""
+    abertura = t.get("abertura_ts")
+    horas_aberto = None
+    if abertura:
+        try:
+            ts = abertura if isinstance(abertura, datetime) else datetime.fromisoformat(str(abertura))
+            horas_aberto = round((datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)).total_seconds() / 3600, 1)
+        except Exception:
+            pass
+    return {
+        **t,
+        "filial_label": f"Filial {t.get('id_filial', '?')}",
+        "turno_label": f"Turno {t.get('id_turno', '?')}",
+        "usuario_label": op if op else f"Operador #{t.get('id_usuario', '?')}",
+        "total_vendas": fat,
+        "total_cancelamentos": 0,
+        "total_pagamentos": fat,
+        "saldo_comercial": fat,
+        "horas_aberto": horas_aberto,
+    }
+
+
 def cash_overview(
     role: str,
     id_empresa: int,
@@ -706,7 +732,7 @@ def cash_overview(
     params = {"id_empresa": id_empresa}
 
     # Open shifts
-    turnos = query_dict(f"""
+    turnos_raw = query_dict(f"""
         SELECT id_filial, id_turno, id_usuario, nome_operador,
                abertura_ts, fechamento_ts, is_aberto,
                faturamento_turno, qtd_vendas_turno
@@ -716,6 +742,20 @@ def cash_overview(
         ORDER BY abertura_ts DESC
         LIMIT 50
     """, parameters=params)
+    turnos = [_enrich_open_turno(t) for t in turnos_raw]
+
+    # Top commercial turnos (all shifts in period)
+    all_turnos_raw = query_dict(f"""
+        SELECT id_filial, id_turno, id_usuario, nome_operador,
+               abertura_ts, fechamento_ts, is_aberto,
+               faturamento_turno, qtd_vendas_turno
+        FROM {MART_RT_DB}.cash_overview_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+        ORDER BY faturamento_turno DESC
+        LIMIT 50
+    """, parameters=params)
+
+    all_turnos = [_enrich_open_turno(t) for t in all_turnos_raw]
 
     # Commercial KPIs from sales_daily_rt
     sales_rows = query_dict(f"""
@@ -767,20 +807,20 @@ def cash_overview(
     return {
         "kpis": commercial_kpis,
         "series": {},
-        "turnos": [],
+        "turnos": all_turnos,
         "turnos_abertos": turnos,
         "qtd_abertos": len(turnos),
         "commercial": {
             "kpis": commercial_kpis,
             "summary": f"Período com {int(sales_kpi.get('qtd_vendas') or 0)} vendas registradas.",
             "by_day": by_day,
-            "top_turnos": [],
+            "top_turnos": all_turnos,
         },
         "historical": {
             "source_status": "available",
             "payment_mix": payments,
             "kpis": commercial_kpis,
-            "top_turnos": [],
+            "top_turnos": all_turnos,
             "cancelamentos": [],
             "by_day": by_day,
         },
@@ -899,6 +939,55 @@ def fraud_last_events(
     """, parameters={"id_empresa": id_empresa})
 
 
+def fraud_series(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> List[Dict[str, Any]]:
+    """Fraud/cancellation daily series from fraud_daily_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+
+    return query_dict(f"""
+        SELECT data_key, id_filial,
+               sum(qtd_eventos) AS cancelamentos,
+               sum(impacto_total) AS valor_cancelado
+        FROM {MART_RT_DB}.fraud_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        GROUP BY data_key, id_filial
+        ORDER BY data_key, id_filial
+    """, parameters={"id_empresa": id_empresa})
+
+
+def fraud_top_users(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 10,
+    **kwargs: Any,
+) -> List[Dict[str, Any]]:
+    """Top users by cancellation volume from risk_recent_events_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+
+    return query_dict(f"""
+        SELECT nome_operador AS usuario_nome,
+               count() AS cancelamentos,
+               sum(valor_total) AS valor_cancelado
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+          AND event_type = 'cancelamento'
+        GROUP BY nome_operador
+        ORDER BY valor_cancelado DESC
+        LIMIT {limit}
+    """, parameters={"id_empresa": id_empresa})
+
+
 # ================================================================
 # FINANCE
 # ================================================================
@@ -1001,6 +1090,8 @@ REALTIME_FUNCTIONS = {
     "cash_overview",
     "open_cash_monitor",
     "fraud_kpis",
+    "fraud_series",
+    "fraud_top_users",
     "fraud_last_events",
     "finance_kpis",
     "streaming_health",
