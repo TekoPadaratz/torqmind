@@ -700,9 +700,12 @@ def cash_overview(
     dt_fim: Optional[date] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Cash/shift overview."""
+    """Cash/shift overview with commercial KPIs."""
     filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim) if dt_ini and dt_fim else ""
+    params = {"id_empresa": id_empresa}
 
+    # Open shifts
     turnos = query_dict(f"""
         SELECT id_filial, id_turno, id_usuario, nome_operador,
                abertura_ts, fechamento_ts, is_aberto,
@@ -712,13 +715,102 @@ def cash_overview(
           AND is_aberto = 1
         ORDER BY abertura_ts DESC
         LIMIT 50
-    """, parameters={"id_empresa": id_empresa})
+    """, parameters=params)
+
+    # Commercial KPIs from sales_daily_rt
+    sales_rows = query_dict(f"""
+        SELECT s_fat AS total_vendas, s_cancel AS total_cancelamentos,
+               s_vendas AS qtd_vendas, s_cancel_qtd AS qtd_cancelamentos
+        FROM (
+            SELECT sum(faturamento) AS s_fat, sum(valor_cancelado) AS s_cancel,
+                   sum(qtd_vendas) AS s_vendas, sum(qtd_canceladas) AS s_cancel_qtd
+            FROM {MART_RT_DB}.sales_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        )
+    """, parameters=params)
+    sales_kpi = sales_rows[0] if sales_rows else {}
+
+    # Payment breakdown from payments_by_type_rt
+    payments = query_dict(f"""
+        SELECT label, category, sum(valor_total) AS valor_total, sum(qtd_transacoes) AS qtd_transacoes
+        FROM {MART_RT_DB}.payments_by_type_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        GROUP BY label, category
+        ORDER BY valor_total DESC
+    """, parameters=params)
+
+    total_vendas = float(sales_kpi.get("total_vendas") or 0)
+    total_cancelamentos = float(sales_kpi.get("total_cancelamentos") or 0)
+    total_pagamentos = sum(float(p.get("valor_total") or 0) for p in payments)
+    saldo_comercial = total_vendas - total_cancelamentos
+
+    commercial_kpis = {
+        "total_vendas": total_vendas,
+        "total_cancelamentos": total_cancelamentos,
+        "total_pagamentos": total_pagamentos,
+        "saldo_comercial": saldo_comercial,
+        "qtd_vendas": int(sales_kpi.get("qtd_vendas") or 0),
+        "qtd_cancelamentos": int(sales_kpi.get("qtd_cancelamentos") or 0),
+    }
+
+    # Sales by day for the period
+    by_day = query_dict(f"""
+        SELECT dt, sum(faturamento) AS faturamento, sum(qtd_vendas) AS qtd_vendas
+        FROM {MART_RT_DB}.sales_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+        GROUP BY dt ORDER BY dt
+    """, parameters=params)
+
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     return {
+        "kpis": commercial_kpis,
+        "series": {},
+        "turnos": [],
         "turnos_abertos": turnos,
         "qtd_abertos": len(turnos),
+        "commercial": {
+            "kpis": commercial_kpis,
+            "summary": f"Período com {int(sales_kpi.get('qtd_vendas') or 0)} vendas registradas.",
+            "by_day": by_day,
+            "top_turnos": [],
+        },
+        "historical": {
+            "source_status": "available",
+            "payment_mix": payments,
+            "kpis": commercial_kpis,
+            "top_turnos": [],
+            "cancelamentos": [],
+            "by_day": by_day,
+        },
+        "live_now": {
+            "source_status": "available",
+            "summary": f"{len(turnos)} caixa(s) aberto(s) no momento.",
+            "kpis": {
+                "caixas_abertos": len(turnos),
+                "caixas_criticos": 0,
+                "total_vendas_abertas": sum(float(t.get("faturamento_turno") or 0) for t in turnos),
+            },
+            "open_boxes": turnos[:10],
+            "stale_boxes": [],
+            "payment_mix": [],
+            "cancelamentos": [],
+            "alerts": [],
+        },
+        "dre_summary": {
+            "cards": [
+                {"key": "receita", "label": "Receita bruta", "amount": total_vendas, "detail": "Total faturado no período"},
+                {"key": "cancelamentos", "label": "Cancelamentos", "amount": total_cancelamentos, "detail": "Devoluções e cancelamentos"},
+                {"key": "recebimentos", "label": "Recebimentos", "amount": total_pagamentos, "detail": "Pagamentos recebidos"},
+            ],
+            "pending": [],
+        },
+        "payment_breakdown": payments,
         "source": "realtime",
         "realtime_source": _realtime_source(),
+        "freshness": {"mode": "realtime", "source": _realtime_source(), "last_refresh": now_iso},
+        "operational_sync": {"source": "realtime", "last_publish": now_iso},
     }
 
 
@@ -761,6 +853,7 @@ def fraud_kpis(
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Fraud/risk KPIs."""
+    import math
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
@@ -773,7 +866,13 @@ def fraud_kpis(
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
     """, parameters={"id_empresa": id_empresa})
 
-    return rows[0] if rows else {"qtd_eventos": 0, "impacto_total": 0, "score_medio": 0}
+    result = rows[0] if rows else {"qtd_eventos": 0, "impacto_total": 0, "score_medio": 0}
+    # Sanitize NaN from avg() on empty sets
+    for key in ("score_medio", "impacto_total"):
+        val = result.get(key)
+        if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+            result[key] = 0
+    return result
 
 
 def fraud_last_events(

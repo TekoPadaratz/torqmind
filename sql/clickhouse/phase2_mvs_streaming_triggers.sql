@@ -360,13 +360,13 @@ SELECT
     ifNull(c.nome, concat('#ID ', toString(v.id_cliente))) AS cliente_nome,
     max(toDate(v.data)) AS last_purchase,
     toInt32(dateDiff('day', max(toDate(v.data)), today())) AS recency_days,
-    toInt32(countIf(toDate(v.data) >= today() - 30)) AS frequency_30,
-    toInt32(countIf(toDate(v.data) >= today() - 90)) AS frequency_90,
+    toInt32(uniqIf(v.id_comprovante, toDate(v.data) >= today() - 30)) AS frequency_30,
+    toInt32(uniqIf(v.id_comprovante, toDate(v.data) >= today() - 90)) AS frequency_90,
     toDecimal128(sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 30), 2) AS monetary_30,
     toDecimal128(sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 90), 2) AS monetary_90,
-    toDecimal128(if(countIf(toDate(v.data) >= today() - 30) = 0, 0, sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 30) / countIf(toDate(v.data) >= today() - 30)), 2) AS ticket_30,
+    toDecimal128(if(uniqIf(v.id_comprovante, toDate(v.data) >= today() - 30) = 0, 0, sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 30) / uniqIf(v.id_comprovante, toDate(v.data) >= today() - 30)), 2) AS ticket_30,
     toDecimal64(30, 2) AS expected_cycle_days,
-    toInt32(greatest(0, countIf(toDate(v.data) >= today() - 30) - countIf(toDate(v.data) >= today() - 90 AND toDate(v.data) < today() - 30))) AS trend_frequency,
+    toInt32(greatest(0, uniqIf(v.id_comprovante, toDate(v.data) >= today() - 30) - uniqIf(v.id_comprovante, toDate(v.data) >= today() - 90 AND toDate(v.data) < today() - 30))) AS trend_frequency,
     toDecimal128(
         sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 30)
         - sumIf(ifNull(i.total, 0), toDate(v.data) >= today() - 90 AND toDate(v.data) < today() - 30),

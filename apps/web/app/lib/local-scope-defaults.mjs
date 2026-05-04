@@ -23,7 +23,7 @@ export function buildBrowserLocalDefaultScope(session) {
   const localTodayDate = new Date();
   const localToday = formatBusinessCalendarDate(localTodayDate);
   const referenceDate = parseCalendarDate(localToday) || localTodayDate;
-  const days = positiveInt(defaultScope?.days, 1);
+  const days = positiveInt(defaultScope?.days, 30);
   const startDate = addCalendarDays(referenceDate, -(days - 1));
   const branchIds = normalizeBranchIds(defaultScope?.id_filiais, defaultScope?.id_filial ?? session?.id_filial);
 

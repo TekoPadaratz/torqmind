@@ -1331,26 +1331,38 @@ def operational_score(role: str, id_empresa: int, id_filial: Any, dt_ini: date, 
 
 
 def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
-    branch = _branch_clause("id_filial", id_filial)
+    branch_v = _branch_clause("v.id_filial", id_filial)
     rows = _run(
         f"""
         SELECT
-          id_cliente,
-          max(cliente_nome) AS cliente_nome,
-          sum(monetary_90) AS faturamento,
-          sum(frequency_90) AS compras,
-          max(last_purchase) AS ultima_compra,
-          if(sum(frequency_90) = 0, 0, sum(monetary_90) / sum(frequency_90)) AS ticket_medio
-        FROM torqmind_mart.customer_rfm_daily
-        WHERE id_empresa = {{id_empresa:Int32}}
-          AND dt_ref <= {{dt_fim:Date}}
-          AND id_cliente != -1
-          {branch}
-        GROUP BY id_cliente
+          v.id_cliente AS id_cliente,
+          max(ifNull(c.nome, concat('#ID ', toString(v.id_cliente)))) AS cliente_nome,
+          sum(i.total) AS faturamento,
+          uniq(v.id_comprovante) AS compras,
+          max(toDate(v.data)) AS ultima_compra,
+          if(uniq(v.id_comprovante) = 0, 0, sum(i.total) / uniq(v.id_comprovante)) AS ticket_medio
+        FROM torqmind_dw.fact_venda_item i
+        INNER JOIN torqmind_dw.fact_venda v
+          ON v.id_empresa = i.id_empresa
+         AND v.id_filial = i.id_filial
+         AND v.id_db = i.id_db
+         AND v.id_movprodutos = i.id_movprodutos
+        LEFT JOIN torqmind_dw.dim_cliente c
+          ON c.id_empresa = v.id_empresa
+         AND c.id_filial = v.id_filial
+         AND c.id_cliente = v.id_cliente
+        WHERE v.id_empresa = {{id_empresa:Int32}}
+          AND toDate(v.data) BETWEEN {{dt_ini:Date}} AND {{dt_fim:Date}}
+          AND v.cancelado = 0
+          AND ifNull(i.cfop, 0) >= 5000
+          AND v.id_cliente IS NOT NULL
+          AND v.id_cliente != -1
+          {branch_v}
+        GROUP BY v.id_cliente
         ORDER BY faturamento DESC, compras DESC, id_cliente
         LIMIT {{limit:UInt32}}
         """,
-        {"id_empresa": int(id_empresa), "dt_fim": dt_fim, "limit": int(limit)},
+        {"id_empresa": int(id_empresa), "dt_ini": dt_ini, "dt_fim": dt_fim, "limit": int(limit)},
         id_empresa,
     )
     return rows
