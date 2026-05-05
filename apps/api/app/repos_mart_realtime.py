@@ -822,7 +822,7 @@ def payments_overview(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
-    by_type = query_dict(f"""
+    by_type_raw = query_dict(f"""
         SELECT tipo_forma, label, category,
                sum(valor_total) AS valor_total, sum(qtd_transacoes) AS qtd_transacoes
         FROM {MART_RT_DB}.payments_by_type_rt FINAL
@@ -831,10 +831,29 @@ def payments_overview(
         ORDER BY valor_total DESC
     """, parameters={"id_empresa": id_empresa})
 
-    total = sum(float(r.get("valor_total", 0) or 0) for r in by_type)
+    mix = [
+        {
+            "tipo_forma": r.get("tipo_forma"),
+            "label": r.get("label"),
+            "category": r.get("category"),
+            "category_label": r.get("label") or r.get("category"),
+            "total_valor": round(float(r.get("valor_total") or 0), 2),
+            "qtd_comprovantes": int(r.get("qtd_transacoes") or 0),
+        }
+        for r in by_type_raw
+    ]
+    total_val = round(sum(r["total_valor"] for r in mix), 2)
+    source_status = "ok" if mix else "unavailable"
     return {
-        "total": total,
-        "by_type": by_type,
+        "kpis": {
+            "total_valor": total_val,
+            "source_status": source_status,
+            "mix": mix,
+            "source": "realtime",
+        },
+        "by_day": [],
+        "by_turno": [],
+        "anomalies": [],
         "source": "realtime",
         "realtime_source": _realtime_source(),
     }
@@ -943,7 +962,7 @@ def cash_overview(
     sales_kpi = sales_rows[0] if sales_rows else {}
 
     # Payment breakdown from payments_by_type_rt
-    payments = query_dict(f"""
+    payments_raw = query_dict(f"""
         SELECT label, category, sum(valor_total) AS valor_total, sum(qtd_transacoes) AS qtd_transacoes
         FROM {MART_RT_DB}.payments_by_type_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
@@ -951,9 +970,19 @@ def cash_overview(
         ORDER BY valor_total DESC
     """, parameters=params)
 
+    payments = [
+        {
+            "label": p.get("label"),
+            "category": p.get("category"),
+            "total_valor": round(float(p.get("valor_total") or 0), 2),
+            "qtd_comprovantes": int(p.get("qtd_transacoes") or 0),
+        }
+        for p in payments_raw
+    ]
+
     total_vendas = float(sales_kpi.get("total_vendas") or 0)
     total_cancelamentos = float(sales_kpi.get("total_cancelamentos") or 0)
-    total_pagamentos = sum(float(p.get("valor_total") or 0) for p in payments)
+    total_pagamentos = sum(p["total_valor"] for p in payments)
     saldo_comercial = total_vendas - total_cancelamentos
 
     commercial_kpis = {
