@@ -183,16 +183,6 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
         )
         return {"ok": True, "sent": False, "reason": "below_min_severity", "min_severity": min_severity}
 
-    cfg = _get_telegram_setting(id_empresa)
-    if not cfg or not _to_bool(cfg.get("is_enabled")):
-        logger.info("telegram_suppressed reason=telegram_disabled id_empresa=%s", id_empresa)
-        return {"ok": True, "sent": False, "reason": "telegram_disabled"}
-
-    chat_id = str(cfg.get("chat_id") or "").strip()
-    if not chat_id:
-        logger.info("telegram_suppressed reason=missing_chat_id id_empresa=%s", id_empresa)
-        return {"ok": True, "sent": False, "reason": "missing_chat_id"}
-
     id_filial = _to_int(payload.get("id_filial"))
     filial_nome = str(payload.get("filial_nome") or "")
     event_type = str(payload.get("event_type") or payload.get("insight_type") or "ALERTA_CRITICO").upper()
@@ -203,6 +193,19 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
     title = str(payload.get("title") or "Alerta crítico")
     body = str(payload.get("body") or payload.get("message") or "Risco crítico detectado.")
     url = str(payload.get("url") or "/dashboard")
+
+    # Resolve chat_ids: prefer per-company telegram_settings, fall back to per-user recipients
+    chat_ids: List[str] = []
+    cfg = _get_telegram_setting(id_empresa)
+    if cfg and _to_bool(cfg.get("is_enabled")) and str(cfg.get("chat_id") or "").strip():
+        chat_ids = [str(cfg["chat_id"]).strip()]
+    else:
+        # Fall back to users who opted-in via user_notification_settings
+        chat_ids = _get_recipients(id_empresa)
+
+    if not chat_ids:
+        logger.info("telegram_suppressed reason=no_recipients id_empresa=%s", id_empresa)
+        return {"ok": True, "sent": False, "reason": "no_recipients"}
 
     dedupe_raw = f"{id_empresa}|{id_filial}|{insight_id or event_type}|{event_date}"
     dedupe_hash = hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
@@ -240,18 +243,22 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
         f"Drill-down: {url}"
     )
 
-    sent = _send_telegram_sync(chat_id=chat_id, text=text, retries=3)
+    sent_count = 0
+    for cid in chat_ids:
+        if _send_telegram_sync(chat_id=cid, text=text, retries=3):
+            sent_count += 1
+    sent = sent_count > 0
     logger.info(
-        "telegram_dispatch id_empresa=%s id_filial=%s chat_id=%s sent=%s event_type=%s insight_id=%s dedupe_hash=%s",
+        "telegram_dispatch id_empresa=%s id_filial=%s recipients=%s sent=%s event_type=%s insight_id=%s dedupe_hash=%s",
         id_empresa,
         id_filial,
-        chat_id,
+        len(chat_ids),
         sent,
         event_type,
         insight_id,
         dedupe_hash,
     )
-    return {"ok": True, "sent": sent, "chat_id": chat_id, "dedupe_hash": dedupe_hash}
+    return {"ok": True, "sent": sent, "recipients": len(chat_ids), "sent_count": sent_count, "dedupe_hash": dedupe_hash}
 
 
 def _insert_alert_if_new(
@@ -361,3 +368,133 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
 
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
+# User-facing config helpers
+# ---------------------------------------------------------------------------
+
+def get_telegram_config(user_id: str) -> Dict[str, Any]:
+    """Return the current user's Telegram notification settings."""
+    sql = """
+      SELECT telegram_chat_id, telegram_username, telegram_enabled
+      FROM app.user_notification_settings
+      WHERE user_id = %s::uuid
+    """
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        row = conn.execute(sql, (str(user_id),)).fetchone()
+        if row:
+            return {
+                "telegram_chat_id": row["telegram_chat_id"],
+                "telegram_username": row["telegram_username"],
+                "telegram_enabled": bool(row["telegram_enabled"]),
+                "configured": bool(row["telegram_chat_id"] and row["telegram_enabled"]),
+                "bot_token_set": bool(settings.telegram_bot_token),
+            }
+        return {
+            "telegram_chat_id": None,
+            "telegram_username": None,
+            "telegram_enabled": False,
+            "configured": False,
+            "bot_token_set": bool(settings.telegram_bot_token),
+        }
+
+
+def save_telegram_config(
+    user_id: str,
+    *,
+    telegram_chat_id: Optional[str],
+    telegram_username: Optional[str],
+    telegram_enabled: bool,
+) -> Dict[str, Any]:
+    """Upsert user Telegram notification settings."""
+    chat_id = str(telegram_chat_id or "").strip() or None
+    username = str(telegram_username or "").strip() or None
+    sql = """
+      INSERT INTO app.user_notification_settings
+        (user_id, telegram_chat_id, telegram_username, telegram_enabled)
+      VALUES (%s::uuid, %s, %s, %s)
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        telegram_chat_id = EXCLUDED.telegram_chat_id,
+        telegram_username = EXCLUDED.telegram_username,
+        telegram_enabled = EXCLUDED.telegram_enabled
+    """
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        conn.execute(sql, (str(user_id), chat_id, username, telegram_enabled))
+        conn.commit()
+    return {
+        "ok": True,
+        "telegram_chat_id": chat_id,
+        "telegram_username": username,
+        "telegram_enabled": telegram_enabled,
+        "configured": bool(chat_id and telegram_enabled),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dispatch queued notifications
+# ---------------------------------------------------------------------------
+
+def dispatch_pending_notifications(
+    id_empresa: int,
+    *,
+    limit: int = 20,
+    severity: str = "CRITICAL",
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Send CRITICAL app.notifications not yet dispatched via Telegram.
+
+    Tracks dispatches via telegram_dispatch_log using notification_id as key.
+    """
+    if not settings.telegram_bot_token:
+        return {"ok": False, "reason": "bot_token_not_set", "sent": 0, "skipped": 0, "total": 0}
+
+    sql = """
+      SELECT n.id, n.id_filial, n.severity, n.title, n.body, n.url, n.created_at
+      FROM app.notifications n
+      WHERE n.id_empresa = %s
+        AND n.severity = %s
+        AND NOT EXISTS (
+          SELECT 1 FROM app.telegram_dispatch_log dl
+          WHERE dl.id_empresa = %s
+            AND dl.event_type = 'NOTIFICATION_DISPATCH'
+            AND dl.insight_id = n.id
+        )
+      ORDER BY n.created_at DESC
+      LIMIT %s
+    """
+    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+        rows = [dict(r) for r in conn.execute(sql, (id_empresa, severity, id_empresa, limit)).fetchall()]
+
+    if not rows:
+        return {"ok": True, "reason": "no_pending", "sent": 0, "skipped": 0, "total": 0}
+
+    sent = 0
+    skipped = 0
+    for row in rows:
+        created = row.get("created_at")
+        event_time = created.isoformat() if hasattr(created, "isoformat") else str(created or "")
+        payload = {
+            "severity": row.get("severity", "CRITICAL"),
+            "insight_id": int(row["id"]),
+            "event_type": "NOTIFICATION_DISPATCH",
+            "id_filial": row.get("id_filial"),
+            "event_time": event_time,
+            "impacto_estimado": 0.0,
+            "title": row.get("title") or "Alerta crítico",
+            "body": row.get("body") or "",
+            "url": row.get("url") or "/dashboard",
+        }
+        result = send_telegram_alert(id_empresa=id_empresa, payload=payload, force=force)
+        if result.get("sent"):
+            sent += 1
+        else:
+            skipped += 1
+
+    return {
+        "ok": True,
+        "sent": sent,
+        "skipped": skipped,
+        "total": len(rows),
+    }

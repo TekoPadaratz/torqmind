@@ -17,7 +17,12 @@ from app import repos_analytics as repos_mart
 from app import repos_auth
 from app.services import snapshot_cache
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
-from app.services.telegram import send_telegram_alert
+from app.services.telegram import (  # noqa: F811
+    dispatch_pending_notifications,
+    get_telegram_config,
+    save_telegram_config,
+    send_telegram_alert,
+)
 from app.schemas_bi import (
     GoalTargetRequest,
     CashOverviewResponse,
@@ -1744,6 +1749,62 @@ def admin_telegram_test(
     }
     result = send_telegram_alert(id_empresa=tenant, payload=payload, force=True)
     return {"ok": True, "id_empresa": tenant, "id_filial": filial, "result": result}
+
+
+# ------------------------
+# Telegram — configuração pessoal
+# ------------------------
+
+class TelegramSettingsUpdate(BaseModel):
+    telegram_chat_id: Optional[str] = None
+    telegram_username: Optional[str] = None
+    telegram_enabled: bool = False
+
+
+@router.get("/me/telegram")
+def me_telegram_settings(
+    claims=Depends(get_current_claims),
+):
+    user_id = str(claims.get("sub") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return get_telegram_config(user_id)
+
+
+@router.patch("/me/telegram")
+def me_telegram_update(
+    body: TelegramSettingsUpdate,
+    claims=Depends(get_current_claims),
+):
+    user_id = str(claims.get("sub") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return save_telegram_config(
+        user_id,
+        telegram_chat_id=body.telegram_chat_id,
+        telegram_username=body.telegram_username,
+        telegram_enabled=body.telegram_enabled,
+    )
+
+
+@router.post("/admin/telegram/dispatch-pending")
+def admin_telegram_dispatch_pending(
+    limit: int = Query(20, ge=1, le=100),
+    severity: str = Query("CRITICAL"),
+    force: bool = Query(False),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="forbidden")
+    try:
+        repos_auth.assert_product_write_allowed(claims)
+    except repos_auth.AuthError as exc:
+        _raise_auth_error(exc)
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=None, id_filiais_q=None)
+    result = dispatch_pending_notifications(tenant, limit=limit, severity=severity.upper(), force=force)
+    return {"ok": True, "id_empresa": tenant, **result}
 
 
 @router.get("/notifications")
