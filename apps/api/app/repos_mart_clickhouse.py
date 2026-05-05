@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from app.business_time import business_clock_payload, business_timezone, business_today
 from app.db_clickhouse import query_dict
+from app.db import get_conn
 
 logger = logging.getLogger(__name__)
 
@@ -1020,12 +1021,12 @@ def _commercial_annual_comparison(monthly_rows: List[Dict[str, Any]], *, current
 def sales_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
     """Classificação por CFOP inteligente: 51XX (Vendas Normais) vs 52XX (Devoluções)."""
     comparison_year = dt_fim.year
-    
+
     # Buscar dados desagregados do DW para classificação por CFOP
     where_filial = f"AND v.id_filial = {int(id_filial)}" if id_filial else ""
     sql_cfop_breakdown = f"""
     SELECT
-      CASE 
+      CASE
         WHEN i.cfop >= 5100 AND i.cfop < 5200 THEN 'vendas_normais'
         WHEN i.cfop >= 5200 AND i.cfop < 5300 THEN 'devolucoes'
         ELSE 'outras'
@@ -1042,43 +1043,43 @@ def sales_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini
     GROUP BY cfop_class, v.cancelado
     ORDER BY cfop_class, v.cancelado
     """
-    
+
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         rows = conn.execute(
             sql_cfop_breakdown,
             (id_empresa, int(dt_ini.strftime("%Y%m%d")), int(dt_fim.strftime("%Y%m%d")))
         ).fetchall()
-    
+
     # Agregar por classe CFOP
     cfop_data: Dict[str, Dict[str, Any]] = {
         "vendas_normais": {"documentos": 0, "valor_ativo": 0.0, "valor_cancelado": 0.0},
         "devolucoes": {"documentos": 0, "valor_ativo": 0.0, "valor_cancelado": 0.0},
     }
-    
+
     for row in rows:
-        cfop_class = row[0]
-        is_cancelado = row[1]
-        doc_count = row[2]
-        valor = float(row[3] or 0)
-        
+        cfop_class = row.get("cfop_class")
+        is_cancelado = row.get("cancelado")
+        doc_count = _to_int(row.get("doc_count"))
+        valor = _to_float(row.get("valor_total"))
+
         if cfop_class not in cfop_data:
             continue
-        
+
         cfop_data[cfop_class]["documentos"] += doc_count
         if is_cancelado:
             cfop_data[cfop_class]["valor_cancelado"] += valor
         else:
             cfop_data[cfop_class]["valor_ativo"] += valor
-    
+
     # Buscar dados mensais para evolução
     kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
     monthly_series, annual_comparison = _commercial_annual_comparison([], current_year=comparison_year)
-    
+
     by_hour = [
         {"hora": row["hora"], "saidas": row["faturamento"], "entradas": 0.0, "cancelamentos": 0.0}
         for row in sales_by_hour(role, id_empresa, id_filial, dt_ini, dt_fim)
     ]
-    
+
     return {
         "kpis": {
             "saidas": _to_float(kpis.get("faturamento")),
