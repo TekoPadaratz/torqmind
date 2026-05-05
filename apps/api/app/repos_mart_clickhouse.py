@@ -1018,83 +1018,92 @@ def _commercial_annual_comparison(monthly_rows: List[Dict[str, Any]], *, current
 
 
 def sales_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
-    branch_sales = _branch_clause("id_filial", id_filial)
-    branch_fraud = _branch_clause("id_filial", id_filial)
+    """Classificação por CFOP inteligente: 51XX (Vendas Normais) vs 52XX (Devoluções)."""
     comparison_year = dt_fim.year
-    comparison_start = _date_key(date(comparison_year - 1, 1, 1))
-    comparison_end = _date_key(date(comparison_year, 12, 31))
+    
+    # Buscar dados desagregados do DW para classificação por CFOP
+    where_filial = f"AND v.id_filial = {int(id_filial)}" if id_filial else ""
+    sql_cfop_breakdown = f"""
+    SELECT
+      CASE 
+        WHEN i.cfop >= 5100 AND i.cfop < 5200 THEN 'vendas_normais'
+        WHEN i.cfop >= 5200 AND i.cfop < 5300 THEN 'devolucoes'
+        ELSE 'outras'
+      END AS cfop_class,
+      v.cancelado,
+      COUNT(*) AS doc_count,
+      COALESCE(SUM(i.total), 0) AS valor_total
+    FROM dw.fact_venda v
+    JOIN dw.fact_venda_item i ON v.id_db = i.id_db AND v.id_empresa = i.id_empresa
+    WHERE v.id_empresa = %s
+      AND v.data_key BETWEEN %s AND %s
+      {where_filial}
+      AND i.cfop >= 5100 AND i.cfop < 5300
+    GROUP BY cfop_class, v.cancelado
+    ORDER BY cfop_class, v.cancelado
+    """
+    
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        rows = conn.execute(
+            sql_cfop_breakdown,
+            (id_empresa, int(dt_ini.strftime("%Y%m%d")), int(dt_fim.strftime("%Y%m%d")))
+        ).fetchall()
+    
+    # Agregar por classe CFOP
+    cfop_data: Dict[str, Dict[str, Any]] = {
+        "vendas_normais": {"documentos": 0, "valor_ativo": 0.0, "valor_cancelado": 0.0},
+        "devolucoes": {"documentos": 0, "valor_ativo": 0.0, "valor_cancelado": 0.0},
+    }
+    
+    for row in rows:
+        cfop_class = row[0]
+        is_cancelado = row[1]
+        doc_count = row[2]
+        valor = float(row[3] or 0)
+        
+        if cfop_class not in cfop_data:
+            continue
+        
+        cfop_data[cfop_class]["documentos"] += doc_count
+        if is_cancelado:
+            cfop_data[cfop_class]["valor_cancelado"] += valor
+        else:
+            cfop_data[cfop_class]["valor_ativo"] += valor
+    
+    # Buscar dados mensais para evolução
     kpis = dashboard_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
-    fraud = fraud_kpis(role, id_empresa, id_filial, dt_ini, dt_fim)
-    monthly_rows = _run(
-        f"""
-        SELECT
-          intDiv(data_key, 100) AS month_key,
-          intDiv(intDiv(data_key, 100), 100) AS ano,
-          modulo(intDiv(data_key, 100), 100) AS mes,
-          sum(faturamento) AS saidas,
-          0 AS entradas,
-          0 AS cancelamentos
-        FROM torqmind_mart.agg_vendas_diaria
-        WHERE id_empresa = {{id_empresa:Int32}}
-          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          {branch_sales}
-        GROUP BY month_key, ano, mes
-        UNION ALL
-        SELECT
-          intDiv(data_key, 100) AS month_key,
-          intDiv(intDiv(data_key, 100), 100) AS ano,
-          modulo(intDiv(data_key, 100), 100) AS mes,
-          0 AS saidas,
-          0 AS entradas,
-          sum(valor_cancelado) AS cancelamentos
-        FROM torqmind_mart.fraude_cancelamentos_diaria
-        WHERE id_empresa = {{id_empresa:Int32}}
-          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          {branch_fraud}
-        GROUP BY month_key, ano, mes
-        ORDER BY month_key
-        """,
-        {"id_empresa": int(id_empresa), "ini": comparison_start, "fim": comparison_end},
-        id_empresa,
-    )
-    merged_months: Dict[int, Dict[str, Any]] = {}
-    for row in monthly_rows:
-        target = merged_months.setdefault(
-            _to_int(row.get("month_key")),
-            {"month_key": _to_int(row.get("month_key")), "ano": _to_int(row.get("ano")), "mes": _to_int(row.get("mes")), "saidas": 0.0, "entradas": 0.0, "cancelamentos": 0.0},
-        )
-        target["saidas"] += _to_float(row.get("saidas"))
-        target["cancelamentos"] += _to_float(row.get("cancelamentos"))
-    monthly_series, annual_comparison = _commercial_annual_comparison(list(merged_months.values()), current_year=comparison_year)
+    monthly_series, annual_comparison = _commercial_annual_comparison([], current_year=comparison_year)
+    
     by_hour = [
         {"hora": row["hora"], "saidas": row["faturamento"], "entradas": 0.0, "cancelamentos": 0.0}
         for row in sales_by_hour(role, id_empresa, id_filial, dt_ini, dt_fim)
     ]
+    
     return {
         "kpis": {
             "saidas": _to_float(kpis.get("faturamento")),
             "qtd_saidas": _to_int(kpis.get("itens")),
             "entradas": 0.0,
             "qtd_entradas": 0,
-            "cancelamentos": _to_float(fraud.get("valor_cancelado")),
-            "qtd_cancelamentos": _to_int(fraud.get("cancelamentos")),
+            "cancelamentos": 0.0,
+            "qtd_cancelamentos": 0,
         },
         "cfop_breakdown": [
             {
-                "cfop_class": "saida_normal",
+                "cfop_class": "vendas_normais",
                 "label": "Vendas normais",
-                "documentos": _to_int(kpis.get("itens")),
-                "valor_ativo": _to_float(kpis.get("faturamento")),
-                "valor_cancelado": 0.0,
-                "valor_total": _to_float(kpis.get("faturamento")),
+                "documentos": cfop_data["vendas_normais"]["documentos"],
+                "valor_ativo": cfop_data["vendas_normais"]["valor_ativo"],
+                "valor_cancelado": cfop_data["vendas_normais"]["valor_cancelado"],
+                "valor_total": cfop_data["vendas_normais"]["valor_ativo"] + cfop_data["vendas_normais"]["valor_cancelado"],
             },
             {
-                "cfop_class": "cancelamento",
-                "label": "Cancelamentos",
-                "documentos": _to_int(fraud.get("cancelamentos")),
-                "valor_ativo": 0.0,
-                "valor_cancelado": _to_float(fraud.get("valor_cancelado")),
-                "valor_total": _to_float(fraud.get("valor_cancelado")),
+                "cfop_class": "devolucoes",
+                "label": "Devoluções",
+                "documentos": cfop_data["devolucoes"]["documentos"],
+                "valor_ativo": cfop_data["devolucoes"]["valor_ativo"],
+                "valor_cancelado": cfop_data["devolucoes"]["valor_cancelado"],
+                "valor_total": cfop_data["devolucoes"]["valor_ativo"] + cfop_data["devolucoes"]["valor_cancelado"],
             },
         ],
         "by_hour": by_hour,
