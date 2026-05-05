@@ -152,15 +152,18 @@ test("all-branches selection is preserved as sentinel across links", () => {
     dt_fim: "2026-04-30",
     dt_ref: "2026-04-30",
     id_empresa: 12,
+    id_filiais: [7, 9, 11],
     branch_scope: "all",
   });
   assert.match(params.toString(), /branch_scope=all/);
   assert.ok(!params.toString().includes("id_filial="));
-  assert.ok(!params.toString().includes("id_filiais="));
+  assert.match(params.toString(), /id_filiais=7/);
+  assert.match(params.toString(), /id_filiais=9/);
+  assert.match(params.toString(), /id_filiais=11/);
 
   const parsed = readScopeFromSearch(new URLSearchParams(params.toString()));
   assert.equal(parsed.branch_scope, "all");
-  assert.deepEqual(parsed.id_filiais, []);
+  assert.deepEqual(parsed.id_filiais, ["7", "9", "11"]);
 });
 
 test("scope controls distinguish platform master, owner and branch manager", () => {

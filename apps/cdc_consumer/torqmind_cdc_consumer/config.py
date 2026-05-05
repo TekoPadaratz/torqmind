@@ -9,12 +9,25 @@ class Settings(BaseSettings):
     # Redpanda / Kafka
     redpanda_brokers: str = "redpanda:9092"
     cdc_consumer_group: str = "torqmind-cdc-consumer"
-    cdc_topics: str = ""  # Comma-separated; empty = auto-subscribe via pattern
+    cdc_topics: str = (
+        "torqmind.stg.comprovantes,"
+        "torqmind.stg.itenscomprovantes,"
+        "torqmind.stg.formas_pgto_comprovantes,"
+        "torqmind.stg.turnos,"
+        "torqmind.stg.usuarios,"
+        "torqmind.stg.produtos,"
+        "torqmind.stg.grupoprodutos,"
+        "torqmind.stg.contaspagar,"
+        "torqmind.stg.contasreceber,"
+        "torqmind.app.payment_type_map,"
+        "torqmind.app.goals,"
+        "torqmind.app.competitor_fuel_prices"
+    )
     cdc_topic_pattern: str = "^torqmind\\..*"
     cdc_batch_size: int = 500
     cdc_flush_interval_seconds: float = 5.0
     cdc_poll_timeout_seconds: float = 1.0
-    cdc_auto_offset_reset: str = "earliest"
+    cdc_auto_offset_reset: str = "latest"
 
     # ClickHouse
     clickhouse_host: str = "clickhouse"

@@ -45,7 +45,7 @@ Atalhos uteis:
 - `make clickhouse-mvs`: cria MVs streaming.
 - `make clickhouse-native-backfill`: popula marts nativas a partir de `torqmind_dw`.
 - `make analytics-smoke`: valida inventory do facade.
-- `make clickhouse-init`: executa sync DW nativo, espera as 14 tabelas obrigatorias e cria tabelas mart; para refresh completo rode backfill e MVs em seguida.
+- `make clickhouse-init`: executa sync DW nativo, espera as 15 tabelas obrigatorias e cria tabelas mart; para refresh completo rode backfill e MVs em seguida.
 - `make prod-clickhouse-sync-dw`: sync produtivo PostgreSQL DW -> ClickHouse DW nativo.
 - `make prod-clickhouse-sync-dw-full`: full refresh controlado do DW ClickHouse nativo.
 - `make prod-clickhouse-sync-dw-incremental`: sync incremental do DW ClickHouse nativo.
@@ -143,7 +143,7 @@ Deploy:
 - `docker-compose.prod.yml`: stack prod com ClickHouse.
 - `.env.production.example`: variaveis prod esperadas.
 - `deploy/scripts/load_clickhouse_historical.sh`: carga historica CH.
-- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 14 tabelas DW obrigatorias por `postgresql(...)`, carrega `app.payment_type_map` em `dim_forma_pagamento` e valida counts/max(data_key); nao imprime credenciais.
+- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 15 tabelas DW obrigatorias por `postgresql(...)`, carrega `app.payment_type_map` em `dim_forma_pagamento`, recria `torqmind_mart.agg_estoque_posicao_atual` e valida counts/max(data_key); nao imprime credenciais.
 - `deploy/scripts/prod-clickhouse-refresh-marts.sh`: modo `full` para bootstrap e `incremental` para republicar janelas afetadas de marts idempotentes.
 - `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; executa sync DW nativo, valida vendas, recria marts, roda backfill e depois cria MVs streaming.
 - `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW nativo vs marts; diferencia ERROR critico de WARN de qualidade.

@@ -91,6 +91,19 @@ class BranchScopeRouteUnitTest(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(cash_overview.call_args.args[2], [11, 13])
 
+    def test_cash_overview_contract_normalization_backfills_legacy_payment_mix(self) -> None:
+        payload = {
+            "historical": {"payment_mix": [{"label": "PIX"}], "cancelamentos": []},
+            "live_now": {"alerts": []},
+            "payment_breakdown": [{"label": "PIX"}],
+        }
+
+        normalized = routes_bi._normalize_cached_payload_contract("cash_overview", payload)
+
+        self.assertEqual(normalized["payment_mix"], [{"label": "PIX"}])
+        self.assertEqual(normalized["cancelamentos"], [])
+        self.assertEqual(normalized["alerts"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

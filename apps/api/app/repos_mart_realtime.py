@@ -959,7 +959,9 @@ def cash_overview(
     commercial_kpis = {
         "total_vendas": total_vendas,
         "total_cancelamentos": total_cancelamentos,
+        "cancelamentos_periodo": total_cancelamentos,
         "total_pagamentos": total_pagamentos,
+        "recebimentos_periodo": total_pagamentos,
         "saldo_comercial": saldo_comercial,
         "qtd_vendas": int(sales_kpi.get("qtd_vendas") or 0),
         "qtd_cancelamentos": int(sales_kpi.get("qtd_cancelamentos") or 0),
@@ -1018,6 +1020,7 @@ def cash_overview(
             ],
             "pending": [],
         },
+        "payment_mix": payments,
         "payment_breakdown": payments,
         "source": "realtime",
         "realtime_source": _realtime_source(),
@@ -1064,7 +1067,12 @@ def fraud_kpis(
     dt_fim: date,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Fraud/risk KPIs."""
+    """Operational fraud KPIs for the antifraud screen.
+
+    The frontend contract expects cancellation totals under
+    ``cancelamentos`` and ``valor_cancelado``. Keep the modeled-risk keys as
+    compatibility metadata because some higher-level bundles still inspect them.
+    """
     import math
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
@@ -1080,10 +1088,16 @@ def fraud_kpis(
 
     result = rows[0] if rows else {"qtd_eventos": 0, "impacto_total": 0, "score_medio": 0}
     # Sanitize NaN from avg() on empty sets
-    for key in ("score_medio", "impacto_total"):
+    for key in ("score_medio", "impacto_total", "qtd_eventos"):
         val = result.get(key)
         if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
             result[key] = 0
+    qtd_eventos = int(result.get("qtd_eventos") or 0)
+    impacto_total = float(result.get("impacto_total") or 0)
+    result["qtd_eventos"] = qtd_eventos
+    result["impacto_total"] = impacto_total
+    result["cancelamentos"] = qtd_eventos
+    result["valor_cancelado"] = impacto_total
     return result
 
 

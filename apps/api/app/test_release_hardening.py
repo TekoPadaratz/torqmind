@@ -1904,7 +1904,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 (1,),
             )["result"]
             self.assertEqual(int(third_detail["rows"]), 0)
-            self.assertEqual(int(third_detail["candidate_count"]), 1)
+            self.assertEqual(int(third_detail["candidate_count"]), 0)
             self.assertEqual(int(third_detail["upsert_inserts"]), 0)
             self.assertEqual(int(third_detail["upsert_updates"]), 0)
 

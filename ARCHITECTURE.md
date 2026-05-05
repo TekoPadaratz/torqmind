@@ -61,7 +61,7 @@ Markdown
 ## 8. Histórico de Incidentes
 - **2026-04 — Risk_v2 broken:** v2 inicial (migration 059) inseria `FUNCIONARIO_OUTLIER` com todos os IDs NULL → `*_nk` colapsavam para `(-1,-1,-1)` → violação de `uq_fact_risco_evento_nk` quando havia mais de 1 outlier no dia/filial. Adicionalmente, fazia 3 scans em `fact_comprovante`. **Resolvido em migration 062** (IDs sintéticos + CTE base materializada).
 - **Confusão `total_venda` vs `total_vendas`:** o campo real em `dw.fact_venda` é `total_venda` (singular). Views `mart.*` (ex.: `mart.fato_caixa_diario`) podem expor o agregado como `total_vendas` (plural). A função `compute_risk_events_v2` **NÃO usa `fact_venda`** — opera apenas em `fact_comprovante.valor_total`.
-- **2026-04-27 — Hotfix `fact_estoque_atual`:** pipeline `etl-operational` falhava no step 14 com `function etl.load_fact_estoque_atual(smallint) does not exist`. Módulo de estoque não está implementado no banco. Step **temporariamente desabilitado** em `apps/api/app/services/etl_orchestrator.py::PHASE_SQL_STEPS` (linha comentada) e em `test_etl_orchestration.py` (entrada removida do `manual_counts`). `step_count` se ajusta automaticamente via `len(PHASE_SQL_STEPS)`. **Reativar** descomentando ambas as linhas quando a migration de estoque for criada.
+- **2026-04-27 a 2026-05-05 — `fact_estoque_atual` ausente:** o pipeline `etl-operational` falhava no step 14 com `function etl.load_fact_estoque_atual(smallint) does not exist`. **Resolvido na migration 074**, que cria `stg.estoque`, `dw.fact_estoque_atual`, `etl.load_fact_estoque_atual` e `mart.agg_estoque_posicao_atual`, reativando o step de estoque no orchestrator e no teste de ordem.
 - **2026-04-29 — Dashboard Geral stale + lentidão (3min/1dia):** Duas fases de correção:
   - **Fase 1 — ETL:** track `etl-operational` não invocava `etl.refresh_marts`. Resolvido alterando `_track_runs_publication` para incluir `TRACK_OPERATIONAL`. Flag `publication_deferred` congelada em `False`.
   - **Fase 2 — Eliminação de `dw.fact_*` do Dashboard:** `dashboard_home_bundle`, `dashboard_kpis`, `dashboard_series` e `sales_overview_bundle` usavam overlay "dia ao vivo" que escaneava `dw.fact_venda` + `dw.fact_venda_item` via `_sales_window_fact_cte` / `sales_operational_day_bundle`. Com marts frescas a cada 5 min, esse overlay é desnecessário e era a causa dos 3 min de carga. **Removido inteiramente.** Dashboard agora lê **exclusivamente** de `mart.agg_vendas_diaria`, `mart.agg_vendas_hora`, `mart.agg_produtos_diaria`, `mart.agg_grupos_diaria`, `mart.agg_funcionarios_diaria`. Freshness metadata mudou: `source = "mart.agg_vendas_diaria"`, `reading_status = "mart_snapshot"`. Testes unitários e de integração atualizados. `sales_operational_range_bundle` e `sales_operational_day_bundle` permanecem no código mas **não são mais invocados** por Dashboard Geral nem Tela de Vendas (via `sales_overview_bundle`).
@@ -84,7 +84,7 @@ Localização: `apps/api/app/services/etl_orchestrator.py` (~linha 74). Steps ex
 | 11 | fact_venda | `etl.load_fact_venda` |
 | 12 | fact_venda_item | `etl.load_fact_venda_item` |
 | 13 | fact_financeiro | `etl.load_fact_financeiro` |
-| ~~14~~ | ~~fact_estoque_atual~~ | **DESABILITADO 2026-04-27** (migration ausente) |
+| 14 | fact_estoque_atual | `etl.load_fact_estoque_atual` (migration 074) |
 | risk | risk_events (track risk) | `etl.compute_risk_events_v2` (migration 062) |
 
 ## 10. Política de Refresh por Track (`etl_orchestrator._track_runs_publication`)

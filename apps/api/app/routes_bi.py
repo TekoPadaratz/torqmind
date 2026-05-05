@@ -92,6 +92,28 @@ def _with_fallback_state(
     return annotated
 
 
+def _normalize_cached_payload_contract(scope_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = copy.deepcopy(payload)
+    if scope_key != "cash_overview":
+        return normalized
+
+    historical = normalized.get("historical") if isinstance(normalized.get("historical"), dict) else {}
+    live_now = normalized.get("live_now") if isinstance(normalized.get("live_now"), dict) else {}
+
+    if not isinstance(normalized.get("payment_mix"), list):
+        if isinstance(historical.get("payment_mix"), list):
+            normalized["payment_mix"] = historical.get("payment_mix") or []
+        elif isinstance(normalized.get("payment_breakdown"), list):
+            normalized["payment_mix"] = normalized.get("payment_breakdown") or []
+        else:
+            normalized["payment_mix"] = []
+    if not isinstance(normalized.get("cancelamentos"), list):
+        normalized["cancelamentos"] = historical.get("cancelamentos") or []
+    if not isinstance(normalized.get("alerts"), list):
+        normalized["alerts"] = live_now.get("alerts") or []
+    return normalized
+
+
 def _with_cached_response(
     scope_key: str,
     role: str,
@@ -181,7 +203,7 @@ def _with_cached_response(
         matched_signature: Optional[str],
         exact_scope_match: bool,
     ) -> Dict[str, Any]:
-        annotated = copy.deepcopy(payload)
+        annotated = _normalize_cached_payload_contract(scope_key, payload)
         annotated["_scope"] = {
             "route_key": scope_key,
             "signature": scope_signature,
@@ -1166,7 +1188,7 @@ def fraud_overview(
         dt_fim=dt_fim,
         dt_ref=as_of,
         compute=build_response,
-        extra_context={"module": "fraud"},
+        extra_context={"module": "fraud", "contract_version": 2},
         safe_fallback=lambda: _safe_fraud_overview_payload(tenant, dt_ini, dt_fim, as_of),
     )
 
@@ -1434,6 +1456,7 @@ def cash_overview(
         dt_fim=dt_fim,
         dt_ref=None,
         compute=lambda: repos_mart.cash_overview(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim),
+        extra_context={"module": "cash", "contract_version": 2},
         safe_fallback=_safe_cash_overview_payload,
     )
 

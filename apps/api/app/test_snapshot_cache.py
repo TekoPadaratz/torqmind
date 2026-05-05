@@ -1,4 +1,5 @@
 import json
+import math
 import unittest
 from decimal import Decimal
 from datetime import date, datetime, timezone
@@ -83,11 +84,60 @@ class SnapshotCacheTests(unittest.TestCase):
         mock_conn.execute.assert_not_called()
         mock_conn.commit.assert_not_called()
 
+    def test_write_snapshot_normalizes_non_finite_numbers(self):
+        updated_at = datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc)
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {"updated_at": updated_at}
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value = mock_cursor
+        mock_conn.__enter__.return_value = mock_conn
+
+        with patch("app.services.snapshot_cache.get_conn", return_value=mock_conn):
+            snapshot_cache.write_snapshot(
+                role="MASTER",
+                tenant_id=1,
+                branch_id=None,
+                snapshot_key="dashboard_home",
+                scope_signature="sig",
+                context={"dt_ini": date(2026, 3, 1)},
+                payload={
+                    "kpis": {
+                        "score_medio": math.nan,
+                        "impacto_total": math.inf,
+                        "desvio": -math.inf,
+                    },
+                    "series": [1.0, math.nan],
+                },
+            )
+
+        params = mock_conn.execute.call_args[0][1]
+        self.assertEqual(
+            json.loads(params[5]),
+            {
+                "kpis": {
+                    "score_medio": None,
+                    "impacto_total": None,
+                    "desvio": None,
+                },
+                "series": [1.0, None],
+            },
+        )
+
     def test_hot_bi_routes_use_snapshot_cache(self):
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
         self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("pricing_competitor_overview"))
         self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("noncritical_probe"))
+
+    def test_realtime_hot_bi_routes_bypass_snapshot_cache_for_truth(self):
+        with patch.object(snapshot_cache.settings, "use_realtime_marts", True):
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("cash_overview"))
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("fraud_overview"))
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("finance_overview"))
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("pricing_competitor_overview"))
+            self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("noncritical_probe"))
 
     def test_with_cached_response_prefers_snapshot_during_etl(self):
         cached_record = {

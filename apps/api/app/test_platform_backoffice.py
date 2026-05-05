@@ -529,6 +529,38 @@ class PlatformBackofficeTest(unittest.TestCase):
         response_branch = self._login(branch_user_email, "Senha@123", expected_status=403)
         self.assertEqual(response_branch.json()["error"], "branch_disabled")
 
+    @patch("app.repos_mart_realtime.streaming_health")
+    def test_streaming_health_requires_platform_access_and_returns_payload(self, mock_streaming_health) -> None:
+        mock_streaming_health.return_value = {
+            "source_freshness": [{"dataset": "sales", "lag_seconds": 12}],
+            "cdc_state": [],
+            "recent_errors": [],
+            "lag": [],
+            "mart_publications": [],
+        }
+
+        master_email = self._ensure_sovereign_user()
+        master_headers = self._auth_headers(master_email, seed_cli.PLATFORM_MASTER_PASSWORD)
+
+        platform_response = self.client.get("/platform/streaming-health", headers=master_headers)
+        self.assertEqual(platform_response.status_code, 200, platform_response.text)
+        platform_body = platform_response.json()
+        self.assertIn("source_freshness", platform_body)
+        self.assertIn("use_realtime_marts", platform_body)
+
+        tenant_id = self._create_tenant("Tenant streaming health")
+        tenant_email = self._create_user(
+            "tenant_admin",
+            "Senha@123",
+            email=self._unique_email("tenant.streaming"),
+            tenant_id=tenant_id,
+        )
+        tenant_headers = self._auth_headers(tenant_email, "Senha@123")
+
+        tenant_response = self.client.get("/platform/streaming-health", headers=tenant_headers)
+        self.assertEqual(tenant_response.status_code, 403, tenant_response.text)
+        self.assertEqual(tenant_response.json()["detail"]["error"], "platform_forbidden")
+
     def test_existing_email_login_keeps_working_after_username_support(self) -> None:
         tenant_id = self._create_tenant("Tenant Existing Email Login")
         username = self._unique_username("legacy-login")

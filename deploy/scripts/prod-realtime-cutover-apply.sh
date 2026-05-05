@@ -392,7 +392,7 @@ step_neutralize_legacy_etl() {
         for pattern in "${LEGACY_ETL_PATTERNS[@]}"; do
           grep -v '^\s*#' "$crontab_backup" | grep -F "$pattern" | while IFS= read -r line; do
             log INFO "  [would disable] $line"
-          done
+          done || true
         done
       else
         log INFO "Legacy ETL cron entries found. Commenting out..."
@@ -648,8 +648,47 @@ step_backfill() {
   log INFO "backfill=OK"
 }
 
+step_align_consumer_offsets() {
+  if (( DRY_RUN )); then
+    log INFO "=== STEP 12: Align CDC consumer offsets SKIPPED (dry-run) ==="
+    return 0
+  fi
+
+  log INFO "=== STEP 12: Align CDC consumer offsets to live tail ==="
+
+  local consumer_group="${CDC_CONSUMER_GROUP:-torqmind-cdc-consumer}"
+  local topic_list
+  topic_list="$(compose_streaming exec -T redpanda sh -lc "rpk topic list | awk 'NR > 1 && \$1 ~ /^torqmind\\./ { print \$1 }' | paste -sd, -" 2>/dev/null || true)"
+  if [[ -z "$topic_list" ]]; then
+    log ERROR "Could not resolve torqmind.* topics for CDC offset alignment"
+    exit 1
+  fi
+
+  run compose_streaming stop cdc-consumer
+
+  local wait_seconds=0
+  local group_members=""
+  while (( wait_seconds < 90 )); do
+    group_members="$(compose_streaming exec -T redpanda sh -lc "rpk group describe '$consumer_group' 2>/dev/null | awk '/^MEMBERS/ {print \$2; exit}'" 2>/dev/null || true)"
+    group_members="${group_members:-0}"
+    if [[ "$group_members" == "0" ]]; then
+      break
+    fi
+    sleep 2
+    wait_seconds=$((wait_seconds + 2))
+  done
+  if [[ "$group_members" != "0" ]]; then
+    log ERROR "CDC consumer group $consumer_group still has active members after stop"
+    exit 1
+  fi
+
+  run compose_streaming exec -T redpanda rpk group seek "$consumer_group" --to end --topics "$topic_list" --allow-new-topics
+  run compose_streaming up -d --wait cdc-consumer
+  log INFO "cdc_consumer_offsets=ALIGNED group=$consumer_group"
+}
+
 step_verify_streaming_readiness() {
-  log INFO "=== STEP 12: Verify streaming data readiness ==="
+  log INFO "=== STEP 13: Verify streaming data readiness ==="
   if (( DRY_RUN )); then
     log INFO "DRY-RUN: would verify Redpanda/Debezium/CDC/current/mart_rt readiness"
     return 0
@@ -695,7 +734,7 @@ step_verify_streaming_readiness() {
 }
 
 step_validate_parity() {
-  log INFO "=== STEP 13: Validate parity (BLOQUEANTE) ==="
+  log INFO "=== STEP 14: Validate parity (BLOQUEANTE) ==="
   if [[ ! -f "$ROOT_DIR/deploy/scripts/realtime-validate-cutover.sh" ]]; then
     log ERROR "realtime-validate-cutover.sh not found — cannot validate. Aborting."
     exit 1
@@ -706,7 +745,7 @@ step_validate_parity() {
 }
 
 step_activate_realtime() {
-  log INFO "=== STEP 14: Activate USE_REALTIME_MARTS=true ==="
+  log INFO "=== STEP 15: Activate USE_REALTIME_MARTS=true ==="
   tm_env_set "USE_REALTIME_MARTS" "true"
   tm_env_set "REALTIME_MARTS_SOURCE" "$SOURCE"
   tm_env_set "REALTIME_MARTS_FALLBACK" "false"
@@ -723,13 +762,13 @@ step_rollback_to_legacy() {
 }
 
 step_rebuild_api() {
-  log INFO "=== STEP 15: Rebuild API/Web with realtime flag ==="
+  log INFO "=== STEP 16: Rebuild API/Web with realtime flag ==="
   run compose_prod up -d --no-deps --force-recreate api web
   log INFO "api_web_rebuild=OK"
 }
 
 step_smoke() {
-  log INFO "=== STEP 16: Smoke endpoints (fallback=false) ==="
+  log INFO "=== STEP 17: Smoke endpoints (fallback=false) ==="
   if (( DRY_RUN )); then
     log INFO "DRY-RUN: would test API health and BI endpoints with fallback=false"
     return 0
@@ -933,6 +972,7 @@ step_start_streaming
 step_register_debezium
 step_bootstrap_stg
 step_backfill
+step_align_consumer_offsets
 step_verify_streaming_readiness
 step_validate_parity
 step_activate_realtime

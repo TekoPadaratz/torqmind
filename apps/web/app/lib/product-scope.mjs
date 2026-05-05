@@ -74,9 +74,7 @@ export function readScopeFromSearch(searchParams, fallback = {}) {
     fallback.id_filiais,
     fallback.id_filial,
   );
-  const id_filiais = branch_scope === 'all'
-    ? []
-    : (requestedBranchIds.length ? requestedBranchIds : fallbackBranchIds);
+  const id_filiais = requestedBranchIds.length ? requestedBranchIds : fallbackBranchIds;
   const id_filial = params.get('id_filial')
     || (id_filiais.length === 1 ? id_filiais[0] : null)
     || (fallback.id_filial != null ? String(fallback.id_filial) : null);
@@ -107,6 +105,7 @@ export function buildScopeSearchParams(scope, options = {}) {
   const branchScope = String(scope?.branch_scope || '').trim().toLowerCase();
   if (branchScope === 'all') {
     params.set('branch_scope', 'all');
+    for (const branchId of branchIds) params.append('id_filiais', branchId);
   } else if (branchIds.length === 1) {
     params.set('id_filial', branchIds[0]);
   } else {

@@ -8,8 +8,9 @@ ALLOW_INSECURE_ENV="${ALLOW_INSECURE_ENV:-0}"
 LOCK_FILE="${LOCK_FILE:-/tmp/torqmind-prod-etl-pipeline.lock}"
 STATE_DIR="${STATE_DIR:-/var/tmp/torqmind-etl}"
 RISK_INTERVAL_MINUTES="${RISK_INTERVAL_MINUTES:-30}"
-PIPELINE_TIMEOUT_SECONDS="${PIPELINE_TIMEOUT_SECONDS:-90}"
-PIPELINE_WARN_SECONDS="${PIPELINE_WARN_SECONDS:-30}"
+RISK_TRACK_MODE="${RISK_TRACK_MODE:-auto}"
+PIPELINE_TIMEOUT_SECONDS="${PIPELINE_TIMEOUT_SECONDS:-240}"
+PIPELINE_WARN_SECONDS="${PIPELINE_WARN_SECONDS:-120}"
 PIPELINE_TRACK_LOG_TAIL_LINES="${PIPELINE_TRACK_LOG_TAIL_LINES:-120}"
 PIPELINE_TRACK_LOG_MAX_BYTES="${PIPELINE_TRACK_LOG_MAX_BYTES:-12000}"
 SKIP_BUSY_TENANTS="${SKIP_BUSY_TENANTS:-true}"
@@ -179,6 +180,93 @@ print("false")
 PY
 }
 
+bool_is_true() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+load_runtime_flags_from_env() {
+  python3 - "$ENV_FILE" <<'PY'
+import sys
+
+path = sys.argv[1]
+wanted = {
+    "USE_REALTIME_MARTS": "",
+    "REALTIME_MARTS_SOURCE": "",
+    "REFRESH_LEGACY_PG_MARTS": "",
+}
+
+try:
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key.startswith("export "):
+                key = key[7:].strip()
+            if key not in wanted:
+                continue
+            value = value.strip()
+            if value and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            wanted[key] = value
+except OSError:
+    pass
+
+print("|".join((wanted["USE_REALTIME_MARTS"], wanted["REALTIME_MARTS_SOURCE"], wanted["REFRESH_LEGACY_PG_MARTS"])))
+PY
+}
+
+RISK_TRACK_STATE_MESSAGE=""
+
+risk_track_enabled() {
+  RISK_TRACK_STATE_MESSAGE=""
+  if [[ "${FORCE_RISK:-false}" == "true" || "${FORCE_RISK:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  local mode="${RISK_TRACK_MODE,,}"
+  case "$mode" in
+    enabled|enable|true|1|on)
+      return 0
+      ;;
+    disabled|disable|false|0|off)
+      RISK_TRACK_STATE_MESSAGE="TorqMind risk track skipped: RISK_TRACK_MODE=${RISK_TRACK_MODE}."
+      return 1
+      ;;
+    auto|"")
+      ;;
+    *)
+      RISK_TRACK_STATE_MESSAGE="TorqMind risk track skipped: RISK_TRACK_MODE inválido (${RISK_TRACK_MODE})."
+      return 1
+      ;;
+  esac
+
+  local runtime_flags
+  local use_realtime_marts
+  local realtime_marts_source
+  local refresh_legacy_pg_marts
+
+  runtime_flags="$(load_runtime_flags_from_env)"
+  IFS='|' read -r use_realtime_marts realtime_marts_source refresh_legacy_pg_marts <<<"$runtime_flags"
+  if bool_is_true "$use_realtime_marts" \
+    && [[ "${realtime_marts_source,,}" == "stg" ]] \
+    && ! bool_is_true "$refresh_legacy_pg_marts"; then
+    RISK_TRACK_STATE_MESSAGE="TorqMind risk track skipped: auto-disabled for realtime STG without legacy PostgreSQL mart refresh."
+    return 1
+  fi
+
+  return 0
+}
+
 is_clickhouse_incremental_enabled() {
   [[ "$CLICKHOUSE_INCREMENTAL_ENABLED" == "true" || "$CLICKHOUSE_INCREMENTAL_ENABLED" == "1" ]]
 }
@@ -196,15 +284,17 @@ run_clickhouse_incremental_publication() {
 }
 
 risk_is_due() {
+  RISK_TRACK_STATE_MESSAGE=""
   if [[ "${FORCE_RISK:-false}" == "true" || "${FORCE_RISK:-0}" == "1" ]]; then
     return 0
   fi
   if [[ ! "$RISK_INTERVAL_MINUTES" =~ ^-?[0-9]+$ ]]; then
-    echo "RISK_INTERVAL_MINUTES inválido: $RISK_INTERVAL_MINUTES" >&2
+    RISK_TRACK_STATE_MESSAGE="TorqMind risk track skipped: RISK_INTERVAL_MINUTES inválido (${RISK_INTERVAL_MINUTES})."
     return 1
   fi
   if (( RISK_INTERVAL_MINUTES <= 0 )); then
-    return 0
+    RISK_TRACK_STATE_MESSAGE="TorqMind risk track disabled by RISK_INTERVAL_MINUTES=${RISK_INTERVAL_MINUTES}."
+    return 1
   fi
   if [[ ! -f "$RISK_STATE_FILE" ]]; then
     return 0
@@ -219,7 +309,12 @@ risk_is_due() {
     return 0
   fi
 
-  (( now_epoch - last_epoch >= RISK_INTERVAL_MINUTES * 60 ))
+  if (( now_epoch - last_epoch >= RISK_INTERVAL_MINUTES * 60 )); then
+    return 0
+  fi
+
+  RISK_TRACK_STATE_MESSAGE="TorqMind risk track not due yet."
+  return 1
 }
 
 risk_state_should_advance() {
@@ -255,20 +350,24 @@ else
   echo "$(date -Iseconds) ClickHouse incremental publication skipped after operational track: operational failed." >&2
 fi
 
-if risk_is_due; then
-  echo "$(date -Iseconds) TorqMind risk track due." >&2
-  risk_summary="$(run_track risk "$RISK_SKIP_BUSY_TENANTS")"
-  printf '%s\n' "$risk_summary"
-  if [[ "$(track_succeeded "$risk_summary")" == "true" ]]; then
-    run_clickhouse_incremental_publication "after-risk"
-  fi
-  if [[ "$(risk_state_should_advance "$risk_summary")" == "true" ]]; then
-    date +%s >"$RISK_STATE_FILE"
+if risk_track_enabled; then
+  if risk_is_due; then
+    echo "$(date -Iseconds) TorqMind risk track due." >&2
+    risk_summary="$(run_track risk "$RISK_SKIP_BUSY_TENANTS")"
+    printf '%s\n' "$risk_summary"
+    if [[ "$(track_succeeded "$risk_summary")" == "true" ]]; then
+      run_clickhouse_incremental_publication "after-risk"
+    fi
+    if [[ "$(risk_state_should_advance "$risk_summary")" == "true" ]]; then
+      date +%s >"$RISK_STATE_FILE"
+    else
+      echo "$(date -Iseconds) TorqMind risk track terminou com falha/skip; janela não avançada." >&2
+    fi
   else
-    echo "$(date -Iseconds) TorqMind risk track terminou com falha/skip; janela não avançada." >&2
+    echo "$(date -Iseconds) ${RISK_TRACK_STATE_MESSAGE:-TorqMind risk track not due yet.}" >&2
   fi
 else
-  echo "$(date -Iseconds) TorqMind risk track not due yet." >&2
+  echo "$(date -Iseconds) ${RISK_TRACK_STATE_MESSAGE:-TorqMind risk track skipped.}" >&2
 fi
 
 echo "$(date -Iseconds) TorqMind ETL pipeline finished" >&2

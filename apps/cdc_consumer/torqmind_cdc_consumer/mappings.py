@@ -300,6 +300,14 @@ _register(TableMapping(
              "severity_hint", "active"),
 ))
 
+_register(TableMapping(
+    source_schema="app", source_table="goals",
+    ch_database="torqmind_current", ch_table="goals",
+    primary_key=("id",),
+    columns=("id", "id_empresa", "id_filial", "goal_date", "goal_type",
+             "target_value", "created_at"),
+))
+
 
 def get_mapping(schema: str, table: str) -> TableMapping | None:
     """Lookup table mapping by schema.table."""

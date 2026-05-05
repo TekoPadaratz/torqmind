@@ -339,6 +339,45 @@ bootstrap_payment_type_map() {
   log "  ClickHouse total after: ${ch_count//[[:space:]]/}"
 }
 
+bootstrap_goals() {
+  log "Bootstrapping app.goals → torqmind_current.goals ..."
+  local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'goals', '${PG_USER}', '${PG_PASS}', 'app')"
+
+  local pg_count
+  pg_count="$(pg_scalar "SELECT count(*) FROM app.goals WHERE id_empresa = $ID_EMPRESA")"
+  pg_count="${pg_count//[[:space:]]/}"
+  log "  PG rows for tenant ${ID_EMPRESA}: $pg_count"
+
+  if (( pg_count == 0 )); then
+    log "  WARN: app.goals has 0 rows for tenant ${ID_EMPRESA} - skipping"
+    return 0
+  fi
+
+  ch_exec -q "
+    INSERT INTO torqmind_current.goals (
+        id, id_empresa, id_filial, goal_date, goal_type, target_value, created_at,
+        is_deleted, source_ts_ms, ingested_at
+    )
+    SELECT
+        id,
+        id_empresa,
+        id_filial,
+        goal_date,
+        goal_type,
+        target_value,
+        created_at,
+        0,
+        toInt64(toUnixTimestamp(coalesce(created_at, now())) * 1000),
+        now64(6)
+    FROM ${src}
+    WHERE id_empresa = ${ID_EMPRESA}
+  " 2>/dev/null
+
+  local ch_count
+  ch_count="$(ch_exec -q "SELECT count() FROM torqmind_current.goals FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null)"
+  log "  ClickHouse total after: ${ch_count//[[:space:]]/}"
+}
+
 # --- Parity check ---
 
 validate_parity() {
@@ -423,6 +462,7 @@ main() {
 
   # App-level lookup
   bootstrap_payment_type_map
+  bootstrap_goals
 
   # Parity validation
   if (( ! SKIP_PARITY )); then

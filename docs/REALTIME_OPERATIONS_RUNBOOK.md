@@ -99,6 +99,12 @@ stg.formas_pgto_comprovantes
 
 Then it waits for raw/current STG CDC, triggers MartBuilder with `source=stg`, verifies `sales_daily_rt`, and calls the API facade with fallback disabled. It does not run STG->DW ETL.
 
+Operational notes:
+
+- The default synthetic business date uses year `2099`, which stays inside ClickHouse `Date` range while still avoiding stale raw/mart matches.
+- In production-like environments with historical backfill already applied, keep the CDC consumer on `CDC_AUTO_OFFSET_RESET=latest` and an explicit hot-path `CDC_TOPICS` list. This avoids large unrelated backlog from delaying realtime proof.
+- Realtime mart refreshes now run off the consumer ingestion hot path, so raw/current writes are not blocked by synchronous mart rebuilds.
+
 ## Rollback
 
 ```bash
@@ -199,4 +205,4 @@ Shows: date range, daily volume, hourly distribution, filial breakdown, payment 
 
 ## Remaining Risk
 
-The STG-direct path is implemented in code and scripts, but production acceptance still requires running the E2E smoke and blocking validation against the target environment. If either cannot run, the release is not operationally concluded.
+The STG-direct path is implemented and the production-like acceptance flow is executable, but any environment that overrides the smoke date beyond ClickHouse `Date` range or reintroduces broad CDC topic subscriptions can regress realtime behavior and must be revalidated with the blocking smoke and validation scripts.

@@ -92,15 +92,39 @@ class AnalyticsFacadeUnitTest(unittest.TestCase):
         pg_call.assert_called_once()
         validator.compare.assert_called_once_with("dashboard_kpis", {"source": "pg"}, {"source": "ch"})
 
-    def test_documented_debt_falls_back_to_postgres(self) -> None:
-        repos_analytics.settings.use_clickhouse = True
-        repos_analytics.settings.dual_read_mode = False
+    def test_inventory_has_no_analytical_clickhouse_debt(self) -> None:
+        inventory = repos_analytics.analytics_backend_inventory()
+        debts = [item for item in inventory["functions"] if item["source"] == "postgres_debt"]
 
-        with patch.object(repos_analytics._postgres, "stock_position_summary", return_value={"source": "pg"}) as pg_call:
-            result = repos_analytics.stock_position_summary("MASTER", 7, None)
+        self.assertEqual(debts, [])
 
-        self.assertEqual(result, {"source": "pg"})
-        pg_call.assert_called_once()
+    def test_inventory_marks_customers_delinquency_as_clickhouse(self) -> None:
+        inventory = repos_analytics.analytics_backend_inventory()
+        row = next(item for item in inventory["functions"] if item["function"] == "customers_delinquency_overview")
+
+        self.assertEqual(row["source"], "clickhouse")
+        self.assertTrue(bool(row["clickhouse_implemented"]))
+        self.assertIsNone(row["debt"])
+
+    def test_inventory_marks_goal_reads_as_clickhouse(self) -> None:
+        inventory = repos_analytics.analytics_backend_inventory()
+        goals_today = next(item for item in inventory["functions"] if item["function"] == "goals_today")
+        monthly_projection = next(item for item in inventory["functions"] if item["function"] == "monthly_goal_projection")
+
+        self.assertEqual(goals_today["source"], "clickhouse")
+        self.assertTrue(bool(goals_today["clickhouse_implemented"]))
+        self.assertIsNone(goals_today["debt"])
+        self.assertEqual(monthly_projection["source"], "clickhouse")
+        self.assertTrue(bool(monthly_projection["clickhouse_implemented"]))
+        self.assertIsNone(monthly_projection["debt"])
+
+    def test_inventory_marks_stock_position_as_clickhouse(self) -> None:
+        inventory = repos_analytics.analytics_backend_inventory()
+        row = next(item for item in inventory["functions"] if item["function"] == "stock_position_summary")
+
+        self.assertEqual(row["source"], "clickhouse")
+        self.assertTrue(bool(row["clickhouse_implemented"]))
+        self.assertIsNone(row["debt"])
 
     def test_competitor_pricing_overview_is_postgres_owned_app_flow(self) -> None:
         repos_analytics.settings.use_clickhouse = True
@@ -213,6 +237,92 @@ class ClickHouseQueryScopeUnitTest(unittest.TestCase):
         )
         self.assertEqual(payload["reading_status"], "unavailable_for_requested_window")
         self.assertEqual(payload["freshness"]["historical_through_dt"], "2026-04-30")
+
+    def test_goals_today_uses_clickhouse_current_table(self) -> None:
+        captured = {}
+
+        def fake_query(query, parameters=None, tenant_id=None):
+            captured["query"] = query
+            captured["parameters"] = parameters
+            captured["tenant_id"] = tenant_id
+            return [{"goal_type": "FATURAMENTO", "target_value": 9500000, "goal_rows": 1, "goal_month": date(2026, 5, 1)}]
+
+        with patch.object(repos_mart_clickhouse, "query_dict", side_effect=fake_query):
+            payload = repos_mart_clickhouse.goals_today("MASTER", 1, 14458, date(2026, 5, 21))
+
+        self.assertEqual(payload[0]["goal_type"], "FATURAMENTO")
+        self.assertEqual(float(payload[0]["target_value"]), 9500000.0)
+        self.assertEqual(payload[0]["branch_goal_count"], 1)
+        self.assertEqual(payload[0]["goal_month"], "2026-05-01")
+        self.assertIn("FROM torqmind_current.goals FINAL", captured["query"])
+        self.assertIn("id_filial = 14458", captured["query"])
+        self.assertEqual(captured["parameters"]["month_ini"], date(2026, 5, 1))
+        self.assertEqual(captured["tenant_id"], 1)
+
+    def test_stock_position_summary_reports_clickhouse_unavailable_when_tables_are_missing(self) -> None:
+        with patch.object(repos_mart_clickhouse, "_table_exists", return_value=False):
+            payload = repos_mart_clickhouse.stock_position_summary("MASTER", 1, 14458)
+
+        self.assertEqual(payload["source_status"], "unavailable")
+        self.assertEqual(payload["rows"], 0)
+        self.assertIn("ClickHouse", payload["summary"])
+
+    def test_monthly_goal_projection_uses_clickhouse_goal_rows_and_sales_series(self) -> None:
+        with patch.object(
+            repos_mart_clickhouse,
+            "commercial_window_coverage",
+            return_value={"mode": "exact", "effective_dt_ini": date(2026, 5, 1), "effective_dt_fim": date(2026, 5, 21)},
+        ), patch.object(
+            repos_mart_clickhouse,
+            "business_today",
+            return_value=date(2026, 5, 21),
+        ), patch.object(
+            repos_mart_clickhouse,
+            "business_clock_payload",
+            return_value={"business_today": "2026-05-21"},
+        ), patch.object(
+            repos_mart_clickhouse,
+            "sales_operational_day_bundle",
+            return_value={"kpis": {"faturamento": 500.0}},
+        ), patch.object(
+            repos_mart_clickhouse,
+            "_sales_daily_totals_from_mart",
+            side_effect=[
+                [
+                    {"data_key": 20260501, "faturamento": 100.0},
+                    {"data_key": 20260502, "faturamento": 200.0},
+                ],
+                [
+                    {"data_key": 20260429, "faturamento": 150.0},
+                    {"data_key": 20260430, "faturamento": 180.0},
+                    {"data_key": 20260501, "faturamento": 100.0},
+                ],
+            ],
+        ) as daily_totals, patch.object(
+            repos_mart_clickhouse,
+            "_goal_rows_for_month",
+            return_value=[{"goal_type": "FATURAMENTO", "target_value": 9500000.0, "goal_rows": 1, "goal_month": date(2026, 5, 1)}],
+        ) as goal_rows, patch.object(
+            repos_mart_clickhouse,
+            "_sales_month_summaries_from_mart",
+            return_value=[
+                {"month_ref": "2026-04-01", "faturamento": 1000.0, "observed_days": 30, "expected_days": 30, "completeness_pct": 100.0, "has_data": True, "is_partial": False, "is_complete": True},
+                {"month_ref": "2026-03-01", "faturamento": 900.0, "observed_days": 31, "expected_days": 31, "completeness_pct": 100.0, "has_data": True, "is_partial": False, "is_complete": True},
+                {"month_ref": "2026-02-01", "faturamento": 800.0, "observed_days": 28, "expected_days": 28, "completeness_pct": 100.0, "has_data": True, "is_partial": False, "is_complete": True},
+            ],
+        ) as month_summaries:
+            payload = repos_mart_clickhouse.monthly_goal_projection("MASTER", 1, 14458, date(2026, 5, 21))
+
+        self.assertEqual(payload["month_ref"], "2026-05-01")
+        self.assertTrue(bool(payload["goal"]["configured"]))
+        self.assertEqual(float(payload["goal"]["target_value"]), 9500000.0)
+        self.assertEqual(payload["series_mtd"][-1]["date"], "2026-05-21")
+        self.assertEqual(float(payload["series_mtd"][-1]["faturamento"]), 500.0)
+        self.assertEqual(payload["summary"]["days_elapsed"], 21)
+        self.assertEqual(payload["history"]["average_basis"], "last_3_complete_months")
+        self.assertEqual(goal_rows.call_args.kwargs["goal_type"], "FATURAMENTO")
+        self.assertEqual(daily_totals.call_count, 2)
+        month_summaries.assert_called_once()
 
     def test_cash_live_now_does_not_return_epoch_zero_as_1970(self) -> None:
         responses = [
@@ -438,6 +548,98 @@ class ClickHouseQueryScopeUnitTest(unittest.TestCase):
 
         self.assertIsNone(empty_payload["dt_ref"])
         self.assertNotIn("1970-01-01", str(empty_payload))
+
+    def test_payments_anomalies_backfills_filial_name_from_current_snapshot(self) -> None:
+        def fake_query(sql: str, parameters=None, tenant_id=None):
+            normalized = " ".join(sql.split())
+            if "FROM torqmind_mart.pagamentos_anomalias_diaria" in normalized:
+                return [
+                    {
+                        "data_key": 20260504,
+                        "id_filial": 14122,
+                        "filial_nome": "",
+                        "id_turno": 7,
+                        "turno_value": "7",
+                        "event_type": "CANCELAMENTO_CAIXA",
+                        "severity": "high",
+                        "score": 91.2,
+                        "impacto_estimado": 820.0,
+                        "reasons": "{}",
+                        "insight_id": "abc",
+                        "insight_id_hash": "abc",
+                    }
+                ]
+            if "FROM torqmind_current.stg_filiais FINAL" in normalized:
+                return [{"id_filial": 14122, "filial_nome": "AUTO POSTO VR 05"}]
+            return []
+
+        with patch.object(repos_mart_clickhouse, "query_dict", side_effect=fake_query):
+            rows = repos_mart_clickhouse.payments_anomalies(
+                "MASTER",
+                1,
+                None,
+                date(2026, 5, 4),
+                date(2026, 5, 4),
+                limit=20,
+            )
+
+        self.assertEqual(rows[0]["filial_nome"], "AUTO POSTO VR 05")
+        self.assertEqual(rows[0]["filial_label"], "AUTO POSTO VR 05")
+
+    def test_customers_delinquency_overview_uses_clickhouse_dw_replica(self) -> None:
+        with patch.object(
+            repos_mart_clickhouse,
+            "_first",
+            return_value={
+                "clientes_em_aberto": 3,
+                "titulos_em_aberto": 7,
+                "valor_total": 1234.56,
+                "titulos_30": 2,
+                "titulos_60": 3,
+                "titulos_90_plus": 2,
+                "valor_30": 120.0,
+                "valor_60": 345.67,
+                "valor_90_plus": 768.89,
+                "max_dias_atraso": 94,
+            },
+        ) as first_call, patch.object(
+            repos_mart_clickhouse,
+            "_run",
+            return_value=[
+                {
+                    "id_cliente": 99,
+                    "cliente_nome": "Cliente DW Replica",
+                    "titulos": 4,
+                    "max_dias_atraso": 94,
+                    "valor_aberto": 768.89,
+                    "titulos_30": 0,
+                    "titulos_60": 1,
+                    "titulos_90_plus": 3,
+                    "valor_30": 0,
+                    "valor_60": 120.0,
+                    "valor_90_plus": 648.89,
+                    "titulos_totais": 4,
+                    "valor_total": 768.89,
+                    "bucket_label": "61+ dias",
+                }
+            ],
+        ) as run_call:
+            payload = repos_mart_clickhouse.customers_delinquency_overview(
+                "MASTER",
+                1,
+                None,
+                date(2026, 5, 4),
+                limit=5,
+            )
+
+        self.assertEqual(payload["summary"]["clientes_em_aberto"], 3)
+        self.assertEqual(payload["summary"]["max_dias_atraso"], 94)
+        self.assertEqual(payload["buckets"][2]["label"], "61+ dias")
+        self.assertEqual(payload["customers"][0]["cliente_nome"], "Cliente DW Replica")
+        self.assertEqual(payload["customers"][0]["bucket_label"], "61+ dias")
+        self.assertEqual(payload["dt_ref"], "2026-05-04")
+        self.assertEqual(first_call.call_args[0][2], 1)
+        self.assertEqual(run_call.call_args[0][2], 1)
 
 
 if __name__ == "__main__":

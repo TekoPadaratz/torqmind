@@ -43,10 +43,10 @@ TEST_ID_EMPRESA="${TEST_ID_EMPRESA:-1}"
 TEST_ID_FILIAL="${TEST_ID_FILIAL:-1}"
 TEST_RUN_SUFFIX="${TEST_RUN_SUFFIX:-$(date +%s)}"
 TEST_DAY="$(printf '%02d' "$(( (TEST_RUN_SUFFIX % 28) + 1 ))")"
-# Use an isolated future business date and natural keys to avoid stale raw/mart matches.
-TEST_DATA_KEY="${TEST_DATA_KEY:-229912${TEST_DAY}}"
-TEST_DATE_ISO="${TEST_DATE_ISO:-2299-12-${TEST_DAY}T10:30:00Z}"
-TEST_TS_SQL="${TEST_TS_SQL:-2299-12-${TEST_DAY} 10:30:00+00}"
+# Use an isolated future business date within ClickHouse Date range.
+TEST_DATA_KEY="${TEST_DATA_KEY:-209912${TEST_DAY}}"
+TEST_DATE_ISO="${TEST_DATE_ISO:-2099-12-${TEST_DAY}T10:30:00Z}"
+TEST_TS_SQL="${TEST_TS_SQL:-2099-12-${TEST_DAY} 10:30:00+00}"
 TEST_MARKER="${TEST_MARKER:-__E2E_SMOKE_TEST_${TEST_RUN_SUFFIX}__}"
 TEST_ID_DB="${TEST_ID_DB:-$((900000000 + (TEST_RUN_SUFFIX % 10000000)))}"
 TEST_ID_COMPROVANTE="${TEST_ID_COMPROVANTE:-$TEST_ID_DB}"
@@ -76,11 +76,146 @@ ch_query() {
     --format=TabSeparated -q "$1" 2>/dev/null || echo "__ERROR__"
 }
 
+ch_count() {
+  local result
+  result="$(ch_query "$1")"
+  result="${result//[[:space:]]/}"
+  printf '%s' "$result"
+}
+
+ch_exec() {
+  compose_prod exec -T clickhouse clickhouse-client \
+    --user "$CH_USER" --password "$CH_PASS" \
+    --multiquery -q "$1" >/dev/null
+}
+
+run_mart_builder_refresh() {
+  compose_streaming exec -T cdc-consumer python -c "
+from torqmind_cdc_consumer.mart_builder import MartBuilder
+from torqmind_cdc_consumer.config import settings
+builder = MartBuilder(
+    clickhouse_host=settings.clickhouse_host,
+    clickhouse_port=settings.clickhouse_port,
+    clickhouse_user=settings.clickhouse_user,
+    clickhouse_password=settings.clickhouse_password,
+    source='stg',
+)
+builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'comprovantes')
+builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'itenscomprovantes')
+builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'formas_pgto_comprovantes')
+results = builder.refresh_if_needed()
+for r in results:
+    print(f'  {r.mart_name}: rows={r.rows_written} ms={r.duration_ms} err={r.error}')
+errors = [r for r in results if r.error]
+assert not errors, f'Mart builder returned errors: {errors!r}'
+print('MART_BUILD_OK')
+"
+}
+
+wait_for_current_cleanup() {
+  local max_wait=60
+  local interval=3
+  local elapsed=0
+  local comp_count=""
+  local item_count=""
+  local pgto_count=""
+  local comp_slim_count=""
+  local item_slim_count=""
+  local pgto_slim_count=""
+
+  while (( elapsed < max_wait )); do
+    comp_count="$(ch_count "SELECT count() FROM torqmind_current.stg_comprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
+    item_count="$(ch_count "SELECT count() FROM torqmind_current.stg_itenscomprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
+    pgto_count="$(ch_count "SELECT count() FROM torqmind_current.stg_formas_pgto_comprovantes FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_referencia=$TEST_REFERENCIA AND is_deleted=0")"
+    comp_slim_count="$(ch_count "SELECT count() FROM torqmind_current.stg_comprovantes_slim WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND is_deleted=0")"
+    item_slim_count="$(ch_count "SELECT count() FROM torqmind_current.stg_itenscomprovantes_slim WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE AND id_itemcomprovante=$TEST_ID_ITEM AND is_deleted=0")"
+    pgto_slim_count="$(ch_count "SELECT count() FROM torqmind_current.stg_formas_pgto_slim WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_referencia=$TEST_REFERENCIA AND is_deleted=0")"
+
+    if [[ "$comp_count" == "0" && "$item_count" == "0" && "$pgto_count" == "0" && "$comp_slim_count" == "0" && "$item_slim_count" == "0" && "$pgto_slim_count" == "0" ]]; then
+      return 0
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  log "WARN: current/slim cleanup did not converge after ${max_wait}s (comprovantes=$comp_count itens=$item_count pagamentos=$pgto_count comprovantes_slim=$comp_slim_count itens_slim=$item_slim_count formas_slim=$pgto_slim_count)"
+  return 1
+}
+
+wait_for_mart_cleanup() {
+  local max_wait=60
+  local interval=3
+  local elapsed=0
+  local sales_daily_count=""
+  local sales_hourly_count=""
+  local sales_products_count=""
+  local sales_groups_count=""
+  local payments_count=""
+  local dashboard_count=""
+  local fraud_count=""
+  local risk_count=""
+
+  while (( elapsed < max_wait )); do
+    sales_daily_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    sales_hourly_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.sales_hourly_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    sales_products_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.sales_products_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    sales_groups_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.sales_groups_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    payments_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.payments_by_type_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    dashboard_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.dashboard_home_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    fraud_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.fraud_daily_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+    risk_count="$(ch_count "SELECT count() FROM torqmind_mart_rt.risk_recent_events_rt FINAL WHERE id_empresa=$TEST_ID_EMPRESA AND data_key=$TEST_DATA_KEY")"
+
+    if [[ "$sales_daily_count" == "0" && "$sales_hourly_count" == "0" && "$sales_products_count" == "0" && "$sales_groups_count" == "0" && "$payments_count" == "0" && "$dashboard_count" == "0" && "$fraud_count" == "0" && "$risk_count" == "0" ]]; then
+      return 0
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  log "WARN: mart cleanup did not converge after ${max_wait}s (sales_daily_rt=$sales_daily_count sales_hourly_rt=$sales_hourly_count sales_products_rt=$sales_products_count sales_groups_rt=$sales_groups_count payments_by_type_rt=$payments_count dashboard_home_rt=$dashboard_count fraud_daily_rt=$fraud_count risk_recent_events_rt=$risk_count)"
+  return 1
+}
+
+force_clickhouse_cleanup() {
+  ch_exec "
+    ALTER TABLE torqmind_current.stg_comprovantes DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND id_db = $TEST_ID_DB AND id_comprovante = $TEST_ID_COMPROVANTE SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_current.stg_itenscomprovantes DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND id_db = $TEST_ID_DB AND id_comprovante = $TEST_ID_COMPROVANTE SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_current.stg_formas_pgto_comprovantes DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND id_referencia = $TEST_REFERENCIA SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_current.stg_comprovantes_slim DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND id_db = $TEST_ID_DB AND id_comprovante = $TEST_ID_COMPROVANTE SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_current.stg_itenscomprovantes_slim DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND id_db = $TEST_ID_DB AND id_comprovante = $TEST_ID_COMPROVANTE AND id_itemcomprovante = $TEST_ID_ITEM SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_current.stg_formas_pgto_slim DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND id_referencia = $TEST_REFERENCIA SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.sales_daily_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.sales_hourly_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.sales_products_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.sales_groups_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.payments_by_type_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.dashboard_home_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.fraud_daily_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+    ALTER TABLE torqmind_mart_rt.risk_recent_events_rt DELETE WHERE id_empresa = $TEST_ID_EMPRESA AND id_filial = $TEST_ID_FILIAL AND data_key = $TEST_DATA_KEY SETTINGS mutations_sync = 1;
+  "
+}
+
 cleanup() {
   log "Cleaning up test data (data_key=$TEST_DATA_KEY)..."
   pg_exec "DELETE FROM stg.formas_pgto_comprovantes WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_referencia=$TEST_REFERENCIA;" 2>/dev/null || true
   pg_exec "DELETE FROM stg.itenscomprovantes WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE;" 2>/dev/null || true
   pg_exec "DELETE FROM stg.comprovantes WHERE id_empresa=$TEST_ID_EMPRESA AND id_filial=$TEST_ID_FILIAL AND id_db=$TEST_ID_DB AND id_comprovante=$TEST_ID_COMPROVANTE;" 2>/dev/null || true
+
+  if ! wait_for_current_cleanup; then
+    log "Applying direct ClickHouse cleanup fallback for synthetic key $TEST_DATA_KEY"
+    force_clickhouse_cleanup
+  fi
+
+  run_mart_builder_refresh
+
+  if ! wait_for_mart_cleanup; then
+    log "Reapplying direct ClickHouse cleanup fallback for mart residue on $TEST_DATA_KEY"
+    force_clickhouse_cleanup
+    wait_for_mart_cleanup
+  fi
+
   log "Cleanup done."
 }
 
@@ -211,7 +346,7 @@ step_wait_raw_event() {
 
   while (( elapsed < max_wait )); do
     local raw_count
-    raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='stg' AND table_name='comprovantes' AND JSONExtractInt(after_json, 'id_comprovante')=$TEST_ID_COMPROVANTE AND position(after_json, '$TEST_MARKER') > 0")"
+    raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='stg' AND table_name='comprovantes' AND JSONExtractInt(key_json, 'id_db')=$TEST_ID_DB AND JSONExtractInt(key_json, 'id_comprovante')=$TEST_ID_COMPROVANTE AND (position(after_json, '$TEST_MARKER') > 0 OR position(before_json, '$TEST_MARKER') > 0)")"
     raw_count="${raw_count//[[:space:]]/}"
     if (( raw_count > 0 )); then
       log "Raw event found after ${elapsed}s"
@@ -271,26 +406,7 @@ step_trigger_mart_builder() {
   log "=== Step 4: Trigger mart builder for test data_key ==="
 
   # Call the mart builder backfill for just our test key
-  compose_streaming exec -T cdc-consumer python -c "
-from torqmind_cdc_consumer.mart_builder import MartBuilder
-from torqmind_cdc_consumer.config import settings
-builder = MartBuilder(
-    clickhouse_host=settings.clickhouse_host,
-    clickhouse_port=settings.clickhouse_port,
-    clickhouse_user=settings.clickhouse_user,
-    clickhouse_password=settings.clickhouse_password,
-    source='stg',
-)
-builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'comprovantes')
-builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'itenscomprovantes')
-builder.state.mark($TEST_ID_EMPRESA, $TEST_ID_FILIAL, $TEST_DATA_KEY, 'formas_pgto_comprovantes')
-results = builder.refresh_if_needed()
-for r in results:
-    print(f'  {r.mart_name}: rows={r.rows_written} ms={r.duration_ms} err={r.error}')
-errors = [r for r in results if r.error]
-assert not errors, f'Mart builder returned errors: {errors!r}'
-print('MART_BUILD_OK')
-"
+  run_mart_builder_refresh
 
   log "Mart builder triggered"
 }
@@ -381,7 +497,7 @@ step_generate_proof() {
   commit_hash="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
 
   local raw_count
-  raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='stg' AND table_name='comprovantes' AND JSONExtractInt(after_json, 'id_comprovante')=$TEST_ID_COMPROVANTE AND position(after_json, '$TEST_MARKER') > 0")"
+  raw_count="$(ch_query "SELECT count() FROM torqmind_raw.cdc_events WHERE table_schema='stg' AND table_name='comprovantes' AND JSONExtractInt(key_json, 'id_db')=$TEST_ID_DB AND JSONExtractInt(key_json, 'id_comprovante')=$TEST_ID_COMPROVANTE AND (position(after_json, '$TEST_MARKER') > 0 OR position(before_json, '$TEST_MARKER') > 0)")"
   raw_count="${raw_count//[[:space:]]/}"
 
   local current_comp_count

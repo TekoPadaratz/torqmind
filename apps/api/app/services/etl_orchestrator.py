@@ -100,11 +100,7 @@ PHASE_SQL_STEPS: tuple[tuple[str, str], ...] = (
     ("fact_venda", "SELECT etl.load_fact_venda(%s) AS rows"),
     ("fact_venda_item", "SELECT etl.load_fact_venda_item(%s) AS rows"),
     ("fact_financeiro", "SELECT etl.load_fact_financeiro(%s) AS rows"),
-    # HOTFIX 2026-04-27: módulo de estoque ainda não implementado no banco.
-    # A função etl.load_fact_estoque_atual não existe — step temporariamente
-    # desabilitado para manter o pipeline operacional rodando. Reativar quando
-    # a migration do estoque for criada.
-    # ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
+    ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
 )
 
 ProgressCallback = Callable[[dict[str, Any]], None]

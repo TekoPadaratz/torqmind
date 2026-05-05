@@ -259,6 +259,30 @@ class TestSalesOverviewBundleContract(unittest.TestCase):
         self.assertIn("month_ref_atual", months[0])
         self.assertIn("month_ref_anterior", months[0])
 
+
+class TestFraudRealtimeContract(unittest.TestCase):
+    """Validate antifraud operational KPIs match the frontend contract."""
+
+    @patch("app.repos_mart_realtime.query_dict")
+    def test_fraud_kpis_exposes_operational_keys(self, mock_qd: MagicMock):
+        mock_qd.side_effect = _make_query_dict_side_effect("fraud")
+
+        from app.repos_mart_realtime import fraud_kpis
+
+        result = fraud_kpis(
+            role="ADMIN",
+            id_empresa=1,
+            id_filial=None,
+            dt_ini=date(2026, 4, 1),
+            dt_fim=date(2026, 4, 30),
+        )
+
+        self.assertEqual(result["cancelamentos"], 10)
+        self.assertEqual(result["valor_cancelado"], 500.0)
+        self.assertEqual(result["qtd_eventos"], 10)
+        self.assertEqual(result["impacto_total"], 500.0)
+        self.assertEqual(result["score_medio"], 0.45)
+
     @patch("app.repos_mart_realtime.query_dict")
     def test_pydantic_validates_sales_response(self, mock_qd: MagicMock):
         mock_qd.side_effect = _make_query_dict_side_effect("sales")
@@ -377,6 +401,11 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
         self.assertEqual(turno["filial_label"], "AUTO POSTO VR 07")
         self.assertEqual(turno["turno_label"], "3")
         self.assertEqual(turno["usuario_label"], "Camila S")
+        self.assertEqual(float(result["kpis"]["recebimentos_periodo"]), 900.0)
+        self.assertEqual(float(result["kpis"]["cancelamentos_periodo"]), 50.0)
+        self.assertEqual(float(result["historical"]["kpis"]["recebimentos_periodo"]), 900.0)
+        self.assertEqual(float(result["historical"]["kpis"]["cancelamentos_periodo"]), 50.0)
+        self.assertEqual(result["payment_mix"], result["historical"]["payment_mix"])
         self.assertNotEqual(turno["filial_label"], "Filial 10169")
         self.assertNotEqual(turno["usuario_label"], "Operador #9")
 

@@ -219,6 +219,31 @@ Resultado objetivo:
 - ingest:
   - `ingest_ok=true`
   - `inserted_or_updated=1`
+
+## Realtime cutover final (2026-05-05)
+
+- runtime ajustado para realtime operacional:
+  - `CDC_AUTO_OFFSET_RESET=latest`
+  - `CDC_TOPICS` restrito ao hot path STG + `app.goals`/config
+  - refresh das marts movido para worker assíncrono, fora do hot path de ingestão
+- smoke oficial executado em ambiente alvo:
+  - `ENV_FILE=/etc/torqmind/prod.env bash deploy/scripts/realtime-e2e-smoke.sh`
+  - resultado: `PASS`
+- evidência objetiva do último run nominal:
+  - raw encontrado em `0s`
+  - `torqmind_current.stg_comprovantes` confirmado em `0s`
+  - `torqmind_current.stg_itenscomprovantes` confirmado em `6s`
+  - `sales_daily_rt_count=1`
+  - `sales_daily_rt_faturamento=42.5`
+  - `api_response_faturamento=42.5`
+  - `fallback=false`
+  - `etl_invoked=false`
+- artefato gerado:
+  - `/home/deploy/torqmind/tmp/realtime-proof-20260505_001404.json`
+- causa raiz fechada durante a validação:
+  - atraso não estava em Debezium/Redpanda; estava no `cdc-consumer`
+  - o consumer acumulava backlog por assinatura ampla demais e bloqueava a ingestão com refresh síncrono de marts
+  - o smoke também usava `2299`, fora da faixa de `Date` do ClickHouse; o default foi movido para `2099`
 - ETL:
   - `run1=50,130.82 ms`
   - `run2=47,267.40 ms`
@@ -233,6 +258,23 @@ Resultado objetivo:
 - estado Jarvis IA:
   - `jarvis_generate.stats`: `processed=1`, `cache_hits=1`, `openai_calls=0`, `fallback_used=0`
   - `ai_usage.totals`: `cache_rows=2`, `openai_calls=1`, `fallback_calls=1`
+
+## Stock ClickHouse closure (2026-05-05)
+
+- migration publicada:
+  - `sql/migrations/074_fact_estoque_atual.sql`
+  - objetos criados no PostgreSQL: `stg.estoque`, `dw.fact_estoque_atual`, `etl.load_fact_estoque_atual(integer)`, `mart.agg_estoque_posicao_atual`
+- runtime ETL reativado:
+  - `apps/api/app/services/etl_orchestrator.py` voltou a executar `fact_estoque_atual`
+  - teste de ordem reativado e validado: `app.test_etl_orchestration.EtlOrchestrationTest.test_tenant_phase_runs_explicit_steps_in_loader_order`
+- publicação ClickHouse concluída:
+  - `torqmind_dw.fact_estoque_atual` criada e carregada
+  - `torqmind_mart.agg_estoque_posicao_atual` criada
+  - validação objetiva: `SELECT count() FROM system.tables WHERE database = 'torqmind_mart' AND name = 'agg_estoque_posicao_atual'` -> `1`
+- validações executadas:
+  - `SELECT etl.load_fact_estoque_atual(1)` -> `0`
+  - `ENV_FILE=/etc/torqmind/prod.env ID_EMPRESA=1 bash deploy/scripts/prod-data-reconcile.sh` -> `errors=0`
+  - leitura Python via `repos_mart_clickhouse.stock_position_summary('MASTER', 1, 14458)` deixou de falhar por ausência de tabela/view e retornou o estado esperado de ausência de snapshots publicados (`rows=0`)
 - contagens finais tenant 1:
   - `stg.comprovantes`: `10,924,419`
   - `stg.movprodutos`: `10,909,620`

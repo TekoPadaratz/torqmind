@@ -308,6 +308,21 @@ CREATE TABLE IF NOT EXISTS torqmind_current.payment_type_map (
 ORDER BY (id)
 SETTINGS index_granularity = 8192;
 
+CREATE TABLE IF NOT EXISTS torqmind_current.goals (
+    id                Int64 NOT NULL,
+    id_empresa        Int32 NOT NULL,
+    id_filial         Int32 NOT NULL,
+    goal_date         Date NOT NULL,
+    goal_type         LowCardinality(String) NOT NULL,
+    target_value      Decimal(18, 2) NOT NULL,
+    created_at        Nullable(DateTime64(6, 'UTC')),
+    is_deleted        UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms      Int64 NOT NULL,
+    ingested_at       DateTime64(6, 'UTC') DEFAULT now64(6)
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id)
+SETTINGS index_granularity = 8192;
+
 -- ============================================================
 -- STG CANONICAL SOURCE CURRENT TABLES
 -- ============================================================

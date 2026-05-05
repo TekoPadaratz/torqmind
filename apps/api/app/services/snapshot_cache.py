@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
@@ -35,6 +36,13 @@ HOT_ROUTE_REFRESH_AFTER_SECONDS: dict[str, int] = {
     "goals_overview": 300,
 }
 ROUTE_SNAPSHOT_BYPASS_KEYS = frozenset({"pricing_competitor_overview"})
+REALTIME_TRUTH_BYPASS_KEYS = frozenset({
+    "dashboard_home",
+    "sales_overview",
+    "cash_overview",
+    "fraud_overview",
+    "finance_overview",
+})
 SYNC_SNAPSHOT_KEYS = tuple(HOT_ROUTE_REFRESH_AFTER_SECONDS.keys())
 DB_BUSY_LONG_QUERY_SECONDS = 15
 DB_BUSY_LOCK_WAITER_THRESHOLD = 1
@@ -95,15 +103,31 @@ def build_scope_signature(context: Dict[str, Any]) -> str:
 
 
 def route_snapshot_is_bypassed(snapshot_key: str) -> bool:
-    return snapshot_key in ROUTE_SNAPSHOT_BYPASS_KEYS
+    if snapshot_key in ROUTE_SNAPSHOT_BYPASS_KEYS:
+        return True
+    return bool(getattr(settings, "use_realtime_marts", False)) and snapshot_key in REALTIME_TRUTH_BYPASS_KEYS
 
 
 def _normalize_jsonb(value: Any) -> Any:
     return dict(value) if isinstance(value, dict) else value
 
 
+def _normalize_non_finite_json(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _normalize_non_finite_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_non_finite_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_non_finite_json(item) for item in value]
+    return value
+
+
 def _serialize_jsonb(value: Any) -> str:
-    return json.dumps(jsonable_encoder(value), ensure_ascii=False)
+    encoded = jsonable_encoder(value)
+    return json.dumps(_normalize_non_finite_json(encoded), ensure_ascii=False, allow_nan=False)
+
 
 
 def _snapshot_record_from_row(row_map: Dict[str, Any]) -> Dict[str, Any]:

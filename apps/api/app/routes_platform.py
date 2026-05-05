@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.deps import get_current_claims
-from app import repos_platform
+from app import repos_auth, repos_platform
 from app.schemas_platform import (
     BranchUpsertRequest,
     ChannelUpsertRequest,
@@ -400,8 +400,8 @@ def audit_list(
 def streaming_health(claims=Depends(get_current_claims)):
     """Streaming/realtime pipeline health for platform admins."""
     try:
-        repos_platform.require_platform_access(claims)
-    except repos_platform.AuthError as exc:
+        repos_auth.assert_platform_access(claims)
+    except repos_auth.AuthError as exc:
         _raise(exc)
 
     from app import repos_mart_realtime
