@@ -130,6 +130,7 @@ required_tables=(
   dim_usuario_caixa
   fact_caixa_turno
   fact_comprovante
+  fact_estoque_atual
   fact_financeiro
   fact_pagamento_comprovante
   fact_risco_evento
@@ -147,6 +148,7 @@ declare -A engines=(
   [dim_usuario_caixa]="ReplacingMergeTree(updated_at)"
   [fact_caixa_turno]="ReplacingMergeTree(updated_at)"
   [fact_comprovante]="ReplacingMergeTree(updated_at)"
+  [fact_estoque_atual]="ReplacingMergeTree(updated_at)"
   [fact_financeiro]="ReplacingMergeTree(updated_at)"
   [fact_pagamento_comprovante]="MergeTree()"
   [fact_risco_evento]="MergeTree()"
@@ -164,6 +166,7 @@ declare -A order_by=(
   [dim_usuario_caixa]="(id_empresa, id_filial, id_usuario)"
   [fact_caixa_turno]="(id_empresa, id_filial, id_turno)"
   [fact_comprovante]="(id_empresa, ifNull(data_key, 0), id_filial, id_db, id_comprovante)"
+  [fact_estoque_atual]="(id_empresa, ifNull(data_key_ref, 0), id_filial, id_estoque)"
   [fact_financeiro]="(id_empresa, id_filial, ifNull(data_key_venc, 0), tipo_titulo, id_db, id_titulo)"
   [fact_pagamento_comprovante]="(id_empresa, data_key, id_filial, referencia)"
   [fact_risco_evento]="(id_empresa, data_key, id_filial, event_type, ifNull(id_db, 0), ifNull(id_comprovante, 0), ifNull(id_movprodutos, 0), id)"
@@ -173,6 +176,7 @@ declare -A order_by=(
 
 declare -A chunk_column=(
   [fact_comprovante]="data_key"
+  [fact_estoque_atual]="data_key_ref"
   [fact_pagamento_comprovante]="data_key"
   [fact_risco_evento]="data_key"
   [fact_venda]="data_key"
@@ -181,6 +185,7 @@ declare -A chunk_column=(
 
 declare -A incremental_key_column=(
   [fact_comprovante]="data_key"
+  [fact_estoque_atual]="data_key_ref"
   [fact_pagamento_comprovante]="data_key"
   [fact_risco_evento]="data_key"
   [fact_venda]="data_key"
@@ -194,6 +199,7 @@ incremental_fact_tables=(
   fact_venda_item
   fact_pagamento_comprovante
   fact_caixa_turno
+  fact_estoque_atual
   fact_financeiro
   fact_risco_evento
   fact_comprovante
@@ -257,6 +263,49 @@ validate_payment_type_map() {
     return 1
   fi
   echo "  OK dim_forma_pagamento: rows=${ch_count}"
+}
+
+create_stock_position_view() {
+  ch --multiquery --query "
+CREATE DATABASE IF NOT EXISTS torqmind_mart;
+DROP VIEW IF EXISTS torqmind_mart.agg_estoque_posicao_atual;
+CREATE VIEW torqmind_mart.agg_estoque_posicao_atual AS
+SELECT
+  e.id_empresa AS id_empresa,
+  e.id_filial AS id_filial,
+  e.id_estoque AS id_estoque,
+  e.id_produto AS id_produto,
+  e.id_local_venda AS id_local_venda,
+  e.data_ref AS dt_ref,
+  e.updated_at AS updated_at,
+  CAST(ifNull(e.qtd_atual, 0), 'Decimal(18,3)') AS qtd_total,
+  CAST(ifNull(e.qtd_atual, 0), 'Decimal(18,3)') * CAST(ifNull(p.custo_medio, 0), 'Decimal(18,6)') AS valor_estimado,
+  if(
+    positionCaseInsensitiveUTF8(ifNull(g.nome, ''), 'COMBUST') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'GASOL') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'ETANOL') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'DIESEL') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'GNV') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(lv.nome, ''), 'PISTA') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(lv.nome, ''), 'TANQUE') > 0
+    OR positionCaseInsensitiveUTF8(ifNull(lv.nome, ''), 'BICO') > 0,
+    'tanques',
+    'loja'
+  ) AS estoque_bucket
+FROM (SELECT * FROM torqmind_dw.fact_estoque_atual FINAL) AS e
+LEFT JOIN (SELECT * FROM torqmind_dw.dim_produto FINAL) AS p
+  ON p.id_empresa = e.id_empresa
+ AND p.id_filial = e.id_filial
+ AND p.id_produto = e.id_produto
+LEFT JOIN (SELECT * FROM torqmind_dw.dim_grupo_produto FINAL) AS g
+  ON g.id_empresa = p.id_empresa
+ AND g.id_filial = p.id_filial
+ AND g.id_grupo_produto = p.id_grupo_produto
+LEFT JOIN (SELECT * FROM torqmind_dw.dim_local_venda FINAL) AS lv
+  ON lv.id_empresa = e.id_empresa
+ AND lv.id_filial = e.id_filial
+ AND lv.id_local_venda = e.id_local_venda;
+"
 }
 
 next_month() {
@@ -407,6 +456,8 @@ WITH changed AS (
   UNION ALL
   SELECT data_key::int AS data_key FROM dw.fact_comprovante WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key IS NOT NULL
   UNION ALL
+  SELECT data_key_ref::int AS data_key FROM dw.fact_estoque_atual WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key_ref IS NOT NULL
+  UNION ALL
   SELECT data_key_abertura::int AS data_key FROM dw.fact_caixa_turno WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key_abertura IS NOT NULL
   UNION ALL
   SELECT data_key_venc::int AS data_key FROM dw.fact_financeiro WHERE updated_at >= '${since}'::timestamptz${tenant_clause} AND data_key_venc IS NOT NULL
@@ -534,6 +585,7 @@ run_full_sync() {
     validate_table_count "$table"
   done
   validate_payment_type_map
+  create_stock_position_view
 
   echo
   echo "== validate critical sales facts =="
@@ -551,14 +603,15 @@ run_incremental_sync() {
   drop_streaming_mvs
 
   local table_count
-  table_count="$(ch --query "SELECT count() FROM system.tables WHERE database = 'torqmind_dw' AND name IN ('dim_cliente','dim_filial','dim_funcionario','dim_grupo_produto','dim_local_venda','dim_produto','dim_usuario_caixa','fact_caixa_turno','fact_comprovante','fact_financeiro','fact_pagamento_comprovante','fact_risco_evento','fact_venda','fact_venda_item')")"
-  if [[ "$table_count" -lt 14 ]]; then
+  table_count="$(ch --query "SELECT count() FROM system.tables WHERE database = 'torqmind_dw' AND name IN ('dim_cliente','dim_filial','dim_funcionario','dim_grupo_produto','dim_local_venda','dim_produto','dim_usuario_caixa','fact_caixa_turno','fact_comprovante','fact_estoque_atual','fact_financeiro','fact_pagamento_comprovante','fact_risco_evento','fact_venda','fact_venda_item')")"
+  if [[ "$table_count" -lt 15 ]]; then
     echo "ERROR: torqmind_dw native tables are incomplete; run MODE=full first." >&2
     exit 1
   fi
   echo "  refreshing app.payment_type_map -> torqmind_dw.dim_forma_pagamento"
   reload_payment_type_map
   validate_payment_type_map
+  create_stock_position_view
 
   local since window dt_ini_key dt_fim_key changed_rows table key_column
   since="$(sync_state_since)"

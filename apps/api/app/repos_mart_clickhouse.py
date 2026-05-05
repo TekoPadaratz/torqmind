@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 CASH_STALE_WINDOW_HOURS = 96
+CURRENT_DB = "torqmind_current"
 
 SNAPSHOT_TABLES = {
     "customer_churn_risk_daily": "torqmind_mart.customer_churn_risk_daily",
@@ -101,12 +102,12 @@ def finance_definitions() -> Dict[str, Dict[str, str]]:
         },
         "payments_total": {
             "label": "Leitura dos pagamentos",
-            "formula": "Soma dos pagamentos conciliados no recorte.",
+            "formula": "Soma dos pagamentos conciliados no período.",
             "source": "torqmind_mart.agg_pagamentos_turno",
             "impact": "Mostra por onde o dinheiro entrou e sustenta conferência com caixa.",
         },
         "payments_unknown_share": {
-            "label": "Pagamentos não identificados",
+            "label": "Pagamentos sem classificação",
             "formula": "Valor sem mapeamento oficial dividido pelo valor total conciliado de pagamentos.",
             "source": "torqmind_mart.agg_pagamentos_turno",
             "impact": "Indica perda de explicabilidade do recebimento.",
@@ -126,6 +127,29 @@ def _date_from_key(value: Any) -> Optional[date]:
         return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
     except ValueError:
         return None
+
+
+def _month_start(value: date) -> date:
+    return date(value.year, value.month, 1)
+
+
+def _next_month_start(value: date) -> date:
+    month_ref = _month_start(value)
+    if month_ref.month == 12:
+        return date(month_ref.year + 1, 1, 1)
+    return date(month_ref.year, month_ref.month + 1, 1)
+
+
+def _shift_months(value: date, months: int) -> date:
+    month_index = (value.year * 12) + (value.month - 1) + int(months)
+    year = month_index // 12
+    month = (month_index % 12) + 1
+    return date(year, month, 1)
+
+
+def _days_in_month(value: date) -> int:
+    month_ref = _month_start(value)
+    return (_next_month_start(month_ref) - month_ref).days
 
 
 def _to_float(value: Any, decimals: int = 2) -> float:
@@ -214,7 +238,7 @@ def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
         return "Todas as filiais"
     if len(branch_ids) > 1:
         return f"{len(branch_ids)} filiais selecionadas"
-    return "Filial não identificada"
+    return "Filial sem cadastro"
 
 
 def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
@@ -223,21 +247,21 @@ def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
         return value
     if id_turno is not None and _to_int(id_turno) > 0:
         return str(_to_int(id_turno))
-    return "Turno não identificado"
+    return "Turno sem cadastro"
 
 
 def _cash_operator_label(usuario_nome: Any, id_usuario: Any = None) -> str:
     nome = str(usuario_nome or "").strip()
     if nome:
         return nome
-    return "Operador não identificado"
+    return "Operador sem cadastro"
 
 
 def _employee_label(funcionario_nome: Any, id_funcionario: Any = None) -> str:
     nome = str(funcionario_nome or "").strip()
     if nome and nome.lower() not in {"(sem funcionário)", "(sem funcionario)", "sem funcionário", "sem funcionario"}:
         return nome
-    return "Equipe não identificada"
+    return "Equipe sem cadastro"
 
 
 def _event_type_label(event_type: Any) -> str:
@@ -263,9 +287,199 @@ def _run(sql: str, parameters: Dict[str, Any], tenant_id: int) -> List[Dict[str,
     return query_dict(sql, parameters=parameters, tenant_id=tenant_id)
 
 
+def _table_exists(database: str, table: str, tenant_id: int) -> bool:
+    row = _first(
+        """
+        SELECT count() AS table_count
+        FROM system.tables
+        WHERE database = {database:String}
+          AND name = {table:String}
+        """,
+        {"database": database, "table": table},
+        tenant_id,
+    )
+    return _to_int(row.get("table_count")) > 0
+
+
+def _load_current_filial_names(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[int, str]:
+    branch_ids = sorted(
+        {
+            int(row["id_filial"])
+            for row in rows
+            if row.get("id_filial") is not None
+        }
+    )
+    if not branch_ids:
+        return {}
+
+    values = ", ".join(str(branch_id) for branch_id in branch_ids)
+    result = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            argMax(
+                coalesce(
+                    nullIf(JSONExtractString(payload, 'NOMEFILIAL'), ''),
+                    nullIf(JSONExtractString(payload, 'NOME'), ''),
+                    nullIf(JSONExtractString(payload, 'RAZAOSOCIALFILIAL'), '')
+                ),
+                source_ts_ms
+            ) AS filial_nome
+        FROM {CURRENT_DB}.stg_filiais FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND id_filial IN ({values})
+        GROUP BY id_filial
+        """,
+        parameters={"id_empresa": id_empresa},
+        tenant_id=id_empresa,
+    )
+    return {
+        int(row["id_filial"]): str(row.get("filial_nome") or "").strip()
+        for row in result
+    }
+
+
 def _first(sql: str, parameters: Dict[str, Any], tenant_id: int) -> Dict[str, Any]:
     rows = _run(sql, parameters, tenant_id)
     return dict(rows[0]) if rows else {}
+
+
+def _stock_unavailable_payload(summary: str) -> Dict[str, Any]:
+    return {
+        "source_status": "unavailable",
+        "summary": summary,
+        "cards": [],
+        "dt_ref": None,
+        "last_sync_at": None,
+        "rows": 0,
+    }
+
+
+def _goal_rows_for_month(
+    id_empresa: int,
+    id_filial: Any,
+    month_ref: date,
+    *,
+    goal_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    month_ini = _month_start(month_ref)
+    month_end = _next_month_start(month_ini) - timedelta(days=1)
+    branch = _branch_clause("id_filial", id_filial)
+    goal_filter = "" if goal_type is None else " AND goal_type = {goal_type:String}"
+    rows = _run(
+        f"""
+        SELECT
+          goal_type,
+          sum(target_value) AS target_value,
+          count() AS goal_rows,
+          min(goal_date) AS goal_month
+        FROM {CURRENT_DB}.goals FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND goal_date BETWEEN {{month_ini:Date}} AND {{month_end:Date}}
+          {goal_filter}
+          {branch}
+        GROUP BY goal_type
+        ORDER BY goal_type
+        """,
+        {
+            "id_empresa": int(id_empresa),
+            "month_ini": month_ini,
+            "month_end": month_end,
+            **({"goal_type": str(goal_type)} if goal_type is not None else {}),
+        },
+        id_empresa,
+    )
+    return [
+        {
+            "goal_type": str(row.get("goal_type") or ""),
+            "target_value": _to_float(row.get("target_value")),
+            "goal_rows": _to_int(row.get("goal_rows")),
+            "goal_month": row.get("goal_month"),
+        }
+        for row in rows
+    ]
+
+
+def _sales_daily_totals_from_mart(id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    if dt_fim < dt_ini:
+        return []
+    branch = _branch_clause("id_filial", id_filial)
+    rows = _run(
+        f"""
+        SELECT
+          data_key,
+                    sum(total_venda) AS faturamento
+                FROM torqmind_dw.fact_venda FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                    AND coalesce(situacao, 0) = 1
+          {branch}
+        GROUP BY data_key
+        ORDER BY data_key
+        """,
+        {"id_empresa": int(id_empresa), "ini": _date_key(dt_ini), "fim": _date_key(dt_fim)},
+        id_empresa,
+    )
+    return [{"data_key": _to_int(row.get("data_key")), "faturamento": _to_float(row.get("faturamento"))} for row in rows]
+
+
+def _sales_month_summaries_from_mart(id_empresa: int, id_filial: Any, month_ref: date, *, lookback_months: int = 6) -> List[Dict[str, Any]]:
+    last_closed_month = _shift_months(_month_start(month_ref), -1)
+    first_month = _shift_months(last_closed_month, -(max(lookback_months, 1) - 1))
+    branch = _branch_clause("id_filial", id_filial)
+    rows = _run(
+        f"""
+        SELECT
+          intDiv(data_key, 100) AS month_key,
+          uniqExact(data_key) AS observed_days,
+                    sum(total_venda) AS faturamento
+                FROM torqmind_dw.fact_venda FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                    AND coalesce(situacao, 0) = 1
+          {branch}
+        GROUP BY month_key
+        ORDER BY month_key DESC
+        """,
+        {
+            "id_empresa": int(id_empresa),
+            "ini": _date_key(first_month),
+            "fim": _date_key(_next_month_start(last_closed_month) - timedelta(days=1)),
+        },
+        id_empresa,
+    )
+
+    raw_map: Dict[date, Dict[str, Any]] = {}
+    for row in rows:
+        month_key = str(_to_int(row.get("month_key")))
+        if len(month_key) != 6:
+            continue
+        current_month = date(int(month_key[:4]), int(month_key[4:6]), 1)
+        raw_map[current_month] = row
+
+    calendar_rows: List[Dict[str, Any]] = []
+    for offset in range(max(lookback_months, 1)):
+        current_month = _shift_months(last_closed_month, -offset)
+        expected_days = _days_in_month(current_month)
+        row = raw_map.get(current_month, {})
+        observed_days = _to_int(row.get("observed_days"))
+        faturamento = _to_float(row.get("faturamento"))
+        completeness_pct = round((observed_days / expected_days) * 100, 1) if expected_days else 0.0
+        calendar_rows.append(
+            {
+                "month_ref": current_month.isoformat(),
+                "faturamento": faturamento,
+                "observed_days": observed_days,
+                "expected_days": expected_days,
+                "completeness_pct": completeness_pct,
+                "has_data": observed_days > 0,
+                "is_partial": observed_days > 0 and observed_days < expected_days,
+                "is_complete": observed_days >= expected_days,
+            }
+        )
+    return calendar_rows
 
 
 def _window_coverage_payload(
@@ -306,7 +520,7 @@ def _window_coverage_payload(
         effective_dt_fim = requested_dt_fim
         mode = "requested_outside_coverage"
         message = (
-            f"O recorte pedido começa em {requested_dt_ini.isoformat()}, mas a última base comercial disponível "
+            f"O período solicitado começa em {requested_dt_ini.isoformat()}, mas a última base comercial disponível "
             f"vai até {latest_available_dt.isoformat()}. Não há vendas publicadas para a data solicitada."
         )
     elif requested_dt_fim > latest_available_dt:
@@ -314,7 +528,7 @@ def _window_coverage_payload(
         effective_dt_fim = latest_available_dt
         mode = "partial_requested"
         message = (
-            f"A base comercial canônica cobre este recorte apenas até {latest_available_dt.isoformat()}. "
+            f"A base comercial canônica cobre este período apenas até {latest_available_dt.isoformat()}. "
             "Os valores posteriores ainda não chegaram da origem."
         )
     else:
@@ -479,7 +693,7 @@ def risk_model_coverage(dt_ini: date, dt_fim: date, risk_window: Dict[str, Any])
         )
     else:
         status = "not_covered"
-        message = "A leitura modelada não cobre este recorte. Os eventos operacionais continuam válidos para o período."
+        message = "A leitura modelada não cobre este período. Os eventos operacionais continuam válidos para o período."
 
     return {
         "status": status,
@@ -1331,26 +1545,38 @@ def operational_score(role: str, id_empresa: int, id_filial: Any, dt_ini: date, 
 
 
 def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
-    branch = _branch_clause("id_filial", id_filial)
+    branch_v = _branch_clause("v.id_filial", id_filial)
     rows = _run(
         f"""
         SELECT
-          id_cliente,
-          max(cliente_nome) AS cliente_nome,
-          sum(monetary_90) AS faturamento,
-          sum(frequency_90) AS compras,
-          max(last_purchase) AS ultima_compra,
-          if(sum(frequency_90) = 0, 0, sum(monetary_90) / sum(frequency_90)) AS ticket_medio
-        FROM torqmind_mart.customer_rfm_daily
-        WHERE id_empresa = {{id_empresa:Int32}}
-          AND dt_ref <= {{dt_fim:Date}}
-          AND id_cliente != -1
-          {branch}
-        GROUP BY id_cliente
+          v.id_cliente AS id_cliente,
+          max(ifNull(c.nome, concat('#ID ', toString(v.id_cliente)))) AS cliente_nome,
+          sum(i.total) AS faturamento,
+          uniq(v.id_comprovante) AS compras,
+          max(toDate(v.data)) AS ultima_compra,
+          if(uniq(v.id_comprovante) = 0, 0, sum(i.total) / uniq(v.id_comprovante)) AS ticket_medio
+        FROM torqmind_dw.fact_venda_item i
+        INNER JOIN torqmind_dw.fact_venda v
+          ON v.id_empresa = i.id_empresa
+         AND v.id_filial = i.id_filial
+         AND v.id_db = i.id_db
+         AND v.id_movprodutos = i.id_movprodutos
+        LEFT JOIN torqmind_dw.dim_cliente c
+          ON c.id_empresa = v.id_empresa
+         AND c.id_filial = v.id_filial
+         AND c.id_cliente = v.id_cliente
+        WHERE v.id_empresa = {{id_empresa:Int32}}
+          AND toDate(v.data) BETWEEN {{dt_ini:Date}} AND {{dt_fim:Date}}
+          AND v.cancelado = 0
+          AND ifNull(i.cfop, 0) >= 5000
+          AND v.id_cliente IS NOT NULL
+          AND v.id_cliente != -1
+          {branch_v}
+        GROUP BY v.id_cliente
         ORDER BY faturamento DESC, compras DESC, id_cliente
         LIMIT {{limit:UInt32}}
         """,
-        {"id_empresa": int(id_empresa), "dt_fim": dt_fim, "limit": int(limit)},
+        {"id_empresa": int(id_empresa), "dt_ini": dt_ini, "dt_fim": dt_fim, "limit": int(limit)},
         id_empresa,
     )
     return rows
@@ -1517,6 +1743,588 @@ def customers_churn_snapshot_meta(role: str, id_empresa: int, id_filial: Any, as
         "source_table": "torqmind_mart.clientes_churn_risco",
         "source_kind": "operational_current",
         "latest_updated_at": fallback_rows[0].get("updated_at"),
+    }
+
+
+def customers_delinquency_overview(
+        role: str,
+        id_empresa: int,
+        id_filial: Any,
+        as_of: date,
+        *,
+        limit: int = 20,
+) -> Dict[str, Any]:
+        branch_fact = _branch_clause("f.id_filial", id_filial)
+        zero_money = "CAST(0, 'Decimal(18,2)')"
+        open_amount = (
+                "greatest("
+                f"{zero_money}, "
+                "CAST(ifNull(f.valor, 0), 'Decimal(18,2)') - CAST(ifNull(f.valor_pago, 0), 'Decimal(18,2)')"
+                ")"
+        )
+        base_cte = f"""
+            WITH base AS (
+                SELECT
+                    f.id_filial,
+                    ifNull(f.id_entidade, -1) AS id_cliente,
+                    {open_amount} AS valor_aberto,
+                    greatest(0, dateDiff('day', coalesce(f.vencimento, f.data_emissao), {{as_of:Date}})) AS dias_atraso
+                FROM (
+                    SELECT *
+                    FROM torqmind_dw.fact_financeiro FINAL
+                ) AS f
+                WHERE f.id_empresa = {{id_empresa:Int32}}
+                    AND f.tipo_titulo = 1
+                    {branch_fact}
+                    AND coalesce(f.vencimento, f.data_emissao) < {{as_of:Date}}
+                    AND (
+                        f.data_pagamento IS NULL
+                        OR f.data_pagamento > {{as_of:Date}}
+                        OR (CAST(ifNull(f.valor, 0), 'Decimal(18,2)') - CAST(ifNull(f.valor_pago, 0), 'Decimal(18,2)')) > {zero_money}
+                    )
+            ), open_rows AS (
+                SELECT *
+                FROM base
+                WHERE valor_aberto > {zero_money}
+                    AND id_cliente != -1
+            )
+        """
+        summary = _first(
+                f"""
+                {base_cte}
+                SELECT
+                    uniqExact(id_cliente) AS clientes_em_aberto,
+                    count() AS titulos_em_aberto,
+                    sum(valor_aberto) AS valor_total,
+                    countIf(dias_atraso BETWEEN 1 AND 30) AS titulos_30,
+                    countIf(dias_atraso BETWEEN 31 AND 60) AS titulos_60,
+                    countIf(dias_atraso > 60) AS titulos_90_plus,
+                    sumIf(valor_aberto, dias_atraso BETWEEN 1 AND 30) AS valor_30,
+                    sumIf(valor_aberto, dias_atraso BETWEEN 31 AND 60) AS valor_60,
+                    sumIf(valor_aberto, dias_atraso > 60) AS valor_90_plus,
+                    max(dias_atraso) AS max_dias_atraso
+                FROM open_rows
+                """,
+                {"id_empresa": int(id_empresa), "as_of": as_of},
+                id_empresa,
+        )
+        customers = _run(
+                f"""
+                {base_cte}, per_branch_customer AS (
+                    SELECT
+                        o.id_filial,
+                        o.id_cliente,
+                        count() AS titulos,
+                        max(o.dias_atraso) AS max_dias_atraso,
+                        sum(o.valor_aberto) AS valor_aberto,
+                        countIf(o.dias_atraso BETWEEN 1 AND 30) AS titulos_30,
+                        countIf(o.dias_atraso BETWEEN 31 AND 60) AS titulos_60,
+                        countIf(o.dias_atraso > 60) AS titulos_90_plus,
+                        sumIf(o.valor_aberto, o.dias_atraso BETWEEN 1 AND 30) AS valor_30,
+                        sumIf(o.valor_aberto, o.dias_atraso BETWEEN 31 AND 60) AS valor_60,
+                        sumIf(o.valor_aberto, o.dias_atraso > 60) AS valor_90_plus
+                    FROM open_rows o
+                    GROUP BY o.id_filial, o.id_cliente
+                ), same_branch_customer AS (
+                    SELECT
+                        id_empresa,
+                        id_filial,
+                        id_cliente,
+                        argMax(nome, updated_at) AS nome
+                    FROM (
+                        SELECT *
+                        FROM torqmind_dw.dim_cliente FINAL
+                    )
+                    WHERE id_empresa = {{id_empresa:Int32}}
+                    GROUP BY id_empresa, id_filial, id_cliente
+                ), any_branch_customer AS (
+                    SELECT
+                        id_empresa,
+                        id_cliente,
+                        argMax(nome, updated_at) AS nome
+                    FROM (
+                        SELECT *
+                        FROM torqmind_dw.dim_cliente FINAL
+                    )
+                    WHERE id_empresa = {{id_empresa:Int32}}
+                    GROUP BY id_empresa, id_cliente
+                )
+                SELECT
+                    p.id_cliente AS id_cliente,
+                    max(
+                        coalesce(
+                            nullIf(trimBoth(ifNull(ds.nome, '')), ''),
+                            nullIf(trimBoth(ifNull(da.nome, '')), ''),
+                            concat('#ID ', toString(p.id_cliente))
+                        )
+                    ) AS cliente_nome,
+                    sum(p.titulos) AS titulos,
+                    max(p.max_dias_atraso) AS max_dias_atraso,
+                    sum(p.valor_aberto) AS valor_aberto,
+                    sum(p.titulos_30) AS titulos_30,
+                    sum(p.titulos_60) AS titulos_60,
+                    sum(p.titulos_90_plus) AS titulos_90_plus,
+                    sum(p.valor_30) AS valor_30,
+                    sum(p.valor_60) AS valor_60,
+                    sum(p.valor_90_plus) AS valor_90_plus,
+                    sum(p.titulos) AS titulos_totais,
+                    sum(p.valor_aberto) AS valor_total,
+                    multiIf(
+                        sum(p.valor_90_plus) > {zero_money},
+                        '61+ dias',
+                        sum(p.valor_60) > {zero_money},
+                        '31-60 dias',
+                        '1-30 dias'
+                    ) AS bucket_label
+                FROM per_branch_customer p
+                LEFT JOIN same_branch_customer ds
+                    ON ds.id_empresa = {{id_empresa:Int32}}
+                 AND ds.id_filial = p.id_filial
+                 AND ds.id_cliente = p.id_cliente
+                LEFT JOIN any_branch_customer da
+                    ON da.id_empresa = {{id_empresa:Int32}}
+                 AND da.id_cliente = p.id_cliente
+                GROUP BY p.id_cliente
+                ORDER BY valor_aberto DESC, max_dias_atraso DESC, id_cliente
+                LIMIT {{limit:UInt32}}
+                """,
+                {"id_empresa": int(id_empresa), "as_of": as_of, "limit": int(limit)},
+                id_empresa,
+        )
+        summary_payload = {
+                "clientes_em_aberto": _to_int(summary.get("clientes_em_aberto")),
+                "titulos_em_aberto": _to_int(summary.get("titulos_em_aberto")),
+                "valor_total": _to_float(summary.get("valor_total")),
+                "titulos_30": _to_int(summary.get("titulos_30")),
+                "titulos_60": _to_int(summary.get("titulos_60")),
+                "titulos_90_plus": _to_int(summary.get("titulos_90_plus")),
+                "valor_30": _to_float(summary.get("valor_30")),
+                "valor_60": _to_float(summary.get("valor_60")),
+                "valor_90_plus": _to_float(summary.get("valor_90_plus")),
+                "max_dias_atraso": _to_int(summary.get("max_dias_atraso")),
+        }
+        return {
+                "summary": summary_payload,
+                "buckets": [
+                        {"bucket": "1_30", "label": "1-30 dias", "valor": summary_payload["valor_30"], "titulos": summary_payload["titulos_30"]},
+                        {"bucket": "31_60", "label": "31-60 dias", "valor": summary_payload["valor_60"], "titulos": summary_payload["titulos_60"]},
+                        {"bucket": "61_plus", "label": "61+ dias", "valor": summary_payload["valor_90_plus"], "titulos": summary_payload["titulos_90_plus"]},
+                ],
+                "customers": [
+                        {
+                                "id_cliente": _to_int(row.get("id_cliente")),
+                                "cliente_nome": row.get("cliente_nome"),
+                                "titulos": _to_int(row.get("titulos")),
+                                "max_dias_atraso": _to_int(row.get("max_dias_atraso")),
+                                "valor_aberto": _to_float(row.get("valor_aberto")),
+                                "titulos_30": _to_int(row.get("titulos_30")),
+                                "titulos_60": _to_int(row.get("titulos_60")),
+                                "titulos_90_plus": _to_int(row.get("titulos_90_plus")),
+                                "valor_30": _to_float(row.get("valor_30")),
+                                "valor_60": _to_float(row.get("valor_60")),
+                                "valor_90_plus": _to_float(row.get("valor_90_plus")),
+                                "titulos_totais": _to_int(row.get("titulos_totais") or row.get("titulos")),
+                                "valor_total": _to_float(row.get("valor_total") or row.get("valor_aberto")),
+                                "bucket_label": row.get("bucket_label"),
+                        }
+                        for row in customers
+                ],
+                "dt_ref": as_of.isoformat(),
+        }
+
+
+def stock_position_summary(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+) -> Dict[str, Any]:
+    branch_mart = _branch_clause("id_filial", id_filial)
+    branch_dw = _branch_clause("e.id_filial", id_filial)
+
+    if _table_exists("torqmind_mart", "agg_estoque_posicao_atual", id_empresa):
+        row = _first(
+            f"""
+            SELECT
+              count() AS rows,
+              max(updated_at) AS last_sync_at,
+              max(dt_ref) AS dt_ref,
+              sumIf(qtd_total, estoque_bucket = 'tanques') AS qtd_tanques,
+              sumIf(valor_estimado, estoque_bucket = 'tanques') AS valor_tanques,
+              sumIf(qtd_total, estoque_bucket = 'loja') AS qtd_loja,
+              sumIf(valor_estimado, estoque_bucket = 'loja') AS valor_loja
+            FROM torqmind_mart.agg_estoque_posicao_atual
+            WHERE id_empresa = {{id_empresa:Int32}}
+              {branch_mart}
+            """,
+            {"id_empresa": int(id_empresa)},
+            id_empresa,
+        )
+    elif _table_exists("torqmind_dw", "fact_estoque_atual", id_empresa):
+        row = _first(
+            f"""
+            WITH enriched AS (
+              SELECT
+                e.id_filial,
+                e.id_produto,
+                e.id_local_venda,
+                CAST(ifNull(e.qtd_atual, 0), 'Decimal(18,3)') AS qtd_atual,
+                CAST(ifNull(p.custo_medio, 0), 'Decimal(18,6)') AS custo_unitario,
+                CAST(ifNull(e.qtd_atual, 0), 'Decimal(18,3)') * CAST(ifNull(p.custo_medio, 0), 'Decimal(18,6)') AS valor_estimado,
+                if(
+                  positionCaseInsensitiveUTF8(ifNull(g.nome, ''), 'COMBUST') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'GASOL') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'ETANOL') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'DIESEL') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(p.nome, ''), 'GNV') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(lv.nome, ''), 'PISTA') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(lv.nome, ''), 'TANQUE') > 0
+                  OR positionCaseInsensitiveUTF8(ifNull(lv.nome, ''), 'BICO') > 0,
+                  'tanques',
+                  'loja'
+                ) AS estoque_bucket,
+                e.data_ref,
+                e.updated_at
+                            FROM (SELECT * FROM torqmind_dw.fact_estoque_atual FINAL) AS e
+                            LEFT JOIN (SELECT * FROM torqmind_dw.dim_produto FINAL) AS p
+                ON p.id_empresa = e.id_empresa
+               AND p.id_filial = e.id_filial
+               AND p.id_produto = e.id_produto
+                            LEFT JOIN (SELECT * FROM torqmind_dw.dim_grupo_produto FINAL) AS g
+                ON g.id_empresa = p.id_empresa
+               AND g.id_filial = p.id_filial
+               AND g.id_grupo_produto = p.id_grupo_produto
+                            LEFT JOIN (SELECT * FROM torqmind_dw.dim_local_venda FINAL) AS lv
+                ON lv.id_empresa = e.id_empresa
+               AND lv.id_filial = e.id_filial
+               AND lv.id_local_venda = e.id_local_venda
+              WHERE e.id_empresa = {{id_empresa:Int32}}
+                {branch_dw}
+            )
+            SELECT
+              count() AS rows,
+              max(updated_at) AS last_sync_at,
+              max(data_ref) AS dt_ref,
+              sumIf(qtd_atual, estoque_bucket = 'tanques') AS qtd_tanques,
+              sumIf(valor_estimado, estoque_bucket = 'tanques') AS valor_tanques,
+              sumIf(qtd_atual, estoque_bucket = 'loja') AS qtd_loja,
+              sumIf(valor_estimado, estoque_bucket = 'loja') AS valor_loja
+            FROM enriched
+            """,
+            {"id_empresa": int(id_empresa)},
+            id_empresa,
+        )
+    else:
+        return _stock_unavailable_payload("A trilha de estoque ainda não foi publicada no ClickHouse desta base.")
+
+    rows = _to_int(row.get("rows"))
+    dt_ref = row.get("dt_ref")
+    last_sync_at = row.get("last_sync_at")
+    if rows <= 0:
+        return {
+            "source_status": "unavailable",
+            "summary": "Nenhum snapshot de estoque foi ingerido na trilha canônica desta empresa.",
+            "cards": [
+                {
+                    "key": "estoque_tanques",
+                    "label": "Estoque de tanques",
+                    "status": "unavailable",
+                    "amount": None,
+                    "quantity": None,
+                    "detail": "Sem posição canônica de estoque publicada para combustíveis e tanques.",
+                },
+                {
+                    "key": "estoque_loja",
+                    "label": "Estoque de loja",
+                    "status": "unavailable",
+                    "amount": None,
+                    "quantity": None,
+                    "detail": "Sem posição canônica de estoque publicada para a loja e itens de conveniência.",
+                },
+            ],
+            "dt_ref": None,
+            "last_sync_at": None,
+            "rows": 0,
+        }
+
+    return {
+        "source_status": "ok",
+        "summary": (
+            f"Posição de estoque canônica com {rows} item(ns), atualizada até "
+            f"{dt_ref.isoformat() if hasattr(dt_ref, 'isoformat') else dt_ref}."
+        ),
+        "cards": [
+            {
+                "key": "estoque_tanques",
+                "label": "Estoque de tanques",
+                "status": "ready",
+                "amount": _to_float(row.get("valor_tanques")),
+                "quantity": _to_float(row.get("qtd_tanques"), 3),
+                "detail": "Valor estimado pela posição atual multiplicada pelo custo médio dos produtos de combustível.",
+            },
+            {
+                "key": "estoque_loja",
+                "label": "Estoque de loja",
+                "status": "ready",
+                "amount": _to_float(row.get("valor_loja")),
+                "quantity": _to_float(row.get("qtd_loja"), 3),
+                "detail": "Valor estimado da posição de conveniência e demais itens fora do bucket de tanques.",
+            },
+        ],
+        "dt_ref": _iso_or_none(dt_ref),
+        "last_sync_at": _iso_or_none(last_sync_at),
+        "rows": rows,
+    }
+
+
+def goals_today(role: str, id_empresa: int, id_filial: Any, goal_date: date) -> List[Dict[str, Any]]:
+    rows = _goal_rows_for_month(id_empresa, id_filial, goal_date)
+    return [
+        {
+            "goal_type": row.get("goal_type"),
+            "target_value": _to_float(row.get("target_value")),
+            "branch_goal_count": _to_int(row.get("goal_rows")),
+            "goal_month": _iso_or_none(row.get("goal_month")),
+        }
+        for row in rows
+    ]
+
+
+def monthly_goal_projection(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
+    requested_as_of = as_of or business_today(id_empresa)
+    commercial_coverage = commercial_window_coverage(
+        role,
+        id_empresa,
+        id_filial,
+        requested_as_of,
+        requested_as_of,
+    )
+    effective_as_of = commercial_coverage.get("effective_dt_fim") or requested_as_of
+    month_start = _month_start(effective_as_of)
+    month_end = _next_month_start(month_start) - timedelta(days=1)
+    total_days = (month_end - month_start).days + 1
+    days_elapsed = (effective_as_of - month_start).days + 1
+    remaining_days = max(total_days - days_elapsed, 0)
+
+    historical_end = effective_as_of
+    live_bundle = None
+    business_day = business_today(id_empresa)
+    if effective_as_of == requested_as_of == business_day:
+        historical_end = effective_as_of - timedelta(days=1)
+        live_bundle = sales_operational_day_bundle(role, id_empresa, id_filial, effective_as_of, include_rankings=False)
+
+    daily_rows = (
+        _sales_daily_totals_from_mart(id_empresa, id_filial, month_start, historical_end)
+        if historical_end >= month_start
+        else []
+    )
+    daily_map: Dict[date, float] = {
+        _date_from_key(row.get("data_key")): _to_float(row.get("faturamento"))
+        for row in daily_rows
+        if _date_from_key(row.get("data_key")) is not None
+    }
+    if live_bundle:
+        daily_map[effective_as_of] = _to_float((live_bundle.get("kpis") or {}).get("faturamento"))
+
+    series: List[Dict[str, Any]] = []
+    cursor = month_start
+    while cursor <= effective_as_of:
+        value = _to_float(daily_map.get(cursor))
+        series.append(
+            {
+                "date": cursor.isoformat(),
+                "data_key": _date_key(cursor),
+                "weekday": cursor.strftime("%A"),
+                "weekday_index": cursor.weekday(),
+                "faturamento": value,
+            }
+        )
+        cursor += timedelta(days=1)
+
+    mtd_actual = round(sum(_to_float(item.get("faturamento")) for item in series), 2)
+    avg_daily_mtd = round(mtd_actual / days_elapsed, 2) if days_elapsed > 0 else 0.0
+    projection_base = round(mtd_actual + (avg_daily_mtd * remaining_days), 2)
+
+    weekday_history_start = month_start - timedelta(days=84)
+    weekday_rows = (
+        _sales_daily_totals_from_mart(id_empresa, id_filial, weekday_history_start, effective_as_of - timedelta(days=1))
+        if effective_as_of > weekday_history_start
+        else []
+    )
+
+    weekday_totals: Dict[int, List[float]] = {}
+    for row in weekday_rows:
+        row_date = _date_from_key(row.get("data_key"))
+        if row_date is None:
+            continue
+        weekday_totals.setdefault(row_date.weekday(), []).append(_to_float(row.get("faturamento")))
+
+    weekday_observations = sum(len(values) for values in weekday_totals.values())
+    weekday_avg: Dict[int, float] = {
+        weekday: (sum(values) / len(values))
+        for weekday, values in weekday_totals.items()
+        if values
+    }
+    overall_weekday_avg = (
+        sum(sum(values) for values in weekday_totals.values()) / weekday_observations
+        if weekday_observations > 0
+        else 0.0
+    )
+    weekday_factor: Dict[int, float] = {}
+    if overall_weekday_avg > 0 and weekday_observations >= 21:
+        for weekday in range(7):
+            factor = (weekday_avg.get(weekday) or overall_weekday_avg) / overall_weekday_avg
+            weekday_factor[weekday] = max(0.7, min(1.3, factor))
+
+    adjusted_remaining = 0.0
+    future_cursor = effective_as_of + timedelta(days=1)
+    while future_cursor <= month_end:
+        factor = weekday_factor.get(future_cursor.weekday(), 1.0)
+        adjusted_remaining += avg_daily_mtd * factor
+        future_cursor += timedelta(days=1)
+    projection_adjusted = round(mtd_actual + adjusted_remaining, 2) if weekday_factor else projection_base
+
+    goal_rows = _goal_rows_for_month(id_empresa, id_filial, month_start, goal_type="FATURAMENTO")
+    goal_row = goal_rows[0] if goal_rows else {}
+
+    recent_closed_months = _sales_month_summaries_from_mart(id_empresa, id_filial, month_start, lookback_months=4)
+    last_month_rows = recent_closed_months[:3]
+    comparison_months = recent_closed_months[:3]
+    complete_comparison = len([item for item in comparison_months if bool(item.get("is_complete"))]) >= 3
+    comparison_mode = "last_3_complete_months" if complete_comparison else "last_3_available_months"
+
+    target_value = _to_float(goal_row.get("target_value"))
+    goal_configured = _to_int(goal_row.get("goal_rows")) > 0 and target_value > 0
+    average_last_3_months = (
+        round(sum(_to_float(row.get("faturamento")) for row in comparison_months) / len(comparison_months), 2)
+        if comparison_months
+        else 0.0
+    )
+    required_daily_to_goal = round(max(target_value - mtd_actual, 0) / remaining_days, 2) if remaining_days > 0 and goal_configured else 0.0
+    gap_to_goal = round(projection_adjusted - target_value, 2) if goal_configured else None
+    variation_vs_goal_pct = round(((projection_adjusted / target_value) - 1) * 100, 2) if goal_configured and target_value > 0 else None
+    variation_vs_last_3m_pct = (
+        round(((projection_adjusted / average_last_3_months) - 1) * 100, 2)
+        if average_last_3_months > 0
+        else None
+    )
+
+    if commercial_coverage.get("mode") == "shifted_latest":
+        status = "latest_compatible"
+        headline = (
+            f"A base comercial ainda não chegou em {requested_as_of.strftime('%m/%Y')}. "
+            f"A projeção mostra a última referência disponível de {effective_as_of.strftime('%m/%Y')}."
+        )
+    elif goal_configured and projection_adjusted >= target_value:
+        status = "above_goal"
+        headline = "O ritmo atual projeta fechamento acima da meta mensal."
+    elif goal_configured and projection_adjusted < target_value:
+        status = "below_goal"
+        headline = "O ritmo atual projeta fechamento abaixo da meta mensal."
+    elif average_last_3_months > 0 and projection_adjusted >= average_last_3_months:
+        status = "above_history"
+        headline = "O ritmo atual projeta fechamento acima da média recente."
+    else:
+        status = "tracking"
+        headline = "A projeção usa o ritmo atual do mês como referência principal."
+
+    if weekday_factor and weekday_observations >= 28:
+        confidence_level = "high"
+        confidence_label = "Alta"
+        confidence_reason = "Há base recente suficiente para ajustar o restante do mês pelo padrão de dia da semana."
+    elif days_elapsed >= 5:
+        confidence_level = "medium"
+        confidence_label = "Moderada"
+        confidence_reason = "A projeção já usa uma base razoável do mês, mas ainda com pouca profundidade sazonal."
+    else:
+        confidence_level = "low"
+        confidence_label = "Baixa"
+        confidence_reason = "O mês ainda tem poucos dias observados; a projeção é mais sensível a oscilações diárias."
+
+    return {
+        "month_ref": month_start.isoformat(),
+        "month_label": month_start.strftime("%m/%Y"),
+        "requested_as_of": requested_as_of.isoformat(),
+        "effective_as_of": effective_as_of.isoformat(),
+        "requested_month_ref": _month_start(requested_as_of).isoformat(),
+        "business_clock": business_clock_payload(id_empresa),
+        "status": status,
+        "headline": headline,
+        "commercial_coverage": commercial_coverage,
+        "summary": {
+            "mtd_actual": mtd_actual,
+            "avg_daily_mtd": avg_daily_mtd,
+            "projection_base": projection_base,
+            "projection_adjusted": projection_adjusted,
+            "remaining_days": remaining_days,
+            "days_elapsed": days_elapsed,
+            "total_days": total_days,
+        },
+        "goal": {
+            "configured": goal_configured,
+            "target_value": target_value,
+            "gap_to_goal": gap_to_goal,
+            "variation_pct": variation_vs_goal_pct,
+            "required_daily_to_goal": required_daily_to_goal,
+            "goal_month": month_start.isoformat(),
+            "scope_branch_count": _to_int(goal_row.get("goal_rows")),
+        },
+        "history": {
+            "last_3_months": [
+                {
+                    "month_ref": row.get("month_ref"),
+                    "faturamento": _to_float(row.get("faturamento")),
+                    "observed_days": _to_int(row.get("observed_days")),
+                    "expected_days": _to_int(row.get("expected_days")),
+                    "completeness_pct": float(row.get("completeness_pct") or 0),
+                    "has_data": bool(row.get("has_data")),
+                    "is_partial": bool(row.get("is_partial")),
+                    "is_complete": bool(row.get("is_complete")),
+                }
+                for row in last_month_rows
+            ],
+            "comparison_months": [
+                {
+                    "month_ref": row.get("month_ref"),
+                    "faturamento": _to_float(row.get("faturamento")),
+                    "observed_days": _to_int(row.get("observed_days")),
+                    "expected_days": _to_int(row.get("expected_days")),
+                    "is_complete": bool(row.get("is_complete")),
+                }
+                for row in comparison_months
+            ],
+            "average_last_3_months": average_last_3_months,
+            "variation_vs_last_3m_pct": variation_vs_last_3m_pct,
+            "average_basis": comparison_mode,
+            "average_basis_note": (
+                "A média comparativa usou apenas meses fechados completos para evitar distorção por histórico parcial."
+                if comparison_mode == "last_3_complete_months"
+                else "A média comparativa precisou usar os meses disponíveis porque não havia três fechamentos completos."
+            ),
+        },
+        "forecast": {
+            "method": "mtd_with_weekday_adjustment" if weekday_factor else "mtd_average",
+            "weekday_adjustment_applied": bool(weekday_factor),
+            "weekday_observations": weekday_observations,
+            "weekday_factors": {str(key): round(float(value), 3) for key, value in sorted(weekday_factor.items())},
+            "confidence_level": confidence_level,
+            "confidence_label": confidence_label,
+            "confidence_reason": confidence_reason,
+        },
+        "series_mtd": series,
+        "drivers": [
+            f"MTD atual em {_format_brl(mtd_actual)}.",
+            f"Ritmo médio de {_format_brl(avg_daily_mtd)} por dia corrido do mês até agora.",
+            (
+                "Projeção ajustada por padrão de dia da semana."
+                if weekday_factor
+                else "Projeção linear simples porque ainda não há base sazonal suficiente."
+            ),
+        ],
     }
 
 
@@ -1884,13 +2692,13 @@ def payments_overview_kpis(role: str, id_empresa: int, id_filial: Any, dt_ini: d
         row["category_label"] = _payment_category_label(row.get("category"), row.get("label"))
     if row_count == 0:
         source_status = "unavailable"
-        summary = "Sem movimento de formas de pagamento no recorte selecionado."
+        summary = "Sem movimento de formas de pagamento no período selecionado."
     elif total_curr <= 0 and nonzero_rows == 0:
         source_status = "value_gap"
         summary = "Os registros de pagamento chegaram, mas os valores ainda precisam de validação da carga para leitura executiva."
     elif unknown_share > 0:
         source_status = "partial"
-        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos não identificados no recorte."
+        summary = "A taxonomia oficial está aplicada, mas ainda existem pagamentos sem classificação no período."
     else:
         source_status = "ok"
         summary = "Leitura de meios de pagamento alinhada à taxonomia oficial da Xpert."
@@ -1987,7 +2795,10 @@ def payments_anomalies(role: str, id_empresa: int, id_filial: Any, dt_ini: date,
         {"id_empresa": int(id_empresa), "ini": _date_key(dt_ini), "fim": _date_key(dt_fim), "limit": int(limit)},
         id_empresa,
     )
+    filial_names = _load_current_filial_names(id_empresa, rows)
     for row in rows:
+        if not str(row.get("filial_nome") or "").strip() and row.get("id_filial") is not None:
+            row["filial_nome"] = filial_names.get(int(row["id_filial"]), "")
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["event_label"] = _event_type_label(row.get("event_type"))
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
@@ -2219,7 +3030,9 @@ def cash_commercial_overview(role: str, id_empresa: int, id_filial: Any, dt_ini:
             "ticket_medio": round(total_vendas / qtd_vendas, 2) if qtd_vendas else 0.0,
             "total_vendas": total_vendas,
             "total_pagamentos": total_pagamentos,
+            "recebimentos_periodo": total_pagamentos,
             "total_cancelamentos": total_cancelamentos,
+            "cancelamentos_periodo": total_cancelamentos,
             "qtd_cancelamentos": qtd_cancelamentos,
             "caixas_com_cancelamento": 0,
             "total_devolucoes": 0.0,
@@ -2453,7 +3266,7 @@ def jarvis_briefing(role: str, id_empresa: int, id_filial: Any, dt_ref: date, co
         "title": "Copiloto operacional",
         "data_ref": dt_ref.isoformat(),
         "status": status,
-        "headline": "Priorize as frentes com maior valor em jogo no recorte atual." if exposure > 0 else "Operação estável no recorte atual, sem foco crítico acima da linha de corte.",
+        "headline": "Priorize as frentes com maior valor em jogo no período atual." if exposure > 0 else "Operação estável no período atual, sem foco crítico acima da linha de corte.",
         "summary": "Leitura consolidada em ClickHouse a partir das Smart Marts analíticas.",
         "priority": "Hoje" if exposure > 0 else "Acompanhar",
         "impact_value": round(exposure, 2),

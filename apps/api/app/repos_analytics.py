@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from app import repos_mart as _postgres
 from app import repos_mart_clickhouse as _clickhouse
+from app import repos_mart_realtime as _realtime
 from app.config import settings
 from app.db_clickhouse import get_dual_read_validator
 
@@ -41,7 +42,6 @@ _POSTGRES_OWNED_FUNCTIONS = {
     "competitor_pricing_overview",
     "competitor_pricing_upsert",
     "competitor_fuel_product_ids",
-    "goals_today",
     "upsert_goal",
     "risk_insights",
     "notifications_list",
@@ -52,9 +52,6 @@ _POSTGRES_OWNED_FUNCTIONS = {
 # Analytical functions that remain on the legacy path until a mart exists with
 # the same grain/contract. The warning is emitted only when USE_CLICKHOUSE=true.
 _CLICKHOUSE_DEBT_FUNCTIONS = {
-    "stock_position_summary": "estoque mart is not present in sql/clickhouse yet",
-    "customers_delinquency_overview": "finance delinquency drilldown needs a customer-level mart",
-    "monthly_goal_projection": "goal projection mixes app.goals with analytical sales series",
 }
 
 
@@ -67,6 +64,16 @@ def _legacy_function(name: str) -> Callable[..., Any]:
 
 def _clickhouse_function(name: str) -> Callable[..., Any] | None:
     value = getattr(_clickhouse, name, None)
+    return value if callable(value) else None
+
+
+def _realtime_function(name: str) -> Callable[..., Any] | None:
+    """Get function from realtime mart repos if available."""
+    if not settings.use_realtime_marts:
+        return None
+    if name not in _realtime.REALTIME_FUNCTIONS:
+        return None
+    value = getattr(_realtime, name, None)
     return value if callable(value) else None
 
 
@@ -92,6 +99,17 @@ def _dispatch(name: str) -> Callable[..., Any]:
 
         if name in _POSTGRES_OWNED_FUNCTIONS:
             return legacy(*args, **kwargs)
+
+        # Try realtime marts first when enabled
+        realtime = _realtime_function(name)
+        if realtime is not None:
+            try:
+                return realtime(*args, **kwargs)
+            except Exception as exc:
+                if settings.realtime_marts_fallback:
+                    logger.warning("Realtime mart read failed for %s, falling back to legacy: %s", name, exc)
+                else:
+                    raise
 
         if clickhouse is None:
             if use_clickhouse and name in _CLICKHOUSE_DEBT_FUNCTIONS:

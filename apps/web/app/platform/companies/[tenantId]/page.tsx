@@ -228,7 +228,7 @@ export default function PlatformCompanyDetailPage() {
               <div className="platformFieldHint">Status comercial e cobrança são geridos apenas pelo Master.</div>
             )}
             <div className="platformFieldHint" style={{ gridColumn: '1 / -1' }}>
-              sales_history_days limita somente a trilha comercial curta. default_product_scope_days define o recorte automático de entrada no dashboard para usuários do produto.
+              sales_history_days limita somente a trilha comercial curta. default_product_scope_days define o período padrão de entrada no dashboard para usuários do produto.
             </div>
             <label className="platformCheckbox">
               <input

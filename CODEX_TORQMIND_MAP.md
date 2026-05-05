@@ -9,6 +9,7 @@ Arquivo de contexto rapido para futuras sessoes. Leia este arquivo antes de reau
 - PostgreSQL continua sendo fonte da verdade transacional e legado analitico (`stg`, `dw`, `mart`, `app`, `auth`, `billing`).
 - ClickHouse mantem uma copia analitica nativa do schema `dw` PostgreSQL no banco `torqmind_dw`, carregada explicitamente por script via table function `postgresql(...)`.
 - ClickHouse serve marts nativas em `torqmind_mart` com tabelas agregadas/desnormalizadas e MVs streaming.
+- O realtime 2.0 atual e um candidato de cutover STG-direto: `Agent/API -> STG -> Debezium(stg.*) -> Redpanda -> CDC Consumer -> torqmind_current.stg_* -> MartBuilder(source=stg) -> torqmind_mart_rt -> API`. DW fica para auditoria/reconciliacao/rollback, nao como hot path realtime.
 - Operacao normal: ETL incremental atualiza PostgreSQL DW, depois `prod-clickhouse-sync-dw.sh MODE=incremental` publica `torqmind_dw` nativo e `prod-clickhouse-refresh-marts.sh MODE=incremental` republica janelas afetadas nas marts.
 - O backend analitico usa `app.repos_analytics` como facade ClickHouse-first. As rotas continuam chamando nomes publicos iguais aos de `repos_mart`.
 - Origem canonica de vendas: `stg.comprovantes` e `stg.itenscomprovantes`. `MovProdutos`/`ItensMovProdutos` nao devem voltar ao hot path de vendas; campos DW como `id_movprodutos` podem permanecer apenas como aliases legados preenchidos a partir de comprovantes.
@@ -44,7 +45,7 @@ Atalhos uteis:
 - `make clickhouse-mvs`: cria MVs streaming.
 - `make clickhouse-native-backfill`: popula marts nativas a partir de `torqmind_dw`.
 - `make analytics-smoke`: valida inventory do facade.
-- `make clickhouse-init`: executa sync DW nativo, espera as 14 tabelas obrigatorias e cria tabelas mart; para refresh completo rode backfill e MVs em seguida.
+- `make clickhouse-init`: executa sync DW nativo, espera as 15 tabelas obrigatorias e cria tabelas mart; para refresh completo rode backfill e MVs em seguida.
 - `make prod-clickhouse-sync-dw`: sync produtivo PostgreSQL DW -> ClickHouse DW nativo.
 - `make prod-clickhouse-sync-dw-full`: full refresh controlado do DW ClickHouse nativo.
 - `make prod-clickhouse-sync-dw-incremental`: sync incremental do DW ClickHouse nativo.
@@ -55,6 +56,18 @@ Atalhos uteis:
 - `make prod-clickhouse-init`: em producao recria `torqmind_dw` nativo, valida `fact_venda`/`fact_venda_item` contra PostgreSQL, recria `torqmind_mart`, roda backfill e cria MVs streaming nesta ordem.
 - `make prod-data-reconcile ID_EMPRESA=1 ID_FILIAL=14458`: compara PostgreSQL DW, `torqmind_dw` e marts de vendas sem depender de `stg.movprodutos`.
 - `make prod-semantic-marts-audit ID_EMPRESA=1 ID_FILIAL=14458`: valida semantica de labels humanos em pagamentos, caixa, antifraude, risco, financeiro e concorrencia.
+- `make prod-homologation-apply`: orquestrador unico para homologacao com preflight, pause/resume de cron, build/recreate, migrate, ClickHouse full, audits e post-boot checks.
+- `make prod-homologation-apply-streaming`: mesmo fluxo, mas com bootstrap e validacao do streaming 2.0 em paralelo.
+- `make prod-homologation-apply-full-stg`: rebuild completo desde STG (todas as filiais) com ClickHouse full, desde 2025-01-01.
+- `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1`: rebuild seguro das camadas derivadas PostgreSQL desde a STG, sem tocar ClickHouse.
+- `make prod-rebuild-derived-from-stg FROM_DATE=2025-01-01 ID_EMPRESA=1 INCLUDE_DIMENSIONS=1`: mesma rotina, mas incluindo purge de dimensoes DW reconstruiveis em rebuild tenant-wide aberto.
+
+Nota sobre filiais no apply:
+- `--id-filial` = escopo de auditoria/smoke (default 14458). Nao afeta rebuild nem backfill.
+- `--rebuild-id-filial` = escopo do rebuild derivado. Omitir = todas as filiais.
+- `--backfill-id-filial` = escopo do backfill realtime (MartBuilder). Omitir = todas as filiais.
+- `--all-filiais` = alias explícito para rebuild/backfill de todas as filiais.
+- Conflito: `--all-filiais` e `--backfill-id-filial` sao mutuamente exclusivos (exit 2).
 
 ## 3. Variaveis de ambiente criticas
 
@@ -68,6 +81,12 @@ Atalhos uteis:
 - `RISK_INTERVAL_MINUTES=30`: intervalo default do trilho risk.
 - `PIPELINE_TIMEOUT_SECONDS`, `PIPELINE_WARN_SECONDS`, `PIPELINE_TRACK_LOG_MAX_BYTES`: limites de tempo/log do ciclo operacional.
 - `CLICKHOUSE_INCREMENTAL_ENABLED=true`: habilita sync DW + refresh marts apos tracks com mudancas.
+- `USE_REALTIME_MARTS=false`: ativa leitura de marts via torqmind_mart_rt (CDC-fed). Quando true, repos_analytics rota para repos_mart_realtime.
+- `REALTIME_MARTS_SOURCE=stg|dw`: origem do MartBuilder/facade realtime. O aceite final exige `stg`; `dw` e compatibilidade/reconciliacao.
+- `REALTIME_MARTS_DOMAINS=dashboard,sales,cash,fraud,finance,payments`: domínios servidos pelo mart_rt.
+- `REALTIME_MARTS_FALLBACK=true`: se true, falhas no mart_rt caem silenciosamente para batch. No cutover final, deve ser false.
+- `ENABLE_MART_BUILDER=true`: CDC Consumer dispara MartBuilder após cada flush.
+- Origem realtime atual: Debezium captura `stg.comprovantes`, `stg.itenscomprovantes`, `stg.formas_pgto_comprovantes`, cadastros STG, financeiro STG e `app.payment_type_map`. `dw.*` pode permanecer no connector para reconciliacao/rollback, mas MartBuilder default usa `source=stg`.
 - `PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_PASSWORD`: conexao PostgreSQL.
 - `DATABASE_URL`: URL async da API.
 - `JWT_SECRET_KEY`/equivalentes em `config.py`: nunca logar nem commitar.
@@ -106,6 +125,7 @@ SQL PostgreSQL:
 
 - `sql/migrations/*.sql`: cadeia versionada.
 - `sql/torqmind_reset_db_v2.sql`: reset dev/homolog alinhado ate a migration `071`.
+- `sql/migrations/072_derived_rebuild_runtime_scope.sql`: helpers de runtime (`etl.from_date`, `etl.to_date`, `etl.branch_id`, `etl.force_full_scan`) e redefs das funcoes ETL ativas para rebuild derivado controlado, incluindo os wrappers publicos `load_fact_pagamento_comprovante*` e `load_fact_venda_item*`.
 
 SQL ClickHouse:
 
@@ -113,6 +133,8 @@ SQL ClickHouse:
 - `sql/clickhouse/phase2_mvs_design.sql`: tabelas marts.
 - `sql/clickhouse/phase2_mvs_streaming_triggers.sql`: MVs streaming.
 - `sql/clickhouse/phase3_native_backfill.sql`: backfill nativo; configura `max_partitions_per_insert_block=0` somente na sessao de backfill historico.
+- `sql/clickhouse/streaming/040_mart_rt_database.sql`: cria `torqmind_mart_rt` e `mart_publication_log`; deve aparecer em `git ls-files`.
+- `sql/clickhouse/streaming/041_mart_rt_tables.sql`: cria as tabelas mart_rt obrigatorias; deve aparecer em `git ls-files`.
 
 Deploy:
 
@@ -121,7 +143,7 @@ Deploy:
 - `docker-compose.prod.yml`: stack prod com ClickHouse.
 - `.env.production.example`: variaveis prod esperadas.
 - `deploy/scripts/load_clickhouse_historical.sh`: carga historica CH.
-- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 14 tabelas DW obrigatorias por `postgresql(...)`, carrega `app.payment_type_map` em `dim_forma_pagamento` e valida counts/max(data_key); nao imprime credenciais.
+- `deploy/scripts/prod-clickhouse-sync-dw.sh`: cria `torqmind_dw` nativo, carrega as 15 tabelas DW obrigatorias por `postgresql(...)`, carrega `app.payment_type_map` em `dim_forma_pagamento`, recria `torqmind_mart.agg_estoque_posicao_atual` e valida counts/max(data_key); nao imprime credenciais.
 - `deploy/scripts/prod-clickhouse-refresh-marts.sh`: modo `full` para bootstrap e `incremental` para republicar janelas afetadas de marts idempotentes.
 - `deploy/scripts/prod-clickhouse-init.sh`: bootstrap prod; executa sync DW nativo, valida vendas, recria marts, roda backfill e depois cria MVs streaming.
 - `deploy/scripts/prod-data-reconcile.sh`: reconciliacao DW PostgreSQL vs ClickHouse DW nativo vs marts; diferencia ERROR critico de WARN de qualidade.
@@ -129,8 +151,19 @@ Deploy:
 - `deploy/scripts/prod-etl-pipeline.sh`: rotina leve com lock, timeout, ETL operational/risk e publicacao incremental ClickHouse.
 - `deploy/scripts/prod-install-cron.sh`: instala cron `*/${OPERATIONAL_INTERVAL_MINUTES}`; default operacional 2 min e risk 30 min.
 - `deploy/scripts/prod-history-coverage-audit.sh`: auditoria historica por STG canonico, DW PostgreSQL, DW ClickHouse e mart.
+- `deploy/scripts/prod-rebuild-derived-from-stg.sh`: audita cobertura STG, purga somente fatos derivados seguros, opcionalmente inclui dimensoes DW reconstruiveis com `--include-dimensions`, roda ETL full canônico com janela controlada e `force_full_scan`, e verifica STG vs DW sem tocar ClickHouse.
 - `deploy/scripts/prod-sales-orphans-report.sh`: relatorio de orfaos de venda; nao deleta nada.
+- `deploy/scripts/prod-homologation-apply.sh`: apply unico seguro para homolog/prod; valida env e compose, pausa cron, rebuilda API/Web/Nginx, roda migrate, opcionalmente faz rebuild derivado desde a STG (com `--rebuild-id-filial` para escopo ou todas as filiais por default), aceita `--include-dimensions` e o escape hatch explicito `--allow-dw-only --skip-clickhouse`, executa ClickHouse full ou incremental, audits, streaming opcional, limpeza de `app.snapshot_cache`, post-boot checks e resume cron sem `down -v` nem apagar volumes.
+- `deploy/scripts/streaming-init-mart-rt.sh`: aplica 040/041 com credenciais ClickHouse e falha se qualquer DDL ou tabela obrigatoria estiver ausente.
+- `deploy/scripts/realtime-validate-cutover.sh`: validacao bloqueante `--source stg` de STG canonica vs mart_rt e API facade com `USE_REALTIME_MARTS=true`, `REALTIME_MARTS_SOURCE=stg` e `REALTIME_MARTS_FALLBACK=false`.
+- `deploy/scripts/prod-realtime-cutover-apply.sh`: cutover one-command STG-direto; so ativa realtime depois de init, readiness de Redpanda/Debezium/CDC/current/raw STG, dados em mart_rt, validacao bloqueante e smoke fallback=false.
+- `deploy/scripts/realtime-e2e-smoke.sh`: smoke STG-direto com fixture em `stg.comprovantes`/`stg.itenscomprovantes`/`stg.formas_pgto_comprovantes`, raw/current/mart_rt e API facade.
 - `Makefile`: fonte unica dos comandos operacionais.
+
+Runbook do apply unico:
+
+- `docs/HOMOLOGATION_APPLY_RUNBOOK.md`: explica quando usar `--full-clickhouse`, `--with-streaming` e `--streaming-non-blocking`, como acompanhar logs e como fazer rollback basico sem tocar em volumes.
+- `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`: explica quando usar o rebuild derivado puro, a diferenca entre STG -> DW e DW -> ClickHouse, e a semantica segura de `force_full_scan` em rebuild tenant-wide vs rebuild escopado.
 
 Testes:
 
@@ -315,6 +348,10 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Corrigido DRE/resumo de caixa ClickHouse para retornar cards financeiros a partir de `finance_aging_daily` e nunca renderizar data 1970 quando nao ha snapshot.
 - Corrigido fluxo de preco concorrente para bypassar snapshot cache no overview e preservar inputs digitados enquanto o frontend refaz a consulta apos salvar.
 - Adicionado `docs/clickhouse_semantic_parity_audit.md` e `prod-semantic-marts-audit.sh` para validar paridade semantica operacional.
+- Corrigido MartBuilder (CDC consumer) para aplicar `toTimezone(dt_evento, 'America/Sao_Paulo')` antes de extrair `data_key` e `hora`, evitando atribuicao de vendas noturnas (21h-23h59 BRT) ao dia UTC seguinte.
+- Corrigido `ch_query()`/`pg_scalar()` no cutover script para logar erros reais em vez de mascarar com `2>/dev/null`.
+- Adicionada tolerancia de 0.1% no validate-cutover para contas inteiras com drift de fronteira de fuso.
+- Adicionado `deploy/scripts/realtime-sales-data-profile.sh` para profiling operacional de qualidade de dados STG/current/mart_rt.
 
 ## 9. Pontas soltas remanescentes
 
@@ -445,3 +482,208 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - Infra UTC; negocio/UI `America/Sao_Paulo`; filtros sempre `YYYY-MM-DD`; API retorna timestamp tecnico com offset.
 - Bootstrap ClickHouse: sincronizar `torqmind_dw` nativo e validar count/max(data_key) contra PostgreSQL antes de backfillar marts.
 - Nunca compartilhar uma instancia global de client clickhouse-connect entre threads; o client carrega estado de sessao.
+
+## 14. Arquitetura Event-Driven Streaming (TorqMind 2.0)
+
+Status: FUNDAÇÃO CRIADA — stack paralela ao sistema atual.
+
+### Decisões arquiteturais
+
+- Broker: Redpanda (Kafka-compatible, single binary, leve em memória).
+- CDC: Debezium PostgreSQL Connector via Debezium Connect.
+- Consumer: serviço Python próprio (`apps/cdc_consumer/`) — controle total sobre mapeamento, idempotência e observabilidade.
+- OLAP: ClickHouse com 4 camadas: `torqmind_raw`, `torqmind_current`, `torqmind_ops`, `torqmind_mart`.
+- NÃO usa MaterializedPostgreSQL.
+- NÃO corta pipeline atual (cron/shell ETL) nesta fase.
+- NÃO troca API para `torqmind_current` ainda.
+
+### Fluxo CDC
+
+```
+PostgreSQL (stg.*, app.*) → Debezium → Redpanda → CDC Consumer → ClickHouse (raw/current/ops)
+```
+
+### Tabelas capturadas (primeiro escopo)
+
+STG vendas: `comprovantes`, `itenscomprovantes`, `formas_pgto_comprovantes`.
+STG cadastros/operacional: `turnos`, `entidades` (clientes), `produtos`, `grupoprodutos`, `funcionarios`, `usuarios`, `localvendas`, `filiais` quando existir.
+STG financeiro: `contaspagar`, `contasreceber`, `financeiro` quando disponível.
+App: `payment_type_map`, `competitor_fuel_prices`/`goals` quando existirem.
+DW: `fact_*`/`dim_*` podem permanecer capturados apenas para reconciliacao/rollback.
+
+### Tópicos Redpanda
+
+Formato: `torqmind.<schema>.<table>` (ex: `torqmind.stg.comprovantes`).
+
+### Idempotência
+
+- Raw: append-only com projeção dedup por (topic, partition, offset).
+- Current: ReplacingMergeTree com version = source_ts_ms; mesma PK com ts_ms menor é descartada no merge.
+- Deletes: marcados com `is_deleted=1`, não há DELETE físico.
+
+### Mapa de arquivos streaming
+
+- `docker-compose.streaming.yml`: stack Redpanda + Console + Debezium + Consumer.
+- `apps/cdc_consumer/`: serviço CDC Consumer Python.
+- `deploy/debezium/connectors/torqmind-postgres-cdc.json`: config do connector.
+- `deploy/scripts/streaming-*.sh`: scripts operacionais.
+- `sql/clickhouse/streaming/001_databases.sql`: cria databases.
+- `sql/clickhouse/streaming/010_raw_events.sql`: tabela raw append-only.
+- `sql/clickhouse/streaming/020_current_tables.sql`: tabelas current (ReplacingMergeTree), incluindo `stg_*` do hot path STG-direto.
+- `sql/clickhouse/streaming/030_ops_tables.sql`: tabelas operacionais (offsets, lag, erros).
+- `docs/architecture/TORQMIND_EVENT_DRIVEN_2_0.md`: documentação completa.
+- `docs/architecture/TORQMIND_2_0_CUTOVER_PLAN.md`: plano de migração batch → streaming.
+- `docs/product/TORQMIND_PRODUCT_WORLD_CLASS_AUDIT.md`: auditoria world-class de produto.
+
+### Variáveis de ambiente streaming (CDC Consumer)
+
+- `REDPANDA_BROKERS`, `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`
+- `CDC_CONSUMER_GROUP`, `CDC_TOPICS`, `CDC_TOPIC_PATTERN`, `CDC_BATCH_SIZE`, `CDC_FLUSH_INTERVAL_SECONDS`
+- `LOG_LEVEL`
+- `REALTIME_MARTS_SOURCE=stg`: default do CDC Consumer/MartBuilder.
+
+### Comandos Makefile streaming
+
+- `make streaming-up`: sobe stack.
+- `make streaming-down`: para stack.
+- `make streaming-init-clickhouse`: cria schemas ClickHouse.
+- `make streaming-init-mart-rt`: aplica DDLs 040/041 das marts realtime.
+- `make streaming-register-debezium`: registra connector.
+- `make streaming-status`: status geral.
+- `make streaming-validate-cdc`: valida pipeline.
+- `make streaming-logs`: tail logs.
+- `make streaming-config-check`: valida compose.
+- `make test-cdc-consumer`: testes unitários do consumer.
+
+### Comandos Makefile realtime cutover
+
+- `make realtime-cutover`: cutover completo STG-direto (build, migrate, backfill-stg, validate --source stg, activate).
+- `make realtime-validate`: compara STG canônica vs mart_rt (bloqueante, exit 1 se divergente).
+- `make realtime-backfill`: reconstrói mart_rt a partir de `torqmind_current.stg_*`.
+- `make realtime-rollback`: desativa realtime, volta para batch.
+- `make realtime-e2e-smoke`: teste ponta-a-ponta STG (insere comprovante/item/pagamento em STG -> confirma na API).
+
+### Próximos passos
+
+- Provar o E2E STG-direto no ambiente alvo antes de declarar go-live operacional.
+- Criar tabela física `stg.clientes` se o produto decidir separar clientes de `stg.entidades`; hoje clientes usam `stg.entidades`.
+- Observabilidade com Prometheus/Grafana.
+- Flink para CEP/aggregation streaming.
+- Temporal para workflows de backfill/onboarding.
+- Agent consumindo eventos para alertas reativos.
+
+### Perfis de deploy
+
+- `local-full`: Redpanda + Console + Debezium + Consumer (dev).
+- `prod-lite`: Redpanda + Debezium + Consumer sem Console (4 CPU / 8 GB).
+
+### Validações executadas (2026-04-30)
+
+- `bash -n deploy/scripts/streaming-*.sh`: passou.
+- `docker compose -f docker-compose.streaming.yml --profile local-full config --quiet`: passou.
+- `docker compose -f docker-compose.prod.yml --env-file .env.production.example config --quiet`: passou (não quebrou).
+- `python3 -m pytest apps/cdc_consumer/tests/ -v`: 29 testes + 15 subtestes passaram.
+- DDL alignment tests verificam que 010/020/030 SQL correspondem exatamente ao que `clickhouse_writer.py` insere.
+- Rede Docker corrigida: `torqmind_default` (external) em vez de rede isolada.
+- Scripts de streaming com auth ClickHouse e env POSTGRES_* padronizado.
+
+## 15. Auditoria de Produto World-Class (2026-04-30)
+
+Status: AUDITORIA COMPLETA — documentos criados.
+
+### Documentos produzidos
+
+- `docs/product/TORQMIND_PRODUCT_WORLD_CLASS_AUDIT.md`: auditoria tela por tela, domínio por domínio, personas, quick wins, roadmap.
+- `docs/architecture/TORQMIND_2_0_CUTOVER_PLAN.md`: plano de migração batch → streaming em 7 fases com rollback e checklists.
+
+### Achados críticos de produto
+
+1. ~~**"recorte"** em 32 ocorrências no frontend~~ — **RESOLVIDO**: substituído por "período" em todo frontend e backend.
+2. ~~**"não identificado"** em 8 ocorrências~~ — **RESOLVIDO**: substituído por termos contextuais (sem cadastro, sem classificação).
+3. ~~JWT secret default aceito silenciosamente em produção~~ — **RESOLVIDO**: fail-fast bloqueia placeholders + padrões fracos em prod/homolog/staging.
+4. ~~`product_global` role não valida tenant_id~~ — **RESOLVIDO**: valida tenant_ids; sem tenants = 403.
+5. ~~24 endpoints BI sem response_model tipado~~ — **FASE 1 RESOLVIDA**: 5 endpoints principais com envelope tipado (Dict/Any + extra allow). Próxima fase: contratos fortes por domínio.
+6. Falta mart de divergência de caixa, inadimplência por cliente, histórico de preço.
+7. Plataforma admin sem health técnico de CDC/streaming.
+
+### Response Models — Estado atual (Fase 1)
+
+Os 5 endpoints BI principais (`/dashboard/home`, `/sales/overview`, `/cash/overview`, `/fraud/overview`, `/finance/overview`) usam `response_model` com modelos envelope (`CacheMetadata` + campos tipados como `Dict[str, Any]` + `model_config = {"extra": "allow"}`).
+
+No antifraude, o campo externo continua sendo `model_coverage`, mas o schema usa um nome interno com alias para evitar warning de namespace protegido do Pydantic.
+
+**Justificativa Fase 1:** os payloads reais são dinâmicos e variam por contexto de negócio. Os modelos envelope garantem documentação OpenAPI e serialização controlada sem quebrar contratos existentes.
+
+**Fase 2 (futura):** contratos fortes por domínio com schemas aninhados específicos (KPI models, Series models, etc.) quando os payloads estabilizarem.
+
+### Ingest Key — Decisão de Design
+
+- **Header canônico:** `X-Ingest-Key` (único, sem alias).
+- Em produção/homolog/staging: `INGEST_REQUIRE_KEY=true` obrigatório (enforced via fail-fast).
+- Sem chave → 401 "Missing X-Ingest-Key".
+- Chave inválida → 401 "Invalid X-Ingest-Key".
+- Chave válida → resolve `id_empresa` do tenant.
+
+### Security Gates — Ambientes produtivos
+
+Ambientes bloqueados: `prod`, `production`, `homolog`, `homologation`, `staging`.
+
+Validações em `_validate_production_settings()`:
+- JWT secret: rejeita vazio, placeholders (CHANGE_ME*), valores triviais (password, admin, 1234, etc.) e qualquer valor com menos de 32 caracteres.
+- PG password: mesma regra
+- ClickHouse: `CLICKHOUSE_USER=default` é proibido em ambiente produtivo, mesmo com senha forte; `CLICKHOUSE_PASSWORD` vazio/placeholder também é bloqueado.
+- INGEST_REQUIRE_KEY=true obrigatório
+- Em dev/test/local os defaults continuam permitidos, mas com warning explícito para não mascarar risco real.
+- Não há validação artificial para `ETL_INTERNAL_KEY` no startup: o header canônico de ingest continua sendo `X-Ingest-Key`, resolvido por tenant no banco.
+
+### Quick wins identificados
+
+- ~~Replace "recorte" → "período"~~ ✅
+- ~~Replace "não identificado" → termos contextuais~~ ✅
+- ~~Fail-fast config.py se JWT secret = default em produção~~ ✅
+- ~~Validar id_empresa em product_global scope~~ ✅
+
+### UI Copy Quality Gate
+
+Teste automatizado `apps/web/app/lib/ui-copy-quality.test.mjs`:
+- Integrado ao `npm test` (roda no pipeline).
+- Escaneia recursivamente `.tsx`, `.ts`, `.mjs`, `.js`.
+- Exclui arquivos de teste (*.test.*, *.spec.*) e diretórios node_modules/.next.
+- Reporta arquivo, linha, termo, motivo e trecho.
+- Termos proibidos: `recorte`, `não identificado/a/os`, `Saídas normais`, `Frescor operacional`, `FORMA_`, `01/01/1970`, `1970` em texto visível, `mart`, `snapshot`, `trilho operacional`, `publicação analítica` e `Platform` como label visual.
+- Usa heurística específica para `Platform` e allowlist curta para arquivos técnicos internos de leitura/cobertura.
+- Qualquer novo termo proibido detectado falha o build.
+
+### Runtime / Container Validation
+
+Checklist mínimo para garantir que o container API reflete a branch atual:
+- `docker compose build api`
+- `docker compose up -d api`
+- `docker compose exec -T api python - <<'PY'`
+  `from app import schemas_bi`
+  `print([name for name in dir(schemas_bi) if name.endswith("Response")])`
+  `PY`
+- `make analytics-smoke`
+
+### Cutover streaming: estado
+
+| Fase | Status |
+|------|--------|
+| 1 - CDC Paralelo | ✅ Completa |
+| 2 - Validação em staging | Próxima |
+| 3 - Mart piloto streaming | Planejada |
+| 4 - API feature flag | Planejada |
+| 5 - Dashboards migrados | Planejada |
+| 6 - Alertas | Planejada |
+| 7 - Agent/Jarvis | Planejada |
+
+### Correção técnica (streaming)
+
+- `040_pilot_marts.sql` removido do disco (não existia mais); referência mantida no Section 14 como histórico.
+- Rede Docker streaming corrigida para `external: true` com `torqmind_default`.
+- Env vars padronizados para POSTGRES_* com fallback PG_*.
+- ClickHouse auth adicionado em todos os scripts.
+- Register Debezium usa Python JSON generation (não sed).
+- CDC_TOPIC_PATTERN corrigido: `^torqmind\..*` (escape simples no YAML).
+- `python3 -m pytest apps/cdc_consumer/tests/ -v`: 29 testes, todos passaram.
+- Scripts não imprimem senhas (validado com grep).

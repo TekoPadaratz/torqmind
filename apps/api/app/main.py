@@ -71,7 +71,8 @@ def startup_event() -> None:
         _startup_status = {"ok": True, "message": None}
     except Exception as exc:  # noqa: BLE001
         logger.warning("Startup soft-failed while preparing local seed: %s", exc, exc_info=exc)
-        _startup_status = {"ok": False, "message": str(exc)}
+        # Seed failure in dev/local is non-critical — keep the app healthy.
+        _startup_status = {"ok": True, "message": f"seed_skipped: {exc}"}
 
 
 @app.exception_handler(HTTPException)

@@ -94,12 +94,20 @@ metric_pg_fact_venda_item() {
   pg "SELECT count(*)::bigint || '|' || COALESCE(min(data_key), 0)::bigint || '|' || COALESCE(max(data_key), 0)::bigint || '|' || COALESCE(max(updated_at)::text, '') FROM dw.fact_venda_item WHERE id_empresa = ${ID_EMPRESA}${pg_branch};"
 }
 
+metric_pg_fact_estoque() {
+  pg "SELECT count(*)::bigint || '|' || COALESCE(max(data_key_ref), 0)::bigint || '|' || COALESCE(max(updated_at)::text, '') FROM dw.fact_estoque_atual WHERE id_empresa = ${ID_EMPRESA}${pg_branch};"
+}
+
 metric_ch_fact_venda() {
   ch --query "SELECT concat(toString(count()), '|', toString(coalesce(min(data_key), 0)), '|', toString(coalesce(max(data_key), 0)), '|', toString(coalesce(max(updated_at), toDateTime(0)))) FROM torqmind_dw.fact_venda WHERE id_empresa = ${ID_EMPRESA}${ch_branch}"
 }
 
 metric_ch_fact_venda_item() {
   ch --query "SELECT concat(toString(count()), '|', toString(coalesce(min(data_key), 0)), '|', toString(coalesce(max(data_key), 0)), '|', toString(coalesce(max(updated_at), toDateTime(0)))) FROM torqmind_dw.fact_venda_item WHERE id_empresa = ${ID_EMPRESA}${ch_branch}"
+}
+
+metric_ch_fact_estoque() {
+  ch --query "SELECT concat(toString(count()), '|', toString(coalesce(max(data_key_ref), 0)), '|', toString(coalesce(max(updated_at), toDateTime(0)))) FROM torqmind_dw.fact_estoque_atual WHERE id_empresa = ${ID_EMPRESA}${ch_branch}"
 }
 
 metric_ch_mart_sales() {
@@ -116,6 +124,7 @@ required_tables=(
   dim_usuario_caixa
   fact_caixa_turno
   fact_comprovante
+  fact_estoque_atual
   fact_financeiro
   fact_pagamento_comprovante
   fact_risco_evento
@@ -150,6 +159,11 @@ if [[ "$mart_exists" != "1" ]]; then
   error "required mart torqmind_mart.agg_vendas_diaria is missing"
 fi
 
+stock_mart_exists="$(ch --query "SELECT count() FROM system.tables WHERE database = 'torqmind_mart' AND name = 'agg_estoque_posicao_atual'" || true)"
+if [[ "$stock_mart_exists" != "1" ]]; then
+  error "required mart torqmind_mart.agg_estoque_posicao_atual is missing"
+fi
+
 if [[ "${APP_CORS_ORIGINS:-}" == *"localhost"* || "${APP_CORS_ORIGINS:-}" == *"127.0.0.1"* || "${APP_CORS_ORIGIN_REGEX:-}" == *"localhost"* ]]; then
   warn "CORS still contains localhost entries"
 fi
@@ -163,20 +177,26 @@ fi
 echo
 pg_venda="$(metric_pg_fact_venda)"
 pg_item="$(metric_pg_fact_venda_item)"
+pg_estoque="$(metric_pg_fact_estoque)"
 ch_venda="$(metric_ch_fact_venda)"
 ch_item="$(metric_ch_fact_venda_item)"
+ch_estoque="$(metric_ch_fact_estoque)"
 ch_mart="$(metric_ch_mart_sales)"
 
 IFS='|' read -r pg_venda_count pg_venda_min_data pg_venda_max_data pg_venda_min_key pg_venda_max_key pg_venda_updated <<< "$pg_venda"
 IFS='|' read -r pg_item_count pg_item_min_key pg_item_max_key pg_item_updated <<< "$pg_item"
+IFS='|' read -r pg_estoque_count pg_estoque_max_key pg_estoque_updated <<< "$pg_estoque"
 IFS='|' read -r ch_venda_count ch_venda_min_key ch_venda_max_key ch_venda_updated <<< "$ch_venda"
 IFS='|' read -r ch_item_count ch_item_min_key ch_item_max_key ch_item_updated <<< "$ch_item"
+IFS='|' read -r ch_estoque_count ch_estoque_max_key ch_estoque_updated <<< "$ch_estoque"
 IFS='|' read -r mart_count mart_min_key mart_max_key mart_sum_faturamento mart_updated <<< "$ch_mart"
 
 echo "PostgreSQL dw.fact_venda:       rows=${pg_venda_count} min_data=${pg_venda_min_data:-null} max_data=${pg_venda_max_data:-null} min_data_key=${pg_venda_min_key} max_data_key=${pg_venda_max_key} max_updated_at=${pg_venda_updated:-null}"
 echo "PostgreSQL dw.fact_venda_item:  rows=${pg_item_count} min_data_key=${pg_item_min_key} max_data_key=${pg_item_max_key} max_updated_at=${pg_item_updated:-null}"
+echo "PostgreSQL dw.fact_estoque_atual: rows=${pg_estoque_count} max_data_key_ref=${pg_estoque_max_key} max_updated_at=${pg_estoque_updated:-null}"
 echo "ClickHouse torqmind_dw.fact_venda:      rows=${ch_venda_count} min_data_key=${ch_venda_min_key} max_data_key=${ch_venda_max_key} max_updated_at=${ch_venda_updated:-null}"
 echo "ClickHouse torqmind_dw.fact_venda_item: rows=${ch_item_count} min_data_key=${ch_item_min_key} max_data_key=${ch_item_max_key} max_updated_at=${ch_item_updated:-null}"
+echo "ClickHouse torqmind_dw.fact_estoque_atual: rows=${ch_estoque_count} max_data_key_ref=${ch_estoque_max_key} max_updated_at=${ch_estoque_updated:-null}"
 echo "ClickHouse torqmind_mart.agg_vendas_diaria: rows=${mart_count} min_data_key=${mart_min_key} max_data_key=${mart_max_key} sum_faturamento=${mart_sum_faturamento} max_updated_at=${mart_updated:-null}"
 
 echo
@@ -213,6 +233,12 @@ if [[ "$pg_item_count" != "$ch_item_count" || "$pg_item_max_key" != "$ch_item_ma
   error "torqmind_dw.fact_venda_item count/max(data_key) diverges from PostgreSQL"
 else
   ok "torqmind_dw.fact_venda_item matches PostgreSQL count/max(data_key)"
+fi
+
+if [[ "$pg_estoque_count" != "$ch_estoque_count" || "$pg_estoque_max_key" != "$ch_estoque_max_key" ]]; then
+  error "torqmind_dw.fact_estoque_atual count/max(data_key_ref) diverges from PostgreSQL"
+else
+  ok "torqmind_dw.fact_estoque_atual matches PostgreSQL count/max(data_key_ref)"
 fi
 
 if (( mart_max_key < ch_item_max_key )); then

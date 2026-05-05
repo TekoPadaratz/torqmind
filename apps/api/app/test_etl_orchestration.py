@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
+import sys
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +17,7 @@ class _DummyConn:
     def __init__(self) -> None:
         self.commit_calls = 0
         self.rollback_calls = 0
+        self.calls: list[tuple[str, object]] = []
 
     def commit(self) -> None:
         self.commit_calls += 1
@@ -23,6 +26,11 @@ class _DummyConn:
         self.rollback_calls += 1
 
     def execute(self, *_args, **_kwargs):
+        query = str(_args[0]) if _args else ""
+        params = _args[1] if len(_args) > 1 else None
+        self.calls.append((query, params))
+        if "set_config" in query:
+            return _LoaderCursor({})
         raise AssertionError("Unexpected SQL execution in this test")
 
 
@@ -116,6 +124,41 @@ class _ChunkLoaderConn:
         return _LoaderCursor({})
 
 
+class _RuntimeScopeConn:
+    def __init__(self) -> None:
+        self.commit_calls = 0
+        self.rollback_calls = 0
+        self.calls: list[tuple[str, object]] = []
+
+    def commit(self) -> None:
+        self.commit_calls += 1
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
+
+    def execute(self, query, params=None):
+        sql = str(query)
+        self.calls.append((sql, params))
+        return _LoaderCursor({})
+
+
+class _RowcountResult:
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
+class _WatermarkResetConn:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def execute(self, query, params=None):
+        sql = str(query)
+        self.calls.append((sql, params))
+        if "DELETE FROM etl.watermark" in sql:
+            return _RowcountResult(12)
+        return _LoaderCursor({})
+
+
 class EtlOrchestrationTest(unittest.TestCase):
     def test_cli_and_endpoint_share_same_incremental_cycle_function(self) -> None:
         self.assertIs(cli_etl_incremental.run_incremental_cycle, etl_orchestrator.run_incremental_cycle)
@@ -132,6 +175,164 @@ class EtlOrchestrationTest(unittest.TestCase):
                 "turnos",
             ),
         )
+
+    def test_force_full_resets_only_derived_phase_watermarks_for_tenant_wide_rebuild(self) -> None:
+        conn = _WatermarkResetConn()
+
+        with (
+            patch("app.services.etl_orchestrator._hot_window_days", return_value=3),
+            patch("app.services.etl_orchestrator._run_sql_count", return_value=0),
+            patch("app.services.etl_orchestrator._run_payment_loader", return_value=0),
+            patch("app.services.etl_orchestrator._run_venda_item_loader", return_value=0),
+            patch("app.services.etl_orchestrator._phase_domains", return_value={"sales": True}),
+            patch("app.services.etl_orchestrator._log_stage_summary"),
+            patch("app.services.etl_orchestrator._run_logged_count_step") as mock_logged_step,
+        ):
+            def _side_effect(_conn, _tenant_id, _step_name, **kwargs):
+                rows = kwargs["operation"]()
+                return rows, 0
+
+            mock_logged_step.side_effect = _side_effect
+
+            result = etl_orchestrator._run_tenant_phase(
+                conn,
+                7,
+                True,
+                date(2026, 4, 30),
+                from_date=date(2025, 1, 1),
+                track=etl_orchestrator.TRACK_OPERATIONAL,
+            )
+
+        self.assertTrue(result["ok"])
+        delete_calls = [item for item in conn.calls if "DELETE FROM etl.watermark" in item[0]]
+        self.assertEqual(len(delete_calls), 1)
+        _, params = delete_calls[0]
+        self.assertEqual(params[0], 7)
+        self.assertEqual(tuple(params[1]), etl_orchestrator.FORCE_FULL_PHASE_WATERMARK_DATASETS)
+        self.assertEqual(result["meta"]["from_date"], "2025-01-01")
+
+    def test_force_full_keeps_watermarks_when_rebuild_is_scoped(self) -> None:
+        conn = _WatermarkResetConn()
+
+        with (
+            patch("app.services.etl_orchestrator._hot_window_days", return_value=3),
+            patch("app.services.etl_orchestrator._run_sql_count", return_value=0),
+            patch("app.services.etl_orchestrator._run_payment_loader", return_value=0),
+            patch("app.services.etl_orchestrator._run_venda_item_loader", return_value=0),
+            patch("app.services.etl_orchestrator._phase_domains", return_value={"sales": True}),
+            patch("app.services.etl_orchestrator._log_stage_summary"),
+            patch("app.services.etl_orchestrator._run_logged_count_step") as mock_logged_step,
+        ):
+            def _side_effect(_conn, _tenant_id, _step_name, **kwargs):
+                rows = kwargs["operation"]()
+                return rows, 0
+
+            mock_logged_step.side_effect = _side_effect
+
+            result = etl_orchestrator._run_tenant_phase(
+                conn,
+                7,
+                True,
+                date(2026, 4, 30),
+                from_date=date(2025, 1, 1),
+                to_date=date(2025, 12, 31),
+                branch_id=14458,
+                track=etl_orchestrator.TRACK_OPERATIONAL,
+            )
+
+        self.assertTrue(result["ok"])
+        delete_calls = [item for item in conn.calls if "DELETE FROM etl.watermark" in item[0]]
+        self.assertEqual(delete_calls, [])
+        self.assertFalse(result["meta"]["watermark_reset"])
+        self.assertEqual(result["meta"]["watermark_reset_skipped_reason"], "scoped_force_full_scan")
+        self.assertEqual(result["meta"]["branch_id"], 14458)
+        self.assertEqual(result["meta"]["to_date"], "2025-12-31")
+
+    @patch("app.services.etl_orchestrator._dispatch_cash_telegram_alerts", return_value=etl_orchestrator._empty_notification_details())
+    @patch("app.services.etl_orchestrator._dispatch_payment_telegram_alerts", return_value=etl_orchestrator._empty_notification_details())
+    @patch("app.services.etl_orchestrator._run_tenant_post_refresh", return_value=etl_orchestrator._empty_post_meta())
+    @patch("app.services.etl_orchestrator._run_global_refresh", return_value=etl_orchestrator._empty_refresh_meta(date(2026, 4, 30)))
+    @patch("app.services.etl_orchestrator._run_tenant_clock_meta_sql", return_value={})
+    @patch(
+        "app.services.etl_orchestrator._run_tenant_phase",
+        return_value={
+            "ok": True,
+            "id_empresa": 7,
+            "ref_date": date(2026, 4, 30),
+            "hot_window_days": 3,
+            "meta": {"fact_venda": 0},
+        },
+    )
+    @patch("app.services.etl_orchestrator.inspect_running_etl_state", return_value={"live_rows": [], "stale_rows": []})
+    def test_incremental_cycle_applies_runtime_scope_settings(
+        self,
+        _mock_inspect_running_state,
+        _mock_phase,
+        _mock_clock_meta,
+        _mock_refresh,
+        _mock_post_refresh,
+        _mock_payment_telegram,
+        _mock_cash_telegram,
+    ) -> None:
+        conn = _RuntimeScopeConn()
+
+        @contextmanager
+        def _conn_ctx():
+            yield conn
+
+        with patch("app.services.etl_orchestrator.get_conn", side_effect=lambda **_: _conn_ctx()):
+            summary = etl_orchestrator.run_incremental_cycle(
+                [7],
+                ref_date=date(2026, 4, 30),
+                from_date=date(2025, 1, 1),
+                to_date=date(2025, 12, 31),
+                branch_id=14458,
+                refresh_mart=True,
+                force_full=True,
+                fail_fast=True,
+                track=etl_orchestrator.TRACK_OPERATIONAL,
+                tenant_rows=[{"id_empresa": 7, "nome": "Tenant 7", "status": "active", "is_active": True}],
+                acquire_lock=False,
+            )
+
+        self.assertTrue(summary["ok"])
+        set_config_calls = [item for item in conn.calls if "set_config" in item[0]]
+        self.assertEqual(len(set_config_calls), 5)
+        self.assertEqual(set_config_calls[0][1], ("etl.ref_date", "2026-04-30"))
+        self.assertEqual(set_config_calls[1][1], ("etl.from_date", "2025-01-01"))
+        self.assertEqual(set_config_calls[2][1], ("etl.to_date", "2025-12-31"))
+        self.assertEqual(set_config_calls[3][1], ("etl.branch_id", "14458"))
+        self.assertEqual(set_config_calls[4][1], ("etl.force_full_scan", "true"))
+
+    @patch("app.cli.etl_incremental.list_target_tenants", return_value=[{"id_empresa": 7, "nome": "Tenant 7", "status": "active", "is_active": True}])
+    @patch("app.cli.etl_incremental.run_incremental_cycle", return_value={"ok": True, "failed": 0, "items": []})
+    def test_cli_propagates_force_full_and_rebuild_window(self, mock_run_cycle, _mock_list_tenants) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = [
+            "etl_incremental",
+            "--tenant-id",
+            "7",
+            "--branch-id",
+            "14458",
+            "--force-full",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-12-31",
+            "--track",
+            "full",
+        ]
+
+        with patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
+            cli_etl_incremental.main()
+
+        mock_run_cycle.assert_called_once()
+        kwargs = mock_run_cycle.call_args.kwargs
+        self.assertTrue(kwargs["force_full"])
+        self.assertEqual(kwargs["from_date"], date(2025, 1, 1))
+        self.assertEqual(kwargs["to_date"], date(2025, 12, 31))
+        self.assertEqual(kwargs["branch_id"], 14458)
 
     @patch("app.services.etl_orchestrator._dispatch_cash_telegram_alerts", return_value=etl_orchestrator._empty_notification_details())
     @patch("app.services.etl_orchestrator._dispatch_payment_telegram_alerts", return_value=etl_orchestrator._empty_notification_details())
@@ -598,8 +799,7 @@ class EtlOrchestrationTest(unittest.TestCase):
             "fact_venda": 11,
             "fact_venda_item": 12,
             "fact_financeiro": 13,
-            # HOTFIX 2026-04-27: step desabilitado em PHASE_SQL_STEPS — reativar com a migration de estoque.
-            # "fact_estoque_atual": 14,
+            "fact_estoque_atual": 14,
             "risk_events": 15,
         }
         step_order: list[str] = []

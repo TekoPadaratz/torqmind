@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.deps import get_current_claims
-from app import repos_platform
+from app import repos_auth, repos_platform
 from app.schemas_platform import (
     BranchUpsertRequest,
     ChannelUpsertRequest,
@@ -394,3 +394,26 @@ def audit_list(
         }
     except repos_platform.AuthError as exc:
         _raise(exc)
+
+
+@router.get("/streaming-health")
+def streaming_health(claims=Depends(get_current_claims)):
+    """Streaming/realtime pipeline health for platform admins."""
+    try:
+        repos_auth.assert_platform_access(claims)
+    except repos_auth.AuthError as exc:
+        _raise(exc)
+
+    from app import repos_mart_realtime
+    from app.config import settings as _settings
+
+    try:
+        health = repos_mart_realtime.streaming_health(id_empresa=0)
+    except Exception as e:
+        health = {"error": str(e), "source_freshness": [], "cdc_state": [], "recent_errors": [], "lag": [], "mart_publications": []}
+
+    health["use_realtime_marts"] = _settings.use_realtime_marts
+    health["realtime_marts_source"] = _settings.realtime_marts_source
+    health["realtime_marts_domains"] = _settings.realtime_marts_domains
+    health["realtime_marts_fallback"] = _settings.realtime_marts_fallback
+    return health

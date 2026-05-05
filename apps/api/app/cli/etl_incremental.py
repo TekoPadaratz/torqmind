@@ -28,7 +28,11 @@ def _emit_progress(event: dict[str, object]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the canonical incremental ETL for active tenants.")
     parser.add_argument("--tenant-id", dest="tenant_id", type=int, default=None, help="Run only for one tenant.")
+    parser.add_argument("--branch-id", dest="branch_id", type=int, default=None, help="Optional branch scope for controlled rebuilds.")
     parser.add_argument("--ref-date", dest="ref_date", default=None, help="Reference date YYYY-MM-DD. Defaults to today.")
+    parser.add_argument("--from-date", dest="from_date", default=None, help="Lower bound business date YYYY-MM-DD for controlled rebuilds.")
+    parser.add_argument("--to-date", dest="to_date", default=None, help="Upper bound business date YYYY-MM-DD for controlled rebuilds.")
+    parser.add_argument("--force-full", dest="force_full", action="store_true", help="Reset only derived ETL watermarks before rerunning the canonical loaders.")
     parser.add_argument("--fail-fast", dest="fail_fast", action="store_true", help="Stop on the first tenant failure.")
     parser.add_argument(
         "--track",
@@ -46,6 +50,10 @@ def main() -> None:
     args = parser.parse_args()
 
     ref_date = _parse_date(args.ref_date)
+    from_date = date.fromisoformat(args.from_date) if args.from_date else None
+    to_date = date.fromisoformat(args.to_date) if args.to_date else None
+    if from_date and to_date and to_date < from_date:
+        raise SystemExit("--to-date must be greater than or equal to --from-date")
     track = normalize_track(args.track)
     tenants = list_target_tenants(args.tenant_id)
     if not tenants:
@@ -70,8 +78,11 @@ def main() -> None:
         summary = run_incremental_cycle(
             [int(tenant["id_empresa"]) for tenant in tenants],
             ref_date=ref_date,
+            from_date=from_date,
+            to_date=to_date,
+            branch_id=args.branch_id,
             refresh_mart=True,
-            force_full=False,
+            force_full=args.force_full,
             fail_fast=args.fail_fast,
             track=track,
             skip_busy_tenants=args.skip_busy_tenants,

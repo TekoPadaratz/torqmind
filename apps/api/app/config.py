@@ -5,6 +5,7 @@ EN   : Everything is env-driven (.env) to keep Docker-friendly deployments.
 """
 
 from datetime import date
+import warnings
 
 from pydantic_settings import BaseSettings
 
@@ -34,11 +35,17 @@ class Settings(BaseSettings):
     clickhouse_database: str = "torqmind_mart"
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
-    
+
     # Feature flags for Phase 3 migration
     use_clickhouse: bool = True  # When False, fallback to PostgreSQL dw
     dual_read_mode: bool = False  # When True, validate both sources
     refresh_legacy_pg_marts: bool = False  # Legacy PostgreSQL mart refresh is off in ClickHouse-first production
+
+    # Feature flags for realtime/event-driven pipeline
+    use_realtime_marts: bool = False  # When True, BI reads from torqmind_mart_rt (CDC-fed)
+    realtime_marts_source: str = "stg"  # stg is the accepted realtime source; dw is legacy/reconciliation only
+    realtime_marts_domains: str = "dashboard,sales,cash,fraud,finance,payments"  # Comma-separated domains using realtime
+    realtime_marts_fallback: bool = True  # When True, fallback to legacy mart on realtime error
 
     # Business clock
     business_timezone: str = "America/Sao_Paulo"
@@ -85,4 +92,73 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
+_BLOCKED_PATTERNS = (
+    "change_me",
+    "changeme",
+    "default",
+    "password",
+    "postgres",
+    "admin",
+    "1234",
+)
+
+_PRODUCTIVE_ENVS = {"prod", "production", "homolog", "homologation", "staging"}
+
+
+def _is_production_like_env(app_env: str | None) -> bool:
+    return (app_env or "").strip().lower() in _PRODUCTIVE_ENVS
+
+
+def _is_weak_secret(value: str | None, *, min_length: int | None = None) -> bool:
+    """Return True for empty, placeholder, or trivially insecure values."""
+    normalized = str(value or "").strip()
+    if not normalized:
+        return True
+    if min_length is not None and len(normalized) < min_length:
+        return True
+    lowered = normalized.lower()
+    return any(pattern in lowered for pattern in _BLOCKED_PATTERNS)
+
+
+def _collect_security_violations(s: "Settings") -> list[str]:
+    violations: list[str] = []
+
+    if _is_weak_secret(s.api_jwt_secret, min_length=32):
+        violations.append("API_JWT_SECRET must be strong and have at least 32 characters")
+
+    if _is_weak_secret(s.pg_password):
+        violations.append("POSTGRES_PASSWORD/PG_PASSWORD must be strong and cannot use placeholders")
+
+    if str(s.clickhouse_user or "").strip().lower() == "default":
+        violations.append("CLICKHOUSE_USER cannot be 'default' in production-like environments")
+
+    if _is_weak_secret(s.clickhouse_password):
+        violations.append("CLICKHOUSE_PASSWORD must be strong and cannot use placeholders")
+
+    if not s.ingest_require_key:
+        violations.append("INGEST_REQUIRE_KEY must be true in production-like environments")
+
+    return violations
+
+
+def _validate_production_settings(s: "Settings") -> None:
+    """Fail fast in production-like envs and warn in dev/test/local."""
+    violations = _collect_security_violations(s)
+    if _is_production_like_env(s.app_env):
+        if violations:
+            raise SystemExit(
+                f"FATAL: Refusing to start in {s.app_env} with insecure config:\n"
+                + "\n".join(f"  - {violation}" for violation in violations)
+            )
+        return
+
+    if violations:
+        warnings.warn(
+            "Non-production config is using permissive values for: " + ", ".join(violations),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
 settings = Settings()
+_validate_production_settings(settings)

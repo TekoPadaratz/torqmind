@@ -41,8 +41,12 @@ def resolve_scope(
 
     if user_role == "product_global":
         preferred_tenants = claims.get("tenant_ids") or []
-        fallback_tenant = preferred_tenants[0] if preferred_tenants else 1
+        if not preferred_tenants:
+            raise HTTPException(status_code=403, detail={"error": "tenant_access_missing", "message": "Usuário product_global sem empresas vinculadas."})
+        fallback_tenant = preferred_tenants[0]
         id_empresa = int(id_empresa_q or default_tenant or fallback_tenant)
+        if int(id_empresa) not in {int(v) for v in preferred_tenants}:
+            raise HTTPException(status_code=403, detail={"error": "tenant_access_denied", "message": "Acesso não permitido à empresa."})
         id_filial = int(id_filial_q or default_branch) if (id_filial_q is not None or default_branch is not None) else None
         return id_empresa, id_filial
 

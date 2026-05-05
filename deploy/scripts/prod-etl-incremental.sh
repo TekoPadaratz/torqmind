@@ -36,8 +36,24 @@ if [[ -n "${REF_DATE:-}" ]]; then
   args+=(--ref-date "$REF_DATE")
 fi
 
+if [[ -n "${FROM_DATE:-}" ]]; then
+  args+=(--from-date "$FROM_DATE")
+fi
+
+if [[ -n "${TO_DATE:-}" ]]; then
+  args+=(--to-date "$TO_DATE")
+fi
+
 if [[ -n "${TENANT_ID:-}" ]]; then
   args+=(--tenant-id "$TENANT_ID")
+fi
+
+if [[ -n "${BRANCH_ID:-}" ]]; then
+  args+=(--branch-id "$BRANCH_ID")
+fi
+
+if [[ "${FORCE_FULL:-false}" == "true" || "${FORCE_FULL:-0}" == "1" ]]; then
+  args+=(--force-full)
 fi
 
 if [[ "${FAIL_FAST:-false}" == "true" ]]; then

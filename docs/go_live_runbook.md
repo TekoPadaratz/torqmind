@@ -18,6 +18,131 @@ export TM_ENV=/etc/torqmind/prod.env
 cd "$TM_ROOT"
 ```
 
+## Apply unico recomendado
+
+Para homologacao controlada, prefira o orquestrador unico em vez de disparar comandos soltos.
+
+Apply padrao com ClickHouse completo:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --id-empresa 1 --id-filial 14458
+```
+
+Apply com streaming 2.0 em paralelo:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --full-clickhouse --with-streaming --id-empresa 1 --id-filial 14458
+```
+
+Apply com rebuild derivado desde a STG antes do ClickHouse full:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --from-date 2025-01-01 --id-empresa 1 --id-filial 14458
+```
+
+Apply apenas para reconstruir o DW PostgreSQL, sem republicar ClickHouse:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --rebuild-dw-from-stg --allow-dw-only --skip-clickhouse --from-date 2025-01-01 --id-empresa 1
+```
+
+Apply incremental sem streaming:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-homologation-apply.sh --yes --no-streaming
+```
+
+Logs:
+
+- apply principal em `/home/deploy/logs/torqmind-homologation-apply-YYYYMMDD_HHMMSS.log`
+- pipeline recorrente em `/home/deploy/logs/torqmind-etl-pipeline.log`
+
+Detalhes completos de flags, dry-run e rollback basico: `docs/HOMOLOGATION_APPLY_RUNBOOK.md`.
+Runbook do rebuild derivado puro: `docs/DERIVED_REBUILD_FROM_STG_RUNBOOK.md`.
+Use `--allow-dw-only` apenas para verificacao intermediaria do PostgreSQL DW; para religar o serving analitico da API, o fluxo recomendado continua sendo republicar ClickHouse no mesmo apply.
+
+## Cutover realtime STG-direto
+
+O cutover realtime final usa STG como origem operacional:
+
+```text
+Agent/API -> STG -> Debezium(stg.*) -> Redpanda -> CDC Consumer -> torqmind_current.stg_* -> mart_rt -> API
+```
+
+DW permanece para auditoria, reconciliacao, backfill legado e rollback emergencial. Ele nao e o motor operacional do BI realtime quando `REALTIME_MARTS_SOURCE=stg`.
+
+Nota de schema: `stg.clientes` nao existe fisicamente no schema atual; o dataset `clientes` entra por `stg.entidades`. O connector lista `stg.clientes` e a publication inclui essa tabela apenas quando ela existir.
+
+Auditoria obrigatoria dos DDLs antes do cutover:
+
+```bash
+git ls-files sql/clickhouse/streaming | sort
+find sql/clickhouse/streaming -maxdepth 1 -type f | sort
+```
+
+Os dois outputs precisam conter:
+
+```text
+sql/clickhouse/streaming/040_mart_rt_database.sql
+sql/clickhouse/streaming/041_mart_rt_tables.sql
+```
+
+Inicializar mart_rt com validacao de credenciais e tabelas:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/streaming-init-mart-rt.sh
+```
+
+Rodar cutover one-command:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --yes --with-backfill --source stg --id-empresa 1 --all-filiais
+# NOTE: --id-filial (se usado) é apenas para audit/smoke. Não limita o backfill.
+# Para cutover completo de produção, NÃO use --backfill-id-filial.
+```
+
+O script so ativa `USE_REALTIME_MARTS=true` depois de validar:
+- DDL mart_rt aplicado;
+- Redpanda, Debezium e CDC consumer em `RUNNING`;
+- raw/current com dados para tabelas STG canonicas que possuem dados do tenant;
+- mart_rt com dados;
+- `realtime-validate-cutover.sh --source stg` retornando zero;
+- smoke da API com `REALTIME_MARTS_SOURCE=stg` e `REALTIME_MARTS_FALLBACK=false`.
+
+Validacao isolada:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-validate-cutover.sh --source stg
+```
+
+Smoke e2e STG-direto:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/realtime-e2e-smoke.sh
+```
+
+Esse smoke insere fixture em `stg.comprovantes`, `stg.itenscomprovantes` e `stg.formas_pgto_comprovantes`. Ele prova STG -> Debezium -> Redpanda -> CDC -> current -> mart_rt -> API sem rodar ETL STG->DW.
+
+Rollback:
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
+```
+
+Risco remanescente: a aceitacao operacional depende de executar o smoke E2E e a validacao bloqueante no ambiente alvo. Se esses comandos nao rodarem, o cutover nao deve ser declarado concluido.
+
+### Timezone
+
+O MartBuilder aplica `toTimezone(dt_evento, 'America/Sao_Paulo')` antes de extrair `data_key` e `hora`. Isso garante que vendas noturnas (21h-23h59 BRT = 00h-02h59 UTC) sejam atribuidas ao dia correto.
+
+Para validar a distribuicao horaria pos-cutover:
+
+```bash
+ENV_FILE="$TM_ENV" COMPOSE_FILE=docker-compose.prod.yml \
+  bash deploy/scripts/realtime-sales-data-profile.sh --id-empresa 1
+```
+
 ## T-48h: benchmark local com massa real
 
 Contagens por camada:
@@ -115,10 +240,19 @@ sudo systemctl enable --now cron
 Preencher no `prod.env` pelo menos:
 - `POSTGRES_PASSWORD`
 - `API_JWT_SECRET`
+- `CLICKHOUSE_USER`
+- `CLICKHOUSE_PASSWORD`
+- `INGEST_REQUIRE_KEY=true`
 - `SEED_PASSWORD`
 - `POSTGRES_SHM_SIZE`
 - `POSTGRES_SHARED_BUFFERS`
 - `DB_POOL_MAX_SIZE`
+
+Política obrigatória de segurança antes do deploy:
+- `API_JWT_SECRET` com 32+ caracteres e sem placeholders como `CHANGE_ME`, `default`, `password`, `admin`, `1234`.
+- `CLICKHOUSE_USER` dedicado; `default` é proibido em produção/homolog/staging.
+- `CLICKHOUSE_PASSWORD` forte e sem placeholders.
+- `INGEST_REQUIRE_KEY=true`.
 
 Subir apenas o Postgres:
 
@@ -169,6 +303,19 @@ Subir o restante da stack:
 ENV_FILE="$TM_ENV" ./deploy/scripts/prod-up.sh
 docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" ps
 ```
+
+Validar rebuild do container API antes do smoke:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" build api
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" up -d api
+docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T api python - <<'PY'
+from app import schemas_bi
+print([name for name in dir(schemas_bi) if name.endswith("Response")])
+PY
+```
+
+Saída esperada: as classes `DashboardHomeResponse`, `SalesOverviewResponse`, `CashOverviewResponse`, `FraudOverviewResponse` e `FinanceOverviewResponse` devem aparecer no container em execução.
 
 ## T-10min: smoke de aplicação
 
@@ -221,6 +368,7 @@ Critério funcional adicional:
 - `cash` deve trazer `historical` e `live_now`;
 - `auth_me` deve apontar `home_path` para `/dashboard?...`, já com o recorte inicial do dia atual, e nunca para `/scope`.
 - escopo sem `id_filial` explícito deve significar somente `auth.filiais` ativas e autorizadas para o usuário; filiais inativas nunca entram em `todas`.
+- o gate de copy do frontend precisa estar verde no `npm test`, bloqueando jargões como `recorte`, `snapshot`, `mart`, `Saídas normais` e `Platform` como label visual.
 
 ## T+1h: validação operacional
 
@@ -402,3 +550,45 @@ ENV_FILE="$TM_ENV" ./deploy/scripts/prod-post-boot-check.sh
 cat backup_pre_release.dump | docker compose -f docker-compose.prod.yml --env-file "$TM_ENV" exec -T postgres \
   pg_restore -U postgres -d TORQMIND -j 4 --clean --if-exists
 ```
+
+---
+
+## Realtime Marts (Cutover Pós Go-Live)
+
+> Pré-requisito: stack streaming e STG canônica estáveis em produção.
+
+### Ativação
+
+```bash
+# Dry-run primeiro (não muda nada, apenas valida fluxo)
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --dry-run --with-backfill --source stg --id-empresa 1 --id-filial 14458 --all-filiais
+
+# Execução real (all filiais — produção)
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh \
+  --yes --with-backfill --source stg --id-empresa 1 --all-filiais
+# NOTE: --id-filial = apenas audit/smoke. --backfill-id-filial para escopo parcial.
+```
+
+### Validação isolada (não ativa realtime)
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --validate-only --source stg
+```
+
+### Rollback para batch
+
+```bash
+ENV_FILE="$TM_ENV" ./deploy/scripts/prod-realtime-cutover-apply.sh --rollback-to-legacy
+```
+
+### E2E Smoke Test
+
+```bash
+make realtime-e2e-smoke
+```
+
+### Documentação detalhada
+
+- Arquitetura e decisões: `docs/architecture/TORQMIND_REALTIME_CUTOVER_FINAL.md`
+- Operações e troubleshooting: `docs/REALTIME_OPERATIONS_RUNBOOK.md`

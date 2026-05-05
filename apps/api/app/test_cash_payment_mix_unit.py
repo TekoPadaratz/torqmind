@@ -138,6 +138,8 @@ class CashPaymentMixUnitTest(unittest.TestCase):
         self.assertEqual(payload["payment_mix"][1]["label"], "Depósito Bancário")
         self.assertEqual(float(payload["kpis"]["total_devolucoes"]), 15.0)
         self.assertEqual(float(payload["kpis"]["caixa_liquido"]), 495.0)
+        self.assertEqual(float(payload["kpis"]["recebimentos_periodo"]), 510.0)
+        self.assertEqual(float(payload["kpis"]["cancelamentos_periodo"]), 40.0)
         self.assertEqual(float(payload["by_day"][0]["caixa_liquido"]), 285.0)
         self.assertEqual(float(payload["top_turnos"][0]["total_devolucoes"]), 15.0)
         self.assertEqual(float(payload["top_turnos"][0]["caixa_liquido"]), 495.0)

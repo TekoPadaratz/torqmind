@@ -278,7 +278,7 @@ export function buildExecutiveCards({
       title:
         fraudImpact > 0 || modeledImpact > 0
           ? 'Fraude que exige auditoria'
-          : 'Fraude sob controle no recorte',
+          : 'Fraude sob controle no período',
       value: formatCurrencyValue(Math.max(fraudImpact, modeledImpact)),
       detail:
         fraudImpact > 0 || modeledImpact > 0
@@ -304,8 +304,8 @@ export function buildExecutiveCards({
       value: formatCurrencyValue(cashPressure),
       detail:
         cashPressure > 0
-          ? `Receber vencido em ${formatCurrencyValue(receiving)} e pagar vencido em ${formatCurrencyValue(paying)} já pressionam a liquidez do recorte.`
-          : 'Nenhum vencido relevante superou a linha de atenção no recorte analisado.',
+          ? `Receber vencido em ${formatCurrencyValue(receiving)} e pagar vencido em ${formatCurrencyValue(paying)} já pressionam a liquidez do período.`
+          : 'Nenhum vencido relevante superou a linha de atenção no período analisado.',
       action:
         cashPressure > 0
           ? receiving >= paying
@@ -393,7 +393,7 @@ export function buildExecutiveSummary({ overview, scope, priorityCards = [] }) {
 
   return {
     title: copiloto.title || 'Copiloto operacional',
-    headline: copiloto.headline || 'Operação estável no recorte atual.',
+    headline: copiloto.headline || 'Operação estável no período atual.',
     problem:
       copiloto.problem ||
       copiloto.headline ||
@@ -406,7 +406,7 @@ export function buildExecutiveSummary({ overview, scope, priorityCards = [] }) {
       copiloto.cause || copiloto.summary || 'Sem desvio material identificado.',
     confidenceLabel: copiloto.confidence_label || 'Alta',
     confidenceReason:
-      copiloto.confidence_reason || 'Base pronta e coerente para este recorte.',
+      copiloto.confidence_reason || 'Base pronta e coerente para este período.',
     evidence: Array.isArray(copiloto.evidence) ? copiloto.evidence : [],
     highlights,
     secondaryFocus: Array.isArray(copiloto.secondary_focus)

@@ -359,7 +359,7 @@ export default function GoalsPage() {
             </table>
             {!loading && detailedLeaderboard.length < 15 ? (
               <div className="muted" style={{ marginTop: 10 }}>
-                Exibindo {detailedLeaderboard.length} vendedor(es) válidos neste recorte.
+                Exibindo {detailedLeaderboard.length} vendedor(es) válidos neste período.
               </div>
             ) : null}
           </div>
@@ -368,7 +368,7 @@ export default function GoalsPage() {
             <div className="panelHead">
               <div>
                 <h2>Indicadores da equipe</h2>
-                <div className="muted">Foco em metas válidas para o recorte atual e insights por filial.</div>
+                <div className="muted">Foco em metas válidas para o período atual e insights por filial.</div>
               </div>
               <span className="badge bronze">{branchLabel}</span>
             </div>

@@ -95,7 +95,6 @@ It warns on app-level objects that are absent but not critical to BI mart semant
 
 ## Remaining Debt
 
-- `stock_position_summary` still needs a dedicated ClickHouse stock mart.
 - `customers_delinquency_overview` still needs a customer-level finance/delinquency mart.
 - `competitor_pricing_overview` remains PostgreSQL-owned for app writes and saved competitor prices; this is intentional.
 - `monthly_goal_projection` still mixes app goals and analytical sales.

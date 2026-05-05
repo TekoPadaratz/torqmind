@@ -1,0 +1,157 @@
+# TorqMind Event-Driven Streaming Stack
+# Parallel to existing system - does NOT replace docker-compose.prod.yml
+#
+# Profiles:
+#   - local-full: all services including console (default)
+#   - prod-lite: minimal footprint for 4 CPU / 8 GB server
+#
+# Usage:
+#   docker compose -f docker-compose.streaming.yml --env-file .env up -d
+#   docker compose -f docker-compose.streaming.yml --profile prod-lite --env-file .env up -d
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.7
+    container_name: torqmind-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory 512M
+      - --reserve-memory 0M
+      - --default-log-level=warn
+      - --set redpanda.auto_create_topics_enabled=true
+      - --set redpanda.enable_idempotence=true
+    ports:
+      - "19092:19092"   # Kafka external
+      - "18082:18082"   # Pandaproxy
+      - "18081:18081"   # Schema registry
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -qi '^Healthy:[[:space:]]*true'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.6.0
+    container_name: torqmind-redpanda-console
+    restart: unless-stopped
+    profiles:
+      - local-full
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+          schemaRegistry:
+            enabled: true
+            urls: ["http://redpanda:8081"]
+        redpanda:
+          adminApi:
+            enabled: true
+            urls: ["http://redpanda:9644"]
+        connect:
+          enabled: true
+          clusters:
+            - name: torqmind-debezium
+              url: http://debezium-connect:8083
+    entrypoint: /bin/sh
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
+    ports:
+      - "18080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  debezium-connect:
+    image: debezium/connect:2.6
+    container_name: torqmind-debezium
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: torqmind-debezium-connect
+      CONFIG_STORAGE_TOPIC: _torqmind_connect_configs
+      OFFSET_STORAGE_TOPIC: _torqmind_connect_offsets
+      STATUS_STORAGE_TOPIC: _torqmind_connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "true"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      HEAP_OPTS: "-Xms256m -Xmx512m"
+    ports:
+      - "18083:8083"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  cdc-consumer:
+    build:
+      context: ./apps/cdc_consumer
+    container_name: torqmind-cdc-consumer
+    restart: unless-stopped
+    environment:
+      REDPANDA_BROKERS: redpanda:9092
+      CLICKHOUSE_HOST: ${CDC_CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_PORT: ${CDC_CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-torqmind}
+      CDC_CONSUMER_GROUP: ${CDC_CONSUMER_GROUP:-torqmind-cdc-consumer}
+      CDC_AUTO_OFFSET_RESET: ${CDC_AUTO_OFFSET_RESET:-latest}
+      CDC_TOPICS: ${CDC_TOPICS:-torqmind.stg.comprovantes,torqmind.stg.itenscomprovantes,torqmind.stg.formas_pgto_comprovantes,torqmind.stg.turnos,torqmind.stg.usuarios,torqmind.stg.produtos,torqmind.stg.grupoprodutos,torqmind.stg.contaspagar,torqmind.stg.contasreceber,torqmind.app.payment_type_map,torqmind.app.goals,torqmind.app.competitor_fuel_prices}
+      CDC_TOPIC_PATTERN: ${CDC_TOPIC_PATTERN:-^torqmind\..*}
+      CDC_BATCH_SIZE: ${CDC_BATCH_SIZE:-500}
+      CDC_FLUSH_INTERVAL_SECONDS: ${CDC_FLUSH_INTERVAL_SECONDS:-5}
+      ENABLE_MART_BUILDER: ${ENABLE_MART_BUILDER:-true}
+      REALTIME_MARTS_SOURCE: ${REALTIME_MARTS_SOURCE:-stg}
+      LOG_LEVEL: ${CDC_LOG_LEVEL:-INFO}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      debezium-connect:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+networks:
+  default:
+    name: ${STREAMING_NETWORK:-torqmind_default}
+    external: true
+
+volumes:
+  redpanda_data:
+    name: torqmind_redpanda_data

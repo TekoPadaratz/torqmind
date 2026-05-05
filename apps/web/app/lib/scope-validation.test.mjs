@@ -166,7 +166,7 @@ test('buildValidatedScope keeps the locked branch after validation', () => {
   assert.match(params, /id_filial=77/);
 });
 
-test('buildValidatedScope preserves all-branches sentinel without expanding ids in params', () => {
+test('buildValidatedScope preserves all-branches sentinel while carrying explicit ids for backend requests', () => {
   const scope = buildValidatedScope({
     draft: {
       dt_ini: '2026-04-01',
@@ -185,8 +185,9 @@ test('buildValidatedScope preserves all-branches sentinel without expanding ids 
 
   const params = buildScopeSearchParams(scope).toString();
   assert.equal(scope.branch_scope, 'all');
-  assert.deepEqual(scope.id_filiais, []);
+  assert.deepEqual(scope.id_filiais, ['11', '13']);
   assert.equal(scope.id_filial, null);
   assert.match(params, /branch_scope=all/);
-  assert.equal(params.includes('id_filiais='), false);
+  assert.match(params, /id_filiais=11/);
+  assert.match(params, /id_filiais=13/);
 });

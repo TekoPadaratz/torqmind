@@ -97,7 +97,7 @@ export function buildValidatedScope({
     dt_ref: String(draft?.dt_fim || activeScope?.dt_ref || ''),
     scope_epoch: String(scopeEpoch || ''),
     id_empresa: String(draft?.id_empresa || activeScope?.id_empresa || ''),
-    id_filiais: draft?.selectionMode === 'all' ? [] : branchIds,
+    id_filiais: branchIds,
     id_filial: draft?.selectionMode === 'all' ? null : (branchIds.length === 1 ? branchIds[0] : null),
     branch_scope: draft?.selectionMode === 'all' ? 'all' : 'selected',
   };

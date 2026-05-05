@@ -61,7 +61,7 @@ test('executive cards stay useful when there is no material pressure', () => {
   });
 
   assert.equal(cards[0].title, 'Caixa sem ruptura relevante agora');
-  assert.equal(cards[1].title, 'Fraude sob controle no recorte');
+  assert.equal(cards[1].title, 'Fraude sob controle no período');
   assert.equal(cards[2].title, 'Fluxo financeiro sem pressão material');
   assert.equal(cards[3].title, 'Clientes recorrentes dentro do padrão');
 });

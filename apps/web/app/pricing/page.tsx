@@ -194,7 +194,7 @@ export default function PricingPage() {
                 <h2>Preço por combustível: posto x concorrência</h2>
                 {!loading && !items.length ? (
                   <EmptyState
-                    title="Nenhum combustível elegível neste recorte."
+                    title="Nenhum combustível elegível neste período."
                     detail="Selecione uma filial com movimento em combustíveis para calcular o impacto competitivo."
                   />
                 ) : null}

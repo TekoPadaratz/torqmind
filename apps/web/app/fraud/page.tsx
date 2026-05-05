@@ -60,7 +60,7 @@ function riskGridReference(event: any) {
   if (event?.id_comprovante) return `Documento ${event.id_comprovante}`;
   if (event?.id_movprodutos) return `Movimento ${event.id_movprodutos}`;
   const turnoLabel = formatTurnoLabel(event?.id_turno, event?.turno_label);
-  if (turnoLabel && turnoLabel !== "Turno não identificado")
+  if (turnoLabel && turnoLabel !== "Turno sem cadastro")
     return turnoLabel.startsWith("Turno ") ? turnoLabel : `Turno ${turnoLabel}`;
   return "Sem referência operacional";
 }
@@ -147,7 +147,7 @@ export default function FraudPage() {
         operador:
           row.operador_caixa_label ||
           row.responsavel_label ||
-          "Operador não identificado",
+          "Operador sem cadastro",
         frentista: row.funcionario_label || "Sem frentista associado",
         valor: row.impacto_estimado,
         data: row.data,
@@ -314,7 +314,7 @@ export default function FraudPage() {
                       </div>
                     ))
                   ) : (
-                    <div className="muted">Sem alertas modelados no recorte.</div>
+                    <div className="muted">Sem alertas modelados no período.</div>
                   )}
                 </div>
               </div>
@@ -368,7 +368,7 @@ export default function FraudPage() {
                       </div>
                     ))
                   ) : (
-                    <div className="muted">Sem cancelamentos operacionais no recorte.</div>
+                    <div className="muted">Sem cancelamentos operacionais no período.</div>
                   )}
                 </div>
               </div>
@@ -493,7 +493,7 @@ export default function FraudPage() {
                 ) : (
                   <EmptyState
                     title="Sem frentista destacado."
-                    detail="Nenhum colaborador apareceu com concentração material no recorte atual."
+                    detail="Nenhum colaborador apareceu com concentração material no período atual."
                   />
                 )}
               </div>
@@ -558,7 +558,7 @@ export default function FraudPage() {
                 ) : (
                   <EmptyState
                     title="Sem cancelamento recente."
-                    detail="Não houve cancelamento operacional no recorte atual."
+                    detail="Não houve cancelamento operacional no período atual."
                   />
                 )}
               </div>
@@ -575,7 +575,7 @@ export default function FraudPage() {
                     <div className="muted" style={{ marginTop: 6 }}>
                       {topModeledEvent.operador_caixa_label ||
                         topModeledEvent.responsavel_label ||
-                        "Responsável não identificado"}{" "}
+                        "Responsável sem cadastro"}{" "}
                       · {formatDateTime(topModeledEvent.data)}
                     </div>
                     <div
@@ -594,7 +594,7 @@ export default function FraudPage() {
                     detail={
                       modelCoverageStatus === "covered"
                         ? "O período não trouxe evento modelado com criticidade suficiente para liderar a fila de revisão."
-                        : "O modelo não cobre este recorte por completo. Use os eventos operacionais e a janela coberta pelo modelo como referência."
+                        : "O modelo não cobre este período por completo. Use os eventos operacionais e a janela coberta pelo modelo como referência."
                     }
                   />
                 )}
@@ -664,7 +664,7 @@ export default function FraudPage() {
                                 <td>
                                   {item.usuario_label ||
                                     item.usuario_nome ||
-                                    "Operador não identificado"}
+                                    "Operador sem cadastro"}
                                 </td>
                                 <td>{formatHoursLabel(item.horas_aberto)}</td>
                                 <td>{item.status_label || item.severity}</td>
@@ -755,7 +755,7 @@ export default function FraudPage() {
                 {!loading && !(data?.last_events || []).length ? (
                   <EmptyState
                     title="Sem eventos operacionais recentes."
-                    detail="Não houve cancelamentos reconciliados por turno no recorte analisado."
+                    detail="Não houve cancelamentos reconciliados por turno no período analisado."
                   />
                 ) : null}
                 <div className="tableScroll">
@@ -827,7 +827,7 @@ export default function FraudPage() {
                           <td>
                             {row.operador_caixa_label ||
                               row.responsavel_label ||
-                              "Operador não identificado"}
+                              "Operador sem cadastro"}
                           </td>
                           <td>{formatCurrency(row.impacto_estimado)}</td>
                           <td>
@@ -846,7 +846,7 @@ export default function FraudPage() {
                 {!loading && !suspiciousOperationRows.length ? (
                   <EmptyState
                     title="Sem outras suspeitas materiais."
-                    detail="Os demais sinais modelados ficaram abaixo do limiar de destaque no recorte atual."
+                    detail="Os demais sinais modelados ficaram abaixo do limiar de destaque no período atual."
                   />
                 ) : null}
                 <div className="tableScroll">
@@ -868,7 +868,7 @@ export default function FraudPage() {
                           <td>
                             {row.operador_caixa_label ||
                               row.responsavel_label ||
-                              "Operador não identificado"}
+                              "Operador sem cadastro"}
                           </td>
                           <td>
                             {row.funcionario_label || "Sem frentista associado"}
@@ -1014,7 +1014,7 @@ export default function FraudPage() {
                 {!loading && !highlightRows.length ? (
                   <EmptyState
                     title="Sem destaques no período."
-                    detail="Nenhum evento entrou na fila principal de revisão para o recorte atual."
+                    detail="Nenhum evento entrou na fila principal de revisão para o período atual."
                   />
                 ) : null}
                 <div className="tableScroll">
@@ -1052,7 +1052,7 @@ export default function FraudPage() {
                 Central antifraude com duas leituras complementares: a leitura
                 operacional mostra o que realmente aconteceu no período, e a
                 leitura modelada prioriza o que vale investigar primeiro quando
-                a janela do modelo cobre o recorte.
+                a janela do modelo cobre o período.
               </div>
               {!loading ? (
                 <div

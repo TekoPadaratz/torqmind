@@ -64,7 +64,7 @@ export function formatFilialLabel(idFilial: any, filialNome?: string | null) {
   const nome = String(filialNome || '').trim();
   if (nome) return nome;
   if (idFilial === null || idFilial === undefined || idFilial === '') return 'Todas as filiais';
-  return 'Filial não identificada';
+  return 'Filial sem cadastro';
 }
 
 export function formatRoleLabel(role: any) {
@@ -96,5 +96,5 @@ export function formatTurnoLabel(idTurno: any, friendlyLabel?: string | null) {
   if (label) return label;
   const numericTurno = Number(idTurno);
   if (Number.isFinite(numericTurno) && numericTurno > 0) return String(Math.trunc(numericTurno));
-  return 'Turno não identificado';
+  return 'Turno sem cadastro';
 }

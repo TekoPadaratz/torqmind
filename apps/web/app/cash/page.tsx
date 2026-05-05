@@ -205,7 +205,7 @@ export default function CashPage() {
                 {!loading && !paymentMix.length ? (
                   <EmptyState
                     title="Sem pagamentos conciliados no período."
-                    detail="A distribuição por forma aparece quando existem recebimentos conciliados no recorte."
+                    detail="A distribuição por forma aparece quando existem recebimentos conciliados no período."
                   />
                 ) : null}
                 <div
@@ -252,7 +252,7 @@ export default function CashPage() {
                 </div>
                 {!loading && !commercialByDay.length ? (
                   <EmptyState
-                    title="Sem série diária para o recorte."
+                    title="Sem série diária para o período."
                     detail="A leitura comercial do caixa aparece quando existem comprovantes válidos no período."
                   />
                 ) : null}
@@ -299,7 +299,7 @@ export default function CashPage() {
                 {!loading && !topTurnos.length ? (
                   <EmptyState
                     title="Sem turnos comerciais no período."
-                    detail="Os turnos aparecem quando comprovantes e recebimentos ficam vinculados ao recorte."
+                    detail="Os turnos aparecem quando comprovantes e recebimentos ficam vinculados ao período."
                   />
                 ) : null}
                 {topTurnos.length ? (

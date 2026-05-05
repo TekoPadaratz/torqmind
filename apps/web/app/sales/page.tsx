@@ -16,6 +16,7 @@ import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { buildUserLabel, formatCurrency } from "../lib/format";
+import { formatSalesQuantity } from "../lib/sales-quantity.mjs";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
@@ -338,7 +339,7 @@ export default function SalesPage() {
                           <td>
                             <div>{p.produto_nome}</div>
                             <div className="muted" style={{ marginTop: 4 }}>
-                              {Number(p.qtd || 0).toFixed(3)} un. · preço médio{" "}
+                              {formatSalesQuantity(p.qtd, p)} · preço médio{" "}
                               {formatCurrency(p.valor_unitario_medio)}
                             </div>
                           </td>

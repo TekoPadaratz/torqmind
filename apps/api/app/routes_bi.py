@@ -17,8 +17,20 @@ from app import repos_analytics as repos_mart
 from app import repos_auth
 from app.services import snapshot_cache
 from app.services.jarvis_ai import ai_usage_summary, generate_jarvis_ai_plans
-from app.services.telegram import send_telegram_alert
-from app.schemas_bi import GoalTargetRequest
+from app.services.telegram import (  # noqa: F811
+    dispatch_pending_notifications,
+    get_telegram_config,
+    save_telegram_config,
+    send_telegram_alert,
+)
+from app.schemas_bi import (
+    GoalTargetRequest,
+    CashOverviewResponse,
+    DashboardHomeResponse,
+    FinanceOverviewResponse,
+    FraudOverviewResponse,
+    SalesOverviewResponse,
+)
 
 router = APIRouter(prefix="/bi", tags=["bi"])
 logger = logging.getLogger(__name__)
@@ -83,6 +95,28 @@ def _with_fallback_state(
         **fallback_meta,
     }
     return annotated
+
+
+def _normalize_cached_payload_contract(scope_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = copy.deepcopy(payload)
+    if scope_key != "cash_overview":
+        return normalized
+
+    historical = normalized.get("historical") if isinstance(normalized.get("historical"), dict) else {}
+    live_now = normalized.get("live_now") if isinstance(normalized.get("live_now"), dict) else {}
+
+    if not isinstance(normalized.get("payment_mix"), list):
+        if isinstance(historical.get("payment_mix"), list):
+            normalized["payment_mix"] = historical.get("payment_mix") or []
+        elif isinstance(normalized.get("payment_breakdown"), list):
+            normalized["payment_mix"] = normalized.get("payment_breakdown") or []
+        else:
+            normalized["payment_mix"] = []
+    if not isinstance(normalized.get("cancelamentos"), list):
+        normalized["cancelamentos"] = historical.get("cancelamentos") or []
+    if not isinstance(normalized.get("alerts"), list):
+        normalized["alerts"] = live_now.get("alerts") or []
+    return normalized
 
 
 def _with_cached_response(
@@ -174,7 +208,7 @@ def _with_cached_response(
         matched_signature: Optional[str],
         exact_scope_match: bool,
     ) -> Dict[str, Any]:
-        annotated = copy.deepcopy(payload)
+        annotated = _normalize_cached_payload_contract(scope_key, payload)
         annotated["_scope"] = {
             "route_key": scope_key,
             "signature": scope_signature,
@@ -1016,7 +1050,7 @@ def dashboard_overview(
     }
 
 
-@router.get("/dashboard/home")
+@router.get("/dashboard/home", response_model=DashboardHomeResponse)
 def dashboard_home(
     dt_ini: date,
     dt_fim: date,
@@ -1046,7 +1080,7 @@ def dashboard_home(
 # Vendas & Stores
 # ------------------------
 
-@router.get("/sales/overview")
+@router.get("/sales/overview", response_model=SalesOverviewResponse)
 def sales_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1081,7 +1115,7 @@ def sales_overview(
 # Anti-fraude
 # ------------------------
 
-@router.get("/fraud/overview")
+@router.get("/fraud/overview", response_model=FraudOverviewResponse)
 def fraud_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1159,7 +1193,7 @@ def fraud_overview(
         dt_fim=dt_fim,
         dt_ref=as_of,
         compute=build_response,
-        extra_context={"module": "fraud"},
+        extra_context={"module": "fraud", "contract_version": 2},
         safe_fallback=lambda: _safe_fraud_overview_payload(tenant, dt_ini, dt_fim, as_of),
     )
 
@@ -1334,7 +1368,7 @@ def clients_retention_anonymous(
 # Financeiro
 # ------------------------
 
-@router.get("/finance/overview")
+@router.get("/finance/overview", response_model=FinanceOverviewResponse)
 def finance_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1406,7 +1440,7 @@ def payments_overview(
 # Caixa
 # ------------------------
 
-@router.get("/cash/overview")
+@router.get("/cash/overview", response_model=CashOverviewResponse)
 def cash_overview(
     dt_ini: date,
     dt_fim: date,
@@ -1427,6 +1461,7 @@ def cash_overview(
         dt_fim=dt_fim,
         dt_ref=None,
         compute=lambda: repos_mart.cash_overview(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim),
+        extra_context={"module": "cash", "contract_version": 2},
         safe_fallback=_safe_cash_overview_payload,
     )
 
@@ -1714,6 +1749,62 @@ def admin_telegram_test(
     }
     result = send_telegram_alert(id_empresa=tenant, payload=payload, force=True)
     return {"ok": True, "id_empresa": tenant, "id_filial": filial, "result": result}
+
+
+# ------------------------
+# Telegram — configuração pessoal
+# ------------------------
+
+class TelegramSettingsUpdate(BaseModel):
+    telegram_chat_id: Optional[str] = None
+    telegram_username: Optional[str] = None
+    telegram_enabled: bool = False
+
+
+@router.get("/me/telegram")
+def me_telegram_settings(
+    claims=Depends(get_current_claims),
+):
+    user_id = str(claims.get("sub") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return get_telegram_config(user_id)
+
+
+@router.patch("/me/telegram")
+def me_telegram_update(
+    body: TelegramSettingsUpdate,
+    claims=Depends(get_current_claims),
+):
+    user_id = str(claims.get("sub") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return save_telegram_config(
+        user_id,
+        telegram_chat_id=body.telegram_chat_id,
+        telegram_username=body.telegram_username,
+        telegram_enabled=body.telegram_enabled,
+    )
+
+
+@router.post("/admin/telegram/dispatch-pending")
+def admin_telegram_dispatch_pending(
+    limit: int = Query(20, ge=1, le=100),
+    severity: str = Query("CRITICAL"),
+    force: bool = Query(False),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="forbidden")
+    try:
+        repos_auth.assert_product_write_allowed(claims)
+    except repos_auth.AuthError as exc:
+        _raise_auth_error(exc)
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=None, id_filiais_q=None)
+    result = dispatch_pending_notifications(tenant, limit=limit, severity=severity.upper(), force=force)
+    return {"ok": True, "id_empresa": tenant, **result}
 
 
 @router.get("/notifications")
