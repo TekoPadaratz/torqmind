@@ -1180,25 +1180,9 @@ def dashboard_home_bundle(
             "cash": {
                 "live_now": cash_live,
             },
-            "jarvis": jarvis_briefing(
-                role,
-                id_empresa,
-                id_filial,
-                dt_ref=dt_ref,
-                context={
-                    "fraud_operational": fraud_operational.get("kpis"),
-                    "modeled_risk": modeled_risk.get("kpis"),
-                    "cash_live": cash_live,
-                    "finance_aging": finance_aging,
-                    "churn": churn,
-                    "payments": payments,
-                    "sales": sales,
-                    "signals": {
-                        "peak_hours": peak_hours_signal,
-                        "declining_products": declining_products_signal,
-                    },
-                },
-            ),
+            # DISABLED (2026-05-05): jarvis_briefing calls competitor_pricing_overview which takes 2-4s,
+            # causing dashboard_home to hang indefinitely. Will re-enable after caching competitor_pricing.
+            "jarvis": {},
         },
         "churn": churn,
         "finance": {
