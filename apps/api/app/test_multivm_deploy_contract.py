@@ -38,8 +38,9 @@ class MultiVmDeployContractTest(unittest.TestCase):
         self.assertIn("DATABASE_URL", api_env)
         self.assertNotEqual(api_env["PG_HOST"], "postgres")
         self.assertNotEqual(api_env["CLICKHOUSE_HOST"], "clickhouse")
-        self.assertIn("private PostgreSQL host", api_env["PG_HOST"])
-        self.assertIn("private Analytics host", api_env["CLICKHOUSE_HOST"])
+        self.assertIn("CHANGE_ME_PRIVATE_POSTGRES_HOST", api_env["PG_HOST"])
+        self.assertIn("CHANGE_ME_PRIVATE_ANALYTICS_HOST", api_env["CLICKHOUSE_HOST"])
+        self.assertIn("CHANGE_ME_PRIVATE_POSTGRES_HOST", api_env["DATABASE_URL"])
 
     def test_pg_compose_only_runs_postgres_with_logical_replication(self) -> None:
         data = compose("docker-compose.pg.yml")

@@ -370,18 +370,19 @@ class EtlOrchestrationTest(unittest.TestCase):
             },
         ]
 
-        summary = etl_orchestrator.run_incremental_cycle(
-            [1, 2],
-            ref_date=date(2026, 3, 19),
-            refresh_mart=True,
-            force_full=False,
-            fail_fast=False,
-            tenant_rows=[
-                {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
-                {"id_empresa": 2, "nome": "Tenant 2", "status": "active", "is_active": True},
-            ],
-            acquire_lock=False,
-        )
+        with patch("app.services.etl_orchestrator._legacy_pg_marts_enabled", return_value=True):
+            summary = etl_orchestrator.run_incremental_cycle(
+                [1, 2],
+                ref_date=date(2026, 3, 19),
+                refresh_mart=True,
+                force_full=False,
+                fail_fast=False,
+                tenant_rows=[
+                    {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
+                    {"id_empresa": 2, "nome": "Tenant 2", "status": "active", "is_active": True},
+                ],
+                acquire_lock=False,
+            )
 
         self.assertTrue(summary["ok"], summary)
         self.assertEqual(mock_refresh.call_count, 1)
@@ -495,17 +496,18 @@ class EtlOrchestrationTest(unittest.TestCase):
             "meta": {},
         }
 
-        summary = etl_orchestrator.run_incremental_cycle(
-            [1],
-            ref_date=date(2026, 3, 20),
-            refresh_mart=True,
-            force_full=False,
-            fail_fast=False,
-            tenant_rows=[
-                {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
-            ],
-            acquire_lock=False,
-        )
+        with patch("app.services.etl_orchestrator._legacy_pg_marts_enabled", return_value=True):
+            summary = etl_orchestrator.run_incremental_cycle(
+                [1],
+                ref_date=date(2026, 3, 20),
+                refresh_mart=True,
+                force_full=False,
+                fail_fast=False,
+                tenant_rows=[
+                    {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
+                ],
+                acquire_lock=False,
+            )
 
         self.assertTrue(summary["ok"], summary)
         self.assertEqual(mock_refresh.call_count, 1)
@@ -564,6 +566,7 @@ class EtlOrchestrationTest(unittest.TestCase):
                 refresh_mart=True,
                 force_full=False,
                 fail_fast=True,
+                track=etl_orchestrator.TRACK_OPERATIONAL,
                 tenant_rows=[
                     {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
                     {"id_empresa": 2, "nome": "Tenant 2", "status": "active", "is_active": True},
@@ -1145,9 +1148,8 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_refresh,
         mock_post_refresh,
     ) -> None:
-        # 2026-04-29: política antiga adiava o refresh global na track operacional, deixando
-        # mart.agg_vendas_diaria & cia. defasadas. Política nova: OPERATIONAL também publica
-        # as marts globais via etl.refresh_marts em cada ciclo.
+        # Multi-VM production publishes BI through ClickHouse. Legacy PostgreSQL mart refresh
+        # is explicit opt-in, while operational post-refresh still runs as the fast path.
         mock_refresh.return_value = {"ref_date": "2026-03-23", "refreshed_any": True, "sales_marts_refreshed": True}
         mock_post_refresh.return_value = etl_orchestrator._empty_post_meta()
         summary = etl_orchestrator.run_incremental_cycle(
@@ -1162,18 +1164,20 @@ class EtlOrchestrationTest(unittest.TestCase):
         )
 
         self.assertTrue(summary["ok"], summary)
-        mock_refresh.assert_called_once()
+        mock_refresh.assert_not_called()
         self.assertEqual(mock_post_refresh.call_count, 1)
         self.assertEqual(mock_post_refresh.call_args.kwargs["publication_mode"], etl_orchestrator.PUBLICATION_MODE_FAST_PATH)
-        self.assertTrue(summary["global_refresh"]["requested"])
+        self.assertFalse(summary["global_refresh"]["requested"])
         self.assertFalse(summary["global_refresh"]["deferred"])
-        self.assertTrue(summary["global_refresh"]["refreshed_any"])
-        self.assertTrue(summary["items"][0]["result"]["meta"]["mart_refreshed"])
+        self.assertFalse(summary["global_refresh"]["refreshed_any"])
+        self.assertFalse(summary["items"][0]["result"]["meta"]["mart_refreshed"])
+        self.assertTrue(summary["items"][0]["result"]["meta"]["refresh_requested"])
         self.assertFalse(summary["items"][0]["result"]["meta"]["publication_deferred"])
         self.assertEqual(
             summary["items"][0]["result"]["meta"]["publication_mode"],
             etl_orchestrator.PUBLICATION_MODE_FAST_PATH,
         )
+        self.assertTrue(summary["items"][0]["result"]["meta"]["post_refresh_executed"])
         self.assertTrue(summary["items"][0]["result"]["meta"]["publication_executed"])
 
 

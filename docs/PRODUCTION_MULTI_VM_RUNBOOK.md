@@ -132,6 +132,35 @@ The bootstrap does:
 
 Use `--dry-run` first to inspect SSH and compose commands without changing servers.
 
+## Exact Production Sequence
+
+Use this order on clean Ubuntu servers:
+
+1. Fill `/etc/torqmind/cluster.env` on the App/orchestrator server with the SSH hosts, private IPs, repo URL, repo dir and branch.
+2. Fill only the role-specific env on each server:
+   - PostgreSQL: `/etc/torqmind/prod.pg.env`
+   - Analytics: `/etc/torqmind/prod.analytics.env`
+   - App: `/etc/torqmind/prod.app.env`
+3. Prepare SSH keys so the App/orchestrator user can run `ssh -o BatchMode=yes deploy@<host> true` for all three hosts.
+4. Run `prod-multivm-prepare-host.sh` on each server, optionally with `--with-ufw`.
+5. From the App/orchestrator server, run `prod-multivm-sync-code.sh --yes`.
+6. Run the bootstrap:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.app.env \
+CLUSTER_ENV=/etc/torqmind/cluster.env \
+./deploy/scripts/prod-multivm-bootstrap.sh --yes --with-ddl --with-cron --validate
+```
+
+7. Run blocking validation and proof again if any data/bootstrap step was repeated.
+8. Only after infrastructure validation passes, point the Agent to the public API/Nginx URL on the App server.
+9. Run the Agent historical load and validate PostgreSQL STG counts.
+10. Run the first full/incremental STG->DW load from the App server.
+11. Bootstrap ClickHouse from PostgreSQL STG and rebuild `mart_rt`.
+12. Register/validate Debezium and keep CDC Consumer/MartBuilder active.
+13. Enable realtime only after proof PASS by setting `USE_REALTIME_MARTS=true`, `REALTIME_MARTS_SOURCE=stg` and `REALTIME_MARTS_FALLBACK=false`.
+14. Generate final proof JSON and keep it with the deployment evidence.
+
 ## Data Bootstrap Sequence
 
 For real customer data, the Agent sends history to the public API on the App server. ClickHouse does not populate itself.
@@ -218,6 +247,40 @@ It writes:
 - Schedule: every 2 minutes by default
 
 The installer preserves existing crontab lines and replaces only the TorqMind multi-VM ETL entry.
+
+## Local And CI Tests
+
+Default API tests must not require Docker service DNS such as `postgres`. DB-backed API suites are marked `integration_db` and skipped unless explicitly enabled.
+
+Unit/local API suite:
+
+```bash
+pytest apps/api -q
+```
+
+PostgreSQL integration suite inside Docker Compose:
+
+```bash
+ENV_FILE=.env \
+COMPOSE_FILE=docker-compose.yml \
+RUN_INTEGRATION=true \
+./deploy/scripts/test-api-in-docker.sh
+```
+
+The script starts `postgres` and `api`, rebuilds the API image when needed, runs migrations, installs `pytest` inside the API container if needed, then runs:
+
+```bash
+python -m pytest . -q --run-db-integration
+```
+
+By default `RUN_INTEGRATION=false`, so the same script runs only the non-DB API tests inside the container. For a narrow DB-backed smoke, pass a pytest target:
+
+```bash
+ENV_FILE=.env \
+COMPOSE_FILE=docker-compose.yml \
+RUN_INTEGRATION=true \
+./deploy/scripts/test-api-in-docker.sh app/test_ingest_time_parsing.py
+```
 
 ## Status
 

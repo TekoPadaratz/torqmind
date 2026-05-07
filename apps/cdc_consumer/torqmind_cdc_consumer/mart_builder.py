@@ -970,7 +970,7 @@ class MartBuilder:
             toDate(toString(i.data_key), '%Y%m%d') AS dt,
             i.id_produto,
             coalesce(nullIf(p.nome_produto, ''), 'Produto sem cadastro') AS nome_produto,
-            coalesce(p.id_grupo_produto, i.id_grupo_produto) AS id_grupo_produto_resolved,
+            coalesce(p.id_grupo_produto, i.id_grupo_produto) AS id_grupo_produto,
             coalesce(nullIf(g.nome_grupo, ''), 'Grupo sem cadastro') AS nome_grupo,
             sum(i.qtd) AS qtd,
             sum(i.total) AS faturamento,
@@ -997,7 +997,7 @@ class MartBuilder:
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
           AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
-        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto_resolved, nome_grupo
+        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
         """
         rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))

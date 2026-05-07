@@ -79,7 +79,8 @@ export default function SettingsPage() {
   }
 
   return (
-    <AppNav title="Configurações">
+    <div>
+      <AppNav title="Configurações" />
       <div className="pageContent">
         <div className="pageHeader">
           <h1 className="pageTitle">Configurações</h1>
@@ -195,6 +196,6 @@ export default function SettingsPage() {
           )}
         </section>
       </div>
-    </AppNav>
+    </div>
   );
 }

@@ -68,8 +68,9 @@ class DashboardJarvisUnitTests(unittest.TestCase):
         sales_peak_hours_signal.assert_called_once_with("MASTER", 7, None, date(2026, 4, 15))
         sales_declining_products_signal.assert_called_once_with("MASTER", 7, None, date(2026, 4, 15))
         cash_live_now.assert_called_once_with("MASTER", 7, None)
-        jarvis_briefing.assert_called_once()
+        jarvis_briefing.assert_not_called()
         self.assertEqual(payload["overview"]["sales"]["reading_status"], "mart_snapshot")
+        self.assertEqual(payload["overview"]["jarvis"], {})
         self.assertEqual(payload["cash"]["live_now"]["summary"], "live")
         self.assertEqual(payload["notifications_unread"], 2)
 

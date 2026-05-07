@@ -31,9 +31,9 @@ services:
       - -c
       - wal_keep_size=${POSTGRES_WAL_KEEP_SIZE:-1GB}
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
-      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-TORQMIND}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_POSTGRES_PASSWORD}
     ports:
       - "${PG_BIND_IP:-127.0.0.1}:${PG_PORT:-5432}:5432"
     volumes:
