@@ -39,7 +39,7 @@ set +a
 PG_USER="${POSTGRES_USER:-${PG_USER:-postgres}}"
 PG_PASS="${POSTGRES_PASSWORD:-${PG_PASSWORD:-postgres}}"
 PG_DB="${POSTGRES_DB:-${PG_DATABASE:-TORQMIND}}"
-PG_HOST="${PG_HOST:-postgres}"
+PG_HOST="${PG_HOST:-${POSTGRES_HOST:-postgres}}"
 PG_PORT="${PG_PORT:-5432}"
 CH_USER="${CLICKHOUSE_USER:-torqmind}"
 CH_PASS="${CLICKHOUSE_PASSWORD:-torqmind}"
@@ -207,7 +207,7 @@ bootstrap_simple_stg() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', '${pg_table}', '${PG_USER}', '${PG_PASS}', 'stg')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM stg.${pg_table} WHERE id_empresa = ${ID_EMPRESA}")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE id_empresa = ${ID_EMPRESA}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -243,7 +243,7 @@ bootstrap_contaspagar() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'contaspagar', '${PG_USER}', '${PG_PASS}', 'stg')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM stg.contaspagar WHERE id_empresa = ${ID_EMPRESA}")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE id_empresa = ${ID_EMPRESA}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -276,7 +276,7 @@ bootstrap_contasreceber() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'contasreceber', '${PG_USER}', '${PG_PASS}', 'stg')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM stg.contasreceber WHERE id_empresa = ${ID_EMPRESA}")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE id_empresa = ${ID_EMPRESA}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -309,7 +309,7 @@ bootstrap_payment_type_map() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'payment_type_map', '${PG_USER}', '${PG_PASS}', 'app')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM app.payment_type_map")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -392,7 +392,8 @@ validate_parity() {
     local filter="${5:-id_empresa = $ID_EMPRESA}"
 
     local pg_count ch_count
-    pg_count="$(pg_scalar "SELECT count(*) FROM ${pg_schema}.${pg_table} WHERE ${filter}")"
+    local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', '${pg_table}', '${PG_USER}', '${PG_PASS}', '${pg_schema}')"
+    pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE ${filter}" 2>/dev/null || echo "0")"
     pg_count="${pg_count//[[:space:]]/}"
     ch_count="$(ch_exec -q "SELECT count() FROM torqmind_current.${ch_table} FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null)"
     ch_count="${ch_count//[[:space:]]/}"

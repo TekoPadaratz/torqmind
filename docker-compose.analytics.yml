@@ -1,0 +1,158 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: torqmind-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-torqmind_mart}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?CLICKHOUSE_USER is required}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: ${CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT:-1}
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ports:
+      - "${CLICKHOUSE_BIND_IP:-127.0.0.1}:${CLICKHOUSE_PORT:-8123}:8123"
+      - "${CLICKHOUSE_BIND_IP:-127.0.0.1}:${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - chdata_prod:/var/lib/clickhouse
+      - ./deploy/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8123/ping | grep -q Ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.7
+    container_name: torqmind-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092
+      - --pandaproxy-addr
+      - internal://0.0.0.0:8082
+      - --advertise-pandaproxy-addr
+      - internal://redpanda:8082
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      - --mode
+      - dev-container
+      - --smp
+      - ${REDPANDA_SMP:-1}
+      - --memory
+      - ${REDPANDA_MEMORY:-768M}
+      - --reserve-memory
+      - ${REDPANDA_RESERVE_MEMORY:-0M}
+      - --default-log-level=${REDPANDA_LOG_LEVEL:-warn}
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+      - --set
+      - redpanda.enable_idempotence=true
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    expose:
+      - "9092"
+      - "8081"
+      - "8082"
+      - "9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -qi '^Healthy:[[:space:]]*true'"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 35s
+
+  debezium-connect:
+    image: debezium/connect:2.6
+    container_name: torqmind-debezium
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: ${DEBEZIUM_GROUP_ID:-torqmind-debezium-connect}
+      CONFIG_STORAGE_TOPIC: ${DEBEZIUM_CONFIG_STORAGE_TOPIC:-_torqmind_connect_configs}
+      OFFSET_STORAGE_TOPIC: ${DEBEZIUM_OFFSET_STORAGE_TOPIC:-_torqmind_connect_offsets}
+      STATUS_STORAGE_TOPIC: ${DEBEZIUM_STATUS_STORAGE_TOPIC:-_torqmind_connect_status}
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "true"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      HEAP_OPTS: ${DEBEZIUM_HEAP_OPTS:--Xms256m -Xmx768m}
+      POSTGRES_HOST: ${POSTGRES_HOST:?POSTGRES_HOST is required}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "${DEBEZIUM_BIND_IP:-127.0.0.1}:${DEBEZIUM_PORT:-18083}:8083"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8083/connectors >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+
+  cdc-consumer:
+    build:
+      context: ./apps/cdc_consumer
+    container_name: torqmind-cdc-consumer
+    restart: unless-stopped
+    environment:
+      REDPANDA_BROKERS: redpanda:9092
+      CLICKHOUSE_HOST: ${CDC_CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_PORT: ${CDC_CLICKHOUSE_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?CLICKHOUSE_USER is required}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?CLICKHOUSE_PASSWORD is required}
+      CDC_CONSUMER_GROUP: ${CDC_CONSUMER_GROUP:-torqmind-cdc-consumer}
+      CDC_TOPICS: ${CDC_TOPICS:-}
+      CDC_TOPIC_PATTERN: ${CDC_TOPIC_PATTERN:-^torqmind\..*}
+      CDC_BATCH_SIZE: ${CDC_BATCH_SIZE:-500}
+      CDC_FLUSH_INTERVAL_SECONDS: ${CDC_FLUSH_INTERVAL_SECONDS:-5}
+      CDC_POLL_TIMEOUT_SECONDS: ${CDC_POLL_TIMEOUT_SECONDS:-1}
+      CDC_AUTO_OFFSET_RESET: ${CDC_AUTO_OFFSET_RESET:-earliest}
+      ENABLE_RAW_WRITES: ${ENABLE_RAW_WRITES:-true}
+      ENABLE_CURRENT_WRITES: ${ENABLE_CURRENT_WRITES:-true}
+      ENABLE_OPS_WRITES: ${ENABLE_OPS_WRITES:-true}
+      ENABLE_MART_BUILDER: ${ENABLE_MART_BUILDER:-true}
+      REALTIME_MARTS_SOURCE: ${REALTIME_MARTS_SOURCE:-stg}
+      LOG_LEVEL: ${CDC_LOG_LEVEL:-INFO}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      debezium-connect:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os, clickhouse_connect; c=clickhouse_connect.get_client(host=os.environ.get('CLICKHOUSE_HOST','clickhouse'), port=int(os.environ.get('CLICKHOUSE_PORT','8123')), username=os.environ.get('CLICKHOUSE_USER','torqmind'), password=os.environ.get('CLICKHOUSE_PASSWORD','')); c.command('SELECT 1')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+
+volumes:
+  chdata_prod:
+  redpanda_data:

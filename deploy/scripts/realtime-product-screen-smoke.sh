@@ -1,28 +1,162 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BASE_URL="${BASE_URL:-http://localhost/api}"
-API_CONTAINER="${API_CONTAINER:-torqmind-api-1}"
-TENANT_ID="${TENANT_ID:-1}"
+ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.app.env}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.app.yml}"
+PUBLIC_BASE_URL="${PRODUCT_SMOKE_BASE_URL:-http://127.0.0.1}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
+BASE_URL="${BASE_URL:-${PUBLIC_BASE_URL}/api}"
+BASE_URL="${BASE_URL%/}"
+API_CONTAINER="${API_CONTAINER:-torqmind-api}"
+TENANT_ID="${TENANT_ID:-${PRODUCT_SMOKE_ID_EMPRESA:-1}}"
 BRANCH_ID="${BRANCH_ID:--1}"
 ROLE="${ROLE:-platform_master}"
 SUBJECT="${SUBJECT:-ad519ee4-56c9-41fd-8ab0-9192a26e8d0a}"
 WINDOW_DAYS="${WINDOW_DAYS:-30}"
-DT_FIM="${DT_FIM:-$(date +%F)}"
-DT_INI="${DT_INI:-$(date -d "${DT_FIM} -$((WINDOW_DAYS - 1)) days" +%F)}"
+DT_FIM="${DT_FIM:-${PRODUCT_SMOKE_DT_FIM:-$(date +%F)}}"
+DT_INI="${DT_INI:-${PRODUCT_SMOKE_DT_INI:-$(date -d "${DT_FIM} -$((WINDOW_DAYS - 1)) days" +%F)}}"
+PRODUCT_SMOKE_REQUIRE_MULTIVM="${PRODUCT_SMOKE_REQUIRE_MULTIVM:-false}"
+PRODUCT_SMOKE_CHECK_PAGES="${PRODUCT_SMOKE_CHECK_PAGES:-auto}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-generate_token() {
-    docker exec "$API_CONTAINER" python -c "import sys; sys.path.insert(0, '/app'); from app.security import create_access_token; print(create_access_token({'sub': '${SUBJECT}', 'role': '${ROLE}', 'id_empresa': int('${TENANT_ID}'), 'id_filial': int('${BRANCH_ID}')}))"
+HAS_COMPOSE_ENV=false
+if [[ -f "$ENV_FILE" ]]; then
+  HAS_COMPOSE_ENV=true
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+log() {
+  printf '%s [product-smoke] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+compose_app() {
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+compose_service_running() {
+  local service="$1"
+  [[ "$HAS_COMPOSE_ENV" == "true" ]] || return 1
+  command -v docker >/dev/null 2>&1 || return 1
+  compose_app ps --status running --services 2>/dev/null | grep -Fx "$service" >/dev/null
+}
+
+require_http_page() {
+  local name="$1"
+  local url="$2"
+  local body
+  body="$(curl -fsS --max-time 20 "$url")"
+  if [[ "$body" != *"__next"* && "$body" != *"TorqMind"* ]]; then
+    echo "FAIL $name did not look like a rendered Next.js/TorqMind page" >&2
+    return 1
+  fi
+  log "PASS $name page"
+}
+
+run_multivm_checks() {
+  if [[ "$PRODUCT_SMOKE_REQUIRE_MULTIVM" != "true" && "$PRODUCT_SMOKE_REQUIRE_MULTIVM" != "1" ]]; then
+    return 0
+  fi
+  if [[ "$HAS_COMPOSE_ENV" != "true" ]]; then
+    echo "ENV_FILE=$ENV_FILE not found; required for multi-VM smoke" >&2
+    exit 2
+  fi
+
+  log "Checking App compose services"
+  compose_service_running api
+  compose_service_running web
+  compose_service_running nginx
+
+  log "Checking API effective multi-VM flags"
+  compose_app exec -T api python - <<'PY'
+from app.config import settings
+
+assert settings.realtime_marts_fallback is False, "REALTIME_MARTS_FALLBACK must be false"
+assert settings.pg_host not in {"postgres", "localhost", "127.0.0.1"}, "PG_HOST must be remote in multi-VM"
+assert settings.clickhouse_host not in {"clickhouse", "localhost", "127.0.0.1"}, "CLICKHOUSE_HOST must be remote in multi-VM"
+print("API_FLAGS_OK")
+PY
+}
+
+run_public_page_checks() {
+  local should_check="$PRODUCT_SMOKE_CHECK_PAGES"
+  if [[ "$should_check" == "auto" ]]; then
+    should_check=false
+    if [[ "$PRODUCT_SMOKE_REQUIRE_MULTIVM" == "true" || "$PRODUCT_SMOKE_REQUIRE_MULTIVM" == "1" ]]; then
+      should_check=true
+    fi
+  fi
+  [[ "$should_check" == "true" || "$should_check" == "1" ]] || return 0
+
+  log "Checking public product pages through Nginx"
+  require_http_page login "$PUBLIC_BASE_URL/"
+  require_http_page dashboard "$PUBLIC_BASE_URL/dashboard?dt_ini=$DT_INI&dt_fim=$DT_FIM&id_empresa=$TENANT_ID&scope_epoch=prod-smoke"
+  require_http_page sales "$PUBLIC_BASE_URL/sales?dt_ini=$DT_INI&dt_fim=$DT_FIM&id_empresa=$TENANT_ID&scope_epoch=prod-smoke"
+}
+
+generate_token_in_compose() {
+  compose_app exec -T api env \
+    TOKEN_SUBJECT="$SUBJECT" \
+    TOKEN_ROLE="$ROLE" \
+    TOKEN_TENANT_ID="$TENANT_ID" \
+    TOKEN_BRANCH_ID="$BRANCH_ID" \
+    python - <<'PY'
+import os
+from app.security import create_access_token
+
+print(create_access_token({
+    "sub": os.environ["TOKEN_SUBJECT"],
+    "role": os.environ["TOKEN_ROLE"],
+    "id_empresa": int(os.environ["TOKEN_TENANT_ID"]),
+    "id_filial": int(os.environ["TOKEN_BRANCH_ID"]),
+}))
+PY
+}
+
+generate_token_in_container() {
+  local container="$1"
+  docker exec \
+    -e TOKEN_SUBJECT="$SUBJECT" \
+    -e TOKEN_ROLE="$ROLE" \
+    -e TOKEN_TENANT_ID="$TENANT_ID" \
+    -e TOKEN_BRANCH_ID="$BRANCH_ID" \
+    "$container" \
+    python - <<'PY'
+import os
+from app.security import create_access_token
+
+print(create_access_token({
+    "sub": os.environ["TOKEN_SUBJECT"],
+    "role": os.environ["TOKEN_ROLE"],
+    "id_empresa": int(os.environ["TOKEN_TENANT_ID"]),
+    "id_filial": int(os.environ["TOKEN_BRANCH_ID"]),
+}))
+PY
+}
+
+generate_token() {
+  if compose_service_running api; then
+    generate_token_in_compose
+    return
+  fi
+  if generate_token_in_container "$API_CONTAINER" 2>/dev/null; then
+    return
+  fi
+  generate_token_in_container torqmind-api-1
+}
+
+run_multivm_checks
+run_public_page_checks
 
 if [[ -n "${TORQMIND_SMOKE_TOKEN:-}" ]]; then
   TOKEN="$TORQMIND_SMOKE_TOKEN"
 else
   if ! command -v docker >/dev/null 2>&1; then
-    echo "docker não encontrado e TORQMIND_SMOKE_TOKEN não foi informado" >&2
+    echo "docker not found and TORQMIND_SMOKE_TOKEN was not provided" >&2
     exit 2
   fi
   TOKEN="$(generate_token)"
@@ -58,14 +192,18 @@ from pathlib import Path
 
 tmp_dir = Path(sys.argv[1])
 
+
 def load(name: str):
     return json.loads((tmp_dir / f"{name}.json").read_text(encoding="utf-8"))
+
 
 def truthy_sequence(value):
     return isinstance(value, list) and len(value) > 0
 
+
 def truthy_mapping(value):
     return isinstance(value, dict) and len(value) > 0
+
 
 checks = []
 
@@ -84,18 +222,17 @@ sales = load("sales")
 checks.append((
     "sales",
     truthy_mapping(sales.get("kpis")) and (truthy_sequence(sales.get("top_products")) or truthy_sequence(sales.get("by_day"))),
-    "sales sem KPIs ou sem produtos/série",
+    "sales sem KPIs ou sem produtos/serie",
 ))
 
 cash = load("cash")
 cash_kpis = cash.get("kpis") or {}
-cash_historical = (cash.get("historical") or {}).get("kpis") or {}
 checks.append((
     "cash",
     cash_kpis.get("total_pagamentos") is not None and cash_kpis.get("recebimentos_periodo") is not None and cash_kpis.get("cancelamentos_periodo") is not None and (
         truthy_sequence((cash.get("historical") or {}).get("payment_mix")) or truthy_sequence(cash.get("turnos"))
     ),
-    "cash sem aliases compatíveis ou sem mix/turnos",
+    "cash sem aliases compativeis ou sem mix/turnos",
 ))
 
 fraud = load("fraud")
@@ -117,7 +254,7 @@ projection_goal = ((projection.get("goal") or {}).get("target_value"))
 checks.append((
     "goals",
     truthy_sequence(goals.get("leaderboard")) or truthy_sequence(goals.get("risk_top_employees")) or projection_goal is not None,
-    "goals sem leaderboard, risco ou projeção",
+    "goals sem leaderboard, risco ou projecao",
 ))
 
 customers = load("customers")
@@ -132,7 +269,7 @@ checks.append((
         or truthy_sequence(delinquency.get("buckets"))
         or truthy_sequence(delinquency.get("customers"))
     ),
-    "customers sem RFM ou sem blocos materiais de churn/delinquência",
+    "customers sem RFM ou sem blocos materiais de churn/delinquencia",
 ))
 
 finance = load("finance")
@@ -152,7 +289,7 @@ platform = load("platform")
 checks.append((
     "platform",
     truthy_mapping(platform) and "use_realtime_marts" in platform and "source_freshness" in platform and "recent_errors" in platform,
-    "platform sem payload mínimo de saúde técnica",
+    "platform sem payload minimo de saude tecnica",
 ))
 
 failed = [item for item in checks if not item[1]]
@@ -165,4 +302,4 @@ if failed:
     raise SystemExit(1)
 PY
 
-echo "Smoke concluído para ${BASE_URL} no período ${DT_INI}..${DT_FIM}."
+echo "Smoke concluido para ${BASE_URL} no periodo ${DT_INI}..${DT_FIM}."

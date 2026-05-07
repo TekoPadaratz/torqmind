@@ -243,3 +243,17 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.source_freshness (
 ) ENGINE = ReplacingMergeTree(checked_at)
 ORDER BY (id_empresa, domain)
 SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_publication_log (
+    mart_name       LowCardinality(String) NOT NULL,
+    id_empresa      Int32 NOT NULL DEFAULT 0,
+    window_start    Date NOT NULL,
+    window_end      Date NOT NULL,
+    rows_written    UInt64 NOT NULL DEFAULT 0,
+    duration_ms     UInt64 NOT NULL DEFAULT 0,
+    published_at    DateTime64(6, 'UTC') NOT NULL DEFAULT now64(6)
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(published_at)
+ORDER BY (mart_name, id_empresa, published_at)
+TTL toDateTime(published_at) + INTERVAL 30 DAY
+SETTINGS index_granularity = 8192;

@@ -195,7 +195,7 @@ else
       ${ID_FILIAL:+--id-filial "$ID_FILIAL"} || {
       log "ERROR: Mart backfill failed."
       log "System is in safe state: mart_rt was reset but not populated."
-      log "Realtime remains disabled (fallback=true)."
+      log "Realtime remains disabled; do not enable fallback as acceptance proof."
       log "To retry: re-run this script with same arguments."
       exit 1
     }
