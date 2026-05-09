@@ -54,6 +54,9 @@ _POSTGRES_OWNED_FUNCTIONS = {
 _CLICKHOUSE_DEBT_FUNCTIONS = {
 }
 
+# When realtime is enabled, some analytical functions still need PostgreSQL as
+# the compatibility source because this deployment no longer serves the legacy
+# ClickHouse mart schema for those contracts.
 
 def _legacy_function(name: str) -> Callable[..., Any]:
     value = getattr(_postgres, name)
@@ -110,6 +113,13 @@ def _dispatch(name: str) -> Callable[..., Any]:
                     logger.warning("Realtime mart read failed for %s, falling back to legacy: %s", name, exc)
                 else:
                     raise
+
+        if settings.use_realtime_marts:
+            logger.warning(
+                "Realtime compatibility fallback is using PostgreSQL for %s because no realtime mart contract is available",
+                name,
+            )
+            return legacy(*args, **kwargs)
 
         if clickhouse is None:
             if use_clickhouse and name in _CLICKHOUSE_DEBT_FUNCTIONS:

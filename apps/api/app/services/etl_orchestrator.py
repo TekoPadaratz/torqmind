@@ -103,10 +103,44 @@ PHASE_SQL_STEPS: tuple[tuple[str, str], ...] = (
     ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
 )
 
+OPTIONAL_PHASE_STEP_MESSAGES: dict[str, str] = {
+    "fact_estoque_atual": "SKIP estoque_atual: function not installed",
+}
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _etl_loader_function_exists(conn, function_name: str) -> bool:
+    try:
+        row = conn.execute(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = 'etl'
+                AND p.proname = %s
+            ) AS ok
+            """,
+            (function_name,),
+        ).fetchone()
+    except AssertionError:
+        return True
+    return bool((row or {}).get("ok"))
+
+
+def _optional_phase_step_skip_meta(conn, step_name: str) -> dict[str, Any] | None:
+    if step_name != "fact_estoque_atual":
+        return None
+    if _etl_loader_function_exists(conn, "load_fact_estoque_atual"):
+        return None
+    return {
+        "reason": "function_not_installed",
+        "message": OPTIONAL_PHASE_STEP_MESSAGES[step_name],
+    }
 
 
 def _env_positive_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -1877,6 +1911,32 @@ def _run_tenant_phase(
         if _track_runs_operational(track):
             for step_name, query in PHASE_SQL_STEPS:
                 step_index += 1
+                skip_meta = _optional_phase_step_skip_meta(conn, step_name)
+                if skip_meta is not None:
+                    meta[step_name] = 0
+                    meta[f"{step_name}_ms"] = 0
+                    meta[f"{step_name}_skipped"] = True
+                    meta[f"{step_name}_skip_reason"] = skip_meta["reason"]
+                    meta[f"{step_name}_message"] = skip_meta["message"]
+                    _log_instant_step(
+                        conn,
+                        tenant_id,
+                        step_name,
+                        status="ok",
+                        rows_processed=0,
+                        meta={
+                            "stage": "phase",
+                            "track": track,
+                            "ref_date": ref_date.isoformat(),
+                            "step_index": step_index,
+                            "step_count": step_count,
+                            "skipped": True,
+                            **skip_meta,
+                        },
+                        progress_callback=progress_callback,
+                    )
+                    logger.warning("%s tenant_id=%s", skip_meta["message"], tenant_id)
+                    continue
                 if step_name == "fact_pagamento_comprovante":
                     operation = lambda: _run_payment_loader(
                         conn,

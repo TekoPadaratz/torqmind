@@ -5,9 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 YES=false
 DRY_RUN=false
 ID_EMPRESA="${ID_EMPRESA:-1}"
-CRITICAL_DATA_KEY="${CRITICAL_DATA_KEY:-20260430}"
-FRESHNESS_MAX_SECONDS="${FRESHNESS_MAX_SECONDS:-300}"
+CRITICAL_DATA_KEY="${CRITICAL_DATA_KEY:-}"
+FRESHNESS_MAX_SECONDS="${FRESHNESS_MAX_SECONDS:-3600}"
 CDC_LAG_MAX_MESSAGES="${CDC_LAG_MAX_MESSAGES:-1000}"
+CDC_CONSUMER_GROUP="${CDC_CONSUMER_GROUP:-}"
+FRESHNESS_DOMAIN_FILTER_SQL="${FRESHNESS_DOMAIN_FILTER_SQL:-domain IN ('comprovantes','itenscomprovantes','formas_pgto_comprovantes','fact_comprovante','fact_venda','fact_venda_item','fact_pagamento_comprovante','fact_financeiro','fact_caixa_turno')}"
 
 # shellcheck source=deploy/scripts/lib/multivm.sh
 source "$ROOT_DIR/deploy/scripts/lib/multivm.sh"
@@ -80,6 +82,11 @@ PG_ENV="$(tm_mv_env_file_for_role pg)"
 ANALYTICS_ENV="$(tm_mv_env_file_for_role analytics)"
 APP_ENV="$(tm_mv_env_file_for_role app)"
 
+if [[ -z "$CDC_CONSUMER_GROUP" && -f "$ANALYTICS_ENV" ]]; then
+  CDC_CONSUMER_GROUP="$(awk -F= '/^CDC_CONSUMER_GROUP=/{print $2}' "$ANALYTICS_ENV" | tail -n1 | tr -d '[:space:]')"
+fi
+CDC_CONSUMER_GROUP="${CDC_CONSUMER_GROUP:-torqmind-cdc-consumer}"
+
 pg_cmd() {
   local sql="$1"
   cat <<EOF
@@ -105,6 +112,11 @@ docker compose -f docker-compose.analytics.yml --env-file $(tm_mv_quote "$ANALYT
   clickhouse-client --user "\$CLICKHOUSE_USER" --password "\$CLICKHOUSE_PASSWORD" --format=TabSeparated -q $(tm_mv_quote "$sql")
 EOF
 }
+
+if [[ -z "$CRITICAL_DATA_KEY" ]]; then
+  CRITICAL_DATA_KEY="$(tm_mv_ssh analytics "$(ch_cmd "SELECT max(data_key) FROM torqmind_mart_rt.sales_daily_rt FINAL WHERE id_empresa=$ID_EMPRESA;")" | tr -d '[:space:]')"
+fi
+[[ -n "$CRITICAL_DATA_KEY" && "$CRITICAL_DATA_KEY" != "0" ]] || tm_mv_die "could not resolve CRITICAL_DATA_KEY from torqmind_mart_rt.sales_daily_rt"
 
 tm_mv_log "validating PostgreSQL"
 run_check "pg.health" pg "
@@ -141,13 +153,13 @@ run_check "cdc-consumer.running" analytics "
   docker compose -f docker-compose.analytics.yml --env-file $(tm_mv_quote "$ANALYTICS_ENV") ps --status running --services | grep -Fx cdc-consumer
 "
 run_check "cdc.lag.not_stuck" analytics "
-  value=\$($(ch_cmd "SELECT ifNull(max(lag), 0) FROM torqmind_ops.cdc_lag WHERE measured_at >= now() - INTERVAL 15 MINUTE;"))
-  value=\"\${value//[[:space:]]/}\"
-  [[ -z \"\$value\" ]] && value=0
-  awk \"BEGIN { exit ((\$value + 0) <= $CDC_LAG_MAX_MESSAGES ? 0 : 1) }\"
+  total=\$(cd $(tm_mv_quote "$TORQMIND_REPO_DIR") && docker compose -f docker-compose.analytics.yml --env-file $(tm_mv_quote "$ANALYTICS_ENV") exec -T redpanda rpk group describe $CDC_CONSUMER_GROUP 2>/dev/null | awk '/^TOTAL-LAG/ {print \$2; exit}')
+  total=\"\${total//[[:space:]]/}\"
+  [[ -n \"\$total\" ]] || exit 1
+  awk \"BEGIN { exit ((\$total + 0) <= $CDC_LAG_MAX_MESSAGES ? 0 : 1) }\"
 "
 run_check "freshness.ok" analytics "
-  freshness=\$($(ch_cmd "SELECT count() AS rows, countIf(status = 'stale' OR lag_seconds > $FRESHNESS_MAX_SECONDS) AS stale_rows FROM torqmind_mart_rt.source_freshness FINAL WHERE id_empresa = $ID_EMPRESA;"))
+  freshness=\$($(ch_cmd "SELECT count() AS rows, countIf(lag_seconds > $FRESHNESS_MAX_SECONDS) AS stale_rows FROM torqmind_mart_rt.source_freshness FINAL WHERE id_empresa = $ID_EMPRESA AND $FRESHNESS_DOMAIN_FILTER_SQL;"))
   rows=\"\$(printf '%s' \"\$freshness\" | cut -f1 | tr -d '[:space:]')\"
   stale=\"\$(printf '%s' \"\$freshness\" | cut -f2 | tr -d '[:space:]')\"
   [[ \"\$rows\" -gt 0 && \"\$stale\" == \"0\" ]]

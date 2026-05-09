@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from datetime import date
 
 from torqmind_cdc_consumer.debezium import DebeziumEvent, parse_debezium_event
 from torqmind_cdc_consumer.mappings import TABLE_MAPPINGS, get_mapping
@@ -170,6 +171,10 @@ class TestMappings(unittest.TestCase):
 class TestClickHouseWriter(unittest.TestCase):
     """Test ClickHouse writer buffering logic (no actual CH connection)."""
 
+    @staticmethod
+    def _debezium_date(value: date) -> int:
+        return (value - date(1970, 1, 1)).days
+
     def _make_event(self, op="c", table_schema="dw", table_name="fact_venda"):
         return DebeziumEvent(
             topic="torqmind.dw.fact_venda",
@@ -194,11 +199,68 @@ class TestClickHouseWriter(unittest.TestCase):
             data_key=20260430,
         )
 
+    def _make_finance_event(self, vencimento):
+        return DebeziumEvent(
+            topic="torqmind.dw.fact_financeiro",
+            partition=0,
+            offset=101,
+            op="c",
+            source_ts_ms=1714500000001,
+            table_schema="dw",
+            table_name="fact_financeiro",
+            before=None,
+            after={
+                "id_empresa": 1,
+                "id_filial": 14458,
+                "id_db": 1,
+                "tipo_titulo": 1,
+                "id_titulo": 999,
+                "id_entidade": 123,
+                "data_emissao": date(2026, 5, 8),
+                "data_key_emissao": 20260508,
+                "vencimento": vencimento,
+                "data_key_venc": 20260508,
+                "data_pagamento": None,
+                "data_key_pgto": None,
+                "valor": "10.00",
+                "valor_pago": None,
+            },
+            key={
+                "id_empresa": 1,
+                "id_filial": 14458,
+                "id_db": 1,
+                "tipo_titulo": 1,
+                "id_titulo": 999,
+            },
+            id_empresa=1,
+            data_key=20260508,
+        )
+
     def test_process_event_buffers_raw(self):
         writer = ClickHouseWriter()
         event = self._make_event()
         writer.process_event(event)
         self.assertEqual(len(writer._raw_buffer), 1)
+
+    def test_invalid_clickhouse_date_is_sanitized_to_none(self):
+        writer = ClickHouseWriter()
+        event = self._make_finance_event(self._debezium_date(date(1900, 1, 2)))
+
+        writer.process_event(event)
+
+        mapping = get_mapping("dw", "fact_financeiro")
+        row = writer._current_buffers["torqmind_current.fact_financeiro"][0]
+        self.assertIsNone(row[mapping.columns.index("vencimento")])
+
+    def test_valid_clickhouse_date_is_preserved(self):
+        writer = ClickHouseWriter()
+        event = self._make_finance_event(self._debezium_date(date(2026, 5, 23)))
+
+        writer.process_event(event)
+
+        mapping = get_mapping("dw", "fact_financeiro")
+        row = writer._current_buffers["torqmind_current.fact_financeiro"][0]
+        self.assertEqual(row[mapping.columns.index("vencimento")], date(2026, 5, 23))
 
     def test_process_event_buffers_current(self):
         writer = ClickHouseWriter()

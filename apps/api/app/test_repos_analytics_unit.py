@@ -25,10 +25,13 @@ class AnalyticsFacadeUnitTest(unittest.TestCase):
         repos_analytics._DISPATCH_CACHE.clear()
         self._use_clickhouse = repos_analytics.settings.use_clickhouse
         self._dual_read = repos_analytics.settings.dual_read_mode
+        self._use_realtime_marts = repos_analytics.settings.use_realtime_marts
+        repos_analytics.settings.use_realtime_marts = False
 
     def tearDown(self) -> None:
         repos_analytics.settings.use_clickhouse = self._use_clickhouse
         repos_analytics.settings.dual_read_mode = self._dual_read
+        repos_analytics.settings.use_realtime_marts = self._use_realtime_marts
         repos_analytics._DISPATCH_CACHE.clear()
 
     def test_clickhouse_enabled_dispatches_to_clickhouse_function(self) -> None:
@@ -91,6 +94,22 @@ class AnalyticsFacadeUnitTest(unittest.TestCase):
         ch_call.assert_called_once()
         pg_call.assert_called_once()
         validator.compare.assert_called_once_with("dashboard_kpis", {"source": "pg"}, {"source": "ch"})
+
+    def test_realtime_mode_without_realtime_contract_uses_postgres_legacy(self) -> None:
+        repos_analytics.settings.use_clickhouse = True
+        repos_analytics.settings.dual_read_mode = False
+        repos_analytics.settings.use_realtime_marts = True
+
+        with patch.object(repos_analytics._clickhouse, "risk_kpis", return_value={"source": "ch"}) as ch_call, patch.object(
+            repos_analytics._postgres,
+            "risk_kpis",
+            return_value={"source": "pg"},
+        ) as pg_call:
+            result = repos_analytics.risk_kpis("MASTER", 7, None, date(2026, 4, 1), date(2026, 4, 2))
+
+        self.assertEqual(result, {"source": "pg"})
+        ch_call.assert_not_called()
+        pg_call.assert_called_once()
 
     def test_inventory_has_no_analytical_clickhouse_debt(self) -> None:
         inventory = repos_analytics.analytics_backend_inventory()

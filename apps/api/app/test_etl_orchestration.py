@@ -158,6 +158,9 @@ class _WatermarkResetConn:
             return _RowcountResult(12)
         return _LoaderCursor({})
 
+    def commit(self) -> None:
+        return None
+
 
 class EtlOrchestrationTest(unittest.TestCase):
     def test_cli_and_endpoint_share_same_incremental_cycle_function(self) -> None:
@@ -781,8 +784,10 @@ class EtlOrchestrationTest(unittest.TestCase):
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
+    @patch("app.services.etl_orchestrator._optional_phase_step_skip_meta")
     def test_tenant_phase_runs_explicit_steps_in_loader_order(
         self,
+        mock_step_skip_meta,
         mock_logged_step,
         _mock_log_instant,
         mock_stage_summary,
@@ -811,6 +816,7 @@ class EtlOrchestrationTest(unittest.TestCase):
             step_order.append(step_name)
             return manual_counts[step_name], manual_counts[step_name] * 10
 
+        mock_step_skip_meta.return_value = None
         mock_logged_step.side_effect = _logged_step_side_effect
 
         result = etl_orchestrator._run_tenant_phase(
@@ -830,6 +836,60 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertTrue(result["meta"]["refresh_domains"]["cash"])
         self.assertEqual(mock_stage_summary.call_count, 1)
         self.assertEqual(mock_stage_summary.call_args.args[2], "run_tenant_phase")
+
+    @patch("app.services.etl_orchestrator._hot_window_days", return_value=3)
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    @patch("app.services.etl_orchestrator._optional_phase_step_skip_meta")
+    def test_tenant_phase_skips_fact_estoque_atual_when_loader_is_not_installed(
+        self,
+        mock_step_skip_meta,
+        mock_logged_step,
+        mock_log_instant,
+        _mock_stage_summary,
+        _mock_hot_window_days,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 1, 10
+
+        def _skip_meta_side_effect(_conn, step_name):
+            if step_name == "fact_estoque_atual":
+                return {
+                    "reason": "function_not_installed",
+                    "message": "SKIP estoque_atual: function not installed",
+                }
+            return None
+
+        mock_step_skip_meta.side_effect = _skip_meta_side_effect
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        result = etl_orchestrator._run_tenant_phase(
+            _DummyConn(),
+            1,
+            False,
+            date(2026, 3, 23),
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+        )
+
+        self.assertEqual(
+            step_order,
+            [name for name, _query in etl_orchestrator.PHASE_SQL_STEPS if name != "fact_estoque_atual"],
+        )
+        self.assertEqual(result["meta"]["fact_estoque_atual"], 0)
+        self.assertTrue(result["meta"]["fact_estoque_atual_skipped"])
+        self.assertEqual(result["meta"]["fact_estoque_atual_skip_reason"], "function_not_installed")
+        self.assertEqual(
+            result["meta"]["fact_estoque_atual_message"],
+            "SKIP estoque_atual: function not installed",
+        )
+        mock_log_instant.assert_called_once()
+        self.assertEqual(mock_log_instant.call_args.args[2], "fact_estoque_atual")
+        self.assertEqual(mock_log_instant.call_args.kwargs["rows_processed"], 0)
+        self.assertTrue(mock_log_instant.call_args.kwargs["meta"]["skipped"])
 
     @patch("app.services.etl_orchestrator._hot_window_days", return_value=3)
     @patch("app.services.etl_orchestrator._log_stage_summary")
