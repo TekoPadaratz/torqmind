@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS stg.nfe (
     dt_evento           timestamptz,
     payload             jsonb       NOT NULL,
     ingested_at         timestamptz NOT NULL DEFAULT now(),
+    received_at         timestamptz DEFAULT now(),
 
     CONSTRAINT stg_nfe_pk PRIMARY KEY (id_empresa, id_filial, id_db, id_comprovante, id_nfe)
 );
