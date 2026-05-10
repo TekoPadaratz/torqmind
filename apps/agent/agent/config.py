@@ -343,6 +343,39 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "enabled": False,
     },
     "financeiro": {"table": "dbo.FINANCEIRO", "enabled": False},
+    "nfe": {
+        "table": "dbo.NFE",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_NFE, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_NFE", "ID_DB"],
+        "contract_name": "nfe_pk_required_fields",
+        "required_fields": ["ID_NFE", "ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "STATUS"],
+        "unique_key_fields": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "ID_NFE"],
+        "preflight_tables": {
+            "dbo.NFE": [
+                "ID_NFE",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_COMPROVANTE",
+                "STATUS",
+            ],
+        },
+        "retention_days": COMMERCIAL_WINDOW_DAYS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT n.*, "
+            "CAST(n.DATAEMISSAO AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(n.DATAEMISSAO AS datetime2)), "
+            f"       (NULLIF(CAST(n.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.NFE n"
+        ),
+        "enabled": True,
+    },
 }
 
 

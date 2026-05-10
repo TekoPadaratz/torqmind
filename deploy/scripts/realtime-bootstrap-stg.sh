@@ -427,6 +427,7 @@ validate_parity() {
   check_parity stg localvendas stg_localvendas optional "id_empresa = $ID_EMPRESA"
   check_parity stg contaspagar stg_contaspagar optional "id_empresa = $ID_EMPRESA"
   check_parity stg contasreceber stg_contasreceber optional "id_empresa = $ID_EMPRESA"
+  check_parity stg nfe stg_nfe optional "id_empresa = $ID_EMPRESA"
 
   if (( errors > 0 )); then
     log "PARITY CHECK FAILED: $errors required table(s) have data in PG but zero in ClickHouse"
@@ -456,6 +457,9 @@ main() {
   bootstrap_simple_stg entidades stg_entidades "id_empresa, id_filial, id_entidade" optional
   bootstrap_simple_stg funcionarios stg_funcionarios "id_empresa, id_filial, id_funcionario" optional
   bootstrap_simple_stg localvendas stg_localvendas "id_empresa, id_filial, id_localvendas" optional
+
+  # NFE fiscal documents
+  bootstrap_simple_stg nfe stg_nfe "id_empresa, id_filial, id_db, id_comprovante, id_nfe" optional
 
   # Financial tables (4-part key)
   bootstrap_contaspagar

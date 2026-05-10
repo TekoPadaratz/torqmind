@@ -81,6 +81,8 @@ export default function CashPage() {
   const openBoxes = liveNow?.open_boxes || data?.open_boxes || [];
   const staleBoxes = liveNow?.stale_boxes || data?.stale_boxes || [];
   const alerts = liveNow?.alerts || data?.alerts || [];
+  const inutilizacoes = data?.inutilizacoes || {};
+  const inutItems = inutilizacoes?.items || [];
   const paymentMixChartHeight = Math.max(280, paymentMix.length * 44);
 
   return (
@@ -335,6 +337,58 @@ export default function CashPage() {
                   </div>
                 ) : null}
               </div>
+
+              {inutItems.length > 0 ? (
+                <>
+                  <div className="card col-12">
+                    <div className="sectionEyebrow">Classificação fiscal</div>
+                    <h2 style={{ marginTop: 4 }}>Notas Fiscais Inutilizadas (NFE status 5)</h2>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      Comprovantes cujo documento fiscal foi inutilizado. Não são cancelamentos reais nem indicadores de fraude.
+                    </div>
+                  </div>
+
+                  <div className="card kpi col-3">
+                    <div className="label">Qtd. inutilizadas</div>
+                    <div className="value">{inutilizacoes.qtd || 0}</div>
+                  </div>
+                  <div className="card kpi col-3">
+                    <div className="label">Valor total inutilizado</div>
+                    <div className="value">{formatCurrency(inutilizacoes.valor_total)}</div>
+                  </div>
+
+                  <div className="card col-12">
+                    <div className="tableScroll">
+                      <table className="table compact">
+                        <thead>
+                          <tr>
+                            <th>Filial</th>
+                            <th>Turno</th>
+                            <th>Operador</th>
+                            <th>Nº NFE</th>
+                            <th>Série</th>
+                            <th>Valor</th>
+                            <th>Data</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {inutItems.map((item: any, idx: number) => (
+                            <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
+                              <td>{item.filial_label}</td>
+                              <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
+                              <td>{item.usuario_label}</td>
+                              <td>{item.numero_nfe || "-"}</td>
+                              <td>{item.serie_nfe || "-"}</td>
+                              <td>{formatCurrency(item.valor_comprovante)}</td>
+                              <td>{item.dt ? formatDateKey(Number(String(item.dt).replace(/-/g, ""))) : "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              ) : null}
 
               <div className="card col-12">
                 <div className="sectionEyebrow">Caixa agora</div>

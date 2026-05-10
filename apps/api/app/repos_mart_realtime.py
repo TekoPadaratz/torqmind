@@ -1051,11 +1051,81 @@ def cash_overview(
         },
         "payment_mix": payments,
         "payment_breakdown": payments,
+        "inutilizacoes": _cash_nfe_inutilizations(id_empresa, id_filial, dt_ini, dt_fim),
         "source": "realtime",
         "realtime_source": _realtime_source(),
         "freshness": {"mode": "realtime", "source": _realtime_source(), "last_refresh": now_iso},
         "operational_sync": {"source": "realtime", "last_publish": now_iso},
     }
+
+
+def _cash_nfe_inutilizations(
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Query NFE inutilizations (status=5) for the cash page."""
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim) if dt_ini and dt_fim else ""
+
+    try:
+        exists = query_scalar(
+            f"SELECT count() FROM system.tables WHERE database = '{MART_RT_DB}' AND name = 'nfe_inutilizations_rt'",
+            parameters={},
+        )
+        if not exists:
+            return {"qtd": 0, "valor_total": 0.0, "items": []}
+    except Exception:
+        return {"qtd": 0, "valor_total": 0.0, "items": []}
+
+    rows = query_dict(f"""
+        SELECT
+            id_filial, filial_nome, id_turno,
+            turno_abertura_ts, turno_fechamento_ts,
+            id_usuario, nome_operador,
+            id_comprovante, id_nfe, numero_nfe, serie_nfe,
+            chave_nfe, modelo_nfe, data_emissao_nfe,
+            valor_comprovante, referencia, dt, hora
+        FROM {MART_RT_DB}.nfe_inutilizations_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+        ORDER BY dt DESC, hora DESC
+        LIMIT 100
+    """, parameters={"id_empresa": id_empresa})
+
+    filial_names = _load_current_filial_names(id_empresa, rows) if rows else {}
+    turno_values = _load_current_turno_values(id_empresa, rows) if rows else {}
+
+    items = []
+    for row in rows:
+        fid = int(row.get("id_filial") or 0)
+        tid = int(row.get("id_turno") or 0)
+        filial_nome = filial_names.get(fid) or str(row.get("filial_nome") or "").strip()
+        turno_value = turno_values.get((fid, tid))
+        usuario_nome = str(row.get("nome_operador") or "").strip()
+        items.append({
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, filial_nome),
+            "id_turno": tid,
+            "turno_label": _turno_label(turno_value, tid),
+            "turno_abertura_ts": str(row.get("turno_abertura_ts") or ""),
+            "turno_fechamento_ts": str(row.get("turno_fechamento_ts") or ""),
+            "usuario_label": _cash_operator_label(usuario_nome, row.get("id_usuario")),
+            "id_comprovante": row.get("id_comprovante"),
+            "id_nfe": row.get("id_nfe"),
+            "numero_nfe": str(row.get("numero_nfe") or ""),
+            "serie_nfe": str(row.get("serie_nfe") or ""),
+            "chave_nfe": str(row.get("chave_nfe") or ""),
+            "modelo_nfe": str(row.get("modelo_nfe") or ""),
+            "data_emissao_nfe": str(row.get("data_emissao_nfe") or ""),
+            "valor_comprovante": round(float(row.get("valor_comprovante") or 0), 2),
+            "referencia": str(row.get("referencia") or ""),
+            "dt": str(row.get("dt") or ""),
+            "hora": str(row.get("hora") or ""),
+        })
+
+    valor_total = round(sum(i["valor_comprovante"] for i in items), 2)
+    return {"qtd": len(items), "valor_total": valor_total, "items": items}
 
 
 def open_cash_monitor(

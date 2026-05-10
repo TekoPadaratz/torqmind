@@ -75,3 +75,8 @@ datasets:
   contaspagar: { enabled: true, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
   contasreceber: { enabled: true, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
   financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }
+  nfe:
+    enabled: true
+    table: dbo.NFE
+    watermark_column: DATAREPL
+    # NFE fiscal documents for inutilization classification (status 3=autorizada, 4=cancelada, 5=inutilizada)

@@ -917,6 +917,7 @@ def _safe_cash_overview_payload() -> Dict[str, Any]:
         "payment_mix": [],
         "cancelamentos": [],
         "alerts": [],
+        "inutilizacoes": {"qtd": 0, "valor_total": 0.0, "items": []},
         },
         fallback_state="preparing",
         message="O caixa ainda está preparando a leitura consolidada do período. O payload sinaliza indisponibilidade transitória sem simular fechamento zerado.",

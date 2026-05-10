@@ -5790,6 +5790,7 @@ def cash_overview(
         "payment_mix": historical.get("payment_mix") or [],
         "cancelamentos": historical.get("cancelamentos") or [],
         "alerts": live_now.get("alerts") or [],
+        "inutilizacoes": {"qtd": 0, "valor_total": 0.0, "items": []},
         "commercial_coverage": commercial_coverage,
     }
 

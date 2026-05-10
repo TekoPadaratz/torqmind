@@ -242,6 +242,20 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "id_local_venda_shadow": _to_int(_get_any(obj, ["ID_LOCALVENDAS", "ID_LOCAL_VENDA", "id_localvendas"])),
             "qtd_atual_shadow": _to_numeric(_get_any(obj, ["QTDEATUAL", "QTD_ATUAL", "qtd_atual"])),
         }
+    if dataset_key == "nfe":
+        return {
+            "status_shadow": _to_int(_get_any(obj, ["STATUS", "status", "STATUSNFE", "STATUS_NFE"])),
+            "numero_nfe_shadow": _get_any(obj, ["NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]),
+            "serie_shadow": _get_any(obj, ["SERIE", "serie", "SERIENFE", "SERIE_NFE"]),
+            "chave_nfe_shadow": _get_any(obj, ["CHAVE", "CHAVENFE", "CHAVE_NFE", "CHAVEACESSO", "CHAVE_ACESSO", "chave_nfe"]),
+            "modelo_shadow": _get_any(obj, ["MODELO", "modelo", "MODELONFE", "MODELO_NFE"]),
+            "protocolo_shadow": _get_any(obj, ["PROTOCOLO", "protocolo", "NPROTOCOLO", "NPROTOCOLO_NFE"]),
+            "data_emissao_shadow": _parse_ts(_get_any(obj, ["DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]), tenant_id=None),
+            "data_autorizacao_shadow": _parse_ts(_get_any(obj, ["DATAAUTORIZACAO", "DATA_AUTORIZACAO", "data_autorizacao"]), tenant_id=None),
+            "data_cancelamento_shadow": _parse_ts(_get_any(obj, ["DATACANCELAMENTO", "DATA_CANCELAMENTO", "data_cancelamento"]), tenant_id=None),
+            "data_inutilizacao_shadow": _parse_ts(_get_any(obj, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]), tenant_id=None),
+            "valor_nfe_shadow": _to_numeric(_get_any(obj, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"])),
+        }
     return {}
 
 
@@ -318,6 +332,22 @@ def _batch_columns(dataset_key: str, spec: DatasetSpec) -> List[str]:
                 "id_produto_shadow",
                 "id_local_venda_shadow",
                 "qtd_atual_shadow",
+            ]
+        )
+    elif dataset_key == "nfe":
+        columns.extend(
+            [
+                "status_shadow",
+                "numero_nfe_shadow",
+                "serie_shadow",
+                "chave_nfe_shadow",
+                "modelo_shadow",
+                "protocolo_shadow",
+                "data_emissao_shadow",
+                "data_autorizacao_shadow",
+                "data_cancelamento_shadow",
+                "data_inutilizacao_shadow",
+                "valor_nfe_shadow",
             ]
         )
     columns.append("payload")
@@ -544,6 +574,18 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_db", ["ID_DB", "id_db"]),
             ("tipo_titulo", ["TIPO_TITULO", "tipo_titulo"]),
             ("id_titulo", ["ID_TITULO", "id_titulo"]),
+        ],
+    ),
+
+    # NFE (Nota Fiscal Eletrônica) - fiscal classification
+    "nfe": DatasetSpec(
+        table="stg.nfe",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_comprovante", "id_nfe"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_comprovante", ["ID_COMPROVANTE", "id_comprovante"]),
+            ("id_nfe", ["ID_NFE", "id_nfe"]),
         ],
     ),
 }
