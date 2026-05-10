@@ -12,7 +12,8 @@ sqlserver:
   login_timeout_seconds: 20
 
 api:
-  # Em producao, prefira sempre HTTPS + ingest_key.
+  # Em producao, use a URL do seu servidor TorqMind e configure ingest_key.
+  # Exemplo producao: http://redevr.ddns.me:14023/api
   base_url: https://torqmind.example.com/api
   ingest_key: CHANGE_ME_INGEST_KEY
   # Em dev/local, troque base_url para http://localhost:8000 e use empresa_id.
