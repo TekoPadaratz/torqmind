@@ -64,6 +64,6 @@ DO $$ BEGIN
     END IF;
 END $$;
 
-COMMENT ON TABLE stg.nfe IS 'Raw NFE (Nota Fiscal Eletrônica) records from client SQL Server. status_shadow: 3=authorized, 4=cancelled_real, 5=voided/inutilized.';
+COMMENT ON TABLE stg.nfe IS 'Raw NFE records from client SQL Server. status_shadow: 3=authorized, 4=cancelled_real, 5=voided/inutilized.';
 
 COMMIT;

@@ -1025,8 +1025,8 @@ class MartBuilder:
         nfe_filter_cancel = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
 
         sql = f"""
-        {nfe_with}
         INSERT INTO {self.mart_rt_db}.sales_daily_rt
+        {nfe_with}
         SELECT
             base.id_empresa, base.id_filial, base.data_key,
             toDate(toString(base.data_key), '%Y%m%d') AS dt,
@@ -1310,8 +1310,8 @@ class MartBuilder:
                 if False else ""  # unused, using WITH instead
             )
             sql = f"""
-            WITH {self._nfe_latest_status_cte('nfe_latest')}
             INSERT INTO {self.mart_rt_db}.fraud_daily_rt
+            WITH {self._nfe_latest_status_cte('nfe_latest')}
             SELECT
                 c.id_empresa, c.id_filial, c.data_key,
                 toDate(toString(c.data_key), '%Y%m%d') AS dt,
@@ -1368,8 +1368,8 @@ class MartBuilder:
         nfe_filter = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
 
         sql = f"""
-        {nfe_with}
         INSERT INTO {self.mart_rt_db}.risk_recent_events_rt
+        {nfe_with}
         SELECT
             toInt64(cityHash64(concat(toString(c.id_empresa), ':', toString(c.id_filial), ':', toString(c.id_db), ':', toString(c.id_comprovante))) % 9223372036854775807) AS id,
             c.id_empresa, c.id_filial, c.data_key,
@@ -1459,8 +1459,8 @@ class MartBuilder:
         nfe_filter_cancel = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
 
         sql = f"""
-        {nfe_with}
         INSERT INTO {self.mart_rt_db}.dashboard_home_rt
+        {nfe_with}
         SELECT
             base.id_empresa, base.id_filial, base.data_key,
             toDate(toString(base.data_key), '%Y%m%d') AS dt,
@@ -1527,8 +1527,8 @@ class MartBuilder:
 
         tz = self._BUSINESS_TZ
         sql = f"""
-        WITH {self._nfe_latest_status_cte('nfe_latest')}
         INSERT INTO {self.mart_rt_db}.nfe_inutilizations_rt
+        WITH {self._nfe_latest_status_cte('nfe_latest')}
         SELECT
             c.id_empresa, c.id_filial,
             coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
