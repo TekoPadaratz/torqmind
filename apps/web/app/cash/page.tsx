@@ -79,7 +79,9 @@ export default function CashPage() {
   const dreSummary = data?.dre_summary || {};
   const paymentMix = historical?.payment_mix || [];
   const commercialByDay = commercial?.by_day || [];
-  const topTurnos = (commercial?.top_turnos || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
+  const topTurnos = (commercial?.top_turnos || [])
+    .filter((item: any) => Number(item?.id_turno || 0) > 0)
+    .slice(0, 15);
   const openBoxes = (liveNow?.open_boxes || data?.open_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
   const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
   const alerts = liveNow?.alerts || data?.alerts || [];
@@ -313,7 +315,7 @@ export default function CashPage() {
               </div>
 
               <div className="card col-12">
-                <h2>Turnos com maior fluxo comercial</h2>
+                <h2>Turnos com maior fluxo no período selecionado</h2>
                 {!loading && !topTurnos.length ? (
                   <EmptyState
                     title="Sem turnos comerciais no período."
@@ -329,7 +331,8 @@ export default function CashPage() {
                           <th>Turno</th>
                           <th>Período do turno</th>
                           <th>Operador</th>
-                          <th>Vendas</th>
+                          <th>Qtd. vendas</th>
+                          <th>Faturamento</th>
                           <th>Cancel.</th>
                           <th>Receb.</th>
                           <th>Saldo</th>
@@ -344,6 +347,7 @@ export default function CashPage() {
                             </td>
                             <td>{formatTurnoPeriod(item.abertura_ts, item.fechamento_ts)}</td>
                             <td>{item.usuario_label}</td>
+                            <td>{Number(item.qtd_vendas || 0)}</td>
                             <td>{formatCurrency(item.total_vendas)}</td>
                             <td>{formatCurrency(item.total_cancelamentos)}</td>
                             <td>{formatCurrency(item.total_pagamentos)}</td>

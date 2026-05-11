@@ -347,7 +347,7 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
     @patch("app.repos_mart_realtime.query_dict")
     def test_cash_uses_real_labels_when_current_dimensions_exist(self, mock_qd: MagicMock):
         def side_effect(query: str, parameters=None):
-            q = query.lower()
+            q = " ".join(query.lower().split())
             if "from torqmind_mart_rt.cash_overview_rt" in q and "order by abertura_ts desc" in q:
                 return [{
                     "id_filial": 10169,
@@ -360,17 +360,26 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
                     "faturamento_turno": Decimal("950.00"),
                     "qtd_vendas_turno": 12,
                 }]
-            if "from torqmind_mart_rt.cash_overview_rt" in q and "order by faturamento_turno desc" in q:
+            if "with turn_sales as" in q and "from torqmind_current.stg_comprovantes_slim as c final" in q:
+                self.assertIn("and c.id_turno > 0", q)
+                self.assertRegex(q, r"and c\.data_key >= 20260401 and c\.data_key <= 20260430|and data_key >= 20260401 and data_key <= 20260430")
+                self.assertIn("limit 15", q)
                 return [{
                     "id_filial": 10169,
                     "id_turno": 7134,
                     "id_usuario": 9,
                     "nome_operador": "Camila S",
                     "abertura_ts": datetime(2026, 4, 30, 10, 0, tzinfo=timezone.utc),
-                    "fechamento_ts": None,
-                    "is_aberto": 1,
-                    "faturamento_turno": Decimal("950.00"),
-                    "qtd_vendas_turno": 12,
+                    "fechamento_ts": datetime(2026, 4, 30, 18, 0, tzinfo=timezone.utc),
+                    "is_aberto": 0,
+                    "first_event_at": datetime(2026, 4, 30, 10, 5, tzinfo=timezone.utc),
+                    "last_event_at": datetime(2026, 4, 30, 17, 50, tzinfo=timezone.utc),
+                    "total_vendas": Decimal("950.00"),
+                    "qtd_vendas": 12,
+                    "total_cancelamentos": Decimal("50.00"),
+                    "qtd_cancelamentos": 1,
+                    "total_pagamentos": Decimal("900.00"),
+                    "saldo_comercial": Decimal("900.00"),
                 }]
             if "from torqmind_current.stg_filiais" in q:
                 return [{"id_filial": 10169, "filial_nome": "AUTO POSTO VR 07"}]
@@ -401,6 +410,9 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
         self.assertEqual(turno["filial_label"], "AUTO POSTO VR 07")
         self.assertEqual(turno["turno_label"], "3")
         self.assertEqual(turno["usuario_label"], "Camila S")
+        self.assertEqual(turno["qtd_vendas"], 12)
+        self.assertEqual(float(turno["total_cancelamentos"]), 50.0)
+        self.assertEqual(float(turno["total_pagamentos"]), 900.0)
         self.assertEqual(float(result["kpis"]["recebimentos_periodo"]), 900.0)
         self.assertEqual(float(result["kpis"]["cancelamentos_periodo"]), 50.0)
         self.assertEqual(float(result["historical"]["kpis"]["recebimentos_periodo"]), 900.0)

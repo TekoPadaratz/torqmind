@@ -7,9 +7,31 @@ import {
   buildScopeKey,
   buildScopeSearchParams,
   getScopeControls,
+  hasExplicitBranchSelection,
   needsCanonicalScope,
   readScopeFromSearch,
 } from "./product-scope.mjs";
+
+function assertHrefWithSameParams(actualHref, expectedHref) {
+  const actualUrl = new URL(actualHref, "https://torqmind.local");
+  const expectedUrl = new URL(expectedHref, "https://torqmind.local");
+  const normalize = (url) => {
+    const grouped = {};
+    for (const [key, value] of url.searchParams.entries()) {
+      if (!grouped[key]) {
+        grouped[key] = [];
+      }
+      grouped[key].push(value);
+    }
+    for (const key of Object.keys(grouped)) {
+      grouped[key].sort();
+    }
+    return grouped;
+  };
+
+  assert.equal(actualUrl.pathname, expectedUrl.pathname);
+  assert.deepEqual(normalize(actualUrl), normalize(expectedUrl));
+}
 
 test("product scope builder keeps legacy single-branch links when exactly one filial is selected", () => {
   const params = buildScopeSearchParams({
@@ -166,6 +188,90 @@ test("all-branches selection is preserved as sentinel across links", () => {
   const parsed = readScopeFromSearch(new URLSearchParams(params.toString()));
   assert.equal(parsed.branch_scope, "all");
   assert.deepEqual(parsed.id_filiais, ["7", "9", "11"]);
+});
+
+test("explicit all-branches URL is not expanded from session fallback", () => {
+  const scope = readScopeFromSearch(
+    new URLSearchParams("dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&branch_scope=all&scope_epoch=epoch-all"),
+    {
+      id_empresa: 1,
+      id_filiais: ["11", "13", "17", "19", "23"],
+      branch_scope: "all",
+      dt_ref: "2026-05-11",
+    },
+  );
+
+  assert.equal(scope.branch_scope, "all");
+  assert.deepEqual(scope.id_filiais, []);
+  assert.equal(scope.id_filial, null);
+});
+
+test("explicit single-branch URL is not overwritten by broader session fallback", () => {
+  const href = buildCanonicalProductHref(
+    "/cash?tab=live&dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=14458&scope_epoch=epoch-branch",
+    {
+      id_empresa: 1,
+      accesses: [
+        { id_empresa: 1, id_filial: 10169 },
+        { id_empresa: 1, id_filial: 14458 },
+        { id_empresa: 1, id_filial: 18777 },
+      ],
+      default_scope: { id_empresa: 1, id_filiais: [10169, 14458, 18777], branch_scope: "all", days: 30 },
+    },
+  );
+
+  assertHrefWithSameParams(
+    href,
+    "/cash?tab=live&dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=14458&scope_epoch=epoch-branch&dt_ref=2026-05-11",
+  );
+});
+
+test("explicit multi-branch URL is not overwritten by broader session fallback", () => {
+  const href = buildCanonicalProductHref(
+    "/customers?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filiais=10169&id_filiais=14458&scope_epoch=epoch-multi",
+    {
+      id_empresa: 1,
+      accesses: [
+        { id_empresa: 1, id_filial: 10169 },
+        { id_empresa: 1, id_filial: 14458 },
+        { id_empresa: 1, id_filial: 18777 },
+        { id_empresa: 1, id_filial: 28888 },
+      ],
+      default_scope: { id_empresa: 1, id_filiais: [10169, 14458, 18777, 28888], branch_scope: "all", days: 30 },
+    },
+  );
+
+  assertHrefWithSameParams(
+    href,
+    "/customers?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filiais=10169&id_filiais=14458&scope_epoch=epoch-multi&dt_ref=2026-05-11",
+  );
+});
+
+test("canonical product href keeps explicit all-branches sentinel without appending all fallback branches", () => {
+  const href = buildCanonicalProductHref(
+    "/finance?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&branch_scope=all&scope_epoch=epoch-all",
+    {
+      id_empresa: 1,
+      accesses: [
+        { id_empresa: 1, id_filial: 10169 },
+        { id_empresa: 1, id_filial: 14458 },
+        { id_empresa: 1, id_filial: 18777 },
+      ],
+      default_scope: { id_empresa: 1, id_filiais: [10169, 14458, 18777], branch_scope: "all", days: 30 },
+    },
+  );
+
+  assertHrefWithSameParams(
+    href,
+    "/finance?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&branch_scope=all&scope_epoch=epoch-all&dt_ref=2026-05-11",
+  );
+});
+
+test("explicit branch selection detector distinguishes explicit URL scope from session fallback", () => {
+  assert.equal(hasExplicitBranchSelection(new URLSearchParams("branch_scope=all")), true);
+  assert.equal(hasExplicitBranchSelection(new URLSearchParams("id_filial=14458")), true);
+  assert.equal(hasExplicitBranchSelection(new URLSearchParams("id_filiais=10169&id_filiais=14458")), true);
+  assert.equal(hasExplicitBranchSelection(new URLSearchParams("dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1")), false);
 });
 
 test("scope controls distinguish platform master, owner and branch manager", () => {

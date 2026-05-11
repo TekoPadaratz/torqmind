@@ -20,6 +20,7 @@ import {
   buildScopeSearchParams,
   createScopeEpoch,
   getScopeControls,
+  hasExplicitBranchSelection,
   readScopeFromSearch,
 } from '../lib/product-scope.mjs';
 
@@ -40,6 +41,7 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
   const fallback = buildBrowserLocalDefaultScope(session);
   const parsed = readScopeFromSearch(searchParams, fallback);
   const controls = getScopeControls(session);
+  const explicitBranchSelection = hasExplicitBranchSelection(searchParams);
 
   const fallbackCompany =
     parsed.id_empresa ||
@@ -47,15 +49,26 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
     (session?.id_empresa != null ? String(session.id_empresa) : null) ||
     (session?.tenant_ids?.length ? String(session.tenant_ids[0]) : null);
 
+  const explicitBranchIds = uniqueBranchIds([
+    ...(parsed.id_filiais || []),
+    parsed.id_filial,
+  ]);
+
   const fallbackBranchIds = controls.branchLocked && session?.id_filial != null
     ? [String(session.id_filial)]
-    : uniqueBranchIds([
-        ...(parsed.id_filiais || []),
-        ...(fallback.id_filiais || []),
-        parsed.id_filial,
-        fallback.id_filial,
-        session?.id_filial,
-      ]);
+    : explicitBranchSelection
+      ? explicitBranchIds
+      : uniqueBranchIds([
+          ...(parsed.id_filiais || []),
+          ...(fallback.id_filiais || []),
+          parsed.id_filial,
+          fallback.id_filial,
+          session?.id_filial,
+        ]);
+
+  const branchScope = explicitBranchSelection
+    ? (parsed.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'))
+    : (parsed.branch_scope || fallback.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'));
 
   return {
     dt_ini: parsed.dt_ini || fallback.dt_ini || '',
@@ -66,7 +79,7 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
     id_empresa: fallbackCompany,
     id_filial: fallbackBranchIds.length === 1 ? fallbackBranchIds[0] : null,
     id_filiais: fallbackBranchIds,
-    branch_scope: parsed.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'),
+    branch_scope: branchScope,
   };
 }
 

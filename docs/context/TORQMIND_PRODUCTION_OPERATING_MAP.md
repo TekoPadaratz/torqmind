@@ -1,7 +1,7 @@
 # TorqMind Production Operating Map
 
-Atualizado em: 2026-05-11 15:50 America/Sao_Paulo
-Checkout de referência: nova-branch-limpa @ 9226e5f + ajustes operacionais locais
+Atualizado em: 2026-05-11 20:10 America/Sao_Paulo
+Checkout de referência: nova-branch-limpa @ a12e281 + ajustes locais desta rodada
 
 ## Topologia
 
@@ -58,12 +58,36 @@ Checkout de referência: nova-branch-limpa @ 9226e5f + ajustes operacionais loca
 - Timezone de leitura e publicação: America/Sao_Paulo
 - Documento de apoio semântico: docs/data/TORQMIND_SEMANTIC_FIELD_MAP.md
 
+## Regras de escopo do produto
+
+- Seleção explícita de filial na URL é autoritativa
+- `id_filial`, `id_filiais` repetidos e `branch_scope=all|selected` não podem ser reexpandidos por fallback de sessão
+- Navegação entre Dashboard, Vendas, Caixa, Clientes e Financeiro não pode resetar nem ampliar filiais explicitamente escolhidas
+- A canonicalização de URL deve preservar exatamente a seleção explícita de filial antes de aplicar defaults locais
+
 ## Regras de Caixa
 
 - Caixa 0 deve ser ignorado em rankings e relações por caixa
 - Inutilizações fiscais aparecem como seção própria no Caixa
 - Turnos e detalhes operacionais devem expor data e hora
 - Cancelamentos reais no Caixa não incluem NFE status=5
+- `top_turnos` comercial deve ser ranqueado pelo período e filiais selecionados, não pela lista global/all-time de caixas
+- `top_turnos` deve usar `stg_comprovantes_slim` e pagamentos vinculados ao período selecionado, com limite operacional de 15 itens
+- Caixas abertos agora e ranking comercial do período são blocos distintos e não podem compartilhar a mesma ordenação
+
+## Regras de Clientes / performance
+
+- O snapshot RFM do módulo Clientes deve ler primeiro de `mart.customer_rfm_daily` com `max(dt_ref) <= as_of`
+- Fallback para `dw.fact_venda` só é aceitável quando o snapshot da mart estiver ausente para o escopo
+- Diagnóstico rápido: se a primeira chamada de `/bi/customers/overview` voltar para múltiplos segundos, medir `customers_rfm_snapshot` antes das demais consultas
+- `anonymous_retention_daily` pode estar vazio em tenants sem publicação; a tela deve degradar sem bloquear o restante do módulo
+
+## Crons e automações esperados
+
+- Referência preferencial de instalação: `deploy/scripts/prod-install-cron.sh`, com pipeline único a cada 2 minutos e risco sequencial conforme `RISK_TRACK_MODE` e `RISK_INTERVAL_MINUTES`
+- Estado observado no host App nesta rodada: cron legado operacional ativo em `*/2 * * * *` chamando `deploy/scripts/prod-etl-incremental.sh` com `TRACK=operational`
+- `cron` e `docker` estavam `active` no host App em 2026-05-11 20:10 America/Sao_Paulo
+- O log de cron confirma refresh periódico de `customer_sales_daily`, `customer_rfm_daily` e `customer_churn_risk_daily`; `anonymous_retention_refreshed` permaneceu `false` nesta janela observada
 
 ## Scripts de operação
 
@@ -99,6 +123,7 @@ Checkout de referência: nova-branch-limpa @ 9226e5f + ajustes operacionais loca
 - Containers App/API/Web/Nginx: healthy no host 172.30.0.10
 - PostgreSQL: healthy no host 172.30.0.8
 - Analytics/CDC/ClickHouse: healthy no host 172.30.0.9
+- Git local nesta rodada: `a12e281` na branch `nova-branch-limpa`, com ajustes locais ainda não publicados para escopo, Caixa e performance de Clientes
 - Bootstrap realtime de NFE corrigido para carregar stg.nfe diretamente em torqmind_current.stg_nfe_slim; parity validada com 70215 linhas
 - Backfill current -> slim -> marts concluído com sucesso; NFE status=5 segregada corretamente em nfe_inutilizations_rt e fora de fraude/risco
 - Root cause do freshness financeiro nesta rodada: STG financeiro seguia fresco, mas dw.fact_financeiro ficou parado em 2026-05-08; resolvido com purge scoped de 5450 linhas em dw.fact_financeiro para 2026-05-01..2026-05-12 e rerun do ETL full da mesma janela
@@ -106,4 +131,6 @@ Checkout de referência: nova-branch-limpa @ 9226e5f + ajustes operacionais loca
 - Validacao multi-VM final: PASS em 2026-05-11 18:48 UTC com smoke de produto aprovado
 - Proof pack final: tmp/prod-multivm-proof-20260511_184917.json com result=PASS
 - Health publico e materialidade do produto: PASS em dashboard, sales, cash, fraud, goals, customers, finance e platform
-- Pendencias bloqueantes neste ponto: nenhuma
+- Medição desta rodada no endpoint de Clientes: chamada fria observada em 17.5s na produção atual; gargalo isolado em `customers_rfm_snapshot` (15.6s) e correção local validada reduzindo a composição para ~652ms no banco real
+- `mart.customer_rfm_daily` e `mart.customer_churn_risk_daily` estão atualizadas até 2026-05-11 para o tenant 1; `mart.anonymous_retention_daily` segue sem linhas para esse tenant
+- Pendências bloqueantes nesta rodada: publicar os ajustes locais e reprovar no navegador público após rebuild

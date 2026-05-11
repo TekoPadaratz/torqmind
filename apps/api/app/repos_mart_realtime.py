@@ -871,7 +871,10 @@ def _enrich_open_turno(
     """Add frontend-expected fields to turno data."""
     from datetime import datetime, timezone
 
-    fat = float(t.get("faturamento_turno") or 0)
+    fat = float(t.get("total_vendas") if t.get("total_vendas") is not None else (t.get("faturamento_turno") or 0))
+    total_cancelamentos = round(float(t.get("total_cancelamentos") or 0), 2)
+    total_pagamentos = round(float(t.get("total_pagamentos") if t.get("total_pagamentos") is not None else fat), 2)
+    saldo_comercial = round(float(t.get("saldo_comercial") if t.get("saldo_comercial") is not None else (fat - total_cancelamentos)), 2)
     abertura = t.get("abertura_ts")
     id_filial = int(t["id_filial"]) if t.get("id_filial") is not None else None
     id_turno = int(t["id_turno"]) if t.get("id_turno") is not None else None
@@ -898,9 +901,9 @@ def _enrich_open_turno(
         "usuario_nome": usuario_nome,
         "usuario_label": _cash_operator_label(usuario_nome, t.get("id_usuario")),
         "total_vendas": fat,
-        "total_cancelamentos": 0,
-        "total_pagamentos": fat,
-        "saldo_comercial": fat,
+        "total_cancelamentos": total_cancelamentos,
+        "total_pagamentos": total_pagamentos,
+        "saldo_comercial": saldo_comercial,
         "horas_aberto": horas_aberto,
     }
 
@@ -916,6 +919,8 @@ def cash_overview(
     """Cash/shift overview with commercial KPIs."""
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim) if dt_ini and dt_fim else ""
+    sales_filial = _branch_clause("c.id_filial", id_filial)
+    sales_date_range = _date_range_filter(dt_ini, dt_fim, "c.data_key") if dt_ini and dt_fim else ""
     params = {"id_empresa": id_empresa}
 
     # Open shifts
@@ -931,16 +936,76 @@ def cash_overview(
         LIMIT 50
     """, parameters=params)
 
-    # Top commercial turnos (all shifts in period)
+    # Top commercial turnos in the requested period.
     all_turnos_raw = query_dict(f"""
-        SELECT id_filial, id_turno, id_usuario, nome_operador,
-               abertura_ts, fechamento_ts, is_aberto,
-               faturamento_turno, qtd_vendas_turno
-        FROM {MART_RT_DB}.cash_overview_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial}
-          AND id_turno > 0
-        ORDER BY faturamento_turno DESC
-        LIMIT 50
+        WITH turn_sales AS (
+            SELECT
+                c.id_filial AS id_filial,
+                c.id_turno AS id_turno,
+                min(c.dt_evento_local) AS first_event_at,
+                max(c.dt_evento_local) AS last_event_at,
+                round(sumIf(c.valor_total, c.cancelado = 0), 2) AS total_vendas,
+                toUInt32(uniqExactIf(tuple(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante), c.cancelado = 0)) AS qtd_vendas,
+                round(sumIf(c.valor_total, c.cancelado = 1), 2) AS total_cancelamentos,
+                toUInt32(uniqExactIf(tuple(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante), c.cancelado = 1)) AS qtd_cancelamentos
+            FROM {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+            WHERE c.id_empresa = {{id_empresa:Int32}} {sales_date_range} {sales_filial}
+              AND c.is_deleted = 0
+              AND c.id_turno > 0
+            GROUP BY c.id_filial, c.id_turno
+        ), turn_meta AS (
+            SELECT
+                id_filial,
+                id_turno,
+                id_usuario,
+                nome_operador,
+                abertura_ts,
+                fechamento_ts,
+                is_aberto
+            FROM {MART_RT_DB}.cash_overview_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND id_turno > 0
+        )
+        SELECT
+            s.id_filial,
+            s.id_turno,
+            m.id_usuario,
+            m.nome_operador,
+            coalesce(m.abertura_ts, s.first_event_at) AS abertura_ts,
+            coalesce(m.fechamento_ts, s.last_event_at) AS fechamento_ts,
+            coalesce(m.is_aberto, toUInt8(0)) AS is_aberto,
+            s.first_event_at,
+            s.last_event_at,
+            s.total_vendas,
+            s.qtd_vendas,
+            s.total_cancelamentos,
+            s.qtd_cancelamentos,
+            coalesce(pay.total_pagamentos, 0) AS total_pagamentos,
+            round(s.total_vendas - s.total_cancelamentos, 2) AS saldo_comercial
+        FROM turn_sales AS s
+                LEFT JOIN (
+                        SELECT
+                        c.id_filial AS id_filial,
+                        c.id_turno AS id_turno,
+                                round(sum(fp.valor), 2) AS total_pagamentos
+                        FROM {CURRENT_DB}.stg_formas_pgto_slim AS fp FINAL
+                        INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+                            ON c.id_empresa = fp.id_empresa
+                         AND c.id_filial = fp.id_filial
+                         AND c.referencia = fp.id_referencia
+                        WHERE c.id_empresa = {{id_empresa:Int32}} {sales_date_range} {sales_filial}
+                            AND c.is_deleted = 0
+                            AND fp.is_deleted = 0
+                            AND c.id_turno > 0
+                        GROUP BY c.id_filial, c.id_turno
+                ) AS pay
+          ON pay.id_filial = s.id_filial
+         AND pay.id_turno = s.id_turno
+        LEFT JOIN turn_meta AS m
+          ON m.id_filial = s.id_filial
+         AND m.id_turno = s.id_turno
+        ORDER BY s.total_vendas DESC, s.qtd_vendas DESC, s.last_event_at DESC
+        LIMIT 15
     """, parameters=params)
 
     label_source_rows = turnos_raw + all_turnos_raw

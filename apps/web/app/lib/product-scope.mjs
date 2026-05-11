@@ -38,6 +38,10 @@ function normalizeProductPath(rawPath) {
   };
 }
 
+function normalizeBranchScope(rawScope) {
+  return String(rawScope || '').trim().toLowerCase();
+}
+
 function hasExplicitScope(searchParams) {
   const hasDt = Boolean(searchParams.get('dt_ini')) && Boolean(searchParams.get('dt_fim'));
   const hasEmpresa = Boolean(searchParams.get('id_empresa'));
@@ -47,6 +51,19 @@ function hasExplicitScope(searchParams) {
   const hasScopeEpoch = Boolean(normalizeScopeEpoch(searchParams.get('scope_epoch')));
 
   return hasDt && hasEmpresa && hasBranch && hasScopeEpoch;
+}
+
+export function hasExplicitBranchSelection(searchParams) {
+  const params =
+    searchParams instanceof URLSearchParams
+      ? searchParams
+      : new URLSearchParams(typeof searchParams === 'string' ? searchParams : '');
+
+  const branchScope = normalizeBranchScope(params.get('branch_scope'));
+  return Boolean(params.get('id_filial'))
+    || params.getAll('id_filiais').length > 0
+    || branchScope === 'all'
+    || branchScope === 'selected';
 }
 
 function normalizeBranchIds(...sources) {
@@ -95,6 +112,7 @@ export function readScopeFromSearch(searchParams, fallback = {}) {
     searchParams instanceof URLSearchParams
       ? searchParams
       : new URLSearchParams(typeof searchParams === 'string' ? searchParams : '');
+  const explicitBranchSelection = hasExplicitBranchSelection(params);
 
   const dt_ini = params.get('dt_ini') || fallback.dt_ini || '';
   const dt_fim = params.get('dt_fim') || fallback.dt_fim || '';
@@ -103,9 +121,9 @@ export function readScopeFromSearch(searchParams, fallback = {}) {
   const requestedScopeEpoch = normalizeScopeEpoch(params.get('scope_epoch'));
   const fallbackScopeEpoch = normalizeScopeEpoch(fallback.scope_epoch);
 
-  const requestedBranchScope = String(params.get('branch_scope') || '').trim().toLowerCase();
-  const fallbackBranchScope = String(fallback.branch_scope || '').trim().toLowerCase();
-  const branch_scope = requestedBranchScope || fallbackBranchScope || '';
+  const requestedBranchScope = normalizeBranchScope(params.get('branch_scope'));
+  const fallbackBranchScope = normalizeBranchScope(fallback.branch_scope);
+  const branch_scope = explicitBranchSelection ? requestedBranchScope : (requestedBranchScope || fallbackBranchScope || '');
   const requestedBranchIds = normalizeBranchIds(
     params.getAll('id_filiais'),
     params.get('id_filial'),
@@ -114,10 +132,14 @@ export function readScopeFromSearch(searchParams, fallback = {}) {
     fallback.id_filiais,
     fallback.id_filial,
   );
-  const id_filiais = requestedBranchIds.length ? requestedBranchIds : fallbackBranchIds;
-  const id_filial = params.get('id_filial')
-    || (id_filiais.length === 1 ? id_filiais[0] : null)
-    || (fallback.id_filial != null ? String(fallback.id_filial) : null);
+  const id_filiais = explicitBranchSelection
+    ? requestedBranchIds
+    : (requestedBranchIds.length ? requestedBranchIds : fallbackBranchIds);
+  const id_filial = explicitBranchSelection
+    ? (params.get('id_filial') || (requestedBranchIds.length === 1 ? requestedBranchIds[0] : null))
+    : (params.get('id_filial')
+      || (id_filiais.length === 1 ? id_filiais[0] : null)
+      || (fallback.id_filial != null ? String(fallback.id_filial) : null));
   const scope_key = buildScopeKey({ dt_ini, dt_fim, dt_ref, id_empresa, id_filial, id_filiais });
 
   return {
@@ -165,6 +187,7 @@ export function buildProductHref(path, scope, options = {}) {
 export function buildCanonicalProductHref(path, session, options = {}) {
   const { pathname, searchParams } = normalizeProductPath(path);
   const fallbackScope = buildBrowserLocalDefaultScope(session);
+  const explicitBranchSelection = hasExplicitBranchSelection(searchParams);
   const parsedScope = readScopeFromSearch(searchParams, fallbackScope);
   const scope = {
     ...parsedScope,
@@ -172,9 +195,15 @@ export function buildCanonicalProductHref(path, session, options = {}) {
     dt_fim: parsedScope.dt_fim || fallbackScope.dt_fim || '',
     dt_ref: parsedScope.dt_ref || fallbackScope.dt_ref || parsedScope.dt_fim || fallbackScope.dt_fim || '',
     id_empresa: parsedScope.id_empresa || fallbackScope.id_empresa || null,
-    id_filial: parsedScope.id_filial || fallbackScope.id_filial || null,
-    id_filiais: parsedScope.id_filiais?.length ? parsedScope.id_filiais : (fallbackScope.id_filiais || []),
-    branch_scope: parsedScope.branch_scope || fallbackScope.branch_scope || '',
+    id_filial: explicitBranchSelection
+      ? (parsedScope.id_filial || null)
+      : (parsedScope.id_filial || fallbackScope.id_filial || null),
+    id_filiais: explicitBranchSelection
+      ? (parsedScope.id_filiais || [])
+      : (parsedScope.id_filiais?.length ? parsedScope.id_filiais : (fallbackScope.id_filiais || [])),
+    branch_scope: explicitBranchSelection
+      ? (parsedScope.branch_scope || '')
+      : (parsedScope.branch_scope || fallbackScope.branch_scope || ''),
     scope_epoch: normalizeScopeEpoch(options.scopeEpoch)
       || normalizeScopeEpoch(parsedScope.scope_epoch)
       || createScopeEpoch(),

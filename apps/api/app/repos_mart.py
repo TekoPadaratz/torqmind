@@ -3298,6 +3298,26 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
 def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int], as_of: date) -> Dict[str, Any]:
     """Very lightweight RFM-like snapshot for *today* (rule-based, no ML yet)."""
 
+    mart_where_filial, mart_branch_params = _branch_scope_clause("id_filial", id_filial)
+    latest_snapshot_sql = f"""
+      SELECT MAX(dt_ref)::date AS dt_ref
+      FROM mart.customer_rfm_daily
+      WHERE id_empresa = %s
+        AND dt_ref <= %s::date
+        {mart_where_filial}
+    """
+    snapshot_sql = f"""
+      SELECT
+        COUNT(*) FILTER (WHERE id_cliente <> -1)::int AS clientes_identificados,
+        COUNT(*) FILTER (WHERE last_purchase >= (%s::date - interval '7 days'))::int AS ativos_7d,
+        COUNT(*) FILTER (WHERE last_purchase < (%s::date - interval '30 days'))::int AS em_risco_30d,
+        COALESCE(SUM(monetary_90),0)::numeric(18,2) AS faturamento_90d
+      FROM mart.customer_rfm_daily
+      WHERE id_empresa = %s
+        AND dt_ref = %s::date
+        {mart_where_filial}
+    """
+
     # Last 90 days window
     dt_ini = as_of - timedelta(days=90)
     ini = _date_key(dt_ini)
@@ -3330,6 +3350,19 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int],
 
     params2 = params + [as_of, as_of]
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        latest_snapshot = conn.execute(
+            latest_snapshot_sql,
+            [id_empresa, as_of] + mart_branch_params,
+        ).fetchone()
+        snapshot_dt = latest_snapshot.get("dt_ref") if latest_snapshot else None
+        if snapshot_dt:
+            row = conn.execute(
+                snapshot_sql,
+                [as_of, as_of, id_empresa, snapshot_dt] + mart_branch_params,
+            ).fetchone()
+            if row:
+                return row
+
         row = conn.execute(sql, params2).fetchone()
         return row or {
             "clientes_identificados": 0,
