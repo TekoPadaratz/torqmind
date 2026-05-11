@@ -13,7 +13,7 @@ import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { resolvePricingOverviewRequest } from '../lib/pricing-request.mjs';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
-import { useScopeQuery } from '../lib/scope';
+import { useEnsureScopedProductUrl, useScopeQuery } from '../lib/scope';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
 
 export const dynamic = 'force-dynamic';
@@ -28,6 +28,7 @@ function fmtNum(v: any, digits = 3) {
 export default function PricingPage() {
   const router = useRouter();
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error: loadError, loading, pendingUnavailable } = useBiScopeData<any>({
     moduleKey: 'pricing_competitor_overview',
     scope,

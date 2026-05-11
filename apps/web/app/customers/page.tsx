@@ -20,7 +20,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { describeChurnCoverage } from "../lib/reading-copy.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
@@ -62,6 +62,7 @@ function buildChurnSignal(customer: any) {
 
 export default function CustomersPage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const [delinquencyPage, setDelinquencyPage] = useState(0);
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({

@@ -12,7 +12,7 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import {
   buildExecutiveCards,
@@ -30,6 +30,7 @@ export const dynamic = "force-dynamic";
 
 export default function Dashboard() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const {
     claims,
     data: homeData,

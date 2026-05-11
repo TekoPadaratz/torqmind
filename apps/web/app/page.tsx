@@ -5,6 +5,7 @@ import { clearAuth, getToken, setToken } from "./lib/auth";
 import { extractApiError } from "./lib/errors";
 import { LOGIN_IDENTIFIER_LABEL, LOGIN_IDENTIFIER_PLACEHOLDER } from "./lib/login-copy.mjs";
 import { LOGIN_FORM_DEFAULTS } from "./lib/login-form-defaults.mjs";
+import { buildCanonicalProductHref, createScopeEpoch } from "./lib/product-scope.mjs";
 import { cacheSession } from "./lib/session";
 import { isConfirmedSessionInvalidation } from "./lib/session-state.mjs";
 
@@ -24,8 +25,12 @@ export default function LoginPage() {
     api
       .get("/auth/me")
       .then((res) => {
-        cacheSession(res.data);
-        window.location.href = res.data?.home_path || "/dashboard";
+        const session = cacheSession(res.data);
+        window.location.href = buildCanonicalProductHref(
+          res.data?.home_path || "/dashboard",
+          session,
+          { scopeEpoch: createScopeEpoch() },
+        );
       })
       .catch((error) => {
         if (isConfirmedSessionInvalidation(error)) {
@@ -48,8 +53,12 @@ export default function LoginPage() {
       const res = await api.post("/auth/login", { identifier, password });
       const token = res.data.access_token as string;
       setToken(token);
-      cacheSession(res.data?.session || null);
-      window.location.href = res.data?.home_path || "/dashboard";
+      const session = cacheSession(res.data?.session || res.data || null);
+      window.location.href = buildCanonicalProductHref(
+        res.data?.home_path || "/dashboard",
+        session,
+        { scopeEpoch: createScopeEpoch() },
+      );
     } catch (err: any) {
       setError(extractApiError(err, "Falha no login"));
     }

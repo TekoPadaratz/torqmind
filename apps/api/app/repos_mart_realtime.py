@@ -926,6 +926,7 @@ def cash_overview(
         FROM {MART_RT_DB}.cash_overview_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {filial}
           AND is_aberto = 1
+                    AND id_turno > 0
         ORDER BY abertura_ts DESC
         LIMIT 50
     """, parameters=params)
@@ -937,6 +938,7 @@ def cash_overview(
                faturamento_turno, qtd_vendas_turno
         FROM {MART_RT_DB}.cash_overview_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {filial}
+          AND id_turno > 0
         ORDER BY faturamento_turno DESC
         LIMIT 50
     """, parameters=params)
@@ -1079,13 +1081,26 @@ def _cash_nfe_inutilizations(
     except Exception:
         return {"qtd": 0, "valor_total": 0.0, "items": []}
 
+    summary_rows = query_dict(f"""
+        SELECT
+            count() AS qtd,
+            sum(valor_comprovante) AS valor_total
+        FROM {MART_RT_DB}.nfe_inutilizations_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+    """, parameters={"id_empresa": id_empresa})
+    summary = summary_rows[0] if summary_rows else {"qtd": 0, "valor_total": 0}
+    total_items = int(summary.get("qtd") or 0)
+    total_value = round(float(summary.get("valor_total") or 0), 2)
+    if total_items <= 0:
+        return {"qtd": 0, "valor_total": 0.0, "items": []}
+
     rows = query_dict(f"""
         SELECT
             id_filial, filial_nome, id_turno,
             turno_abertura_ts, turno_fechamento_ts,
             id_usuario, nome_operador,
             id_comprovante, id_nfe, numero_nfe, serie_nfe,
-            chave_nfe, modelo_nfe, data_emissao_nfe,
+            chave_nfe, protocolo, modelo_nfe, data_emissao_nfe,
             valor_comprovante, referencia, dt, hora
         FROM {MART_RT_DB}.nfe_inutilizations_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
@@ -1116,6 +1131,7 @@ def _cash_nfe_inutilizations(
             "numero_nfe": str(row.get("numero_nfe") or ""),
             "serie_nfe": str(row.get("serie_nfe") or ""),
             "chave_nfe": str(row.get("chave_nfe") or ""),
+            "protocolo": str(row.get("protocolo") or ""),
             "modelo_nfe": str(row.get("modelo_nfe") or ""),
             "data_emissao_nfe": str(row.get("data_emissao_nfe") or ""),
             "valor_comprovante": round(float(row.get("valor_comprovante") or 0), 2),
@@ -1124,8 +1140,7 @@ def _cash_nfe_inutilizations(
             "hora": str(row.get("hora") or ""),
         })
 
-    valor_total = round(sum(i["valor_comprovante"] for i in items), 2)
-    return {"qtd": len(items), "valor_total": valor_total, "items": items}
+    return {"qtd": total_items, "valor_total": total_value, "items": items}
 
 
 def open_cash_monitor(
@@ -1143,6 +1158,7 @@ def open_cash_monitor(
         FROM {MART_RT_DB}.cash_overview_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {filial}
           AND is_aberto = 1
+                    AND id_turno > 0
         ORDER BY abertura_ts DESC
     """, parameters={"id_empresa": id_empresa})
 

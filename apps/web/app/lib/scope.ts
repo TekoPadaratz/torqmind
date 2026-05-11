@@ -1,10 +1,16 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 import { buildBrowserLocalDefaultScope } from './local-scope-defaults.mjs';
-import { buildScopeSearchParams, readScopeFromSearch } from './product-scope.mjs';
+import {
+  buildCanonicalProductHref,
+  buildScopeSearchParams,
+  createScopeEpoch,
+  needsCanonicalScope,
+  readScopeFromSearch,
+} from './product-scope.mjs';
 import { readCachedSession } from './session';
 
 export type ScopeQuery = {
@@ -21,13 +27,31 @@ export type ScopeQuery = {
   ready: boolean;
 };
 
+function buildScopeSessionDependency(session: any): string {
+  return JSON.stringify({
+    id_empresa: session?.id_empresa ?? null,
+    id_filial: session?.id_filial ?? null,
+    tenant_ids: Array.isArray(session?.tenant_ids) ? session.tenant_ids : [],
+    default_scope: session?.default_scope ?? null,
+    accesses: Array.isArray(session?.accesses)
+      ? session.accesses.map((access: any) => ({
+          id_empresa: access?.id_empresa ?? null,
+          id_filial: access?.id_filial ?? null,
+        }))
+      : [],
+  });
+}
+
 export function useScopeQuery(fallback?: Partial<ScopeQuery>): ScopeQuery {
   const searchParams = useSearchParams();
+  const search = searchParams?.toString() || '';
   const cachedSession = readCachedSession();
+  const sessionDependency = buildScopeSessionDependency(cachedSession);
+  const fallbackDependency = JSON.stringify(fallback || {});
 
   return useMemo(() => {
     const sessionFallback = buildBrowserLocalDefaultScope(cachedSession);
-    const scope = readScopeFromSearch(searchParams, {
+    const scope = readScopeFromSearch(new URLSearchParams(search), {
       ...sessionFallback,
       ...(fallback || {}),
     });
@@ -46,10 +70,33 @@ export function useScopeQuery(fallback?: Partial<ScopeQuery>): ScopeQuery {
       ready: true,
     };
   }, [
-    cachedSession,
-    fallback,
-    searchParams,
+    fallbackDependency,
+    search,
+    sessionDependency,
   ]);
+}
+
+export function useEnsureScopedProductUrl(): void {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const search = searchParams?.toString() || '';
+  const cachedSession = readCachedSession();
+  const sessionDependency = buildScopeSessionDependency(cachedSession);
+
+  useEffect(() => {
+    if (!cachedSession || !pathname) return;
+
+    const currentHref = search ? `${pathname}?${search}` : pathname;
+    if (!needsCanonicalScope(currentHref)) return;
+
+    const nextHref = buildCanonicalProductHref(currentHref, cachedSession, {
+      scopeEpoch: createScopeEpoch(),
+    });
+    if (nextHref === currentHref) return;
+
+    router.replace(nextHref);
+  }, [pathname, router, search, sessionDependency]);
 }
 
 export function buildScopeParams(scope: Partial<ScopeQuery>, options?: { includeDtRef?: boolean }): URLSearchParams {

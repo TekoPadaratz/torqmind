@@ -44,6 +44,14 @@ export function formatDateTime(value: any) {
   return dateTimeFormatter.format(parsed).replace(', ', ' ');
 }
 
+export function formatTurnoPeriod(aberturaTs: any, fechamentoTs: any) {
+  if (!aberturaTs && !fechamentoTs) return '-';
+  const aberturaLabel = formatDateTime(aberturaTs);
+  const fechamentoLabel = fechamentoTs ? formatDateTime(fechamentoTs) : 'em aberto';
+  if (aberturaLabel === '-' && fechamentoLabel !== 'em aberto') return fechamentoLabel;
+  return `${aberturaLabel} → ${fechamentoLabel}`;
+}
+
 export function formatHoursLabel(value: any) {
   return formatDurationHours(value);
 }
@@ -93,7 +101,10 @@ export function buildUserLabel(claims: any) {
 
 export function formatTurnoLabel(idTurno: any, friendlyLabel?: string | null) {
   const label = String(friendlyLabel || '').trim();
-  if (label) return label;
+  if (label) {
+    const numericLabel = Number(label);
+    if (!Number.isFinite(numericLabel) || numericLabel > 0) return label;
+  }
   const numericTurno = Number(idTurno);
   if (Number.isFinite(numericTurno) && numericTurno > 0) return String(Math.trunc(numericTurno));
   return 'Turno sem cadastro';

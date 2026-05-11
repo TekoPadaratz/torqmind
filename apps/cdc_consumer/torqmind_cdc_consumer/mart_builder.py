@@ -634,6 +634,7 @@ class MartBuilder:
                 numero_nfe String NOT NULL DEFAULT '',
                 serie String NOT NULL DEFAULT '',
                 chave_nfe String NOT NULL DEFAULT '',
+                protocolo String NOT NULL DEFAULT '',
                 modelo String NOT NULL DEFAULT '',
                 data_emissao Nullable(DateTime64(6, 'America/Sao_Paulo')),
                 valor_nfe Decimal(18,2) NOT NULL DEFAULT 0,
@@ -827,6 +828,7 @@ class MartBuilder:
             ifNull(n.status_shadow, toInt16OrZero(JSONExtractString(n.payload, 'STATUS'))) AS status,
             coalesce(
                 nullIf(toString(n.numero_nfe_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'NRONF'), ''),
                 nullIf(JSONExtractString(n.payload, 'NUMERO'), ''),
                 nullIf(JSONExtractString(n.payload, 'NUMERONFE'), ''),
                 ''
@@ -838,18 +840,28 @@ class MartBuilder:
             ) AS serie,
             coalesce(
                 nullIf(toString(n.chave_nfe_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'CHAVEACESSO'), ''),
                 nullIf(JSONExtractString(n.payload, 'CHAVE'), ''),
                 nullIf(JSONExtractString(n.payload, 'CHAVENFE'), ''),
                 nullIf(JSONExtractString(n.payload, 'CHAVE_ACESSO'), ''),
                 ''
             ) AS chave_nfe,
             coalesce(
+                nullIf(toString(n.protocolo_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'PROTOCOLO'), ''),
+                nullIf(JSONExtractString(n.payload, 'NPROTOCOLO'), ''),
+                ''
+            ) AS protocolo,
+            coalesce(
                 nullIf(toString(n.modelo_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'TIPO_DOC'), ''),
                 nullIf(JSONExtractString(n.payload, 'MODELO'), ''),
                 ''
             ) AS modelo,
             coalesce(
                 n.data_emissao_shadow,
+                parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'DATA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'TORQMIND_DT_EVENTO')),
                 parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'DATAEMISSAO')),
                 parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'DATA_EMISSAO'))
             ) AS data_emissao,
@@ -1273,7 +1285,7 @@ class MartBuilder:
                 toInt32(formatDateTime(abertura_ts, '%Y%m%d')) AS data_key_abertura,
                 {is_aberto} AS is_aberto
             FROM {self.current_db}.stg_turnos AS t FINAL
-            WHERE t.is_deleted = 0 {empresa_filter_t} {filial_filter_t}
+            WHERE t.is_deleted = 0 AND t.id_turno > 0 {empresa_filter_t} {filial_filter_t}
         ) AS turnos
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON turnos.id_empresa = u.id_empresa AND turnos.id_filial = u.id_filial AND turnos.id_usuario = u.id_usuario
@@ -1282,7 +1294,7 @@ class MartBuilder:
                    sum(c.valor_total) AS faturamento,
                    toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS qtd
             FROM {self.current_db}.stg_comprovantes_slim AS c
-            WHERE c.is_deleted = 0 AND c.cancelado = 0 {empresa_filter_c} {filial_filter_c}
+            WHERE c.is_deleted = 0 AND c.cancelado = 0 AND c.id_turno > 0 {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.id_turno
         ) AS vendas ON turnos.id_empresa = vendas.id_empresa AND turnos.id_filial = vendas.id_filial
             AND turnos.id_turno = vendas.id_turno
@@ -1508,7 +1520,7 @@ class MartBuilder:
     # ================================================================
 
     def _refresh_nfe_inutilizations_rt_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
-        """NFE inutilizations mart: comprovantes with cancelado=1 AND NFE status=5.
+        """NFE inutilizations mart: comprovantes linked to NFE status=5.
 
         This mart tracks voided fiscal documents for operational/fiscal audit.
         Displayed in the Caixa screen as a separate section.
@@ -1536,7 +1548,6 @@ class MartBuilder:
             toDate(toString(c.data_key), '%Y%m%d') AS dt,
             c.hora,
             c.id_turno,
-            -- Turno abertura/fechamento from stg_turnos
             coalesce(
                 parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTABERTURA')),
                 parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAABERTURA')),
@@ -1555,6 +1566,7 @@ class MartBuilder:
             nfe_detail.numero_nfe,
             nfe_detail.serie AS serie_nfe,
             nfe_detail.chave_nfe,
+            nfe_detail.protocolo AS protocolo,
             nfe_detail.modelo AS modelo_nfe,
             nfe_detail.data_emissao AS data_emissao_nfe,
             c.valor_total AS valor_comprovante,
@@ -1570,6 +1582,7 @@ class MartBuilder:
                    argMax(numero_nfe, source_ts_ms) AS numero_nfe,
                    argMax(serie, source_ts_ms) AS serie,
                    argMax(chave_nfe, source_ts_ms) AS chave_nfe,
+                     argMax(protocolo, source_ts_ms) AS protocolo,
                    argMax(modelo, source_ts_ms) AS modelo,
                    argMax(data_emissao, source_ts_ms) AS data_emissao
             FROM {self.current_db}.stg_nfe_slim
@@ -1584,7 +1597,7 @@ class MartBuilder:
             ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
-        WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
+                WHERE {kf_c} AND c.is_deleted = 0
           AND nfe_latest.nfe_status = 5
           {empresa_filter_c} {filial_filter_c}
         """
@@ -1749,11 +1762,11 @@ class MartBuilder:
             SELECT id_empresa, id_filial, id_turno,
                    sumIf(total_venda, cancelado = 0) AS faturamento,
                    toUInt32(countIf(cancelado = 0)) AS qtd
-            FROM {self.current_db}.fact_venda FINAL WHERE is_deleted = 0
+            FROM {self.current_db}.fact_venda FINAL WHERE is_deleted = 0 AND id_turno > 0
             GROUP BY id_empresa, id_filial, id_turno
         ) AS vendas ON ct.id_empresa = vendas.id_empresa AND ct.id_filial = vendas.id_filial
             AND ct.id_turno = vendas.id_turno
-        WHERE ct.is_deleted = 0
+        WHERE ct.is_deleted = 0 AND ct.id_turno > 0
         """
         client.command(sql, settings=self._query_settings)
         return MartRefreshResult("cash_overview_rt", 0, int((time.time() - t0) * 1000))

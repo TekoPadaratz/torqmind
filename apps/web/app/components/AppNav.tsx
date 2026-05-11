@@ -103,7 +103,7 @@ export default function AppNav({
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const [session, setSession] = useState<any>(readCachedSession());
+  const [session, setSession] = useState<any>(null);
   const [draft, setDraft] = useState<ScopeDraft>({
     dt_ini: '',
     dt_fim: '',
@@ -127,6 +127,8 @@ export default function AppNav({
     let active = true;
 
     const hydrateSession = async () => {
+      const cached = readCachedSession();
+      if (active && cached) setSession(cached);
       const me = await loadSession(router, 'product');
       if (active && me) setSession(me);
     };

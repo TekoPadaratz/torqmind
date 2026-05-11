@@ -2832,6 +2832,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
           toUnixTimestamp(max(updated_at)) AS latest_activity_epoch
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
+                    AND id_turno > 0
           {branch}
         """,
         {"id_empresa": int(id_empresa)},
@@ -2850,6 +2851,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
           AND severity != 'STALE'
+                    AND id_turno > 0
           {branch}
         ORDER BY multiIf(severity = 'CRITICAL', 0, severity = 'HIGH', 1, severity = 'WARN', 2, 3), horas_aberto DESC, updated_at DESC
         LIMIT 20
@@ -2869,6 +2871,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
           AND severity = 'STALE'
+                    AND id_turno > 0
           {branch}
         ORDER BY updated_at DESC, horas_aberto DESC
         LIMIT 10
@@ -3100,6 +3103,23 @@ def _cash_nfe_inutilizations(
     to_key = int(dt_fim.strftime("%Y%m%d")) if dt_fim else 99991231
     date_filter = f"AND data_key >= {from_key} AND data_key <= {to_key}" if dt_ini and dt_fim else ""
 
+    summary_rows = _run(
+        f"""
+        SELECT
+            count() AS qtd,
+            sum(valor_comprovante) AS valor_total
+        FROM torqmind_mart_rt.nfe_inutilizations_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {branch} {date_filter}
+        """,
+        {"id_empresa": int(id_empresa)},
+        id_empresa,
+    )
+    summary = summary_rows[0] if summary_rows else {"qtd": 0, "valor_total": 0}
+    total_items = int(summary.get("qtd") or 0)
+    total_value = round(float(summary.get("valor_total") or 0), 2)
+    if total_items <= 0:
+        return {"qtd": 0, "valor_total": 0.0, "items": []}
+
     rows = _run(
         f"""
         SELECT
@@ -3107,7 +3127,7 @@ def _cash_nfe_inutilizations(
             turno_abertura_ts, turno_fechamento_ts,
             id_usuario, nome_operador,
             id_comprovante, id_nfe, numero_nfe, serie_nfe,
-            chave_nfe, modelo_nfe, data_emissao_nfe,
+            chave_nfe, protocolo, modelo_nfe, data_emissao_nfe,
             valor_comprovante, referencia, dt, hora
         FROM torqmind_mart_rt.nfe_inutilizations_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {branch} {date_filter}
@@ -3132,6 +3152,7 @@ def _cash_nfe_inutilizations(
             "numero_nfe": str(row.get("numero_nfe") or ""),
             "serie_nfe": str(row.get("serie_nfe") or ""),
             "chave_nfe": str(row.get("chave_nfe") or ""),
+            "protocolo": str(row.get("protocolo") or ""),
             "modelo_nfe": str(row.get("modelo_nfe") or ""),
             "data_emissao_nfe": str(row.get("data_emissao_nfe") or ""),
             "valor_comprovante": round(float(row.get("valor_comprovante") or 0), 2),
@@ -3139,8 +3160,7 @@ def _cash_nfe_inutilizations(
             "dt": str(row.get("dt") or ""),
             "hora": str(row.get("hora") or ""),
         })
-    valor_total = round(sum(i["valor_comprovante"] for i in items), 2)
-    return {"qtd": len(items), "valor_total": valor_total, "items": items}
+    return {"qtd": total_items, "valor_total": total_value, "items": items}
 
 
 def health_score_latest(role: str, id_empresa: int, id_filial: Any, as_of: Optional[date] = None) -> Dict[str, Any]:

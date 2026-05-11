@@ -33,7 +33,7 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +67,7 @@ function riskGridReference(event: any) {
 
 export default function FraudPage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "fraud_overview",

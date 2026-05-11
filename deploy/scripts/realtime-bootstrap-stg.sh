@@ -259,7 +259,7 @@ bootstrap_nfe_slim() {
   ch_exec -q "
     INSERT INTO torqmind_current.stg_nfe_slim (
         id_empresa, id_filial, id_db, id_comprovante, id_nfe,
-        status, numero_nfe, serie, chave_nfe, modelo,
+      status, numero_nfe, serie, chave_nfe, protocolo, modelo,
         data_emissao, valor_nfe, is_deleted, source_ts_ms
     )
     SELECT
@@ -271,6 +271,7 @@ bootstrap_nfe_slim() {
         ifNull(status_shadow, toInt16OrZero(JSONExtractString(payload, 'STATUS'))) AS status,
         coalesce(
             nullIf(toString(numero_nfe_shadow), ''),
+          nullIf(JSONExtractString(payload, 'NRONF'), ''),
             nullIf(JSONExtractString(payload, 'NUMERO'), ''),
             nullIf(JSONExtractString(payload, 'NUMERONFE'), ''),
             ''
@@ -282,18 +283,28 @@ bootstrap_nfe_slim() {
         ) AS serie,
         coalesce(
             nullIf(toString(chave_nfe_shadow), ''),
+          nullIf(JSONExtractString(payload, 'CHAVEACESSO'), ''),
             nullIf(JSONExtractString(payload, 'CHAVE'), ''),
             nullIf(JSONExtractString(payload, 'CHAVENFE'), ''),
             nullIf(JSONExtractString(payload, 'CHAVE_ACESSO'), ''),
             ''
         ) AS chave_nfe,
         coalesce(
+          nullIf(toString(protocolo_shadow), ''),
+          nullIf(JSONExtractString(payload, 'PROTOCOLO'), ''),
+          nullIf(JSONExtractString(payload, 'NPROTOCOLO'), ''),
+          ''
+        ) AS protocolo,
+        coalesce(
             nullIf(toString(modelo_shadow), ''),
+          nullIf(JSONExtractString(payload, 'TIPO_DOC'), ''),
             nullIf(JSONExtractString(payload, 'MODELO'), ''),
             ''
         ) AS modelo,
         coalesce(
             data_emissao_shadow,
+          parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATA')),
+          parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'TORQMIND_DT_EVENTO')),
             parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATAEMISSAO')),
             parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATA_EMISSAO'))
         ) AS data_emissao,

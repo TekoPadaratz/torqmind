@@ -245,12 +245,12 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
     if dataset_key == "nfe":
         return {
             "status_shadow": _to_int(_get_any(obj, ["STATUS", "status", "STATUSNFE", "STATUS_NFE"])),
-            "numero_nfe_shadow": _get_any(obj, ["NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]),
+            "numero_nfe_shadow": _get_any(obj, ["NRONF", "NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]),
             "serie_shadow": _get_any(obj, ["SERIE", "serie", "SERIENFE", "SERIE_NFE"]),
-            "chave_nfe_shadow": _get_any(obj, ["CHAVE", "CHAVENFE", "CHAVE_NFE", "CHAVEACESSO", "CHAVE_ACESSO", "chave_nfe"]),
-            "modelo_shadow": _get_any(obj, ["MODELO", "modelo", "MODELONFE", "MODELO_NFE"]),
+            "chave_nfe_shadow": _get_any(obj, ["CHAVEACESSO", "CHAVE_ACESSO", "CHAVE", "CHAVENFE", "CHAVE_NFE", "chave_nfe"]),
+            "modelo_shadow": _get_any(obj, ["TIPO_DOC", "MODELO", "modelo", "MODELONFE", "MODELO_NFE"]),
             "protocolo_shadow": _get_any(obj, ["PROTOCOLO", "protocolo", "NPROTOCOLO", "NPROTOCOLO_NFE"]),
-            "data_emissao_shadow": _parse_ts(_get_any(obj, ["DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]), tenant_id=None),
+            "data_emissao_shadow": _parse_ts(_get_any(obj, ["DATA", "TORQMIND_DT_EVENTO", "DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]), tenant_id=None),
             "data_autorizacao_shadow": _parse_ts(_get_any(obj, ["DATAAUTORIZACAO", "DATA_AUTORIZACAO", "data_autorizacao"]), tenant_id=None),
             "data_cancelamento_shadow": _parse_ts(_get_any(obj, ["DATACANCELAMENTO", "DATA_CANCELAMENTO", "data_cancelamento"]), tenant_id=None),
             "data_inutilizacao_shadow": _parse_ts(_get_any(obj, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]), tenant_id=None),

@@ -21,12 +21,13 @@ import {
   formatDateTime,
   formatHoursLabel,
   formatTurnoLabel,
+  formatTurnoPeriod,
 } from "../lib/format";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +57,7 @@ function formatStockQuantity(value: any) {
 
 export default function CashPage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "cash_overview",
@@ -77,13 +79,27 @@ export default function CashPage() {
   const dreSummary = data?.dre_summary || {};
   const paymentMix = historical?.payment_mix || [];
   const commercialByDay = commercial?.by_day || [];
-  const topTurnos = commercial?.top_turnos || [];
-  const openBoxes = liveNow?.open_boxes || data?.open_boxes || [];
-  const staleBoxes = liveNow?.stale_boxes || data?.stale_boxes || [];
+  const topTurnos = (commercial?.top_turnos || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
+  const openBoxes = (liveNow?.open_boxes || data?.open_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
+  const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
   const alerts = liveNow?.alerts || data?.alerts || [];
   const inutilizacoes = data?.inutilizacoes || {};
   const inutItems = inutilizacoes?.items || [];
+  const hasInutilizacoes = Number(inutilizacoes?.qtd || 0) > 0;
   const paymentMixChartHeight = Math.max(280, paymentMix.length * 44);
+
+  function formatNfeDateTime(item: any) {
+    if (item?.data_emissao_nfe) return formatDateTime(item.data_emissao_nfe);
+    if (item?.dt) {
+      const hourValue = Number(item?.hora);
+      if (Number.isFinite(hourValue) && hourValue >= 0) {
+        const hour = String(Math.trunc(hourValue)).padStart(2, "0");
+        return formatDateTime(`${item.dt}T${hour}:00:00`);
+      }
+      return formatDateTime(`${item.dt}T00:00:00`);
+    }
+    return "-";
+  }
 
   return (
     <div>
@@ -311,6 +327,7 @@ export default function CashPage() {
                         <tr>
                           <th>Filial</th>
                           <th>Turno</th>
+                          <th>Período do turno</th>
                           <th>Operador</th>
                           <th>Vendas</th>
                           <th>Cancel.</th>
@@ -325,6 +342,7 @@ export default function CashPage() {
                             <td>
                               {formatTurnoLabel(item.id_turno, item.turno_label)}
                             </td>
+                            <td>{formatTurnoPeriod(item.abertura_ts, item.fechamento_ts)}</td>
                             <td>{item.usuario_label}</td>
                             <td>{formatCurrency(item.total_vendas)}</td>
                             <td>{formatCurrency(item.total_cancelamentos)}</td>
@@ -338,7 +356,7 @@ export default function CashPage() {
                 ) : null}
               </div>
 
-              {inutItems.length > 0 ? (
+              {hasInutilizacoes ? (
                 <>
                   <div className="card col-12">
                     <div className="sectionEyebrow">Classificação fiscal</div>
@@ -358,34 +376,46 @@ export default function CashPage() {
                   </div>
 
                   <div className="card col-12">
-                    <div className="tableScroll">
-                      <table className="table compact">
-                        <thead>
-                          <tr>
-                            <th>Filial</th>
-                            <th>Turno</th>
-                            <th>Operador</th>
-                            <th>Nº NFE</th>
-                            <th>Série</th>
-                            <th>Valor</th>
-                            <th>Data</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {inutItems.map((item: any, idx: number) => (
-                            <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
-                              <td>{item.filial_label}</td>
-                              <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
-                              <td>{item.usuario_label}</td>
-                              <td>{item.numero_nfe || "-"}</td>
-                              <td>{item.serie_nfe || "-"}</td>
-                              <td>{formatCurrency(item.valor_comprovante)}</td>
-                              <td>{item.dt ? formatDateKey(Number(String(item.dt).replace(/-/g, ""))) : "-"}</td>
+                    {!loading && !inutItems.length ? (
+                      <EmptyState
+                        title="Lista detalhada em preparação"
+                        detail="Existem notas inutilizadas no período, mas a lista detalhada ainda está sendo preparada."
+                      />
+                    ) : null}
+                    {inutItems.length ? (
+                      <div className="tableScroll">
+                        <table className="table compact">
+                          <thead>
+                            <tr>
+                              <th>Data/hora</th>
+                              <th>Filial</th>
+                              <th>Turno/caixa</th>
+                              <th>Período do turno</th>
+                              <th>Operador</th>
+                              <th>Nº NFE</th>
+                              <th>Comprovante</th>
+                              <th>Valor</th>
+                              <th>Chave / protocolo</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </thead>
+                          <tbody>
+                            {inutItems.map((item: any, idx: number) => (
+                              <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
+                                <td>{formatNfeDateTime(item)}</td>
+                                <td>{item.filial_label}</td>
+                                <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
+                                <td>{formatTurnoPeriod(item.turno_abertura_ts, item.turno_fechamento_ts)}</td>
+                                <td>{item.usuario_label}</td>
+                                <td>{item.numero_nfe || "-"}</td>
+                                <td>{item.id_comprovante || "-"}</td>
+                                <td>{formatCurrency(item.valor_comprovante)}</td>
+                                <td>{item.protocolo || item.chave_nfe || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
                   </div>
                 </>
               ) : null}

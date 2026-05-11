@@ -30,13 +30,14 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { describeFinanceCoverage } from "../lib/reading-copy.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
 
 export default function FinancePage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "finance_overview",

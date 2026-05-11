@@ -1,6 +1,6 @@
 -- 042_mart_nfe_inutilizations.sql
 -- Dedicated mart for NFE inutilizations (status=5).
--- Shows voided fiscal documents linked to cancelled comprovantes.
+-- Shows voided fiscal documents linked to comprovantes without treating them as real cancellations.
 -- Used by Caixa screen for operational/fiscal audit.
 
 CREATE TABLE IF NOT EXISTS torqmind_mart_rt.nfe_inutilizations_rt (
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.nfe_inutilizations_rt (
     numero_nfe          String NOT NULL DEFAULT '',
     serie_nfe           String NOT NULL DEFAULT '',
     chave_nfe           String NOT NULL DEFAULT '',
+    protocolo           String NOT NULL DEFAULT '',
     modelo_nfe          String NOT NULL DEFAULT '',
     data_emissao_nfe    Nullable(DateTime64(6, 'America/Sao_Paulo')),
     valor_comprovante   Decimal(18,2) NOT NULL DEFAULT 0,

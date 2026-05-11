@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildCanonicalProductHref,
   buildProductHref,
   buildScopeKey,
   buildScopeSearchParams,
   getScopeControls,
+  needsCanonicalScope,
   readScopeFromSearch,
 } from "./product-scope.mjs";
 
@@ -196,4 +198,72 @@ test("channel admin can switch company and branch inside its carteira", () => {
     canSelectMultipleBranches: true,
     branchLocked: false,
   });
+});
+
+test("canonical product href builds scoped dashboard link from session fallback", () => {
+  const href = buildCanonicalProductHref(
+    "/dashboard",
+    {
+      id_empresa: 12,
+      id_filial: 7,
+      default_scope: { days: 7 },
+    },
+    { scopeEpoch: "epoch-login" },
+  );
+
+  assert.match(href, /^\/dashboard\?/);
+  assert.match(href, /dt_ini=\d{4}-\d{2}-\d{2}/);
+  assert.match(href, /dt_fim=\d{4}-\d{2}-\d{2}/);
+  assert.match(href, /id_empresa=12/);
+  assert.match(href, /id_filial=7/);
+  assert.match(href, /scope_epoch=epoch-login/);
+});
+
+test("canonical product href derives all accessible branches for company-level sessions", () => {
+  const href = buildCanonicalProductHref(
+    "/dashboard",
+    {
+      id_empresa: 12,
+      id_filial: null,
+      accesses: [
+        { id_empresa: 12, id_filial: 7 },
+        { id_empresa: 12, id_filial: 9 },
+        { id_empresa: 12, id_filial: null },
+      ],
+      default_scope: { id_empresa: 12, days: 7 },
+    },
+    { scopeEpoch: "epoch-all-branches" },
+  );
+
+  assert.match(href, /^\/dashboard\?/);
+  assert.match(href, /id_empresa=12/);
+  assert.match(href, /branch_scope=all/);
+  assert.match(href, /id_filiais=7/);
+  assert.match(href, /id_filiais=9/);
+  assert.match(href, /scope_epoch=epoch-all-branches/);
+});
+
+test("canonical product href preserves explicit scope and keeps unrelated params", () => {
+  const href = buildCanonicalProductHref(
+    "/cash?tab=live&dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=14458",
+    {
+      id_empresa: 1,
+      id_filial: 14458,
+      default_scope: { days: 30 },
+    },
+    { scopeEpoch: "epoch-canonical" },
+  );
+
+  assert.equal(
+    href,
+    "/cash?tab=live&dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=14458&dt_ref=2026-05-11&scope_epoch=epoch-canonical",
+  );
+});
+
+test("scope canonicalization detects missing URL scope", () => {
+  assert.equal(needsCanonicalScope("/dashboard"), true);
+  assert.equal(
+    needsCanonicalScope("/dashboard?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=7&scope_epoch=epoch-1"),
+    false,
+  );
 });

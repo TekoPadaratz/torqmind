@@ -260,6 +260,27 @@ def _all_active_tenant_ids() -> list[int]:
     return [int(row["id_empresa"]) for row in rows if row.get("id_empresa") is not None]
 
 
+def _list_active_branch_ids(tenant_id: int, today: date | None = None) -> list[int]:
+    reference_date = today or _user_now()[0]
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        rows = conn.execute(
+            """
+            SELECT id_filial, valid_from, valid_until
+            FROM auth.filiais
+            WHERE id_empresa = %s
+              AND is_active = true
+            ORDER BY id_filial
+            """,
+            (tenant_id,),
+        ).fetchall()
+
+    return [
+        int(row["id_filial"])
+        for row in rows
+        if row.get("id_filial") is not None and is_date_in_window(reference_date, row.get("valid_from"), row.get("valid_until"))
+    ]
+
+
 def _date_key_to_date(value: Any) -> date | None:
     if value in (None, ""):
         return None
@@ -447,11 +468,13 @@ def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[
     dt_fim = scope_defaults["current_date"]
     default_days = int(scope_defaults["default_product_scope_days"])
     dt_ini = dt_fim - timedelta(days=max(default_days - 1, 0))
-    branch_ids = [int(branch_id)] if branch_id is not None else []
+    branch_ids = [int(branch_id)] if branch_id is not None else _list_active_branch_ids(tenant_id, scope_defaults["current_date"])
+    resolved_branch_id = int(branch_id) if branch_id is not None else branch_ids[0] if len(branch_ids) == 1 else None
     return {
         "id_empresa": tenant_id,
-        "id_filial": branch_id,
+        "id_filial": resolved_branch_id,
         "id_filiais": branch_ids,
+        "branch_scope": "all" if branch_id is None and len(branch_ids) > 1 else "",
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "dt_ref": scope_defaults["current_date"].isoformat(),

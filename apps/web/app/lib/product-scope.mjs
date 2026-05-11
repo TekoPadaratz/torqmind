@@ -1,3 +1,5 @@
+import { buildBrowserLocalDefaultScope } from './local-scope-defaults.mjs';
+
 export const PRODUCT_LINKS = [
   { path: '/dashboard', label: 'Dashboard Geral' },
   { path: '/sales', label: 'Vendas' },
@@ -12,6 +14,39 @@ export const PRODUCT_LINKS = [
 function normalizeScopeEpoch(rawValue) {
   const normalized = String(rawValue || '').trim();
   return normalized || null;
+}
+
+const SCOPE_QUERY_KEYS = [
+  'dt_ini',
+  'dt_fim',
+  'dt_ref',
+  'id_empresa',
+  'id_filial',
+  'id_filiais',
+  'branch_scope',
+  'scope_epoch',
+];
+
+function normalizeProductPath(rawPath) {
+  const fallbackPath = typeof rawPath === 'string' && rawPath.trim() ? rawPath.trim() : '/dashboard';
+  const normalizedPath = fallbackPath.startsWith('/') ? fallbackPath : `/${fallbackPath}`;
+  const url = new URL(normalizedPath, 'https://torqmind.local');
+
+  return {
+    pathname: url.pathname || '/dashboard',
+    searchParams: new URLSearchParams(url.searchParams),
+  };
+}
+
+function hasExplicitScope(searchParams) {
+  const hasDt = Boolean(searchParams.get('dt_ini')) && Boolean(searchParams.get('dt_fim'));
+  const hasEmpresa = Boolean(searchParams.get('id_empresa'));
+  const hasBranch = Boolean(searchParams.get('id_filial'))
+    || searchParams.getAll('id_filiais').length > 0
+    || String(searchParams.get('branch_scope') || '').trim().toLowerCase() === 'all';
+  const hasScopeEpoch = Boolean(normalizeScopeEpoch(searchParams.get('scope_epoch')));
+
+  return hasDt && hasEmpresa && hasBranch && hasScopeEpoch;
 }
 
 function normalizeBranchIds(...sources) {
@@ -38,6 +73,11 @@ function normalizeBranchIds(...sources) {
 
 export function createScopeEpoch() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function needsCanonicalScope(path) {
+  const { searchParams } = normalizeProductPath(path);
+  return !hasExplicitScope(searchParams);
 }
 
 export function buildScopeKey(scope = {}) {
@@ -120,6 +160,38 @@ export function buildScopeSearchParams(scope, options = {}) {
 export function buildProductHref(path, scope, options = {}) {
   const qs = buildScopeSearchParams(scope, options).toString();
   return qs ? `${path}?${qs}` : path;
+}
+
+export function buildCanonicalProductHref(path, session, options = {}) {
+  const { pathname, searchParams } = normalizeProductPath(path);
+  const fallbackScope = buildBrowserLocalDefaultScope(session);
+  const parsedScope = readScopeFromSearch(searchParams, fallbackScope);
+  const scope = {
+    ...parsedScope,
+    dt_ini: parsedScope.dt_ini || fallbackScope.dt_ini || '',
+    dt_fim: parsedScope.dt_fim || fallbackScope.dt_fim || '',
+    dt_ref: parsedScope.dt_ref || fallbackScope.dt_ref || parsedScope.dt_fim || fallbackScope.dt_fim || '',
+    id_empresa: parsedScope.id_empresa || fallbackScope.id_empresa || null,
+    id_filial: parsedScope.id_filial || fallbackScope.id_filial || null,
+    id_filiais: parsedScope.id_filiais?.length ? parsedScope.id_filiais : (fallbackScope.id_filiais || []),
+    branch_scope: parsedScope.branch_scope || fallbackScope.branch_scope || '',
+    scope_epoch: normalizeScopeEpoch(options.scopeEpoch)
+      || normalizeScopeEpoch(parsedScope.scope_epoch)
+      || createScopeEpoch(),
+  };
+
+  const mergedParams = new URLSearchParams(searchParams);
+  for (const key of SCOPE_QUERY_KEYS) {
+    mergedParams.delete(key);
+  }
+
+  const scopeParams = buildScopeSearchParams(scope, options);
+  for (const [key, value] of scopeParams.entries()) {
+    mergedParams.append(key, value);
+  }
+
+  const query = mergedParams.toString();
+  return query ? `${pathname}?${query}` : pathname;
 }
 
 export function getScopeControls(claims) {

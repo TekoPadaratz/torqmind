@@ -9,7 +9,7 @@ import ScopeTransitionState from '../components/ui/ScopeTransitionState';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
-import { buildScopeParams, useScopeQuery } from '../lib/scope';
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from '../lib/scope';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
 import { apiPost } from '../lib/api';
 import { extractApiError } from '../lib/errors';
@@ -27,6 +27,7 @@ function buildRiskStatus(score: number) {
 
 export default function GoalsPage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error, loading, pendingUnavailable } = useBiScopeData<any>({
     moduleKey: 'goals_overview',
     scope,

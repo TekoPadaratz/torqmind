@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.stg_nfe_slim (
     numero_nfe          String NOT NULL DEFAULT '',
     serie               String NOT NULL DEFAULT '',
     chave_nfe           String NOT NULL DEFAULT '',
+    protocolo           String NOT NULL DEFAULT '',
     modelo              String NOT NULL DEFAULT '',
     data_emissao        Nullable(DateTime64(6, 'America/Sao_Paulo')),
     valor_nfe           Decimal(18,2) NOT NULL DEFAULT 0,

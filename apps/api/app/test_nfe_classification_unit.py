@@ -13,6 +13,7 @@ import types
 import unittest
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("APP_ENV", "test")
@@ -35,17 +36,24 @@ except ModuleNotFoundError:
     sys.modules["clickhouse_connect.driver"] = fake_clickhouse.driver
     sys.modules["clickhouse_connect.driver.exceptions"] = fake_clickhouse.driver.exceptions
 
+ROOT = Path(__file__).resolve().parents[3]
+for rel_path in ("apps/api", "apps/agent"):
+    module_path = str(ROOT / rel_path)
+    if module_path not in sys.path:
+        sys.path.insert(0, module_path)
+
 
 class TestNFEDatasetSpec(unittest.TestCase):
     """Ensure NFE is registered in the ingest route's DatasetSpec registry."""
 
     def test_nfe_dataset_registered(self):
-        from app.routes_ingest import DATASET_SPECS
-        self.assertIn("nfe", DATASET_SPECS)
+        from app.routes_ingest import DATASETS
+        self.assertIn("nfe", DATASETS)
 
     def test_nfe_pk_cols(self):
-        from app.routes_ingest import DATASET_SPECS
-        spec = DATASET_SPECS["nfe"]
+        from app.routes_ingest import DATASETS
+        spec = DATASETS["nfe"]
+        self.assertEqual(spec.table, "stg.nfe")
         self.assertEqual(
             spec.pk_cols,
             ["id_empresa", "id_filial", "id_db", "id_comprovante", "id_nfe"],
@@ -55,22 +63,24 @@ class TestNFEDatasetSpec(unittest.TestCase):
         from app.routes_ingest import _shadow_values_for_dataset
         row = {
             "STATUS": 5,
-            "NUMERONFE": "123",
-            "SERIE": "1",
-            "CHAVENFE": "abc",
-            "MODELO": "55",
+            "NRONF": "123",
+            "CHAVEACESSO": "abc",
+            "TIPO_DOC": "55",
             "PROTOCOLO": "xyz",
-            "DATAEMISSAO": "2026-01-15",
+            "DATA": "2026-01-15",
             "DATAAUTORIZACAO": "2026-01-15",
             "DATACANCELAMENTO": None,
             "DATAINUTILIZACAO": "2026-01-16",
-            "VALORNFE": "1500.00",
+            "VALOR": "1500.00",
         }
         result = _shadow_values_for_dataset("nfe", row)
         self.assertEqual(result["status_shadow"], 5)
         self.assertEqual(result["numero_nfe_shadow"], "123")
         self.assertEqual(result["chave_nfe_shadow"], "abc")
-        self.assertEqual(result["valor_nfe_shadow"], "1500.00")
+        self.assertEqual(result["modelo_shadow"], "55")
+        self.assertEqual(result["protocolo_shadow"], "xyz")
+        self.assertIsNotNone(result["data_emissao_shadow"])
+        self.assertEqual(result["valor_nfe_shadow"], 1500.0)
 
 
 class TestNFEInutilizationsContract(unittest.TestCase):
@@ -95,6 +105,8 @@ class TestNFEInutilizationsContract(unittest.TestCase):
 
         def side_effect(q, **kw):
             q_lower = q.lower()
+            if "count() as qtd" in q_lower and "sum(valor_comprovante) as valor_total" in q_lower:
+                return [{"qtd": 1, "valor_total": 1500.50}]
             if "nfe_inutilizations_rt" in q_lower:
                 return [
                     {
@@ -108,8 +120,9 @@ class TestNFEInutilizationsContract(unittest.TestCase):
                         "id_comprovante": 100,
                         "id_nfe": 200,
                         "numero_nfe": "123",
-                        "serie_nfe": "1",
+                        "serie_nfe": "",
                         "chave_nfe": "abc123",
+                        "protocolo": "prot-001",
                         "modelo_nfe": "55",
                         "data_emissao_nfe": "2026-01-15",
                         "valor_comprovante": 1500.50,
@@ -134,6 +147,7 @@ class TestNFEInutilizationsContract(unittest.TestCase):
         item = result["items"][0]
         self.assertEqual(item["id_nfe"], 200)
         self.assertEqual(item["numero_nfe"], "123")
+        self.assertEqual(item["protocolo"], "prot-001")
         self.assertEqual(item["valor_comprovante"], 1500.50)
 
 
