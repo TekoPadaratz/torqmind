@@ -12,8 +12,7 @@ sqlserver:
   login_timeout_seconds: 20
 
 api:
-  # Em producao, use a URL do seu servidor TorqMind e configure ingest_key.
-  # Exemplo producao: http://redevr.ddns.me:14023/api
+  # Em producao, prefira sempre HTTPS + ingest_key.
   base_url: https://torqmind.example.com/api
   ingest_key: CHANGE_ME_INGEST_KEY
   # Em dev/local, troque base_url para http://localhost:8000 e use empresa_id.
@@ -59,6 +58,42 @@ datasets:
     #   FROM dbo.FORMAS_PGTO_COMPROVANTES f
     #   JOIN dbo.COMPROVANTES c ON c.REFERENCIA = f.ID_REFERENCIA
 
+  nfe:
+    enabled: true
+    table: dbo.NFE
+    date_column: DATA
+    incremental_field: DATA
+    watermark_column: DATA
+    key_fields:
+      - ID_FILIAL
+      - ID_DB
+      - ID_COMPROVANTE
+      - ID_NFE
+    columns:
+      id_nfe: ID_NFE
+      id_filial: ID_FILIAL
+      id_db: ID_DB
+      id_comprovante: ID_COMPROVANTE
+      id_lotenfe: ID_LOTENFE
+      numero: NRONF
+      chave: CHAVEACESSO
+      recibo: RECIBO
+      protocolo: PROTOCOLO
+      inf: INF
+      data: DATA
+      status: STATUS
+      ambiente: TPAMB
+      contingencia: CONTINGENCIA
+      protocolo_contingencia: PROTCONTIGENCIA
+      data_replicacao: DATAREPL
+      id_nfe_complementada: ID_NFE_COMPLEMENTADA
+      nro_evento: NRO_EVENTO
+      id_ref_nfe: ID_REF_NFE
+      tipo_doc: TIPO_DOC
+      tentativas: TENTATIVAS
+      cnf: CNF
+      id_comprovante_subst: ID_COMPROVANTE_SUBST
+
   filiais: { enabled: true, table: dbo.FILIAIS, watermark_column: DATAREPL }
   funcionarios: { enabled: true, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
   usuarios: { enabled: true, table: dbo.USUARIOS, watermark_column: DATAREPL }
@@ -76,8 +111,3 @@ datasets:
   contaspagar: { enabled: true, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
   contasreceber: { enabled: true, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
   financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }
-  nfe:
-    enabled: true
-    table: dbo.NFE
-    watermark_column: DATAREPL
-    # NFE fiscal documents for inutilization classification (status 3=autorizada, 4=cancelada, 5=inutilizada)
