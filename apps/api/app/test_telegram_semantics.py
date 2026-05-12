@@ -8,12 +8,13 @@ from app.services.telegram import notify_cancelled_comprovantes, raw_comprovante
 
 
 class TelegramSemanticsTests(unittest.TestCase):
-    def test_raw_comprovante_is_cancelled_prioritizes_cancelado_flag_when_present(self) -> None:
-        self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": False, "SITUACAO": 2}))
+    def test_raw_comprovante_is_cancelled_prioritizes_situacao_2_as_real_cancel(self) -> None:
+        self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": False, "SITUACAO": 2}))
         self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True, "SITUACAO": 3}))
         self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True, "SITUACAO": 5}))
         self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True}))
         self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": False}))
+        self.assertFalse(raw_comprovante_is_cancelled({"SITUACAO": 3}))
 
     def test_notify_cancelled_comprovantes_triggers_on_cancelado_true(self) -> None:
         row = {

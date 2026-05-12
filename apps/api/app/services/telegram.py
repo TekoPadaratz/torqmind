@@ -55,15 +55,14 @@ def _get_any(d: Dict[str, Any], keys: List[str]) -> Any:
 def raw_comprovante_is_cancelled(row: Dict[str, Any]) -> bool:
     """Resolve raw Xpert comprovante cancellation semantics."""
 
+    situacao = _to_int(_get_any(row, ["SITUACAO", "situacao", "STATUS", "status"]))
+    if situacao == 2:
+        return True
+
     cancelado_raw = _get_any(row, ["CANCELADO", "cancelado"])
     if cancelado_raw is not None:
         return _to_bool(cancelado_raw)
 
-    situacao = _to_int(_get_any(row, ["SITUACAO", "situacao", "STATUS", "status"]))
-    if situacao == 2:
-        return True
-    if situacao in {3, 5}:
-        return False
     return False
 
 

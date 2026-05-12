@@ -167,7 +167,6 @@ export function buildScopeSearchParams(scope, options = {}) {
   const branchScope = String(scope?.branch_scope || '').trim().toLowerCase();
   if (branchScope === 'all') {
     params.set('branch_scope', 'all');
-    for (const branchId of branchIds) params.append('id_filiais', branchId);
   } else if (branchIds.length === 1) {
     params.set('id_filial', branchIds[0]);
   } else {
@@ -189,11 +188,12 @@ export function buildCanonicalProductHref(path, session, options = {}) {
   const fallbackScope = buildBrowserLocalDefaultScope(session);
   const explicitBranchSelection = hasExplicitBranchSelection(searchParams);
   const parsedScope = readScopeFromSearch(searchParams, fallbackScope);
+  const requestedDtRef = searchParams.get('dt_ref');
   const scope = {
     ...parsedScope,
     dt_ini: parsedScope.dt_ini || fallbackScope.dt_ini || '',
     dt_fim: parsedScope.dt_fim || fallbackScope.dt_fim || '',
-    dt_ref: parsedScope.dt_ref || fallbackScope.dt_ref || parsedScope.dt_fim || fallbackScope.dt_fim || '',
+    dt_ref: requestedDtRef || parsedScope.dt_fim || fallbackScope.dt_ref || fallbackScope.dt_fim || '',
     id_empresa: parsedScope.id_empresa || fallbackScope.id_empresa || null,
     id_filial: explicitBranchSelection
       ? (parsedScope.id_filial || null)

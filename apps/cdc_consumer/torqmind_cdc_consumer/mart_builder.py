@@ -403,7 +403,7 @@ class MartBuilder:
                     f"  AND c.data_key >= {{from_key:Int32}} "
                     f"  AND c.data_key <= {{to_key:Int32}} "
                     f"  AND c.data_key > 0 "
-                    f"  AND c.cancelado = 0 "
+                    f"  AND c.commercial_eligible = 1 "
                     f"  AND c.is_deleted = 0 "
                     f"  AND i.is_deleted = 0 "
                     f"  AND i.cfop > 5000 "
@@ -417,7 +417,7 @@ class MartBuilder:
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT data_key FROM {self.current_db}.fact_venda FINAL "
                     f"WHERE id_empresa = {{id_empresa:Int32}} AND data_key >= {{from_key:Int32}} "
-                    f"AND data_key <= {{to_key:Int32}} AND is_deleted = 0 {filial_filter_plain} "
+                    f"AND data_key <= {{to_key:Int32}} AND is_deleted = 0 AND commercial_eligible = 1 {filial_filter_plain} "
                     f"ORDER BY data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                 )
@@ -673,7 +673,9 @@ class MartBuilder:
             f"ifNull(c.cancelado_shadow, "
             f"if(lower(JSONExtractString(c.payload, 'CANCELADO')) IN ('true','t','1','s','sim','yes'), 1, 0))"
         )
-        cancelado_expr = f"toUInt8(multiIf({situacao} = 2, 1, {situacao} IN (3, 5), 0, {raw_cancelado}))"
+        cancelado_expr = f"toUInt8(if({situacao} = 2, 1, {raw_cancelado}))"
+        ignored_business_expr = f"toUInt8({situacao} = 3)"
+        commercial_eligible_expr = f"toUInt8(({cancelado_expr}) = 0 AND ({ignored_business_expr}) = 0)"
         valor_total = f"ifNull(c.valor_total_shadow, toDecimal64OrZero(JSONExtractString(c.payload, 'VLRTOTAL'), 2))"
         id_turno = f"ifNull(c.id_turno_shadow, toInt32OrZero(JSONExtractString(c.payload, 'ID_TURNOS')))"
         id_usuario = f"coalesce(c.id_usuario_shadow, toInt32OrZero(JSONExtractString(c.payload, 'ID_USUARIOS')), toInt32OrZero(JSONExtractString(c.payload, 'ID_USUARIO')))"
@@ -690,6 +692,8 @@ class MartBuilder:
             {ts_local} AS dt_evento_local,
             {valor_total} AS valor_total,
             {cancelado_expr} AS cancelado,
+            {ignored_business_expr} AS ignored_business,
+            {commercial_eligible_expr} AS commercial_eligible,
             {situacao} AS situacao,
             {id_turno} AS id_turno,
             {id_usuario} AS id_usuario,
@@ -1063,7 +1067,7 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-              AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                            AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -1109,7 +1113,7 @@ class MartBuilder:
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
@@ -1159,7 +1163,7 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
         """
@@ -1204,7 +1208,7 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
         """
@@ -1231,9 +1235,23 @@ class MartBuilder:
             toUInt32(count()) AS qtd_transacoes,
             now64(6) AS published_at
         FROM {self.current_db}.stg_formas_pgto_slim AS p
+        INNER JOIN (
+            SELECT
+                c.id_empresa,
+                c.id_filial,
+                c.referencia,
+                argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible
+            FROM {self.current_db}.stg_comprovantes_slim AS c
+            WHERE c.is_deleted = 0 AND c.referencia > 0
+            GROUP BY c.id_empresa, c.id_filial, c.referencia
+        ) AS docs
+            ON docs.id_empresa = p.id_empresa
+           AND docs.id_filial = p.id_filial
+           AND docs.referencia = p.id_referencia
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
             ON p.tipo_forma = m.tipo_forma
         WHERE {kf} AND p.is_deleted = 0
+          AND docs.commercial_eligible = 1
           {empresa_filter_p} {filial_filter_p}
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
         """
@@ -1294,7 +1312,7 @@ class MartBuilder:
                    sum(c.valor_total) AS faturamento,
                    toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS qtd
             FROM {self.current_db}.stg_comprovantes_slim AS c
-            WHERE c.is_deleted = 0 AND c.cancelado = 0 AND c.id_turno > 0 {empresa_filter_c} {filial_filter_c}
+            WHERE c.is_deleted = 0 AND c.commercial_eligible = 1 AND c.id_turno > 0 {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.id_turno
         ) AS vendas ON turnos.id_empresa = vendas.id_empresa AND turnos.id_filial = vendas.id_filial
             AND turnos.id_turno = vendas.id_turno
@@ -1493,7 +1511,7 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-              AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                            AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -1636,7 +1654,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -1668,7 +1686,7 @@ class MartBuilder:
             ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
             AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
         WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-          AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                    AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY v.id_empresa, v.id_filial, v.data_key, hora
         """
         client.command(sql, settings=self._query_settings)
@@ -1695,7 +1713,7 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.dim_grupo_produto AS g FINAL
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial AND vi.id_grupo_produto = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_produto, p.nome, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=self._query_settings)
@@ -1721,7 +1739,7 @@ class MartBuilder:
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial
             AND coalesce(vi.id_grupo_produto, 0) = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=self._query_settings)
@@ -1740,7 +1758,7 @@ class MartBuilder:
         FROM {self.current_db}.fact_pagamento_comprovante AS p FINAL
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
             ON p.tipo_forma = m.tipo_forma AND m.id_empresa = p.id_empresa
-        WHERE p.data_key IN ({keys_str}) AND p.is_deleted = 0
+        WHERE p.data_key IN ({keys_str}) AND p.is_deleted = 0 AND coalesce(p.cash_eligible, 0) = 1
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
         """
         client.command(sql, settings=self._query_settings)
@@ -1760,8 +1778,8 @@ class MartBuilder:
             ON ct.id_empresa = u.id_empresa AND ct.id_filial = u.id_filial AND ct.id_usuario = u.id_usuario
         LEFT JOIN (
             SELECT id_empresa, id_filial, id_turno,
-                   sumIf(total_venda, cancelado = 0) AS faturamento,
-                   toUInt32(countIf(cancelado = 0)) AS qtd
+                   sumIf(total_venda, commercial_eligible = 1) AS faturamento,
+                   toUInt32(countIf(commercial_eligible = 1)) AS qtd
             FROM {self.current_db}.fact_venda FINAL WHERE is_deleted = 0 AND id_turno > 0
             GROUP BY id_empresa, id_filial, id_turno
         ) AS vendas ON ct.id_empresa = vendas.id_empresa AND ct.id_filial = vendas.id_filial
@@ -1844,7 +1862,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -1957,7 +1975,7 @@ class MartBuilder:
                 f"  AND c.data_key >= {{from_key:Int32}} "
                 f"  AND c.data_key <= {{to_key:Int32}} "
                 f"  AND c.data_key > 0 "
-                f"  AND c.cancelado = 0 "
+                f"  AND c.commercial_eligible = 1 "
                 f"  AND c.is_deleted = 0 "
                 f"  AND i.is_deleted = 0 "
                 f"  AND i.cfop > 5000 "

@@ -181,13 +181,11 @@ test("all-branches selection is preserved as sentinel across links", () => {
   });
   assert.match(params.toString(), /branch_scope=all/);
   assert.ok(!params.toString().includes("id_filial="));
-  assert.match(params.toString(), /id_filiais=7/);
-  assert.match(params.toString(), /id_filiais=9/);
-  assert.match(params.toString(), /id_filiais=11/);
+  assert.ok(!params.toString().includes("id_filiais="));
 
   const parsed = readScopeFromSearch(new URLSearchParams(params.toString()));
   assert.equal(parsed.branch_scope, "all");
-  assert.deepEqual(parsed.id_filiais, ["7", "9", "11"]);
+  assert.deepEqual(parsed.id_filiais, []);
 });
 
 test("explicit all-branches URL is not expanded from session fallback", () => {
@@ -344,9 +342,25 @@ test("canonical product href derives all accessible branches for company-level s
   assert.match(href, /^\/dashboard\?/);
   assert.match(href, /id_empresa=12/);
   assert.match(href, /branch_scope=all/);
-  assert.match(href, /id_filiais=7/);
-  assert.match(href, /id_filiais=9/);
+  assert.doesNotMatch(href, /id_filiais=/);
   assert.match(href, /scope_epoch=epoch-all-branches/);
+});
+
+test("all-branches sentinel remains canonical even when full branch list is present in memory", () => {
+  const href = buildProductHref("/cash", {
+    dt_ini: "2026-05-01",
+    dt_fim: "2026-05-11",
+    dt_ref: "2026-05-11",
+    id_empresa: 1,
+    id_filiais: [10169, 14458, 18777],
+    branch_scope: "all",
+    scope_epoch: "epoch-all-memory",
+  });
+
+  assert.equal(
+    href,
+    "/cash?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&branch_scope=all&dt_ref=2026-05-11&scope_epoch=epoch-all-memory",
+  );
 });
 
 test("canonical product href preserves explicit scope and keeps unrelated params", () => {

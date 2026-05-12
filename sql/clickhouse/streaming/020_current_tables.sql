@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda (
     saidas_entradas   Nullable(Int32),
     total_venda       Nullable(Decimal(18,2)),
     cancelado         UInt8 NOT NULL DEFAULT 0,
+    commercial_eligible UInt8 NOT NULL DEFAULT 1,
     is_deleted        UInt8 NOT NULL DEFAULT 0,
     source_ts_ms      Int64 NOT NULL,
     ingested_at       DateTime64(6, 'UTC') DEFAULT now64(6),
@@ -142,6 +143,9 @@ SETTINGS index_granularity = 8192;
 
 ALTER TABLE torqmind_current.fact_venda
     ADD COLUMN IF NOT EXISTS data Nullable(DateTime64(6, 'UTC')) AFTER data_key;
+
+ALTER TABLE torqmind_current.fact_venda
+    ADD COLUMN IF NOT EXISTS commercial_eligible UInt8 NOT NULL DEFAULT 1 AFTER cancelado;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda_item (
     id_empresa         Int32 NOT NULL,
@@ -181,6 +185,8 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_comprovante (
     id_cliente        Nullable(Int32),
     valor_total       Nullable(Decimal(18,2)),
     cancelado         UInt8 NOT NULL DEFAULT 0,
+    ignored_business  UInt8 NOT NULL DEFAULT 0,
+    commercial_eligible UInt8 NOT NULL DEFAULT 1,
     situacao          Nullable(Int32),
     is_deleted        UInt8 NOT NULL DEFAULT 0,
     source_ts_ms      Int64 NOT NULL,
@@ -190,6 +196,12 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_comprovante (
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id_empresa, id_filial, id_db, id_comprovante)
 SETTINGS index_granularity = 8192;
+
+ALTER TABLE torqmind_current.fact_comprovante
+    ADD COLUMN IF NOT EXISTS ignored_business UInt8 NOT NULL DEFAULT 0 AFTER cancelado;
+
+ALTER TABLE torqmind_current.fact_comprovante
+    ADD COLUMN IF NOT EXISTS commercial_eligible UInt8 NOT NULL DEFAULT 1 AFTER ignored_business;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_pagamento_comprovante (
     id_empresa        Int32 NOT NULL,
@@ -203,6 +215,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_pagamento_comprovante (
     valor             Decimal(18,2) NOT NULL DEFAULT 0,
     dt_evento         DateTime64(6, 'UTC') NOT NULL,
     data_key          Int32 NOT NULL,
+    cash_eligible     UInt8 NOT NULL DEFAULT 0,
     nsu               Nullable(String),
     autorizacao       Nullable(String),
     bandeira          Nullable(String),
@@ -215,6 +228,9 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_pagamento_comprovante (
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id_empresa, id_filial, referencia, tipo_forma)
 SETTINGS index_granularity = 8192;
+
+ALTER TABLE torqmind_current.fact_pagamento_comprovante
+    ADD COLUMN IF NOT EXISTS cash_eligible UInt8 NOT NULL DEFAULT 0 AFTER data_key;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_caixa_turno (
     id_empresa              Int32 NOT NULL,

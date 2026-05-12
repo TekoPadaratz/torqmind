@@ -194,7 +194,7 @@ export default function AppNav({
       dt_ini: activeScope.dt_ini || '',
       dt_fim: activeScope.dt_fim || '',
       id_empresa: activeScope.id_empresa || '',
-      id_filiais: nextBranchIds,
+      id_filiais: selectionMode === 'all' ? [] : nextBranchIds,
       selectionMode,
     });
   }, [
@@ -254,10 +254,14 @@ export default function AppNav({
 
           const allowedIds = new Set(items.map((item) => String(item.id_filial)));
           const filteredIds = current.id_filiais.filter((branchId) => allowedIds.has(branchId));
+          const availableBranchIds = uniqueBranchIds(items.map((item) => item.id_filial));
+          const allAvailableSelected = current.selectionMode === 'all'
+            || (availableBranchIds.length > 0 && filteredIds.length === availableBranchIds.length);
+
           return {
             ...current,
-            id_filiais: filteredIds,
-            selectionMode: filteredIds.length ? 'selected' : 'all',
+            id_filiais: allAvailableSelected ? [] : filteredIds,
+            selectionMode: allAvailableSelected ? 'all' : (filteredIds.length ? 'selected' : 'all'),
           };
         });
       } catch {
@@ -379,15 +383,18 @@ export default function AppNav({
     triggerAuxiliaryLoads();
     setDraft((current) => {
       if (scopeControls.branchLocked) return current;
-      const isSelected = current.id_filiais.includes(branchId);
+      const availableBranchIds = uniqueBranchIds(branches.map((branch) => branch.id_filial));
+      const currentIds = current.selectionMode === 'all' ? [] : current.id_filiais;
+      const isSelected = currentIds.includes(branchId);
       const nextIds = isSelected
-        ? current.id_filiais.filter((item) => item !== branchId)
-        : uniqueBranchIds([...current.id_filiais, branchId]);
+        ? currentIds.filter((item) => item !== branchId)
+        : uniqueBranchIds([...currentIds, branchId]);
+      const allAvailableSelected = availableBranchIds.length > 0 && nextIds.length === availableBranchIds.length;
 
       return {
         ...current,
-        id_filiais: nextIds,
-        selectionMode: nextIds.length ? 'selected' : 'all',
+        id_filiais: allAvailableSelected ? [] : nextIds,
+        selectionMode: allAvailableSelected ? 'all' : (nextIds.length ? 'selected' : 'all'),
       };
     });
   };
