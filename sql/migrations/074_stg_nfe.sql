@@ -1,5 +1,5 @@
 -- 074_stg_nfe.sql
--- NFE (Nota Fiscal Eletrônica) staging table for fiscal classification.
+-- NFE (Nota Fiscal Eletronica) staging table for fiscal classification.
 -- Stores raw NFE records from the client SQL Server via Agent ingest.
 -- Used to classify comprovantes as: authorized (3), cancelled (4), or voided/inutilized (5).
 
