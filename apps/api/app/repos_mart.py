@@ -27,12 +27,15 @@ from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.db import get_conn
 from app.sales_semantics import (
     CANCELLATION_STATUS,
+    COMMERCIAL_STATUSES,
+    IGNORED_BUSINESS_STATUS,
     RETURN_STATUS,
     SALE_STATUS,
     cash_net_value,
     comercial_cfop_class_sql,
     comercial_cfop_direction_sql,
     comercial_cfop_numeric_sql,
+    commercial_eligible_sql,
     sales_cfop_filter_sql,
     sales_status_filter_sql,
     sales_status_sql,
@@ -1827,8 +1830,6 @@ def _sales_window_fact_cte(
     params = (
         [id_empresa] + date_params + branch_params
         + [id_empresa] + item_branch_params
-        + [id_empresa] + date_params + branch_params
-        + [id_empresa] + item_branch_params
     )
     conn_branch_id = _conn_branch_id(id_filial)
     cte = f"""
@@ -1870,43 +1871,6 @@ def _sales_window_fact_cte(
           i.updated_at AS item_updated_at,
           i.created_at AS item_created_at
         FROM sale_headers v
-        JOIN dw.fact_venda_item i
-          ON i.id_empresa = v.id_empresa
-         AND i.id_filial = v.id_filial
-         AND i.id_db = v.id_db
-         AND i.id_comprovante = v.id_comprovante
-        WHERE i.id_empresa = %s
-          {where_filial_item}
-          AND {sales_cfop_filter_sql('i')}
-      ), return_headers AS MATERIALIZED (
-        SELECT
-          v.id_empresa,
-          v.id_filial,
-          v.id_db,
-          v.id_comprovante,
-          v.data,
-          v.data_key,
-          v.updated_at AS venda_updated_at,
-          v.created_at AS venda_created_at
-        FROM dw.fact_venda v
-        WHERE v.id_empresa = %s
-          AND {date_predicate_sql}
-          AND {sales_status_filter_sql('v', RETURN_STATUS)}
-          {where_filial_venda}
-      ), return_items AS MATERIALIZED (
-        SELECT
-          v.id_empresa,
-          v.id_filial,
-          v.id_db,
-          v.id_comprovante,
-          v.data,
-          v.data_key,
-          v.venda_updated_at,
-          v.venda_created_at,
-          i.total,
-          i.updated_at AS item_updated_at,
-          i.created_at AS item_created_at
-        FROM return_headers v
         JOIN dw.fact_venda_item i
           ON i.id_empresa = v.id_empresa
          AND i.id_filial = v.id_filial
@@ -1961,17 +1925,11 @@ def sales_operational_day_bundle(
           WHEN COUNT(DISTINCT si.doc_key) = 0 THEN 0::numeric(18,2)
           ELSE (SUM(si.total) / COUNT(DISTINCT si.doc_key))::numeric(18,2)
         END AS ticket_medio,
-        COALESCE((SELECT SUM(ri.total) FROM return_items ri), 0)::numeric(18,2) AS devolucoes,
+        0::numeric(18,2) AS devolucoes,
         COUNT(DISTINCT si.doc_key)::int AS vendas,
         (
-          SELECT MAX(sync_ts)
-          FROM (
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
+          SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data))
             FROM sale_items
-            UNION ALL
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
-            FROM return_items
-          ) sync_points
         ) AS latest_sync_at
       FROM sale_items si
     """
@@ -2120,17 +2078,11 @@ def sales_operational_range_bundle(
           WHEN COUNT(DISTINCT si.doc_key) = 0 THEN 0::numeric(18,2)
           ELSE (SUM(si.total) / COUNT(DISTINCT si.doc_key))::numeric(18,2)
         END AS ticket_medio,
-        COALESCE((SELECT SUM(ri.total) FROM return_items ri), 0)::numeric(18,2) AS devolucoes,
+        0::numeric(18,2) AS devolucoes,
         COUNT(DISTINCT si.doc_key)::int AS vendas,
         (
-          SELECT MAX(sync_ts)
-          FROM (
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
+          SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data))
             FROM sale_items
-            UNION ALL
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
-            FROM return_items
-          ) sync_points
         ) AS latest_sync_at
       FROM sale_items si
     """
@@ -4824,7 +4776,7 @@ def _cash_live_now_live_query(role: str, id_empresa: int, id_filial: Optional[in
     total_vendas = round(float(summary_row.get("total_vendas_abertas") or 0), 2)
     total_cancelamentos = round(float(summary_row.get("total_cancelamentos_abertas") or 0), 2)
     total_devolucoes = round(float(summary_row.get("total_devolucoes_abertas") or 0), 2)
-    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos)
     snapshot_ts = summary_row.get("snapshot_ts")
     latest_activity_ts = summary_row.get("latest_activity_ts")
     snapshot_ts_iso = _iso_or_none(snapshot_ts)
@@ -4841,7 +4793,6 @@ def _cash_live_now_live_query(role: str, id_empresa: int, id_filial: Optional[in
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
@@ -5157,7 +5108,6 @@ def _cash_live_now_from_marts(role: str, id_empresa: int, id_filial: Optional[in
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
@@ -5177,7 +5127,7 @@ def _cash_live_now_from_marts(role: str, id_empresa: int, id_filial: Optional[in
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
 
     total_devolucoes = round(sum(float(row.get("total_devolucoes") or 0) for row in open_rows), 2)
-    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos)
 
     payment_mix = [
         {
@@ -5332,7 +5282,7 @@ def _cash_sales_docs_cte(
         WHERE v.id_empresa = %s
           AND {date_key_sql}
           {where_filial}
-          AND {_sales_status_expression('v')} IN ({SALE_STATUS}, {CANCELLATION_STATUS}, {RETURN_STATUS})
+          AND {_sales_status_expression('v')} IN ({SALE_STATUS}, {CANCELLATION_STATUS})
           AND {sales_cfop_filter_sql('i')}
           AND {_resolved_cash_eligible_sql('c.cash_eligible', 'c.data', 'c.data_conta', 'c.id_turno')}
         GROUP BY
@@ -5375,9 +5325,6 @@ def _cash_historical_overview(
           COALESCE(SUM(total) FILTER (WHERE situacao = {CANCELLATION_STATUS}), 0)::numeric(18,2) AS total_cancelamentos,
           COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos,
           COUNT(DISTINCT (id_filial::text || ':' || id_turno::text)) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS caixas_com_cancelamento,
-          COALESCE(SUM(total) FILTER (WHERE situacao = {RETURN_STATUS}), 0)::numeric(18,2) AS total_devolucoes,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {RETURN_STATUS})::int AS qtd_devolucoes,
-          COUNT(DISTINCT (id_filial::text || ':' || id_turno::text)) FILTER (WHERE situacao = {RETURN_STATUS})::int AS caixas_com_devolucao,
           MIN(data_key)::int AS min_data_key,
           MAX(data_key)::int AS max_data_key
         FROM sales_docs
@@ -5398,9 +5345,6 @@ def _cash_historical_overview(
         v.total_cancelamentos,
         v.qtd_cancelamentos,
         v.caixas_com_cancelamento,
-        v.total_devolucoes,
-        v.qtd_devolucoes,
-        v.caixas_com_devolucao,
         v.min_data_key,
         v.max_data_key,
         p.total_pagamentos
@@ -5414,9 +5358,7 @@ def _cash_historical_overview(
           COUNT(DISTINCT (id_filial::text || ':' || id_turno::text))::int AS caixas,
           COALESCE(SUM(total) FILTER (WHERE situacao = {SALE_STATUS}), 0)::numeric(18,2) AS total_vendas,
           COALESCE(SUM(total) FILTER (WHERE situacao = {CANCELLATION_STATUS}), 0)::numeric(18,2) AS total_cancelamentos,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos,
-          COALESCE(SUM(total) FILTER (WHERE situacao = {RETURN_STATUS}), 0)::numeric(18,2) AS total_devolucoes,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {RETURN_STATUS})::int AS qtd_devolucoes
+          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos
         FROM sales_docs
         GROUP BY data_key
       ), pagamentos AS (
@@ -5436,8 +5378,6 @@ def _cash_historical_overview(
         COALESCE(v.total_vendas, 0)::numeric(18,2) AS total_vendas,
         COALESCE(v.total_cancelamentos, 0)::numeric(18,2) AS total_cancelamentos,
         COALESCE(v.qtd_cancelamentos, 0)::int AS qtd_cancelamentos,
-        COALESCE(v.total_devolucoes, 0)::numeric(18,2) AS total_devolucoes,
-        COALESCE(v.qtd_devolucoes, 0)::int AS qtd_devolucoes,
         COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
       FROM vendas v
       FULL OUTER JOIN pagamentos p
@@ -5480,9 +5420,7 @@ def _cash_historical_overview(
           COALESCE(SUM(total) FILTER (WHERE situacao = {SALE_STATUS}), 0)::numeric(18,2) AS total_vendas,
           COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {SALE_STATUS})::int AS qtd_vendas,
           COALESCE(SUM(total) FILTER (WHERE situacao = {CANCELLATION_STATUS}), 0)::numeric(18,2) AS total_cancelamentos,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos,
-          COALESCE(SUM(total) FILTER (WHERE situacao = {RETURN_STATUS}), 0)::numeric(18,2) AS total_devolucoes,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {RETURN_STATUS})::int AS qtd_devolucoes
+          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos
         FROM sales_docs
         GROUP BY id_filial, id_turno
       ), pagamentos AS (
@@ -5520,8 +5458,6 @@ def _cash_historical_overview(
         c.qtd_vendas,
         c.total_cancelamentos,
         c.qtd_cancelamentos,
-        c.total_devolucoes,
-        c.qtd_devolucoes,
         COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
       FROM turnos c
       LEFT JOIN dw.fact_caixa_turno t
@@ -5544,7 +5480,7 @@ def _cash_historical_overview(
       LEFT JOIN pagamentos p
         ON p.id_filial = c.id_filial
        AND p.id_turno = c.id_turno
-      ORDER BY c.total_vendas DESC, c.total_cancelamentos DESC, c.total_devolucoes DESC, c.last_event_at DESC
+      ORDER BY c.total_vendas DESC, c.total_cancelamentos DESC, c.last_event_at DESC
       LIMIT 12
     """
 
@@ -5568,7 +5504,7 @@ def _cash_historical_overview(
     caixas_periodo = int(summary_row.get("caixas_periodo") or 0)
     qtd_cancelamentos = int(summary_row.get("qtd_cancelamentos") or 0)
     qtd_devolucoes = int(summary_row.get("qtd_devolucoes") or 0)
-    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos)
     payment_mix = [
         {
             "label": row.get("label"),
@@ -5590,7 +5526,6 @@ def _cash_historical_overview(
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
 
     for row in top_turnos_rows:
@@ -5604,7 +5539,6 @@ def _cash_historical_overview(
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
@@ -5770,7 +5704,7 @@ def _cash_historical_overview_from_marts(
             "total_devolucoes": 0.0,
             "qtd_devolucoes": 0,
             "caixas_com_devolucao": 0,
-            "caixa_liquido": cash_net_value(total_vendas, total_cancelamentos, 0.0),
+            "caixa_liquido": cash_net_value(total_vendas, total_cancelamentos),
         },
         "by_day": commercial.get("by_day") or [],
         "payment_mix": payment_mix,

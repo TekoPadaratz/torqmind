@@ -1587,7 +1587,9 @@ class MartBuilder:
             nfe_detail.protocolo AS protocolo,
             nfe_detail.modelo AS modelo_nfe,
             nfe_detail.data_emissao AS data_emissao_nfe,
-            c.valor_total AS valor_comprovante,
+            if(c.valor_total > 0, c.valor_total,
+               coalesce(items_agg.soma_itens, toDecimal64(0, 2))
+            ) AS valor_comprovante,
             c.referencia,
             now64(6) AS published_at
         FROM {self.current_db}.stg_comprovantes_slim AS c
@@ -1615,6 +1617,14 @@ class MartBuilder:
             ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
+        LEFT JOIN (
+            SELECT id_empresa, id_filial, id_db, id_comprovante,
+                   sum(i.total) AS soma_itens
+            FROM {self.current_db}.stg_itenscomprovantes_slim AS i
+            GROUP BY id_empresa, id_filial, id_db, id_comprovante
+        ) AS items_agg
+            ON c.id_empresa = items_agg.id_empresa AND c.id_filial = items_agg.id_filial
+            AND c.id_db = items_agg.id_db AND c.id_comprovante = items_agg.id_comprovante
                 WHERE {kf_c} AND c.is_deleted = 0
           AND nfe_latest.nfe_status = 5
           {empresa_filter_c} {filial_filter_c}
