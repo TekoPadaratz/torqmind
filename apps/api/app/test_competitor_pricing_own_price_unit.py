@@ -71,13 +71,23 @@ class OwnPriceQueryStructureTest(unittest.TestCase):
 
     def test_excludes_cancelled_receipts(self):
         sql = self._capture_sql()
-        self.assertIn("fc.cancelado = false", sql,
-                       "Must filter out cancelled receipts")
+        self.assertIn("COALESCE(fc.cancelado, false) = false", sql,
+                       "Must filter out cancelled receipts with COALESCE")
 
     def test_excludes_situacao_3(self):
         sql = self._capture_sql()
-        self.assertIn("fc.situacao != 3", sql,
-                       "Must exclude situacao=3 receipts")
+        self.assertIn("COALESCE(fc.situacao, 0) != 3", sql,
+                       "Must exclude situacao=3 receipts with COALESCE")
+
+    def test_requires_fc_data_not_null(self):
+        sql = self._capture_sql()
+        self.assertIn("fc.data IS NOT NULL", sql,
+                       "Must require fc.data IS NOT NULL")
+
+    def test_orders_nulls_last(self):
+        sql = self._capture_sql()
+        self.assertIn("NULLS LAST", sql,
+                       "Must use NULLS LAST in ORDER BY")
 
     def test_uses_preco_praticado_unitario(self):
         sql = self._capture_sql()
@@ -154,6 +164,80 @@ class OwnPriceSelectionTest(unittest.TestCase):
             )
 
         self.assertEqual(result, {})
+
+
+class FuelDeduplicationTest(unittest.TestCase):
+    """Verifies that list_fuel_products deduplicates by fuel_type."""
+
+    def test_dedup_prefers_product_with_own_price(self):
+        """When two products have same fuel_type, keep the one with own_price."""
+        fake_rows = [
+            {"product_id": 11879, "product_name": "GASOLINA ADITIVADA SHELL V-POWER",
+             "fuel_type": "GASOLINA", "grupo_nome": "COMBUSTIVEIS",
+             "custo_medio": None, "unidade": "LT"},
+            {"product_id": 5992, "product_name": "GASOLINA ADITIVADA",
+             "fuel_type": "GASOLINA", "grupo_nome": "COMBUSTIVEIS",
+             "custo_medio": None, "unidade": "LT"},
+        ]
+        own_prices = {
+            5992: {"price": Decimal("6.89"), "source": "LAST_SALE"},
+        }
+
+        class FakeCursor:
+            def fetchall(self):
+                return fake_rows
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                return FakeCursor()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        with patch("app.repos_competitor_pricing.get_conn", return_value=FakeConn()), \
+             patch("app.repos_competitor_pricing._get_own_prices", return_value=own_prices):
+            result = repos_competitor_pricing.list_fuel_products(
+                role="MASTER", id_empresa=1, id_filial=14458,
+            )
+
+        fuel_gasolina = [r for r in result if r["fuel_type"] == "GASOLINA"]
+        self.assertEqual(len(fuel_gasolina), 1,
+                         "Must have exactly one GASOLINA entry after dedup")
+        self.assertEqual(fuel_gasolina[0]["product_id"], 5992,
+                         "Must keep product 5992 (has own_price), not 11879")
+        self.assertEqual(fuel_gasolina[0]["own_current_price"], "6.89")
+
+    def test_no_dedup_when_different_fuel_types(self):
+        """Products with different fuel_types are all kept."""
+        fake_rows = [
+            {"product_id": 1, "product_name": "GASOLINA COMUM",
+             "fuel_type": "GASOLINA", "grupo_nome": "COMBUSTIVEIS",
+             "custo_medio": None, "unidade": "LT"},
+            {"product_id": 2, "product_name": "ETANOL COMUM",
+             "fuel_type": "ETANOL", "grupo_nome": "COMBUSTIVEIS",
+             "custo_medio": None, "unidade": "LT"},
+        ]
+
+        class FakeCursor:
+            def fetchall(self):
+                return fake_rows
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                return FakeCursor()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        with patch("app.repos_competitor_pricing.get_conn", return_value=FakeConn()), \
+             patch("app.repos_competitor_pricing._get_own_prices", return_value={}):
+            result = repos_competitor_pricing.list_fuel_products(
+                role="MASTER", id_empresa=1, id_filial=14458,
+            )
+
+        self.assertEqual(len(result), 2)
 
 
 if __name__ == "__main__":

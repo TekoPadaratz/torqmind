@@ -78,7 +78,8 @@ def list_fuel_products(
             p.unidade,
             p.custo_medio,
             CASE
-                WHEN UPPER(p.nome) LIKE '%%GASOL%%' THEN 'GASOLINA'
+                WHEN UPPER(p.nome) LIKE '%%GASOL%%ADIT%%' THEN 'GASOLINA_ADITIVADA'
+                WHEN UPPER(p.nome) LIKE '%%GASOL%%' THEN 'GASOLINA_COMUM'
                 WHEN UPPER(p.nome) LIKE '%%ETANOL%%' OR UPPER(p.nome) LIKE '%%ALCOOL%%' THEN 'ETANOL'
                 WHEN UPPER(p.nome) LIKE '%%DIESEL S10%%' OR UPPER(p.nome) LIKE '%%S10%%' THEN 'DIESEL S10'
                 WHEN UPPER(p.nome) LIKE '%%DIESEL%%' THEN 'DIESEL S500'
@@ -132,7 +133,28 @@ def list_fuel_products(
             "own_current_price": str(own["price"]) if own else None,
             "own_price_source": own["source"] if own else None,
         })
-    return result
+
+    # Deduplicate by fuel_type — when multiple products map to the same
+    # fuel_type, prefer the one with an own_price (actual sales).
+    seen: Dict[Optional[str], Dict[str, Any]] = {}
+    deduped: List[Dict[str, Any]] = []
+    for item in result:
+        ft = item.get("fuel_type")
+        if ft is None:
+            deduped.append(item)
+            continue
+        if ft not in seen:
+            seen[ft] = item
+            deduped.append(item)
+        else:
+            prev = seen[ft]
+            # Replace if new one has own_price and previous doesn't
+            if item["own_current_price"] and not prev["own_current_price"]:
+                idx = deduped.index(prev)
+                deduped[idx] = item
+                seen[ft] = item
+
+    return deduped
 
 
 def _get_own_prices(
@@ -175,9 +197,10 @@ def _get_own_prices(
           AND v.total > 0
           AND v.preco_praticado_unitario IS NOT NULL
           AND v.preco_praticado_unitario > 0
-          AND fc.cancelado = false
-          AND fc.situacao != 3
-        ORDER BY v.id_produto, fc.data DESC, v.id_comprovante DESC, v.id_itensmovprodutos DESC
+          AND COALESCE(fc.cancelado, false) = false
+          AND COALESCE(fc.situacao, 0) != 3
+          AND fc.data IS NOT NULL
+        ORDER BY v.id_produto, fc.data DESC NULLS LAST, v.id_comprovante DESC, v.id_itensmovprodutos DESC
     """
     try:
         with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
@@ -370,7 +393,8 @@ def _get_product_names(
     sql = f"""
         SELECT id_produto, nome,
             CASE
-                WHEN UPPER(nome) LIKE '%%GASOL%%' THEN 'GASOLINA'
+                WHEN UPPER(nome) LIKE '%%GASOL%%ADIT%%' THEN 'GASOLINA_ADITIVADA'
+                WHEN UPPER(nome) LIKE '%%GASOL%%' THEN 'GASOLINA_COMUM'
                 WHEN UPPER(nome) LIKE '%%ETANOL%%' OR UPPER(nome) LIKE '%%ALCOOL%%' THEN 'ETANOL'
                 WHEN UPPER(nome) LIKE '%%DIESEL S10%%' OR UPPER(nome) LIKE '%%S10%%' THEN 'DIESEL S10'
                 WHEN UPPER(nome) LIKE '%%DIESEL%%' THEN 'DIESEL S500'

@@ -1318,13 +1318,44 @@ def fraud_last_events(
             SELECT event_id AS id, id_filial, filial_nome, data_key, event_type, source,
                    id_turno, id_caixa, id_usuario, nome_operador,
                    id_funcionario, nome_funcionario, valor_total,
-                   impacto_estimado, score_risco, score_level, reasons, hora
+                   impacto_estimado, score_risco, score_level, reasons, hora,
+                   dt
             FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
             ORDER BY event_id DESC
             LIMIT {limit}
         """, parameters={"id_empresa": id_empresa})
         if rows:
+            for row in rows:
+                # Build real datetime from dt (Date) + hora (UInt8)
+                dt_val = row.get("dt")
+                hora_val = row.get("hora", 0)
+                if dt_val:
+                    from datetime import datetime as _dt
+                    if isinstance(dt_val, str):
+                        row["data"] = f"{dt_val} {int(hora_val):02d}:00:00"
+                    else:
+                        row["data"] = _dt.combine(dt_val, _dt.min.time().replace(hour=int(hora_val))).isoformat()
+                else:
+                    row["data"] = None
+                # Derive usuario_label / usuario_source
+                nome_op = (row.get("nome_operador") or "").strip()
+                id_usr = row.get("id_usuario", 0)
+                if nome_op:
+                    row["usuario_label"] = nome_op
+                    row["usuario_source"] = "comprovante"
+                elif id_usr:
+                    row["usuario_label"] = f"Operador #{id_usr}"
+                    row["usuario_source"] = "id_only"
+                else:
+                    row["usuario_label"] = "Operador não resolvido"
+                    row["usuario_source"] = "unresolved"
+                # Derive filial_label
+                fn = (row.get("filial_nome") or "").strip()
+                row["filial_label"] = fn if fn else f"Filial {row.get('id_filial', '?')}"
+                # Derive turno_label
+                id_turno = row.get("id_turno", 0)
+                row["turno_label"] = f"Turno {id_turno}" if id_turno else ""
             return rows
     except Exception:
         pass
@@ -1384,7 +1415,7 @@ def fraud_top_users(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
-    return query_dict(f"""
+    rows = query_dict(f"""
         SELECT nome_operador AS usuario_nome,
                count() AS cancelamentos,
                sum(valor_total) AS valor_cancelado
@@ -1395,6 +1426,10 @@ def fraud_top_users(
         ORDER BY valor_cancelado DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
+    for row in rows:
+        nome = (row.get("usuario_nome") or "").strip()
+        row["usuario_label"] = nome if nome else "Operador não resolvido"
+    return rows
 
 
 # ================================================================
