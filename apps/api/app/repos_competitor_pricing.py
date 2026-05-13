@@ -97,7 +97,6 @@ def list_fuel_products(
           AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%OLEO%%'
           AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%LUBR%%'
           AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%ADITIV%%'
-          AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%ADITIV%%'
           AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%ARLA%%'
           AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%LUBR%%'
           AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%FILTRO%%'
@@ -498,7 +497,7 @@ def update_item_price(
 
         conn.execute(
             """UPDATE app.competitor_price_items
-               SET price = %(new_price)s, created_at = %(now)s
+               SET price = %(new_price)s, updated_at = %(now)s
                WHERE id = %(item_id)s""",
             {"new_price": new_price, "now": now, "item_id": item_id},
         )

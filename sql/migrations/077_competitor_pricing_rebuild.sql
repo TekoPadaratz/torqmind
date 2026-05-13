@@ -7,7 +7,29 @@
 
 BEGIN;
 
--- Drop 076 tables (all empty)
+-- Drop 076 tables only if they have 0 rows (safety guard)
+DO $$
+DECLARE
+  _tbl TEXT;
+  _cnt BIGINT;
+BEGIN
+  FOR _tbl IN
+    SELECT unnest(ARRAY[
+      'app.competitor_price_capture_evidence',
+      'app.competitor_price_capture_item_revisions',
+      'app.competitor_price_capture_items',
+      'app.competitor_price_captures',
+      'app.competitor_stations'
+    ])
+  LOOP
+    EXECUTE format('SELECT count(*) FROM %s', _tbl) INTO _cnt;
+    IF _cnt > 0 THEN
+      RAISE EXCEPTION 'Table % has % rows — refusing to DROP. Aborting migration 077.', _tbl, _cnt;
+    END IF;
+  END LOOP;
+END
+$$;
+
 DROP TABLE IF EXISTS app.competitor_price_capture_evidence CASCADE;
 DROP TABLE IF EXISTS app.competitor_price_capture_item_revisions CASCADE;
 DROP TABLE IF EXISTS app.competitor_price_capture_items CASCADE;

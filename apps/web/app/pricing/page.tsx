@@ -209,6 +209,7 @@ function RegisterTab({
         capture_date: captureDate,
         observation: observation.trim() || null,
         items,
+        ...(scope.id_filial ? { id_filial: parseInt(scope.id_filial, 10) } : {}),
       });
       setSuccess(`Captura salva com sucesso! ${res.data?.items_saved || items.length} preços registrados.`);
       setStationName('');
@@ -291,7 +292,7 @@ function RegisterTab({
                   <td style={{ textAlign: 'right', color: 'var(--muted)' }}>
                     {fuel.own_current_price
                       ? `R$ ${fmtPrice(fuel.own_current_price)}`
-                      : '-'}
+                      : <span style={{ fontSize: 11, opacity: 0.6 }}>Sem preço próprio</span>}
                   </td>
                   <td style={{ textAlign: 'right' }}>
                     <input
@@ -574,7 +575,7 @@ function ComparisonTab({
                       )}
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      {row.own_current_price ? `R$ ${fmtPrice(row.own_current_price)}` : '-'}
+                      {row.own_current_price ? `R$ ${fmtPrice(row.own_current_price)}` : <span style={{ fontSize: 11, opacity: 0.6 }}>Sem preço</span>}
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       {row.competitor_min_price ? `R$ ${fmtPrice(row.competitor_min_price)}` : '-'}

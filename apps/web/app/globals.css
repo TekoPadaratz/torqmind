@@ -733,8 +733,8 @@ body.product-shell .container {
   color: var(--text);
 }
 .pricingTabActive {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  color: var(--accent-copper);
+  border-bottom-color: var(--accent-copper);
 }
 .alertError {
   margin-bottom: 12px;

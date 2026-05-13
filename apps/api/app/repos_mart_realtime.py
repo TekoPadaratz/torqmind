@@ -1740,7 +1740,6 @@ REALTIME_FUNCTIONS = {
     "fraud_last_events",
     "risk_top_employees",
     "finance_kpis",
-    "customers_summary_paginated",
     "streaming_health",
     "goals_today",
     "monthly_goal_projection",
