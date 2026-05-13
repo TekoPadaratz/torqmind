@@ -143,10 +143,13 @@ def _get_own_prices(
 ) -> Dict[int, Dict[str, Any]]:
     """Own fuel prices from last real sale on the reference date.
 
-    Uses dw.fact_venda_item.preco_praticado_unitario — the actual price
-    charged to the customer.  Picks the most recent sale of each product
-    on ``ref_date`` (data_key).  If no sale exists, the product is absent
-    from the result (own_price = NULL).
+    Joins dw.fact_venda_item with dw.fact_comprovante to get the real sale
+    timestamp (fc.data) and to filter out cancelled / situacao=3 receipts.
+    Orders by fc.data DESC (real sale time), then id_comprovante DESC as
+    tiebreaker — never by created_at (DW load time).
+
+    If no valid sale exists for a product on the reference date the product
+    is absent from the result (own_price = NULL).
 
     NOTE: custo_medio (dim_produto) is cost, NOT selling price — it is
     intentionally NOT used here.
@@ -160,6 +163,11 @@ def _get_own_prices(
             v.id_produto,
             v.preco_praticado_unitario AS unit_price
         FROM dw.fact_venda_item v
+        JOIN dw.fact_comprovante fc
+            ON fc.id_empresa = v.id_empresa
+           AND fc.id_filial  = v.id_filial
+           AND fc.id_db       = v.id_db
+           AND fc.id_comprovante = v.id_comprovante
         WHERE v.id_empresa = %(id_empresa)s
           AND v.id_filial  = %(id_filial)s
           AND v.data_key   = %(data_key)s
@@ -167,7 +175,9 @@ def _get_own_prices(
           AND v.total > 0
           AND v.preco_praticado_unitario IS NOT NULL
           AND v.preco_praticado_unitario > 0
-        ORDER BY v.id_produto, v.created_at DESC
+          AND fc.cancelado = false
+          AND fc.situacao != 3
+        ORDER BY v.id_produto, fc.data DESC, v.id_comprovante DESC, v.id_itensmovprodutos DESC
     """
     try:
         with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
