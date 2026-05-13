@@ -69,7 +69,7 @@ Percorre 4 layers: STG PG → CH Slim → Mart RT → API.
 ## Ações Realizadas no Ambiente
 
 1. ✅ ALTER TABLE stg_comprovantes_slim ADD COLUMN ignored_business/commercial_eligible
-2. ✅ ALTER TABLE fact_venda ADD COLUMN commercial_eligible  
+2. ✅ ALTER TABLE fact_venda ADD COLUMN commercial_eligible
 3. ✅ CDC auto-repopulou slim (1051 rows: 1047 elegíveis, 2 sit=3, 2 cancelados)
 4. ✅ DELETE de dados duplicados/corrompidos das marts
 5. ✅ Mart rebuild (mart_only=True) — 11 refreshes, 68.629 rows

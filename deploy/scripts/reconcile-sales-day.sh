@@ -25,7 +25,7 @@ echo ""
 PG_CONTAINER="${PG_CONTAINER:-torqmind-postgres}"
 echo "── LAYER 1: STG PostgreSQL (${PG_HOST}) ──"
 ssh "tm@${PG_HOST}" "docker exec ${PG_CONTAINER} psql -U torqmind -d torqmind -c \"
-SELECT 
+SELECT
   COUNT(*) AS total,
   COUNT(*) FILTER (WHERE cancelado = 1) AS cancelados,
   COUNT(*) FILTER (WHERE situacao = 3) AS sit3,
@@ -42,7 +42,7 @@ echo ""
 echo "── LAYER 2: ClickHouse Slim (${CH_HOST}) ──"
 ssh "tm@${CH_HOST}" "docker exec torqmind-clickhouse clickhouse-client \
   --user $CH_USER --password $CH_PASS -q \"
-SELECT 
+SELECT
   count() AS total,
   countIf(cancelado=1) AS cancelados,
   countIf(ignored_business=1) AS sit3,
@@ -64,7 +64,7 @@ SELECT
   count() AS qtd_itens
 FROM torqmind_current.stg_itenscomprovantes_slim i
 INNER JOIN torqmind_current.stg_comprovantes_slim c
-  ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial 
+  ON c.id_empresa=i.id_empresa AND c.id_filial=i.id_filial
      AND c.id_comprovante=i.id_comprovante AND c.data_key=i.data_key
 WHERE i.id_empresa=$ID_EMPRESA AND i.id_filial=$ID_FILIAL AND i.data_key=$DATA_KEY
   AND c.commercial_eligible=1 AND i.cfop > 5000

@@ -42,6 +42,7 @@ REALTIME_TRUTH_BYPASS_KEYS = frozenset({
     "cash_overview",
     "fraud_overview",
     "finance_overview",
+    "goals_overview",
 })
 SYNC_SNAPSHOT_KEYS = tuple(HOT_ROUTE_REFRESH_AFTER_SECONDS.keys())
 DB_BUSY_LONG_QUERY_SECONDS = 15

@@ -465,6 +465,7 @@ class MartBuilder:
             if self.source == "stg":
                 results.append(self._refresh_cash_overview_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
                 results.append(self._refresh_risk_recent_events_stg(client, id_empresa=id_empresa, id_filial=id_filial))
+                results.append(self._refresh_antifraude_eventos_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial, skip_delete=True))
                 results.append(self._refresh_finance_overview_stg(client, id_empresa=id_empresa, id_filial=id_filial))
                 results.append(self._refresh_nfe_inutilizations_rt_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
             else:
@@ -1458,8 +1459,8 @@ class MartBuilder:
             'cancelamento' AS event_type,
             'STG' AS source,
             c.id_turno,
-            t.abertura_ts AS turno_abertura_ts,
-            t.fechamento_ts AS turno_fechamento_ts,
+            parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATA')) AS turno_abertura_ts,
+            parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')) AS turno_fechamento_ts,
             toInt32(0) AS id_caixa,
             c.id_usuario,
             coalesce(nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''), nullIf(JSONExtractString(u.payload, 'NOME'), ''), '') AS nome_operador,

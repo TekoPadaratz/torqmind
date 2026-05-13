@@ -58,6 +58,24 @@ def _date_range_filter(dt_ini: date, dt_fim: date, col: str = "data_key") -> str
     return f" AND {col} >= {from_key} AND {col} <= {to_key}"
 
 
+def _date_key(d: date) -> int:
+    return int(d.strftime("%Y%m%d"))
+
+
+def _to_float(value: Any, decimals: int = 2) -> float:
+    try:
+        return round(float(value), decimals)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _sales_product_meta_subquery() -> str:
     return f"""
         SELECT
@@ -1528,6 +1546,178 @@ def customers_summary_paginated(
 
 
 # ================================================================
+# Leaderboard / Goals (read from ClickHouse dim or PG mart via slim)
+# ================================================================
+
+def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
+    """Top employees by sales revenue from realtime mart (comprovantes_slim + dim_funcionario)."""
+    branch = _branch_clause("s.id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            s.id_usuario,
+            coalesce(nullIf(u.nome, ''), concat('Usuário #', toString(s.id_usuario))) AS funcionario_nome,
+            sum(s.valor_total) AS faturamento,
+            toDecimal64(0, 2) AS margem,
+            toUInt32(count()) AS vendas
+        FROM {CURRENT_DB}.stg_comprovantes_slim AS s
+        LEFT JOIN {CURRENT_DB}.dim_usuario_caixa AS u FINAL
+            ON s.id_empresa = u.id_empresa AND s.id_usuario = u.id_usuario
+        WHERE s.id_empresa = {{id_empresa:Int32}}
+          AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND s.cancelado = 0 AND s.is_deleted = 0
+          AND s.commercial_eligible = 1
+          AND s.id_usuario > 0
+          {branch}
+        GROUP BY s.id_usuario, u.nome
+        ORDER BY faturamento DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "limit": int(limit),
+    })
+    return [
+        {
+            "id_funcionario": _to_int(row.get("id_usuario")),
+            "funcionario_nome": row.get("funcionario_nome") or "",
+            "faturamento": _to_float(row.get("faturamento")),
+            "margem": _to_float(row.get("margem")),
+            "vendas": _to_int(row.get("vendas")),
+        }
+        for row in rows
+    ]
+
+
+def leaderboard_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 20) -> List[Dict[str, Any]]:
+    if dt_fim < dt_ini:
+        return []
+    return sales_top_employees(role, id_empresa, id_filial, dt_ini, dt_fim, limit=limit)
+
+
+def risk_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
+    """Top employees by fraud/risk events."""
+    branch = _branch_clause("r.id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            r.nome_operador AS funcionario_nome,
+            count() AS eventos,
+            sum(r.impacto_estimado) AS impacto
+        FROM {MART_RT_DB}.risk_recent_events_rt AS r FINAL
+        WHERE r.id_empresa = {{id_empresa:Int32}}
+          AND r.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND r.nome_operador != ''
+          {branch}
+        GROUP BY r.nome_operador
+        ORDER BY impacto DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "limit": int(limit),
+    })
+    return [
+        {
+            "funcionario_nome": row.get("funcionario_nome") or "",
+            "eventos": _to_int(row.get("eventos")),
+            "impacto": _to_float(row.get("impacto")),
+        }
+        for row in rows
+    ]
+
+
+def goals_today(role: str, id_empresa: int, id_filial: Any, goal_date: date) -> List[Dict[str, Any]]:
+    """Read current goals from ClickHouse goals table."""
+    branch = _branch_clause("g.id_filial", id_filial)
+    month_start = goal_date.replace(day=1)
+    if goal_date.month == 12:
+        month_end = goal_date.replace(year=goal_date.year + 1, month=1, day=1) - timedelta(days=1)
+    else:
+        month_end = goal_date.replace(month=goal_date.month + 1, day=1) - timedelta(days=1)
+    rows = query_dict(f"""
+        SELECT
+            g.goal_type,
+            sum(g.target_value) AS target_value,
+            count() AS goal_rows,
+            min(g.goal_date) AS goal_month
+        FROM {CURRENT_DB}.goals AS g FINAL
+        WHERE g.id_empresa = {{id_empresa:Int32}}
+          AND g.is_deleted = 0
+          AND g.goal_date BETWEEN {{month_ini:Date}} AND {{month_end:Date}}
+          {branch}
+        GROUP BY g.goal_type
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "month_ini": month_start.isoformat(),
+        "month_end": month_end.isoformat(),
+    })
+    return [dict(row) for row in rows]
+
+
+def monthly_goal_projection(role: str, id_empresa: int, id_filial: Any, as_of: Optional[date] = None) -> Dict[str, Any]:
+    """Monthly goal projection using realtime data."""
+    effective_as_of = as_of or business_today(id_empresa)
+    month_start = effective_as_of.replace(day=1)
+    if effective_as_of.month == 12:
+        month_end = effective_as_of.replace(year=effective_as_of.year + 1, month=1, day=1) - timedelta(days=1)
+    else:
+        month_end = effective_as_of.replace(month=effective_as_of.month + 1, day=1) - timedelta(days=1)
+
+    goals = goals_today(role, id_empresa, id_filial, effective_as_of)
+    faturamento_goal = next((g for g in goals if g.get("goal_type") == "faturamento"), None)
+    target = _to_float(faturamento_goal.get("target_value")) if faturamento_goal else 0.0
+
+    branch = _branch_clause("id_filial", id_filial)
+    mtd = query_dict(f"""
+        SELECT sum(faturamento) AS faturamento
+        FROM {MART_RT_DB}.dashboard_home_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {branch}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(month_start),
+        "fim": _date_key(effective_as_of),
+    })
+    realizado = _to_float(mtd[0].get("faturamento")) if mtd else 0.0
+
+    elapsed_days = max((effective_as_of - month_start).days + 1, 1)
+    total_days = max((month_end - month_start).days + 1, 1)
+    daily_avg = realizado / elapsed_days if elapsed_days > 0 else 0.0
+    projected = daily_avg * total_days
+    pct = round(realizado / target * 100, 1) if target > 0 else 0.0
+
+    status = "ahead" if target > 0 and projected >= target else "behind" if target > 0 else "no_goal"
+    return {
+        "month_ref": month_start.isoformat(),
+        "month_label": month_start.strftime("%B %Y"),
+        "requested_as_of": effective_as_of.isoformat(),
+        "effective_as_of": effective_as_of.isoformat(),
+        "requested_month_ref": month_start.isoformat(),
+        "commercial_coverage": {},
+        "business_clock": {},
+        "goal": {"goal_type": "faturamento", "target_value": target},
+        "status": status,
+        "summary": {
+            "realizado": round(realizado, 2),
+            "target": round(target, 2),
+            "pct_realizado": pct,
+            "projected": round(projected, 2),
+            "remaining": round(max(target - realizado, 0), 2),
+            "elapsed_days": elapsed_days,
+            "total_days": total_days,
+            "daily_avg": round(daily_avg, 2),
+        },
+        "headline": f"{'%.1f' % pct}% da meta" if target > 0 else "Sem meta definida",
+        "forecast": {"projected_eom": round(projected, 2), "confidence": "medium"},
+        "drivers": [],
+        "history": [],
+        "series_mtd": [],
+    }
+
+
+# ================================================================
 # INVENTORY (for analytics facade routing)
 # ================================================================
 
@@ -1539,6 +1729,8 @@ REALTIME_FUNCTIONS = {
     "sales_by_hour",
     "sales_top_products",
     "sales_top_groups",
+    "sales_top_employees",
+    "leaderboard_employees",
     "payments_overview",
     "cash_overview",
     "open_cash_monitor",
@@ -1546,7 +1738,10 @@ REALTIME_FUNCTIONS = {
     "fraud_series",
     "fraud_top_users",
     "fraud_last_events",
+    "risk_top_employees",
     "finance_kpis",
     "customers_summary_paginated",
     "streaming_health",
+    "goals_today",
+    "monthly_goal_projection",
 }
