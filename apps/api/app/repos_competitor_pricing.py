@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -135,9 +135,34 @@ def _get_own_prices(
     role: str,
     id_empresa: int,
     id_filial: int,
+    ref_date: Optional[date] = None,
 ) -> Dict[int, Dict[str, Any]]:
-    """Get own fuel prices from recent avg sale price (7-day window)."""
-    sql = """
+    """Own fuel prices: cadastro (custo_medio) first, then last sale avg, else NULL."""
+    result: Dict[int, Dict[str, Any]] = {}
+
+    # A) Cadastro price from dw.dim_produto.custo_medio
+    cadastro_sql = """
+        SELECT id_produto, custo_medio
+        FROM dw.dim_produto
+        WHERE id_empresa = %(id_empresa)s
+          AND id_filial  = %(id_filial)s
+          AND custo_medio IS NOT NULL
+          AND custo_medio > 0
+    """
+    try:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+            cur = conn.execute(cadastro_sql, {"id_empresa": id_empresa, "id_filial": id_filial})
+            for r in cur.fetchall():
+                result[r["id_produto"]] = {
+                    "price": r["custo_medio"],
+                    "source": "CADASTRO",
+                }
+    except Exception:
+        logger.warning("Failed to get own prices from dw.dim_produto", exc_info=True)
+
+    # B) Fill gaps with last-sale avg from mart.agg_produtos_diaria (7-day window)
+    target = ref_date or date.today()
+    sale_sql = """
         SELECT
             a.id_produto,
             CASE WHEN SUM(a.qtd) > 0
@@ -147,23 +172,27 @@ def _get_own_prices(
         FROM mart.agg_produtos_diaria a
         WHERE a.id_empresa = %(id_empresa)s
           AND a.id_filial  = %(id_filial)s
-          AND a.data >= CURRENT_DATE - INTERVAL '7 days'
-          AND a.data <= CURRENT_DATE
+          AND a.data >= %(dt_ini)s
+          AND a.data <= %(dt_fim)s
         GROUP BY a.id_produto
         HAVING SUM(a.qtd) > 0
     """
-    result: Dict[int, Dict[str, Any]] = {}
     try:
         with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-            cur = conn.execute(sql, {"id_empresa": id_empresa, "id_filial": id_filial})
+            cur = conn.execute(sale_sql, {
+                "id_empresa": id_empresa, "id_filial": id_filial,
+                "dt_ini": target - timedelta(days=7), "dt_fim": target,
+            })
             for r in cur.fetchall():
-                if r["avg_price"] and r["avg_price"] > 0:
-                    result[r["id_produto"]] = {
+                pid = r["id_produto"]
+                if pid not in result and r["avg_price"] and r["avg_price"] > 0:
+                    result[pid] = {
                         "price": r["avg_price"],
                         "source": "LAST_SALE",
                     }
     except Exception:
         logger.warning("Failed to get own prices from mart.agg_produtos_diaria", exc_info=True)
+
     return result
 
 
@@ -456,6 +485,7 @@ def update_item_price(
     *,
     role: str,
     id_empresa: int,
+    id_filial: Optional[int] = None,
     item_id: str,
     new_price: Decimal,
     change_reason: Optional[str],
@@ -468,12 +498,13 @@ def update_item_price(
     now = _now_utc()
 
     with get_conn(role=role, tenant_id=id_empresa) as conn:
+        _filial_cond = "AND i.id_filial = %(id_filial)s" if id_filial else ""
         cur = conn.execute(
-            """SELECT i.*, c.station_id, c.station_name_snapshot
+            f"""SELECT i.*, c.station_id, c.station_name_snapshot
                FROM app.competitor_price_items i
                JOIN app.competitor_price_captures c ON c.id = i.capture_id
-               WHERE i.id = %(item_id)s AND i.id_empresa = %(id_empresa)s""",
-            {"item_id": item_id, "id_empresa": id_empresa},
+               WHERE i.id = %(item_id)s AND i.id_empresa = %(id_empresa)s {_filial_cond}""",
+            {"item_id": item_id, "id_empresa": id_empresa, **(dict(id_filial=id_filial) if id_filial else {})},
         )
         item = cur.fetchone()
         if not item:
@@ -569,11 +600,11 @@ def get_comparison(
                 i.price,
                 i.station_id,
                 c.station_name_snapshot AS station_name,
-                i.created_at,
+                COALESCE(i.updated_at, i.created_at) AS effective_at,
                 i.created_by_user_name,
                 ROW_NUMBER() OVER (
                     PARTITION BY i.station_id, i.product_id
-                    ORDER BY i.created_at DESC
+                    ORDER BY COALESCE(i.updated_at, i.created_at) DESC
                 ) AS rn
             FROM app.competitor_price_items i
             JOIN app.competitor_price_captures c ON c.id = i.capture_id
@@ -584,7 +615,7 @@ def get_comparison(
               AND i.price > 0
         )
         SELECT product_id, product_name, fuel_type, price,
-               station_id, station_name, created_at, created_by_user_name
+               station_id, station_name, effective_at, created_by_user_name
         FROM ranked
         WHERE rn = 1
     """
@@ -619,7 +650,7 @@ def get_comparison(
             avg_price = sum(prices) / len(prices)
             min_price = min(prices)
             min_entry = min(entries, key=lambda e: Decimal(str(e["price"])))
-            last_entry = max(entries, key=lambda e: e["created_at"])
+            last_entry = max(entries, key=lambda e: e["effective_at"])
 
             diff_value = (own_price - min_price) if own_price else None
             diff_percent = (
@@ -648,7 +679,7 @@ def get_comparison(
                 "diff_value": str(round(diff_value, 4)) if diff_value is not None else None,
                 "diff_percent": str(round(diff_percent, 2)) if diff_percent is not None else None,
                 "status": status,
-                "last_competitor_record_at": last_entry["created_at"].isoformat() if last_entry["created_at"] else None,
+                "last_competitor_record_at": last_entry["effective_at"].isoformat() if last_entry["effective_at"] else None,
                 "last_competitor_user_name": last_entry["created_by_user_name"],
             })
         else:

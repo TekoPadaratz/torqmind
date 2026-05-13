@@ -1,11 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import { apiGet, apiPost, apiPatch } from '../lib/api';
 import { extractApiError } from '../lib/errors';
 import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
+import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
+import { startScopeTransition } from '../lib/scope-runtime';
 
 export const dynamic = 'force-dynamic';
 
@@ -153,6 +156,7 @@ function RegisterTab({
   setError: (m: string) => void;
   setSuccess: (m: string) => void;
 }) {
+  const router = useRouter();
   const [fuels, setFuels] = useState<FuelProduct[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -204,17 +208,19 @@ function RegisterTab({
 
     setSaving(true);
     try {
-      const res = await apiPost('/bi/pricing/competitor/captures', {
+      const res = await apiPost(`/bi/pricing/competitor/captures?${scopeParams(scope)}`, {
         station_name: stationName.trim(),
         capture_date: captureDate,
         observation: observation.trim() || null,
         items,
-        ...(scope.id_filial ? { id_filial: parseInt(scope.id_filial, 10) } : {}),
       });
       setSuccess(`Captura salva com sucesso! ${res.data?.items_saved || items.length} preços registrados.`);
       setStationName('');
       setObservation('');
-      setPrices({});
+      // keep prices — user may want to register at another station
+      const nextScope = { ...scope, scope_epoch: createScopeEpoch() };
+      startScopeTransition(nextScope, 'pricing_register');
+      router.replace(buildProductHref('/pricing', nextScope));
     } catch (e: any) {
       setError(extractApiError(e, 'Erro ao salvar captura'));
     } finally {
@@ -366,7 +372,7 @@ function HistoryTab({
       return;
     }
     try {
-      await apiPatch(`/bi/pricing/competitor/items/${itemId}`, {
+      await apiPatch(`/bi/pricing/competitor/items/${itemId}?${scopeParams(scope)}`, {
         new_price: cleaned,
         change_reason: 'Correção manual',
       });

@@ -179,17 +179,19 @@ def update_item_price(
     item_id: str,
     body: ItemPriceUpdateRequest,
     request: Request,
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
 ):
     _require_write_access(claims)
-    tenant, _bs, _bi = resolve_scope_filters(claims)
-    role = claims["role"]
+    role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     user_id, user_name = _user_info(claims)
 
     try:
         result = pricing_repo.update_item_price(
             role=role,
             id_empresa=tenant,
+            id_filial=filial,
             item_id=item_id,
             new_price=Decimal(body.new_price),
             change_reason=body.change_reason,

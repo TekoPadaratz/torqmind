@@ -327,8 +327,10 @@ body.product-shell .container {
   padding: 16px 22px 0;
   transition: transform 0.3s ease;
 }
-.productTopNav.navHidden {
-  transform: translateY(-100%);
+@media (max-width: 768px) {
+  .productTopNav.navHidden {
+    transform: translateY(-100%);
+  }
 }
 
 .productTopBar {

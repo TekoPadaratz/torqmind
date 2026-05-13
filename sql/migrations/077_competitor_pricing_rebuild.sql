@@ -8,6 +8,7 @@
 BEGIN;
 
 -- Drop 076 tables only if they have 0 rows (safety guard)
+-- Uses to_regclass to avoid error when table does not exist.
 DO $$
 DECLARE
   _tbl TEXT;
@@ -22,9 +23,11 @@ BEGIN
       'app.competitor_stations'
     ])
   LOOP
-    EXECUTE format('SELECT count(*) FROM %s', _tbl) INTO _cnt;
-    IF _cnt > 0 THEN
-      RAISE EXCEPTION 'Table % has % rows — refusing to DROP. Aborting migration 077.', _tbl, _cnt;
+    IF to_regclass(_tbl) IS NOT NULL THEN
+      EXECUTE format('SELECT count(*) FROM %s', _tbl) INTO _cnt;
+      IF _cnt > 0 THEN
+        RAISE EXCEPTION 'Table % has % rows - refusing to DROP. Aborting migration 077.', _tbl, _cnt;
+      END IF;
     END IF;
   END LOOP;
 END

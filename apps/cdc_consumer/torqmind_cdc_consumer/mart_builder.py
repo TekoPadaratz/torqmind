@@ -1459,11 +1459,20 @@ class MartBuilder:
             'cancelamento' AS event_type,
             'STG' AS source,
             c.id_turno,
-            parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATA')) AS turno_abertura_ts,
-            parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')) AS turno_fechamento_ts,
+            coalesce(
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTABERTURA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAABERTURA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRABERTURA'))
+            ) AS turno_abertura_ts,
+            coalesce(
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTFECHAMENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRAFECHAMENTO'))
+            ) AS turno_fechamento_ts,
             toInt32(0) AS id_caixa,
             c.id_usuario,
-            coalesce(nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''), nullIf(JSONExtractString(u.payload, 'NOME'), ''), '') AS nome_operador,
+            coalesce(nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''), nullIf(JSONExtractString(u.payload, 'NOME'), ''), nullIf(uc.nome, ''), '') AS nome_operador,
             CAST(NULL, 'Nullable(Int32)') AS id_funcionario,
             '' AS nome_funcionario,
             c.valor_total,
@@ -1476,6 +1485,8 @@ class MartBuilder:
         FROM {self.current_db}.stg_comprovantes_slim AS c
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
+        LEFT JOIN {self.current_db}.dim_usuario_caixa AS uc FINAL
+            ON c.id_empresa = uc.id_empresa AND c.id_filial = uc.id_filial AND nullIf(c.id_usuario, 0) = uc.id_usuario
         LEFT JOIN {self.current_db}.stg_filiais AS f FINAL
             ON c.id_empresa = f.id_empresa AND c.id_filial = f.id_filial
         LEFT JOIN {self.current_db}.stg_turnos AS t FINAL

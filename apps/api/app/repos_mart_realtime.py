@@ -1380,7 +1380,7 @@ def fraud_top_users(
     limit: int = 10,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
-    """Top users by cancellation volume from risk_recent_events_rt."""
+    """Top users by cancellation volume from enriched mart_antifraude_eventos."""
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
@@ -1388,7 +1388,7 @@ def fraud_top_users(
         SELECT nome_operador AS usuario_nome,
                count() AS cancelamentos,
                sum(valor_total) AS valor_cancelado
-        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
           AND event_type = 'cancelamento'
         GROUP BY nome_operador
@@ -1561,7 +1561,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
             toUInt32(count()) AS vendas
         FROM {CURRENT_DB}.stg_comprovantes_slim AS s
         LEFT JOIN {CURRENT_DB}.dim_usuario_caixa AS u FINAL
-            ON s.id_empresa = u.id_empresa AND s.id_usuario = u.id_usuario
+            ON s.id_empresa = u.id_empresa AND s.id_filial = u.id_filial AND s.id_usuario = u.id_usuario
         WHERE s.id_empresa = {{id_empresa:Int32}}
           AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           AND s.cancelado = 0 AND s.is_deleted = 0
