@@ -56,6 +56,9 @@ type CaptureItem = {
   latest_revision_number: number;
   previous_price: string | null;
   created_by_user_name: string;
+  last_updated_by_user_name: string | null;
+  last_updated_at: string | null;
+  change_reason: string | null;
 };
 
 type Capture = {
@@ -217,7 +220,7 @@ function RegisterTab({
       setSuccess(`Captura salva com sucesso! ${res.data?.items_saved || items.length} preços registrados.`);
       setStationName('');
       setObservation('');
-      // keep prices — user may want to register at another station
+      setPrices({});
       const nextScope = { ...scope, scope_epoch: createScopeEpoch() };
       startScopeTransition(nextScope, 'pricing_register');
       router.replace(buildProductHref('/pricing', nextScope));
@@ -427,6 +430,8 @@ function HistoryTab({
                   <tr>
                     <th>Produto</th>
                     <th style={{ textAlign: 'right' }}>Preço</th>
+                    <th>Registrado por</th>
+                    <th>Última alteração</th>
                     <th style={{ textAlign: 'center', width: 100 }}>Ação</th>
                   </tr>
                 </thead>
@@ -454,6 +459,28 @@ function HistoryTab({
                           />
                         ) : (
                           <span style={{ fontWeight: 600 }}>R$ {fmtPrice(item.price)}</span>
+                        )}
+                      </td>
+                      <td style={{ color: 'var(--muted)', fontSize: 12 }}>
+                        {item.created_by_user_name}
+                      </td>
+                      <td style={{ fontSize: 12 }}>
+                        {item.last_updated_by_user_name ? (
+                          <span>
+                            <span style={{ fontWeight: 500 }}>{item.last_updated_by_user_name}</span>
+                            {item.last_updated_at && (
+                              <span className="muted" style={{ marginLeft: 4 }}>
+                                {new Date(item.last_updated_at).toLocaleString('pt-BR')}
+                              </span>
+                            )}
+                            {item.change_reason && (
+                              <span className="muted" style={{ display: 'block', fontSize: 11 }}>
+                                {item.change_reason}
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="muted">-</span>
                         )}
                       </td>
                       <td style={{ textAlign: 'center' }}>

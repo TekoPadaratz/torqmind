@@ -1,5 +1,5 @@
 -- ============================================================================
--- Migration 076: Competitor Pricing — Transactional Tables
+-- Migration 076: Competitor Pricing - Transactional Tables
 -- ============================================================================
 -- Creates the full competitor pricing schema in app.* for PostgreSQL.
 -- Tables: competitor_stations, competitor_price_captures,

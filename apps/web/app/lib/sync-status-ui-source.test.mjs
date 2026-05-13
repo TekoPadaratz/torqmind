@@ -36,10 +36,10 @@ test('sales page uses customer-friendly sales labels', () => {
   assert.ok(!source.includes('Saídas normais'));
 });
 
-test('pricing page keeps typed competitor prices while refetching after save', () => {
+test('pricing page clears typed competitor prices after save to prevent stale data', () => {
   const source = readFileSync(new URL('../pricing/page.tsx', import.meta.url), 'utf8');
   assert.ok(source.includes('router.replace(buildProductHref'));
-  assert.ok(!source.includes('setPriceInputs({});'));
+  assert.ok(source.includes('setPrices({})'));
 });
 
 test('product navigation uses Plataforma label in Portuguese', () => {

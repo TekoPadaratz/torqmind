@@ -2,13 +2,18 @@
 
 Single-transaction capture of competitor fuel prices by field managers.
 No prior station registration required. Audit trail via revisions table.
+
+Storage: all data lives in PostgreSQL ``app.*`` tables (app-owned, not
+ClickHouse/mart).  Own-price ("Meu Preço") is read from
+``dw.fact_venda_item.preco_praticado_unitario`` (actual sale price, NOT
+custo_medio).  If no sale exists on the reference date the own price is NULL.
 """
 from __future__ import annotations
 
 import logging
 import re
 import unicodedata
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -96,7 +101,6 @@ def list_fuel_products(
           AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%FILTRO%%'
           AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%OLEO%%'
           AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%LUBR%%'
-          AND UPPER(COALESCE(g.nome, '')) NOT LIKE '%%ADITIV%%'
           AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%ARLA%%'
           AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%LUBR%%'
           AND UPPER(COALESCE(p.nome, '')) NOT LIKE '%%FILTRO%%'
@@ -137,61 +141,48 @@ def _get_own_prices(
     id_filial: int,
     ref_date: Optional[date] = None,
 ) -> Dict[int, Dict[str, Any]]:
-    """Own fuel prices: cadastro (custo_medio) first, then last sale avg, else NULL."""
-    result: Dict[int, Dict[str, Any]] = {}
+    """Own fuel prices from last real sale on the reference date.
 
-    # A) Cadastro price from dw.dim_produto.custo_medio
-    cadastro_sql = """
-        SELECT id_produto, custo_medio
-        FROM dw.dim_produto
-        WHERE id_empresa = %(id_empresa)s
-          AND id_filial  = %(id_filial)s
-          AND custo_medio IS NOT NULL
-          AND custo_medio > 0
+    Uses dw.fact_venda_item.preco_praticado_unitario — the actual price
+    charged to the customer.  Picks the most recent sale of each product
+    on ``ref_date`` (data_key).  If no sale exists, the product is absent
+    from the result (own_price = NULL).
+
+    NOTE: custo_medio (dim_produto) is cost, NOT selling price — it is
+    intentionally NOT used here.
     """
-    try:
-        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-            cur = conn.execute(cadastro_sql, {"id_empresa": id_empresa, "id_filial": id_filial})
-            for r in cur.fetchall():
-                result[r["id_produto"]] = {
-                    "price": r["custo_medio"],
-                    "source": "CADASTRO",
-                }
-    except Exception:
-        logger.warning("Failed to get own prices from dw.dim_produto", exc_info=True)
-
-    # B) Fill gaps with last-sale avg from mart.agg_produtos_diaria (7-day window)
+    result: Dict[int, Dict[str, Any]] = {}
     target = ref_date or date.today()
+    data_key = int(target.strftime("%Y%m%d"))
+
     sale_sql = """
-        SELECT
-            a.id_produto,
-            CASE WHEN SUM(a.qtd) > 0
-                 THEN ROUND(SUM(a.faturamento) / SUM(a.qtd), 4)
-                 ELSE NULL
-            END AS avg_price
-        FROM mart.agg_produtos_diaria a
-        WHERE a.id_empresa = %(id_empresa)s
-          AND a.id_filial  = %(id_filial)s
-          AND a.data >= %(dt_ini)s
-          AND a.data <= %(dt_fim)s
-        GROUP BY a.id_produto
-        HAVING SUM(a.qtd) > 0
+        SELECT DISTINCT ON (v.id_produto)
+            v.id_produto,
+            v.preco_praticado_unitario AS unit_price
+        FROM dw.fact_venda_item v
+        WHERE v.id_empresa = %(id_empresa)s
+          AND v.id_filial  = %(id_filial)s
+          AND v.data_key   = %(data_key)s
+          AND v.qtd > 0
+          AND v.total > 0
+          AND v.preco_praticado_unitario IS NOT NULL
+          AND v.preco_praticado_unitario > 0
+        ORDER BY v.id_produto, v.created_at DESC
     """
     try:
         with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
             cur = conn.execute(sale_sql, {
-                "id_empresa": id_empresa, "id_filial": id_filial,
-                "dt_ini": target - timedelta(days=7), "dt_fim": target,
+                "id_empresa": id_empresa,
+                "id_filial": id_filial,
+                "data_key": data_key,
             })
             for r in cur.fetchall():
-                pid = r["id_produto"]
-                if pid not in result and r["avg_price"] and r["avg_price"] > 0:
-                    result[pid] = {
-                        "price": r["avg_price"],
-                        "source": "LAST_SALE",
-                    }
+                result[r["id_produto"]] = {
+                    "price": r["unit_price"],
+                    "source": "LAST_SALE",
+                }
     except Exception:
-        logger.warning("Failed to get own prices from mart.agg_produtos_diaria", exc_info=True)
+        logger.warning("Failed to get own prices from dw.fact_venda_item", exc_info=True)
 
     return result
 
@@ -441,7 +432,22 @@ def list_history(
                  FROM app.competitor_price_item_revisions r
                  WHERE r.item_id = i.id AND r.action_type = 'UPDATE_PRICE'
                  ORDER BY r.revision_number DESC LIMIT 1
-                ) AS previous_price
+                ) AS previous_price,
+                (SELECT r.changed_by_user_name
+                 FROM app.competitor_price_item_revisions r
+                 WHERE r.item_id = i.id AND r.action_type = 'UPDATE_PRICE'
+                 ORDER BY r.revision_number DESC LIMIT 1
+                ) AS last_updated_by_user_name,
+                (SELECT r.changed_at
+                 FROM app.competitor_price_item_revisions r
+                 WHERE r.item_id = i.id AND r.action_type = 'UPDATE_PRICE'
+                 ORDER BY r.revision_number DESC LIMIT 1
+                ) AS last_updated_at,
+                (SELECT r.change_reason
+                 FROM app.competitor_price_item_revisions r
+                 WHERE r.item_id = i.id AND r.action_type = 'UPDATE_PRICE'
+                 ORDER BY r.revision_number DESC LIMIT 1
+                ) AS change_reason
             FROM app.competitor_price_items i
             WHERE i.capture_id IN ({placeholders})
             ORDER BY i.product_id
@@ -461,6 +467,9 @@ def list_history(
                 "created_by_user_name": it["created_by_user_name"],
                 "latest_revision_number": it["latest_revision_number"],
                 "previous_price": str(it["previous_price"]) if it["previous_price"] else None,
+                "last_updated_by_user_name": it["last_updated_by_user_name"],
+                "last_updated_at": it["last_updated_at"].isoformat() if it["last_updated_at"] else None,
+                "change_reason": it["change_reason"],
             })
 
     result = []
@@ -626,7 +635,7 @@ def get_comparison(
         })
         competitor_rows = cur.fetchall()
 
-    own_prices = _get_own_prices(role, id_empresa, id_filial)
+    own_prices = _get_own_prices(role, id_empresa, id_filial, ref_date=capture_date)
     fuels = list_fuel_products(role, id_empresa, id_filial)
 
     by_product: Dict[int, list] = {}

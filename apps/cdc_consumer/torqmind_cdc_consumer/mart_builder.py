@@ -1468,7 +1468,7 @@ class MartBuilder:
             coalesce(
                 parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')),
                 parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTFECHAMENTO')),
-                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRAFECHAMENTO'))
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO'))
             ) AS turno_fechamento_ts,
             toInt32(0) AS id_caixa,
             c.id_usuario,
