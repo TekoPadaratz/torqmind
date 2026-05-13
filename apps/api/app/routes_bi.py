@@ -1494,46 +1494,6 @@ def cash_overview(
     )
 
 
-# ------------------------
-# Precificacao Concorrencia
-# ------------------------
-
-@router.get("/pricing/competitor/overview")
-def pricing_competitor_overview(
-    dt_ini: date,
-    dt_fim: date,
-    days_simulation: int = Query(10, ge=1, le=60),
-    id_filial: Optional[int] = Query(None),
-    id_filiais: Optional[List[int]] = Query(None),
-    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
-    claims=Depends(get_current_claims),
-):
-    role = claims["role"]
-    tenant, filial_scope, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    filial = primary_branch_id(filial_scope)
-    if filial is None:
-        raise HTTPException(status_code=400, detail="id_filial is required for competitor pricing simulation")
-
-    return _with_cached_response(
-        scope_key="pricing_competitor_overview",
-        role=role,
-        tenant_id=tenant,
-        branch_scope=branch_scope,
-        dt_ini=dt_ini,
-        dt_fim=dt_fim,
-        dt_ref=None,
-        compute=lambda: repos_mart.competitor_pricing_overview(
-            role,
-            tenant,
-            filial,
-            dt_ini=dt_ini,
-            dt_fim=dt_fim,
-            days_simulation=days_simulation,
-        ),
-        extra_context={"days_simulation": days_simulation},
-        safe_fallback=lambda: _safe_pricing_overview_payload(dt_ini, dt_fim, days_simulation),
-    )
-
 
 @router.get("/sync/status")
 def sync_status(
@@ -1544,54 +1504,6 @@ def sync_status(
 ):
     tenant, _, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return snapshot_cache.last_consolidated_sync(tenant_id=tenant, branch_id=primary_branch_id(branch_scope))
-
-
-@router.post("/pricing/competitor/prices")
-def pricing_competitor_prices_upsert(
-    payload: CompetitorPriceUpsertRequest,
-    id_filial: Optional[int] = Query(None),
-    id_filiais: Optional[List[int]] = Query(None),
-    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
-    claims=Depends(get_current_claims),
-):
-    role = claims["role"]
-    if role not in {"MASTER", "OWNER", "MANAGER"}:
-        raise HTTPException(status_code=403, detail="forbidden")
-    try:
-        repos_auth.assert_product_write_allowed(claims)
-    except repos_auth.AuthError as exc:
-        _raise_auth_error(exc)
-
-    tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    filial = primary_branch_id(filial_scope)
-    if filial is None:
-        raise HTTPException(status_code=400, detail="id_filial is required to save competitor prices")
-
-    if not payload.items:
-        return {"ok": True, "saved": 0}
-
-    requested_ids = [item.id_produto for item in payload.items]
-    allowed_ids = repos_mart.competitor_fuel_product_ids(role, tenant, filial, requested_ids)
-    invalid_ids = [pid for pid in requested_ids if pid not in allowed_ids]
-    if invalid_ids:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "competitor_invalid_product",
-                "message": "Só é permitido registrar preços para combustíveis ativos.",
-                "ids": invalid_ids,
-            },
-        )
-
-    items = [{"id_produto": it.id_produto, "competitor_price": it.competitor_price} for it in payload.items]
-    result = repos_mart.competitor_pricing_upsert(
-        role,
-        tenant,
-        filial,
-        items=items,
-        updated_by=str(claims.get("sub") or ""),
-    )
-    return {"ok": True, **result}
 
 
 # ------------------------
