@@ -130,10 +130,33 @@ export default function AppNav({
   const [unread, setUnread] = useState(initialUnread ?? 0);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
+  const [navHidden, setNavHidden] = useState(false);
 
   useEffect(() => {
     document.body.classList.add('product-shell');
     return () => document.body.classList.remove('product-shell');
+  }, []);
+
+  // Hide nav on scroll down (mobile), show on scroll up
+  useEffect(() => {
+    let lastY = window.scrollY;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY;
+        if (y > 120 && y > lastY) {
+          setNavHidden(true);
+        } else if (y < lastY) {
+          setNavHidden(false);
+        }
+        lastY = y;
+        ticking = false;
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   useEffect(() => {
@@ -427,7 +450,7 @@ export default function AppNav({
 
   return (
     <>
-      <header className="productTopNav">
+      <header className={`productTopNav${navHidden ? ' navHidden' : ''}`}>
         <div className="productTopBar">
           <div className="productBrand productBrandInline">
             <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={34} height={34} priority />

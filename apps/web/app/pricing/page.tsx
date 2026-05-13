@@ -105,20 +105,16 @@ export default function PricingPage() {
   return (
     <>
       <AppNav title="Preco Concorrente" />
-      <div className="max-w-5xl mx-auto px-4 py-6">
-        <h1 className="text-2xl font-bold mb-4">Preco Concorrente</h1>
+      <div className="container">
+        <h1 className="pageTitle">Preco Concorrente</h1>
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-6 border-b border-gray-200">
+        <div className="pricingTabs">
           {tabs.map(t => (
             <button
               key={t.key}
               onClick={() => { setTab(t.key); clearMessages(); }}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                tab === t.key
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
+              className={`pricingTab ${tab === t.key ? 'pricingTabActive' : ''}`}
             >
               {t.label}
             </button>
@@ -127,26 +123,24 @@ export default function PricingPage() {
 
         {/* Messages */}
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded text-sm">
-            {error}
-          </div>
+          <div className="alertError">{error}</div>
         )}
         {success && (
-          <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded text-sm">
-            {success}
-          </div>
+          <div className="alertSuccess">{success}</div>
         )}
 
         {/* Tab Content */}
-        {tab === 'register' && (
-          <RegisterTab scope={scope} setError={setError} setSuccess={setSuccess} />
-        )}
-        {tab === 'history' && (
-          <HistoryTab scope={scope} setError={setError} setSuccess={setSuccess} />
-        )}
-        {tab === 'comparison' && (
-          <ComparisonTab scope={scope} setError={setError} />
-        )}
+        <div className="card">
+          {tab === 'register' && (
+            <RegisterTab scope={scope} setError={setError} setSuccess={setSuccess} />
+          )}
+          {tab === 'history' && (
+            <HistoryTab scope={scope} setError={setError} setSuccess={setSuccess} />
+          )}
+          {tab === 'comparison' && (
+            <ComparisonTab scope={scope} setError={setError} />
+          )}
+        </div>
       </div>
     </>
   );

@@ -1311,14 +1311,21 @@ def fraud_last_events(
     except Exception:
         pass
 
-    # Fallback to legacy mart (without turno/caixa enrichment)
+    # Fallback to legacy mart — enrich with filial name from dim_filial
+    filial_r = _branch_clause("r.id_filial", id_filial)
     return query_dict(f"""
-        SELECT id, id_filial, data_key, event_type, source,
-               nome_operador, nome_funcionario, valor_total,
-               impacto_estimado, score_risco, score_level, reasons
-        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
-        ORDER BY id DESC
+        SELECT r.id, r.id_filial,
+               COALESCE(f.nome, concat('Filial ', toString(r.id_filial))) AS filial_nome,
+               r.data_key, r.event_type, r.source,
+               r.nome_operador, r.nome_funcionario, r.valor_total,
+               r.impacto_estimado, r.score_risco, r.score_level, r.reasons
+        FROM {MART_RT_DB}.risk_recent_events_rt AS r FINAL
+        LEFT JOIN (
+            SELECT id_filial, nome
+            FROM {CURRENT_DB}.dim_filial FINAL
+        ) AS f ON r.id_filial = f.id_filial
+        WHERE r.id_empresa = {{id_empresa:Int32}} {filial_r} {date_range}
+        ORDER BY r.id DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
 
