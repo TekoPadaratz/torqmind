@@ -1290,10 +1290,28 @@ def fraud_last_events(
     limit: int = 30,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
-    """Recent risk events with operator/employee names."""
+    """Recent risk events with operator/employee names, shift and register."""
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
+    # Try enriched mart first (has id_turno, id_caixa, hora, filial_nome)
+    try:
+        rows = query_dict(f"""
+            SELECT event_id AS id, id_filial, filial_nome, data_key, event_type, source,
+                   id_turno, id_caixa, id_usuario, nome_operador,
+                   id_funcionario, nome_funcionario, valor_total,
+                   impacto_estimado, score_risco, score_level, reasons, hora
+            FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+            ORDER BY event_id DESC
+            LIMIT {limit}
+        """, parameters={"id_empresa": id_empresa})
+        if rows:
+            return rows
+    except Exception:
+        pass
+
+    # Fallback to legacy mart (without turno/caixa enrichment)
     return query_dict(f"""
         SELECT id, id_filial, data_key, event_type, source,
                nome_operador, nome_funcionario, valor_total,
@@ -1441,6 +1459,68 @@ def streaming_health(id_empresa: int = 0, **kwargs: Any) -> Dict[str, Any]:
 
 
 # ================================================================
+# CUSTOMERS (paginated from mart_clientes_resumo)
+# ================================================================
+
+def customers_summary_paginated(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    sort_by: str = "total_compras_30d",
+    sort_order: str = "DESC",
+    search: str = "",
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Paginated customer summary from mart_clientes_resumo."""
+    filial = _branch_clause("id_filial", id_filial)
+    params = {"id_empresa": id_empresa}
+
+    allowed_sorts = {"total_compras_30d", "qtd_compras_30d", "ticket_medio_30d", "total_compras_all", "recencia_dias", "nome_cliente"}
+    if sort_by not in allowed_sorts:
+        sort_by = "total_compras_30d"
+    if sort_order.upper() not in ("ASC", "DESC"):
+        sort_order = "DESC"
+
+    search_clause = ""
+    if search:
+        safe_search = search.replace("'", "\\'").replace("\\", "\\\\")
+        search_clause = f" AND (positionCaseInsensitive(nome_cliente, '{safe_search}') > 0 OR positionCaseInsensitive(documento, '{safe_search}') > 0)"
+
+    offset = (max(1, page) - 1) * page_size
+
+    count_rows = query_dict(f"""
+        SELECT count() AS total
+        FROM {MART_RT_DB}.mart_clientes_resumo FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {search_clause}
+    """, parameters=params)
+    total = int(count_rows[0]["total"]) if count_rows else 0
+
+    rows = query_dict(f"""
+        SELECT id_cliente, nome_cliente, documento, telefone, email,
+               segmento, risk_level,
+               total_compras_30d, qtd_compras_30d, ticket_medio_30d,
+               total_compras_all, qtd_compras_all,
+               ultima_compra_key, recencia_dias
+        FROM {MART_RT_DB}.mart_clientes_resumo FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {search_clause}
+        ORDER BY {sort_by} {sort_order}
+        LIMIT {int(page_size)} OFFSET {int(offset)}
+    """, parameters=params)
+
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
+        "source": "realtime",
+    }
+
+
+# ================================================================
 # INVENTORY (for analytics facade routing)
 # ================================================================
 
@@ -1460,5 +1540,6 @@ REALTIME_FUNCTIONS = {
     "fraud_top_users",
     "fraud_last_events",
     "finance_kpis",
+    "customers_summary_paginated",
     "streaming_health",
 }

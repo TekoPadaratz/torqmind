@@ -102,7 +102,7 @@ class MartBuilder:
         "sales_daily_rt", "sales_hourly_rt", "sales_products_rt", "sales_groups_rt",
         "payments_by_type_rt", "dashboard_home_rt", "fraud_daily_rt",
         "risk_recent_events_rt", "cash_overview_rt", "finance_overview_rt",
-        "nfe_inutilizations_rt",
+        "nfe_inutilizations_rt", "mart_antifraude_eventos",
         "source_freshness", "mart_publication_log",
     ]
 
@@ -200,6 +200,7 @@ class MartBuilder:
                         results.append(self._refresh_sales_groups_stg(client, data_keys))
                         results.append(self._refresh_fraud_daily_stg(client, data_keys))
                         results.append(self._refresh_risk_recent_events_stg(client))
+                        results.append(self._refresh_antifraude_eventos_stg(client, data_keys))
 
                     if tables & {"comprovantes", "nfe"}:
                         results.append(self._refresh_nfe_inutilizations_rt_stg(client, data_keys))
@@ -1423,6 +1424,68 @@ class MartBuilder:
         """
         rows = self._insert_and_count_nokey(client, "risk_recent_events_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("risk_recent_events_rt", rows, int((time.time() - t0) * 1000))
+
+    def _refresh_antifraude_eventos_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
+        """Enriched fraud events with operador, turno, caixa, filial_nome.
+
+        Writes to mart_antifraude_eventos. Excludes NFE status=5.
+        """
+        t0 = time.time()
+        kf = self._slim_keys_filter(data_keys, "c")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
+        if not skip_delete:
+            self._delete_mart_batch(client, "mart_antifraude_eventos", data_keys, id_empresa, id_filial)
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_join = (
+            f"LEFT JOIN nfe_latest "
+            f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
+            f"AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante "
+        ) if has_nfe else ""
+        nfe_filter = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
+
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.mart_antifraude_eventos
+        {nfe_with}
+        SELECT
+            c.id_empresa, c.id_filial,
+            coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
+            c.data_key,
+            toDate(toString(c.data_key), '%Y%m%d') AS dt,
+            toInt64(cityHash64(concat(toString(c.id_empresa), ':', toString(c.id_filial), ':', toString(c.id_db), ':', toString(c.id_comprovante))) % 9223372036854775807) AS event_id,
+            'cancelamento' AS event_type,
+            'STG' AS source,
+            c.id_turno,
+            t.abertura_ts AS turno_abertura_ts,
+            t.fechamento_ts AS turno_fechamento_ts,
+            toInt32(0) AS id_caixa,
+            c.id_usuario,
+            coalesce(nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''), nullIf(JSONExtractString(u.payload, 'NOME'), ''), '') AS nome_operador,
+            CAST(NULL, 'Nullable(Int32)') AS id_funcionario,
+            '' AS nome_funcionario,
+            c.valor_total,
+            c.valor_total AS impacto_estimado,
+            80 AS score_risco,
+            'HIGH' AS score_level,
+            '{{"source":"stg.comprovantes","rule":"cancelled_receipt"}}' AS reasons,
+            toUInt8(toHour(c.dt_evento_local)) AS hora,
+            now64(6) AS published_at
+        FROM {self.current_db}.stg_comprovantes_slim AS c
+        LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
+            ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
+        LEFT JOIN {self.current_db}.stg_filiais AS f FINAL
+            ON c.id_empresa = f.id_empresa AND c.id_filial = f.id_filial
+        LEFT JOIN {self.current_db}.stg_turnos AS t FINAL
+            ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
+        {nfe_join}
+        WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+          {nfe_filter}
+          {empresa_filter_c} {filial_filter_c}
+        """
+        rows = self._insert_and_count(client, "mart_antifraude_eventos", sql, data_keys, id_empresa, id_filial)
+        return MartRefreshResult("mart_antifraude_eventos", rows, int((time.time() - t0) * 1000))
 
     def _refresh_finance_overview_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
         """Finance overview. Reads payload from finance tables (small volume)."""

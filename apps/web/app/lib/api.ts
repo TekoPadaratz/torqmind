@@ -46,6 +46,16 @@ export async function apiPatch(path: string, body: any, config?: AxiosRequestCon
   return res.data;
 }
 
+export async function apiPut(path: string, body: any, config?: AxiosRequestConfig) {
+  const res = await api.put(path, body, config);
+  return res.data;
+}
+
+export async function apiDelete(path: string, config?: AxiosRequestConfig) {
+  const res = await api.delete(path, config);
+  return res.data;
+}
+
 export function isRequestCanceled(error: any): boolean {
   return isRequestCanceledBase(error);
 }

@@ -7022,3 +7022,35 @@ def notification_mark_read(
         row = conn.execute(sql, params).fetchone()
         conn.commit()
     return row or {"id": notification_id, "read_at": None}
+
+
+def customers_summary_paginated(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    sort_by: str = "total_compras_30d",
+    sort_order: str = "DESC",
+    search: str = "",
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """PG fallback for paginated customer summary (uses customers_top)."""
+    from datetime import timedelta
+    today = business_today(id_empresa)
+    dt_ini = today - timedelta(days=30)
+    items = customers_top(role, id_empresa, id_filial, dt_ini, today, limit=500)
+    if search:
+        s = search.lower()
+        items = [i for i in items if s in str(i.get("cliente_nome", "")).lower()]
+    total = len(items)
+    offset = (max(1, page) - 1) * page_size
+    return {
+        "items": items[offset:offset + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
+        "source": "postgres",
+    }

@@ -1229,6 +1229,33 @@ def risk_overview(
 # Clientes
 # ------------------------
 
+@router.get("/customers/summary")
+def customers_summary(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    sort_by: Optional[str] = Query("total_compras_30d"),
+    sort_order: Optional[str] = Query("DESC"),
+    search: Optional[str] = Query(""),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    try:
+        return repos_mart.customers_summary_paginated(
+            role, tenant, filial,
+            page=page, page_size=page_size,
+            sort_by=sort_by or "total_compras_30d",
+            sort_order=sort_order or "DESC",
+            search=search or "",
+        )
+    except Exception as exc:
+        logger.warning("customers_summary fallback: %s", exc)
+        return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "source": "unavailable"}
+
+
 @router.get("/customers/overview")
 def customers_overview(
     dt_ini: date,
