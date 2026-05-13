@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState } from 'react';
 import AppNav from '../components/AppNav';
 import { apiGet, apiPost, apiPatch } from '../lib/api';
 import { extractApiError } from '../lib/errors';
-import { formatCurrency } from '../lib/format';
 import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
 
 export const dynamic = 'force-dynamic';
@@ -97,16 +96,16 @@ export default function PricingPage() {
   const clearMessages = () => { setError(''); setSuccess(''); };
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'register', label: 'Registrar Precos' },
-    { key: 'history', label: 'Historico' },
-    { key: 'comparison', label: 'Comparacao' },
+    { key: 'register', label: 'Registrar Preços' },
+    { key: 'history', label: 'Histórico' },
+    { key: 'comparison', label: 'Comparação' },
   ];
 
   return (
     <>
-      <AppNav title="Preco Concorrente" />
+      <AppNav title="Preço Concorrente" />
       <div className="container">
-        <h1 className="pageTitle">Preco Concorrente</h1>
+        <h1 className="pageTitle">Preço Concorrente</h1>
 
         {/* Tabs */}
         <div className="pricingTabs">
@@ -122,12 +121,8 @@ export default function PricingPage() {
         </div>
 
         {/* Messages */}
-        {error && (
-          <div className="alertError">{error}</div>
-        )}
-        {success && (
-          <div className="alertSuccess">{success}</div>
-        )}
+        {error && <div className="alertError">{error}</div>}
+        {success && <div className="alertSuccess">{success}</div>}
 
         {/* Tab Content */}
         <div className="card">
@@ -173,7 +168,7 @@ function RegisterTab({
       const res = await apiGet(`/bi/pricing/competitor/fuels?${scopeParams(scope)}`);
       setFuels(res.data || []);
     } catch (e: any) {
-      setError(extractApiError(e, 'Erro ao carregar combustiveis'));
+      setError(extractApiError(e, 'Erro ao carregar combustíveis'));
     } finally {
       setLoading(false);
     }
@@ -182,7 +177,6 @@ function RegisterTab({
   useEffect(() => { loadFuels(); }, [loadFuels]);
 
   const handlePriceChange = (productId: number, value: string) => {
-    // Allow only valid decimal input
     const cleaned = value.replace(/[^0-9.,]/g, '').replace(',', '.');
     setPrices(prev => ({ ...prev, [productId]: cleaned }));
   };
@@ -192,7 +186,7 @@ function RegisterTab({
     setSuccess('');
 
     if (!stationName.trim() || stationName.trim().length < 3) {
-      setError('Informe o nome do posto (minimo 3 caracteres).');
+      setError('Informe o nome do posto (mínimo 3 caracteres).');
       return;
     }
 
@@ -204,7 +198,7 @@ function RegisterTab({
       }));
 
     if (items.length === 0) {
-      setError('Informe ao menos um preco.');
+      setError('Informe ao menos um preço.');
       return;
     }
 
@@ -216,7 +210,7 @@ function RegisterTab({
         observation: observation.trim() || null,
         items,
       });
-      setSuccess(`Captura salva com sucesso! ${res.data?.items_saved || items.length} precos registrados.`);
+      setSuccess(`Captura salva com sucesso! ${res.data?.items_saved || items.length} preços registrados.`);
       setStationName('');
       setObservation('');
       setPrices({});
@@ -228,45 +222,43 @@ function RegisterTab({
   };
 
   if (!scope.id_filial) {
-    return <p className="text-gray-500 text-sm">Selecione uma filial para registrar precos.</p>;
+    return <p className="muted">Selecione uma filial para registrar preços.</p>;
   }
 
   return (
     <div>
       {/* Station Name */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Nome do Posto Concorrente
-        </label>
+      <div className="pricingField full" style={{ marginBottom: 16 }}>
+        <label className="pricingLabel">Nome do Posto Concorrente</label>
         <input
           type="text"
           value={stationName}
           onChange={e => setStationName(e.target.value)}
           placeholder="Ex: Posto Shell Centro"
-          className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="input"
           maxLength={200}
         />
       </div>
 
       {/* Date + Observation */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Data</label>
+      <div className="pricingFormRow">
+        <div className="pricingField">
+          <label className="pricingLabel">Data</label>
           <input
             type="date"
             value={captureDate}
             onChange={e => setCaptureDate(e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="input"
           />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Observacao (opcional)</label>
+        <div className="pricingField">
+          <label className="pricingLabel">Observação (opcional)</label>
           <input
             type="text"
             value={observation}
             onChange={e => setObservation(e.target.value)}
-            placeholder="Ex: Precos de placa"
-            className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Ex: Preços de placa"
+            className="input"
             maxLength={500}
           />
         </div>
@@ -274,41 +266,41 @@ function RegisterTab({
 
       {/* Fuel Prices Table */}
       {loading ? (
-        <p className="text-gray-500 text-sm">Carregando combustiveis...</p>
+        <p className="muted">Carregando combustíveis...</p>
       ) : fuels.length === 0 ? (
-        <p className="text-gray-500 text-sm">Nenhum combustivel encontrado para esta filial.</p>
+        <p className="muted">Nenhum combustível encontrado para esta filial.</p>
       ) : (
-        <div className="overflow-x-auto mb-4">
-          <table className="w-full text-sm border-collapse">
+        <div className="tableScroll" style={{ marginBottom: 20 }}>
+          <table className="table">
             <thead>
-              <tr className="border-b border-gray-200 text-left">
-                <th className="py-2 pr-3 font-medium text-gray-600">Combustivel</th>
-                <th className="py-2 pr-3 font-medium text-gray-600 text-right">Meu Preco</th>
-                <th className="py-2 font-medium text-gray-600 text-right">Preco Concorrente</th>
+              <tr>
+                <th>Combustível</th>
+                <th style={{ textAlign: 'right' }}>Meu Preço</th>
+                <th style={{ textAlign: 'right' }}>Preço Concorrente</th>
               </tr>
             </thead>
             <tbody>
               {fuels.map(fuel => (
-                <tr key={fuel.product_id} className="border-b border-gray-100">
-                  <td className="py-2 pr-3">
-                    <div className="font-medium">{fuel.product_name}</div>
+                <tr key={fuel.product_id}>
+                  <td>
+                    <span style={{ fontWeight: 600 }}>{fuel.product_name}</span>
                     {fuel.fuel_type && (
-                      <span className="text-xs text-gray-400">{fuel.fuel_type}</span>
+                      <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>{fuel.fuel_type}</span>
                     )}
                   </td>
-                  <td className="py-2 pr-3 text-right text-gray-500">
+                  <td style={{ textAlign: 'right', color: 'var(--muted)' }}>
                     {fuel.own_current_price
                       ? `R$ ${fmtPrice(fuel.own_current_price)}`
                       : '-'}
                   </td>
-                  <td className="py-2 text-right">
+                  <td style={{ textAlign: 'right' }}>
                     <input
                       type="text"
                       inputMode="decimal"
                       value={prices[fuel.product_id] || ''}
                       onChange={e => handlePriceChange(fuel.product_id, e.target.value)}
-                      placeholder="0.000"
-                      className="w-24 text-right border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="0,000"
+                      className="inputInline"
                     />
                   </td>
                 </tr>
@@ -322,9 +314,9 @@ function RegisterTab({
       <button
         onClick={handleSubmit}
         disabled={saving}
-        className="w-full sm:w-auto px-6 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+        className="btnPrimary"
       >
-        {saving ? 'Salvando...' : 'Registrar Precos'}
+        {saving ? 'Salvando...' : 'Registrar Preços'}
       </button>
     </div>
   );
@@ -356,7 +348,7 @@ function HistoryTab({
       const res = await apiGet(`/bi/pricing/competitor/history?${params}`);
       setCaptures(res.data || []);
     } catch (e: any) {
-      setError(extractApiError(e, 'Erro ao carregar historico'));
+      setError(extractApiError(e, 'Erro ao carregar histórico'));
     } finally {
       setLoading(false);
     }
@@ -369,113 +361,114 @@ function HistoryTab({
     setSuccess('');
     const cleaned = editPrice.replace(',', '.');
     if (!cleaned || parseFloat(cleaned) <= 0) {
-      setError('Preco invalido.');
+      setError('Preço inválido.');
       return;
     }
     try {
       await apiPatch(`/bi/pricing/competitor/items/${itemId}`, {
         new_price: cleaned,
-        change_reason: 'Correcao manual',
+        change_reason: 'Correção manual',
       });
-      setSuccess('Preco atualizado.');
+      setSuccess('Preço atualizado.');
       setEditingItem(null);
       setEditPrice('');
       loadHistory();
     } catch (e: any) {
-      setError(extractApiError(e, 'Erro ao atualizar preco'));
+      setError(extractApiError(e, 'Erro ao atualizar preço'));
     }
   };
 
   if (!scope.id_filial) {
-    return <p className="text-gray-500 text-sm">Selecione uma filial.</p>;
+    return <p className="muted">Selecione uma filial.</p>;
   }
 
   return (
     <div>
       {/* Date picker */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-1">Data</label>
+      <div className="pricingField" style={{ marginBottom: 16, maxWidth: 220 }}>
+        <label className="pricingLabel">Data</label>
         <input
           type="date"
           value={historyDate}
           onChange={e => setHistoryDate(e.target.value)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="input"
         />
       </div>
 
       {loading ? (
-        <p className="text-gray-500 text-sm">Carregando...</p>
+        <p className="muted">Carregando...</p>
       ) : captures.length === 0 ? (
-        <p className="text-gray-500 text-sm">Nenhuma captura encontrada para esta data.</p>
+        <p className="muted">Nenhuma captura encontrada para esta data.</p>
       ) : (
-        <div className="space-y-6">
+        <div>
           {captures.map(cap => (
-            <div key={cap.capture_id} className="bg-white border border-gray-200 rounded-lg p-4">
-              <div className="flex flex-wrap items-center gap-2 mb-3">
-                <span className="font-semibold text-gray-800">{cap.station_name}</span>
-                <span className="text-xs text-gray-400">
+            <div key={cap.capture_id} className="historyCapture">
+              <div className="captureHeader">
+                <span className="captureStation">{cap.station_name}</span>
+                <span className="captureMeta">
                   {cap.captured_at ? new Date(cap.captured_at).toLocaleString('pt-BR') : ''}
                 </span>
-                <span className="text-xs text-gray-400">por {cap.registered_by_user_name}</span>
+                <span className="captureMeta">por {cap.registered_by_user_name}</span>
               </div>
               {cap.observation && (
-                <p className="text-xs text-gray-500 mb-2 italic">{cap.observation}</p>
+                <p className="captureObs">{cap.observation}</p>
               )}
 
               {/* Items */}
-              <table className="w-full text-sm">
+              <table className="table compact">
                 <thead>
-                  <tr className="border-b border-gray-100 text-left text-gray-500">
-                    <th className="py-1 pr-2 font-medium">Produto</th>
-                    <th className="py-1 text-right font-medium">Preco</th>
-                    <th className="py-1 text-center font-medium w-20">Acao</th>
+                  <tr>
+                    <th>Produto</th>
+                    <th style={{ textAlign: 'right' }}>Preço</th>
+                    <th style={{ textAlign: 'center', width: 100 }}>Ação</th>
                   </tr>
                 </thead>
                 <tbody>
                   {cap.items.map(item => (
-                    <tr key={item.item_id} className="border-b border-gray-50">
-                      <td className="py-1 pr-2">
+                    <tr key={item.item_id}>
+                      <td>
                         <span>{item.product_name}</span>
                         {item.previous_price && (
-                          <span className="text-xs text-gray-400 ml-1">
+                          <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
                             (anterior: R$ {fmtPrice(item.previous_price)})
                           </span>
                         )}
                       </td>
-                      <td className="py-1 text-right">
+                      <td style={{ textAlign: 'right' }}>
                         {editingItem === item.item_id ? (
                           <input
                             type="text"
                             inputMode="decimal"
                             value={editPrice}
                             onChange={e => setEditPrice(e.target.value.replace(/[^0-9.,]/g, '').replace(',', '.'))}
-                            className="w-20 text-right border border-blue-300 rounded px-1 py-0.5 text-sm focus:outline-none"
+                            className="inputInline"
+                            style={{ width: 90 }}
                             autoFocus
                           />
                         ) : (
-                          <span className="font-medium">R$ {fmtPrice(item.price)}</span>
+                          <span style={{ fontWeight: 600 }}>R$ {fmtPrice(item.price)}</span>
                         )}
                       </td>
-                      <td className="py-1 text-center">
+                      <td style={{ textAlign: 'center' }}>
                         {editingItem === item.item_id ? (
-                          <div className="flex gap-1 justify-center">
+                          <span style={{ display: 'inline-flex', gap: 4 }}>
                             <button
                               onClick={() => handleEditSave(item.item_id)}
-                              className="text-green-600 text-xs hover:underline"
+                              className="btnLink btnLinkGood"
                             >
                               Salvar
                             </button>
                             <button
                               onClick={() => { setEditingItem(null); setEditPrice(''); }}
-                              className="text-gray-400 text-xs hover:underline"
+                              className="btnLink btnLinkMuted"
                             >
                               Cancelar
                             </button>
-                          </div>
+                          </span>
                         ) : (
                           <button
                             onClick={() => { setEditingItem(item.item_id); setEditPrice(item.price); }}
-                            className="text-blue-600 text-xs hover:underline"
+                            className="btnLink btnLinkAccent"
                           >
                             Editar
                           </button>
@@ -523,87 +516,91 @@ function ComparisonTab({
 
   useEffect(() => { loadComparison(); }, [loadComparison]);
 
-  const statusLabel = (s: string) => {
+  const statusInfo = (s: string) => {
     switch (s) {
-      case 'MEU_POSTO_MAIS_BARATO': return { text: 'Mais barato', color: 'text-green-600' };
-      case 'MEU_POSTO_MAIS_CARO': return { text: 'Mais caro', color: 'text-red-600' };
-      case 'IGUAL_AO_MENOR': return { text: 'Igual', color: 'text-blue-600' };
-      case 'SEM_CONCORRENTE': return { text: 'Sem dados', color: 'text-gray-400' };
-      case 'SEM_PRECO_PROPRIO': return { text: 'Sem preco proprio', color: 'text-yellow-600' };
-      default: return { text: s, color: 'text-gray-500' };
+      case 'MEU_POSTO_MAIS_BARATO': return { text: 'Mais barato', cls: 'statusGood' };
+      case 'MEU_POSTO_MAIS_CARO': return { text: 'Mais caro', cls: 'statusBad' };
+      case 'IGUAL_AO_MENOR': return { text: 'Igual', cls: 'statusNeutral' };
+      case 'SEM_CONCORRENTE': return { text: 'Sem dados', cls: 'statusMuted' };
+      case 'SEM_PRECO_PROPRIO': return { text: 'Sem preço próprio', cls: 'statusWarn' };
+      default: return { text: s, cls: 'statusMuted' };
     }
   };
 
   if (!scope.id_filial) {
-    return <p className="text-gray-500 text-sm">Selecione uma filial.</p>;
+    return <p className="muted">Selecione uma filial.</p>;
   }
 
   return (
     <div>
       {/* Date picker */}
-      <div className="mb-4">
-        <label className="block text-sm font-medium text-gray-700 mb-1">Data de referencia</label>
+      <div className="pricingField" style={{ marginBottom: 16, maxWidth: 220 }}>
+        <label className="pricingLabel">Data de referência</label>
         <input
           type="date"
           value={compDate}
           onChange={e => setCompDate(e.target.value)}
-          className="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="input"
         />
       </div>
 
       {loading ? (
-        <p className="text-gray-500 text-sm">Carregando comparativo...</p>
+        <p className="muted">Carregando comparativo...</p>
       ) : rows.length === 0 ? (
-        <p className="text-gray-500 text-sm">Nenhum dado de comparacao encontrado.</p>
+        <p className="muted">Nenhum dado de comparação encontrado.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
+        <div className="tableScroll">
+          <table className="table">
             <thead>
-              <tr className="border-b border-gray-200 text-left">
-                <th className="py-2 pr-3 font-medium text-gray-600">Combustivel</th>
-                <th className="py-2 pr-3 font-medium text-gray-600 text-right">Meu Preco</th>
-                <th className="py-2 pr-3 font-medium text-gray-600 text-right">Menor Concorrente</th>
-                <th className="py-2 pr-3 font-medium text-gray-600">Posto</th>
-                <th className="py-2 pr-3 font-medium text-gray-600 text-right">Media</th>
-                <th className="py-2 pr-3 font-medium text-gray-600 text-right">Diferenca</th>
-                <th className="py-2 font-medium text-gray-600 text-center">Status</th>
+              <tr>
+                <th>Combustível</th>
+                <th style={{ textAlign: 'right' }}>Meu Preço</th>
+                <th style={{ textAlign: 'right' }}>Menor Concorrente</th>
+                <th>Posto</th>
+                <th style={{ textAlign: 'right' }}>Média</th>
+                <th style={{ textAlign: 'right' }}>Diferença</th>
+                <th style={{ textAlign: 'center' }}>Status</th>
               </tr>
             </thead>
             <tbody>
               {rows.map(row => {
-                const st = statusLabel(row.status);
+                const st = statusInfo(row.status);
                 return (
-                  <tr key={row.product_id} className="border-b border-gray-100">
-                    <td className="py-2 pr-3">
-                      <div className="font-medium">{row.product_name}</div>
+                  <tr key={row.product_id}>
+                    <td>
+                      <span style={{ fontWeight: 600 }}>{row.product_name}</span>
                       {row.fuel_type && (
-                        <span className="text-xs text-gray-400">{row.fuel_type}</span>
+                        <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>{row.fuel_type}</span>
                       )}
                     </td>
-                    <td className="py-2 pr-3 text-right">
+                    <td style={{ textAlign: 'right' }}>
                       {row.own_current_price ? `R$ ${fmtPrice(row.own_current_price)}` : '-'}
                     </td>
-                    <td className="py-2 pr-3 text-right">
+                    <td style={{ textAlign: 'right' }}>
                       {row.competitor_min_price ? `R$ ${fmtPrice(row.competitor_min_price)}` : '-'}
                     </td>
-                    <td className="py-2 pr-3 text-gray-500 text-xs">
+                    <td style={{ color: 'var(--muted)', fontSize: 12 }}>
                       {row.competitor_min_station_name || '-'}
                     </td>
-                    <td className="py-2 pr-3 text-right text-gray-500">
+                    <td style={{ textAlign: 'right', color: 'var(--muted)' }}>
                       {row.competitor_avg_price ? `R$ ${fmtPrice(row.competitor_avg_price)}` : '-'}
                     </td>
-                    <td className="py-2 pr-3 text-right">
+                    <td style={{ textAlign: 'right' }}>
                       {row.diff_value != null ? (
-                        <span className={Number(row.diff_value) > 0 ? 'text-red-600' : 'text-green-600'}>
+                        <span className={Number(row.diff_value) > 0 ? 'statusBad' : 'statusGood'}>
                           {Number(row.diff_value) > 0 ? '+' : ''}R$ {fmtPrice(row.diff_value)}
                           {row.diff_percent != null && (
-                            <span className="text-xs ml-1">({Number(row.diff_percent) > 0 ? '+' : ''}{fmtPrice(row.diff_percent, 1)}%)</span>
+                            <span style={{ fontSize: 11, marginLeft: 4 }}>
+                              ({Number(row.diff_percent) > 0 ? '+' : ''}{fmtPrice(row.diff_percent, 1)}%)
+                            </span>
                           )}
                         </span>
                       ) : '-'}
                     </td>
-                    <td className={`py-2 text-center text-xs font-medium ${st.color}`}>
-                      {st.text}
+                    <td style={{ textAlign: 'center' }}>
+                      <span className={st.cls} style={{ fontSize: 12, fontWeight: 600 }}>
+                        {st.text}
+                      </span>
                     </td>
                   </tr>
                 );
