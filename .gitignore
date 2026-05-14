@@ -58,3 +58,8 @@ arquivo.dump
 apps/cdc_consumer/torqmind_cdc_consumer.egg-info/
 tmp/
 apps/api/torqmind_api.egg-info/
+
+# Xpert Source Explorer — real config and output (never commit)
+config/source-explorer.env
+logs/source_explorer/
+exports/source_explorer/
