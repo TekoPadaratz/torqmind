@@ -138,21 +138,19 @@ export default function AppNav({
     return () => document.body.classList.remove('product-shell');
   }, []);
 
-  // Hide nav on scroll down (mobile), show on scroll up
+  // Hide nav on scroll down (mobile), show only when near the top
   useEffect(() => {
-    let lastY = window.scrollY;
     let ticking = false;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(() => {
         const y = window.scrollY;
-        if (y > 120 && y > lastY) {
-          setNavHidden(true);
-        } else if (y < lastY) {
+        if (y <= 12) {
           setNavHidden(false);
+        } else if (y > 80) {
+          setNavHidden(true);
         }
-        lastY = y;
         ticking = false;
       });
     };

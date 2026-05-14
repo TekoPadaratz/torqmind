@@ -49,3 +49,11 @@ test('product navigation uses Plataforma label in Portuguese', () => {
   assert.ok(!source.includes('>Platform<'));
   assert.ok(platformShell.includes('TorqMind Plataforma'));
 });
+
+test('AppNav mobile scroll does not auto-reveal on scroll up', () => {
+  const source = readFileSync(new URL('../components/AppNav.tsx', import.meta.url), 'utf8');
+  // Must NOT contain "y < lastY" pattern (old auto-reveal on any scroll up)
+  assert.ok(!source.includes('y < lastY'), 'scroll handler must not show nav on generic scroll up');
+  // Must show nav only when near top (scrollY <= small threshold)
+  assert.ok(source.includes('y <= 12') || source.includes('scrollY <= 12'), 'scroll handler must show nav only near top');
+});
