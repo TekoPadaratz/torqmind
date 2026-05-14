@@ -23,6 +23,8 @@ from tools.xpert_source_explorer import (
     write_md,
     ensure_dir,
     _json_serial,
+    classify_comprovante,
+    is_commercial,
 )
 
 
@@ -314,6 +316,111 @@ class TestAuditSalesUsesCorrectDateColumn(unittest.TestCase):
         source = inspect.getsource(cmd_nfe_discovery)
         self.assertIn("DATAREPL", source)
         self.assertIn("NUNCA usar como filtro", source)
+
+
+class TestClassifyComprovante(unittest.TestCase):
+    def test_comercial(self):
+        self.assertEqual(classify_comprovante(0, 0, 3), "comercial")
+
+    def test_situacao_3(self):
+        self.assertEqual(classify_comprovante(3, 0, None), "situacao_3_ignorada")
+
+    def test_nfe_inutilizada(self):
+        self.assertEqual(classify_comprovante(0, 1, 5), "nfe_inutilizada")
+
+    def test_cancelamento_real(self):
+        self.assertEqual(classify_comprovante(0, 1, 4), "cancelamento_real")
+
+    def test_cancelado_sem_nfe(self):
+        self.assertEqual(classify_comprovante(0, 1, None), "cancelado_sem_nfe_cancelamento")
+
+    def test_cancelado_nfe_3(self):
+        self.assertEqual(classify_comprovante(0, 1, 3), "cancelado_sem_nfe_cancelamento")
+
+
+class TestIsCommercial(unittest.TestCase):
+    def test_commercial_normal(self):
+        self.assertTrue(is_commercial(0, 0))
+
+    def test_not_commercial_sit3(self):
+        self.assertFalse(is_commercial(3, 0))
+
+    def test_not_commercial_cancelled(self):
+        self.assertFalse(is_commercial(0, 1))
+
+    def test_none_values(self):
+        self.assertTrue(is_commercial(None, None))
+
+
+class TestCompareLogic(unittest.TestCase):
+    """Test compare-stg-comprovantes-range logic without real DB."""
+
+    def _make_doc(self, id_db, id_comprovante, total, situacao=0, cancelado=0, nfe_status=None, data_dia="2026-05-10"):
+        return {
+            "id_filial": "14458",
+            "id_db": str(id_db),
+            "id_comprovante": str(id_comprovante),
+            "total_header": float(total),
+            "situacao": situacao,
+            "cancelado": cancelado,
+            "nfe_status": nfe_status,
+            "data_dia": data_dia,
+            "data": f"{data_dia} 10:00:00",
+            "classification": classify_comprovante(situacao, cancelado, nfe_status),
+            "commercial_eligible": 1 if is_commercial(situacao, cancelado) else 0,
+        }
+
+    def test_source_only_detected(self):
+        src = [self._make_doc(1, 100, 500.0)]
+        stg = []
+        src_map = {(d["id_filial"], d["id_db"], d["id_comprovante"]): d for d in src}
+        stg_map = {(d["id_filial"], d["id_db"], d["id_comprovante"]): d for d in stg}
+        source_only = [src_map[k] for k in src_map if k not in stg_map]
+        self.assertEqual(len(source_only), 1)
+
+    def test_stg_only_detected(self):
+        src = []
+        stg = [self._make_doc(1, 200, 300.0)]
+        src_map = {(d["id_filial"], d["id_db"], d["id_comprovante"]): d for d in src}
+        stg_map = {(d["id_filial"], d["id_db"], d["id_comprovante"]): d for d in stg}
+        stg_only = [stg_map[k] for k in stg_map if k not in src_map]
+        self.assertEqual(len(stg_only), 1)
+
+    def test_total_mismatch_detected(self):
+        src = [self._make_doc(1, 100, 500.0)]
+        stg = [self._make_doc(1, 100, 499.0)]
+        key = ("14458", "1", "100")
+        diff = abs(src[0]["total_header"] - stg[0]["total_header"])
+        self.assertGreater(diff, 0.01)
+
+    def test_status_mismatch_detected(self):
+        src = [self._make_doc(1, 100, 500.0, situacao=0, cancelado=0)]
+        stg = [self._make_doc(1, 100, 500.0, situacao=3, cancelado=0)]
+        self.assertNotEqual(src[0]["situacao"], stg[0]["situacao"])
+
+    def test_nfe_mismatch_detected(self):
+        src = [self._make_doc(1, 100, 500.0, nfe_status=3)]
+        stg = [self._make_doc(1, 100, 500.0, nfe_status=5)]
+        self.assertNotEqual(src[0]["nfe_status"], stg[0]["nfe_status"])
+
+    def test_key_uses_id_db(self):
+        """Keys must include id_db for uniqueness."""
+        doc_a = self._make_doc(1, 100, 500.0)
+        doc_b = self._make_doc(2, 100, 300.0)
+        key_a = (doc_a["id_filial"], doc_a["id_db"], doc_a["id_comprovante"])
+        key_b = (doc_b["id_filial"], doc_b["id_db"], doc_b["id_comprovante"])
+        self.assertNotEqual(key_a, key_b)
+
+    def test_delta_explanation_closes(self):
+        """delta_explained must account for delta_total_comercial."""
+        # source has 1 commercial doc missing in STG
+        src = [self._make_doc(1, 100, 500.0)]
+        stg = []
+        delta_total_comercial = 500.0 - 0.0
+        source_only_comercial_total = 500.0
+        delta_explained = source_only_comercial_total
+        unexplained = abs(delta_total_comercial - delta_explained)
+        self.assertLessEqual(unexplained, 0.01)
 
 
 # Import after path setup

@@ -45,7 +45,7 @@ log = logging.getLogger("xpert")
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 BUSINESS_KEYWORDS: List[str] = [
     "comprovante", "item", "produto", "venda", "cancel", "nfe", "nfce",
@@ -1344,11 +1344,16 @@ WHERE ID_FILIAL = '{id_filial}' AND DATA >= '{dt}' AND DATA < '{dt_end}'
         return
 
     pg_conn = get_pg_connection(cfg)
-    stg_rows = pg_query(pg_conn, f"""\
-SELECT id_filial::text, id_db::text, id_comprovante::text, data, situacao,
-       COALESCE(cancelado, 0) AS cancelado, COALESCE(total, 0) AS total
+    stg_rows = pg_query(pg_conn, """\
+SELECT id_filial::text, id_db::text, id_comprovante::text,
+       (dt_evento AT TIME ZONE 'America/Sao_Paulo')::timestamp AS data,
+       situacao_shadow AS situacao,
+       CASE WHEN cancelado_shadow THEN 1 ELSE 0 END AS cancelado,
+       COALESCE(valor_total_shadow, 0) AS total
 FROM stg.comprovantes
-WHERE id_filial = %s AND data >= %s AND data < %s
+WHERE id_filial = %s
+  AND (dt_evento AT TIME ZONE 'America/Sao_Paulo')::date >= %s::date
+  AND (dt_evento AT TIME ZONE 'America/Sao_Paulo')::date < %s::date
 """, (str(id_filial), dt, dt_end))
     pg_conn.close()
 
@@ -1823,6 +1828,753 @@ def cmd_full_discovery(cfg: Config, args: argparse.Namespace) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Subcommand: test-stg-connection
+# ═══════════════════════════════════════════════════════════════════════════
+
+def cmd_test_stg_connection(cfg: Config, args: argparse.Namespace) -> None:
+    """Test PostgreSQL STG connection."""
+    log.info("Testing STG PostgreSQL connection to %s/%s ...", cfg.stg_pg_host, cfg.stg_pg_database)
+    if not cfg.stg_pg_host:
+        log.error("STG_PG_HOST not configured. Set STG_PG_HOST or POSTGRES_HOST in env.")
+        sys.exit(1)
+    conn = get_pg_connection(cfg)
+    info = pg_query(conn, "SELECT current_database() AS db, current_user AS usr, now() AS server_time")
+    if info:
+        log.info("=== STG Connection OK ===")
+        log.info("  Database: %s", info[0].get("db"))
+        log.info("  User:     %s", info[0].get("usr"))
+        log.info("  Time:     %s", info[0].get("server_time"))
+
+    # Count key tables
+    for tbl in ["stg.comprovantes", "stg.nfe", "stg.itenscomprovantes", "stg.formas_pgto_comprovantes"]:
+        try:
+            cnt = pg_query(conn, f"SELECT COUNT(*) AS cnt FROM {tbl}")
+            log.info("  %s: %s rows", tbl, f"{cnt[0]['cnt']:,}" if cnt else "N/A")
+        except Exception as exc:
+            log.warning("  %s: %s", tbl, exc)
+    conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Subcommand: compare-stg-comprovantes-range
+# ═══════════════════════════════════════════════════════════════════════════
+
+def classify_comprovante(situacao, cancelado, nfe_status) -> str:
+    """Classify a comprovante for commercial analysis."""
+    sit = int(situacao or 0)
+    canc = int(cancelado or 0)
+    nfe_st = int(nfe_status) if nfe_status is not None else None
+
+    if sit == 3:
+        return "situacao_3_ignorada"
+    if canc == 1 and nfe_st == 5:
+        return "nfe_inutilizada"
+    if canc == 1 and nfe_st == 4:
+        return "cancelamento_real"
+    if canc == 1:
+        return "cancelado_sem_nfe_cancelamento"
+    return "comercial"
+
+
+def is_commercial(situacao, cancelado) -> bool:
+    sit = int(situacao or 0)
+    canc = int(cancelado or 0)
+    return sit != 3 and canc == 0
+
+
+def _get_sp_today():
+    """Get today's date in America/Sao_Paulo timezone."""
+    try:
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo("America/Sao_Paulo")
+        return datetime.now(tz).date()
+    except (ImportError, KeyError):
+        # Python < 3.9 or tzdata not available
+        return date.today()
+
+
+def cmd_compare_stg_comprovantes_range(cfg: Config, args: argparse.Namespace) -> None:
+    """Compare source SQL Server vs STG PostgreSQL comprovantes for a date range.
+
+    With --stg-only, skips SQL Server and produces a STG consistency audit.
+    """
+    out_dir = ensure_dir(args.out)
+    id_filial = args.id_filial
+    stg_only_mode = getattr(args, "stg_only", False)
+
+    # Date range defaults
+    today_sp = _get_sp_today()
+    if args.date_to:
+        date_to = datetime.strptime(args.date_to, "%Y-%m-%d").date()
+    else:
+        date_to = today_sp - timedelta(days=1)
+    if args.date_from:
+        date_from = datetime.strptime(args.date_from, "%Y-%m-%d").date()
+    else:
+        date_from = date_to - timedelta(days=14)
+
+    date_to_exclusive = date_to + timedelta(days=1)
+
+    log.info("Compare range: filial=%s, from=%s, to=%s (exclusive=%s)%s",
+             id_filial, date_from, date_to, date_to_exclusive,
+             " [STG-ONLY MODE]" if stg_only_mode else "")
+
+    source_docs: List[Dict] = []
+    t_comp_name = "N/A (stg-only)"
+    t_nfe_name = "N/A (stg-only)"
+
+    if not stg_only_mode:
+        # ─── A) Source SQL Server ─────────────────────────────────────────────
+        log.info("Connecting to SQL Server source...")
+        conn_src = get_connection(cfg)
+
+        t_comp = _find_table(conn_src, ["COMPROVANTES", "comprovantes", "Comprovantes"])
+        t_nfe = _find_table(conn_src, ["NFE", "nfe", "Nfe"])
+        if not t_comp:
+            log.error("COMPROVANTES table not found in source!")
+            conn_src.close()
+            sys.exit(1)
+        t_comp_name = t_comp
+        t_nfe_name = t_nfe or "not found"
+
+        # Detect optional columns
+        comp_cols_q = execute_query(conn_src,
+            "SELECT c.name FROM sys.columns c "
+            "JOIN sys.tables t ON c.object_id = t.object_id "
+            "WHERE LOWER(t.name) = 'comprovantes'")
+        comp_col_names = {r["name"].upper() for r in comp_cols_q}
+        has_cancelado = "CANCELADO" in comp_col_names
+        has_referencia = "REFERENCIA" in comp_col_names
+        has_id_turno = "ID_TURNO" in comp_col_names
+        has_id_usuario = "ID_USUARIO" in comp_col_names
+
+        cancelado_expr = "ISNULL(c.CANCELADO, 0)" if has_cancelado else "0"
+        extra_cols = ""
+        if has_referencia:
+            extra_cols += ",\n    c.REFERENCIA AS referencia"
+        if has_id_turno:
+            extra_cols += ",\n    c.ID_TURNO AS id_turno"
+        if has_id_usuario:
+            extra_cols += ",\n    c.ID_USUARIO AS id_usuario"
+
+        nfe_join_src = ""
+        nfe_cols_src = ",\n    NULL AS nfe_status,\n    NULL AS nfe_nronf,\n    NULL AS nfe_chaveacesso,\n    NULL AS nfe_data"
+        if t_nfe:
+            nfe_join_src = (
+                f"\nLEFT JOIN {t_nfe} n ON c.ID_FILIAL = n.ID_FILIAL "
+                f"AND c.ID_DB = n.ID_DB AND c.ID_COMPROVANTE = n.ID_COMPROVANTE"
+            )
+            nfe_cols_src = (
+                ",\n    n.STATUS AS nfe_status,"
+                "\n    n.NRONF AS nfe_nronf,"
+                "\n    n.CHAVEACESSO AS nfe_chaveacesso,"
+                "\n    n.DATA AS nfe_data"
+            )
+
+        sql_source = f"""\
+SELECT
+    c.ID_FILIAL AS id_filial,
+    c.ID_DB AS id_db,
+    c.ID_COMPROVANTE AS id_comprovante,
+    c.DATA AS data,
+    CAST(c.DATA AS date) AS data_dia,
+    c.SITUACAO AS situacao,
+    {cancelado_expr} AS cancelado,
+    ISNULL(c.TOTAL, 0) AS total_header{extra_cols}{nfe_cols_src}
+FROM {t_comp} c{nfe_join_src}
+WHERE c.ID_FILIAL = '{id_filial}'
+  AND c.DATA >= '{date_from}'
+  AND c.DATA < '{date_to_exclusive}'
+ORDER BY c.DATA, c.ID_COMPROVANTE
+"""
+        log.info("Querying source SQL Server...")
+        source_rows_raw = execute_query(conn_src, sql_source)
+        conn_src.close()
+        log.info("Source returned %d rows.", len(source_rows_raw))
+
+        # Process source rows
+        for r in source_rows_raw:
+            doc = {
+                "id_filial": str(r.get("id_filial", "")),
+                "id_db": str(r.get("id_db", "")),
+                "id_comprovante": str(r.get("id_comprovante", "")),
+                "data": str(r.get("data", "")),
+                "data_dia": str(r.get("data_dia", "")),
+                "situacao": r.get("situacao"),
+                "cancelado": int(r.get("cancelado") or 0),
+                "total_header": float(r.get("total_header") or 0),
+                "nfe_status": r.get("nfe_status"),
+                "nfe_nronf": r.get("nfe_nronf"),
+                "nfe_chaveacesso": mask_pii(r.get("nfe_chaveacesso"), "chaveacesso") if r.get("nfe_chaveacesso") else None,
+                "nfe_data": str(r.get("nfe_data", "")) if r.get("nfe_data") else None,
+            }
+            if has_referencia:
+                doc["referencia"] = r.get("referencia")
+            if has_id_turno:
+                doc["id_turno"] = r.get("id_turno")
+            if has_id_usuario:
+                doc["id_usuario"] = r.get("id_usuario")
+            doc["classification"] = classify_comprovante(doc["situacao"], doc["cancelado"], doc["nfe_status"])
+            doc["commercial_eligible"] = 1 if is_commercial(doc["situacao"], doc["cancelado"]) else 0
+            source_docs.append(doc)
+
+    # ─── B) STG PostgreSQL ────────────────────────────────────────────────
+    log.info("Connecting to STG PostgreSQL...")
+    if not cfg.stg_pg_host:
+        log.error("STG_PG_HOST not configured. Set STG_PG_HOST or POSTGRES_HOST in env.")
+        sys.exit(1)
+
+    pg_conn = get_pg_connection(cfg)
+
+    # Try with NFE join first
+    # STG uses shadow columns: dt_evento (UTC), situacao_shadow, cancelado_shadow (bool),
+    # valor_total_shadow, referencia_shadow, id_turno_shadow, id_usuario_shadow
+    # NFE: status_shadow, numero_nfe_shadow, chave_nfe_shadow, data_emissao_shadow
+    sql_stg_with_nfe = """\
+SELECT
+    c.id_filial::text AS id_filial,
+    c.id_db::text AS id_db,
+    c.id_comprovante::text AS id_comprovante,
+    (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::timestamp AS data,
+    (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date AS data_dia,
+    c.situacao_shadow AS situacao,
+    CASE WHEN c.cancelado_shadow THEN 1 ELSE 0 END AS cancelado,
+    COALESCE(c.valor_total_shadow, 0) AS total_header,
+    c.referencia_shadow AS referencia,
+    c.id_turno_shadow AS id_turno,
+    c.id_usuario_shadow AS id_usuario,
+    n.status_shadow AS nfe_status,
+    n.numero_nfe_shadow AS nfe_nronf,
+    n.chave_nfe_shadow AS nfe_chaveacesso,
+    (n.data_emissao_shadow AT TIME ZONE 'America/Sao_Paulo')::timestamp AS nfe_data
+FROM stg.comprovantes c
+LEFT JOIN stg.nfe n ON c.id_filial = n.id_filial AND c.id_db = n.id_db AND c.id_comprovante = n.id_comprovante
+WHERE c.id_filial = %s
+  AND (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date >= %s::date
+  AND (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date < %s::date
+ORDER BY c.dt_evento, c.id_comprovante
+"""
+
+    sql_stg_without_nfe = """\
+SELECT
+    c.id_filial::text AS id_filial,
+    c.id_db::text AS id_db,
+    c.id_comprovante::text AS id_comprovante,
+    (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::timestamp AS data,
+    (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date AS data_dia,
+    c.situacao_shadow AS situacao,
+    CASE WHEN c.cancelado_shadow THEN 1 ELSE 0 END AS cancelado,
+    COALESCE(c.valor_total_shadow, 0) AS total_header,
+    c.referencia_shadow AS referencia,
+    c.id_turno_shadow AS id_turno,
+    c.id_usuario_shadow AS id_usuario,
+    NULL::integer AS nfe_status,
+    NULL::text AS nfe_nronf,
+    NULL::text AS nfe_chaveacesso,
+    NULL::timestamp AS nfe_data
+FROM stg.comprovantes c
+WHERE c.id_filial = %s
+  AND (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date >= %s::date
+  AND (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date < %s::date
+ORDER BY c.dt_evento, c.id_comprovante
+"""
+
+    stg_rows_raw = []
+    try:
+        stg_rows_raw = pg_query(pg_conn, sql_stg_with_nfe,
+                                (str(id_filial), str(date_from), str(date_to_exclusive)))
+    except Exception as exc:
+        log.warning("STG query with NFE join failed (%s), retrying without NFE...", exc)
+        try:
+            pg_conn.close()
+            pg_conn = get_pg_connection(cfg)
+            stg_rows_raw = pg_query(pg_conn, sql_stg_without_nfe,
+                                    (str(id_filial), str(date_from), str(date_to_exclusive)))
+        except Exception as exc2:
+            log.error("STG query without NFE also failed: %s", exc2)
+            pg_conn.close()
+            sys.exit(1)
+    pg_conn.close()
+    log.info("STG returned %d rows.", len(stg_rows_raw))
+
+    # Process STG rows
+    stg_docs = []
+    for r in stg_rows_raw:
+        doc = {
+            "id_filial": str(r.get("id_filial", "")),
+            "id_db": str(r.get("id_db", "")),
+            "id_comprovante": str(r.get("id_comprovante", "")),
+            "data": str(r.get("data", "")),
+            "data_dia": str(r.get("data_dia", "")),
+            "situacao": r.get("situacao"),
+            "cancelado": int(r.get("cancelado") or 0),
+            "total_header": float(r.get("total_header") or 0),
+            "referencia": r.get("referencia"),
+            "id_turno": r.get("id_turno"),
+            "id_usuario": r.get("id_usuario"),
+            "nfe_status": r.get("nfe_status"),
+            "nfe_nronf": r.get("nfe_nronf"),
+            "nfe_chaveacesso": mask_pii(r.get("nfe_chaveacesso"), "chaveacesso") if r.get("nfe_chaveacesso") else None,
+            "nfe_data": str(r.get("nfe_data", "")) if r.get("nfe_data") else None,
+        }
+        doc["classification"] = classify_comprovante(doc["situacao"], doc["cancelado"], doc["nfe_status"])
+        doc["commercial_eligible"] = 1 if is_commercial(doc["situacao"], doc["cancelado"]) else 0
+        stg_docs.append(doc)
+
+    # ─── C) Compare by key ────────────────────────────────────────────────
+    src_map = {(d["id_filial"], d["id_db"], d["id_comprovante"]): d for d in source_docs}
+    stg_map = {(d["id_filial"], d["id_db"], d["id_comprovante"]): d for d in stg_docs}
+
+    source_only = []
+    stg_only = []
+    total_mismatch = []
+    status_mismatch = []
+    nfe_mismatch = []
+    nfe_missing_in_stg = []
+    nfe_missing_in_source = []
+    classification_mismatch = []
+
+    all_keys = set(src_map.keys()) | set(stg_map.keys())
+
+    for key in all_keys:
+        src = src_map.get(key)
+        stg = stg_map.get(key)
+
+        if src and not stg:
+            source_only.append(src)
+            continue
+        if stg and not src:
+            stg_only.append(stg)
+            continue
+
+        # Both exist
+        if abs(src["total_header"] - stg["total_header"]) > 0.01:
+            total_mismatch.append({
+                **src,
+                "stg_total_header": stg["total_header"],
+                "diff": round(src["total_header"] - stg["total_header"], 2),
+            })
+
+        src_sit = int(src.get("situacao") or 0)
+        stg_sit = int(stg.get("situacao") or 0)
+        src_canc = int(src.get("cancelado") or 0)
+        stg_canc = int(stg.get("cancelado") or 0)
+        if src_sit != stg_sit or src_canc != stg_canc:
+            status_mismatch.append({
+                **src,
+                "stg_situacao": stg.get("situacao"),
+                "stg_cancelado": stg.get("cancelado"),
+            })
+
+        src_nfe = src.get("nfe_status")
+        stg_nfe = stg.get("nfe_status")
+        if src_nfe is not None and stg_nfe is not None:
+            if int(src_nfe) != int(stg_nfe):
+                nfe_mismatch.append({
+                    **src,
+                    "stg_nfe_status": stg_nfe,
+                })
+        elif src_nfe is not None and stg_nfe is None:
+            nfe_missing_in_stg.append(src)
+        elif src_nfe is None and stg_nfe is not None:
+            nfe_missing_in_source.append({**stg, "note": "nfe_exists_only_in_stg"})
+
+        if src["classification"] != stg["classification"]:
+            classification_mismatch.append({
+                **src,
+                "stg_classification": stg["classification"],
+            })
+
+    # ─── D) Totalizadores por dia ─────────────────────────────────────────
+    all_days = sorted(set(
+        [d["data_dia"] for d in source_docs] +
+        [d["data_dia"] for d in stg_docs]
+    ))
+
+    day_summaries = []
+    for dia in all_days:
+        src_day = [d for d in source_docs if d["data_dia"] == dia]
+        stg_day = [d for d in stg_docs if d["data_dia"] == dia]
+
+        src_comercial = [d for d in src_day if d["commercial_eligible"] == 1]
+        stg_comercial = [d for d in stg_day if d["commercial_eligible"] == 1]
+        src_sit3 = [d for d in src_day if d["classification"] == "situacao_3_ignorada"]
+        stg_sit3 = [d for d in stg_day if d["classification"] == "situacao_3_ignorada"]
+        src_canc = [d for d in src_day if d["cancelado"] == 1]
+        stg_canc = [d for d in stg_day if d["cancelado"] == 1]
+        src_inut = [d for d in src_day if d["classification"] == "nfe_inutilizada"]
+        stg_inut = [d for d in stg_day if d["classification"] == "nfe_inutilizada"]
+
+        src_day_keys = {(d["id_filial"], d["id_db"], d["id_comprovante"]) for d in src_day}
+        stg_day_keys = {(d["id_filial"], d["id_db"], d["id_comprovante"]) for d in stg_day}
+
+        day_source_only = [d for d in source_only if d["data_dia"] == dia]
+        day_stg_only = [d for d in stg_only if d["data_dia"] == dia]
+        day_total_mismatch = [d for d in total_mismatch if d["data_dia"] == dia]
+        day_status_mismatch = [d for d in status_mismatch if d["data_dia"] == dia]
+        day_nfe_mismatch = [d for d in nfe_mismatch if d["data_dia"] == dia]
+
+        count_delta = len(src_day) - len(stg_day)
+        src_total_all = sum(d["total_header"] for d in src_day)
+        stg_total_all = sum(d["total_header"] for d in stg_day)
+        src_total_comercial = sum(d["total_header"] for d in src_comercial)
+        stg_total_comercial = sum(d["total_header"] for d in stg_comercial)
+
+        day_pass = (
+            count_delta == 0
+            and abs(src_total_all - stg_total_all) < 0.01
+            and len(day_source_only) == 0
+            and len(day_stg_only) == 0
+            and len(day_total_mismatch) == 0
+            and len(day_status_mismatch) == 0
+            and len(day_nfe_mismatch) == 0
+        )
+
+        day_summaries.append({
+            "data_dia": dia,
+            "source_count_all": len(src_day),
+            "stg_count_all": len(stg_day),
+            "count_delta": count_delta,
+            "source_total_all": round(src_total_all, 2),
+            "stg_total_all": round(stg_total_all, 2),
+            "total_all_delta": round(src_total_all - stg_total_all, 2),
+            "source_count_comercial": len(src_comercial),
+            "stg_count_comercial": len(stg_comercial),
+            "count_comercial_delta": len(src_comercial) - len(stg_comercial),
+            "source_total_comercial": round(src_total_comercial, 2),
+            "stg_total_comercial": round(stg_total_comercial, 2),
+            "total_comercial_delta": round(src_total_comercial - stg_total_comercial, 2),
+            "source_count_situacao_3": len(src_sit3),
+            "stg_count_situacao_3": len(stg_sit3),
+            "source_total_situacao_3": round(sum(d["total_header"] for d in src_sit3), 2),
+            "stg_total_situacao_3": round(sum(d["total_header"] for d in stg_sit3), 2),
+            "source_count_cancelado": len(src_canc),
+            "stg_count_cancelado": len(stg_canc),
+            "source_total_cancelado": round(sum(d["total_header"] for d in src_canc), 2),
+            "stg_total_cancelado": round(sum(d["total_header"] for d in stg_canc), 2),
+            "source_count_nfe_inutilizada": len(src_inut),
+            "stg_count_nfe_inutilizada": len(stg_inut),
+            "source_total_nfe_inutilizada": round(sum(d["total_header"] for d in src_inut), 2),
+            "stg_total_nfe_inutilizada": round(sum(d["total_header"] for d in stg_inut), 2),
+            "source_only_count": len(day_source_only),
+            "stg_only_count": len(day_stg_only),
+            "total_mismatch_count": len(day_total_mismatch),
+            "status_mismatch_count": len(day_status_mismatch),
+            "nfe_mismatch_count": len(day_nfe_mismatch),
+            "day_pass": day_pass,
+        })
+
+    # ─── E) Delta explanation by day ──────────────────────────────────────
+    delta_explanations = []
+    for ds in day_summaries:
+        dia = ds["data_dia"]
+        delta_total_comercial = ds["total_comercial_delta"]
+        if abs(delta_total_comercial) < 0.01:
+            continue
+
+        day_source_only_docs = [d for d in source_only if d["data_dia"] == dia]
+        day_stg_only_docs = [d for d in stg_only if d["data_dia"] == dia]
+        day_total_mismatch_docs = [d for d in total_mismatch if d["data_dia"] == dia]
+        day_status_mismatch_docs = [d for d in status_mismatch if d["data_dia"] == dia]
+
+        source_only_comercial_total = sum(
+            d["total_header"] for d in day_source_only_docs if d["commercial_eligible"] == 1
+        )
+        stg_only_comercial_total = sum(
+            d["total_header"] for d in day_stg_only_docs if d["commercial_eligible"] == 1
+        )
+        total_mismatch_diff = sum(d.get("diff", 0) for d in day_total_mismatch_docs)
+
+        # Status mismatch effect: docs commercial in source but not STG or vice-versa
+        status_mismatch_effect = 0.0
+        for d in day_status_mismatch_docs:
+            src_eligible = d["commercial_eligible"]
+            stg_eligible_val = is_commercial(d.get("stg_situacao"), d.get("stg_cancelado"))
+            if src_eligible == 1 and not stg_eligible_val:
+                status_mismatch_effect += d["total_header"]
+            elif src_eligible == 0 and stg_eligible_val:
+                status_mismatch_effect -= d["total_header"]
+
+        # NFE inutilizada effect
+        nfe_inutilizada_effect = sum(
+            d["total_header"] for d in nfe_missing_in_stg
+            if d["data_dia"] == dia and d.get("nfe_status") is not None and int(d["nfe_status"]) == 5
+        )
+
+        # Situacao 3 effect
+        situacao_3_effect = 0.0
+        day_class_mismatch = [d for d in classification_mismatch if d["data_dia"] == dia]
+        for d in day_class_mismatch:
+            if d["classification"] == "situacao_3_ignorada" and d.get("stg_classification") == "comercial":
+                situacao_3_effect -= d["total_header"]
+            elif d["classification"] == "comercial" and d.get("stg_classification") == "situacao_3_ignorada":
+                situacao_3_effect += d["total_header"]
+
+        delta_explained = (
+            source_only_comercial_total
+            - stg_only_comercial_total
+            + total_mismatch_diff
+            + status_mismatch_effect
+            + nfe_inutilizada_effect
+            + situacao_3_effect
+        )
+        unexplained = delta_total_comercial - delta_explained
+
+        delta_explanations.append({
+            "data_dia": dia,
+            "delta_total_comercial": round(delta_total_comercial, 2),
+            "source_only_comercial_total": round(source_only_comercial_total, 2),
+            "stg_only_comercial_total": round(stg_only_comercial_total, 2),
+            "total_mismatch_diff": round(total_mismatch_diff, 2),
+            "status_mismatch_effect": round(status_mismatch_effect, 2),
+            "nfe_inutilizada_effect": round(nfe_inutilizada_effect, 2),
+            "situacao_3_effect": round(situacao_3_effect, 2),
+            "delta_explained_amount": round(delta_explained, 2),
+            "unexplained_delta": round(unexplained, 2),
+        })
+
+    # ─── F) Write outputs ─────────────────────────────────────────────────
+    # Ledgers
+    write_csv(source_docs, out_dir / "source_ledger.csv")
+    write_csv(stg_docs, out_dir / "stg_ledger.csv")
+
+    # Divergences
+    write_csv(source_only, out_dir / "source_only.csv")
+    write_csv(stg_only, out_dir / "stg_only.csv")
+    write_csv(total_mismatch, out_dir / "total_mismatch.csv")
+    write_csv(status_mismatch, out_dir / "status_mismatch.csv")
+    write_csv(nfe_mismatch, out_dir / "nfe_mismatch.csv")
+    write_csv(nfe_missing_in_stg, out_dir / "nfe_missing_in_stg.csv")
+    write_csv(nfe_missing_in_source, out_dir / "nfe_missing_in_source.csv")
+    write_csv(classification_mismatch, out_dir / "classification_mismatch.csv")
+
+    # Day summaries
+    write_csv(day_summaries, out_dir / "compare_summary_by_day.csv")
+    write_json(day_summaries, out_dir / "compare_summary_by_day.json")
+
+    # Delta explanation
+    write_csv(delta_explanations, out_dir / "delta_explanation_by_day.csv")
+    write_json(delta_explanations, out_dir / "delta_explanation_by_day.json")
+
+    # Top delta documents (source_only + total_mismatch sorted by absolute value)
+    top_delta_docs = []
+    for d in source_only:
+        if d["commercial_eligible"] == 1:
+            top_delta_docs.append({**d, "delta_type": "source_only", "delta_value": d["total_header"]})
+    for d in stg_only:
+        if d["commercial_eligible"] == 1:
+            top_delta_docs.append({**d, "delta_type": "stg_only", "delta_value": -d["total_header"]})
+    for d in total_mismatch:
+        top_delta_docs.append({**d, "delta_type": "total_mismatch", "delta_value": d.get("diff", 0)})
+    top_delta_docs.sort(key=lambda x: abs(x.get("delta_value", 0)), reverse=True)
+    write_csv(top_delta_docs[:100], out_dir / "top_delta_documents.csv")
+
+    # NFE status=5 docs
+    nfe_status5_src = [d for d in source_docs if d.get("nfe_status") is not None and int(d["nfe_status"]) == 5]
+    nfe_status5_stg = [d for d in stg_docs if d.get("nfe_status") is not None and int(d["nfe_status"]) == 5]
+    write_csv(nfe_status5_src, out_dir / "nfe_status5_source.csv")
+    write_csv(nfe_status5_stg, out_dir / "nfe_status5_stg.csv")
+
+    # Situacao 3 docs
+    sit3_src = [d for d in source_docs if d["classification"] == "situacao_3_ignorada"]
+    sit3_stg = [d for d in stg_docs if d["classification"] == "situacao_3_ignorada"]
+    write_csv(sit3_src, out_dir / "situacao3_source.csv")
+    write_csv(sit3_stg, out_dir / "situacao3_stg.csv")
+
+    # Cancelados docs
+    canc_src = [d for d in source_docs if d["cancelado"] == 1]
+    canc_stg = [d for d in stg_docs if d["cancelado"] == 1]
+    write_csv(canc_src, out_dir / "cancelados_source.csv")
+    write_csv(canc_stg, out_dir / "cancelados_stg.csv")
+
+    # Summary JSON
+    overall_pass = all(ds["day_pass"] for ds in day_summaries) if day_summaries else False
+    summary = {
+        "id_filial": id_filial,
+        "date_from": str(date_from),
+        "date_to": str(date_to),
+        "days_audited": len(all_days),
+        "overall_pass": overall_pass,
+        "source_count_total": len(source_docs),
+        "stg_count_total": len(stg_docs),
+        "source_only_count": len(source_only),
+        "stg_only_count": len(stg_only),
+        "total_mismatch_count": len(total_mismatch),
+        "status_mismatch_count": len(status_mismatch),
+        "nfe_mismatch_count": len(nfe_mismatch),
+        "nfe_missing_in_stg_count": len(nfe_missing_in_stg),
+        "nfe_missing_in_source_count": len(nfe_missing_in_source),
+        "classification_mismatch_count": len(classification_mismatch),
+        "source_total_comercial": round(sum(d["total_header"] for d in source_docs if d["commercial_eligible"] == 1), 2),
+        "stg_total_comercial": round(sum(d["total_header"] for d in stg_docs if d["commercial_eligible"] == 1), 2),
+        "sql_server_table": t_comp_name,
+        "stg_tables": "stg.comprovantes LEFT JOIN stg.nfe",
+    }
+    summary["total_comercial_delta"] = round(summary["source_total_comercial"] - summary["stg_total_comercial"], 2)
+    write_json(summary, out_dir / "compare_summary.json")
+
+    # ─── Compare report MD ────────────────────────────────────────────────
+    days_pass = sum(1 for ds in day_summaries if ds["day_pass"])
+    days_fail = len(day_summaries) - days_pass
+
+    md_lines = [
+        f"# Compare Source vs STG — Comprovantes Range",
+        "",
+        f"## 1. Período auditado",
+        f"- De: **{date_from}**",
+        f"- Até: **{date_to}** (inclusive)",
+        f"- Dias: **{len(all_days)}**",
+        "",
+        f"## 2. Filial",
+        f"- ID: **{id_filial}**",
+        "",
+        f"## 3. Conexões usadas",
+        f"- SQL Server: `{cfg.host}/{cfg.database}` (user: {cfg.user})",
+        f"- PostgreSQL STG: `{cfg.stg_pg_host}/{cfg.stg_pg_database}` (user: {cfg.stg_pg_user})",
+        "",
+        f"## 4. Tabela SQL Server",
+        f"- Comprovantes: `{t_comp_name}`",
+        f"- NFE: `{t_nfe_name}`",
+        "",
+        f"## 5. Tabelas STG",
+        f"- `stg.comprovantes`",
+        f"- `stg.nfe` (LEFT JOIN)",
+        "",
+        f"## 6. Resumo geral",
+        "",
+        f"| Metric | Source | STG | Delta |",
+        f"|--------|--------|-----|-------|",
+        f"| Total docs | {len(source_docs):,} | {len(stg_docs):,} | {len(source_docs) - len(stg_docs):+,} |",
+        f"| Comerciais | {summary['source_total_comercial']:,.2f} | {summary['stg_total_comercial']:,.2f} | {summary['total_comercial_delta']:+,.2f} |",
+        f"| Source only | {len(source_only)} | — | — |",
+        f"| STG only | — | {len(stg_only)} | — |",
+        f"| Total mismatch | {len(total_mismatch)} | — | — |",
+        f"| Status mismatch | {len(status_mismatch)} | — | — |",
+        f"| NFE mismatch | {len(nfe_mismatch)} | — | — |",
+        f"| NFE missing STG | {len(nfe_missing_in_stg)} | — | — |",
+        f"| NFE missing source | — | {len(nfe_missing_in_source)} | — |",
+        f"| Classification mismatch | {len(classification_mismatch)} | — | — |",
+        "",
+        f"## 7. Resumo por dia",
+        "",
+        "| Dia | Src | STG | Delta | Comercial Src | Comercial STG | Delta Com. | PASS |",
+        "|-----|-----|-----|-------|---------------|---------------|------------|------|",
+    ]
+    for ds in day_summaries:
+        icon = "✅" if ds["day_pass"] else "❌"
+        md_lines.append(
+            f"| {ds['data_dia']} | {ds['source_count_all']} | {ds['stg_count_all']} | "
+            f"{ds['count_delta']:+} | {ds['source_total_comercial']:,.2f} | "
+            f"{ds['stg_total_comercial']:,.2f} | {ds['total_comercial_delta']:+,.2f} | {icon} |"
+        )
+    md_lines.append("")
+
+    md_lines.append(f"## 8. Dias PASS/FAIL")
+    md_lines.append(f"- PASS: **{days_pass}**")
+    md_lines.append(f"- FAIL: **{days_fail}**")
+    md_lines.append(f"- Overall: **{'PASS' if overall_pass else 'FAIL'}**")
+    md_lines.append("")
+
+    md_lines.append(f"## 9. Delta comercial por dia")
+    md_lines.append("")
+    if delta_explanations:
+        md_lines.append("| Dia | Delta | Src Only | STG Only | Mismatch | Status | NFE Inut | Sit3 | Explained | Unexplained |")
+        md_lines.append("|-----|-------|----------|----------|----------|--------|----------|------|-----------|-------------|")
+        for de in delta_explanations:
+            md_lines.append(
+                f"| {de['data_dia']} | {de['delta_total_comercial']:+,.2f} | "
+                f"{de['source_only_comercial_total']:,.2f} | {de['stg_only_comercial_total']:,.2f} | "
+                f"{de['total_mismatch_diff']:,.2f} | {de['status_mismatch_effect']:,.2f} | "
+                f"{de['nfe_inutilizada_effect']:,.2f} | {de['situacao_3_effect']:,.2f} | "
+                f"{de['delta_explained_amount']:,.2f} | {de['unexplained_delta']:,.2f} |"
+            )
+    else:
+        md_lines.append("Nenhum dia com delta comercial significativo.")
+    md_lines.append("")
+
+    md_lines.append("## 10. Explicação do delta")
+    md_lines.append("")
+    md_lines.append("- **source_only_comercial_total**: Faturamento de docs comerciais presentes apenas na fonte")
+    md_lines.append("- **stg_only_comercial_total**: Faturamento de docs comerciais presentes apenas na STG")
+    md_lines.append("- **total_mismatch_diff**: Soma das diferenças de valor para docs com total divergente")
+    md_lines.append("- **status_mismatch_effect**: Efeito de docs com status comercial divergente")
+    md_lines.append("- **nfe_inutilizada_effect**: Docs com NFE inutilizada na fonte, sem NFE na STG")
+    md_lines.append("- **situacao_3_effect**: Docs com classificação situacao_3 divergente")
+    md_lines.append("")
+
+    md_lines.append("## 11. Top documentos responsáveis")
+    md_lines.append("")
+    if top_delta_docs:
+        md_lines.append("| Filial | DB | Comprovante | Dia | Tipo | Valor Delta |")
+        md_lines.append("|--------|----|-------------|-----|------|-------------|")
+        for d in top_delta_docs[:20]:
+            md_lines.append(
+                f"| {d['id_filial']} | {d['id_db']} | {d['id_comprovante']} | "
+                f"{d.get('data_dia', '')} | {d['delta_type']} | {d.get('delta_value', 0):+,.2f} |"
+            )
+    else:
+        md_lines.append("Nenhum documento com delta significativo.")
+    md_lines.append("")
+
+    md_lines.append("## 12. NFE inutilizadas (status=5)")
+    md_lines.append(f"- Fonte: {len(nfe_status5_src)} docs")
+    md_lines.append(f"- STG: {len(nfe_status5_stg)} docs")
+    md_lines.append("")
+
+    md_lines.append("## 13. Situação=3")
+    md_lines.append(f"- Fonte: {len(sit3_src)} docs")
+    md_lines.append(f"- STG: {len(sit3_stg)} docs")
+    md_lines.append("")
+
+    md_lines.append("## 14. Cancelados")
+    md_lines.append(f"- Fonte: {len(canc_src)} docs")
+    md_lines.append(f"- STG: {len(canc_stg)} docs")
+    md_lines.append("")
+
+    # Diagnosis
+    md_lines.append("## 15. Diagnóstico provável por camada")
+    md_lines.append("")
+    if len(source_only) > 0:
+        md_lines.append("- **source_only > 0**: Fonte SQL Server possui documentos ausentes na STG. "
+                        "Investigar Agent, filtro de coleta, watermark, spool, API ingest ou rejeição.")
+    if len(stg_only) > 0:
+        md_lines.append("- **stg_only > 0**: STG possui documentos não encontrados na fonte. "
+                        "Investigar banco/host, data, timezone, registros antigos ou ambiente errado.")
+    if len(status_mismatch) > 0:
+        md_lines.append("- **status_mismatch > 0**: Status SITUACAO/CANCELADO diverge. "
+                        "Investigar atualização incremental, CDC, upsert ou schema mapping.")
+    if len(nfe_missing_in_stg) > 0:
+        md_lines.append("- **nfe_missing_in_stg > 0**: NFE existe na fonte e não na STG. "
+                        "Investigar dataset NFE do Agent/API ingest.")
+    if (len(source_only) == 0 and len(stg_only) == 0 and len(total_mismatch) == 0
+            and len(status_mismatch) == 0 and summary["total_comercial_delta"] != 0):
+        md_lines.append("- **raw matches but commercial doesn't**: Dados brutos chegaram, "
+                        "mas classificação comercial/status diverge.")
+    if overall_pass:
+        md_lines.append("- **Tudo confere**: Problema não está entre fonte e STG. "
+                        "Próxima camada: ClickHouse slim/mart/API/Web.")
+    md_lines.append("")
+
+    md_lines.append("## 16. Próxima ação recomendada")
+    md_lines.append("")
+    if overall_pass:
+        md_lines.append("Fonte e STG estão alinhadas. Investigar camadas seguintes: "
+                        "CDC Consumer → ClickHouse raw → current → slim → mart_rt → API → Web.")
+    elif len(source_only) > 0:
+        md_lines.append("Prioridade: investigar documentos presentes na fonte mas ausentes na STG. "
+                        "Verificar Agent watermark, API ingest logs, rejeições de schema.")
+    elif len(stg_only) > 0:
+        md_lines.append("Prioridade: investigar documentos na STG sem correspondência na fonte. "
+                        "Verificar se o banco/filial/host está correto.")
+    else:
+        md_lines.append("Investigar mismatches de valor/status. Verificar CDC/upsert logic.")
+    md_lines.append("")
+
+    write_md("\n".join(md_lines), out_dir / "compare_report.md")
+    log.info("Compare complete → %s (overall: %s)", out_dir, "PASS" if overall_pass else "FAIL")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1911,6 +2663,21 @@ def build_parser() -> argparse.ArgumentParser:
     full.add_argument("--env", default=None)
     full.add_argument("--out", required=True)
     full.set_defaults(func=cmd_full_discovery)
+
+    # test-stg-connection
+    tsc = sub.add_parser("test-stg-connection", help="Test PostgreSQL STG connection")
+    tsc.add_argument("--env", default=None)
+    tsc.set_defaults(func=cmd_test_stg_connection)
+
+    # compare-stg-comprovantes-range
+    csr = sub.add_parser("compare-stg-comprovantes-range", help="Compare source vs STG comprovantes for date range")
+    csr.add_argument("--env", default=None)
+    csr.add_argument("--id-filial", required=True)
+    csr.add_argument("--date-from", default=None, help="Start date YYYY-MM-DD (default: 15 days ago)")
+    csr.add_argument("--date-to", default=None, help="End date YYYY-MM-DD inclusive (default: yesterday)")
+    csr.add_argument("--stg-only", action="store_true", default=False, help="Skip SQL Server, audit STG data only")
+    csr.add_argument("--out", required=True)
+    csr.set_defaults(func=cmd_compare_stg_comprovantes_range)
 
     return p
 
