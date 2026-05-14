@@ -26,6 +26,10 @@ export default function LoginPage() {
       .get("/auth/me")
       .then((res) => {
         const session = cacheSession(res.data);
+        if (session?.must_change_password) {
+          window.location.href = '/change-password';
+          return;
+        }
         window.location.href = buildCanonicalProductHref(
           res.data?.home_path || "/dashboard",
           session,
@@ -54,6 +58,13 @@ export default function LoginPage() {
       const token = res.data.access_token as string;
       setToken(token);
       const session = cacheSession(res.data?.session || res.data || null);
+
+      // Force password change redirect
+      if (session?.must_change_password) {
+        window.location.href = '/change-password';
+        return;
+      }
+
       window.location.href = buildCanonicalProductHref(
         res.data?.home_path || "/dashboard",
         session,

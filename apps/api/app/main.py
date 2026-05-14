@@ -6,9 +6,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.db import get_conn
+from app.security import decode_token
 
 from app.routes_auth import router as auth_router
 from app.routes_dashboard import router as dashboard_router
@@ -55,6 +57,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+
+# ── Force password change middleware ─────────────────────────
+_PASSWORD_CHANGE_EXEMPT = {"/auth/login", "/auth/change-password", "/auth/me", "/health", "/readyz"}
+
+
+class ForcePasswordChangeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path.rstrip("/")
+        if request.method == "OPTIONS" or path in _PASSWORD_CHANGE_EXEMPT:
+            return await call_next(request)
+
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+            try:
+                payload = decode_token(token)
+                if payload.get("must_change_password"):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "password_change_required",
+                            "message": "You must change your password before accessing this resource.",
+                        },
+                    )
+            except Exception:
+                pass  # let downstream auth handle invalid tokens
+
+        return await call_next(request)
+
+
+app.add_middleware(ForcePasswordChangeMiddleware)
 
 app.include_router(auth_router)
 app.include_router(dashboard_router)

@@ -19,6 +19,7 @@ import {
   buildProductHref,
   buildScopeSearchParams,
   createScopeEpoch,
+  filterProductLinks,
   getScopeControls,
   hasExplicitBranchSelection,
   readScopeFromSearch,
@@ -461,7 +462,7 @@ export default function AppNav({
           </div>
 
           <nav className="productTopLinks" aria-label="Navegação principal do produto">
-            {PRODUCT_LINKS.map((item) => {
+            {filterProductLinks(session?.allowed_screens).map((item: any) => {
               const isActive = pathname === item.path;
               return (
                 <Link

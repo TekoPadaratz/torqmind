@@ -28,6 +28,7 @@ function emptyUser(role = 'tenant_admin') {
     must_change_password: true,
     locked_until: '',
     reset_failed_login: false,
+    screen_permissions: [] as string[],
     accesses: [emptyAccess(role)],
   };
 }
@@ -55,7 +56,24 @@ function toDatetimeInput(value: any) {
 }
 
 function roleRequiresBranch(role: string) {
-  return role === 'tenant_manager' || role === 'tenant_viewer';
+  return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
+}
+
+const SCREEN_OPTIONS = [
+  { key: 'dashboard_home', label: 'Dashboard Geral' },
+  { key: 'sales', label: 'Vendas' },
+  { key: 'cash', label: 'Caixa' },
+  { key: 'fraud', label: 'Antifraude' },
+  { key: 'customers', label: 'Clientes' },
+  { key: 'finance', label: 'Financeiro' },
+  { key: 'competitor_pricing', label: 'Preço Concorrente' },
+  { key: 'goals_team', label: 'Metas & Equipe' },
+  { key: 'tv_sales_ranking', label: 'TV — Ranking' },
+  { key: 'tv_sales_hourly', label: 'TV — Vendas/Hora' },
+];
+
+function roleUsesScreenPermissions(role: string) {
+  return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
 }
 
 export default function PlatformUsersPage() {
@@ -111,6 +129,7 @@ export default function PlatformUsersPage() {
       must_change_password: Boolean(user.must_change_password),
       locked_until: toDatetimeInput(user.locked_until),
       reset_failed_login: false,
+      screen_permissions: Array.isArray(user.screen_permissions) ? user.screen_permissions : [],
       accesses: (user.accesses || []).length
         ? user.accesses.map((access: any) => ({
             role: access.role || firstRole,
@@ -185,6 +204,7 @@ export default function PlatformUsersPage() {
         valid_from: form.valid_from || null,
         valid_until: form.valid_until || null,
         locked_until: form.locked_until || null,
+        screen_permissions: roleUsesScreenPermissions(form.role) ? form.screen_permissions : null,
         accesses:
           form.role === 'platform_admin' || form.role === 'platform_master' || form.role === 'product_global'
             ? [{ role: form.role, channel_id: null, id_empresa: null, id_filial: null, is_enabled: true, valid_from: null, valid_until: null }]
@@ -292,6 +312,7 @@ export default function PlatformUsersPage() {
                 <option value="tenant_admin">tenant_admin</option>
                 <option value="tenant_manager">tenant_manager</option>
                 <option value="tenant_viewer">tenant_viewer</option>
+                <option value="tenant_kiosk">tenant_kiosk (Vendedor/TV)</option>
                 {me?.user_role === 'platform_master' ? <option value="channel_admin">channel_admin</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="product_global">product_global</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="platform_admin">platform_admin</option> : null}
@@ -372,6 +393,30 @@ export default function PlatformUsersPage() {
                   Adicionar vínculo
                 </button>
               ) : null}
+
+              {roleUsesScreenPermissions(form.role) ? (
+                <div style={{ width: '100%', marginBottom: 8 }}>
+                  <div className="platformFieldHint" style={{ marginBottom: 4 }}>Telas permitidas:</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {SCREEN_OPTIONS.map((screen) => (
+                      <label key={screen.key} className="platformCheckbox" style={{ minWidth: 160 }}>
+                        <input
+                          type="checkbox"
+                          checked={form.screen_permissions.includes(screen.key)}
+                          onChange={(e) => {
+                            const perms = e.target.checked
+                              ? [...form.screen_permissions, screen.key]
+                              : form.screen_permissions.filter((k: string) => k !== screen.key);
+                            setForm({ ...form, screen_permissions: perms });
+                          }}
+                        />
+                        {screen.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <label className="platformCheckbox">
                 <input type="checkbox" checked={form.is_enabled} onChange={(e) => setForm({ ...form, is_enabled: e.target.checked })} />
                 Usuário habilitado

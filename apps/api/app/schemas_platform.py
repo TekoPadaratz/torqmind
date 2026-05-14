@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,6 +16,7 @@ PlatformRole = Literal[
     "tenant_admin",
     "tenant_manager",
     "tenant_viewer",
+    "tenant_kiosk",
 ]
 
 
@@ -70,6 +71,7 @@ class UserUpsertRequest(BaseModel):
     locked_until: Optional[datetime] = None
     reset_failed_login: bool = False
     accesses: list[UserAccessInput] = Field(default_factory=list)
+    screen_permissions: Optional[List[str]] = Field(default=None, description="Allowed screen keys for manager/kiosk roles")
 
     @field_validator("email")
     @classmethod

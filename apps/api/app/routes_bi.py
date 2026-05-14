@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
+from app.permissions import require_screen, redact_sensitive
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
 from app import repos_analytics as repos_mart
 from app import repos_auth
@@ -1017,6 +1018,7 @@ def dashboard_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1060,11 +1062,12 @@ def dashboard_home(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="dashboard_home",
         role=role,
         tenant_id=tenant,
@@ -1074,7 +1077,7 @@ def dashboard_home(
         dt_ref=as_of,
         compute=lambda: repos_mart.dashboard_home_bundle(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim, dt_ref=as_of),
         safe_fallback=lambda: _safe_dashboard_home_payload(tenant, branch_scope, dt_ini, dt_fim, as_of),
-    )
+    ), claims)
 
 
 # ------------------------
@@ -1090,15 +1093,16 @@ def sales_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("sales")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
 
     def build_response() -> Dict[str, Any]:
-        return repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of)
+        return redact_sensitive(repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of), claims)
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="sales_overview",
         role=role,
         tenant_id=tenant,
@@ -1109,7 +1113,7 @@ def sales_overview(
         compute=build_response,
         extra_context={"module": "sales"},
         safe_fallback=lambda: _safe_sales_overview_payload(role, tenant, filial, dt_ini, dt_fim, as_of),
-    )
+    ), claims)
 
 
 # ------------------------
@@ -1125,6 +1129,7 @@ def fraud_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fraud")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1185,7 +1190,7 @@ def fraud_overview(
             "open_cash": open_cash,
         }
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="fraud_overview",
         role=role,
         tenant_id=tenant,
@@ -1196,7 +1201,7 @@ def fraud_overview(
         compute=build_response,
         extra_context={"module": "fraud", "contract_version": 2},
         safe_fallback=lambda: _safe_fraud_overview_payload(tenant, dt_ini, dt_fim, as_of),
-    )
+    ), claims)
 
 
 @router.get("/risk/overview")
@@ -1209,6 +1214,7 @@ def risk_overview(
     status: Optional[str] = Query(None, description="NOVO/LIDO/RESOLVIDO"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fraud")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1240,17 +1246,18 @@ def customers_summary(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     try:
-        return repos_mart.customers_summary_paginated(
+        return redact_sensitive(repos_mart.customers_summary_paginated(
             role, tenant, filial,
             page=page, page_size=page_size,
             sort_by=sort_by or "total_compras_30d",
             sort_order=sort_order or "DESC",
             search=search or "",
-        )
+        ), claims)
     except Exception as exc:
         logger.warning("customers_summary fallback: %s", exc)
         return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "source": "unavailable"}
@@ -1265,6 +1272,7 @@ def customers_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1311,7 +1319,7 @@ def customers_overview(
             "commercial_coverage": commercial_coverage,
         }
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="customers_overview",
         role=role,
         tenant_id=tenant,
@@ -1322,7 +1330,7 @@ def customers_overview(
         compute=build_response,
         extra_context={"feature": "churn"},
         safe_fallback=lambda: _safe_customers_overview_payload(as_of),
-    )
+    ), claims)
 
 
 @router.get("/clients/churn")
@@ -1337,6 +1345,7 @@ def clients_churn(
     limit: int = Query(20, ge=1, le=100),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1377,6 +1386,7 @@ def clients_retention_anonymous(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1408,6 +1418,7 @@ def finance_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1431,7 +1442,7 @@ def finance_overview(
             response["open_cash"] = repos_mart.open_cash_monitor(role, tenant, filial)
         return response
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="finance_overview",
         role=role,
         tenant_id=tenant,
@@ -1446,7 +1457,7 @@ def finance_overview(
             "include_operational": include_operational,
         },
         safe_fallback=lambda: _safe_finance_overview_payload(tenant, as_of, include_series, include_payments, include_operational),
-    )
+    ), claims)
 
 
 @router.get("/payments/overview")
@@ -1458,10 +1469,11 @@ def payments_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=30)
+    return redact_sensitive(repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=30), claims)
 
 
 # ------------------------
@@ -1477,10 +1489,11 @@ def cash_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("cash")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="cash_overview",
         role=role,
         tenant_id=tenant,
@@ -1491,7 +1504,7 @@ def cash_overview(
         compute=lambda: repos_mart.cash_overview(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim),
         extra_context={"module": "cash", "contract_version": 2},
         safe_fallback=_safe_cash_overview_payload,
-    )
+    ), claims)
 
 
 
@@ -1519,6 +1532,7 @@ def goals_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1547,7 +1561,7 @@ def goals_overview(
             "commercial_coverage": commercial_coverage,
         }
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="goals_overview",
         role=role,
         tenant_id=tenant,
@@ -1558,7 +1572,7 @@ def goals_overview(
         compute=build_response,
         extra_context={"goal_date": as_of.isoformat()},
         safe_fallback=lambda: _safe_goals_overview_payload(tenant),
-    )
+    ), claims)
 
 
 @router.post("/goals/target")
@@ -1568,6 +1582,7 @@ def goals_target(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
 ):
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:
@@ -1610,10 +1625,11 @@ def jarvis_briefing(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return repos_mart.jarvis_briefing(role, tenant, primary_branch_id(filial_scope), dt_ref=dt_ref)
+    return redact_sensitive(repos_mart.jarvis_briefing(role, tenant, primary_branch_id(filial_scope), dt_ref=dt_ref), claims)
 
 
 @router.post("/jarvis/generate")
@@ -1625,6 +1641,7 @@ def jarvis_generate(
     force: bool = Query(False),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     try:

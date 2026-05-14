@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, Field
 
 from app import repos_auth
+from app.deps import get_current_claims
 from app.schemas_auth import LoginRequest, LoginResponse
-from app.security import create_access_token, decode_token
+from app.security import create_access_token, decode_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -30,6 +32,7 @@ def login(body: LoginRequest):
         "id_empresa": session.get("id_empresa"),
         "id_filial": session.get("id_filial"),
         "channel_id": session.get("channel_id"),
+        "must_change_password": session.get("must_change_password", False),
     }
     token = create_access_token(payload)
     return LoginResponse(
@@ -69,3 +72,58 @@ def me(authorization: str | None = Header(default=None)):
         )
     except repos_auth.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
+
+
+# ── Change password ──────────────────────────────────────────
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordRequest, claims=Depends(get_current_claims)):
+    """
+    Change user password. Validates current password, updates hash,
+    clears must_change_password flag, sets password_changed_at.
+    Returns a fresh access token with must_change_password=False.
+    """
+    user_id = claims["sub"]
+
+    from app.db import get_conn
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM auth.users WHERE id = %s::uuid",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail={"error": "user_not_found", "message": "User not found"})
+
+        if not verify_password(body.current_password, row["password_hash"]):
+            raise HTTPException(status_code=400, detail={"error": "wrong_password", "message": "Current password is incorrect"})
+
+        if body.current_password == body.new_password:
+            raise HTTPException(status_code=400, detail={"error": "same_password", "message": "New password must differ from current"})
+
+        new_hash = hash_password(body.new_password)
+        conn.execute(
+            """
+            UPDATE auth.users
+            SET password_hash = %s,
+                must_change_password = FALSE,
+                password_changed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = %s::uuid
+            """,
+            (new_hash, user_id),
+        )
+        conn.commit()
+
+    # Issue fresh token with must_change_password=False
+    new_payload = {**claims, "must_change_password": False}
+    for k in ("exp", "iat", "nbf"):
+        new_payload.pop(k, None)
+    token = create_access_token(new_payload)
+
+    return {"ok": True, "access_token": token}

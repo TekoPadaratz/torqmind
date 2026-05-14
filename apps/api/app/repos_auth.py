@@ -23,6 +23,14 @@ from app.authz import (
     tenant_status_is_warning,
 )
 from app.db import get_conn
+from app.permissions import (
+    can_view_sensitive_financials as _can_view_sensitive,
+    get_allowed_screens as _get_allowed_screens_default,
+    is_kiosk_user as _is_kiosk,
+    load_user_screen_permissions,
+    resolve_default_route as _resolve_default,
+    ROLE_DEFAULT_SCREENS,
+)
 from app.security import verify_password
 from app.usernames import (
     identifier_looks_like_email,
@@ -867,8 +875,27 @@ def _build_session_context(
         product_scope_branch = None
 
     default_scope = None
+
+    # ── Screen permissions & layout ──────────────────────────────────
+    user_id_str = str(user["id"])
+    if user_role in ROLE_DEFAULT_SCREENS:
+        allowed_screens = sorted(ROLE_DEFAULT_SCREENS[user_role])
+    else:
+        # tenant_manager / tenant_viewer / tenant_kiosk → DB lookup
+        with get_conn(role="MASTER", tenant_id=None) as _sc:
+            allowed_screens = sorted(load_user_screen_permissions(_sc, user_id_str))
+
+    layout_mode = "kiosk" if _is_kiosk({"user_role": user_role}) else "normal"
+    _claims_stub = {
+        "user_role": user_role,
+        "allowed_screens": allowed_screens,
+        "can_view_sensitive_financials": _can_view_sensitive({"user_role": user_role}),
+    }
+    default_route = _resolve_default(_claims_stub)
+    can_see_financials = _can_view_sensitive({"user_role": user_role})
+
     home_path = (
-        "/dashboard"
+        default_route
         if product_access_enabled
         else "/platform"
         if can_access_platform(user_role)
@@ -902,6 +929,10 @@ def _build_session_context(
             "product": product_access_enabled,
             "product_readonly": product_readonly,
         },
+        "allowed_screens": allowed_screens,
+        "can_view_sensitive_financials": can_see_financials,
+        "layout_mode": layout_mode,
+        "default_route": default_route,
         "server_today": today.isoformat(),
         "default_scope": default_scope,
         "home_path": home_path,

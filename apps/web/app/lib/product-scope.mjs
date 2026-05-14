@@ -1,15 +1,27 @@
 import { buildBrowserLocalDefaultScope } from './local-scope-defaults.mjs';
 
 export const PRODUCT_LINKS = [
-  { path: '/dashboard', label: 'Dashboard Geral' },
-  { path: '/sales', label: 'Vendas' },
-  { path: '/cash', label: 'Caixa' },
-  { path: '/fraud', label: 'Antifraude' },
-  { path: '/customers', label: 'Clientes' },
-  { path: '/finance', label: 'Financeiro' },
-  { path: '/pricing', label: 'Preço Concorrente' },
-  { path: '/goals', label: 'Metas & Equipe' },
+  { path: '/dashboard', label: 'Dashboard Geral', screen_key: 'dashboard_home' },
+  { path: '/sales', label: 'Vendas', screen_key: 'sales' },
+  { path: '/cash', label: 'Caixa', screen_key: 'cash' },
+  { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
+  { path: '/customers', label: 'Clientes', screen_key: 'customers' },
+  { path: '/finance', label: 'Financeiro', screen_key: 'finance' },
+  { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
+  { path: '/goals', label: 'Metas & Equipe', screen_key: 'goals_team' },
 ];
+
+/**
+ * Filter PRODUCT_LINKS to only those the user has screen access to.
+ * If allowed_screens is null/undefined, show all (admin users).
+ */
+export function filterProductLinks(allowed_screens) {
+  if (!Array.isArray(allowed_screens) || allowed_screens.length === 0) {
+    return PRODUCT_LINKS;
+  }
+  const set = new Set(allowed_screens);
+  return PRODUCT_LINKS.filter((link) => set.has(link.screen_key));
+}
 
 function normalizeScopeEpoch(rawValue) {
   const normalized = String(rawValue || '').trim();

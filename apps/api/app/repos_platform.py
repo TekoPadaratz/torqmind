@@ -695,6 +695,16 @@ def list_users(
     users = _load_user_rows()
     access_map = _group_user_accesses(_load_user_access_rows([str(user["id"]) for user in users]))
 
+    # Load screen permissions for all users
+    from app.db import get_conn as _get_conn_perms
+    screen_perms_map: dict[str, list[str]] = {}
+    if users:
+        with _get_conn_perms() as pconn:
+            rows = pconn.execute("SELECT user_id::text AS uid, screen_key FROM auth.user_screen_permissions").fetchall()
+            for row in rows:
+                uid = row["uid"]
+                screen_perms_map.setdefault(uid, []).append(row["screen_key"])
+
     filtered: list[dict[str, Any]] = []
     for user in users:
         accesses = access_map.get(str(user["id"]), [])
@@ -721,6 +731,7 @@ def list_users(
                 "is_enabled": bool(user.get("is_active", True)),
                 "telegram_configured": bool(user.get("telegram_enabled") and user.get("telegram_chat_id")),
                 "accesses": accesses,
+                "screen_permissions": screen_perms_map.get(str(user.get("id")), []),
             }
         )
 
@@ -999,6 +1010,13 @@ def upsert_user(
             )
 
         _ensure_user_contacts_row(conn, user_id)
+
+        # ── Save screen permissions ──
+        screen_permissions = payload.get("screen_permissions")
+        if screen_permissions is not None:
+            from app.permissions import save_user_screen_permissions
+            save_user_screen_permissions(conn, user_id, screen_permissions)
+
         current_user = conn.execute(
             """
             SELECT
@@ -1032,6 +1050,7 @@ def upsert_user(
             }
             for access in accesses
         ]
+        current["screen_permissions"] = screen_permissions or []
         _audit(conn, claims, "user.update" if previous else "user.create", "user", user_id, previous, current, ip)
         conn.commit()
     return current
