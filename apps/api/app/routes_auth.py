@@ -34,7 +34,9 @@ def login(body: LoginRequest):
         "channel_id": session.get("channel_id"),
         "must_change_password": session.get("must_change_password", False),
     }
-    token = create_access_token(payload)
+    # Kiosk sessions last 24h
+    token_minutes = 1440 if session.get("user_role") == "tenant_kiosk" else None
+    token = create_access_token(payload, minutes=token_minutes)
     return LoginResponse(
         access_token=token,
         role=session["role"],
@@ -133,4 +135,27 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
     }
     token = create_access_token(new_payload)
 
+    return {"ok": True, "access_token": token}
+
+
+@router.post("/refresh")
+def refresh_token(claims=Depends(get_current_claims)):
+    """Reissue a fresh access token based on current valid session.
+
+    Kiosk sessions get 24h tokens; other roles get the default TTL.
+    Called periodically by the frontend to keep sessions alive.
+    """
+    user_role = claims.get("user_role") or ""
+    new_payload = {
+        "sub": claims["sub"],
+        "email": claims.get("email"),
+        "user_role": user_role,
+        "role": claims.get("role"),
+        "id_empresa": claims.get("id_empresa"),
+        "id_filial": claims.get("id_filial"),
+        "channel_id": claims.get("channel_id"),
+        "must_change_password": False,
+    }
+    token_minutes = 1440 if user_role == "tenant_kiosk" else None
+    token = create_access_token(new_payload, minutes=token_minutes)
     return {"ok": True, "access_token": token}

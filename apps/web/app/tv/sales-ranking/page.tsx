@@ -1,19 +1,16 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { apiGet, setAuthToken } from "../../lib/api";
-import { getToken, clearAuth } from "../../lib/auth";
+import { apiGet, apiPost, setAuthToken } from "../../lib/api";
+import { getToken, setToken, clearAuth } from "../../lib/auth";
 import { loadSession } from "../../lib/session";
-
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
 
 export default function TVSalesRankingPage() {
   const router = useRouter();
   const [session, setSession] = useState<any>(null);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   useEffect(() => {
     const t = getToken();
@@ -26,8 +23,16 @@ export default function TVSalesRankingPage() {
   const fetchData = useCallback(async () => {
     if (!session) return;
     try {
+      // Refresh token to keep kiosk session alive
+      try {
+        const refreshRes = await apiPost("/auth/refresh", {});
+        if (refreshRes?.access_token) {
+          setToken(refreshRes.access_token);
+        }
+      } catch {}
       const res = await apiGet(`/bi/tv/sales-ranking`);
       setData(res);
+      setLastUpdated(new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
       setError(null);
     } catch (err: any) {
       setError("Erro ao carregar dados");
@@ -36,7 +41,7 @@ export default function TVSalesRankingPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60_000);
+    const interval = setInterval(fetchData, 300_000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -51,7 +56,9 @@ export default function TVSalesRankingPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h1 style={{ fontSize: 32, fontWeight: 700 }}>🏆 Ranking de Vendas — Hoje</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <span style={{ color: "#64748b", fontSize: 14 }}>Atualização automática a cada 60s</span>
+          <span style={{ color: "#64748b", fontSize: 14 }}>
+            {lastUpdated ? `Última atualização: ${lastUpdated}` : "Atualização automática a cada 5 min"}
+          </span>
           <button
             onClick={() => { clearAuth(); router.push("/"); }}
             style={{ padding: "6px 16px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}

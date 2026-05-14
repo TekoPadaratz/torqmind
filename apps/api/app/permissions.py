@@ -299,6 +299,23 @@ def require_screen(screen_key: str):
     return _check
 
 
+def require_not_kiosk():
+    """Return a FastAPI Depends-compatible callable that raises 403
+    if the current user is a kiosk (tenant_kiosk) session."""
+
+    def _check(claims: dict[str, Any] = Depends(_get_claims_ref())):
+        if (claims.get("user_role") or "") == "tenant_kiosk":
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "kiosk_not_allowed",
+                    "message": "Endpoint não disponível para modo TV.",
+                },
+            )
+
+    return _check
+
+
 def _get_claims_ref():
     """Lazy import to avoid circular dependency with deps.py."""
     from app.deps import get_current_claims

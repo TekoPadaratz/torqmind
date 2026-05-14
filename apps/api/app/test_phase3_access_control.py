@@ -516,5 +516,142 @@ class TestKioskScreenRestrictions(unittest.TestCase):
         self.assertEqual(result, ["dashboard_home", "sales", "cash"])
 
 
+# ---------------------------------------------------------------------------
+# 11) kiosk blocked on generic BI endpoints
+# ---------------------------------------------------------------------------
+
+class TestKioskBlockedGenericEndpoints(unittest.TestCase):
+    """tenant_kiosk gets 403 on generic BI endpoints (filiais, sync, etc.)."""
+
+    BLOCKED_ENDPOINTS = [
+        ("GET", "/bi/filiais"),
+        ("GET", "/bi/sync/status"),
+        ("GET", "/bi/me/telegram"),
+        ("PATCH", "/bi/me/telegram"),
+        ("GET", "/bi/notifications"),
+        ("POST", "/bi/notifications/1/read"),
+        ("GET", "/bi/notifications/unread-count"),
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def setUp(self):
+        app.dependency_overrides[get_current_claims] = lambda: _kiosk_claims()
+
+    def tearDown(self):
+        app.dependency_overrides.pop(get_current_claims, None)
+
+    def test_kiosk_blocked_on_all_generic_endpoints(self):
+        for method, path in self.BLOCKED_ENDPOINTS:
+            with self.subTest(method=method, path=path):
+                fn = getattr(self.client, method.lower())
+                kwargs: dict = {}
+                if method == "PATCH":
+                    kwargs["json"] = {"telegram_enabled": False}
+                resp = fn(path, **kwargs)
+                self.assertEqual(resp.status_code, 403, f"{method} {path} should be 403")
+                self.assertEqual(resp.json()["detail"]["error"], "kiosk_not_allowed")
+
+
+# ---------------------------------------------------------------------------
+# 12) kiosk still allowed on TV endpoints
+# ---------------------------------------------------------------------------
+
+class TestKioskAllowedTVEndpoints(unittest.TestCase):
+    """tenant_kiosk can still call /bi/tv/* endpoints."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.pop(get_current_claims, None)
+
+    def test_kiosk_can_access_tv_sales_hourly(self):
+        app.dependency_overrides[get_current_claims] = lambda: _kiosk_claims()
+        with patch("app.repos_analytics.dashboard_series", return_value=[]):
+            resp = self.client.get("/bi/tv/sales-hourly")
+        self.assertNotEqual(resp.status_code, 403)
+
+    def test_kiosk_can_access_tv_sales_ranking(self):
+        app.dependency_overrides[get_current_claims] = lambda: _kiosk_claims()
+        with patch("app.repos_analytics.sales_overview_bundle", return_value={"sellers": []}):
+            resp = self.client.get("/bi/tv/sales-ranking")
+        self.assertNotEqual(resp.status_code, 403)
+
+
+# ---------------------------------------------------------------------------
+# 13) Refresh token endpoint
+# ---------------------------------------------------------------------------
+
+class TestRefreshTokenEndpoint(unittest.TestCase):
+    """POST /auth/refresh issues a fresh token."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.pop(get_current_claims, None)
+
+    def test_refresh_for_kiosk_returns_token(self):
+        app.dependency_overrides[get_current_claims] = lambda: _kiosk_claims()
+        resp = self.client.post("/auth/refresh")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertIn("access_token", body)
+        # Verify kiosk gets 24h token
+        from app.security import decode_token
+        payload = decode_token(body["access_token"])
+        ttl = payload["exp"] - payload["iat"]
+        self.assertAlmostEqual(ttl, 1440 * 60, delta=5)
+
+    def test_refresh_for_owner_returns_default_ttl(self):
+        app.dependency_overrides[get_current_claims] = lambda: _owner_claims()
+        resp = self.client.post("/auth/refresh")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        from app.security import decode_token
+        payload = decode_token(body["access_token"])
+        ttl = payload["exp"] - payload["iat"]
+        from app.config import settings
+        self.assertAlmostEqual(ttl, settings.api_access_token_minutes * 60, delta=5)
+
+    def test_refresh_without_token_401(self):
+        app.dependency_overrides.pop(get_current_claims, None)
+        resp = self.client.post("/auth/refresh")
+        self.assertEqual(resp.status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+# 14) require_not_kiosk unit
+# ---------------------------------------------------------------------------
+
+class TestRequireNotKiosk(unittest.TestCase):
+    """Unit test for require_not_kiosk dependency."""
+
+    def test_kiosk_raises_403(self):
+        from app.permissions import require_not_kiosk
+        checker = require_not_kiosk()
+        with self.assertRaises(HTTPException) as ctx:
+            checker(claims=_kiosk_claims())
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(ctx.exception.detail["error"], "kiosk_not_allowed")
+
+    def test_manager_passes(self):
+        from app.permissions import require_not_kiosk
+        checker = require_not_kiosk()
+        checker(claims=_manager_claims())
+
+    def test_owner_passes(self):
+        from app.permissions import require_not_kiosk
+        checker = require_not_kiosk()
+        checker(claims=_owner_claims())
+
+
 if __name__ == "__main__":
     unittest.main()

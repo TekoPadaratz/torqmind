@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
-from app.permissions import require_screen, redact_sensitive
+from app.permissions import require_screen, redact_sensitive, require_not_kiosk
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
 from app import repos_analytics as repos_mart
 from app import repos_auth
@@ -994,6 +994,7 @@ class CompetitorPriceUpsertRequest(BaseModel):
 def get_filiais(
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, _ = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=None)
@@ -1517,6 +1518,7 @@ def sync_status(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     tenant, _, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return snapshot_cache.last_consolidated_sync(tenant_id=tenant, branch_id=primary_branch_id(branch_scope))
@@ -1724,6 +1726,7 @@ class TelegramSettingsUpdate(BaseModel):
 @router.get("/me/telegram")
 def me_telegram_settings(
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     user_id = str(claims.get("sub") or "")
     if not user_id:
@@ -1735,6 +1738,7 @@ def me_telegram_settings(
 def me_telegram_update(
     body: TelegramSettingsUpdate,
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     user_id = str(claims.get("sub") or "")
     if not user_id:
@@ -1775,6 +1779,7 @@ def notifications_list(
     limit: int = Query(30, ge=1, le=200),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1791,6 +1796,7 @@ def notifications_mark_read(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1804,6 +1810,7 @@ def notifications_unread_count(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)

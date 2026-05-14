@@ -1,7 +1,7 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+.pytest_cache/
 venv/
 env/
 .venv/
