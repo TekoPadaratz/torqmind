@@ -63,3 +63,5 @@ apps/api/torqmind_api.egg-info/
 config/source-explorer.env
 logs/source_explorer/
 exports/source_explorer/
+imports/source_explorer/
+*.tgz

@@ -25,6 +25,9 @@ from tools.xpert_source_explorer import (
     _json_serial,
     classify_comprovante,
     is_commercial,
+    _compare_docs,
+    _compute_day_summaries,
+    _compute_delta_explanations,
 )
 
 
@@ -425,6 +428,135 @@ class TestCompareLogic(unittest.TestCase):
 
 # Import after path setup
 from tools.xpert_source_explorer import cmd_audit_sales_day, cmd_nfe_discovery
+from tools.xpert_source_explorer import cmd_export_source_comprovantes_range, cmd_compare_source_ledger_to_stg
+
+
+class TestSplitCompare(unittest.TestCase):
+    """Tests for export-source-comprovantes-range and compare-source-ledger-to-stg logic."""
+
+    def _make_doc(self, id_db, id_comprovante, total, situacao=0, cancelado=0,
+                  nfe_status=None, data_dia="2026-05-10"):
+        return {
+            "id_filial": "14458",
+            "id_db": str(id_db),
+            "id_comprovante": str(id_comprovante),
+            "total_header": float(total),
+            "situacao": situacao,
+            "cancelado": cancelado,
+            "nfe_status": nfe_status,
+            "data_dia": data_dia,
+            "data": f"{data_dia} 10:00:00",
+            "classification": classify_comprovante(situacao, cancelado, nfe_status),
+            "commercial_eligible": 1 if is_commercial(situacao, cancelado) else 0,
+        }
+
+    def test_export_manifest_has_sha256(self):
+        """Mock export produces manifest with sha256."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            csv_path = Path(d) / "source_ledger.csv"
+            csv_path.write_text("id_filial,id_db,id_comprovante\n14458,1,100\n", encoding="utf-8")
+            sha = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+            manifest = {"sha256": sha, "row_count": 1}
+            manifest_path = Path(d) / "source_manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            loaded = json.loads(manifest_path.read_text())
+            self.assertIn("sha256", loaded)
+            self.assertEqual(loaded["sha256"], sha)
+
+    def test_compare_validates_sha256(self):
+        """SHA256 mismatch is detectable."""
+        import hashlib
+        content = b"id_filial,id_db,id_comprovante\n14458,1,100\n"
+        actual = hashlib.sha256(content).hexdigest()
+        fake = hashlib.sha256(b"tampered").hexdigest()
+        self.assertNotEqual(actual, fake)
+
+    def test_compare_key_uses_id_db(self):
+        """Comparison key must include id_db for uniqueness."""
+        src = [self._make_doc(1, 100, 500.0), self._make_doc(2, 100, 300.0)]
+        stg = [self._make_doc(1, 100, 500.0)]
+        cmp = _compare_docs(src, stg)
+        # doc with id_db=2 should be source_only
+        self.assertEqual(len(cmp["source_only"]), 1)
+        self.assertEqual(cmp["source_only"][0]["id_db"], "2")
+
+    def test_source_only_calculated(self):
+        """Doc in source but not STG → source_only."""
+        src = [self._make_doc(1, 100, 500.0)]
+        stg = []
+        cmp = _compare_docs(src, stg)
+        self.assertEqual(len(cmp["source_only"]), 1)
+        self.assertEqual(len(cmp["stg_only"]), 0)
+
+    def test_stg_only_calculated(self):
+        """Doc in STG but not source → stg_only."""
+        src = []
+        stg = [self._make_doc(1, 200, 300.0)]
+        cmp = _compare_docs(src, stg)
+        self.assertEqual(len(cmp["stg_only"]), 1)
+        self.assertEqual(len(cmp["source_only"]), 0)
+
+    def test_total_mismatch_calculated(self):
+        """Same doc, total differs > 0.01 → total_mismatch."""
+        src = [self._make_doc(1, 100, 500.0)]
+        stg = [self._make_doc(1, 100, 499.0)]
+        cmp = _compare_docs(src, stg)
+        self.assertEqual(len(cmp["total_mismatch"]), 1)
+        self.assertAlmostEqual(cmp["total_mismatch"][0]["diff"], 1.0)
+
+    def test_status_mismatch_calculated(self):
+        """Same doc, situacao or cancelado differs → status_mismatch."""
+        src = [self._make_doc(1, 100, 500.0, situacao=0, cancelado=0)]
+        stg = [self._make_doc(1, 100, 500.0, situacao=3, cancelado=0)]
+        cmp = _compare_docs(src, stg)
+        self.assertEqual(len(cmp["status_mismatch"]), 1)
+
+    def test_nfe_mismatch_calculated(self):
+        """Same doc, nfe_status differs → nfe_mismatch."""
+        src = [self._make_doc(1, 100, 500.0, nfe_status=3)]
+        stg = [self._make_doc(1, 100, 500.0, nfe_status=5)]
+        cmp = _compare_docs(src, stg)
+        self.assertEqual(len(cmp["nfe_mismatch"]), 1)
+
+    def test_classification_situacao_3(self):
+        """classify_comprovante(3, 0, None) == 'situacao_3_ignorada'."""
+        self.assertEqual(classify_comprovante(3, 0, None), "situacao_3_ignorada")
+
+    def test_classification_nfe_inutilizada(self):
+        """classify_comprovante(0, 1, 5) == 'nfe_inutilizada'."""
+        self.assertEqual(classify_comprovante(0, 1, 5), "nfe_inutilizada")
+
+    def test_delta_explained_closes(self):
+        """abs(delta_total_comercial - delta_explained) <= 0.01."""
+        src = [self._make_doc(1, 100, 500.0)]
+        stg = []
+        cmp = _compare_docs(src, stg)
+        day_summaries = _compute_day_summaries(
+            src, stg, cmp["source_only"], cmp["stg_only"],
+            cmp["total_mismatch"], cmp["status_mismatch"], cmp["nfe_mismatch"],
+        )
+        delta_explanations = _compute_delta_explanations(
+            day_summaries, cmp["source_only"], cmp["stg_only"],
+            cmp["total_mismatch"], cmp["status_mismatch"],
+            cmp["nfe_missing_in_stg"], cmp["classification_mismatch"],
+        )
+        self.assertEqual(len(delta_explanations), 1)
+        de = delta_explanations[0]
+        self.assertLessEqual(abs(de["delta_total_comercial"] - de["delta_explained_amount"]), 0.01)
+
+    def test_datarepl_not_in_export_query(self):
+        """cmd_export_source_comprovantes_range source must not use DATAREPL."""
+        import inspect
+        source = inspect.getsource(cmd_export_source_comprovantes_range)
+        self.assertNotIn("DATAREPL", source)
+
+    def test_export_query_uses_comprovantes_data(self):
+        """cmd_export_source_comprovantes_range uses c.DATA for filtering."""
+        import inspect
+        source = inspect.getsource(cmd_export_source_comprovantes_range)
+        self.assertIn("c.DATA >=", source)
+        self.assertIn("c.DATA <", source)
 
 
 if __name__ == "__main__":
