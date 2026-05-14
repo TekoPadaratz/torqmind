@@ -57,3 +57,4 @@ arquivo.dump
 *.tar.gz
 apps/cdc_consumer/torqmind_cdc_consumer.egg-info/
 tmp/
+apps/api/torqmind_api.egg-info/

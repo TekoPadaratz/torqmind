@@ -1,127 +1,107 @@
-# TorqMind Agent Operating Manual (AGENTS.md)
+# TorqMind — Instruções Operacionais para Agents
 
-## Mission
-You are an elite full-stack engineer (FastAPI + Next.js) and data platform engineer (Postgres DW).
-You execute tasks autonomously with production-grade quality for a multi-tenant BI SaaS.
+Estas instruções valem para qualquer agent trabalhando neste repositório.
 
-Repository structure:
-- apps/api : FastAPI (JWT auth, NDJSON ingest, ETL STG→DW→MART, BI endpoints)
-- apps/web : Next.js dashboards (geral, vendas, antifraude, clientes, financeiro, metas)
-- sql/migrations : Postgres init + schemas/tables/ETL SQL/materialized views
-- sql/torqmind_reset_db_v2.sql : full reset (dev/homolog)
+## Produto
 
-## Non-negotiable Principles
-- Correctness > speed. Never ship broken data semantics.
-- Determinism: prefer one-command flows (Makefile/scripts).
-- Multi-tenant safety: hard boundaries between tenants; no cross-tenant leakage.
-- Never expose secrets (.env, connection strings, JWT secrets).
-- Small, reviewable diffs; incremental commits.
-- Always produce evidence: run tests, lint, build, and report outputs.
+TorqMind é um Micro SaaS BI premium para redes de postos de combustíveis.
 
-## Operating Rules
-### Branching
-- Never commit to `main`.
-- Work only in the current branch (e.g. `agent/bootstrap`).
-- Use small commits with clear messages.
+O produto precisa ser confiável em dados, rápido em produção, seguro por role/permissão, simples para usuário operacional, auditável ponta a ponta e vendável para dono de posto.
 
-### Definition of Done (DoD)
-For every task:
-- API: type-safe request/response models, input validation, error handling, logs.
-- Web: consistent UI patterns, no runtime type errors, SSR/CSR correctness.
-- DB: migrations or SQL changes are versioned and idempotent; tenant isolation preserved.
-- Tests: add/adjust tests; critical paths covered.
-- Commands: `make lint` and `make test` succeed (or the closest equivalent).
-- Docs updated if behavior or data contracts change.
+## Stack oficial
 
-## Tech Proficiency Standards
+- Frontend: Next.js / React / TypeScript
+- API: Python / FastAPI
+- PostgreSQL: `app`, `auth`, `stg`, `dw`, `mart`
+- ClickHouse: `torqmind_raw`, `torqmind_current`, `torqmind_mart_rt`, `torqmind_ops`
+- Streaming/CDC: Debezium + Redpanda + CDC Consumer Python
+- Deploy: Docker Compose multi-VM
+- Produção:
+  - PostgreSQL/STG/DW: `172.30.0.8`
+  - Analytics/ClickHouse/Redpanda/Debezium/CDC: `172.30.0.9`
+  - App/API/Web/Nginx: `172.30.0.10`
+  - SSH externo: `ssh -p 14022 tm@redevr.ddns.me`
+  - URL pública: `http://redevr.ddns.me:14023`
+  - API pública: `http://redevr.ddns.me:14023/api`
 
-### FastAPI (apps/api)
-- Prefer Pydantic models for request/response schemas.
-- Use dependency injection for auth, tenant context, DB sessions.
-- JWT:
-  - access + refresh tokens if implemented; otherwise keep consistent with current system.
-  - verify exp/iat/aud/iss if used; never accept "none" alg.
-- NDJSON ingest:
-  - stream-safe (avoid reading entire file into memory),
-  - validate each record,
-  - reject or quarantine bad rows, with a clear error report,
-  - idempotency recommended (dedupe keys / ingestion batch id).
-- ETL:
-  - STG: raw/landing with minimal transforms
-  - DW: conformed dimensions/facts
-  - MART: dashboard-optimized views/materialized views
-  - Always preserve tenant_id and enforce it in every step.
-- Observability:
-  - structured logs,
-  - correlation id per request,
-  - clear metrics counters if present.
+## Regras absolutas de segurança
 
-### Next.js (apps/web)
-- Use TypeScript.
-- Prefer typed API clients and shared schemas if available.
-- Follow existing routing approach (App Router or Pages Router) — do not migrate without explicit request.
-- Keep dashboard pages performant: avoid unnecessary client-side data fetch waterfalls.
-- Ensure tenant context is enforced in API calls; never render cross-tenant data.
-- Add basic e2e hooks (Playwright) if already present; otherwise do not add heavy tooling unless requested.
+Nunca:
+- apagar STG;
+- resetar volumes;
+- regenerar Ingest_Key;
+- expor segredos em logs/commit;
+- executar `docker compose down -v`;
+- rodar DROP/TRUNCATE em produção sem plano, backup e confirmação explícita;
+- fazer deploy sem teste e health check;
+- declarar PASS sem prova.
 
-### Postgres DW + SQL (sql/migrations)
-- Migrations must be:
-  - idempotent when possible (safe re-run),
-  - ordered and documented,
-  - reversible when feasible (or clearly marked irreversible).
-- Materialized views:
-  - define refresh strategy (manual vs scheduled),
-  - use indexes where needed,
-  - ensure tenant filter is always included.
-- `sql/torqmind_reset_db_v2.sql` is for dev/homolog only:
-  - never run against production,
-  - keep it aligned with migrations.
+## Regras canônicas de dados
 
-## Multi-tenant Rules (Critical)
-- Every table and view that can contain customer data must include `tenant_id` (or equivalent key).
-- Every query must filter by tenant_id unless it’s an explicit cross-tenant admin operation.
-- API must derive tenant context from:
-  - JWT claims and/or request headers and/or subdomain,
-  consistent with existing code.
-- Never accept tenant_id purely from client input if it can be spoofed; validate against auth context.
-- Add automated tests for tenant isolation when touching auth/data paths.
+- Vendas canônicas vêm de `stg.comprovantes`, `stg.itenscomprovantes`, `stg.formas_pgto_comprovantes`.
+- Não usar `stg.movprodutos` / `stg.itensmovprodutos` como origem principal de venda realtime.
+- Join comprovante/item: `id_empresa`, `id_filial`, `id_db`, `id_comprovante`.
+- `id_db` é obrigatório.
+- Faturamento vem dos itens válidos, não dos pagamentos.
+- Data da venda vem do comprovante.
+- Timezone: `America/Sao_Paulo`.
+- Proibido fallback com `1970`, `data_key=0`, meio-dia inventado.
+- `situacao=3` é ignorada comercialmente.
+- NFE `status=5` é inutilização fiscal, não venda, não fraude, não cancelamento real.
+- NFE usa `DATA`; nunca usar `DATAREPL` como watermark/filtro.
+- Caixa/turno `0` não entra em rankings operacionais.
 
-## Data Quality & ETL Safety
-- When modifying ETL:
-  - Add validation checks (row counts, constraints, not-null critical fields).
-  - Provide a reconciliation note: expected invariants before/after.
-- Prefer incremental loads:
-  - watermark by timestamp/id if available,
-  - avoid full refresh unless requested.
-- For anti-fraud metrics:
-  - ensure definitions are explicit and documented.
+## Controle de acesso
 
-## Commands (Single Source of Truth)
-If missing, create a Makefile with targets:
-- make setup       # install deps (python + node)
-- make up          # docker compose up -d
-- make down        # stop services
-- make logs        # tail logs
-- make migrate     # apply migrations/init SQL
-- make resetdb     # runs torqmind_reset_db_v2.sql (DEV ONLY)
-- make test        # api + web tests
-- make lint        # ruff/black/mypy + eslint/tsc
-- make api         # run fastapi
-- make web         # run next dev
+- `platform_master`: acesso total, todas empresas/filiais, vê Plataforma, vê margem/lucro/custo.
+- `owner`: empresa/filiais vinculadas, não vê Plataforma, vê margem/lucro/custo.
+- `manager`/gerente: empresa/filiais definidas, menus por checkbox, nunca vê margem/lucro/custo.
+- `tenant_kiosk`/vendedor/TV: modo TV, sem menu normal, apenas dashboards permitidos, só logout, sem margem/lucro/custo.
 
-## Execution Protocol
-Before coding:
-1) Read README.md and relevant docs.
-2) Summarize the plan in bullets.
-3) Identify risks and missing pieces (commands, env vars, migrations).
+Permissão real precisa ser aplicada na API. Esconder menu no frontend não é suficiente.
 
-During execution:
-- Implement smallest working slice.
-- Run `make lint` + `make test` frequently.
-- If a command fails: fix and rerun until green.
+## Regras de domínio para postos
 
-Deliverable:
-- Summary of changes
-- How to run locally from scratch
-- What was validated (tests/commands)
-- Risks/assumptions/next steps
+Sempre considerar combustíveis, preço concorrente, vendas por hora, ranking de vendedores, turno/caixa, operador/frentista, cancelamentos, NFE/NFC-e, formas de pagamento, contas a pagar/receber, metas/equipe e financeiro gerencial.
+
+Nunca expor margem, lucro, CMV, custo ou rentabilidade para gerente/vendedor.
+
+## Qualidade obrigatória antes de PASS
+
+```bash
+python -m compileall apps/api apps/cdc_consumer
+PATH="$PWD/.venv/bin:$PATH" pytest apps/api -q
+PATH="$PWD/.venv/bin:$PATH" pytest apps/cdc_consumer/tests -q
+cd apps/web && npm test && npm run build
+```
+
+Se mexer em produção:
+
+```bash
+curl -I http://redevr.ddns.me:14023
+curl -I http://redevr.ddns.me:14023/api/health
+```
+
+Se mexer em realtime/marts:
+
+```bash
+ENV_FILE=/etc/torqmind/prod.app.env PUBLIC_URL=http://redevr.ddns.me:14023 ./deploy/scripts/realtime-product-screen-smoke.sh
+ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./deploy/scripts/prod-multivm-validate.sh
+ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./deploy/scripts/prod-multivm-proof.sh
+```
+
+## Performance obrigatória
+
+Antes de otimizar, medir. Depois de otimizar, provar antes/depois.
+
+```bash
+curl -sS -w '
+TOTAL=%{time_total}s
+' -o /tmp/endpoint.json 'http://redevr.ddns.me:14023/api/health'
+```
+
+Para endpoints BI: evitar consulta pesada em STG quando Mart/snapshot existe; evitar fallback pesado silencioso; reduzir payload; cache por escopo quando seguro; preferir marts/materializações para telas críticas; alvo: endpoint quente abaixo de 2s sempre que possível.
+
+## Estilo de trabalho
+
+Sempre diagnosticar, explicar causa provável, alterar o mínimo necessário, testar, validar API/Web, limpar sujeira, commit/push quando solicitado e entregar relatório PASS/FAIL com prova.
