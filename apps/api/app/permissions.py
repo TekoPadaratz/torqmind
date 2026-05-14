@@ -306,6 +306,40 @@ def _get_claims_ref():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Allowed screen_keys per role group (for validation on save)
+# ──────────────────────────────────────────────────────────────────────
+
+_ALLOWED_SCREENS_BY_ROLE: Dict[str, Set[str]] = {
+    "tenant_kiosk": _TV_SCREENS,
+    "tenant_manager": _ALL_PRODUCT_SCREENS,
+    "tenant_viewer": _ALL_PRODUCT_SCREENS,
+}
+
+
+def validate_screen_permissions_for_role(role: str, screen_keys: List[str]) -> List[str]:
+    """Validate that screen_keys are allowed for the given role.
+
+    Raises HTTPException(422) if any disallowed key is found.
+    Returns the validated list.
+    """
+    allowed = _ALLOWED_SCREENS_BY_ROLE.get(role)
+    if allowed is None:
+        return screen_keys  # admin/owner roles — no restriction
+
+    disallowed = [k for k in screen_keys if k not in allowed]
+    if disallowed:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "screen_permission_invalid",
+                "message": f"Telas não permitidas para role '{role}': {', '.join(sorted(disallowed))}.",
+                "disallowed": sorted(disallowed),
+            },
+        )
+    return screen_keys
+
+
+# ──────────────────────────────────────────────────────────────────────
 # DB helpers  (used by session builder in repos_auth.py)
 # ──────────────────────────────────────────────────────────────────────
 

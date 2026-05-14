@@ -10,11 +10,11 @@ These endpoints:
 from __future__ import annotations
 
 import logging
-from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.business_time import business_today
 from app.deps import get_current_claims
 from app.permissions import require_screen
 
@@ -54,7 +54,7 @@ def tv_sales_hourly(
 ):
     """Hourly sales series for the current day — TV display safe."""
     role, tenant, branch = _tv_scope(claims)
-    today = date.today()
+    today = business_today(tenant)
 
     try:
         from app import repos_analytics as repos_mart
@@ -78,7 +78,7 @@ def tv_sales_ranking(
 ):
     """Seller ranking for the current day — TV display safe."""
     role, tenant, branch = _tv_scope(claims)
-    today = date.today()
+    today = business_today(tenant)
 
     try:
         from app import repos_analytics as repos_mart

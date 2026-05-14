@@ -59,7 +59,7 @@ function roleRequiresBranch(role: string) {
   return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
 }
 
-const SCREEN_OPTIONS = [
+const PRODUCT_SCREEN_OPTIONS = [
   { key: 'dashboard_home', label: 'Dashboard Geral' },
   { key: 'sales', label: 'Vendas' },
   { key: 'cash', label: 'Caixa' },
@@ -68,9 +68,18 @@ const SCREEN_OPTIONS = [
   { key: 'finance', label: 'Financeiro' },
   { key: 'competitor_pricing', label: 'Preço Concorrente' },
   { key: 'goals_team', label: 'Metas & Equipe' },
-  { key: 'tv_sales_ranking', label: 'TV — Ranking' },
-  { key: 'tv_sales_hourly', label: 'TV — Vendas/Hora' },
 ];
+
+const TV_SCREEN_OPTIONS = [
+  { key: 'tv_sales_hourly', label: 'TV — Vendas/Hora' },
+  { key: 'tv_sales_ranking', label: 'TV — Ranking' },
+];
+
+function screenOptionsForRole(role: string) {
+  if (role === 'tenant_kiosk') return TV_SCREEN_OPTIONS;
+  if (role === 'tenant_manager' || role === 'tenant_viewer') return PRODUCT_SCREEN_OPTIONS;
+  return [...PRODUCT_SCREEN_OPTIONS, ...TV_SCREEN_OPTIONS];
+}
 
 function roleUsesScreenPermissions(role: string) {
   return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
@@ -183,14 +192,20 @@ export default function PlatformUsersPage() {
   const isPlatformSuperuser = Boolean(me?.access?.platform_superuser);
 
   function setRole(role: string) {
-    setForm((current: any) => ({
-      ...current,
-      role,
-      accesses:
-        role === 'platform_admin' || role === 'platform_master' || role === 'product_global'
-          ? [emptyAccess(role)]
-          : current.accesses.map((access: any) => ({ ...access, role })),
-    }));
+    setForm((current: any) => {
+      // When role changes, clear screen_permissions not valid for new role
+      const validKeys = new Set(screenOptionsForRole(role).map(s => s.key));
+      const filteredPerms = (current.screen_permissions || []).filter((k: string) => validKeys.has(k));
+      return {
+        ...current,
+        role,
+        screen_permissions: filteredPerms,
+        accesses:
+          role === 'platform_admin' || role === 'platform_master' || role === 'product_global'
+            ? [emptyAccess(role)]
+            : current.accesses.map((access: any) => ({ ...access, role })),
+      };
+    });
   }
 
   function updateAccess(index: number, patch: any) {
@@ -441,7 +456,7 @@ export default function PlatformUsersPage() {
                 <div style={{ width: '100%', marginBottom: 8 }}>
                   <div className="platformFieldHint" style={{ marginBottom: 4 }}>Telas permitidas:</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {SCREEN_OPTIONS.map((screen) => (
+                    {screenOptionsForRole(form.role).map((screen) => (
                       <label key={screen.key} className="platformCheckbox" style={{ minWidth: 160 }}>
                         <input
                           type="checkbox"

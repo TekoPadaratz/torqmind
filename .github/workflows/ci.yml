@@ -1,0 +1,47 @@
+name: torqmind-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and start stack
+        run: |
+          docker compose up -d --build
+
+      - name: Seed users
+        run: |
+          docker compose exec -T api python -m app.cli.seed
+
+      - name: API smoke tests
+        run: |
+          make test
+
+      - name: Agent tests
+        run: |
+          make test-agent
+
+      - name: Web/API lint-build gate
+        run: |
+          make lint
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose down -v

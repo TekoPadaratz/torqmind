@@ -13,6 +13,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch, MagicMock
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.deps import get_current_claims, get_current_claims_allow_password_change
@@ -337,6 +338,182 @@ class TestForcePasswordChangeDB(unittest.TestCase):
         else:
             self.assertEqual(resp.status_code, 400)
             self.assertEqual(resp.json()["detail"]["error"], "wrong_password")
+
+
+# ---------------------------------------------------------------------------
+# 7) dashboard_overview redaction
+# ---------------------------------------------------------------------------
+
+class TestDashboardOverviewRedaction(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.pop(get_current_claims, None)
+
+    def test_manager_dashboard_overview_redacts_sensitive(self):
+        """Manager with dashboard_home should not see custo_total/margem/margin_10d."""
+        claims = _manager_claims(allowed_screens=["dashboard_home"])
+        app.dependency_overrides[get_current_claims] = lambda: claims
+        with patch("app.repos_analytics.dashboard_kpis") as m_kpis, \
+             patch("app.repos_analytics.dashboard_series") as m_series, \
+             patch("app.repos_analytics.insights_base") as m_insights, \
+             patch("app.repos_analytics.risk_insights") as m_risk_insights, \
+             patch("app.repos_analytics.payments_overview") as m_payments, \
+             patch("app.repos_analytics.open_cash_monitor") as m_open_cash, \
+             patch("app.repos_analytics.risk_kpis") as m_risk_kpis, \
+             patch("app.repos_analytics.risk_series") as m_risk_series, \
+             patch("app.repos_analytics.risk_data_window") as m_risk_window, \
+             patch("app.repos_analytics.operational_score") as m_op_score, \
+             patch("app.repos_analytics.health_score_latest") as m_health, \
+             patch("app.repos_analytics.jarvis_briefing") as m_jarvis, \
+             patch("app.repos_analytics.notifications_unread_count") as m_notif, \
+             patch("app.routes_bi.resolve_scope_filters") as m_scope, \
+             patch("app.routes_bi.resolve_business_date") as m_bdate:
+            m_scope.return_value = (1, 100, [100])
+            m_bdate.return_value = __import__("datetime").date(2026, 5, 14)
+            m_kpis.return_value = {"faturamento": 1000, "custo_total": 500, "margem": 200}
+            m_series.return_value = []
+            m_insights.return_value = []
+            m_risk_insights.return_value = []
+            m_payments.return_value = {}
+            m_open_cash.return_value = []
+            m_risk_kpis.return_value = {}
+            m_risk_series.return_value = []
+            m_risk_window.return_value = {}
+            m_op_score.return_value = {}
+            m_health.return_value = {}
+            m_jarvis.return_value = {}
+            m_notif.return_value = 0
+            resp = self.client.get("/bi/dashboard/overview?dt_ini=2026-05-01&dt_fim=2026-05-14")
+        self.assertIn(resp.status_code, (200,))
+        body = resp.json()
+        kpis = body["kpis"]
+        self.assertEqual(kpis["faturamento"], 1000)
+        self.assertIsNone(kpis.get("custo_total"))
+        self.assertIsNone(kpis.get("margem"))
+
+
+# ---------------------------------------------------------------------------
+# 8) risk_overview redaction
+# ---------------------------------------------------------------------------
+
+class TestRiskOverviewRedaction(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.pop(get_current_claims, None)
+
+    def test_manager_risk_overview_redacts_margem_score(self):
+        """Manager with fraud should not see margem_score in risk overview."""
+        claims = _manager_claims(allowed_screens=["fraud"])
+        app.dependency_overrides[get_current_claims] = lambda: claims
+        with patch("app.repos_analytics.risk_kpis") as m_risk_kpis, \
+             patch("app.repos_analytics.risk_series") as m_risk_series, \
+             patch("app.repos_analytics.risk_data_window") as m_risk_window, \
+             patch("app.repos_analytics.risk_top_employees") as m_top, \
+             patch("app.repos_analytics.risk_by_turn_local") as m_turn, \
+             patch("app.repos_analytics.risk_last_events") as m_events, \
+             patch("app.repos_analytics.risk_insights") as m_insights, \
+             patch("app.repos_analytics.operational_score") as m_op_score, \
+             patch("app.routes_bi.resolve_scope_filters") as m_scope:
+            m_scope.return_value = (1, 100, [100])
+            m_risk_kpis.return_value = {"margem_score": 0.85, "total_alertas": 5}
+            m_risk_series.return_value = []
+            m_risk_window.return_value = {}
+            m_top.return_value = []
+            m_turn.return_value = []
+            m_events.return_value = []
+            m_insights.return_value = []
+            m_op_score.return_value = {}
+            resp = self.client.get("/bi/risk/overview?dt_ini=2026-05-01&dt_fim=2026-05-14")
+        self.assertIn(resp.status_code, (200,))
+        body = resp.json()
+        self.assertIsNone(body["kpis"].get("margem_score"))
+        self.assertEqual(body["kpis"]["total_alertas"], 5)
+
+
+# ---------------------------------------------------------------------------
+# 9) change-password success with minimal JWT
+# ---------------------------------------------------------------------------
+
+class TestChangePasswordSuccess(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def tearDown(self):
+        app.dependency_overrides.pop(get_current_claims_allow_password_change, None)
+
+    def test_change_password_returns_minimal_jwt(self):
+        """After changing password, returned token should be decodable (no session context bloat)."""
+        from contextlib import contextmanager
+        from app.security import decode_token
+
+        claims = _manager_claims(must_change_password=True)
+        app.dependency_overrides[get_current_claims_allow_password_change] = lambda: claims
+
+        @contextmanager
+        def _fake_conn(*a, **kw):
+            mock = MagicMock()
+            mock.execute.return_value.fetchone.return_value = {"password_hash": "fakehash"}
+            yield mock
+
+        with patch("app.db.get_conn", _fake_conn), \
+             patch("app.routes_auth.verify_password", return_value=True), \
+             patch("app.routes_auth.hash_password", return_value="newhash"):
+            resp = self.client.post("/auth/change-password", json={
+                "current_password": "oldpass",
+                "new_password": "newpassword123",
+            })
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertIn("access_token", body)
+        # Decode should work without errors (no datetime/complex objects)
+        payload = decode_token(body["access_token"])
+        self.assertEqual(payload["sub"], claims["sub"])
+        self.assertEqual(payload["must_change_password"], False)
+        # Should NOT contain session-specific keys
+        self.assertNotIn("accesses", payload)
+        self.assertNotIn("allowed_screens", payload)
+
+
+# ---------------------------------------------------------------------------
+# 10) kiosk screen restrictions
+# ---------------------------------------------------------------------------
+
+class TestKioskScreenRestrictions(unittest.TestCase):
+    def test_kiosk_with_sales_gets_422(self):
+        """tenant_kiosk cannot have sales in screen_permissions."""
+        from app.permissions import validate_screen_permissions_for_role
+        with self.assertRaises(HTTPException) as ctx:
+            validate_screen_permissions_for_role("tenant_kiosk", ["sales", "tv_sales_hourly"])
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("sales", ctx.exception.detail["disallowed"])
+
+    def test_kiosk_with_tv_only_passes(self):
+        """tenant_kiosk with only TV screens should pass."""
+        from app.permissions import validate_screen_permissions_for_role
+        result = validate_screen_permissions_for_role("tenant_kiosk", ["tv_sales_hourly", "tv_sales_ranking"])
+        self.assertEqual(result, ["tv_sales_hourly", "tv_sales_ranking"])
+
+    def test_manager_with_tv_gets_422(self):
+        """tenant_manager cannot have TV screens."""
+        from app.permissions import validate_screen_permissions_for_role
+        with self.assertRaises(HTTPException) as ctx:
+            validate_screen_permissions_for_role("tenant_manager", ["dashboard_home", "tv_sales_hourly"])
+        self.assertEqual(ctx.exception.status_code, 422)
+        self.assertIn("tv_sales_hourly", ctx.exception.detail["disallowed"])
+
+    def test_manager_with_product_screens_passes(self):
+        """tenant_manager with product screens should pass."""
+        from app.permissions import validate_screen_permissions_for_role
+        result = validate_screen_permissions_for_role("tenant_manager", ["dashboard_home", "sales", "cash"])
+        self.assertEqual(result, ["dashboard_home", "sales", "cash"])
 
 
 if __name__ == "__main__":

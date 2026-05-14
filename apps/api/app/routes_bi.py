@@ -1025,7 +1025,7 @@ def dashboard_overview(
     as_of = resolve_business_date(dt_ref, tenant)
 
     if compact:
-        return {
+        payload = {
             "insights_generated": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=20),
             "risk": {
                 "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -1033,8 +1033,9 @@ def dashboard_overview(
             },
             "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
         }
+        return redact_sensitive(payload, claims)
 
-    return {
+    payload = {
         "kpis": repos_mart.dashboard_kpis(role, tenant, filial, dt_ini, dt_fim),
         "by_day": repos_mart.dashboard_series(role, tenant, filial, dt_ini, dt_fim),
         "insights": repos_mart.insights_base(role, tenant, filial, dt_ini, dt_fim),
@@ -1051,6 +1052,7 @@ def dashboard_overview(
         "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
         "notifications_unread": repos_mart.notifications_unread_count(role, tenant, filial),
     }
+    return redact_sensitive(payload, claims)
 
 
 @router.get("/dashboard/home", response_model=DashboardHomeResponse)
@@ -1219,7 +1221,7 @@ def risk_overview(
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
-    return {
+    payload = {
         "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
         "by_day": repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim),
         "window": repos_mart.risk_data_window(role, tenant, filial),
@@ -1229,6 +1231,7 @@ def risk_overview(
         "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, status=status, limit=30),
         "operational_score": repos_mart.operational_score(role, tenant, filial, dt_ini, dt_fim),
     }
+    return redact_sensitive(payload, claims)
 
 
 # ------------------------

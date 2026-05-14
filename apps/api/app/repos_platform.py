@@ -1014,7 +1014,8 @@ def upsert_user(
         # ── Save screen permissions ──
         screen_permissions = payload.get("screen_permissions")
         if screen_permissions is not None:
-            from app.permissions import save_user_screen_permissions
+            from app.permissions import save_user_screen_permissions, validate_screen_permissions_for_role
+            validate_screen_permissions_for_role(payload["role"], screen_permissions)
             save_user_screen_permissions(conn, user_id, screen_permissions)
 
         current_user = conn.execute(

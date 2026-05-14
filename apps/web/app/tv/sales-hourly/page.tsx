@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { apiGet, setAuthToken } from "../../lib/api";
-import { getToken } from "../../lib/auth";
+import { getToken, clearAuth } from "../../lib/auth";
 import { loadSession } from "../../lib/session";
 
 function todayStr() {
@@ -50,8 +50,14 @@ export default function TVSalesHourlyPage() {
     <div style={{ padding: "24px 32px", background: "#0f172a", minHeight: "100vh", color: "#f1f5f9" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h1 style={{ fontSize: 32, fontWeight: 700 }}>⏱️ Vendas por Hora — Hoje</h1>
-        <div style={{ color: "#64748b", fontSize: 14 }}>
-          Atualização automática a cada 60s
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <span style={{ color: "#64748b", fontSize: 14 }}>Atualização automática a cada 60s</span>
+          <button
+            onClick={() => { clearAuth(); router.push("/"); }}
+            style={{ padding: "6px 16px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+          >
+            Sair
+          </button>
         </div>
       </div>
 

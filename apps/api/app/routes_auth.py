@@ -120,10 +120,17 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
         )
         conn.commit()
 
-    # Issue fresh token with must_change_password=False
-    new_payload = {**claims, "must_change_password": False}
-    for k in ("exp", "iat", "nbf"):
-        new_payload.pop(k, None)
+    # Issue fresh token — minimal payload (session context is not JWT-safe)
+    new_payload = {
+        "sub": claims["sub"],
+        "email": claims.get("email"),
+        "user_role": claims.get("user_role"),
+        "role": claims.get("role"),
+        "id_empresa": claims.get("id_empresa"),
+        "id_filial": claims.get("id_filial"),
+        "channel_id": claims.get("channel_id"),
+        "must_change_password": False,
+    }
     token = create_access_token(new_payload)
 
     return {"ok": True, "access_token": token}
