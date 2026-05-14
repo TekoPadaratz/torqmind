@@ -26,8 +26,7 @@ export default function TVSalesRankingPage() {
   const fetchData = useCallback(async () => {
     if (!session) return;
     try {
-      const today = todayStr();
-      const res = await apiGet(`/bi/sales/overview?dt_ini=${today}&dt_fim=${today}`);
+      const res = await apiGet(`/bi/tv/sales-ranking`);
       setData(res);
       setError(null);
     } catch (err: any) {
@@ -45,7 +44,7 @@ export default function TVSalesRankingPage() {
     return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Carregando...</div>;
   }
 
-  const sellers = data?.sellers_ranking || data?.top_sellers || [];
+  const sellers = data?.sellers || data?.sellers_ranking || data?.top_sellers || [];
 
   return (
     <div style={{ padding: "24px 32px", background: "#0f172a", minHeight: "100vh", color: "#f1f5f9" }}>

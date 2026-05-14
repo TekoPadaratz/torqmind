@@ -846,15 +846,15 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
                 raise AuthError(422, "validation_error", "channel_admin não pode receber escopo de empresa ou filial.")
             if normalize_role(actor_claims.get("user_role")) == "channel_admin" and channel_id not in channel_ids:
                 raise AuthError(403, "channel_access_denied", "Canal não permitido.")
-        if role in {"tenant_admin", "tenant_manager", "tenant_viewer"}:
+        if role in {"tenant_admin", "tenant_manager", "tenant_viewer", "tenant_kiosk"}:
             if tenant_scope is None:
                 raise AuthError(422, "validation_error", "id_empresa é obrigatório para perfis tenant.")
             if channel_id is not None:
                 raise AuthError(422, "validation_error", "Perfis tenant não podem receber channel_id.")
             if role == "tenant_admin" and branch_scope is not None:
                 raise AuthError(422, "validation_error", "tenant_admin usa escopo por empresa, sem filial.")
-            if role in {"tenant_manager", "tenant_viewer"} and branch_scope is None:
-                raise AuthError(422, "validation_error", "id_filial é obrigatório para tenant_manager e tenant_viewer.")
+            if role in {"tenant_manager", "tenant_viewer", "tenant_kiosk"} and branch_scope is None:
+                raise AuthError(422, "validation_error", "id_filial é obrigatório para tenant_manager, tenant_viewer e tenant_kiosk.")
             if normalize_role(actor_claims.get("user_role")) == "channel_admin":
                 company = _assert_company_visible(actor_claims, int(tenant_scope))
                 if company.get("channel_id") not in set(actor_claims.get("channel_ids") or []):

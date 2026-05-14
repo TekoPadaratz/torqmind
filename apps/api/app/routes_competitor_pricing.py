@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, validator
 
 from app.deps import get_current_claims
 from app import repos_auth
+from app.permissions import require_screen
 from app.scope import resolve_scope_filters, primary_branch_id
 from app import repos_competitor_pricing as pricing_repo
 
@@ -103,6 +104,7 @@ def get_fuel_products(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("competitor_pricing")),
 ):
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     try:
@@ -123,6 +125,7 @@ def create_capture(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("competitor_pricing")),
 ):
     _require_write_access(claims)
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
@@ -161,6 +164,7 @@ def get_history(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("competitor_pricing")),
 ):
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     try:
@@ -182,6 +186,7 @@ def update_item_price(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("competitor_pricing")),
 ):
     _require_write_access(claims)
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
@@ -217,6 +222,7 @@ def get_comparison(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("competitor_pricing")),
 ):
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     try:

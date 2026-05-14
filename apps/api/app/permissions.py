@@ -135,13 +135,26 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
     "cmv",
     "custo",
     "custo_medio",
+    "custo_total",
+    "custo_unitario",
     "cost",
     "markup",
     "rentabilidade",
     "rentab",
     "margem_acumulada",
     "margem_percentual",
+    "margin_10d",
+    "margem_score",
+    "profit_margin",
+    "gross_margin",
 }
+
+# Stems for substring-based redaction — any key whose lowercased name
+# contains one of these stems is treated as sensitive.
+_SENSITIVE_STEMS: tuple[str, ...] = (
+    "margem", "margin", "lucro", "profit", "cmv",
+    "custo", "cost", "markup", "rentab",
+)
 
 # Roles that can see sensitive financial data
 _FINANCIAL_ROLES: Set[str] = {
@@ -243,10 +256,18 @@ def redact_sensitive(data: Any, claims: dict[str, Any]) -> Any:
     return _redact(data)
 
 
+def _is_sensitive_key(key: str) -> bool:
+    """Return True if *key* is a known sensitive financial field."""
+    lower = key.lower()
+    if lower in SENSITIVE_FIELD_NAMES:
+        return True
+    return any(stem in lower for stem in _SENSITIVE_STEMS)
+
+
 def _redact(obj: Any) -> Any:
     if isinstance(obj, dict):
         for key in list(obj.keys()):
-            if key.lower() in SENSITIVE_FIELD_NAMES:
+            if _is_sensitive_key(key):
                 obj[key] = None
             else:
                 _redact(obj[key])

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app import repos_auth
-from app.deps import get_current_claims
+from app.deps import get_current_claims, get_current_claims_allow_password_change
 from app.schemas_auth import LoginRequest, LoginResponse
 from app.security import create_access_token, decode_token, hash_password, verify_password
 
@@ -82,7 +82,7 @@ class ChangePasswordRequest(BaseModel):
 
 
 @router.post("/change-password")
-def change_password(body: ChangePasswordRequest, claims=Depends(get_current_claims)):
+def change_password(body: ChangePasswordRequest, claims=Depends(get_current_claims_allow_password_change)):
     """
     Change user password. Validates current password, updates hash,
     clears must_change_password flag, sets password_changed_at.

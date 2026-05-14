@@ -82,6 +82,7 @@ export default function PlatformUsersPage() {
   const [items, setItems] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
+  const [branchesMap, setBranchesMap] = useState<Record<string, any[]>>({});
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [form, setForm] = useState<any>(emptyUser());
   const [contactForm, setContactForm] = useState<any>(emptyContact());
@@ -150,6 +151,22 @@ export default function PlatformUsersPage() {
       email: user.contact_email || user.email || '',
       phone: user.contact_phone || '',
     });
+
+    // Pre-load branches for companies in existing accesses
+    const empresaIds: string[] = Array.from(new Set(
+      (user.accesses || []).map((a: any) => a.id_empresa).filter(Boolean).map(String)
+    ));
+    for (const eid of empresaIds) {
+      if (!branchesMap[eid]) {
+        apiGet(`/platform/companies/${eid}`)
+          .then((detail: any) => {
+            setBranchesMap((prev) => ({ ...prev, [eid]: detail?.branches || [] }));
+          })
+          .catch(() => {
+            setBranchesMap((prev) => ({ ...prev, [eid]: [] }));
+          });
+      }
+    }
   }
 
   useEffect(() => {
@@ -179,6 +196,21 @@ export default function PlatformUsersPage() {
   function updateAccess(index: number, patch: any) {
     const accesses = [...form.accesses];
     accesses[index] = { ...accesses[index], ...patch, role: form.role };
+    // When company changes, reset branch and load branches for that company
+    if (patch.id_empresa !== undefined) {
+      accesses[index].id_filial = '';
+      const empresaId = patch.id_empresa;
+      if (empresaId && !branchesMap[empresaId]) {
+        apiGet(`/platform/companies/${empresaId}`)
+          .then((detail: any) => {
+            const branches = detail?.branches || [];
+            setBranchesMap((prev) => ({ ...prev, [empresaId]: branches }));
+          })
+          .catch(() => {
+            setBranchesMap((prev) => ({ ...prev, [empresaId]: [] }));
+          });
+      }
+    }
     setForm({ ...form, accesses });
   }
 
@@ -192,7 +224,7 @@ export default function PlatformUsersPage() {
       return;
     }
     if (roleRequiresBranch(form.role) && form.accesses.some((access: any) => !access.id_filial)) {
-      setError('tenant_manager e tenant_viewer exigem filial explícita em todos os vínculos.');
+      setError('tenant_manager, tenant_viewer e tenant_kiosk exigem filial explícita em todos os vínculos.');
       return;
     }
     setSaving(true);
@@ -361,12 +393,23 @@ export default function PlatformUsersPage() {
 	                              </option>
 	                            ))}
 	                          </select>
-	                          <input
+	                          <select
 	                            className="input"
-	                            placeholder={roleRequiresBranch(form.role) ? 'Filial obrigatória' : 'Filial opcional'}
 	                            value={access.id_filial}
 	                            onChange={(e) => updateAccess(index, { id_filial: e.target.value })}
-	                          />
+	                          >
+	                            <option value="">{roleRequiresBranch(form.role) ? 'Filial obrigatória' : 'Filial opcional'}</option>
+	                            {(branchesMap[access.id_empresa] || []).map((branch: any) => (
+	                              <option key={branch.id_filial} value={branch.id_filial}>
+	                                {branch.id_filial} - {branch.nome || `Filial ${branch.id_filial}`}
+	                              </option>
+	                            ))}
+	                          </select>
+	                          {access.id_empresa && !branchesMap[access.id_empresa] ? (
+	                            <div className="platformFieldHint">Carregando filiais...</div>
+	                          ) : access.id_empresa && branchesMap[access.id_empresa]?.length === 0 ? (
+	                            <div className="platformFieldHint" style={{ color: '#f97316' }}>Nenhuma filial encontrada para esta empresa.</div>
+	                          ) : null}
 	                        </>
 	                      )}
                       <input className="input" type="date" value={access.valid_from} onChange={(e) => updateAccess(index, { valid_from: e.target.value })} />

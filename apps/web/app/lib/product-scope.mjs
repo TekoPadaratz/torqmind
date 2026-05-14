@@ -13,11 +13,15 @@ export const PRODUCT_LINKS = [
 
 /**
  * Filter PRODUCT_LINKS to only those the user has screen access to.
- * If allowed_screens is null/undefined, show all (admin users).
+ * If allowed_screens is null/undefined (admin users), show all.
+ * If allowed_screens is an empty array, show none (user has no permissions).
  */
 export function filterProductLinks(allowed_screens) {
-  if (!Array.isArray(allowed_screens) || allowed_screens.length === 0) {
+  if (!Array.isArray(allowed_screens)) {
     return PRODUCT_LINKS;
+  }
+  if (allowed_screens.length === 0) {
+    return [];
   }
   const set = new Set(allowed_screens);
   return PRODUCT_LINKS.filter((link) => set.has(link.screen_key));

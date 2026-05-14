@@ -8,7 +8,8 @@ from app import repos_auth
 from app.security import decode_token
 
 
-def get_current_claims(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+def _resolve_session(authorization: Optional[str]) -> dict[str, Any]:
+    """Decode the bearer token and load the live session context from DB."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail={"error": "missing_bearer", "message": "Missing bearer token"})
 
@@ -31,3 +32,22 @@ def get_current_claims(authorization: Optional[str] = Header(default=None)) -> d
         )
     except repos_auth.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
+
+
+def get_current_claims(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Standard dependency — blocks if user must change password."""
+    session = _resolve_session(authorization)
+    if session.get("must_change_password"):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "password_change_required",
+                "message": "You must change your password before accessing this resource.",
+            },
+        )
+    return session
+
+
+def get_current_claims_allow_password_change(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Variant used by /auth/change-password — does NOT block on must_change_password."""
+    return _resolve_session(authorization)

@@ -26,8 +26,7 @@ export default function TVSalesHourlyPage() {
   const fetchData = useCallback(async () => {
     if (!session) return;
     try {
-      const today = todayStr();
-      const res = await apiGet(`/dashboard/series?dt_ini=${today}&dt_fim=${today}`);
+      const res = await apiGet(`/bi/tv/sales-hourly`);
       setData(res);
       setError(null);
     } catch (err: any) {

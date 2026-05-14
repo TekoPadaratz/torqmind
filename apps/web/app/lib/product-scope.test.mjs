@@ -6,9 +6,11 @@ import {
   buildProductHref,
   buildScopeKey,
   buildScopeSearchParams,
+  filterProductLinks,
   getScopeControls,
   hasExplicitBranchSelection,
   needsCanonicalScope,
+  PRODUCT_LINKS,
   readScopeFromSearch,
 } from "./product-scope.mjs";
 
@@ -386,4 +388,44 @@ test("scope canonicalization detects missing URL scope", () => {
     needsCanonicalScope("/dashboard?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=7&scope_epoch=epoch-1"),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// filterProductLinks — Phase 3 access control tests
+// ---------------------------------------------------------------------------
+
+test("filterProductLinks with specific screens returns only matching links", () => {
+  const result = filterProductLinks(["customers", "competitor_pricing"]);
+  assert.equal(result.length, 2);
+  assert.deepEqual(
+    result.map((l) => l.screen_key),
+    ["customers", "competitor_pricing"],
+  );
+});
+
+test("filterProductLinks with empty array returns no links", () => {
+  const result = filterProductLinks([]);
+  assert.equal(result.length, 0);
+});
+
+test("filterProductLinks with undefined returns all links (admin fallback)", () => {
+  const result = filterProductLinks(undefined);
+  assert.equal(result.length, PRODUCT_LINKS.length);
+});
+
+test("filterProductLinks with null returns all links (admin fallback)", () => {
+  const result = filterProductLinks(null);
+  assert.equal(result.length, PRODUCT_LINKS.length);
+});
+
+test("filterProductLinks with single screen returns only that link", () => {
+  const result = filterProductLinks(["dashboard_home"]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].path, "/dashboard");
+});
+
+test("filterProductLinks with all screens returns all links", () => {
+  const allKeys = PRODUCT_LINKS.map((l) => l.screen_key);
+  const result = filterProductLinks(allKeys);
+  assert.equal(result.length, PRODUCT_LINKS.length);
 });

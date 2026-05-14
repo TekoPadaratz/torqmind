@@ -501,6 +501,7 @@ def _build_dashboard_home_path(
     include_dt_ref: bool = False,
     *,
     include_dates: bool = True,
+    base_route: str = "/dashboard",
 ) -> str:
     params: list[tuple[str, str]] = [("id_empresa", str(scope["id_empresa"]))]
     if include_dates:
@@ -520,7 +521,7 @@ def _build_dashboard_home_path(
     else:
         params.extend(("id_filiais", branch_id) for branch_id in branch_ids)
 
-    return f"/dashboard?{urlencode(params, doseq=True)}"
+    return f"{base_route}?{urlencode(params, doseq=True)}"
 
 
 def _record_failed_login(user_id: str) -> None:
@@ -903,7 +904,14 @@ def _build_session_context(
     )
     if include_default_scope and product_access_enabled and product_scope_tenant is not None:
         default_scope = _build_default_product_scope(product_scope_tenant, product_scope_branch)
-        home_path = _build_dashboard_home_path(default_scope, include_dt_ref=False, include_dates=False)
+        if layout_mode == "kiosk":
+            # Kiosk TV screens don't use product scope params
+            home_path = default_route
+        else:
+            home_path = _build_dashboard_home_path(
+                default_scope, include_dt_ref=False, include_dates=False,
+                base_route=default_route,
+            )
 
     return {
         "sub": str(user["id"]),

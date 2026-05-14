@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { api } from "../lib/api";
+import { api, apiGet } from "../lib/api";
 import { getToken, setToken } from "../lib/auth";
 import { extractApiError } from "../lib/errors";
 
@@ -35,7 +35,14 @@ export default function ChangePasswordPage() {
         setToken(res.data.access_token);
       }
 
-      window.location.href = "/dashboard";
+      // Redirect to the user's permitted home route, not hardcoded /dashboard
+      try {
+        const me = await apiGet("/auth/me");
+        const dest = me?.home_path || me?.default_route || "/dashboard";
+        window.location.href = dest;
+      } catch {
+        window.location.href = "/dashboard";
+      }
     } catch (err: any) {
       setError(extractApiError(err, "Falha ao alterar senha"));
     } finally {

@@ -77,4 +77,4 @@ def get_insights(
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     dt_ini, dt_fim = _clamp_date_range(dt_ini, dt_fim)
     points = repos_mart.insights_base(role, tenant, filial, dt_ini, dt_fim)
-    return {"points": points}
+    return redact_sensitive({"points": points}, claims)
