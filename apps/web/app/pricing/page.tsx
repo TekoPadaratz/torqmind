@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import { apiGet, apiPost, apiPatch } from '../lib/api';
+import { formatBusinessCalendarDate } from '../lib/calendar-date.mjs';
 import { extractApiError } from '../lib/errors';
 import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
@@ -16,8 +17,8 @@ export const dynamic = 'force-dynamic';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+function todayBusinessDate(): string {
+  return formatBusinessCalendarDate(new Date()) || new Date().toISOString().slice(0, 10);
 }
 
 function fmtPrice(v: string | number | null | undefined, digits = 3): string {
@@ -172,7 +173,7 @@ function RegisterTab({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [stationName, setStationName] = useState('');
-  const [captureDate, setCaptureDate] = useState(todayISO());
+  const [captureDate, setCaptureDate] = useState(todayBusinessDate());
   const [observation, setObservation] = useState('');
   const [prices, setPrices] = useState<Record<number, string>>({});
 
@@ -375,7 +376,7 @@ function HistoryTab({
 }) {
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [loading, setLoading] = useState(false);
-  const [historyDate, setHistoryDate] = useState(todayISO());
+  const [historyDate, setHistoryDate] = useState(todayBusinessDate());
   const [editingItem, setEditingItem] = useState<string | null>(null);
   const [editPrice, setEditPrice] = useState('');
 
@@ -602,7 +603,7 @@ function ComparisonTab({
 }) {
   const [rows, setRows] = useState<ComparisonRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [compDate, setCompDate] = useState(todayISO());
+  const [compDate, setCompDate] = useState(todayBusinessDate());
 
   const loadComparison = useCallback(async () => {
     if (!scope.id_empresa || !scope.id_filial) return;

@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from app.business_time import business_today
 from app.db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -177,7 +178,7 @@ def _get_own_prices(
     intentionally NOT used here.
     """
     result: Dict[int, Dict[str, Any]] = {}
-    target = ref_date or date.today()
+    target = ref_date or business_today()
     data_key = int(target.strftime("%Y%m%d"))
 
     sale_sql = """
