@@ -65,3 +65,4 @@ logs/source_explorer/
 exports/source_explorer/
 imports/source_explorer/
 *.tgz
+*.zip

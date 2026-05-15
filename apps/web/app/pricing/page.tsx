@@ -9,6 +9,7 @@ import { extractApiError } from '../lib/errors';
 import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
+import { readCachedSession } from '../lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -101,6 +102,13 @@ export default function PricingPage() {
 
   const clearMessages = () => { setError(''); setSuccess(''); };
 
+  // Detect single scope — hide empresa/filial selectors on mobile
+  const session = readCachedSession();
+  const accesses: any[] = session?.accesses || [];
+  const uniqueEmpresas = new Set(accesses.map((a: any) => a?.id_empresa).filter(Boolean));
+  const uniqueFiliais = new Set(accesses.map((a: any) => a?.id_filial).filter(Boolean));
+  const isSingleScope = uniqueEmpresas.size <= 1 && uniqueFiliais.size <= 1;
+
   const tabs: { key: Tab; label: string }[] = [
     { key: 'register', label: 'Registrar Preços' },
     { key: 'history', label: 'Histórico' },
@@ -109,7 +117,7 @@ export default function PricingPage() {
 
   return (
     <>
-      <AppNav title="Preço Concorrente" />
+      <AppNav title="Preço Concorrente" hideScopeOnMobile={isSingleScope} />
       <div className="container">
         <h1 className="pageTitle">Preço Concorrente</h1>
 
@@ -280,7 +288,8 @@ function RegisterTab({
       ) : fuels.length === 0 ? (
         <p className="muted">Nenhum combustível encontrado para esta filial.</p>
       ) : (
-        <div className="tableScroll" style={{ marginBottom: 20 }}>
+        <>
+        <div className="tableScroll pricingDesktopOnly" style={{ marginBottom: 20 }}>
           <table className="table">
             <thead>
               <tr>
@@ -294,9 +303,6 @@ function RegisterTab({
                 <tr key={fuel.product_id}>
                   <td>
                     <span style={{ fontWeight: 600 }}>{fuel.product_name}</span>
-                    {fuel.fuel_type && (
-                      <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>{fuel.fuel_type}</span>
-                    )}
                   </td>
                   <td style={{ textAlign: 'right', color: 'var(--muted)' }}>
                     {fuel.own_current_price
@@ -318,6 +324,29 @@ function RegisterTab({
             </tbody>
           </table>
         </div>
+        {/* Mobile: vertical fuel cards */}
+        <div className="pricingMobileOnly" style={{ marginBottom: 20 }}>
+          {fuels.map(fuel => (
+            <div key={fuel.product_id} className="fuelCardMobile">
+              <div className="fuelCardName">{fuel.product_name}</div>
+              <div className="fuelCardOwnPrice">
+                {fuel.own_current_price
+                  ? `Meu preço: R$ ${fmtPrice(fuel.own_current_price)}`
+                  : <span style={{ opacity: 0.5 }}>Meu preço: sem dados</span>}
+              </div>
+              <div className="fuelCardLabel">Preço Concorrente</div>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={prices[fuel.product_id] || ''}
+                onChange={e => handlePriceChange(fuel.product_id, e.target.value)}
+                placeholder="0,000"
+                className="fuelCardInput"
+              />
+            </div>
+          ))}
+        </div>
+        </>
       )}
 
       {/* Submit */}
@@ -424,7 +453,8 @@ function HistoryTab({
                 <p className="captureObs">{cap.observation}</p>
               )}
 
-              {/* Items */}
+              {/* Items — Desktop */}
+              <div className="pricingDesktopOnly">
               <table className="table compact">
                 <thead>
                   <tr>
@@ -512,6 +542,46 @@ function HistoryTab({
                   ))}
                 </tbody>
               </table>
+              </div>
+              {/* Items — Mobile */}
+              <div className="pricingMobileOnly">
+                {cap.items.map(item => (
+                  <div key={item.item_id} className="histItemMobile">
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{item.product_name}</div>
+                      {editingItem === item.item_id ? (
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={editPrice}
+                          onChange={e => setEditPrice(e.target.value.replace(/[^0-9.,]/g, '').replace(',', '.'))}
+                          className="fuelCardInput"
+                          style={{ width: 120, minHeight: 40, fontSize: 14, marginTop: 4 }}
+                          autoFocus
+                        />
+                      ) : (
+                        <span style={{ fontWeight: 600, fontSize: 15 }}>R$ {fmtPrice(item.price)}</span>
+                      )}
+                    </div>
+                    <div>
+                      {editingItem === item.item_id ? (
+                        <span style={{ display: 'flex', gap: 8 }}>
+                          <button onClick={() => handleEditSave(item.item_id)} className="btnLink btnLinkGood">Salvar</button>
+                          <button onClick={() => { setEditingItem(null); setEditPrice(''); }} className="btnLink btnLinkMuted">Cancelar</button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => { setEditingItem(item.item_id); setEditPrice(item.price); }}
+                          className="btnLink btnLinkAccent"
+                          style={{ minHeight: 44, padding: '8px 12px' }}
+                        >
+                          Editar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>
@@ -583,7 +653,8 @@ function ComparisonTab({
       ) : rows.length === 0 ? (
         <p className="muted">Nenhum dado de comparação encontrado.</p>
       ) : (
-        <div className="tableScroll">
+        <>
+        <div className="tableScroll pricingDesktopOnly">
           <table className="table">
             <thead>
               <tr>
@@ -603,9 +674,6 @@ function ComparisonTab({
                   <tr key={row.product_id}>
                     <td>
                       <span style={{ fontWeight: 600 }}>{row.product_name}</span>
-                      {row.fuel_type && (
-                        <span className="muted" style={{ marginLeft: 6, fontSize: 12 }}>{row.fuel_type}</span>
-                      )}
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       {row.own_current_price ? `R$ ${fmtPrice(row.own_current_price)}` : <span style={{ fontSize: 11, opacity: 0.6 }}>Sem preço</span>}
@@ -642,6 +710,55 @@ function ComparisonTab({
             </tbody>
           </table>
         </div>
+        {/* Mobile comparison cards */}
+        <div className="pricingMobileOnly">
+          {rows.map(row => {
+            const st = statusInfo(row.status);
+            return (
+              <div key={row.product_id} className="compCardMobile">
+                <div className="fuelCardName">{row.product_name}</div>
+                <div className="compCardRow">
+                  <span>Meu preço</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text)' }}>
+                    {row.own_current_price ? `R$ ${fmtPrice(row.own_current_price)}` : 'Sem preço'}
+                  </span>
+                </div>
+                <div className="compCardRow">
+                  <span>Menor concorrente</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text)' }}>
+                    {row.competitor_min_price ? `R$ ${fmtPrice(row.competitor_min_price)}` : '-'}
+                  </span>
+                </div>
+                {row.competitor_min_station_name && (
+                  <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+                    {row.competitor_min_station_name}
+                  </div>
+                )}
+                <div className="compCardRow" style={{ marginTop: 6 }}>
+                  <span>Diferença</span>
+                  <span>
+                    {row.diff_value != null ? (
+                      <span className={Number(row.diff_value) > 0 ? 'statusBad' : 'statusGood'} style={{ fontWeight: 600 }}>
+                        {Number(row.diff_value) > 0 ? '+' : ''}R$ {fmtPrice(row.diff_value)}
+                        {row.diff_percent != null && (
+                          <span style={{ fontSize: 11, marginLeft: 4 }}>
+                            ({Number(row.diff_percent) > 0 ? '+' : ''}{fmtPrice(row.diff_percent, 1)}%)
+                          </span>
+                        )}
+                      </span>
+                    ) : '-'}
+                  </span>
+                </div>
+                <div style={{ marginTop: 6, textAlign: 'right' }}>
+                  <span className={st.cls} style={{ fontSize: 12, fontWeight: 600 }}>
+                    {st.text}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        </>
       )}
     </div>
   );

@@ -46,7 +46,7 @@ log = logging.getLogger("xpert")
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 BUSINESS_KEYWORDS: List[str] = [
     "comprovante", "item", "produto", "venda", "cancel", "nfe", "nfce",
@@ -2209,12 +2209,27 @@ def cmd_compare_stg_comprovantes_range(cfg: Config, args: argparse.Namespace) ->
         if has_id_usuario:
             extra_cols += ",\n    c.ID_USUARIO AS id_usuario"
 
+        nfe_cte_src = ""
         nfe_join_src = ""
         nfe_cols_src = ",\n    NULL AS nfe_status,\n    NULL AS nfe_nronf,\n    NULL AS nfe_chaveacesso,\n    NULL AS nfe_data"
         if t_nfe:
+            nfe_cte_src = f"""\
+WITH nfe_ranked AS (
+  SELECT n.*,
+         ROW_NUMBER() OVER (
+           PARTITION BY n.ID_FILIAL, n.ID_DB, n.ID_COMPROVANTE
+           ORDER BY
+             CASE WHEN n.STATUS = 5 THEN 1 WHEN n.STATUS = 4 THEN 2 WHEN n.STATUS = 3 THEN 3 ELSE 9 END,
+             n.DATA DESC,
+             n.ID_NFE DESC
+         ) AS rn
+  FROM {t_nfe} n
+  WHERE n.ID_FILIAL = '{id_filial}'
+)
+"""
             nfe_join_src = (
-                f"\nLEFT JOIN {t_nfe} n ON c.ID_FILIAL = n.ID_FILIAL "
-                f"AND c.ID_DB = n.ID_DB AND c.ID_COMPROVANTE = n.ID_COMPROVANTE"
+                "\nLEFT JOIN nfe_ranked n ON c.ID_FILIAL = n.ID_FILIAL "
+                "AND c.ID_DB = n.ID_DB AND c.ID_COMPROVANTE = n.ID_COMPROVANTE AND n.rn = 1"
             )
             nfe_cols_src = (
                 ",\n    n.STATUS AS nfe_status,"
@@ -2224,7 +2239,7 @@ def cmd_compare_stg_comprovantes_range(cfg: Config, args: argparse.Namespace) ->
             )
 
         sql_source = f"""\
-SELECT
+{nfe_cte_src}SELECT
     c.ID_FILIAL AS id_filial,
     c.ID_DB AS id_db,
     c.ID_COMPROVANTE AS id_comprovante,
@@ -2676,18 +2691,58 @@ def cmd_export_source_comprovantes_range(cfg: Config, args: argparse.Namespace) 
     has_id_usuario = "ID_USUARIO" in comp_col_names
     has_id_localvenda = "ID_LOCALVENDA" in comp_col_names
 
+    warnings_list: List[str] = []
+
+    # Detect critical columns
+    has_data = "DATA" in comp_col_names
+    if not has_data:
+        log.error("COMPROVANTES.DATA column not found! Cannot proceed.")
+        conn.close()
+        sys.exit(1)
+
+    has_situacao = "SITUACAO" in comp_col_names
+    if not has_situacao:
+        warnings_list.append("SITUACAO column not found; defaulting to 0")
+
+    # Total column detection
+    total_col = None
+    for candidate in ["TOTAL", "VLRTOTAL", "VALORTOTAL", "TOTALCOMPROVANTE"]:
+        if candidate in comp_col_names:
+            total_col = candidate
+            break
+    if not total_col:
+        total_col = "TOTAL"  # Try anyway, may fail
+        warnings_list.append("No known total column found; trying TOTAL")
+
     cancelado_expr = "ISNULL(c.CANCELADO, 0)" if has_cancelado else "0"
     referencia_expr = "c.REFERENCIA" if has_referencia else "NULL"
     id_turno_expr = "c.ID_TURNO" if has_id_turno else "NULL"
     id_usuario_expr = "c.ID_USUARIO" if has_id_usuario else "NULL"
     id_localvenda_expr = "c.ID_LOCALVENDA" if has_id_localvenda else "NULL"
+    situacao_expr = "c.SITUACAO AS situacao" if has_situacao else "0 AS situacao"
 
+    nfe_cte = ""
     nfe_join = ""
     nfe_cols = ",\n    NULL AS nfe_status,\n    NULL AS nfe_nronf,\n    NULL AS nfe_chaveacesso,\n    NULL AS nfe_data"
+    nfe_join_strategy = "no_nfe"
     if t_nfe:
+        nfe_cte = f"""\
+WITH nfe_ranked AS (
+  SELECT n.*,
+         ROW_NUMBER() OVER (
+           PARTITION BY n.ID_FILIAL, n.ID_DB, n.ID_COMPROVANTE
+           ORDER BY
+             CASE WHEN n.STATUS = 5 THEN 1 WHEN n.STATUS = 4 THEN 2 WHEN n.STATUS = 3 THEN 3 ELSE 9 END,
+             n.DATA DESC,
+             n.ID_NFE DESC
+         ) AS rn
+  FROM {t_nfe} n
+  WHERE n.ID_FILIAL = '{id_filial}'
+)
+"""
         nfe_join = (
-            f"\nLEFT JOIN {t_nfe} n ON c.ID_FILIAL = n.ID_FILIAL "
-            f"AND c.ID_DB = n.ID_DB AND c.ID_COMPROVANTE = n.ID_COMPROVANTE"
+            "\nLEFT JOIN nfe_ranked n ON c.ID_FILIAL = n.ID_FILIAL "
+            "AND c.ID_DB = n.ID_DB AND c.ID_COMPROVANTE = n.ID_COMPROVANTE AND n.rn = 1"
         )
         nfe_cols = (
             ",\n    n.STATUS AS nfe_status,"
@@ -2695,21 +2750,22 @@ def cmd_export_source_comprovantes_range(cfg: Config, args: argparse.Namespace) 
             "\n    n.CHAVEACESSO AS nfe_chaveacesso,"
             "\n    n.DATA AS nfe_data"
         )
+        nfe_join_strategy = "nfe_ranked_rn1"
 
     sql_source = f"""\
-SELECT
+{nfe_cte}SELECT
     c.ID_FILIAL AS id_filial,
     c.ID_DB AS id_db,
     c.ID_COMPROVANTE AS id_comprovante,
     c.DATA AS data,
     CAST(c.DATA AS date) AS data_dia,
-    c.SITUACAO AS situacao,
+    {situacao_expr},
     {cancelado_expr} AS cancelado,
     {referencia_expr} AS referencia,
     {id_turno_expr} AS id_turno,
     {id_usuario_expr} AS id_usuario,
     {id_localvenda_expr} AS id_localvenda,
-    ISNULL(c.TOTAL, 0) AS total_header{nfe_cols}
+    ISNULL(c.{total_col}, 0) AS total_header{nfe_cols}
 FROM {t_comp} c{nfe_join}
 WHERE c.ID_FILIAL = '{id_filial}'
   AND c.DATA >= '{date_from}'
@@ -2721,11 +2777,23 @@ ORDER BY c.DATA, c.ID_COMPROVANTE
     conn.close()
     log.info("Source returned %d rows.", len(source_rows_raw))
 
-    warnings_list: List[str] = []
     if not t_nfe:
         warnings_list.append("NFE table not found; nfe_* columns are NULL")
     if not has_cancelado:
         warnings_list.append("CANCELADO column not found; defaulting to 0")
+
+    # Detect duplicate keys
+    key_counts: Dict[Tuple, int] = defaultdict(int)
+    for r in source_rows_raw:
+        k = (str(r.get("id_filial", "")), str(r.get("id_db", "")), str(r.get("id_comprovante", "")))
+        key_counts[k] += 1
+
+    duplicates = {k: v for k, v in key_counts.items() if v > 1}
+    if duplicates:
+        dup_rows = [{"id_filial": k[0], "id_db": k[1], "id_comprovante": k[2], "count": v} for k, v in duplicates.items()]
+        write_csv(dup_rows, out_dir / "source_duplicate_keys.csv")
+        warnings_list.append(f"Found {len(duplicates)} duplicate keys ({sum(v for v in duplicates.values())} total rows)")
+        log.warning("Duplicate keys detected: %d", len(duplicates))
 
     # Process rows
     source_docs: List[Dict] = []
@@ -2813,8 +2881,16 @@ ORDER BY c.DATA, c.ID_COMPROVANTE
         "date_from": str(date_from),
         "date_to": str(date_to),
         "row_count": len(source_docs),
+        "unique_key_count": len(set((d["id_filial"], d["id_db"], d["id_comprovante"]) for d in source_docs)),
+        "duplicate_key_count": len(duplicates) if duplicates else 0,
+        "source_duplicate_keys_file": "source_duplicate_keys.csv" if duplicates else None,
+        "sqlserver_table_comprovantes": t_comp,
+        "sqlserver_table_nfe": t_nfe or "not found",
+        "nfe_join_strategy": nfe_join_strategy,
+        "total_all": round(sum(d["total_header"] for d in source_docs), 2),
+        "total_comercial": round(sum(d["total_header"] for d in source_docs if d["commercial_eligible"] == 1), 2),
         "sha256": sha256_hex,
-        "query_version": "1.0",
+        "query_version": "2.0",
         "timezone": "America/Sao_Paulo",
         "warnings": warnings_list,
     }
@@ -2888,6 +2964,26 @@ ORDER BY c.DATA, c.ID_COMPROVANTE
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _validate_manifest_match(manifest: dict, id_filial: str, date_from: str, date_to: str) -> Tuple[bool, List[str]]:
+    """Validate manifest against compare args. Returns (ok, warnings).
+
+    ok=False means a hard mismatch (filial), warnings collects date mismatches.
+    """
+    warnings: List[str] = []
+    manifest_filial = str(manifest.get("id_filial", ""))
+    if manifest_filial and manifest_filial != str(id_filial):
+        return False, [f"Manifest id_filial={manifest_filial} does not match id_filial={id_filial}"]
+
+    manifest_from = manifest.get("date_from", "")
+    manifest_to = manifest.get("date_to", "")
+    if manifest_from and manifest_from != str(date_from):
+        warnings.append(f"Manifest date_from mismatch: {manifest_from} vs {date_from}")
+    if manifest_to and manifest_to != str(date_to):
+        warnings.append(f"Manifest date_to mismatch: {manifest_to} vs {date_to}")
+
+    return True, warnings
+
+
 def cmd_compare_source_ledger_to_stg(cfg: Config, args: argparse.Namespace) -> None:
     """Compare exported source CSV against STG PostgreSQL."""
     out_dir = ensure_dir(args.out)
@@ -2914,10 +3010,31 @@ def cmd_compare_source_ledger_to_stg(cfg: Config, args: argparse.Namespace) -> N
 
     warnings_list: List[str] = []
     if actual_sha256 != expected_sha256:
-        warnings_list.append(
-            f"SHA256 mismatch! Expected {expected_sha256[:16]}..., got {actual_sha256[:16]}..."
-        )
-        log.warning("SHA256 mismatch for source_ledger.csv!")
+        log.error("SHA256 MISMATCH! Source ledger may have been modified after export.")
+        log.error("Expected: %s", expected_sha256)
+        log.error("Actual:   %s", actual_sha256)
+        sys.exit(1)
+
+    # Validate manifest against args
+    manifest_filial = str(manifest.get("id_filial", ""))
+    if manifest_filial and manifest_filial != str(id_filial):
+        log.error("Manifest id_filial=%s does not match --id-filial=%s", manifest_filial, id_filial)
+        sys.exit(1)
+
+    manifest_from = manifest.get("date_from", "")
+    manifest_to = manifest.get("date_to", "")
+    if manifest_from and manifest_from != str(date_from):
+        log.warning("Manifest date_from=%s differs from --date-from=%s", manifest_from, date_from)
+        warnings_list.append(f"Manifest date_from mismatch: {manifest_from} vs {date_from}")
+    if manifest_to and manifest_to != str(date_to):
+        log.warning("Manifest date_to=%s differs from --date-to=%s", manifest_to, date_to)
+        warnings_list.append(f"Manifest date_to mismatch: {manifest_to} vs {date_to}")
+
+    # Snapshot time warning
+    today_sp = _get_sp_today()
+    if date_to >= today_sp:
+        warnings_list.append(f"Period includes today or future ({date_to}); STG may have changed since export.")
+        log.warning("Period includes open day %s; delta may be ongoing ingestion.", date_to)
 
     # ─── 2) Read source CSV ───────────────────────────────────────────────
     source_docs_raw: List[Dict] = []
@@ -3030,6 +3147,7 @@ ORDER BY c.dt_evento, c.id_comprovante
             pg_conn.close()
             sys.exit(1)
     pg_conn.close()
+    stg_query_time = datetime.utcnow().isoformat() + "Z"
     log.info("STG returned %d rows.", len(stg_rows_raw))
 
     # Process STG rows
@@ -3080,6 +3198,19 @@ ORDER BY c.dt_evento, c.id_comprovante
     # Ledgers
     write_csv(source_docs, out_dir / "source_ledger.csv")
     write_csv(stg_docs, out_dir / "stg_ledger.csv")
+
+    # Freeze STG snapshot if requested
+    if getattr(args, "freeze_stg_snapshot_out", False):
+        stg_csv_bytes = (out_dir / "stg_ledger.csv").read_bytes()
+        stg_sha256 = hashlib.sha256(stg_csv_bytes).hexdigest()
+        stg_manifest = {
+            "generated_at": stg_query_time,
+            "stg_host": cfg.stg_pg_host,
+            "stg_database": cfg.stg_pg_database,
+            "row_count": len(stg_docs),
+            "sha256": stg_sha256,
+        }
+        write_json(stg_manifest, out_dir / "stg_manifest.json")
 
     # Divergences
     write_csv(source_only, out_dir / "source_only.csv")
@@ -3156,6 +3287,8 @@ ORDER BY c.dt_evento, c.id_comprovante
         "stg_total_comercial": round(sum(d["total_header"] for d in stg_docs if d["commercial_eligible"] == 1), 2),
         "manifest_file": str(manifest_path),
         "sha256_valid": actual_sha256 == expected_sha256,
+        "source_generated_at": manifest.get("generated_at"),
+        "stg_queried_at": stg_query_time,
         "warnings": warnings_list,
     }
     summary["total_comercial_delta"] = round(summary["source_total_comercial"] - summary["stg_total_comercial"], 2)
@@ -3182,7 +3315,8 @@ ORDER BY c.dt_evento, c.id_comprovante
         f"- Backend: `{manifest.get('backend', 'N/A')}`",
         f"- Row count: {manifest.get('row_count', 'N/A')}",
         f"- SHA256 valid: **{'YES' if actual_sha256 == expected_sha256 else 'NO'}**",
-        f"- Generated at: {manifest.get('generated_at', 'N/A')}",
+        f"- Fonte exportada em: {manifest.get('generated_at', 'N/A')}",
+        f"- STG consultada em: {stg_query_time}",
         "",
         "## 4. Conexão STG",
         f"- PostgreSQL: `{cfg.stg_pg_host}/{cfg.stg_pg_database}` (user: {cfg.stg_pg_user})",
@@ -3310,7 +3444,8 @@ ORDER BY c.dt_evento, c.id_comprovante
         md_lines.append("- **raw matches but commercial doesn't**: Dados brutos chegaram, "
                         "mas classificação comercial/status diverge.")
     if overall_pass:
-        md_lines.append("- **Tudo confere**: Problema não está entre fonte e STG.")
+        md_lines.append("- **Fonte exportada e STG alinham para o período.** "
+                        "Verificar se export é da fonte canônica real (CENTRALVR/ATXDADOS).")
     md_lines.append("")
 
     md_lines.append("## 16. Próxima ação recomendada")
@@ -3454,6 +3589,8 @@ def build_parser() -> argparse.ArgumentParser:
     csl.add_argument("--id-filial", required=True)
     csl.add_argument("--date-from", required=True, help="Start date YYYY-MM-DD (inclusive)")
     csl.add_argument("--date-to", required=True, help="End date YYYY-MM-DD (inclusive)")
+    csl.add_argument("--freeze-stg-snapshot-out", action="store_true", default=False,
+                     help="Save STG snapshot manifest alongside outputs")
     csl.add_argument("--out", required=True)
     csl.set_defaults(func=cmd_compare_source_ledger_to_stg)
 

@@ -874,7 +874,84 @@ body.product-shell .container {
 
 @media (max-width: 720px) {
   .pricingFormRow { grid-template-columns: 1fr; }
+  .pricingDesktopOnly { display: none !important; }
+  .pricingMobileOnly { display: block !important; }
+  .btnPrimary { width: 100%; }
+  .scopeHiddenOnMobile { display: none !important; }
 }
+@media (min-width: 721px) {
+  .pricingDesktopOnly { display: block; }
+  .pricingMobileOnly { display: none !important; }
+}
+
+/* ---------- Mobile fuel cards ---------- */
+.fuelCardMobile {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.fuelCardName {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.fuelCardOwnPrice {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.fuelCardLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.fuelCardInput {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,0.2);
+  color: var(--text);
+  font-size: 16px;
+  text-align: right;
+  outline: none;
+  min-height: 48px;
+  box-sizing: border-box;
+}
+.fuelCardInput:focus {
+  border-color: rgba(184,115,51,0.6);
+}
+/* Mobile comparison card */
+.compCardMobile {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.compCardRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+/* Mobile history item card */
+.histItemMobile {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  min-height: 48px;
+}
+.histItemMobile:last-child { border-bottom: none; }
 
 /* ---------- Tables / Code blocks ---------- */
 .table {

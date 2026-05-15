@@ -107,11 +107,13 @@ export default function AppNav({
   userLabel,
   initialUnread,
   deferAuxiliaryLoads = false,
+  hideScopeOnMobile = false,
 }: {
   title: string;
   userLabel?: string;
   initialUnread?: number;
   deferAuxiliaryLoads?: boolean;
+  hideScopeOnMobile?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -503,7 +505,7 @@ export default function AppNav({
           </div>
         </div>
 
-        <div className="productSidebarSection productFilters">
+        <div className={`productSidebarSection productFilters${hideScopeOnMobile ? ' scopeHiddenOnMobile' : ''}`}>
           <div className="productSectionLabel">Empresa e filiais</div>
 
           <label className="productField">
