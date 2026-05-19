@@ -969,6 +969,12 @@ def verify_login(
         verify_password(password, DUMMY_PASSWORD_HASH)
         raise AuthError(401, "invalid_credentials", "Credenciais inválidas.")
 
+    # Check lockout BEFORE password verification to prevent brute-force during lock
+    today, now = _user_now()
+    if bool(user.get("locked_until")) and user["locked_until"] > now:
+        verify_password(password, DUMMY_PASSWORD_HASH)  # constant time
+        raise AuthError(423, "user_locked", "Usuário temporariamente bloqueado.")
+
     if not verify_password(password, user["password_hash"]):
         _record_failed_login(str(user["id"]))
         raise AuthError(401, "invalid_credentials", "Credenciais inválidas.")

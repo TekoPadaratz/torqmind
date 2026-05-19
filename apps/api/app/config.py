@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     app_root_path: str = ""
     app_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
-    app_cors_origin_regex: str = r"^https?://([a-zA-Z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(:3000)?$"
+    app_cors_origin_regex: str = ""
 
     # Database (PostgreSQL)
     database_url: str | None = None

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections import defaultdict
+from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,7 +49,16 @@ def _ensure_dev_seed() -> None:
 
     seed_main()
 
-app = FastAPI(title="TorqMind API", version="0.2.1", root_path=settings.app_root_path or "")
+_is_prod = settings.app_env.lower() in {"prod", "production"}
+
+app = FastAPI(
+    title="TorqMind API",
+    version="0.2.1",
+    root_path=settings.app_root_path or "",
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
+)
 
 cors_origins = [item.strip() for item in str(settings.app_cors_origins or "").split(",") if item.strip()]
 
@@ -90,6 +102,52 @@ class ForcePasswordChangeMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(ForcePasswordChangeMiddleware)
+
+
+# ── Security headers middleware ────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        if settings.app_env.lower() in {"prod", "production"}:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ── Login rate limiting (IP-based) ────────────────────────────
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_login_lock = Lock()
+_LOGIN_WINDOW_SECONDS = 60
+_LOGIN_MAX_PER_WINDOW = 10
+
+
+class LoginRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path.rstrip("/")
+        if request.method == "POST" and path == "/auth/login":
+            client_ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            with _login_lock:
+                attempts = _login_attempts[client_ip]
+                # Prune old entries
+                _login_attempts[client_ip] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+                if len(_login_attempts[client_ip]) >= _LOGIN_MAX_PER_WINDOW:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"error": "rate_limited", "message": "Muitas tentativas de login. Aguarde 1 minuto."},
+                    )
+                _login_attempts[client_ip].append(now)
+        return await call_next(request)
+
+
+app.add_middleware(LoginRateLimitMiddleware)
 
 app.include_router(auth_router)
 app.include_router(dashboard_router)
@@ -150,21 +208,20 @@ def root():
 def health():
     try:
         with get_conn() as conn:
-            row = conn.execute("SELECT current_database() AS db, now() AS now").fetchone()
+            row = conn.execute("SELECT 1 AS ok, now() AS now").fetchone()
         if _startup_status.get("ok", True):
-            return {"ok": True, "status": "up", "db": row["db"], "time": str(row["now"])}
+            return {"ok": True, "status": "up", "time": str(row["now"])}
         return JSONResponse(
             status_code=503,
             content={
                 "ok": False,
                 "status": "degraded",
-                "db": row["db"],
                 "time": str(row["now"]),
                 "startup": {"message": _startup_status.get("message")},
             },
         )
-    except Exception as exc:
-        return JSONResponse(status_code=503, content={"ok": False, "status": "degraded", "error": str(exc)})
+    except Exception:
+        return JSONResponse(status_code=503, content={"ok": False, "status": "degraded"})
 
 
 @app.get("/debug/db")
