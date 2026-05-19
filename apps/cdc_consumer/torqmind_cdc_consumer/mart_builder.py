@@ -1087,7 +1087,8 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-                            AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
+                            AND c.commercial_eligible = 1 AND i.cfop > 5000
+                            AND c.id_db = c.id_filial AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -1133,7 +1134,8 @@ class MartBuilder:
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-                    AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND c.id_db = c.id_filial AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
@@ -1183,7 +1185,8 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-                    AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND c.id_db = c.id_filial AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
         """
@@ -1228,7 +1231,8 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-                    AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND c.id_db = c.id_filial AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
         """
@@ -1604,7 +1608,8 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-                            AND c.commercial_eligible = 1 AND i.cfop > 5000 AND {kf_i}
+                            AND c.commercial_eligible = 1 AND i.cfop > 5000
+                            AND c.id_db = c.id_filial AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
