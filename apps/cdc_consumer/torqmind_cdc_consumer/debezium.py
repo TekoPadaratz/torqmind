@@ -127,6 +127,7 @@ def _extract_data_key(record: dict[str, Any] | None) -> int:
         payload = {}
 
     candidates = [
+        payload.get("DTACONTA"),  # Accounting date — business truth for comprovantes
         record.get("dt_evento"),
         record.get("datarepl"),
         payload.get("TORQMIND_DT_EVENTO"),

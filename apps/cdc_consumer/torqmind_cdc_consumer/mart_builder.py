@@ -364,7 +364,7 @@ class MartBuilder:
 
             if self.source == "stg" and not mart_only:
                 # Phase 1: Discover data_keys from raw STG for slim population
-                data_key_expr = self._stg_data_key_expr("c")
+                data_key_expr = self._stg_data_key_comprovante_expr("c")
                 raw_keys_rows = client.query(
                     f"SELECT DISTINCT {data_key_expr} AS dk "
                     f"FROM {self.current_db}.stg_comprovantes AS c FINAL "
@@ -668,7 +668,7 @@ class MartBuilder:
                 f"DELETE FROM {self.current_db}.stg_comprovantes_slim WHERE data_key IN ({kstr})",
             )
 
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
         # Resolve all fields from shadow columns with payload fallback
@@ -725,7 +725,7 @@ class MartBuilder:
                 f"DELETE FROM {self.current_db}.stg_itenscomprovantes_slim WHERE data_key IN ({kstr})",
             )
 
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
         id_produto = f"ifNull(i.id_produto_shadow, toInt32OrZero(JSONExtractString(i.payload, 'ID_PRODUTOS')))"
@@ -774,7 +774,7 @@ class MartBuilder:
                 f"DELETE FROM {self.current_db}.stg_formas_pgto_slim WHERE data_key IN ({kstr})",
             )
 
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
         valor = f"ifNull(p.valor_shadow, toDecimal64OrZero(JSONExtractString(p.payload, 'VALOR'), 2))"
         ref = f"ifNull(c.referencia_shadow, toInt64OrZero(JSONExtractString(c.payload, 'REFERENCIA')))"
@@ -826,7 +826,7 @@ class MartBuilder:
             return
 
         # NFE doesn't have its own data_key — join with comprovantes to get it
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
         sql = f"""
@@ -915,6 +915,22 @@ class MartBuilder:
     def _stg_data_key_expr(self, alias: str) -> str:
         """data_key (YYYYMMDD int) in local business timezone."""
         return f"toInt32(formatDateTime({self._stg_ts_local_expr(alias)}, '%Y%m%d'))"
+
+    def _stg_data_key_comprovante_expr(self, alias: str) -> str:
+        """data_key for comprovantes: prefer DTACONTA (accounting date) over DATA.
+
+        DTACONTA is the business/accounting date that determines which day a sale
+        belongs to. Falls back to standard timestamp-based data_key when DTACONTA
+        is not available.
+
+        DTACONTA is treated as a local date (no timezone conversion needed) since
+        it's already an accounting date in the client's timezone.
+        """
+        dtaconta_raw = f"JSONExtractString({alias}.payload, 'DTACONTA')"
+        dtaconta_key = (
+            f"toInt32OrNull(replaceAll(left({dtaconta_raw}, 10), '-', ''))"
+        )
+        return f"coalesce({dtaconta_key}, {self._stg_data_key_expr(alias)})"
 
     def _stg_keys_filter(self, expr: str, data_keys: list[int]) -> str:
         keys = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
