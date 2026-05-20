@@ -12,7 +12,7 @@ from agent.secrets import SecretStoreError, load_encrypted_json_file, save_encry
 
 
 COMMERCIAL_WINDOW_DAYS = 365
-DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 120
+DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 240
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
 LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
@@ -321,7 +321,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "   ) AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASPAGAR c"
         ),
-        "enabled": False,
+        "enabled": True,
     },
     "contasreceber": {
         "table": "dbo.CONTASRECEBER",
@@ -340,7 +340,33 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "   ) AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASRECEBER c"
         ),
-        "enabled": False,
+        "enabled": True,
+    },
+    "contasreceberbaixa": {
+        "table": "dbo.CONTASRECEBERBAIXA",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONTASRECEBERBAIXA c"
+        ),
+        "enabled": True,
+    },
+    "contaspagarbaixa": {
+        "table": "dbo.CONTASPAGARBAIXA",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONTASPAGARBAIXA c"
+        ),
+        "enabled": True,
     },
     "financeiro": {"table": "dbo.FINANCEIRO", "enabled": False},
     "nfe": {
@@ -417,6 +443,9 @@ class RuntimeConfig:
     interval_seconds: int = 60
     summary_log_file: str = "logs/torqmind-agent-summary.txt"
     log_level: str = "INFO"
+    rescan_hourly_window_hours: int = 2
+    rescan_daily_window_days: int = 7
+    rescan_daily_after_hour: int = 0
 
     @property
     def effective_connect_timeout_seconds(self) -> int:
@@ -529,6 +558,9 @@ def build_default_raw_config() -> Dict[str, Any]:
             "interval_seconds": 60,
             "summary_log_file": "logs/torqmind-agent-summary.txt",
             "log_level": "INFO",
+            "rescan_hourly_window_hours": 2,
+            "rescan_daily_window_days": 7,
+            "rescan_daily_after_hour": 0,
         },
         "id_empresa": 1,
         "id_db": 1,
@@ -759,6 +791,9 @@ def load_config(
         interval_seconds=int(runtime_raw.get("interval_seconds", 60)),
         summary_log_file=str(runtime_raw.get("summary_log_file", "logs/torqmind-agent-summary.txt")),
         log_level=str(runtime_raw.get("log_level", "INFO")),
+        rescan_hourly_window_hours=int(runtime_raw.get("rescan_hourly_window_hours", 2)),
+        rescan_daily_window_days=int(runtime_raw.get("rescan_daily_window_days", 7)),
+        rescan_daily_after_hour=int(runtime_raw.get("rescan_daily_after_hour", 0)),
     )
 
     datasets = _merge_dataset_configs(raw.get("datasets") or {})

@@ -1029,6 +1029,63 @@ class AgentRunner:
             self.logger.info("phase=cycle_done elapsed_s=%.2f", time.monotonic() - started)
             self._write_cycle_summary(metrics, started=started)
 
+    # ------------------------------------------------------------------
+    # Rescan datasets (commercial datasets that benefit from re-extraction)
+    # ------------------------------------------------------------------
+    RESCAN_DATASETS = ("comprovantes", "itenscomprovantes", "formas_pgto_comprovantes", "nfe")
+
+    def _rescan_window(self, hours: int) -> None:
+        """Run backfill for the last N hours on all commercial datasets."""
+        now = datetime.now()
+        dt_from = now - timedelta(hours=hours)
+        dt_to = now + timedelta(hours=1)  # slight future margin for rounding
+        for dataset in self.RESCAN_DATASETS:
+            ds_cfg = self.cfg.datasets.get(dataset, {})
+            if not ds_cfg.get("enabled", False):
+                continue
+            self.logger.info(
+                "phase=rescan_hourly dataset=%s window_hours=%s from=%s to=%s",
+                dataset, hours, dt_from.isoformat(), dt_to.isoformat(),
+            )
+            try:
+                self.run_once(
+                    only_dataset=dataset,
+                    dt_from=dt_from,
+                    dt_to=dt_to,
+                    ignore_watermark=True,
+                    continue_on_error=True,
+                )
+            except Exception as exc:
+                self.logger.exception(
+                    "phase=rescan_hourly_error dataset=%s error=%s", dataset, str(exc)[:300]
+                )
+
+    def _rescan_daily(self, days: int) -> None:
+        """Run backfill for the last N days on all commercial datasets."""
+        now = datetime.now()
+        dt_from = now - timedelta(days=days)
+        dt_to = now + timedelta(days=1)
+        for dataset in self.RESCAN_DATASETS:
+            ds_cfg = self.cfg.datasets.get(dataset, {})
+            if not ds_cfg.get("enabled", False):
+                continue
+            self.logger.info(
+                "phase=rescan_daily dataset=%s window_days=%s from=%s to=%s",
+                dataset, days, dt_from.isoformat(), dt_to.isoformat(),
+            )
+            try:
+                self.run_once(
+                    only_dataset=dataset,
+                    dt_from=dt_from,
+                    dt_to=dt_to,
+                    ignore_watermark=True,
+                    continue_on_error=True,
+                )
+            except Exception as exc:
+                self.logger.exception(
+                    "phase=rescan_daily_error dataset=%s error=%s", dataset, str(exc)[:300]
+                )
+
     def run_loop(
         self,
         interval_seconds: int,
@@ -1036,11 +1093,57 @@ class AgentRunner:
         only_dataset: Optional[str] = None,
         continue_on_error: bool = False,
     ) -> None:
+        last_hourly_rescan_hour: Optional[int] = None
+        last_daily_rescan_date: Optional[str] = None
+
+        rescan_hourly_hours = self.cfg.runtime.rescan_hourly_window_hours
+        rescan_daily_days = self.cfg.runtime.rescan_daily_window_days
+        rescan_daily_after_hour = self.cfg.runtime.rescan_daily_after_hour
+
+        self.logger.info(
+            "phase=loop_start rescan_hourly_window_hours=%s rescan_daily_window_days=%s rescan_daily_after_hour=%s",
+            rescan_hourly_hours, rescan_daily_days, rescan_daily_after_hour,
+        )
+
         while True:
             try:
+                # --- Normal incremental cycle ---
                 self.run_once(only_dataset=only_dataset, continue_on_error=continue_on_error)
             except Exception as exc:  # noqa: PERF203
                 self.logger.exception("phase=loop_error error=%s", str(exc)[:500])
+
+            now = datetime.now()
+            current_hour = now.hour
+            current_date_str = now.strftime("%Y-%m-%d")
+
+            # --- Rescan horário: a cada hora cheia, re-extrai últimas N horas ---
+            if rescan_hourly_hours > 0 and current_hour != last_hourly_rescan_hour:
+                self.logger.info(
+                    "phase=rescan_hourly_trigger hour=%s window_hours=%s",
+                    current_hour, rescan_hourly_hours,
+                )
+                try:
+                    self._rescan_window(rescan_hourly_hours)
+                except Exception as exc:
+                    self.logger.exception("phase=rescan_hourly_failed error=%s", str(exc)[:300])
+                last_hourly_rescan_hour = current_hour
+
+            # --- Rescan diário: primeira execução após o horário configurado ---
+            if (
+                rescan_daily_days > 0
+                and current_hour >= rescan_daily_after_hour
+                and last_daily_rescan_date != current_date_str
+            ):
+                self.logger.info(
+                    "phase=rescan_daily_trigger hour=%s configured_after=%s window_days=%s",
+                    current_hour, rescan_daily_after_hour, rescan_daily_days,
+                )
+                try:
+                    self._rescan_daily(rescan_daily_days)
+                except Exception as exc:
+                    self.logger.exception("phase=rescan_daily_failed error=%s", str(exc)[:300])
+                last_daily_rescan_date = current_date_str
+
             time.sleep(interval_seconds)
 
     def backfill(self, dataset: str, from_date: datetime, to_date: datetime, *, to_is_date_only: bool = True) -> None:

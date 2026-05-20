@@ -566,6 +566,24 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_contasreceber", ["ID_CONTASRECEBER", "id_contasreceber"]),
         ],
     ),
+    "contasreceberbaixa": DatasetSpec(
+        table="stg.contasreceberbaixa",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_contasreceberbaixa"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_contasreceberbaixa", ["ID_CONTASRECEBERBAIXA", "id_contasreceberbaixa"]),
+        ],
+    ),
+    "contaspagarbaixa": DatasetSpec(
+        table="stg.contaspagarbaixa",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_contaspagarbaixa"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_contaspagarbaixa", ["ID_CONTASPAGARBAIXA", "id_contaspagarbaixa"]),
+        ],
+    ),
     "financeiro": DatasetSpec(
         table="stg.financeiro",
         pk_cols=["id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"],

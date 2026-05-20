@@ -19,6 +19,8 @@ class Settings(BaseSettings):
         "torqmind.stg.grupoprodutos,"
         "torqmind.stg.contaspagar,"
         "torqmind.stg.contasreceber,"
+        "torqmind.stg.contasreceberbaixa,"
+        "torqmind.stg.contaspagarbaixa,"
         "torqmind.stg.nfe,"
         "torqmind.stg.filiais,"
         "torqmind.stg.funcionarios,"

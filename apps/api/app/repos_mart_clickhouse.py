@@ -1771,7 +1771,7 @@ def customers_delinquency_overview(
                     greatest(0, dateDiff('day', coalesce(f.vencimento, f.data_emissao), {{as_of:Date}})) AS dias_atraso
                 FROM (
                     SELECT *
-                    FROM torqmind_dw.fact_financeiro FINAL
+                    FROM torqmind_current.fact_financeiro FINAL
                 ) AS f
                 WHERE f.id_empresa = {{id_empresa:Int32}}
                     AND f.tipo_titulo = 1
@@ -1833,7 +1833,7 @@ def customers_delinquency_overview(
                         argMax(nome, updated_at) AS nome
                     FROM (
                         SELECT *
-                        FROM torqmind_dw.dim_cliente FINAL
+                        FROM torqmind_current.dim_cliente FINAL
                     )
                     WHERE id_empresa = {{id_empresa:Int32}}
                     GROUP BY id_empresa, id_filial, id_cliente
@@ -1844,7 +1844,7 @@ def customers_delinquency_overview(
                         argMax(nome, updated_at) AS nome
                     FROM (
                         SELECT *
-                        FROM torqmind_dw.dim_cliente FINAL
+                        FROM torqmind_current.dim_cliente FINAL
                     )
                     WHERE id_empresa = {{id_empresa:Int32}}
                     GROUP BY id_empresa, id_cliente
@@ -1885,7 +1885,7 @@ def customers_delinquency_overview(
                     ON da.id_empresa = {{id_empresa:Int32}}
                  AND da.id_cliente = p.id_cliente
                 GROUP BY p.id_cliente
-                ORDER BY valor_aberto DESC, max_dias_atraso DESC, id_cliente
+                ORDER BY max_dias_atraso DESC, valor_aberto DESC, id_cliente
                 LIMIT {{limit:UInt32}}
                 """,
                 {"id_empresa": int(id_empresa), "as_of": as_of, "limit": int(limit)},

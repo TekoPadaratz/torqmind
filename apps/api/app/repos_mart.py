@@ -3703,15 +3703,25 @@ def customers_delinquency_overview(
     limit: int = 20,
 ) -> Dict[str, Any]:
     where_filial, branch_params = _branch_scope_clause("f.id_filial", id_filial)
-    params = [as_of, id_empresa] + branch_params + [as_of, as_of, id_empresa, limit]
+    params = [id_empresa, as_of, id_empresa] + branch_params + [as_of, as_of, id_empresa, limit]
     sql = f"""
-      WITH base AS (
+      WITH baixa_agg AS (
+        SELECT id_empresa, id_filial,
+               (payload->>'ID_CONTASRECEBER')::int AS id_contasreceber,
+               SUM((payload->>'VALORBAIXA')::numeric) AS total_baixa
+        FROM stg.contasreceberbaixa
+        WHERE id_empresa = %s
+        GROUP BY id_empresa, id_filial, (payload->>'ID_CONTASRECEBER')::int
+      ), base AS (
         SELECT
           f.id_filial,
           COALESCE(f.id_entidade, -1) AS id_cliente,
-          GREATEST(0::numeric, COALESCE(f.valor, 0) - COALESCE(f.valor_pago, 0))::numeric(18,2) AS valor_aberto,
+          GREATEST(0::numeric, COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)))::numeric(18,2) AS valor_aberto,
           GREATEST(0, %s::date - COALESCE(f.vencimento, f.data_emissao))::int AS dias_atraso
         FROM dw.fact_financeiro f
+        LEFT JOIN baixa_agg bx
+          ON bx.id_empresa = f.id_empresa AND bx.id_filial = f.id_filial
+          AND bx.id_contasreceber = f.id_titulo
         WHERE f.id_empresa = %s
           AND f.tipo_titulo = 1
           {where_filial}
@@ -3719,7 +3729,7 @@ def customers_delinquency_overview(
           AND (
             f.data_pagamento IS NULL
             OR f.data_pagamento > %s
-            OR (COALESCE(f.valor, 0) - COALESCE(f.valor_pago, 0)) > 0
+            OR GREATEST(COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)), 0) > 0
           )
       ), open_rows AS (
         SELECT *
@@ -3837,12 +3847,12 @@ def customers_delinquency_overview(
                     ELSE '1-30 dias'
                   END
               )
-              ORDER BY r.valor_aberto DESC, r.max_dias_atraso DESC, r.id_cliente
+              ORDER BY r.max_dias_atraso DESC, r.valor_aberto DESC, r.id_cliente
             )
             FROM (
               SELECT *
               FROM ranked
-              ORDER BY valor_aberto DESC, max_dias_atraso DESC, id_cliente
+              ORDER BY max_dias_atraso DESC, valor_aberto DESC, id_cliente
               LIMIT %s
             ) r
           ),

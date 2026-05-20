@@ -283,6 +283,20 @@ _register(TableMapping(
 ))
 
 _register(TableMapping(
+    source_schema="stg", source_table="contasreceberbaixa",
+    ch_database="torqmind_current", ch_table="stg_contasreceberbaixa",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_contasreceberbaixa"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "id_contasreceberbaixa"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="contaspagarbaixa",
+    ch_database="torqmind_current", ch_table="stg_contaspagarbaixa",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_contaspagarbaixa"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "id_contaspagarbaixa"),
+))
+
+_register(TableMapping(
     source_schema="stg", source_table="financeiro",
     ch_database="torqmind_current", ch_table="stg_financeiro",
     primary_key=("id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"),

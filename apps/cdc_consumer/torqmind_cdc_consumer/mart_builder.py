@@ -211,7 +211,7 @@ class MartBuilder:
                     if tables & {"turnos", "usuarios", "comprovantes"}:
                         results.append(self._refresh_cash_overview_stg(client, data_keys))
 
-                    if tables & {"financeiro", "contaspagar", "contasreceber"}:
+                    if tables & {"financeiro", "contaspagar", "contasreceber", "contasreceberbaixa", "contaspagarbaixa"}:
                         results.append(self._refresh_finance_overview_stg(client))
                 else:
                     # DW-origin path (already typed, no slim needed)
@@ -396,8 +396,8 @@ class MartBuilder:
                 # Phase 2: Discover publishable data_keys from SLIM (canonical join)
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT c.data_key "
-                    f"FROM {self.current_db}.stg_comprovantes_slim AS c "
-                    f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i "
+                    f"FROM {self.current_db}.stg_comprovantes_slim AS c FINAL "
+                    f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL "
                     f"  ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial "
                     f"  AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante "
                     f"WHERE c.id_empresa = {{id_empresa:Int32}} "
@@ -666,6 +666,7 @@ class MartBuilder:
         if kstr:
             client.command(
                 f"DELETE FROM {self.current_db}.stg_comprovantes_slim WHERE data_key IN ({kstr})",
+                settings={"mutations_sync": "1"},
             )
 
         data_key_expr = self._stg_data_key_comprovante_expr("c")
@@ -723,6 +724,7 @@ class MartBuilder:
         if kstr:
             client.command(
                 f"DELETE FROM {self.current_db}.stg_itenscomprovantes_slim WHERE data_key IN ({kstr})",
+                settings={"mutations_sync": "1"},
             )
 
         data_key_expr = self._stg_data_key_comprovante_expr("c")
@@ -772,6 +774,7 @@ class MartBuilder:
         if kstr:
             client.command(
                 f"DELETE FROM {self.current_db}.stg_formas_pgto_slim WHERE data_key IN ({kstr})",
+                settings={"mutations_sync": "1"},
             )
 
         data_key_expr = self._stg_data_key_comprovante_expr("c")
@@ -1082,13 +1085,13 @@ class MartBuilder:
                 sum(i.desconto) AS desconto_total,
                 sum(i.custo_total) AS custo_total,
                 sum(i.total) - sum(i.custo_total) AS margem_total
-            FROM {self.current_db}.stg_comprovantes_slim AS c
-            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                             AND c.commercial_eligible = 1 AND i.cfop > 5000
-                            AND c.id_db = c.id_filial AND {kf_i}
+                            AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -1096,7 +1099,7 @@ class MartBuilder:
             SELECT c.id_empresa, c.id_filial, c.data_key,
                    uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_canceladas,
                    sum(c.valor_total) AS valor_cancelado
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             {nfe_join_cancel}
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
               {nfe_filter_cancel}
@@ -1129,13 +1132,13 @@ class MartBuilder:
             uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
             toUInt32(count()) AS qtd_itens,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
-        INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+        INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                     AND c.commercial_eligible = 1 AND i.cfop > 5000
-                    AND c.id_db = c.id_filial AND {kf_i}
+                    AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
@@ -1167,8 +1170,8 @@ class MartBuilder:
             sum(i.custo_total) AS custo_total,
             sum(i.total) - sum(i.custo_total) AS margem,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_itenscomprovantes_slim AS i
-        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c FINAL
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         LEFT JOIN (
@@ -1186,7 +1189,7 @@ class MartBuilder:
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
                     AND c.commercial_eligible = 1 AND i.cfop > 5000
-                    AND c.id_db = c.id_filial AND {kf_i}
+                    AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
         """
@@ -1214,8 +1217,8 @@ class MartBuilder:
             sum(i.custo_total) AS custo_total,
             sum(i.total) - sum(i.custo_total) AS margem,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_itenscomprovantes_slim AS i
-        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c FINAL
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         LEFT JOIN (
@@ -1232,7 +1235,7 @@ class MartBuilder:
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
                     AND c.commercial_eligible = 1 AND i.cfop > 5000
-                    AND c.id_db = c.id_filial AND {kf_i}
+                    AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
         """
@@ -1258,14 +1261,14 @@ class MartBuilder:
             sum(p.valor) AS valor_total,
             toUInt32(count()) AS qtd_transacoes,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_formas_pgto_slim AS p
+        FROM {self.current_db}.stg_formas_pgto_slim AS p FINAL
         INNER JOIN (
             SELECT
                 c.id_empresa,
                 c.id_filial,
                 c.referencia,
                 argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             WHERE c.is_deleted = 0 AND c.referencia > 0
             GROUP BY c.id_empresa, c.id_filial, c.referencia
         ) AS docs
@@ -1335,7 +1338,7 @@ class MartBuilder:
             SELECT c.id_empresa, c.id_filial, c.id_turno,
                    sum(c.valor_total) AS faturamento,
                    toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS qtd
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             WHERE c.is_deleted = 0 AND c.commercial_eligible = 1 AND c.id_turno > 0 {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.id_turno
         ) AS vendas ON turnos.id_empresa = vendas.id_empresa AND turnos.id_filial = vendas.id_filial
@@ -1374,7 +1377,7 @@ class MartBuilder:
                 sum(c.valor_total) AS impacto_total,
                 toDecimal64(80, 2) AS score_medio,
                 now64(6) AS published_at
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             LEFT JOIN nfe_latest
                 ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial
                 AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
@@ -1395,7 +1398,7 @@ class MartBuilder:
                 sum(c.valor_total) AS impacto_total,
                 toDecimal64(80, 2) AS score_medio,
                 now64(6) AS published_at
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
@@ -1436,7 +1439,7 @@ class MartBuilder:
             80 AS score_risco, 'HIGH' AS score_level,
             '{{"source":"stg.comprovantes","rule":"cancelled_receipt"}}' AS reasons,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
         {nfe_join}
@@ -1504,7 +1507,7 @@ class MartBuilder:
             '{{"source":"stg.comprovantes","rule":"cancelled_receipt"}}' AS reasons,
             toUInt8(toHour(c.dt_evento_local)) AS hora,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
         LEFT JOIN {self.current_db}.dim_usuario_caixa AS uc FINAL
@@ -1526,9 +1529,37 @@ class MartBuilder:
         t0 = time.time()
         empresa_filter = f"AND id_empresa = {int(id_empresa)}" if id_empresa else ""
         filial_filter = f"AND id_filial = {int(id_filial)}" if id_filial else ""
+        # Aliased filters for JOIN sources
+        def _af(alias: str) -> str:
+            parts = []
+            if id_empresa:
+                parts.append(f"AND {alias}.id_empresa = {int(id_empresa)}")
+            if id_filial:
+                parts.append(f"AND {alias}.id_filial = {int(id_filial)}")
+            return " ".join(parts)
+
+        cp_filter = _af("cp")
+        cr_filter = _af("cr")
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
-        WITH src AS (
+        WITH baixa_receber AS (
+            SELECT id_empresa, id_filial,
+                   toInt32OrZero(JSONExtractString(payload, 'ID_CONTASRECEBER')) AS id_conta,
+                   sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
+            FROM {self.current_db}.stg_contasreceberbaixa FINAL
+            WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            GROUP BY id_empresa, id_filial, id_conta
+        ),
+        baixa_pagar AS (
+            SELECT id_empresa, id_filial,
+                   toInt32OrZero(JSONExtractString(payload, 'ID_CONTASPAGAR')) AS id_conta,
+                   sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
+            FROM {self.current_db}.stg_contaspagarbaixa FINAL
+            WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            GROUP BY id_empresa, id_filial, id_conta
+        ),
+        src AS (
             SELECT id_empresa, id_filial, tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
@@ -1536,19 +1567,33 @@ class MartBuilder:
                 toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
             FROM {self.current_db}.stg_financeiro FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
             UNION ALL
-            SELECT id_empresa, id_filial, 0 AS tipo_titulo,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
-                toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_contaspagar FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            SELECT cp.id_empresa, cp.id_filial, 0 AS tipo_titulo,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTAVCTO'))) AS vencimento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTAPGTO'))) AS data_pagamento,
+                toDecimal64OrZero(JSONExtractString(cp.payload, 'VALOR'), 2) AS valor,
+                greatest(
+                    toDecimal64OrZero(JSONExtractString(cp.payload, 'VLRPAGO'), 2),
+                    coalesce(bp.total_baixa, toDecimal64(0, 2))
+                ) AS valor_pago
+            FROM {self.current_db}.stg_contaspagar AS cp FINAL
+            LEFT JOIN baixa_pagar AS bp
+                ON cp.id_empresa = bp.id_empresa AND cp.id_filial = bp.id_filial
+                AND cp.id_contaspagar = bp.id_conta
+            WHERE cp.is_deleted = 0 {cp_filter}
             UNION ALL
-            SELECT id_empresa, id_filial, 1 AS tipo_titulo,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
-                toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_contasreceber FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            SELECT cr.id_empresa, cr.id_filial, 1 AS tipo_titulo,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAVCTO'))) AS vencimento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAPGTO'))) AS data_pagamento,
+                toDecimal64OrZero(JSONExtractString(cr.payload, 'VALOR'), 2) AS valor,
+                greatest(
+                    toDecimal64OrZero(JSONExtractString(cr.payload, 'VLRPAGO'), 2),
+                    coalesce(br.total_baixa, toDecimal64(0, 2))
+                ) AS valor_pago
+            FROM {self.current_db}.stg_contasreceber AS cr FINAL
+            LEFT JOIN baixa_receber AS br
+                ON cr.id_empresa = br.id_empresa AND cr.id_filial = br.id_filial
+                AND cr.id_contasreceber = br.id_conta
+            WHERE cr.is_deleted = 0 {cr_filter}
         )
         SELECT id_empresa, id_filial, tipo_titulo,
             multiIf(data_pagamento IS NOT NULL, 'pago', vencimento < today(), 'vencido',
@@ -1603,13 +1648,13 @@ class MartBuilder:
                 sum(i.total) AS faturamento,
                 uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
                 toUInt32(uniqExactIf(c.id_cliente, c.id_cliente > 0)) AS qtd_clientes
-            FROM {self.current_db}.stg_comprovantes_slim AS c
-            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                             AND c.commercial_eligible = 1 AND i.cfop > 5000
-                            AND c.id_db = c.id_filial AND {kf_i}
+                            AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -1617,7 +1662,7 @@ class MartBuilder:
             SELECT c.id_empresa, c.id_filial, c.data_key,
                    uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_cancelamentos,
                    sum(c.valor_total) AS valor_cancelado
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             {nfe_join_cancel}
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
               {nfe_filter_cancel}
@@ -1690,7 +1735,7 @@ class MartBuilder:
             ) AS valor_comprovante,
             c.referencia,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
         INNER JOIN nfe_latest
             ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial
             AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
@@ -1718,7 +1763,7 @@ class MartBuilder:
         LEFT JOIN (
             SELECT id_empresa, id_filial, id_db, id_comprovante,
                    sum(i.total) AS soma_itens
-            FROM {self.current_db}.stg_itenscomprovantes_slim AS i
+            FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
             GROUP BY id_empresa, id_filial, id_db, id_comprovante
         ) AS items_agg
             ON c.id_empresa = items_agg.id_empresa AND c.id_filial = items_agg.id_filial
@@ -2075,8 +2120,8 @@ class MartBuilder:
             # Get data_keys with valid sales in slim (canonical join)
             slim_rows = client.query(
                 f"SELECT DISTINCT c.data_key "
-                f"FROM {self.current_db}.stg_comprovantes_slim AS c "
-                f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i "
+                f"FROM {self.current_db}.stg_comprovantes_slim AS c FINAL "
+                f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL "
                 f"  ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial "
                 f"  AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante "
                 f"WHERE c.id_empresa = {{id_empresa:Int32}} "
