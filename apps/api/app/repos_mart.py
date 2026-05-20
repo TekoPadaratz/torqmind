@@ -3700,40 +3700,64 @@ def customers_delinquency_overview(
     id_filial: Optional[int],
     as_of: date,
     *,
-    limit: int = 20,
+    limit: int = 0,
 ) -> Dict[str, Any]:
     where_filial, branch_params = _branch_scope_clause("f.id_filial", id_filial)
-    params = [id_empresa, as_of, id_empresa] + branch_params + [as_of, as_of, id_empresa, limit]
+    params = [id_empresa] + branch_params + [id_empresa, as_of, as_of, as_of, id_empresa]
     sql = f"""
-      WITH baixa_agg AS (
-        SELECT id_empresa, id_filial,
-               (payload->>'ID_CONTASRECEBER')::int AS id_contasreceber,
-               SUM((payload->>'VALORBAIXA')::numeric) AS total_baixa
-        FROM stg.contasreceberbaixa
-        WHERE id_empresa = %s
-        GROUP BY id_empresa, id_filial, (payload->>'ID_CONTASRECEBER')::int
-      ), base AS (
+      WITH open_financeiro AS (
+        SELECT f.id_empresa, f.id_filial, f.id_titulo, f.id_entidade,
+               f.valor, f.valor_pago, f.vencimento, f.data_emissao, f.data_pagamento
+        FROM dw.fact_financeiro f
+        WHERE f.id_empresa = %s
+          AND f.tipo_titulo = 1
+          {where_filial}
+          AND f.data_pagamento IS NULL
+      ), baixa_agg AS (
+        SELECT b.id_empresa, b.id_filial,
+               (b.payload->>'ID_CONTASRECEBER')::int AS id_contasreceber,
+               SUM((b.payload->>'VALORBAIXA')::numeric) AS total_baixa
+        FROM stg.contasreceberbaixa b
+        WHERE b.id_empresa = %s
+          AND EXISTS (
+            SELECT 1 FROM open_financeiro ofin
+            WHERE ofin.id_empresa = b.id_empresa
+              AND ofin.id_filial = b.id_filial
+              AND ofin.id_titulo = (b.payload->>'ID_CONTASRECEBER')::int
+          )
+        GROUP BY b.id_empresa, b.id_filial, (b.payload->>'ID_CONTASRECEBER')::int
+      ), base_vencido AS (
         SELECT
           f.id_filial,
           COALESCE(f.id_entidade, -1) AS id_cliente,
           GREATEST(0::numeric, COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)))::numeric(18,2) AS valor_aberto,
           GREATEST(0, %s::date - COALESCE(f.vencimento, f.data_emissao))::int AS dias_atraso
-        FROM dw.fact_financeiro f
+        FROM open_financeiro f
         LEFT JOIN baixa_agg bx
           ON bx.id_empresa = f.id_empresa AND bx.id_filial = f.id_filial
           AND bx.id_contasreceber = f.id_titulo
-        WHERE f.id_empresa = %s
-          AND f.tipo_titulo = 1
-          {where_filial}
-          AND COALESCE(f.vencimento, f.data_emissao) < %s
-          AND (
-            f.data_pagamento IS NULL
-            OR f.data_pagamento > %s
-            OR GREATEST(COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)), 0) > 0
-          )
+        WHERE COALESCE(f.vencimento, f.data_emissao) < %s
+      ), base_a_vencer AS (
+        SELECT
+          f.id_filial,
+          COALESCE(f.id_entidade, -1) AS id_cliente,
+          GREATEST(0::numeric, COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)))::numeric(18,2) AS valor_aberto
+        FROM open_financeiro f
+        LEFT JOIN baixa_agg bx
+          ON bx.id_empresa = f.id_empresa AND bx.id_filial = f.id_filial
+          AND bx.id_contasreceber = f.id_titulo
+        WHERE COALESCE(f.vencimento, f.data_emissao) >= %s
+      ), a_vencer_total AS (
+        SELECT
+          COALESCE(SUM(valor_aberto), 0)::numeric(18,2) AS valor_a_vencer,
+          COUNT(*)::int AS titulos_a_vencer,
+          COUNT(DISTINCT id_cliente) FILTER (WHERE id_cliente <> -1)::int AS clientes_a_vencer
+        FROM base_a_vencer
+        WHERE valor_aberto > 0
+          AND id_cliente <> -1
       ), open_rows AS (
         SELECT *
-        FROM base
+        FROM base_vencido
         WHERE valor_aberto > 0
           AND id_cliente <> -1
       ), per_branch_customer AS (
@@ -3816,7 +3840,10 @@ def customers_delinquency_overview(
           'valor_30', t.valor_30,
           'valor_60', t.valor_60,
           'valor_90_plus', t.valor_90_plus,
-          'max_dias_atraso', t.max_dias_atraso
+          'max_dias_atraso', t.max_dias_atraso,
+          'valor_a_vencer', av.valor_a_vencer,
+          'titulos_a_vencer', av.titulos_a_vencer,
+          'clientes_a_vencer', av.clientes_a_vencer
         ) AS summary,
         jsonb_build_array(
           jsonb_build_object('bucket', '1_30', 'label', '1-30 dias', 'valor', t.valor_30, 'titulos', t.titulos_30),
@@ -3842,23 +3869,18 @@ def customers_delinquency_overview(
                 'valor_total', r.valor_aberto,
                 'bucket_label',
                   CASE
-                    WHEN r.valor_90_plus > 0 THEN '61+ dias'
-                    WHEN r.valor_60 > 0 THEN '31-60 dias'
+                    WHEN r.titulos_90_plus > 0 THEN '90+ dias'
+                    WHEN r.titulos_60 > 0 THEN '31-60 dias'
                     ELSE '1-30 dias'
                   END
               )
-              ORDER BY r.max_dias_atraso DESC, r.valor_aberto DESC, r.id_cliente
+              ORDER BY r.titulos_90_plus DESC, r.titulos_60 DESC, r.titulos_30 DESC, r.valor_aberto DESC, r.id_cliente
             )
-            FROM (
-              SELECT *
-              FROM ranked
-              ORDER BY max_dias_atraso DESC, valor_aberto DESC, id_cliente
-              LIMIT %s
-            ) r
+            FROM ranked r
           ),
           '[]'::jsonb
         ) AS customers
-      FROM totals t
+      FROM totals t, a_vencer_total av
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         row = conn.execute(sql, params).fetchone() or {}
@@ -3878,6 +3900,9 @@ def customers_delinquency_overview(
             "valor_60": round(float(summary.get("valor_60") or 0), 2),
             "valor_90_plus": round(float(summary.get("valor_90_plus") or 0), 2),
             "max_dias_atraso": int(summary.get("max_dias_atraso") or 0),
+            "valor_a_vencer": round(float(summary.get("valor_a_vencer") or 0), 2),
+            "titulos_a_vencer": int(summary.get("titulos_a_vencer") or 0),
+            "clientes_a_vencer": int(summary.get("clientes_a_vencer") or 0),
         },
         "buckets": [
             {
@@ -7046,21 +7071,87 @@ def customers_summary_paginated(
     search: str = "",
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """PG fallback for paginated customer summary (uses customers_top)."""
-    from datetime import timedelta
-    today = business_today(id_empresa)
-    dt_ini = today - timedelta(days=30)
-    items = customers_top(role, id_empresa, id_filial, dt_ini, today, limit=500)
-    if search:
-        s = search.lower()
-        items = [i for i in items if s in str(i.get("cliente_nome", "")).lower()]
-    total = len(items)
+    """Paginated customer summary from mart.customer_screen_summary (DB-level pagination)."""
+    # Map frontend sort keys to actual columns
+    sort_map = {
+        "total_compras_30d": "compras_30d",
+        "compras_30d": "compras_30d",
+        "faturamento_30d": "faturamento_30d",
+        "faturamento": "faturamento_30d",
+        "ticket_medio": "ticket_medio_30d",
+        "ticket_medio_30d": "ticket_medio_30d",
+        "ultima_compra": "ultima_compra",
+        "cliente_nome": "cliente_nome",
+    }
+    col = sort_map.get(sort_by, "faturamento_30d")
+    direction = "DESC" if sort_order.upper() == "DESC" else "ASC"
+    nulls = "NULLS LAST" if direction == "DESC" else "NULLS FIRST"
     offset = (max(1, page) - 1) * page_size
+
+    where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
+    where_search = ""
+    search_params: list = []
+    if search and search.strip():
+        where_search = "AND m.cliente_nome ILIKE %s"
+        search_params = [f"%{search.strip()}%"]
+
+    count_sql = f"""
+      SELECT COUNT(*)::int AS total
+      FROM mart.customer_screen_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+        {where_search}
+    """
+    count_params = [id_empresa] + branch_params + search_params
+
+    data_sql = f"""
+      SELECT
+        m.id_cliente,
+        m.cliente_nome,
+        m.faturamento_30d AS faturamento,
+        m.compras_30d AS compras,
+        m.ultima_compra,
+        m.ticket_medio_30d AS ticket_medio,
+        m.faturamento_90d,
+        m.compras_90d,
+        m.ticket_medio_90d
+      FROM mart.customer_screen_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+        {where_search}
+      ORDER BY m.{col} {direction} {nulls}, m.id_cliente
+      LIMIT %s OFFSET %s
+    """
+    data_params = [id_empresa] + branch_params + search_params + [page_size, offset]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        total_row = conn.execute(count_sql, count_params).fetchone()
+        total = int(total_row["total"]) if total_row else 0
+        if total == 0:
+            # Fallback: mart may not be populated yet, use legacy approach
+            from datetime import timedelta
+            today = business_today(id_empresa)
+            dt_ini = today - timedelta(days=30)
+            items = customers_top(role, id_empresa, id_filial, dt_ini, today, limit=500)
+            if search:
+                s = search.lower()
+                items = [i for i in items if s in str(i.get("cliente_nome", "")).lower()]
+            total = len(items)
+            return {
+                "items": items[offset:offset + page_size],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
+                "source": "postgres_legacy",
+            }
+        items = list(conn.execute(data_sql, data_params).fetchall())
+
     return {
-        "items": items[offset:offset + page_size],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
-        "source": "postgres",
+        "source": "mart",
     }

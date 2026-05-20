@@ -997,6 +997,7 @@ class EtlOrchestrationTest(unittest.TestCase):
             step_order,
             [
                 "customer_sales_daily_snapshot",
+                "customer_screen_summary",
                 "customer_rfm_snapshot",
                 "customer_churn_risk_snapshot",
                 "payment_notifications",

@@ -2277,6 +2277,28 @@ def _run_tenant_post_refresh(
                 "no_window" if runs_operational else "track_excludes_step",
             )
 
+        # Refresh customer_screen_summary (depends on customer_sales_daily)
+        if runs_operational and post_meta.get("customer_sales_daily_refreshed"):
+            rows, step_ms = _run_logged_count_step(
+                conn,
+                tenant_id,
+                "customer_screen_summary",
+                stage="post_refresh",
+                ref_date=ref_date,
+                operation=lambda: _run_sql_count(
+                    conn,
+                    "SELECT etl.refresh_customer_screen_summary(%s) AS rows",
+                    (tenant_id,),
+                ),
+                meta={},
+                progress_callback=progress_callback,
+            )
+            post_meta["customer_screen_summary_refreshed"] = True
+            post_meta["customer_screen_summary_rows"] = rows
+            post_meta["customer_screen_summary_ms"] = step_ms
+        else:
+            post_meta["customer_screen_summary_skipped"] = True
+
         if runs_operational and customer_rfm_start is not None and customer_rfm_end is not None and customer_rfm_start <= customer_rfm_end:
             clock_driven = not sales_changed
             rows, step_ms = _run_logged_count_step(
