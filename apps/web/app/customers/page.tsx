@@ -102,7 +102,7 @@ export default function CustomersPage() {
       })),
     [delinquency],
   );
-  const delinquencyPageSize = 8;
+  const delinquencyPageSize = 10;
   const delinquencyPageCount = Math.max(
     1,
     Math.ceil(delinquencyCustomers.length / delinquencyPageSize),
@@ -184,15 +184,15 @@ export default function CustomersPage() {
               </div>
 
               <div className="card col-12">
-                <div className="sectionEyebrow">Inadimplência</div>
-                <h2 style={{ marginTop: 4 }}>Clientes com maior exposição em aberto</h2>
+                <div className="sectionEyebrow">Inadimplência e cobrança</div>
+                <h2 style={{ marginTop: 4 }}>Visão completa de contas vencidas e a vencer</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  A leitura executiva mostra buckets de atraso e prioriza os clientes com maior valor e maior risco.
+                  Apenas contas já vencidas entram no ranking de cobrança. As contas a vencer são exibidas como contexto para planejamento de fluxo de caixa.
                 </div>
               </div>
 
               <div className="card kpi col-3 riskCard">
-                <div className="label">Clientes em aberto</div>
+                <div className="label">Clientes em atraso</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -200,7 +200,7 @@ export default function CustomersPage() {
                 </div>
               </div>
               <div className="card kpi col-3 riskCard">
-                <div className="label">Títulos em aberto</div>
+                <div className="label">Títulos vencidos</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -208,7 +208,7 @@ export default function CustomersPage() {
                 </div>
               </div>
               <div className="card kpi col-3 riskCard">
-                <div className="label">Valor vencido</div>
+                <div className="label">Total vencido</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -224,43 +224,68 @@ export default function CustomersPage() {
                 </div>
               </div>
 
+              <div className="card kpi col-4">
+                <div className="label">Títulos a vencer</div>
+                <div className="value">
+                  {loading
+                    ? "..."
+                    : Number(delinquency?.summary?.titulos_a_vencer || 0)}
+                </div>
+              </div>
+              <div className="card kpi col-4">
+                <div className="label">Valor a vencer</div>
+                <div className="value">
+                  {loading
+                    ? "..."
+                    : formatCurrency(delinquency?.summary?.valor_a_vencer)}
+                </div>
+              </div>
+              <div className="card kpi col-4">
+                <div className="label">Clientes a vencer</div>
+                <div className="value">
+                  {loading
+                    ? "..."
+                    : Number(delinquency?.summary?.clientes_a_vencer || 0)}
+                </div>
+              </div>
+
               <div className="card col-12">
-                <h2>Buckets por atraso</h2>
+                <h2>Distribuição por faixa de atraso (vencidos)</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Os buckets mostram concentracao de titulos e valores para orientar a ordem de cobranca.
+                  Concentração de títulos e valores vencidos por faixa de dias em atraso.
                 </div>
               </div>
 
               <div className="card kpi col-4 riskCard">
-                <div className="label">Bucket 30 dias</div>
+                <div className="label">Vencido 1-30 dias</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(delinquency?.summary?.valor_30)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_30 || 0)} titulo(s)`}
+                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_30 || 0)} título(s)`}
                 </div>
               </div>
               <div className="card kpi col-4 riskCard">
-                <div className="label">Bucket 60 dias</div>
+                <div className="label">Vencido 31-60 dias</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(delinquency?.summary?.valor_60)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_60 || 0)} titulo(s)`}
+                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_60 || 0)} título(s)`}
                 </div>
               </div>
               <div className="card kpi col-4 riskCard">
-                <div className="label">Bucket 90+ dias</div>
+                <div className="label">Vencido 90+ dias</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(delinquency?.summary?.valor_90_plus)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_90_plus || 0)} titulo(s)`}
+                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_90_plus || 0)} título(s)`}
                 </div>
               </div>
 
               <div className="card col-12 chartCard">
-                <h2>Buckets por atraso</h2>
+                <h2>Distribuição por faixa de atraso</h2>
                 {!loading && !delinquencyChart.length ? (
                   <EmptyState
                     title="Sem inadimplência relevante no período."
@@ -296,7 +321,7 @@ export default function CustomersPage() {
                   <div>
                     <h2>Prioridades de cobrança</h2>
                     <div className="muted" style={{ marginTop: 8 }}>
-                      Ranking executivo dos clientes com maior pressao em aberto, separado pelos buckets 30, 60 e 90+ dias.
+                      Clientes com contas vencidas ordenados por gravidade: primeiro quem tem mais títulos com 90+ dias em atraso, depois 60 dias e por último 30 dias. Ação imediata nos primeiros da lista.
                     </div>
                   </div>
                   {delinquencyCustomers.length > delinquencyPageSize ? (
@@ -336,30 +361,30 @@ export default function CustomersPage() {
                     <thead>
                       <tr>
                         <th>Cliente</th>
-                        <th>Bucket</th>
-                        <th>Titulos 30</th>
-                        <th>Titulos 60</th>
-                        <th>Titulos 90+</th>
-                        <th>Valores 30</th>
-                        <th>Valores 60</th>
-                        <th>Valores 90+</th>
-                        <th>Titulos totais</th>
-                        <th>Valor total</th>
+                        <th>90+ dias</th>
+                        <th>60 dias</th>
+                        <th>30 dias</th>
+                        <th>R$ 90+</th>
+                        <th>R$ 60</th>
+                        <th>R$ 30</th>
+                        <th>Total títulos</th>
+                        <th>Total em aberto</th>
+                        <th>Maior atraso</th>
                       </tr>
                     </thead>
                     <tbody>
                       {delinquencyPageItems.map((item: any) => (
                         <tr key={item.id_cliente}>
                           <td>{item.cliente_nome}</td>
-                          <td>{item.bucket_label}</td>
+                          <td style={{ fontWeight: item.titulos_90_plus > 0 ? 700 : 400, color: item.titulos_90_plus > 0 ? '#ef4444' : undefined }}>{item.titulos_90_plus}</td>
+                          <td style={{ fontWeight: item.titulos_60 > 0 ? 700 : 400, color: item.titulos_60 > 0 ? '#f97316' : undefined }}>{item.titulos_60}</td>
                           <td>{item.titulos_30}</td>
-                          <td>{item.titulos_60}</td>
-                          <td>{item.titulos_90_plus}</td>
+                          <td style={{ color: item.valor_90_plus > 0 ? '#ef4444' : undefined }}>{formatCurrency(item.valor_90_plus)}</td>
+                          <td style={{ color: item.valor_60 > 0 ? '#f97316' : undefined }}>{formatCurrency(item.valor_60)}</td>
                           <td>{formatCurrency(item.valor_30)}</td>
-                          <td>{formatCurrency(item.valor_60)}</td>
-                          <td>{formatCurrency(item.valor_90_plus)}</td>
                           <td>{item.titulos_totais}</td>
-                          <td>{formatCurrency(item.valor_total)}</td>
+                          <td style={{ fontWeight: 700 }}>{formatCurrency(item.valor_total)}</td>
+                          <td>{item.max_dias_atraso}d</td>
                         </tr>
                       ))}
                     </tbody>
