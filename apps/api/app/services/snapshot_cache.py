@@ -35,7 +35,7 @@ HOT_ROUTE_REFRESH_AFTER_SECONDS: dict[str, int] = {
     "pricing_competitor_overview": 300,
     "goals_overview": 300,
 }
-ROUTE_SNAPSHOT_BYPASS_KEYS = frozenset({"pricing_competitor_overview"})
+ROUTE_SNAPSHOT_BYPASS_KEYS = frozenset({"pricing_competitor_overview", "customers_overview"})
 REALTIME_TRUTH_BYPASS_KEYS = frozenset({
     "dashboard_home",
     "sales_overview",

@@ -1000,6 +1000,7 @@ class EtlOrchestrationTest(unittest.TestCase):
                 "customer_screen_summary",
                 "customer_rfm_snapshot",
                 "customer_churn_risk_snapshot",
+                "customer_delinquency_summary",
                 "payment_notifications",
                 "cash_notifications",
             ],

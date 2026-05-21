@@ -3702,235 +3702,117 @@ def customers_delinquency_overview(
     *,
     limit: int = 0,
 ) -> Dict[str, Any]:
-    where_filial, branch_params = _branch_scope_clause("f.id_filial", id_filial)
-    params = [id_empresa] + branch_params + [id_empresa, as_of, as_of, as_of, id_empresa]
-    sql = f"""
-      WITH open_financeiro AS (
-        SELECT f.id_empresa, f.id_filial, f.id_titulo, f.id_entidade,
-               f.valor, f.valor_pago, f.vencimento, f.data_emissao, f.data_pagamento
-        FROM dw.fact_financeiro f
-        WHERE f.id_empresa = %s
-          AND f.tipo_titulo = 1
-          {where_filial}
-          AND f.data_pagamento IS NULL
-      ), baixa_agg AS (
-        SELECT b.id_empresa, b.id_filial,
-               (b.payload->>'ID_CONTASRECEBER')::int AS id_contasreceber,
-               SUM((b.payload->>'VALORBAIXA')::numeric) AS total_baixa
-        FROM stg.contasreceberbaixa b
-        WHERE b.id_empresa = %s
-          AND EXISTS (
-            SELECT 1 FROM open_financeiro ofin
-            WHERE ofin.id_empresa = b.id_empresa
-              AND ofin.id_filial = b.id_filial
-              AND ofin.id_titulo = (b.payload->>'ID_CONTASRECEBER')::int
-          )
-        GROUP BY b.id_empresa, b.id_filial, (b.payload->>'ID_CONTASRECEBER')::int
-      ), base_vencido AS (
-        SELECT
-          f.id_filial,
-          COALESCE(f.id_entidade, -1) AS id_cliente,
-          GREATEST(0::numeric, COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)))::numeric(18,2) AS valor_aberto,
-          GREATEST(0, %s::date - COALESCE(f.vencimento, f.data_emissao))::int AS dias_atraso
-        FROM open_financeiro f
-        LEFT JOIN baixa_agg bx
-          ON bx.id_empresa = f.id_empresa AND bx.id_filial = f.id_filial
-          AND bx.id_contasreceber = f.id_titulo
-        WHERE COALESCE(f.vencimento, f.data_emissao) < %s
-      ), base_a_vencer AS (
-        SELECT
-          f.id_filial,
-          COALESCE(f.id_entidade, -1) AS id_cliente,
-          GREATEST(0::numeric, COALESCE(f.valor, 0) - GREATEST(COALESCE(f.valor_pago, 0), COALESCE(bx.total_baixa, 0)))::numeric(18,2) AS valor_aberto
-        FROM open_financeiro f
-        LEFT JOIN baixa_agg bx
-          ON bx.id_empresa = f.id_empresa AND bx.id_filial = f.id_filial
-          AND bx.id_contasreceber = f.id_titulo
-        WHERE COALESCE(f.vencimento, f.data_emissao) >= %s
-      ), a_vencer_total AS (
-        SELECT
-          COALESCE(SUM(valor_aberto), 0)::numeric(18,2) AS valor_a_vencer,
-          COUNT(*)::int AS titulos_a_vencer,
-          COUNT(DISTINCT id_cliente) FILTER (WHERE id_cliente <> -1)::int AS clientes_a_vencer
-        FROM base_a_vencer
-        WHERE valor_aberto > 0
-          AND id_cliente <> -1
-      ), open_rows AS (
-        SELECT *
-        FROM base_vencido
-        WHERE valor_aberto > 0
-          AND id_cliente <> -1
-      ), per_branch_customer AS (
-        SELECT
-          o.id_filial,
-          o.id_cliente,
-          COUNT(*)::int AS titulos,
-          MAX(o.dias_atraso)::int AS max_dias_atraso,
-          COALESCE(SUM(o.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
-          COUNT(*) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 30)::int AS titulos_30,
-          COUNT(*) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60)::int AS titulos_60,
-          COUNT(*) FILTER (WHERE o.dias_atraso > 60)::int AS titulos_90_plus,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_30,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus
-        FROM open_rows o
-        GROUP BY o.id_filial, o.id_cliente
-      ), named AS (
-        SELECT
-          p.id_cliente,
-          COALESCE(NULLIF(d.nome, ''), '#ID ' || p.id_cliente::text) AS cliente_nome,
-          p.titulos,
-          p.max_dias_atraso,
-          p.valor_aberto,
-          p.titulos_30,
-          p.titulos_60,
-          p.titulos_90_plus,
-          p.valor_30,
-          p.valor_60,
-          p.valor_90_plus
-        FROM per_branch_customer p
-        LEFT JOIN LATERAL (
-          SELECT d.nome
-          FROM dw.dim_cliente d
-          WHERE d.id_empresa = %s
-            AND d.id_cliente = p.id_cliente
-          ORDER BY
-            CASE WHEN d.id_filial = p.id_filial THEN 0 ELSE 1 END,
-            d.updated_at DESC,
-            d.id_filial
-          LIMIT 1
-        ) d ON true
-      ), ranked AS (
-        SELECT
-          n.id_cliente,
-          MAX(n.cliente_nome) AS cliente_nome,
-          COALESCE(SUM(n.titulos), 0)::int AS titulos,
-          MAX(n.max_dias_atraso)::int AS max_dias_atraso,
-          COALESCE(SUM(n.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
-          COALESCE(SUM(n.titulos_30), 0)::int AS titulos_30,
-          COALESCE(SUM(n.titulos_60), 0)::int AS titulos_60,
-          COALESCE(SUM(n.titulos_90_plus), 0)::int AS titulos_90_plus,
-          COALESCE(SUM(n.valor_30), 0)::numeric(18,2) AS valor_30,
-          COALESCE(SUM(n.valor_60), 0)::numeric(18,2) AS valor_60,
-          COALESCE(SUM(n.valor_90_plus), 0)::numeric(18,2) AS valor_90_plus
-        FROM named n
-        GROUP BY n.id_cliente
-      ), totals AS (
-        SELECT
-          COUNT(DISTINCT id_cliente)::int AS clientes_em_aberto,
-          COUNT(*)::int AS titulos_em_aberto,
-          COALESCE(SUM(valor_aberto), 0)::numeric(18,2) AS valor_total,
-          COUNT(*) FILTER (WHERE dias_atraso BETWEEN 1 AND 30)::int AS titulos_30,
-          COUNT(*) FILTER (WHERE dias_atraso BETWEEN 31 AND 60)::int AS titulos_60,
-          COUNT(*) FILTER (WHERE dias_atraso > 60)::int AS titulos_90_plus,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_30,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus,
-          COALESCE(MAX(dias_atraso), 0)::int AS max_dias_atraso
-        FROM open_rows
-      )
-      SELECT
-        jsonb_build_object(
-          'clientes_em_aberto', t.clientes_em_aberto,
-          'titulos_em_aberto', t.titulos_em_aberto,
-          'valor_total', t.valor_total,
-          'titulos_30', t.titulos_30,
-          'titulos_60', t.titulos_60,
-          'titulos_90_plus', t.titulos_90_plus,
-          'valor_30', t.valor_30,
-          'valor_60', t.valor_60,
-          'valor_90_plus', t.valor_90_plus,
-          'max_dias_atraso', t.max_dias_atraso,
-          'valor_a_vencer', av.valor_a_vencer,
-          'titulos_a_vencer', av.titulos_a_vencer,
-          'clientes_a_vencer', av.clientes_a_vencer
-        ) AS summary,
-        jsonb_build_array(
-          jsonb_build_object('bucket', '1_30', 'label', '1-30 dias', 'valor', t.valor_30, 'titulos', t.titulos_30),
-          jsonb_build_object('bucket', '31_60', 'label', '31-60 dias', 'valor', t.valor_60, 'titulos', t.titulos_60),
-          jsonb_build_object('bucket', '61_plus', 'label', '61+ dias', 'valor', t.valor_90_plus, 'titulos', t.titulos_90_plus)
-        ) AS buckets,
-        COALESCE(
-          (
-            SELECT jsonb_agg(
-              jsonb_build_object(
-                'id_cliente', r.id_cliente,
-                'cliente_nome', r.cliente_nome,
-                'titulos', r.titulos,
-                'max_dias_atraso', r.max_dias_atraso,
-                'valor_aberto', r.valor_aberto,
-                'titulos_30', r.titulos_30,
-                'titulos_60', r.titulos_60,
-                'titulos_90_plus', r.titulos_90_plus,
-                'valor_30', r.valor_30,
-                'valor_60', r.valor_60,
-                'valor_90_plus', r.valor_90_plus,
-                'titulos_totais', r.titulos,
-                'valor_total', r.valor_aberto,
-                'bucket_label',
-                  CASE
-                    WHEN r.titulos_90_plus > 0 THEN '90+ dias'
-                    WHEN r.titulos_60 > 0 THEN '31-60 dias'
-                    ELSE '1-30 dias'
-                  END
-              )
-              ORDER BY r.titulos_90_plus DESC, r.titulos_60 DESC, r.titulos_30 DESC, r.valor_aberto DESC, r.id_cliente
-            )
-            FROM ranked r
-          ),
-          '[]'::jsonb
-        ) AS customers
-      FROM totals t, a_vencer_total av
-    """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        row = conn.execute(sql, params).fetchone() or {}
+    """Delinquency overview from mart.customer_delinquency_summary (fast indexed read)."""
+    where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
 
-    summary = dict(row.get("summary") or {})
-    buckets = list(row.get("buckets") or [])
-    customers = list(row.get("customers") or [])
+    # Summary aggregation from mart
+    summary_sql = f"""
+      SELECT
+        COUNT(*)::int AS clientes_em_aberto,
+        COALESCE(SUM(m.titulos_ate_30d + m.titulos_acima_30d), 0)::int AS titulos_em_aberto,
+        COALESCE(SUM(m.valor_total_vencido), 0)::numeric(18,2) AS valor_total,
+        COALESCE(SUM(m.titulos_ate_30d), 0)::int AS titulos_ate_30d,
+        COALESCE(SUM(m.valor_ate_30d), 0)::numeric(18,2) AS valor_ate_30d,
+        COALESCE(SUM(m.titulos_acima_30d), 0)::int AS titulos_acima_30d,
+        COALESCE(SUM(m.valor_acima_30d), 0)::numeric(18,2) AS valor_acima_30d,
+        COALESCE(SUM(m.titulos_a_vencer), 0)::int AS titulos_a_vencer,
+        COALESCE(SUM(m.valor_a_vencer), 0)::numeric(18,2) AS valor_a_vencer,
+        COALESCE(MAX(m.max_dias_atraso), 0)::int AS max_dias_atraso,
+        COUNT(*) FILTER (WHERE m.titulos_a_vencer > 0)::int AS clientes_a_vencer
+      FROM mart.customer_delinquency_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+    """
+    summary_params = [id_empresa] + branch_params
+
+    # Customer list ordered by gravity
+    customers_sql = f"""
+      SELECT
+        m.id_cliente,
+        m.cliente_nome,
+        m.titulos_ate_30d,
+        m.valor_ate_30d,
+        m.titulos_acima_30d,
+        m.valor_acima_30d,
+        m.titulos_a_vencer,
+        m.valor_a_vencer,
+        m.max_dias_atraso,
+        m.valor_total_vencido
+      FROM mart.customer_delinquency_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+      ORDER BY m.titulos_acima_30d DESC, m.titulos_ate_30d DESC, m.valor_total_vencido DESC, m.id_cliente
+    """
+    customers_params = [id_empresa] + branch_params
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        summary_row = conn.execute(summary_sql, summary_params).fetchone() or {}
+        customers = list(conn.execute(customers_sql, customers_params).fetchall())
+
+    if not customers:
+        # Mart may not be populated yet — return empty structure
+        return {
+            "summary": {
+                "clientes_em_aberto": 0,
+                "titulos_em_aberto": 0,
+                "valor_total": 0,
+                "titulos_ate_30d": 0,
+                "valor_ate_30d": 0,
+                "titulos_acima_30d": 0,
+                "valor_acima_30d": 0,
+                "titulos_a_vencer": 0,
+                "valor_a_vencer": 0,
+                "max_dias_atraso": 0,
+            },
+            "buckets": [
+                {"bucket": "1_30", "label": "Até 30 dias", "valor": 0, "titulos": 0},
+                {"bucket": "31_plus", "label": "30+ dias", "valor": 0, "titulos": 0},
+            ],
+            "customers": [],
+            "dt_ref": as_of.isoformat(),
+        }
+
     return {
         "summary": {
-            "clientes_em_aberto": int(summary.get("clientes_em_aberto") or 0),
-            "titulos_em_aberto": int(summary.get("titulos_em_aberto") or 0),
-            "valor_total": round(float(summary.get("valor_total") or 0), 2),
-            "titulos_30": int(summary.get("titulos_30") or 0),
-            "titulos_60": int(summary.get("titulos_60") or 0),
-            "titulos_90_plus": int(summary.get("titulos_90_plus") or 0),
-            "valor_30": round(float(summary.get("valor_30") or 0), 2),
-            "valor_60": round(float(summary.get("valor_60") or 0), 2),
-            "valor_90_plus": round(float(summary.get("valor_90_plus") or 0), 2),
-            "max_dias_atraso": int(summary.get("max_dias_atraso") or 0),
-            "valor_a_vencer": round(float(summary.get("valor_a_vencer") or 0), 2),
-            "titulos_a_vencer": int(summary.get("titulos_a_vencer") or 0),
-            "clientes_a_vencer": int(summary.get("clientes_a_vencer") or 0),
+            "clientes_em_aberto": int(summary_row.get("clientes_em_aberto") or 0),
+            "titulos_em_aberto": int(summary_row.get("titulos_em_aberto") or 0),
+            "valor_total": round(float(summary_row.get("valor_total") or 0), 2),
+            "titulos_ate_30d": int(summary_row.get("titulos_ate_30d") or 0),
+            "valor_ate_30d": round(float(summary_row.get("valor_ate_30d") or 0), 2),
+            "titulos_acima_30d": int(summary_row.get("titulos_acima_30d") or 0),
+            "valor_acima_30d": round(float(summary_row.get("valor_acima_30d") or 0), 2),
+            "titulos_a_vencer": int(summary_row.get("titulos_a_vencer") or 0),
+            "valor_a_vencer": round(float(summary_row.get("valor_a_vencer") or 0), 2),
+            "max_dias_atraso": int(summary_row.get("max_dias_atraso") or 0),
         },
         "buckets": [
             {
-                "bucket": item.get("bucket"),
-                "label": item.get("label"),
-                "valor": round(float(item.get("valor") or 0), 2),
-                "titulos": int(item.get("titulos") or 0),
-            }
-            for item in buckets
+                "bucket": "1_30",
+                "label": "Até 30 dias",
+                "valor": round(float(summary_row.get("valor_ate_30d") or 0), 2),
+                "titulos": int(summary_row.get("titulos_ate_30d") or 0),
+            },
+            {
+                "bucket": "31_plus",
+                "label": "30+ dias",
+                "valor": round(float(summary_row.get("valor_acima_30d") or 0), 2),
+                "titulos": int(summary_row.get("titulos_acima_30d") or 0),
+            },
         ],
         "customers": [
             {
-                "id_cliente": int(item.get("id_cliente") or 0),
-                "cliente_nome": item.get("cliente_nome"),
-                "titulos": int(item.get("titulos") or 0),
-                "max_dias_atraso": int(item.get("max_dias_atraso") or 0),
-                "valor_aberto": round(float(item.get("valor_aberto") or 0), 2),
-                "titulos_30": int(item.get("titulos_30") or 0),
-                "titulos_60": int(item.get("titulos_60") or 0),
-                "titulos_90_plus": int(item.get("titulos_90_plus") or 0),
-                "valor_30": round(float(item.get("valor_30") or 0), 2),
-                "valor_60": round(float(item.get("valor_60") or 0), 2),
-                "valor_90_plus": round(float(item.get("valor_90_plus") or 0), 2),
-                "titulos_totais": int(item.get("titulos_totais") or item.get("titulos") or 0),
-                "valor_total": round(float(item.get("valor_total") or item.get("valor_aberto") or 0), 2),
-                "bucket_label": item.get("bucket_label"),
+                "id_cliente": int(c.get("id_cliente") or 0),
+                "cliente_nome": c.get("cliente_nome"),
+                "titulos_ate_30d": int(c.get("titulos_ate_30d") or 0),
+                "valor_ate_30d": round(float(c.get("valor_ate_30d") or 0), 2),
+                "titulos_acima_30d": int(c.get("titulos_acima_30d") or 0),
+                "valor_acima_30d": round(float(c.get("valor_acima_30d") or 0), 2),
+                "titulos_a_vencer": int(c.get("titulos_a_vencer") or 0),
+                "valor_a_vencer": round(float(c.get("valor_a_vencer") or 0), 2),
+                "max_dias_atraso": int(c.get("max_dias_atraso") or 0),
+                "valor_total_vencido": round(float(c.get("valor_total_vencido") or 0), 2),
             }
-            for item in customers
+            for c in customers
         ],
         "dt_ref": as_of.isoformat(),
     }

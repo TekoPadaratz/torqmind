@@ -321,7 +321,7 @@ export default function CustomersPage() {
                   <div>
                     <h2>Prioridades de cobrança</h2>
                     <div className="muted" style={{ marginTop: 8 }}>
-                      Clientes com contas vencidas ordenados por gravidade: primeiro quem tem mais títulos com 90+ dias em atraso, depois 60 dias e por último 30 dias. Ação imediata nos primeiros da lista.
+                      Clientes inadimplentes ordenados por gravidade. Mostra títulos vencidos (até 30d e 30+) e títulos ainda a vencer desses mesmos clientes — se está em atraso, não deveria estar comprando.
                     </div>
                   </div>
                   {delinquencyCustomers.length > delinquencyPageSize ? (
@@ -361,14 +361,12 @@ export default function CustomersPage() {
                     <thead>
                       <tr>
                         <th>Cliente</th>
-                        <th>90+ dias</th>
-                        <th>60 dias</th>
-                        <th>30 dias</th>
-                        <th>R$ 90+</th>
-                        <th>R$ 60</th>
-                        <th>R$ 30</th>
-                        <th>Total títulos</th>
-                        <th>Total em aberto</th>
+                        <th>Até 30d</th>
+                        <th>R$ até 30d</th>
+                        <th>30+ dias</th>
+                        <th>R$ 30+</th>
+                        <th>A vencer</th>
+                        <th>R$ a vencer</th>
                         <th>Maior atraso</th>
                       </tr>
                     </thead>
@@ -376,14 +374,12 @@ export default function CustomersPage() {
                       {delinquencyPageItems.map((item: any) => (
                         <tr key={item.id_cliente}>
                           <td>{item.cliente_nome}</td>
-                          <td style={{ fontWeight: item.titulos_90_plus > 0 ? 700 : 400, color: item.titulos_90_plus > 0 ? '#ef4444' : undefined }}>{item.titulos_90_plus}</td>
-                          <td style={{ fontWeight: item.titulos_60 > 0 ? 700 : 400, color: item.titulos_60 > 0 ? '#f97316' : undefined }}>{item.titulos_60}</td>
-                          <td>{item.titulos_30}</td>
-                          <td style={{ color: item.valor_90_plus > 0 ? '#ef4444' : undefined }}>{formatCurrency(item.valor_90_plus)}</td>
-                          <td style={{ color: item.valor_60 > 0 ? '#f97316' : undefined }}>{formatCurrency(item.valor_60)}</td>
-                          <td>{formatCurrency(item.valor_30)}</td>
-                          <td>{item.titulos_totais}</td>
-                          <td style={{ fontWeight: 700 }}>{formatCurrency(item.valor_total)}</td>
+                          <td>{item.titulos_ate_30d ?? item.titulos_30 ?? 0}</td>
+                          <td>{formatCurrency(item.valor_ate_30d ?? item.valor_30 ?? 0)}</td>
+                          <td style={{ fontWeight: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? 700 : 400, color: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? '#ef4444' : undefined }}>{item.titulos_acima_30d ?? ((item.titulos_60 || 0) + (item.titulos_90_plus || 0))}</td>
+                          <td style={{ color: (item.valor_acima_30d ?? (item.valor_60 || 0) + (item.valor_90_plus || 0)) > 0 ? '#ef4444' : undefined }}>{formatCurrency(item.valor_acima_30d ?? ((item.valor_60 || 0) + (item.valor_90_plus || 0)))}</td>
+                          <td style={{ fontWeight: (item.titulos_a_vencer || 0) > 0 ? 700 : 400, color: (item.titulos_a_vencer || 0) > 0 ? '#f97316' : undefined }}>{item.titulos_a_vencer || 0}</td>
+                          <td style={{ color: (item.valor_a_vencer || 0) > 0 ? '#f97316' : undefined }}>{formatCurrency(item.valor_a_vencer || 0)}</td>
                           <td>{item.max_dias_atraso}d</td>
                         </tr>
                       ))}

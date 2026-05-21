@@ -2391,6 +2391,28 @@ def _run_tenant_post_refresh(
             post_meta["finance_aging_skipped"] = True
             _skip_step("finance_aging_snapshot", "no_window" if runs_operational else "track_excludes_step")
 
+        # Refresh customer delinquency mart (depends on finance data)
+        if runs_operational and (post_meta.get("finance_aging_refreshed") or sales_changed or finance_changed):
+            rows, step_ms = _run_logged_count_step(
+                conn,
+                tenant_id,
+                "customer_delinquency_summary",
+                stage="post_refresh",
+                ref_date=ref_date,
+                operation=lambda: _run_sql_count(
+                    conn,
+                    "SELECT etl.refresh_customer_delinquency_summary(%s) AS rows",
+                    (tenant_id,),
+                ),
+                meta={},
+                progress_callback=progress_callback,
+            )
+            post_meta["customer_delinquency_refreshed"] = True
+            post_meta["customer_delinquency_rows"] = rows
+            post_meta["customer_delinquency_ms"] = step_ms
+        else:
+            post_meta["customer_delinquency_skipped"] = True
+
         if runs_risk and health_start is not None and health_end is not None and health_start <= health_end:
             clock_driven = not (sales_changed or finance_changed or risk_changed)
             rows, step_ms = _run_logged_count_step(
