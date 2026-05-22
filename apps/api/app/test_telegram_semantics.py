@@ -9,9 +9,11 @@ from app.services.telegram import notify_cancelled_comprovantes, notify_voided_n
 
 class TelegramSemanticsTests(unittest.TestCase):
     def test_raw_comprovante_is_cancelled_only_cancelado_true(self) -> None:
-        # cancelado=true is a real cancellation
+        # cancelado=true with sale CFOP is a real cancellation
+        self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True, "SITUACAO": 1, "CFOP": "5.102"}))
+        self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True, "CFOP": "5.656"}))
+        # cancelado=true without CFOP (PDV sale) is also a cancellation
         self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True, "SITUACAO": 1}))
-        self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True, "SITUACAO": 3}))
         self.assertTrue(raw_comprovante_is_cancelled({"CANCELADO": True}))
         # cancelado=false is NOT cancelled, regardless of situacao
         self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": False, "SITUACAO": 2}))
@@ -19,6 +21,11 @@ class TelegramSemanticsTests(unittest.TestCase):
         # situacao=2 alone is NOT treated as cancellation anymore
         self.assertFalse(raw_comprovante_is_cancelled({"SITUACAO": 2}))
         self.assertFalse(raw_comprovante_is_cancelled({"SITUACAO": 3}))
+        # CFOP < 5000 (entry/purchase notes) is NEVER a sale cancellation
+        self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": True, "CFOP": "1.102"}))
+        self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": True, "CFOP": "1102"}))
+        self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": True, "CFOP": "2.102"}))
+        self.assertFalse(raw_comprovante_is_cancelled({"CANCELADO": True, "CFOP": "3.949"}))
 
     def test_raw_nfe_is_voided_detects_status_5(self) -> None:
         self.assertTrue(raw_nfe_is_voided({"STATUS": 5}))

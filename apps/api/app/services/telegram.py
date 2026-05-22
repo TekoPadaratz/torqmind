@@ -55,15 +55,26 @@ def _get_any(d: Dict[str, Any], keys: List[str]) -> Any:
 def raw_comprovante_is_cancelled(row: Dict[str, Any]) -> bool:
     """Resolve raw Xpert comprovante cancellation semantics.
 
-    Only CANCELADO=true is a real cancellation.
+    Only CANCELADO=true is a real cancellation of a SALE.
     situacao=2 is NOT treated as cancellation (was previously assumed to be devolução).
+    CFOP < 5000 means entry/purchase note — never alert as cancelled sale.
     """
 
     cancelado_raw = _get_any(row, ["CANCELADO", "cancelado"])
-    if cancelado_raw is not None:
-        return _to_bool(cancelado_raw)
+    if cancelado_raw is None or not _to_bool(cancelado_raw):
+        return False
 
-    return False
+    # Filter out entry notes (CFOP < 5000 = compra/entrada/transferência interna)
+    cfop_raw = _get_any(row, ["CFOP", "cfop"])
+    if cfop_raw is not None:
+        try:
+            cfop_num = int(str(cfop_raw).replace(".", "").replace(",", "").strip()[:4])
+            if cfop_num < 5000:
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    return True
 
 
 def raw_nfe_is_voided(row: Dict[str, Any]) -> bool:
