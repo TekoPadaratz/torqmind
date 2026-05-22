@@ -422,7 +422,6 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
         data_fmt = _format_datetime(data_raw)
         valor_total = _get_any(row, ["VLRTOTAL", "valor_total"]) or 0
         id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario"]))
-        id_turno = _to_int(_get_any(row, ["ID_TURNOS", "id_turno"]))
         referencia = _get_any(row, ["REFERENCIA", "referencia"]) or ""
 
         nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None
@@ -440,8 +439,7 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
             + f"\n"
             f"💰 Valor: {valor_fmt}\n"
             f"📅 Data: {data_fmt}\n"
-            f"👤 Operador: {nome_usuario or id_usuario or '?'}\n"
-            f"🔄 Turno: {id_turno or '?'}"
+            f"👤 Operador: {nome_usuario or id_usuario or '?'}"
         )
 
         for chat_id in recipients:
