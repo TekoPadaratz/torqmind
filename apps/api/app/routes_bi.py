@@ -757,6 +757,9 @@ def _safe_customers_overview_payload(as_of: date) -> Dict[str, Any]:
                 "titulos_em_aberto": None,
                 "valor_total": None,
                 "max_dias_atraso": None,
+                "valor_a_vencer": None,
+                "titulos_a_vencer": None,
+                "clientes_a_vencer": None,
             },
             "buckets": [],
             "customers": [],
@@ -1316,7 +1319,7 @@ def customers_overview(
         return {
             "top_customers": repos_mart.customers_top(role, tenant, filial, effective_dt_ini, effective_dt_fim, limit=15),
             "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=as_of),
-            "delinquency": repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of, limit=15),
+            "delinquency": repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of),
             "churn_top": churn_top,
             "churn_snapshot": churn_bundle.get("snapshot_meta") or repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
             "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, effective_dt_ini, effective_dt_fim),

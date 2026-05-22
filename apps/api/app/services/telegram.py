@@ -113,8 +113,8 @@ def _get_recipients(id_empresa: int) -> List[str]:
       WHERE s.telegram_enabled = true
         AND s.telegram_chat_id IS NOT NULL
         AND (
-          (ut.role = 'OWNER' AND ut.id_empresa = %s)
-          OR (ut.role = 'MASTER')
+          (ut.role IN ('OWNER', 'owner') AND ut.id_empresa = %s)
+          OR (ut.role IN ('MASTER', 'platform_master'))
         )
     """
 
