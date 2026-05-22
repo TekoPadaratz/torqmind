@@ -326,6 +326,44 @@ def _resolve_filial_nome(id_empresa: int, id_filial: int) -> str:
     return str(id_filial)
 
 
+def _format_datetime(raw: Any) -> str:
+    """Format ISO datetime string to 'dd/mm/aaaa HH:MM'."""
+    from datetime import datetime
+
+    if not raw:
+        return "(sem data)"
+    s = str(raw).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%d/%m/%Y %H:%M")
+        except (ValueError, TypeError):
+            continue
+    # Fallback: try parsing just the date part
+    try:
+        dt = datetime.strptime(s[:10], "%Y-%m-%d")
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return s
+
+
+def _resolve_usuario_nome(id_empresa: int, id_filial: int, id_usuario: int) -> Optional[str]:
+    """Resolve operator name from dw.dim_usuario_caixa."""
+    sql = """
+      SELECT nome FROM dw.dim_usuario_caixa
+      WHERE id_empresa = %s AND id_filial = %s AND id_usuario = %s
+      LIMIT 1
+    """
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(sql, (id_empresa, id_filial, id_usuario)).fetchone()
+            if row and row.get("nome"):
+                return str(row["nome"]).strip()
+    except Exception:
+        pass
+    return None
+
+
 def json_dumps(obj: Any) -> str:
     import json
 
@@ -369,11 +407,14 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
             continue
 
         filial_nome = _resolve_filial_nome(id_empresa, id_filial)
-        data = _get_any(row, ["DATA", "data"]) or "(sem data)"
+        data_raw = _get_any(row, ["DATA", "data"]) or ""
+        data_fmt = _format_datetime(data_raw)
         valor_total = _get_any(row, ["VLRTOTAL", "valor_total"]) or 0
         id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario"]))
         id_turno = _to_int(_get_any(row, ["ID_TURNOS", "id_turno"]))
         referencia = _get_any(row, ["REFERENCIA", "referencia"]) or ""
+
+        nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None
 
         try:
             valor_fmt = f"R$ {float(valor_total):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -387,8 +428,8 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
             + (f" (Ref: {referencia})" if referencia else "")
             + f"\n"
             f"💰 Valor: {valor_fmt}\n"
-            f"📅 Data: {data}\n"
-            f"👤 Caixa (ID usuário): {id_usuario or '?'}\n"
+            f"📅 Data: {data_fmt}\n"
+            f"👤 Operador: {nome_usuario or id_usuario or '?'}\n"
             f"🔄 Turno: {id_turno or '?'}"
         )
 
@@ -444,9 +485,11 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
         numero_nfe = _get_any(row, ["NRONF", "NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]) or "?"
         serie = _get_any(row, ["SERIE", "serie"]) or "?"
         valor = _get_any(row, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"]) or 0
-        data_inut = _get_any(row, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]) or ""
-        data_emissao = _get_any(row, ["DATA", "DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]) or ""
+        data_inut = _format_datetime(_get_any(row, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]) or "")
+        data_emissao = _format_datetime(_get_any(row, ["DATA", "DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]) or "")
         id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario", "ID_USUARIO"]))
+
+        nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None
 
         try:
             valor_fmt = f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -458,9 +501,9 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📄 NFe Nº: {numero_nfe} | Série: {serie}\n"
             f"💰 Valor: {valor_fmt}\n"
-            f"📅 Emissão: {data_emissao or '?'}\n"
-            f"📅 Inutilização: {data_inut or '?'}\n"
-            f"👤 Usuário (ID): {id_usuario or '?'}"
+            f"📅 Emissão: {data_emissao}\n"
+            f"📅 Inutilização: {data_inut}\n"
+            f"👤 Operador: {nome_usuario or id_usuario or '?'}"
         )
 
         for chat_id in recipients:
