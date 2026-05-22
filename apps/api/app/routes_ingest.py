@@ -31,7 +31,7 @@ from app.business_time import business_today, business_date_for_datetime, coerce
 from app.config import settings
 from app.db import get_conn
 from app.services.etl_orchestrator import EtlCycleBusyError, TRACK_OPERATIONAL, run_incremental_cycle
-from app.services.telegram import notify_cancelled_comprovantes, raw_comprovante_is_cancelled
+from app.services.telegram import notify_cancelled_comprovantes, notify_voided_nfes, raw_comprovante_is_cancelled, raw_nfe_is_voided
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
@@ -918,6 +918,7 @@ async def ingest_dataset(
     rejected_by_retention_count = 0
     rejected_samples: List[Dict[str, Any]] = []
     cancelled_rows: List[Dict[str, Any]] = []
+    voided_nfe_rows: List[Dict[str, Any]] = []
     inserted = 0
     updated = 0
     duplicates_in_batch = 0
@@ -981,6 +982,9 @@ async def ingest_dataset(
         if dataset_key == "comprovantes" and raw_comprovante_is_cancelled(obj):
             cancelled_rows.append(obj)
 
+        if dataset_key == "nfe" and raw_nfe_is_voided(obj):
+            voided_nfe_rows.append(obj)
+
         id_db_shadow = _infer_id_db_shadow(obj)
         natural_key = _infer_natural_key(obj, pk)
         payload_json = json.dumps(obj, ensure_ascii=False)
@@ -1038,6 +1042,13 @@ async def ingest_dataset(
             await notify_cancelled_comprovantes(id_empresa=id_empresa, raw_rows=cancelled_rows)
         except Exception:
             # Never fail ingestion due to notification issues.
+            pass
+
+    # Optional: send telegram notifications when there are voided NFEs (status=5)
+    if dataset_key == "nfe" and voided_nfe_rows:
+        try:
+            await notify_voided_nfes(id_empresa=id_empresa, raw_rows=voided_nfe_rows)
+        except Exception:
             pass
 
     etl_result = None

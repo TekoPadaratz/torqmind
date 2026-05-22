@@ -53,17 +53,23 @@ def _get_any(d: Dict[str, Any], keys: List[str]) -> Any:
 
 
 def raw_comprovante_is_cancelled(row: Dict[str, Any]) -> bool:
-    """Resolve raw Xpert comprovante cancellation semantics."""
+    """Resolve raw Xpert comprovante cancellation semantics.
 
-    situacao = _to_int(_get_any(row, ["SITUACAO", "situacao", "STATUS", "status"]))
-    if situacao == 2:
-        return True
+    Only CANCELADO=true is a real cancellation.
+    situacao=2 is NOT treated as cancellation (was previously assumed to be devolução).
+    """
 
     cancelado_raw = _get_any(row, ["CANCELADO", "cancelado"])
     if cancelado_raw is not None:
         return _to_bool(cancelado_raw)
 
     return False
+
+
+def raw_nfe_is_voided(row: Dict[str, Any]) -> bool:
+    """Detect NFE with status=5 (inutilização fiscal)."""
+    status = _to_int(_get_any(row, ["STATUS", "status", "STATUSNFE", "STATUS_NFE"]))
+    return status == 5
 
 
 async def _send_telegram(chat_id: str, text: str) -> None:
@@ -303,6 +309,23 @@ def _insert_alert_if_new(
         return bool(row)
 
 
+def _resolve_filial_nome(id_empresa: int, id_filial: int) -> str:
+    """Resolve branch name from auth.filiais. Returns short name or id_filial."""
+    sql = """
+      SELECT nome FROM auth.filiais
+      WHERE id_empresa = %s AND id_filial = %s
+      LIMIT 1
+    """
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(sql, (id_empresa, id_filial)).fetchone()
+            if row and row.get("nome"):
+                return str(row["nome"]).strip()
+    except Exception:
+        pass
+    return str(id_filial)
+
+
 def json_dumps(obj: Any) -> str:
     import json
 
@@ -310,15 +333,13 @@ def json_dumps(obj: Any) -> str:
 
 
 async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str, Any]]) -> None:
-    """Scan ingested comprovantes rows; persist alerts for operationally cancelled comprovantes."""
+    """Scan ingested comprovantes; send Telegram alert for each real cancellation (CANCELADO=true)."""
 
     if not settings.telegram_bot_token:
-        # Not configured; still record alerts (optional) but no external call.
-        pass
+        return
 
     recipients = _get_recipients(id_empresa)
     if not recipients:
-        # No one opted-in.
         return
 
     tasks: List[asyncio.Task] = []
@@ -347,19 +368,99 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
         if not inserted:
             continue
 
+        filial_nome = _resolve_filial_nome(id_empresa, id_filial)
         data = _get_any(row, ["DATA", "data"]) or "(sem data)"
         valor_total = _get_any(row, ["VLRTOTAL", "valor_total"]) or 0
-        id_usuario = _get_any(row, ["ID_USUARIOS", "id_usuario"]) or "?"
-        id_turno = _get_any(row, ["ID_TURNOS", "id_turno"]) or "?"
+        id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario"]))
+        id_turno = _to_int(_get_any(row, ["ID_TURNOS", "id_turno"]))
+        referencia = _get_any(row, ["REFERENCIA", "referencia"]) or ""
+
+        try:
+            valor_fmt = f"R$ {float(valor_total):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except (ValueError, TypeError):
+            valor_fmt = f"R$ {valor_total}"
 
         text = (
-            "🚨 CANCELAMENTO DETECTADO\n"
-            f"Empresa: {id_empresa}\n"
-            f"Filial: {id_filial} | DB: {id_db}\n"
-            f"Comprovante: {id_comprovante}\n"
-            f"Data: {data}\n"
-            f"Valor: R$ {valor_total}\n"
-            f"Usuário: {id_usuario} | Turno: {id_turno}"
+            f"🚨 VENDA CANCELADA na filial {filial_nome}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📄 Comprovante: {id_comprovante}"
+            + (f" (Ref: {referencia})" if referencia else "")
+            + f"\n"
+            f"💰 Valor: {valor_fmt}\n"
+            f"📅 Data: {data}\n"
+            f"👤 Caixa (ID usuário): {id_usuario or '?'}\n"
+            f"🔄 Turno: {id_turno or '?'}"
+        )
+
+        for chat_id in recipients:
+            tasks.append(asyncio.create_task(_send_telegram(chat_id, text)))
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) -> None:
+    """Scan ingested NFEs; send Telegram alert for each voided note (STATUS=5, inutilização)."""
+
+    if not settings.telegram_bot_token:
+        return
+
+    recipients = _get_recipients(id_empresa)
+    if not recipients:
+        return
+
+    tasks: List[asyncio.Task] = []
+
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+
+        if not raw_nfe_is_voided(row):
+            continue
+
+        id_filial = _to_int(_get_any(row, ["ID_FILIAL", "id_filial"]))
+        id_db = _to_int(_get_any(row, ["ID_DB", "id_db"]))
+        id_nfe = _to_int(_get_any(row, ["ID_NFE", "id_nfe", "ID_NOTASFISCAIS", "id_notasfiscais"]))
+
+        if id_filial is None or id_nfe is None:
+            continue
+
+        # Dedupe: use dispatch log to avoid sending same NFE twice
+        dedupe_raw = f"{id_empresa}|{id_filial}|NFE_INUTILIZADA|{id_nfe}"
+        dedupe_hash = hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
+        inserted = _register_dispatch_once(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            event_type="NFE_INUTILIZADA",
+            event_date=time.strftime("%Y-%m-%d"),
+            insight_id=None,
+            dedupe_hash=dedupe_hash,
+            payload={"id_nfe": id_nfe, "id_filial": id_filial, "id_db": id_db},
+        )
+        if not inserted:
+            continue
+
+        filial_nome = _resolve_filial_nome(id_empresa, id_filial)
+        numero_nfe = _get_any(row, ["NRONF", "NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]) or "?"
+        serie = _get_any(row, ["SERIE", "serie"]) or "?"
+        valor = _get_any(row, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"]) or 0
+        data_inut = _get_any(row, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]) or ""
+        data_emissao = _get_any(row, ["DATA", "DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]) or ""
+        id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario", "ID_USUARIO"]))
+
+        try:
+            valor_fmt = f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except (ValueError, TypeError):
+            valor_fmt = f"R$ {valor}"
+
+        text = (
+            f"📋 NOTA INUTILIZADA na filial {filial_nome}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📄 NFe Nº: {numero_nfe} | Série: {serie}\n"
+            f"💰 Valor: {valor_fmt}\n"
+            f"📅 Emissão: {data_emissao or '?'}\n"
+            f"📅 Inutilização: {data_inut or '?'}\n"
+            f"👤 Usuário (ID): {id_usuario or '?'}"
         )
 
         for chat_id in recipients:
