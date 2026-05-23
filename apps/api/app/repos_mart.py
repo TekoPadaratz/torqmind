@@ -2813,7 +2813,7 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
         AND data_key BETWEEN %s AND %s
         {where_filial}
       GROUP BY id_usuario
-      ORDER BY valor_cancelado DESC, cancelamentos DESC, id_usuario
+      ORDER BY cancelamentos DESC, valor_cancelado DESC, id_usuario
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:

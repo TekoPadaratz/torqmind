@@ -223,7 +223,6 @@ def _with_cached_response(
 
     bypass_snapshot = snapshot_cache.route_snapshot_is_bypassed(scope_key)
     if bypass_snapshot:
-        guard_state = safe_hot_route_guard()
         try:
             payload = compute()
         except ROUTE_SNAPSHOT_FALLBACK_ERRORS as exc:
@@ -248,7 +247,7 @@ def _with_cached_response(
                     "exact_scope_match": True,
                     "updated_at": None,
                     "age_seconds": None,
-                    "busy_reasons": list(guard_state.get("reasons") or []),
+                    "busy_reasons": [],
                     "message": "A leitura ao vivo desta tela ficou indisponível agora. A resposta mantém indisponibilidade explícita em vez de reaproveitar snapshot stale.",
                 } | fallback_overrides
                 return payload
@@ -266,7 +265,7 @@ def _with_cached_response(
             "exact_scope_match": True,
             "updated_at": generated_at,
             "age_seconds": 0.0,
-            "busy_reasons": list(guard_state.get("reasons") or []),
+            "busy_reasons": [],
             "message": None,
         }
         return payload

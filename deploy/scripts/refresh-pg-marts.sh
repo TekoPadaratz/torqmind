@@ -59,13 +59,23 @@ with get_conn(role='MASTER', tenant_id=1) as conn:
     for mv in mvs:
         t0 = time.time()
         try:
-            conn.execute(f'REFRESH MATERIALIZED VIEW {mv}')
+            conn.execute(f'REFRESH MATERIALIZED VIEW CONCURRENTLY {mv}')
             elapsed = time.time() - t0
             r = conn.execute(f'SELECT count(*) AS cnt FROM {mv}').fetchone()
             print(f'{mv}: {r[\"cnt\"]} rows ({elapsed:.1f}s)')
         except Exception as e:
             elapsed = time.time() - t0
-            print(f'{mv}: ERROR ({elapsed:.1f}s) - {e}')
+            # Fallback to non-concurrent if no unique index
+            if 'unique index' in str(e).lower() or 'concurrently' in str(e).lower():
+                try:
+                    conn.execute(f'REFRESH MATERIALIZED VIEW {mv}')
+                    elapsed2 = time.time() - t0
+                    r = conn.execute(f'SELECT count(*) AS cnt FROM {mv}').fetchone()
+                    print(f'{mv}: {r[\"cnt\"]} rows ({elapsed2:.1f}s) [non-concurrent fallback]')
+                except Exception as e2:
+                    print(f'{mv}: ERROR ({time.time()-t0:.1f}s) - {e2}')
+            else:
+                print(f'{mv}: ERROR ({elapsed:.1f}s) - {e}')
 " >> "$LOG_FILE" 2>&1
 
 echo "$(date -Iseconds) PG mart refresh complete" >> "$LOG_FILE"

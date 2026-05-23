@@ -107,6 +107,7 @@ export default function LoginPage() {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
+              disabled={checkingSession}
             />
             <input
               className="input"
@@ -115,6 +116,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="senha"
               autoComplete="current-password"
+              disabled={checkingSession}
             />
             {error && (
               <div className="muted" style={{ color: "#fb7185" }}>
@@ -122,7 +124,11 @@ export default function LoginPage() {
               </div>
             )}
             <button className="btn" type="submit" disabled={checkingSession}>
-              Entrar
+              {checkingSession ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <span className="loginSpinner" /> Verificando sessão…
+                </span>
+              ) : 'Entrar'}
             </button>
           </form>
         </div>

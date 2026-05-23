@@ -143,8 +143,9 @@ h2 { margin: 0; font-size: 18px; }
 .skeleton {
   height: 64px;
   border-radius: 10px;
-  background: linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.12), rgba(255,255,255,0.04));
-  animation: pulse 1.5s infinite linear;
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.14) 50%, rgba(255,255,255,0.04) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite ease-in-out;
 }
 
 .scopeTransitionState {
@@ -183,6 +184,16 @@ h2 { margin: 0; font-size: 18px; }
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
+.scopeTransitionPill::before {
+  content: '';
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(244,207,170,0.3);
+  border-top-color: #f4cfaa;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
 
 .scopeTransitionHeadline {
   margin-top: 16px;
@@ -212,6 +223,23 @@ h2 { margin: 0; font-size: 18px; }
   0% { background-position: 0 0; opacity: 0.7; }
   50% { opacity: 1; }
   100% { background-position: 200px 0; opacity: 0.7; }
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+.loginSpinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
 @media (max-width: 1100px) {
   .col-8, .col-7, .col-6, .col-5, .col-4 { grid-column: span 12; }

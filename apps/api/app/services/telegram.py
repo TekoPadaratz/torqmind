@@ -492,10 +492,39 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
 
         filial_nome = _resolve_filial_nome(id_empresa, id_filial)
         numero_nfe = _get_any(row, ["NRONF", "NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]) or "?"
-        serie = _get_any(row, ["SERIE", "serie"]) or "?"
-        valor = _get_any(row, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"]) or 0
-        data_inut = _format_datetime(_get_any(row, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]) or "")
-        data_emissao = _format_datetime(_get_any(row, ["DATA", "DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]) or "")
+
+        # Extract SERIE from CHAVEACESSO (positions 22-24) when not available directly
+        serie = _get_any(row, ["SERIE", "serie"])
+        if not serie:
+            chave = str(_get_any(row, ["CHAVEACESSO", "chaveacesso", "CHAVE_ACESSO"]) or "")
+            if len(chave) >= 25:
+                try:
+                    serie = str(int(chave[22:25]))
+                except (ValueError, TypeError):
+                    serie = None
+        serie = serie or "?"
+
+        # Lookup VALOR from comprovante when not available directly
+        valor = _get_any(row, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"])
+        id_comprovante = _to_int(_get_any(row, ["ID_COMPROVANTE", "id_comprovante"]))
+        if not valor and id_comprovante and id_filial:
+            try:
+                with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+                    comp_row = conn.execute(
+                        "SELECT (payload->>'VLRTOTAL')::numeric AS valor FROM stg.comprovantes WHERE id_empresa=%s AND id_filial=%s AND id_comprovante=%s LIMIT 1",
+                        (id_empresa, id_filial, id_comprovante),
+                    ).fetchone()
+                    if comp_row and comp_row.get("valor"):
+                        valor = comp_row["valor"]
+            except Exception:
+                pass
+        valor = valor or 0
+
+        # Use DATA as inutilização date (Xpert doesn't have separate DATAINUTILIZACAO)
+        data_inut = _format_datetime(
+            _get_any(row, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao", "DATA", "data"]) or ""
+        )
+        data_emissao = _format_datetime(_get_any(row, ["DATAEMISSAO", "DATA_EMISSAO", "data_emissao", "DATA", "data"]) or "")
         id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario", "ID_USUARIO"]))
 
         nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None

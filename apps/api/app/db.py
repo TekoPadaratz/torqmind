@@ -105,6 +105,8 @@ def get_conn(
     def _set_scope(conn: psycopg.Connection) -> None:
         """Set session-level scope variables. Always reset first to avoid leakage."""
         conn.execute("RESET app.role; RESET app.tenant_id; RESET app.branch_id")
+        conn.execute("SET lock_timeout = '10s'")
+        conn.execute("SET statement_timeout = '55s'")
         if role is not None:
             conn.execute(f"SET app.role = '{_sql_quote(role)}'")
         if tenant_id is not None:
