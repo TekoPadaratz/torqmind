@@ -60,7 +60,7 @@ class AgentRunner:
     def _log_startup_summary(self) -> None:
         enabled = list(self._enabled_datasets())
         self.logger.info(
-            "phase=startup api_base_url=%s api_route_prefix=%s state_dir=%s spool_dir=%s connect_timeout_s=%s read_timeout_s=%s max_retries=%s backoff_base_s=%s backoff_max_s=%s summary_log_file=%s datasets_enabled=%s",
+            "phase=startup api_base_url=%s api_route_prefix=%s state_dir=%s spool_dir=%s connect_timeout_s=%s read_timeout_s=%s max_retries=%s backoff_base_s=%s backoff_max_s=%s batch_delay_s=%s summary_log_file=%s datasets_enabled=%s",
             self.cfg.api.base_url,
             self.cfg.api.route_prefix,
             self.cfg.runtime.state_dir,
@@ -70,6 +70,7 @@ class AgentRunner:
             self.cfg.runtime.max_retries,
             self.cfg.runtime.retry_backoff_base_seconds,
             self.cfg.runtime.retry_backoff_max_seconds,
+            self.cfg.runtime.batch_delay_seconds,
             self.cfg.runtime.summary_log_file,
             ",".join(enabled) if enabled else "<none>",
         )
@@ -956,6 +957,11 @@ class AgentRunner:
                             max_watermark_seen,
                             batch.last_pk_tuple,
                         )
+
+                        # Throttle between batches to avoid CPU saturation on SQL Server
+                        batch_delay = self.cfg.runtime.batch_delay_seconds
+                        if batch_delay > 0:
+                            time.sleep(batch_delay)
 
                     if dataset == TURNOS_DATASET:
                         self._revisit_pending_turnos(
