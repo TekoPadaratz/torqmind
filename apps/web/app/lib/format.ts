@@ -106,6 +106,6 @@ export function formatTurnoLabel(idTurno: any, friendlyLabel?: string | null) {
     if (!Number.isFinite(numericLabel) || numericLabel > 0) return label;
   }
   const numericTurno = Number(idTurno);
-  if (Number.isFinite(numericTurno) && numericTurno > 0) return String(Math.trunc(numericTurno));
+  if (Number.isFinite(numericTurno) && numericTurno > 0 && numericTurno <= 99) return String(Math.trunc(numericTurno));
   return 'Turno sem cadastro';
 }

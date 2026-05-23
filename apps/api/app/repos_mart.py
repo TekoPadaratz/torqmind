@@ -221,30 +221,21 @@ def _local_venda_label(id_local_venda: Any, local_nome: Any = None) -> str:
 def _turno_value_sql(payload_expr: str, id_turno_expr: str) -> str:
     return f"""
       COALESCE(
-        NULLIF(trim({payload_expr}->>'TURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NO_TURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NUMTURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NR_TURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NROTURNO'), ''),
-        NULLIF(trim({payload_expr}->>'TURNO_CAIXA'), ''),
-        NULLIF(trim({payload_expr}->>'TURNOCAIXA'), ''),
-        CASE
-          WHEN {id_turno_expr} IS NOT NULL AND {id_turno_expr} > 0 THEN {id_turno_expr}::text
-          ELSE NULL
-        END
+        NULLIF(NULLIF(trim({payload_expr}->>'TURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NO_TURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NUMTURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NR_TURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NROTURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'TURNO_CAIXA'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'TURNOCAIXA'), ''), '0')
       )
     """
 
 
 def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
     value = str(turno_value or "").strip()
-    if value:
+    if value and value != "0":
         return value
-    try:
-        if id_turno is not None and int(id_turno) > 0:
-            return str(int(id_turno))
-    except Exception:
-        pass
     return "Turno sem cadastro"
 
 
