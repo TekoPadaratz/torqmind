@@ -853,11 +853,11 @@ def sales_abc_curve(
             ranked.nome_grupo,
             meta.unidade AS unidade,
             {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
-            ranked.faturamento,
-            ranked.qtd,
-            ranked.custo_total,
-            ranked.margem,
-            ranked.valor_unitario_medio,
+            ranked.fat AS faturamento,
+            ranked.qty AS qtd,
+            ranked.cost AS custo_total,
+            ranked.mrg AS margem,
+            ranked.avg_price AS valor_unitario_medio,
             ranked.participacao_pct,
             ranked.acumulado_pct,
             multiIf(
@@ -869,25 +869,24 @@ def sales_abc_curve(
         FROM (
             SELECT
                 *,
-                row_number() OVER (ORDER BY faturamento DESC, id_produto ASC) AS posicao,
-                faturamento / nullIf(sum(faturamento) OVER (), 0) * 100 AS participacao_pct,
-                sum(faturamento) OVER (ORDER BY faturamento DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-                    / nullIf(sum(faturamento) OVER (), 0) * 100 AS acumulado_pct
+                row_number() OVER (ORDER BY fat DESC, id_produto ASC) AS posicao,
+                toFloat64(fat) / nullIf(toFloat64(sum(fat) OVER ()), 0) * 100 AS participacao_pct,
+                toFloat64(sum(fat) OVER (ORDER BY fat DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+                    / nullIf(toFloat64(sum(fat) OVER ()), 0) * 100 AS acumulado_pct
             FROM (
                 SELECT
                     id_produto,
                     nome_produto,
                     nome_grupo,
-                    sum(faturamento) AS faturamento,
-                    sum(qtd) AS qtd,
-                    sum(custo_total) AS custo_total,
-                    sum(faturamento) - sum(custo_total) AS margem,
-                    if(sum(qtd) > 0, sum(faturamento) / sum(qtd), 0) AS valor_unitario_medio
+                    toFloat64(sum(faturamento)) AS fat,
+                    toFloat64(sum(qtd)) AS qty,
+                    toFloat64(sum(custo_total)) AS cost,
+                    toFloat64(sum(faturamento)) - toFloat64(sum(custo_total)) AS mrg,
+                    if(sum(qtd) > 0, toFloat64(sum(faturamento)) / toFloat64(sum(qtd)), 0) AS avg_price
                 FROM {MART_RT_DB}.sales_products_rt FINAL
                 WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-                  AND faturamento > 0
                 GROUP BY id_produto, nome_produto, nome_grupo
-                HAVING faturamento > 0
+                HAVING sum(faturamento) > 0
             )
         ) AS ranked
         LEFT JOIN ({product_meta_sql}) AS meta
