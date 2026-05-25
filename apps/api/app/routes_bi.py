@@ -1121,6 +1121,23 @@ def sales_overview(
     ), claims)
 
 
+@router.get("/sales/abc-curve")
+def sales_abc_curve(
+    dt_ini: date,
+    dt_fim: date,
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("sales")),
+):
+    role = claims["role"]
+    tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+
+    result = repos_mart.sales_abc_curve(role, tenant, filial, dt_ini, dt_fim)
+    return redact_sensitive(result, claims)
+
+
 # ------------------------
 # Anti-fraude
 # ------------------------

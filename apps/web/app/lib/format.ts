@@ -109,3 +109,9 @@ export function formatTurnoLabel(idTurno: any, friendlyLabel?: string | null) {
   if (Number.isFinite(numericTurno) && numericTurno > 0 && numericTurno <= 99) return String(Math.trunc(numericTurno));
   return 'Turno sem cadastro';
 }
+
+export function formatPercent(value: any, decimals = 1): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + '%';
+}

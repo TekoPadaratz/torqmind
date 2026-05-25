@@ -824,6 +824,278 @@ def sales_top_groups(
 
 
 # ================================================================
+# CURVA ABC DE PRODUTOS
+# ================================================================
+
+def sales_abc_curve(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """ABC curve analysis for products sold in period.
+
+    Returns executive summary, chart data, full ranking and auto-insights.
+    Classification is computed at query time using window functions so it
+    adapts to whatever date/branch filter the user selects.
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+    product_meta_sql = _sales_product_meta_subquery()
+
+    # Query with ranking, cumulative % and ABC classification
+    rows = query_dict(f"""
+        SELECT
+            ranked.id_produto,
+            ranked.nome_produto,
+            ranked.nome_grupo,
+            meta.unidade AS unidade,
+            {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
+            ranked.faturamento,
+            ranked.qtd,
+            ranked.custo_total,
+            ranked.margem,
+            ranked.valor_unitario_medio,
+            ranked.participacao_pct,
+            ranked.acumulado_pct,
+            multiIf(
+                ranked.acumulado_pct <= 80, 'A',
+                ranked.acumulado_pct <= 95, 'B',
+                'C'
+            ) AS classe_abc,
+            ranked.posicao
+        FROM (
+            SELECT
+                *,
+                row_number() OVER (ORDER BY faturamento DESC, id_produto ASC) AS posicao,
+                faturamento / nullIf(sum(faturamento) OVER (), 0) * 100 AS participacao_pct,
+                sum(faturamento) OVER (ORDER BY faturamento DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+                    / nullIf(sum(faturamento) OVER (), 0) * 100 AS acumulado_pct
+            FROM (
+                SELECT
+                    id_produto,
+                    nome_produto,
+                    nome_grupo,
+                    sum(faturamento) AS faturamento,
+                    sum(qtd) AS qtd,
+                    sum(custo_total) AS custo_total,
+                    sum(faturamento) - sum(custo_total) AS margem,
+                    if(sum(qtd) > 0, sum(faturamento) / sum(qtd), 0) AS valor_unitario_medio
+                FROM {MART_RT_DB}.sales_products_rt FINAL
+                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+                  AND faturamento > 0
+                GROUP BY id_produto, nome_produto, nome_grupo
+                HAVING faturamento > 0
+            )
+        ) AS ranked
+        LEFT JOIN ({product_meta_sql}) AS meta
+            ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = ranked.id_produto
+        ORDER BY ranked.posicao ASC
+    """, parameters={"id_empresa": id_empresa})
+
+    if not rows:
+        return _abc_empty_response()
+
+    # Build response sections
+    total_faturamento = sum(float(r.get("faturamento") or 0) for r in rows)
+    class_a = [r for r in rows if r.get("classe_abc") == "A"]
+    class_b = [r for r in rows if r.get("classe_abc") == "B"]
+    class_c = [r for r in rows if r.get("classe_abc") == "C"]
+
+    fat_a = sum(float(r.get("faturamento") or 0) for r in class_a)
+    fat_b = sum(float(r.get("faturamento") or 0) for r in class_b)
+    fat_c = sum(float(r.get("faturamento") or 0) for r in class_c)
+
+    pct_a = (fat_a / total_faturamento * 100) if total_faturamento > 0 else 0
+    pct_b = (fat_b / total_faturamento * 100) if total_faturamento > 0 else 0
+    pct_c = (fat_c / total_faturamento * 100) if total_faturamento > 0 else 0
+
+    leader = rows[0] if rows else {}
+    leader_pct = float(leader.get("participacao_pct") or 0)
+
+    # Concentration insight
+    top5_pct = sum(float(r.get("participacao_pct") or 0) for r in rows[:5])
+    if top5_pct >= 70:
+        concentration = "high"
+        concentration_text = f"Alta concentração: 5 produtos representam {top5_pct:.1f}% do faturamento."
+    elif len(class_c) > 50 and pct_c < 10:
+        concentration = "dispersed"
+        concentration_text = f"Mix pulverizado: Classe C tem {len(class_c)} produtos com apenas {pct_c:.1f}% do faturamento."
+    else:
+        concentration = "healthy"
+        concentration_text = "Concentração saudável do portfólio de produtos."
+
+    # Executive summary
+    summary = {
+        "total_produtos": len(rows),
+        "total_faturamento": total_faturamento,
+        "classe_a_count": len(class_a),
+        "classe_a_pct": round(pct_a, 1),
+        "classe_b_count": len(class_b),
+        "classe_b_pct": round(pct_b, 1),
+        "classe_c_count": len(class_c),
+        "classe_c_pct": round(pct_c, 1),
+        "produto_lider": leader.get("nome_produto") or "",
+        "produto_lider_pct": round(leader_pct, 1),
+        "produto_lider_faturamento": float(leader.get("faturamento") or 0),
+        "concentration": concentration,
+        "concentration_text": concentration_text,
+    }
+
+    # Chart data (top 40 for desktop, frontend truncates for mobile)
+    chart_data = [
+        {
+            "posicao": int(r.get("posicao") or 0),
+            "nome_produto": r.get("nome_produto") or "",
+            "nome_grupo": r.get("nome_grupo") or "",
+            "faturamento": float(r.get("faturamento") or 0),
+            "qtd": float(r.get("qtd") or 0),
+            "valor_unitario_medio": float(r.get("valor_unitario_medio") or 0),
+            "participacao_pct": round(float(r.get("participacao_pct") or 0), 2),
+            "acumulado_pct": round(float(r.get("acumulado_pct") or 0), 2),
+            "classe_abc": r.get("classe_abc") or "C",
+        }
+        for r in rows[:40]
+    ]
+
+    # Full ranking for table
+    ranking = [
+        {
+            "posicao": int(r.get("posicao") or 0),
+            "id_produto": r.get("id_produto"),
+            "nome_produto": r.get("nome_produto") or "",
+            "nome_grupo": r.get("nome_grupo") or "",
+            "unidade": r.get("unidade") or "",
+            "quantity_kind": r.get("quantity_kind") or "unit",
+            "qtd": float(r.get("qtd") or 0),
+            "faturamento": float(r.get("faturamento") or 0),
+            "custo_total": float(r.get("custo_total") or 0),
+            "margem": float(r.get("margem") or 0),
+            "valor_unitario_medio": float(r.get("valor_unitario_medio") or 0),
+            "participacao_pct": round(float(r.get("participacao_pct") or 0), 2),
+            "acumulado_pct": round(float(r.get("acumulado_pct") or 0), 2),
+            "classe_abc": r.get("classe_abc") or "C",
+        }
+        for r in rows
+    ]
+
+    # Auto-generated insights
+    insights = _abc_build_insights(
+        rows=rows,
+        class_a=class_a,
+        class_b=class_b,
+        class_c=class_c,
+        pct_a=pct_a,
+        pct_b=pct_b,
+        pct_c=pct_c,
+        leader=leader,
+        leader_pct=leader_pct,
+        top5_pct=top5_pct,
+        total_faturamento=total_faturamento,
+    )
+
+    return {
+        "summary": summary,
+        "chart_data": chart_data,
+        "ranking": ranking,
+        "insights": insights,
+        "thresholds": {"a": 80, "b": 95, "c": 100},
+        "source": "realtime",
+    }
+
+
+def _abc_empty_response() -> Dict[str, Any]:
+    return {
+        "summary": {
+            "total_produtos": 0,
+            "total_faturamento": 0,
+            "classe_a_count": 0,
+            "classe_a_pct": 0,
+            "classe_b_count": 0,
+            "classe_b_pct": 0,
+            "classe_c_count": 0,
+            "classe_c_pct": 0,
+            "produto_lider": "",
+            "produto_lider_pct": 0,
+            "produto_lider_faturamento": 0,
+            "concentration": "empty",
+            "concentration_text": "",
+        },
+        "chart_data": [],
+        "ranking": [],
+        "insights": [],
+        "thresholds": {"a": 80, "b": 95, "c": 100},
+        "source": "realtime",
+        "empty": True,
+    }
+
+
+def _abc_build_insights(
+    *,
+    rows: List[Dict[str, Any]],
+    class_a: List[Dict[str, Any]],
+    class_b: List[Dict[str, Any]],
+    class_c: List[Dict[str, Any]],
+    pct_a: float,
+    pct_b: float,
+    pct_c: float,
+    leader: Dict[str, Any],
+    leader_pct: float,
+    top5_pct: float,
+    total_faturamento: float,
+) -> List[Dict[str, str]]:
+    """Generate deterministic insights from ABC data."""
+    insights: List[Dict[str, str]] = []
+
+    # Leader insight
+    leader_name = leader.get("nome_produto") or "Produto"
+    if leader_pct >= 20:
+        insights.append({
+            "type": "leader",
+            "text": f"O produto líder é {leader_name}, com {leader_pct:.1f}% do faturamento do período.",
+        })
+
+    # Class A concentration
+    if class_a:
+        insights.append({
+            "type": "class_a",
+            "text": f"Classe A concentra {pct_a:.1f}% do faturamento com apenas {len(class_a)} produto{'s' if len(class_a) != 1 else ''}.",
+        })
+
+    # Top 5 dependency
+    if top5_pct >= 70:
+        insights.append({
+            "type": "dependency",
+            "text": f"Alta dependência: os 5 principais produtos representam {top5_pct:.1f}% do faturamento.",
+        })
+
+    # Class C review
+    if len(class_c) > 20 and pct_c < 10:
+        insights.append({
+            "type": "class_c",
+            "text": f"Classe C possui {len(class_c)} produtos, mas soma apenas {pct_c:.1f}% do faturamento.",
+        })
+
+    # Class B opportunity
+    if class_b and pct_b >= 10:
+        insights.append({
+            "type": "opportunity",
+            "text": "A Classe B pode indicar oportunidades comerciais para ampliar participação.",
+        })
+
+    # Review suggestion
+    if len(class_c) > 50:
+        insights.append({
+            "type": "review",
+            "text": "Revise produtos Classe C com baixo impacto, principalmente se ocupam espaço operacional.",
+        })
+
+    return insights
+
+
+# ================================================================
 # PAYMENTS
 # ================================================================
 
@@ -1761,6 +2033,7 @@ REALTIME_FUNCTIONS = {
     "dashboard_series",
     "dashboard_home_bundle",
     "sales_overview_bundle",
+    "sales_abc_curve",
     "sales_by_hour",
     "sales_top_products",
     "sales_top_groups",

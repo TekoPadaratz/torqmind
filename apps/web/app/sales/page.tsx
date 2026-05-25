@@ -23,6 +23,7 @@ import {
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import SalesAbcSection from "./SalesAbcSection";
 
 export const dynamic = "force-dynamic";
 
@@ -392,6 +393,8 @@ export default function SalesPage() {
                   />
                 </div>
               ) : null}
+
+              <SalesAbcSection />
             </div>
           </>
         )}

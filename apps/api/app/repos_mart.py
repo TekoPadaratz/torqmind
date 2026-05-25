@@ -2273,6 +2273,86 @@ def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_in
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def sales_abc_curve(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs) -> Dict[str, Any]:
+    """ABC curve from PostgreSQL mart (fallback)."""
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
+    sql = f"""
+      WITH base AS (
+        SELECT
+          id_produto,
+          MAX(produto_nome) AS nome_produto,
+          MAX(grupo_nome) AS nome_grupo,
+          SUM(faturamento)::numeric(18,2) AS faturamento,
+          SUM(qtd)::numeric(18,3) AS qtd,
+          SUM(custo_total)::numeric(18,2) AS custo_total,
+          (SUM(faturamento) - SUM(custo_total))::numeric(18,2) AS margem,
+          CASE WHEN SUM(qtd) > 0 THEN (SUM(faturamento) / SUM(qtd))::numeric(18,4) ELSE 0 END AS valor_unitario_medio
+        FROM mart.agg_produtos_diaria
+        WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+        {where_filial}
+        AND faturamento > 0
+        GROUP BY id_produto
+        HAVING SUM(faturamento) > 0
+      ),
+      ranked AS (
+        SELECT *,
+          ROW_NUMBER() OVER (ORDER BY faturamento DESC, id_produto) AS posicao,
+          faturamento / NULLIF(SUM(faturamento) OVER (), 0) * 100 AS participacao_pct,
+          SUM(faturamento) OVER (ORDER BY faturamento DESC, id_produto ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            / NULLIF(SUM(faturamento) OVER (), 0) * 100 AS acumulado_pct
+        FROM base
+      )
+      SELECT *,
+        CASE WHEN acumulado_pct <= 80 THEN 'A' WHEN acumulado_pct <= 95 THEN 'B' ELSE 'C' END AS classe_abc
+      FROM ranked
+      ORDER BY posicao
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    if not rows:
+        return {
+            "summary": {"total_produtos": 0, "total_faturamento": 0, "classe_a_count": 0, "classe_a_pct": 0, "classe_b_count": 0, "classe_b_pct": 0, "classe_c_count": 0, "classe_c_pct": 0, "produto_lider": "", "produto_lider_pct": 0, "produto_lider_faturamento": 0, "concentration": "empty", "concentration_text": ""},
+            "chart_data": [], "ranking": [], "insights": [], "thresholds": {"a": 80, "b": 95, "c": 100}, "source": "postgres", "empty": True,
+        }
+
+    total_fat = sum(float(r.get("faturamento") or 0) for r in rows)
+    class_a = [r for r in rows if r.get("classe_abc") == "A"]
+    class_b = [r for r in rows if r.get("classe_abc") == "B"]
+    class_c = [r for r in rows if r.get("classe_abc") == "C"]
+    pct_a = sum(float(r.get("faturamento") or 0) for r in class_a) / total_fat * 100 if total_fat else 0
+    pct_b = sum(float(r.get("faturamento") or 0) for r in class_b) / total_fat * 100 if total_fat else 0
+    pct_c = sum(float(r.get("faturamento") or 0) for r in class_c) / total_fat * 100 if total_fat else 0
+    leader = rows[0]
+    leader_pct = float(leader.get("participacao_pct") or 0)
+    top5_pct = sum(float(r.get("participacao_pct") or 0) for r in rows[:5])
+
+    if top5_pct >= 70:
+        conc, conc_text = "high", f"Alta concentração: 5 produtos representam {top5_pct:.1f}% do faturamento."
+    elif len(class_c) > 50 and pct_c < 10:
+        conc, conc_text = "dispersed", f"Mix pulverizado: Classe C tem {len(class_c)} produtos com apenas {pct_c:.1f}% do faturamento."
+    else:
+        conc, conc_text = "healthy", "Concentração saudável do portfólio de produtos."
+
+    def _row_to_chart(r):
+        return {"posicao": int(r.get("posicao") or 0), "nome_produto": r.get("nome_produto") or "", "nome_grupo": r.get("nome_grupo") or "", "faturamento": float(r.get("faturamento") or 0), "qtd": float(r.get("qtd") or 0), "valor_unitario_medio": float(r.get("valor_unitario_medio") or 0), "participacao_pct": round(float(r.get("participacao_pct") or 0), 2), "acumulado_pct": round(float(r.get("acumulado_pct") or 0), 2), "classe_abc": r.get("classe_abc") or "C"}
+
+    def _row_to_ranking(r):
+        return {**_row_to_chart(r), "id_produto": r.get("id_produto"), "unidade": "", "quantity_kind": "unit", "custo_total": float(r.get("custo_total") or 0), "margem": float(r.get("margem") or 0)}
+
+    return {
+        "summary": {"total_produtos": len(rows), "total_faturamento": total_fat, "classe_a_count": len(class_a), "classe_a_pct": round(pct_a, 1), "classe_b_count": len(class_b), "classe_b_pct": round(pct_b, 1), "classe_c_count": len(class_c), "classe_c_pct": round(pct_c, 1), "produto_lider": leader.get("nome_produto") or "", "produto_lider_pct": round(leader_pct, 1), "produto_lider_faturamento": float(leader.get("faturamento") or 0), "concentration": conc, "concentration_text": conc_text},
+        "chart_data": [_row_to_chart(r) for r in rows[:40]],
+        "ranking": [_row_to_ranking(r) for r in rows],
+        "insights": [],
+        "thresholds": {"a": 80, "b": 95, "c": 100},
+        "source": "postgres",
+    }
+
+
 def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
