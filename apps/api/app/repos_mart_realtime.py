@@ -912,31 +912,37 @@ def sales_abc_curve(
     if not rows:
         return _abc_empty_response()
 
+    # Determine the metric field for sort_by
+    metric_field_map = {"faturamento": "faturamento", "quantidade": "qtd", "lucro": "margem"}
+    metric_field = metric_field_map.get(sort_by, "faturamento")
+
     # Build response sections
     total_faturamento = sum(float(r.get("faturamento") or 0) for r in rows)
+    total_metric = sum(float(r.get(metric_field) or 0) for r in rows)
     class_a = [r for r in rows if r.get("classe_abc") == "A"]
     class_b = [r for r in rows if r.get("classe_abc") == "B"]
     class_c = [r for r in rows if r.get("classe_abc") == "C"]
 
-    fat_a = sum(float(r.get("faturamento") or 0) for r in class_a)
-    fat_b = sum(float(r.get("faturamento") or 0) for r in class_b)
-    fat_c = sum(float(r.get("faturamento") or 0) for r in class_c)
+    metric_a = sum(float(r.get(metric_field) or 0) for r in class_a)
+    metric_b = sum(float(r.get(metric_field) or 0) for r in class_b)
+    metric_c = sum(float(r.get(metric_field) or 0) for r in class_c)
 
-    pct_a = (fat_a / total_faturamento * 100) if total_faturamento > 0 else 0
-    pct_b = (fat_b / total_faturamento * 100) if total_faturamento > 0 else 0
-    pct_c = (fat_c / total_faturamento * 100) if total_faturamento > 0 else 0
+    pct_a = (metric_a / total_metric * 100) if total_metric > 0 else 0
+    pct_b = (metric_b / total_metric * 100) if total_metric > 0 else 0
+    pct_c = (metric_c / total_metric * 100) if total_metric > 0 else 0
 
     leader = rows[0] if rows else {}
     leader_pct = float(leader.get("participacao_pct") or 0)
 
     # Concentration insight
+    metric_label = {"faturamento": "faturamento", "quantidade": "quantidade", "lucro": "lucro"}.get(sort_by, "faturamento")
     top5_pct = sum(float(r.get("participacao_pct") or 0) for r in rows[:5])
     if top5_pct >= 70:
         concentration = "high"
-        concentration_text = f"Alta concentração: 5 produtos representam {top5_pct:.1f}% do faturamento."
+        concentration_text = f"Alta concentração: 5 produtos representam {top5_pct:.1f}% do {metric_label}."
     elif len(class_c) > 50 and pct_c < 10:
         concentration = "dispersed"
-        concentration_text = f"Mix pulverizado: Classe C tem {len(class_c)} produtos com apenas {pct_c:.1f}% do faturamento."
+        concentration_text = f"Mix pulverizado: Classe C tem {len(class_c)} produtos com apenas {pct_c:.1f}% do {metric_label}."
     else:
         concentration = "healthy"
         concentration_text = "Concentração saudável do portfólio de produtos."
@@ -966,6 +972,7 @@ def sales_abc_curve(
             "nome_grupo": r.get("nome_grupo") or "",
             "faturamento": float(r.get("faturamento") or 0),
             "qtd": float(r.get("qtd") or 0),
+            "margem": float(r.get("margem") or 0),
             "valor_unitario_medio": float(r.get("valor_unitario_medio") or 0),
             "participacao_pct": round(float(r.get("participacao_pct") or 0), 2),
             "acumulado_pct": round(float(r.get("acumulado_pct") or 0), 2),
