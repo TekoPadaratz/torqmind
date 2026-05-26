@@ -68,7 +68,7 @@ interface AbcData {
   summary: AbcSummary;
   chart_data: AbcChartItem[];
   ranking: AbcRankingItem[];
-  insights: string[];
+  insights: Array<{ type: string; text: string } | string>;
   thresholds: { a: number; b: number; c: number };
   source: string;
   empty?: boolean;
@@ -100,7 +100,7 @@ export default function SalesAbcSection() {
     );
   }
 
-  if (!data || data.empty || !data.chart_data?.length) {
+  if (!data || data.empty || !data.chart_data?.length || !data.summary) {
     return (
       <div className="card col-12" style={{ marginTop: 24 }}>
         <div className="sectionEyebrow">Curva ABC de Produtos</div>
@@ -289,8 +289,10 @@ export default function SalesAbcSection() {
         <div className="card col-12">
           <h2>Insights automáticos</h2>
           <ul style={{ marginTop: 8, paddingLeft: 16 }}>
-            {data.insights.map((text, i) => (
-              <li key={i} className="muted" style={{ marginBottom: 4 }}>{text}</li>
+            {data.insights.map((insight: any, i: number) => (
+              <li key={i} className="muted" style={{ marginBottom: 4 }}>
+                {typeof insight === "string" ? insight : insight?.text || ""}
+              </li>
             ))}
           </ul>
         </div>
