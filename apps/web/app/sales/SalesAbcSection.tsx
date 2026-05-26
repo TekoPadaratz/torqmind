@@ -86,8 +86,8 @@ export default function SalesAbcSection() {
 
   const chartItems = useMemo(() => {
     if (!data?.chart_data) return [];
-    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
-    const limit = isMobile ? 15 : 40;
+    const w = typeof window !== "undefined" ? window.innerWidth : 1200;
+    const limit = w >= 1200 ? 20 : w >= 768 ? 12 : 8;
     return data.chart_data.slice(0, limit);
   }, [data]);
 
