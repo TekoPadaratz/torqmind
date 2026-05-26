@@ -833,6 +833,11 @@ def sales_abc_curve(
     id_filial: Any,
     dt_ini: date,
     dt_fim: date,
+    *,
+    sort_by: str = "faturamento",
+    threshold_a: int = 80,
+    threshold_b: int = 95,
+    exclude_fuel: bool = True,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """ABC curve analysis for products sold in period.
@@ -844,6 +849,16 @@ def sales_abc_curve(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
     product_meta_sql = _sales_product_meta_subquery()
+
+    # Fuel exclusion filter
+    fuel_filter = ""
+    if exclude_fuel:
+        fuel_filter = """
+                AND NOT (lower(nome_grupo) LIKE '%combusti%' OR lower(nome_grupo) LIKE '%gasolina%' OR lower(nome_grupo) LIKE '%diesel%' OR lower(nome_grupo) LIKE '%etanol%' OR lower(nome_grupo) LIKE '%gnv%' OR lower(nome_grupo) LIKE '%gas natural%' OR lower(nome_grupo) LIKE '%alcool%')"""
+
+    # Sort column for ORDER BY
+    sort_col_map = {"faturamento": "fat", "quantidade": "qty", "lucro": "mrg"}
+    sort_col = sort_col_map.get(sort_by, "fat")
 
     # Query with ranking, cumulative % and ABC classification
     rows = query_dict(f"""
@@ -861,18 +876,18 @@ def sales_abc_curve(
             ranked.participacao_pct,
             ranked.acumulado_pct,
             multiIf(
-                ranked.acumulado_pct <= 80, 'A',
-                ranked.acumulado_pct <= 95, 'B',
+                ranked.acumulado_pct <= {threshold_a}, 'A',
+                ranked.acumulado_pct <= {threshold_b}, 'B',
                 'C'
             ) AS classe_abc,
             ranked.posicao
         FROM (
             SELECT
                 *,
-                row_number() OVER (ORDER BY fat DESC, id_produto ASC) AS posicao,
-                toFloat64(fat) / nullIf(toFloat64(sum(fat) OVER ()), 0) * 100 AS participacao_pct,
-                toFloat64(sum(fat) OVER (ORDER BY fat DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
-                    / nullIf(toFloat64(sum(fat) OVER ()), 0) * 100 AS acumulado_pct
+                row_number() OVER (ORDER BY {sort_col} DESC, id_produto ASC) AS posicao,
+                toFloat64({sort_col}) / nullIf(toFloat64(sum({sort_col}) OVER ()), 0) * 100 AS participacao_pct,
+                toFloat64(sum({sort_col}) OVER (ORDER BY {sort_col} DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+                    / nullIf(toFloat64(sum({sort_col}) OVER ()), 0) * 100 AS acumulado_pct
             FROM (
                 SELECT
                     id_produto,
@@ -884,7 +899,7 @@ def sales_abc_curve(
                     toFloat64(sum(faturamento)) - toFloat64(sum(custo_total)) AS mrg,
                     if(sum(qtd) > 0, toFloat64(sum(faturamento)) / toFloat64(sum(qtd)), 0) AS avg_price
                 FROM {MART_RT_DB}.sales_products_rt FINAL
-                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}
                 GROUP BY id_produto, nome_produto, nome_grupo
                 HAVING sum(faturamento) > 0
             )
@@ -1000,7 +1015,8 @@ def sales_abc_curve(
         "chart_data": chart_data,
         "ranking": ranking,
         "insights": insights,
-        "thresholds": {"a": 80, "b": 95, "c": 100},
+        "thresholds": {"a": threshold_a, "b": threshold_b, "c": 100},
+        "sort_by": sort_by,
         "source": "realtime",
     }
 

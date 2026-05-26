@@ -238,6 +238,7 @@ Funcoes ClickHouse implementadas:
 | `sales_peak_hours_signal` | Jarvis/insights | `agg_vendas_hora` | sinal horarios |
 | `sales_declining_products_signal` | Jarvis/insights | `agg_produtos_diaria` | sinal produtos |
 | `jarvis_briefing` | `/bi/jarvis/briefing` | marts analiticas | briefing |
+| `sales_abc_curve` | `/bi/sales/abc-curve` | `sales_products_rt` | curva ABC pareto; suporta sort_by (faturamento/quantidade/lucro), thresholds configuraveis, exclusao de combustiveis |
 
 Funcoes estaticas/definicoes tambem existem em CH: `cash_definitions`, `fraud_definitions`, `finance_definitions`, `risk_model_coverage`.
 
@@ -248,6 +249,7 @@ Funcoes Postgres por desenho:
 - `competitor_pricing_upsert`: escrita OLTP app.
 - `competitor_fuel_product_ids`: dimensao/app para formulario.
 - `goals_today`, `upsert_goal`: app goals.
+- `get_filial_params`, `upsert_filial_params`: parametros configuraveis por filial (thresholds ABC, exclusao de combustivel). Tabela `app.filial_params`.
 - `risk_insights`: app/insights operacionais.
 - `notifications_list`, `notifications_unread_count`, `notification_mark_read`: app notifications.
 

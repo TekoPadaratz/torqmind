@@ -1125,6 +1125,7 @@ def sales_overview(
 def sales_abc_curve(
     dt_ini: date,
     dt_fim: date,
+    sort_by: str = Query("faturamento", pattern="^(faturamento|quantidade|lucro)$"),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
@@ -1134,8 +1135,53 @@ def sales_abc_curve(
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
-    result = repos_mart.sales_abc_curve(role, tenant, filial, dt_ini, dt_fim)
+    from app.repos_mart import get_filial_params
+    params = get_filial_params(role, tenant, filial)
+    result = repos_mart.sales_abc_curve(
+        role, tenant, filial, dt_ini, dt_fim,
+        sort_by=sort_by,
+        threshold_a=params["abc_threshold_a"],
+        threshold_b=params["abc_threshold_b"],
+        exclude_fuel=params["abc_exclude_fuel"],
+    )
     return redact_sensitive(result, claims)
+
+
+# ------------------------
+# Filial Params (ABC thresholds)
+# ------------------------
+
+@router.get("/params/filial")
+def get_filial_params_endpoint(
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    from app.repos_mart import get_filial_params
+    return get_filial_params(role, tenant, filial)
+
+
+@router.put("/params/filial")
+def update_filial_params_endpoint(
+    body: dict,
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    if role not in ("platform_master", "owner"):
+        raise HTTPException(403, "Apenas proprietário pode alterar parâmetros")
+    tenant = claims["id_empresa"]
+    filial = body.get("id_filial")
+    if not filial:
+        raise HTTPException(422, "id_filial obrigatório")
+    a = int(body.get("abc_threshold_a", 80))
+    b = int(body.get("abc_threshold_b", 95))
+    if not (1 <= a < b <= 99):
+        raise HTTPException(422, "Thresholds inválidos: A deve ser < B e ambos entre 1-99")
+    from app.repos_mart import upsert_filial_params
+    upsert_filial_params(role, tenant, int(filial), abc_threshold_a=a, abc_threshold_b=b, abc_exclude_fuel=body.get("abc_exclude_fuel", True))
+    return {"ok": True}
 
 
 # ------------------------

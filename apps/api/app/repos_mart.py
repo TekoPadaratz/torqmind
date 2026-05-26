@@ -7108,3 +7108,35 @@ def customers_summary_paginated(
         "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
         "source": "mart",
     }
+
+
+# ================================================================
+# Filial Params (ABC thresholds, etc.)
+# ================================================================
+
+def get_filial_params(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    """Return ABC params for a filial, or defaults if not configured."""
+    defaults = {"abc_threshold_a": 80, "abc_threshold_b": 95, "abc_exclude_fuel": True}
+    if not id_filial:
+        return defaults
+    sql = "SELECT abc_threshold_a, abc_threshold_b, abc_exclude_fuel FROM app.filial_params WHERE id_empresa = %s AND id_filial = %s"
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, [id_empresa, id_filial]).fetchone()
+    if not row:
+        return defaults
+    return {"abc_threshold_a": int(row[0]), "abc_threshold_b": int(row[1]), "abc_exclude_fuel": bool(row[2])}
+
+
+def upsert_filial_params(role: str, id_empresa: int, id_filial: int, *, abc_threshold_a: int, abc_threshold_b: int, abc_exclude_fuel: bool) -> None:
+    """Insert or update filial params (ABC thresholds)."""
+    sql = """
+        INSERT INTO app.filial_params (id_empresa, id_filial, abc_threshold_a, abc_threshold_b, abc_exclude_fuel, updated_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (id_empresa, id_filial)
+        DO UPDATE SET abc_threshold_a = EXCLUDED.abc_threshold_a,
+                      abc_threshold_b = EXCLUDED.abc_threshold_b,
+                      abc_exclude_fuel = EXCLUDED.abc_exclude_fuel,
+                      updated_at = now()
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        conn.execute(sql, [id_empresa, id_filial, abc_threshold_a, abc_threshold_b, abc_exclude_fuel])

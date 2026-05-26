@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -15,6 +15,7 @@ import {
 import EmptyState from "../components/ui/EmptyState";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { readCachedSession } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 const ABC_COLORS: Record<string, string> = {
@@ -70,18 +71,53 @@ interface AbcData {
   ranking: AbcRankingItem[];
   insights: Array<{ type: string; text: string } | string>;
   thresholds: { a: number; b: number; c: number };
+  sort_by?: string;
   source: string;
   empty?: boolean;
 }
 
 export default function SalesAbcSection() {
   const scope = useScopeQuery();
+  const [sortBy, setSortBy] = useState<"faturamento" | "quantidade" | "lucro">("faturamento");
+  const [params, setParams] = useState({ abc_threshold_a: 80, abc_threshold_b: 95, abc_exclude_fuel: true });
+
+  // Fetch params on scope change
+  useEffect(() => {
+    const fetchParams = async () => {
+      try {
+        const session = readCachedSession();
+        if (!session?.token) return;
+        const scopeParams = buildScopeParams(scope);
+        const resp = await fetch(`/api/bi/params/filial?${scopeParams}`, {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+        if (resp.ok) {
+          const p = await resp.json();
+          setParams(p);
+        }
+      } catch { /* ignore */ }
+    };
+    fetchParams();
+  }, [scope]);
+
+  const saveParams = useCallback(async () => {
+    try {
+      const session = readCachedSession();
+      if (!session?.token || !scope.id_filial) return;
+      await fetch(`/api/bi/params/filial`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...params, id_filial: scope.id_filial }),
+      });
+    } catch { /* ignore */ }
+  }, [params, scope]);
+
   const { data, loading } = useBiScopeData<AbcData>({
-    moduleKey: "sales_abc_curve",
+    moduleKey: `sales_abc_curve_${sortBy}`,
     scope,
     errorMessage: "Falha ao carregar Curva ABC",
     buildRequestUrl: (currentScope) =>
-      `/bi/sales/abc-curve?${buildScopeParams(currentScope).toString()}`,
+      `/bi/sales/abc-curve?sort_by=${sortBy}&${buildScopeParams(currentScope).toString()}`,
   });
 
   const chartItems = useMemo(() => {
@@ -121,7 +157,7 @@ export default function SalesAbcSection() {
         <div className="sectionEyebrow">Gestão de Produtos</div>
         <h2 style={{ marginTop: 4 }}>Curva ABC — Análise de Pareto</h2>
         <div className="muted" style={{ marginTop: 8 }}>
-          Classifica produtos por contribuição ao faturamento. Classe A (80%), B (80-95%), C (95-100%).
+          Classifica produtos por contribuição ao {sortBy}. Classe A (até {params.abc_threshold_a}%), B ({params.abc_threshold_a}–{params.abc_threshold_b}%), C ({params.abc_threshold_b}–100%).
         </div>
       </div>
 
@@ -136,6 +172,22 @@ export default function SalesAbcSection() {
       <div className="card kpi col-3">
         <div className="label">
           <span style={{ color: ABC_COLORS.A, fontWeight: 700 }}>■</span> Classe A
+          <span className="muted" style={{ marginLeft: 4, fontSize: 10 }}>
+            (até{" "}
+            {scope.id_filial ? (
+              <input
+                type="number"
+                value={params.abc_threshold_a}
+                onChange={(e) => setParams(p => ({ ...p, abc_threshold_a: Math.max(1, Math.min(98, parseInt(e.target.value) || 80)) }))}
+                onBlur={saveParams}
+                style={{ width: 32, background: "transparent", border: "1px solid #555", borderRadius: 3, color: "#fff", textAlign: "center", fontSize: 10, padding: "1px 2px" }}
+                min={1} max={98}
+              />
+            ) : (
+              <span>{params.abc_threshold_a}</span>
+            )}
+            %)
+          </span>
         </div>
         <div className="value">{summary.classe_a_count} prod.</div>
         <div className="muted" style={{ marginTop: 4 }}>
@@ -145,6 +197,22 @@ export default function SalesAbcSection() {
       <div className="card kpi col-3">
         <div className="label">
           <span style={{ color: ABC_COLORS.B, fontWeight: 700 }}>■</span> Classe B
+          <span className="muted" style={{ marginLeft: 4, fontSize: 10 }}>
+            ({params.abc_threshold_a}–
+            {scope.id_filial ? (
+              <input
+                type="number"
+                value={params.abc_threshold_b}
+                onChange={(e) => setParams(p => ({ ...p, abc_threshold_b: Math.max(p.abc_threshold_a + 1, Math.min(99, parseInt(e.target.value) || 95)) }))}
+                onBlur={saveParams}
+                style={{ width: 32, background: "transparent", border: "1px solid #555", borderRadius: 3, color: "#fff", textAlign: "center", fontSize: 10, padding: "1px 2px" }}
+                min={params.abc_threshold_a + 1} max={99}
+              />
+            ) : (
+              <span>{params.abc_threshold_b}</span>
+            )}
+            %)
+          </span>
         </div>
         <div className="value">{summary.classe_b_count} prod.</div>
         <div className="muted" style={{ marginTop: 4 }}>
@@ -154,6 +222,9 @@ export default function SalesAbcSection() {
       <div className="card kpi col-3">
         <div className="label">
           <span style={{ color: ABC_COLORS.C, fontWeight: 700 }}>■</span> Classe C
+          <span className="muted" style={{ marginLeft: 4, fontSize: 10 }}>
+            ({params.abc_threshold_b}–100%)
+          </span>
         </div>
         <div className="value">{summary.classe_c_count} prod.</div>
         <div className="muted" style={{ marginTop: 4 }}>
@@ -178,7 +249,28 @@ export default function SalesAbcSection() {
       <div className="card col-12 chartCard" style={{ minHeight: 380 }}>
         <h2>Gráfico de Pareto</h2>
         <div className="muted" style={{ marginTop: 4 }}>
-          Barras = faturamento por produto | Linha = % acumulado
+          Barras = {sortBy === "faturamento" ? "faturamento" : sortBy === "quantidade" ? "quantidade" : "lucro"} por produto | Linha = % acumulado
+        </div>
+        <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
+          {(["faturamento", "quantidade", "lucro"] as const).map((opt) => (
+            <button
+              key={opt}
+              onClick={() => setSortBy(opt)}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 6,
+                border: "1px solid #444",
+                background: sortBy === opt ? "#3b82f6" : "transparent",
+                color: sortBy === opt ? "#fff" : "#bbb",
+                fontWeight: sortBy === opt ? 600 : 400,
+                fontSize: 12,
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {opt === "faturamento" ? "Faturamento" : opt === "quantidade" ? "Quantidade" : "Lucro"}
+            </button>
+          ))}
         </div>
         <div style={{ height: 300, marginTop: 12 }}>
           <ResponsiveContainer width="100%" height="100%">
