@@ -1136,7 +1136,8 @@ def sales_abc_curve(
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
     from app.repos_mart import get_filial_params
-    params = get_filial_params(role, tenant, filial)
+    single_filial = filial if isinstance(filial, int) else None
+    params = get_filial_params(role, tenant, single_filial)
     result = repos_mart.sales_abc_curve(
         role, tenant, filial, dt_ini, dt_fim,
         sort_by=sort_by,
