@@ -1126,6 +1126,8 @@ def sales_abc_curve(
     dt_ini: date,
     dt_fim: date,
     sort_by: str = Query("faturamento", pattern="^(faturamento|quantidade|lucro)$"),
+    threshold_a: Optional[int] = Query(None, ge=1, le=98),
+    threshold_b: Optional[int] = Query(None, ge=2, le=99),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
@@ -1138,11 +1140,14 @@ def sales_abc_curve(
     from app.repos_mart import get_filial_params
     single_filial = filial if isinstance(filial, int) else None
     params = get_filial_params(role, tenant, single_filial)
+    # Query params override DB values (allows immediate reclassification after save)
+    effective_a = threshold_a if threshold_a is not None else params["abc_threshold_a"]
+    effective_b = threshold_b if threshold_b is not None else params["abc_threshold_b"]
     result = repos_mart.sales_abc_curve(
         role, tenant, filial, dt_ini, dt_fim,
         sort_by=sort_by,
-        threshold_a=params["abc_threshold_a"],
-        threshold_b=params["abc_threshold_b"],
+        threshold_a=effective_a,
+        threshold_b=effective_b,
         exclude_fuel=params["abc_exclude_fuel"],
     )
     return redact_sensitive(result, claims)

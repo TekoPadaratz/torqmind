@@ -135,24 +135,25 @@ export default function SalesAbcSection() {
     // Save to backend
     try {
       const session = readCachedSession();
-      if (!session?.token || !scope.id_filial) return;
-      await fetch(`/api/bi/params/filial`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ...newParams, id_filial: scope.id_filial }),
-      });
+      if (session?.token && scope.id_filial) {
+        await fetch(`/api/bi/params/filial`, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ ...newParams, id_filial: scope.id_filial }),
+        });
+      }
     } catch { /* ignore */ }
 
-    // Trigger re-fetch of ABC data
+    // Always trigger re-fetch of ABC data with new thresholds
     setRefreshKey((k) => k + 1);
   }, [editA, editB, params, scope]);
 
   const { data, loading } = useBiScopeData<AbcData>({
-    moduleKey: `sales_abc_curve_${sortBy}_${refreshKey}`,
+    moduleKey: `sales_abc_curve_${sortBy}_${params.abc_threshold_a}_${params.abc_threshold_b}_${refreshKey}`,
     scope,
     errorMessage: "Falha ao carregar Curva ABC",
     buildRequestUrl: (currentScope) =>
-      `/bi/sales/abc-curve?sort_by=${sortBy}&${buildScopeParams(currentScope).toString()}`,
+      `/bi/sales/abc-curve?sort_by=${sortBy}&threshold_a=${params.abc_threshold_a}&threshold_b=${params.abc_threshold_b}&${buildScopeParams(currentScope).toString()}`,
   });
 
   const chartItems = useMemo(() => {
