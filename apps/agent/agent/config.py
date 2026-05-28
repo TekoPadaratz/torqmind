@@ -78,6 +78,13 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "full_refresh": True,
         "enabled": False,
     },
+    "planodecontas": {
+        "table": "dbo.PLANODECONTAS",
+        "watermark_column": "ID_PLANODECONTAS",
+        "watermark_order_by": "ID_PLANODECONTAS, ID_FILIAL",
+        "full_refresh": True,
+        "enabled": True,
+    },
     "localvendas": {
         "table": "dbo.LOCALVENDAS",
         "watermark_column": "ID_LOCALVENDAS",
@@ -356,6 +363,20 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
             "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASPAGARBAIXA c"
+        ),
+        "enabled": True,
+    },
+    "movlctos": {
+        "table": "dbo.MOVLCTOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(m.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVLCTOS m"
         ),
         "enabled": True,
     },

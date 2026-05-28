@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+# deploy/scripts/prod-profit-marts-refresh.sh
+# Refreshes the profit management ClickHouse marts from PostgreSQL DW.
+# Usage: ENV_FILE=/etc/torqmind/prod.app.env ./deploy/scripts/prod-profit-marts-refresh.sh [--full]
+set -euo pipefail
+
+ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.app.env}"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a; source "$ENV_FILE"; set +a
+fi
+
+CH_HOST="${CLICKHOUSE_HOST:-localhost}"
+CH_PORT="${CLICKHOUSE_PORT:-8123}"
+CH_USER="${CLICKHOUSE_USER:-default}"
+CH_PASS="${CLICKHOUSE_PASSWORD:-}"
+PG_H="${CLICKHOUSE_PG_HOST:-172.30.0.8}"
+PG_P="${CLICKHOUSE_PG_PORT:-5432}"
+PG_DB="${PG_DATABASE:-torqmind}"
+PG_U="${PG_USER:-torqmind}"
+PG_W="${PG_PASSWORD:-}"
+
+MODE="${1:-incremental}"
+ID_EMPRESA="${ID_EMPRESA:-1}"
+
+echo "=== Profit Marts Refresh (mode=$MODE, empresa=$ID_EMPRESA) ==="
+echo "ClickHouse: $CH_HOST:$CH_PORT"
+echo "PostgreSQL: $PG_H:$PG_P/$PG_DB"
+
+ch() {
+  clickhouse-client --host="$CH_HOST" --port="${CLICKHOUSE_NATIVE_PORT:-9000}" \
+    --user="$CH_USER" --password="$CH_PASS" --query="$1"
+}
+
+ch_http() {
+  curl -sS "http://${CH_HOST}:${CH_PORT}/?user=${CH_USER}&password=${CH_PASS}" \
+    --data-binary "$1"
+}
+
+# ─── Step 1: Determine reference months ───────────────────────────────
+echo ""
+echo "--- Step 1: Determining reference months ---"
+
+# Get available months from PostgreSQL fact_despesa_operacional
+MONTHS=$(PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" \
+  --no-align -t -c "
+  SELECT DISTINCT ano_mes_competencia
+  FROM dw.fact_despesa_operacional
+  WHERE id_empresa = $ID_EMPRESA AND ano_mes_competencia >= 202401
+  ORDER BY ano_mes_competencia DESC
+  LIMIT 12
+")
+
+if [[ -z "$MONTHS" ]]; then
+  echo "WARN: No expense data found. Will refresh sales-only marts."
+fi
+
+echo "Months with expense data: $(echo $MONTHS | tr '\n' ' ')"
+
+# ─── Step 2: Refresh profit_dre_mensal ────────────────────────────────
+echo ""
+echo "--- Step 2: Refreshing profit_dre_mensal ---"
+
+if [[ "$MODE" == "--full" ]] || [[ "$MODE" == "full" ]]; then
+  ch_http "ALTER TABLE torqmind_mart_rt.profit_dre_mensal DELETE WHERE id_empresa = $ID_EMPRESA" || true
+  ch_http "ALTER TABLE torqmind_mart_rt.profit_despesas_mensal DELETE WHERE id_empresa = $ID_EMPRESA" || true
+  ch_http "ALTER TABLE torqmind_mart_rt.profit_produto_mensal DELETE WHERE id_empresa = $ID_EMPRESA" || true
+  ch_http "ALTER TABLE torqmind_mart_rt.profit_resumo_filial DELETE WHERE id_empresa = $ID_EMPRESA" || true
+  echo "Full mode: cleared existing data for empresa $ID_EMPRESA"
+fi
+
+# Insert DRE from PostgreSQL
+ch_http "
+INSERT INTO torqmind_mart_rt.profit_dre_mensal
+SELECT
+    v.id_empresa,
+    v.id_filial,
+    v.ano_mes,
+    -- Receitas por setor
+    v.receita_bruta_total,
+    v.receita_conveniencia,
+    v.receita_pista,
+    v.receita_automotivo,
+    v.receita_cigarro,
+    v.receita_servico,
+    -- Impostos (placeholder - configurable)
+    0 AS impostos_sobre_vendas,
+    v.receita_bruta_total AS receita_liquida_gerencial,
+    -- CMV
+    v.cmv_total,
+    v.cmv_conveniencia,
+    v.cmv_pista,
+    -- Margem bruta
+    v.receita_bruta_total - v.cmv_total AS margem_bruta,
+    CASE WHEN v.receita_bruta_total > 0
+         THEN (v.receita_bruta_total - v.cmv_total) / v.receita_bruta_total
+         ELSE 0 END AS margem_bruta_pct,
+    -- Despesas
+    COALESCE(d.desp_pessoal, 0),
+    COALESCE(d.desp_comercial, 0),
+    COALESCE(d.desp_administrativa, 0),
+    COALESCE(d.desp_financeira, 0),
+    COALESCE(d.desp_tributaria_operacional, 0),
+    COALESCE(d.desp_excepcional, 0),
+    COALESCE(d.desp_rateavel, 0),
+    COALESCE(d.desp_total, 0),
+    -- Resultado
+    v.receita_bruta_total - v.cmv_total - COALESCE(d.desp_total, 0) AS resultado_operacional,
+    v.receita_bruta_total - v.cmv_total - COALESCE(d.desp_total, 0) AS lucro_gerencial_estimado,
+    CASE WHEN v.receita_bruta_total > 0
+         THEN (v.receita_bruta_total - v.cmv_total - COALESCE(d.desp_total, 0)) / v.receita_bruta_total
+         ELSE 0 END AS lucro_gerencial_pct,
+    COALESCE(d.qtd_lancamentos, 0),
+    v.qtd_produtos,
+    now()
+FROM postgresql('${PG_H}:${PG_P}', '${PG_DB}', '(
+  SELECT
+    fvi.id_empresa,
+    fvi.id_filial,
+    (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int) AS ano_mes,
+    SUM(fvi.total)::numeric(18,2) AS receita_bruta_total,
+    SUM(CASE WHEN dp.setor_gerencial = ''conveniencia'' THEN fvi.total ELSE 0 END)::numeric(18,2) AS receita_conveniencia,
+    SUM(CASE WHEN dp.setor_gerencial = ''combustivel'' THEN fvi.total ELSE 0 END)::numeric(18,2) AS receita_pista,
+    SUM(CASE WHEN dp.setor_gerencial = ''automotivo'' THEN fvi.total ELSE 0 END)::numeric(18,2) AS receita_automotivo,
+    SUM(CASE WHEN dp.setor_gerencial = ''cigarro'' THEN fvi.total ELSE 0 END)::numeric(18,2) AS receita_cigarro,
+    SUM(CASE WHEN dp.setor_gerencial = ''servico'' THEN fvi.total ELSE 0 END)::numeric(18,2) AS receita_servico,
+    SUM(fvi.custo_total)::numeric(18,2) AS cmv_total,
+    SUM(CASE WHEN dp.setor_gerencial = ''conveniencia'' THEN fvi.custo_total ELSE 0 END)::numeric(18,2) AS cmv_conveniencia,
+    SUM(CASE WHEN dp.setor_gerencial = ''combustivel'' THEN fvi.custo_total ELSE 0 END)::numeric(18,2) AS cmv_pista,
+    COUNT(DISTINCT fvi.id_produto)::int AS qtd_produtos
+  FROM dw.fact_venda_item fvi
+  LEFT JOIN dw.dim_produto dp ON dp.id_empresa = fvi.id_empresa AND dp.id_produto = fvi.id_produto
+  WHERE fvi.id_empresa = ${ID_EMPRESA}
+    AND fvi.cancelado = false
+    AND fvi.data_key >= ''2024-01-01''::date
+    AND fvi.qtd > 0
+  GROUP BY fvi.id_empresa, fvi.id_filial, (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int)
+)', '${PG_U}', '${PG_W}') AS v
+LEFT JOIN postgresql('${PG_H}:${PG_P}', '${PG_DB}', '(
+  SELECT
+    id_empresa, id_filial, ano_mes_competencia AS ano_mes,
+    SUM(CASE WHEN classificacao_gerencial = ''pessoal'' THEN valor ELSE 0 END)::numeric(18,2) AS desp_pessoal,
+    SUM(CASE WHEN classificacao_gerencial = ''comercial'' THEN valor ELSE 0 END)::numeric(18,2) AS desp_comercial,
+    SUM(CASE WHEN classificacao_gerencial = ''administrativo'' THEN valor ELSE 0 END)::numeric(18,2) AS desp_administrativa,
+    SUM(CASE WHEN classificacao_gerencial = ''financeiro'' THEN valor ELSE 0 END)::numeric(18,2) AS desp_financeira,
+    SUM(CASE WHEN is_tributo_operacional THEN valor ELSE 0 END)::numeric(18,2) AS desp_tributaria_operacional,
+    SUM(CASE WHEN is_excepcional THEN valor ELSE 0 END)::numeric(18,2) AS desp_excepcional,
+    SUM(CASE WHEN entra_rateio_produto THEN valor ELSE 0 END)::numeric(18,2) AS desp_rateavel,
+    SUM(valor)::numeric(18,2) AS desp_total,
+    COUNT(*)::int AS qtd_lancamentos
+  FROM dw.fact_despesa_operacional
+  WHERE id_empresa = ${ID_EMPRESA} AND ano_mes_competencia >= 202401
+  GROUP BY id_empresa, id_filial, ano_mes_competencia
+)', '${PG_U}', '${PG_W}') AS d
+ON d.id_empresa = v.id_empresa AND d.id_filial = v.id_filial AND d.ano_mes = v.ano_mes
+"
+
+DRE_COUNT=$(ch_http "SELECT count() FROM torqmind_mart_rt.profit_dre_mensal WHERE id_empresa = $ID_EMPRESA")
+echo "profit_dre_mensal rows: $DRE_COUNT"
+
+# ─── Step 3: Refresh profit_despesas_mensal ───────────────────────────
+echo ""
+echo "--- Step 3: Refreshing profit_despesas_mensal ---"
+
+ch_http "
+INSERT INTO torqmind_mart_rt.profit_despesas_mensal
+SELECT
+    id_empresa,
+    id_filial,
+    ano_mes_competencia AS ano_mes,
+    classificacao_gerencial,
+    codigo_plano,
+    nome_plano,
+    centro_custo_gerencial,
+    SUM(valor) AS valor_total,
+    COUNT(*) AS qtd_lancamentos,
+    SUM(CASE WHEN tipo_conta = 0 THEN valor ELSE 0 END) AS valor_tipo_0,
+    SUM(CASE WHEN tipo_conta = 1 THEN valor ELSE 0 END) AS valor_tipo_1,
+    SUM(CASE WHEN entra_rateio_produto THEN valor ELSE 0 END) AS valor_rateavel,
+    SUM(CASE WHEN NOT entra_rateio_produto THEN valor ELSE 0 END) AS valor_nao_rateavel,
+    0 AS percentual_sobre_receita,
+    0 AS percentual_sobre_despesa_total,
+    max(CASE WHEN entra_rateio_produto THEN 1 ELSE 0 END) AS entra_rateio_produto,
+    max(CASE WHEN is_excepcional THEN 1 ELSE 0 END) AS is_excepcional,
+    max(CASE WHEN is_financeiro THEN 1 ELSE 0 END) AS is_financeiro,
+    now()
+FROM postgresql('${PG_H}:${PG_P}', '${PG_DB}', 'dw.fact_despesa_operacional', '${PG_U}', '${PG_W}')
+WHERE id_empresa = $ID_EMPRESA AND ano_mes_competencia >= 202401
+GROUP BY id_empresa, id_filial, ano_mes_competencia, classificacao_gerencial, codigo_plano, nome_plano, centro_custo_gerencial
+"
+
+DESP_COUNT=$(ch_http "SELECT count() FROM torqmind_mart_rt.profit_despesas_mensal WHERE id_empresa = $ID_EMPRESA")
+echo "profit_despesas_mensal rows: $DESP_COUNT"
+
+# ─── Step 4: Refresh profit_produto_mensal ────────────────────────────
+echo ""
+echo "--- Step 4: Refreshing profit_produto_mensal ---"
+
+ch_http "
+INSERT INTO torqmind_mart_rt.profit_produto_mensal
+SELECT
+    p.id_empresa,
+    p.id_filial,
+    p.ano_mes,
+    p.id_produto,
+    p.nome_produto,
+    p.id_grupo_produto,
+    p.nome_grupo_produto,
+    p.setor_gerencial,
+    CASE WHEN p.setor_gerencial IN ('conveniencia','automotivo','cigarro') THEN 1 ELSE 0 END AS entra_simulador_reajuste,
+    p.qtd_vendida,
+    p.receita,
+    p.preco_medio,
+    p.custo_medio,
+    p.cmv,
+    p.margem_bruta,
+    p.margem_bruta_pct,
+    CASE WHEN p.receita_setor > 0 THEN p.receita / p.receita_setor ELSE 0 END AS participacao_receita_setor,
+    -- Despesa rateada = despesa rateavel filial * (receita produto / receita total filial)
+    CASE WHEN p.receita_total_filial > 0
+         THEN p.desp_rateavel_filial * (p.receita / p.receita_total_filial)
+         ELSE 0 END AS desp_operacional_rateada,
+    -- Despesa unitaria
+    CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0
+         THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida
+         ELSE 0 END AS desp_operacional_unitaria,
+    -- Lucro gerencial = receita - cmv - desp_rateada
+    p.receita - p.cmv - (CASE WHEN p.receita_total_filial > 0 THEN p.desp_rateavel_filial * (p.receita / p.receita_total_filial) ELSE 0 END) AS lucro_gerencial_estimado,
+    -- Margem gerencial %
+    CASE WHEN p.receita > 0
+         THEN (p.receita - p.cmv - (CASE WHEN p.receita_total_filial > 0 THEN p.desp_rateavel_filial * (p.receita / p.receita_total_filial) ELSE 0 END)) / p.receita
+         ELSE 0 END AS margem_gerencial_pct,
+    -- Markup real
+    CASE WHEN (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END)) > 0
+         THEN p.preco_medio / (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+         ELSE 0 END AS markup_real,
+    -- Preco minimo = custo + desp_unitaria
+    p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END) AS preco_minimo_saudavel,
+    -- Preco ideal = preco_minimo / (1 - margem_desejada)
+    (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+        / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30
+                     WHEN p.setor_gerencial = 'automotivo' THEN 0.30
+                     WHEN p.setor_gerencial = 'cigarro' THEN 0.12
+                     WHEN p.setor_gerencial = 'combustivel' THEN 0.08
+                     ELSE 0.25 END) AS preco_ideal_sugerido,
+    -- Reajuste sugerido
+    greatest(0,
+        ((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+        / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30
+                     WHEN p.setor_gerencial = 'automotivo' THEN 0.30
+                     WHEN p.setor_gerencial = 'cigarro' THEN 0.12
+                     WHEN p.setor_gerencial = 'combustivel' THEN 0.08
+                     ELSE 0.25 END))
+        - p.preco_medio
+    ) AS reajuste_sugerido_valor,
+    -- Reajuste %
+    CASE WHEN p.preco_medio > 0 THEN greatest(0,
+        (((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+        / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30
+                     WHEN p.setor_gerencial = 'automotivo' THEN 0.30
+                     WHEN p.setor_gerencial = 'cigarro' THEN 0.12
+                     WHEN p.setor_gerencial = 'combustivel' THEN 0.08
+                     ELSE 0.25 END))
+        - p.preco_medio) / p.preco_medio
+    ) ELSE 0 END AS reajuste_sugerido_pct,
+    -- Qtd mes anterior (placeholder - same month for now)
+    p.qtd_vendida AS qtd_mes_anterior,
+    -- Impacto 60d = reajuste * qtd * 2
+    greatest(0,
+        ((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+        / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30
+                     WHEN p.setor_gerencial = 'automotivo' THEN 0.30
+                     WHEN p.setor_gerencial = 'cigarro' THEN 0.12
+                     WHEN p.setor_gerencial = 'combustivel' THEN 0.08
+                     ELSE 0.25 END))
+        - p.preco_medio
+    ) * p.qtd_vendida * 2 AS impacto_estimado_60d,
+    -- Status
+    CASE
+        WHEN p.custo_medio = 0 THEN 'sem_custo'
+        WHEN p.preco_medio < (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+            THEN 'abaixo_minimo'
+        WHEN p.preco_medio < ((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+            / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30
+                         WHEN p.setor_gerencial = 'automotivo' THEN 0.30
+                         WHEN p.setor_gerencial = 'cigarro' THEN 0.12
+                         WHEN p.setor_gerencial = 'combustivel' THEN 0.08
+                         ELSE 0.25 END))
+            THEN 'abaixo_ideal'
+        ELSE 'saudavel'
+    END AS status_preco,
+    -- Recomendacao
+    CASE
+        WHEN p.custo_medio = 0 THEN 'Custo indisponível'
+        WHEN p.preco_medio < (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+            THEN 'Preço abaixo do custo operacional'
+        WHEN p.preco_medio < ((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
+            / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30 WHEN p.setor_gerencial = 'automotivo' THEN 0.30 WHEN p.setor_gerencial = 'cigarro' THEN 0.12 WHEN p.setor_gerencial = 'combustivel' THEN 0.08 ELSE 0.25 END))
+            THEN 'Reajuste sugerido para atingir margem ideal'
+        ELSE 'Preço saudável'
+    END AS recomendacao_curta,
+    now()
+FROM postgresql('${PG_H}:${PG_P}', '${PG_DB}', '(
+  SELECT
+    fvi.id_empresa,
+    fvi.id_filial,
+    (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int) AS ano_mes,
+    fvi.id_produto,
+    COALESCE(dp.nome, ''Produto ''||fvi.id_produto) AS nome_produto,
+    COALESCE(dp.id_grupo_produto, 0) AS id_grupo_produto,
+    COALESCE(gp.nome, ''Grupo ''||COALESCE(dp.id_grupo_produto,0)) AS nome_grupo_produto,
+    COALESCE(
+      CASE
+        WHEN dp.id_grupo_produto = 1 THEN ''combustivel''
+        WHEN dp.id_grupo_produto IN (2,4,7,8,9,16,39) THEN ''automotivo''
+        WHEN dp.id_grupo_produto = 10 THEN ''cigarro''
+        WHEN dp.id_grupo_produto IN (5,35) THEN ''servico''
+        WHEN dp.id_grupo_produto IN (6,28,32,38,42) THEN ''interno''
+        WHEN dp.id_grupo_produto IN (14,15,18,12,13,11,17,21,37,40,41,19,20) THEN ''conveniencia''
+        ELSE ''outros''
+      END, ''outros''
+    ) AS setor_gerencial,
+    SUM(fvi.qtd)::numeric(18,3) AS qtd_vendida,
+    SUM(fvi.total)::numeric(18,2) AS receita,
+    CASE WHEN SUM(fvi.qtd) > 0 THEN (SUM(fvi.total) / SUM(fvi.qtd))::numeric(18,4) ELSE 0 END AS preco_medio,
+    CASE WHEN SUM(fvi.qtd) > 0 THEN (SUM(fvi.custo_total) / SUM(fvi.qtd))::numeric(18,4) ELSE 0 END AS custo_medio,
+    SUM(fvi.custo_total)::numeric(18,2) AS cmv,
+    (SUM(fvi.total) - SUM(fvi.custo_total))::numeric(18,2) AS margem_bruta,
+    CASE WHEN SUM(fvi.total) > 0 THEN ((SUM(fvi.total) - SUM(fvi.custo_total)) / SUM(fvi.total))::numeric(8,4) ELSE 0 END AS margem_bruta_pct,
+    -- Receita do setor
+    SUM(SUM(fvi.total)) OVER (PARTITION BY fvi.id_empresa, fvi.id_filial, (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int),
+      CASE
+        WHEN dp.id_grupo_produto = 1 THEN ''combustivel''
+        WHEN dp.id_grupo_produto IN (2,4,7,8,9,16,39) THEN ''automotivo''
+        WHEN dp.id_grupo_produto = 10 THEN ''cigarro''
+        WHEN dp.id_grupo_produto IN (5,35) THEN ''servico''
+        WHEN dp.id_grupo_produto IN (6,28,32,38,42) THEN ''interno''
+        WHEN dp.id_grupo_produto IN (14,15,18,12,13,11,17,21,37,40,41,19,20) THEN ''conveniencia''
+        ELSE ''outros''
+      END)::numeric(18,2) AS receita_setor,
+    -- Receita total filial
+    SUM(SUM(fvi.total)) OVER (PARTITION BY fvi.id_empresa, fvi.id_filial, (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int))::numeric(18,2) AS receita_total_filial,
+    -- Despesa rateavel da filial (join com despesas)
+    COALESCE((SELECT SUM(d.valor)::numeric(18,2) FROM dw.fact_despesa_operacional d WHERE d.id_empresa = fvi.id_empresa AND d.id_filial = fvi.id_filial AND d.ano_mes_competencia = (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int) AND d.entra_rateio_produto = true), 0) AS desp_rateavel_filial
+  FROM dw.fact_venda_item fvi
+  LEFT JOIN dw.dim_produto dp ON dp.id_empresa = fvi.id_empresa AND dp.id_produto = fvi.id_produto
+  LEFT JOIN dw.dim_grupo_produto gp ON gp.id_empresa = fvi.id_empresa AND gp.id_grupo_produto = dp.id_grupo_produto
+  WHERE fvi.id_empresa = ${ID_EMPRESA}
+    AND fvi.cancelado = false
+    AND fvi.data_key >= ''2024-01-01''::date
+    AND fvi.qtd > 0
+    AND COALESCE(
+      CASE
+        WHEN dp.id_grupo_produto IN (6,28,32,38,42) THEN ''interno''
+        ELSE ''ok''
+      END, ''ok'') != ''interno''
+  GROUP BY fvi.id_empresa, fvi.id_filial, (EXTRACT(YEAR FROM fvi.data_key)::int * 100 + EXTRACT(MONTH FROM fvi.data_key)::int), fvi.id_produto, dp.nome, dp.id_grupo_produto, gp.nome,
+    CASE
+      WHEN dp.id_grupo_produto = 1 THEN ''combustivel''
+      WHEN dp.id_grupo_produto IN (2,4,7,8,9,16,39) THEN ''automotivo''
+      WHEN dp.id_grupo_produto = 10 THEN ''cigarro''
+      WHEN dp.id_grupo_produto IN (5,35) THEN ''servico''
+      WHEN dp.id_grupo_produto IN (6,28,32,38,42) THEN ''interno''
+      WHEN dp.id_grupo_produto IN (14,15,18,12,13,11,17,21,37,40,41,19,20) THEN ''conveniencia''
+      ELSE ''outros''
+    END
+)', '${PG_U}', '${PG_W}') AS p
+"
+
+PROD_COUNT=$(ch_http "SELECT count() FROM torqmind_mart_rt.profit_produto_mensal WHERE id_empresa = $ID_EMPRESA")
+echo "profit_produto_mensal rows: $PROD_COUNT"
+
+# ─── Step 5: Refresh profit_resumo_filial ─────────────────────────────
+echo ""
+echo "--- Step 5: Refreshing profit_resumo_filial ---"
+
+ch_http "
+INSERT INTO torqmind_mart_rt.profit_resumo_filial
+SELECT
+    id_empresa,
+    id_filial,
+    ano_mes AS ano_mes_referencia,
+    receita_bruta_total AS receita_total,
+    lucro_gerencial_estimado,
+    lucro_gerencial_pct AS margem_gerencial_pct,
+    desp_operacional_total,
+    CASE WHEN receita_bruta_total > 0 THEN desp_operacional_total / receita_bruta_total ELSE 0 END AS desp_sobre_receita_pct,
+    qtd_produtos_vendidos AS produtos_analisados,
+    0 AS produtos_abaixo_minimo,
+    0 AS produtos_com_reajuste,
+    0 AS impacto_positivo_60d,
+    '' AS setor_mais_lucrativo,
+    now()
+FROM torqmind_mart_rt.profit_dre_mensal FINAL
+WHERE id_empresa = $ID_EMPRESA
+"
+
+# Update resumo with product-level stats
+ch_http "
+INSERT INTO torqmind_mart_rt.profit_resumo_filial
+SELECT
+    id_empresa,
+    id_filial,
+    ano_mes AS ano_mes_referencia,
+    0 AS receita_total,
+    0 AS lucro_gerencial_estimado,
+    0 AS margem_gerencial_pct,
+    0 AS desp_operacional_total,
+    0 AS desp_sobre_receita_pct,
+    count() AS produtos_analisados,
+    countIf(status_preco = 'abaixo_minimo') AS produtos_abaixo_minimo,
+    countIf(status_preco IN ('abaixo_minimo', 'abaixo_ideal')) AS produtos_com_reajuste,
+    sumIf(impacto_estimado_60d, impacto_estimado_60d > 0) AS impacto_positivo_60d,
+    '' AS setor_mais_lucrativo,
+    now()
+FROM torqmind_mart_rt.profit_produto_mensal FINAL
+WHERE id_empresa = $ID_EMPRESA
+GROUP BY id_empresa, id_filial, ano_mes
+"
+
+RESUMO_COUNT=$(ch_http "SELECT count() FROM torqmind_mart_rt.profit_resumo_filial WHERE id_empresa = $ID_EMPRESA")
+echo "profit_resumo_filial rows: $RESUMO_COUNT"
+
+echo ""
+echo "=== Profit Marts Refresh COMPLETE ==="
+echo "  DRE:       $DRE_COUNT rows"
+echo "  Despesas:  $DESP_COUNT rows"
+echo "  Produtos:  $PROD_COUNT rows"
+echo "  Resumo:    $RESUMO_COUNT rows"

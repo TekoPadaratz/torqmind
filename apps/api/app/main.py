@@ -23,6 +23,7 @@ from app.routes_bi import router as bi_router
 from app.routes_competitor_pricing import router as competitor_pricing_router
 from app.routes_platform import router as platform_router
 from app.routes_tv import router as tv_router
+from app.routes_profit import router as profit_router
 
 logger = logging.getLogger(__name__)
 _startup_status: dict[str, str | bool | None] = {"ok": True, "message": None}
@@ -157,6 +158,7 @@ app.include_router(platform_router)
 app.include_router(tv_router)
 app.include_router(etl_router)
 app.include_router(ingest_router)
+app.include_router(profit_router)
 
 
 @app.on_event("startup")

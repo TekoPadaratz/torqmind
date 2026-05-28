@@ -595,6 +595,16 @@ DATASETS: Dict[str, DatasetSpec] = {
         ],
     ),
 
+    # Plano de Contas (chart of accounts)
+    "planodecontas": DatasetSpec(
+        table="stg.planodecontas",
+        pk_cols=["id_empresa", "id_filial", "id_planodecontas"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_planodecontas", ["ID_PLANODECONTAS", "id_planodecontas"]),
+        ],
+    ),
+
     # NFE (Nota Fiscal Eletrônica) - fiscal classification
     "nfe": DatasetSpec(
         table="stg.nfe",

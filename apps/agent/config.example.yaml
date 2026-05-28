@@ -61,53 +61,27 @@ datasets:
   nfe:
     enabled: true
     table: dbo.NFE
-    date_column: DATA
-    incremental_field: DATA
     watermark_column: DATA
-    key_fields:
-      - ID_FILIAL
-      - ID_DB
-      - ID_COMPROVANTE
-      - ID_NFE
-    columns:
-      id_nfe: ID_NFE
-      id_filial: ID_FILIAL
-      id_db: ID_DB
-      id_comprovante: ID_COMPROVANTE
-      id_lotenfe: ID_LOTENFE
-      numero: NRONF
-      chave: CHAVEACESSO
-      recibo: RECIBO
-      protocolo: PROTOCOLO
-      inf: INF
-      data: DATA
-      status: STATUS
-      ambiente: TPAMB
-      contingencia: CONTINGENCIA
-      protocolo_contingencia: PROTCONTIGENCIA
-      data_replicacao: DATAREPL
-      id_nfe_complementada: ID_NFE_COMPLEMENTADA
-      nro_evento: NRO_EVENTO
-      id_ref_nfe: ID_REF_NFE
-      tipo_doc: TIPO_DOC
-      tentativas: TENTATIVAS
-      cnf: CNF
-      id_comprovante_subst: ID_COMPROVANTE_SUBST
 
-  filiais: { enabled: true, table: dbo.FILIAIS, watermark_column: DATAREPL }
-  funcionarios: { enabled: true, table: dbo.FUNCIONARIOS, watermark_column: DATAREPL }
-  usuarios: { enabled: true, table: dbo.USUARIOS, watermark_column: DATAREPL }
-  entidades: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
-  clientes: { enabled: true, table: dbo.ENTIDADES, watermark_column: DATAREPL }
-  grupoprodutos: { enabled: true, table: dbo.GRUPOPRODUTOS, watermark_column: DATAREPL }
-  localvendas: { enabled: true, table: dbo.LOCALVENDAS, watermark_column: DATAREPL }
-  produtos: { enabled: true, table: dbo.PRODUTOS, watermark_column: DATAREPL }
+  # ─── Dimensões / Cadastros ───────────────────────────────────────────
+  filiais: { enabled: true, full_refresh: true }
+  funcionarios: { enabled: true, full_refresh: true }
+  usuarios: { enabled: true, full_refresh: true }
+  entidades: { enabled: true }
+  clientes: { enabled: true }
+  grupoprodutos: { enabled: true, full_refresh: true }
+  localvendas: { enabled: true, full_refresh: true }
+  produtos: { enabled: true }
+  planodecontas: { enabled: true, full_refresh: true }
+
+  # ─── Operacional ────────────────────────────────────────────────────
   turnos:
     enabled: true
-    table: dbo.TURNOS
-    watermark_column: DATAREPL
-    revisit_open_clause: COALESCE(ENCERRANTEFECHAMENTO, 0) = 0
-  movlctos: { enabled: true, table: dbo.MOVLCTOS, watermark_column: DATAREPL }
-  contaspagar: { enabled: true, table: dbo.CONTASPAGAR, watermark_column: DATAREPL }
-  contasreceber: { enabled: true, table: dbo.CONTASRECEBER, watermark_column: DATAREPL }
-  financeiro: { enabled: false, table: dbo.FINANCEIRO, watermark_column: DATAREPL }
+
+  # ─── Financeiro ──────────────────────────────────────────────────────
+  movlctos: { enabled: true }
+  contaspagar: { enabled: true }
+  contasreceber: { enabled: true }
+  contaspagarbaixa: { enabled: true }
+  contasreceberbaixa: { enabled: true }
+  financeiro: { enabled: false }

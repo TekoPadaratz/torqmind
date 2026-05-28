@@ -75,6 +75,11 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "category": "Equipe",
         "has_sensitive": True,
     },
+    "profit_management": {
+        "label": "Gestão de Lucro",
+        "category": "Financeiro",
+        "has_sensitive": True,
+    },
     "platform": {
         "label": "Plataforma",
         "category": "Administração Global",
