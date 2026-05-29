@@ -2277,8 +2277,8 @@ def _run_tenant_post_refresh(
                 "no_window" if runs_operational else "track_excludes_step",
             )
 
-        # Refresh customer_screen_summary (depends on customer_sales_daily)
-        if runs_operational and post_meta.get("customer_sales_daily_refreshed"):
+        # Refresh customer_screen_summary (runs independently — reads from STG/DW directly)
+        if runs_operational:
             rows, step_ms = _run_logged_count_step(
                 conn,
                 tenant_id,
