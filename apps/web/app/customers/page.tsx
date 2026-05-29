@@ -376,10 +376,10 @@ export default function CustomersPage() {
                           <td>{item.cliente_nome}</td>
                           <td>{item.titulos_ate_30d ?? item.titulos_30 ?? 0}</td>
                           <td>{formatCurrency(item.valor_ate_30d ?? item.valor_30 ?? 0)}</td>
-                          <td style={{ fontWeight: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? 700 : 400, color: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? '#ef4444' : undefined }}>{item.titulos_acima_30d ?? ((item.titulos_60 || 0) + (item.titulos_90_plus || 0))}</td>
-                          <td style={{ color: (item.valor_acima_30d ?? (item.valor_60 || 0) + (item.valor_90_plus || 0)) > 0 ? '#ef4444' : undefined }}>{formatCurrency(item.valor_acima_30d ?? ((item.valor_60 || 0) + (item.valor_90_plus || 0)))}</td>
-                          <td style={{ fontWeight: (item.titulos_a_vencer || 0) > 0 ? 700 : 400, color: (item.titulos_a_vencer || 0) > 0 ? '#f97316' : undefined }}>{item.titulos_a_vencer || 0}</td>
-                          <td style={{ color: (item.valor_a_vencer || 0) > 0 ? '#f97316' : undefined }}>{formatCurrency(item.valor_a_vencer || 0)}</td>
+                          <td style={{ fontWeight: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? 700 : 400, color: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? 'var(--color-negative)' : undefined }}>{item.titulos_acima_30d ?? ((item.titulos_60 || 0) + (item.titulos_90_plus || 0))}</td>
+                          <td style={{ color: (item.valor_acima_30d ?? (item.valor_60 || 0) + (item.valor_90_plus || 0)) > 0 ? 'var(--color-negative)' : undefined }}>{formatCurrency(item.valor_acima_30d ?? ((item.valor_60 || 0) + (item.valor_90_plus || 0)))}</td>
+                          <td style={{ fontWeight: (item.titulos_a_vencer || 0) > 0 ? 700 : 400, color: (item.titulos_a_vencer || 0) > 0 ? 'var(--color-warning)' : undefined }}>{item.titulos_a_vencer || 0}</td>
+                          <td style={{ color: (item.valor_a_vencer || 0) > 0 ? 'var(--color-warning)' : undefined }}>{formatCurrency(item.valor_a_vencer || 0)}</td>
                           <td>{item.max_dias_atraso}d</td>
                         </tr>
                       ))}

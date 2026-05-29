@@ -456,12 +456,12 @@ export default function GoalsPage() {
                 </div>
               ) : null}
               {metaError ? (
-                <div className="muted" style={{ marginTop: 6, color: '#f87171' }}>
+                <div className="muted" style={{ marginTop: 6, color: 'var(--color-negative)' }}>
                   {metaError}
                 </div>
               ) : null}
               {metaMessage ? (
-                <div className="muted" style={{ marginTop: 6, color: '#34d399' }}>
+                <div className="muted" style={{ marginTop: 6, color: 'var(--color-positive)' }}>
                   {metaMessage}
                 </div>
               ) : null}

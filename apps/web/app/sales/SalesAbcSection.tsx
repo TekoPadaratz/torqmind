@@ -19,9 +19,9 @@ import { readCachedSession } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 const ABC_COLORS: Record<string, string> = {
-  A: "#22c55e",
-  B: "#eab308",
-  C: "#ef4444",
+  A: "var(--color-positive)",
+  B: "var(--color-warning)",
+  C: "var(--color-negative)",
 };
 
 const CONCENTRATION_ICONS: Record<string, string> = {

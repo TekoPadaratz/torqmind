@@ -192,7 +192,7 @@ export default function FraudPage() {
     : latestOperationalEvent
       ? `${latestOperationalEvent.usuario_label} lidera a revisão operacional mais recente em ${formatDateTime(latestOperationalEvent.data)}.`
       : "O período não trouxe concentração material para puxar a fila imediatamente.";
-  const fraudDonutColors = ["#f97316", "#ef4444", "#38bdf8", "#94a3b8"];
+  const fraudDonutColors = ["var(--color-warning)", "var(--color-negative)", "var(--color-info)", "#94a3b8"];
 
   return (
     <div>
@@ -214,7 +214,7 @@ export default function FraudPage() {
             {modelCoverageStatus !== "covered" ? (
               <div
                 className="card"
-                style={{ marginTop: 12, borderColor: "#f59e0b" }}
+                style={{ marginTop: 12, borderColor: "var(--color-warning)" }}
               >
                 <strong>
                   Leitura modelada com cobertura{" "}

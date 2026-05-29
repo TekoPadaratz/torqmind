@@ -662,7 +662,7 @@ export default function AppNav({
             </div>
           </div>
           {!scopeValidation.ok ? (
-            <div className="muted" style={{ color: '#fca5a5' }} aria-live="polite">
+            <div className="muted" style={{ color: 'var(--color-negative)' }} aria-live="polite">
               {scopeValidation.error}
             </div>
           ) : null}

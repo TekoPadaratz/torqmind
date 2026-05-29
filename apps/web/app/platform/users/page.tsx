@@ -423,7 +423,7 @@ export default function PlatformUsersPage() {
 	                          {access.id_empresa && !branchesMap[access.id_empresa] ? (
 	                            <div className="platformFieldHint">Carregando filiais...</div>
 	                          ) : access.id_empresa && branchesMap[access.id_empresa]?.length === 0 ? (
-	                            <div className="platformFieldHint" style={{ color: '#f97316' }}>Nenhuma filial encontrada para esta empresa.</div>
+	                            <div className="platformFieldHint" style={{ color: 'var(--color-warning)' }}>Nenhuma filial encontrada para esta empresa.</div>
 	                          ) : null}
 	                        </>
 	                      )}

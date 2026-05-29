@@ -93,7 +93,7 @@ export default function SettingsPage() {
           </div>
 
           {!config?.bot_token_set && (
-            <div className="card col-12" style={{ borderColor: '#f59e0b' }}>
+            <div className="card col-12" style={{ borderColor: 'var(--color-warning)' }}>
               <strong>Bot não configurado.</strong>{' '}
               O token do bot Telegram não está ativo no servidor. Entre em contato com a equipe de TI para ativar as notificações.
             </div>
@@ -144,8 +144,8 @@ export default function SettingsPage() {
                 Ativar alertas no Telegram
               </label>
 
-              {saveMsg && <div className="muted" style={{ color: '#4ade80' }}>{saveMsg}</div>}
-              {error && <div className="muted" style={{ color: '#f87171' }}>{error}</div>}
+              {saveMsg && <div className="muted" style={{ color: 'var(--color-positive)' }}>{saveMsg}</div>}
+              {error && <div className="muted" style={{ color: 'var(--color-negative)' }}>{error}</div>}
 
               <div style={{ display: 'flex', gap: 10 }}>
                 <button className="btn btnPrimary" type="submit" disabled={saving}>
@@ -180,13 +180,13 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span className="muted">Alertas ativos</span>
-                  <strong style={{ color: config.telegram_enabled ? '#4ade80' : '#f87171' }}>
+                  <strong style={{ color: config.telegram_enabled ? 'var(--color-positive)' : 'var(--color-negative)' }}>
                     {config.telegram_enabled ? 'Sim' : 'Não'}
                   </strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span className="muted">Token do bot</span>
-                  <strong style={{ color: config.bot_token_set ? '#4ade80' : '#f87171' }}>
+                  <strong style={{ color: config.bot_token_set ? 'var(--color-positive)' : 'var(--color-negative)' }}>
                     {config.bot_token_set ? 'Configurado' : 'Não configurado'}
                   </strong>
                 </div>

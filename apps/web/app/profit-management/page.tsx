@@ -105,12 +105,8 @@ export default function ProfitManagementPage() {
     moduleKey: "profit_products",
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) => {
-      let url = `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}`;
-      if (sectorFilter) url += `&setor=${encodeURIComponent(sectorFilter)}`;
-      if (statusFilter) url += `&status=${encodeURIComponent(statusFilter)}`;
-      return url;
-    },
+    buildRequestUrl: (currentScope) =>
+      `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}&limit=1000`,
   });
 
   const { data: repricingData } = useBiScopeData<any>({
@@ -143,8 +139,18 @@ export default function ProfitManagementPage() {
           p.grupo?.toLowerCase().includes(term),
       );
     }
+    if (sectorFilter) {
+      filtered = filtered.filter(
+        (p: any) => p.setor === sectorFilter,
+      );
+    }
+    if (statusFilter) {
+      filtered = filtered.filter(
+        (p: any) => p.status === statusFilter,
+      );
+    }
     return filtered;
-  }, [products, searchTerm]);
+  }, [products, searchTerm, sectorFilter, statusFilter]);
 
   const expenseChartData = useMemo(() => {
     if (!expenses?.categorias) return [];
@@ -195,64 +201,69 @@ export default function ProfitManagementPage() {
 
   const kpis = overview.kpis || {};
 
+  const lucroColor = kpis.lucro_gerencial_estimado >= 0 ? "var(--color-positive)" : "var(--color-negative)";
+  const margemColor = kpis.margem_gerencial_pct >= 0.05 ? "var(--color-positive)" : "var(--color-warning)";
+  const despReceitaColor = kpis.desp_sobre_receita_pct < 0.15 ? "var(--color-positive)" : "var(--color-warning)";
+
   return (
     <div>
       <AppNav title="Gestão de Lucro" userLabel={userLabel} />
       <div className="container">
         {/* Period indicator */}
-        <div className="muted" style={{ marginTop: 8, fontSize: 13 }}>
+        <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
           Base: {overview.periodo_base} · Estimativa gerencial calculada automaticamente
         </div>
 
-        {/* KPI Cards */}
-        <div className="bi-grid" style={{ marginTop: 16 }}>
-          <div className="card kpi col-2">
-            <div className="label">Lucro Gerencial Estimado</div>
-            <div className="value" style={{ color: kpis.lucro_gerencial_estimado >= 0 ? "#10b981" : "#ef4444" }}>
+        {/* KPI Cards — responsive strip */}
+        <div className="profitKpiStrip">
+          <div className="profitKpiCard" style={{ "--kpi-accent": lucroColor } as React.CSSProperties}>
+            <div className="profitKpiLabel">Lucro Gerencial Estimado</div>
+            <div className="profitKpiValue" style={{ color: lucroColor }}>
               {formatCurrency(kpis.lucro_gerencial_estimado)}
             </div>
+            <div className="profitKpiContext">
+              {kpis.lucro_gerencial_estimado >= 0 ? "Resultado positivo" : "Atenção: resultado negativo"}
+            </div>
           </div>
-          <div className="card kpi col-2">
-            <div className="label">Margem Gerencial</div>
-            <div className="value" style={{ color: kpis.margem_gerencial_pct >= 0.05 ? "#10b981" : "#f59e0b" }}>
+          <div className="profitKpiCard" style={{ "--kpi-accent": margemColor } as React.CSSProperties}>
+            <div className="profitKpiLabel">Margem Gerencial</div>
+            <div className="profitKpiValue" style={{ color: margemColor }}>
               {fmtPct(kpis.margem_gerencial_pct)}
             </div>
+            <div className="profitKpiContext">Receita líq. − CMV − despesas</div>
           </div>
-          <div className="card kpi col-2">
-            <div className="label">Despesa / Receita</div>
-            <div className="value" style={{ color: kpis.desp_sobre_receita_pct < 0.15 ? "#10b981" : "#f59e0b" }}>
+          <div className="profitKpiCard" style={{ "--kpi-accent": despReceitaColor } as React.CSSProperties}>
+            <div className="profitKpiLabel">Despesa / Receita</div>
+            <div className="profitKpiValue" style={{ color: despReceitaColor }}>
               {fmtPct(kpis.desp_sobre_receita_pct)}
             </div>
+            <div className="profitKpiContext">Peso das despesas operacionais</div>
           </div>
-          <div className="card kpi col-3">
-            <div className="label">Impacto Potencial 60d</div>
-            <div className="value" style={{ color: "#3b82f6" }}>
+          <div className="profitKpiCard" style={{ "--kpi-accent": "var(--color-info)" } as React.CSSProperties}>
+            <div className="profitKpiLabel">Potencial Estimado 60d</div>
+            <div className="profitKpiValue" style={{ color: "var(--color-info)" }}>
               {formatCurrency(kpis.impacto_positivo_60d)}
             </div>
+            <div className="profitKpiContext">Oportunidade de repricing</div>
           </div>
-          <div className="card kpi col-3">
-            <div className="label">Produtos c/ Reajuste</div>
-            <div className="value" style={{ color: kpis.produtos_com_reajuste > 0 ? "#f59e0b" : "#10b981" }}>
+          <div className="profitKpiCard" style={{ "--kpi-accent": kpis.produtos_com_reajuste > 0 ? "var(--color-warning)" : "var(--color-positive)" } as React.CSSProperties}>
+            <div className="profitKpiLabel">Produtos c/ Reajuste</div>
+            <div className="profitKpiValue" style={{ color: kpis.produtos_com_reajuste > 0 ? "var(--color-warning)" : "var(--color-positive)" }}>
               {kpis.produtos_com_reajuste || 0}
+            </div>
+            <div className="profitKpiContext">
+              {kpis.produtos_abaixo_minimo > 0 ? `${kpis.produtos_abaixo_minimo} abaixo do mínimo` : "Todos acima do mínimo"}
             </div>
           </div>
         </div>
 
         {/* Tabs */}
-        <div style={{ marginTop: 24, display: "flex", gap: 16, borderBottom: "1px solid var(--border)" }}>
+        <div className="profitTabs">
           {(["overview", "products", "repricing"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              style={{
-                padding: "8px 4px",
-                border: "none",
-                background: "none",
-                cursor: "pointer",
-                fontWeight: activeTab === tab ? 600 : 400,
-                borderBottom: activeTab === tab ? "2px solid #6366f1" : "2px solid transparent",
-                color: activeTab === tab ? "#6366f1" : "var(--text-muted)",
-              }}
+              className={`profitTab${activeTab === tab ? " active" : ""}`}
             >
               {tab === "overview" ? "Visão Geral" : tab === "products" ? "Produtos" : "Oportunidades"}
             </button>
@@ -266,25 +277,17 @@ export default function ProfitManagementPage() {
             {dre?.linhas && (
               <div className="card" style={{ marginTop: 12 }}>
                 <div className="sectionEyebrow">DRE Gerencial Resumida</div>
-                <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+                <table className="dreTable" style={{ marginTop: 8 }}>
                   <tbody>
                     {dre.linhas.map((l: any, i: number) => (
                       <tr
                         key={i}
-                        style={{
-                          borderBottom: "1px solid var(--border)",
-                          fontWeight: l.tipo === "resultado" || l.tipo === "subtotal" ? 600 : 400,
-                          background: l.tipo === "resultado" ? "rgba(99,102,241,0.06)" : "transparent",
-                        }}
+                        className={l.tipo === "resultado" ? "dreRow-resultado" : l.tipo === "subtotal" ? "dreRow-subtotal" : ""}
                       >
-                        <td style={{ padding: "6px 8px", fontSize: 13 }}>{l.label}</td>
+                        <td>{l.label}</td>
                         <td
                           style={{
-                            padding: "6px 8px",
-                            textAlign: "right",
-                            fontFamily: "monospace",
-                            fontSize: 13,
-                            color: l.valor < 0 ? "#ef4444" : l.tipo === "resultado" && l.valor >= 0 ? "#10b981" : "inherit",
+                            color: l.valor < 0 ? "var(--color-negative)" : l.tipo === "resultado" && l.valor >= 0 ? "var(--color-positive)" : "inherit",
                           }}
                         >
                           {formatCurrency(l.valor)}
@@ -293,8 +296,10 @@ export default function ProfitManagementPage() {
                     ))}
                   </tbody>
                 </table>
-                {dre.disclaimer && (
-                  <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>{dre.disclaimer}</div>
+                {dre.margem_gerencial_pct != null && (
+                  <div className="calcFootnote">
+                    Margem gerencial: {fmtPct(dre.margem_gerencial_pct)} · {dre.disclaimer || "Não é lucro contábil/fiscal oficial."}
+                  </div>
                 )}
               </div>
             )}
@@ -318,8 +323,8 @@ export default function ProfitManagementPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>
-                  Despesas usam vencimento como competência. Pagamento/baixa não define o mês.
+                <div className="calcFootnote">
+                  As despesas foram distribuídas conforme vencimento como competência. A baixa é informativa.
                 </div>
               </div>
             )}
@@ -330,18 +335,16 @@ export default function ProfitManagementPage() {
         {activeTab === "products" && (
           <div style={{ marginTop: 16 }}>
             {/* Filters */}
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div className="profitFilterBar">
               <input
                 type="text"
-                placeholder="Buscar produto..."
+                placeholder="Buscar produto ou grupo..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ padding: "6px 10px", fontSize: 13, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}
               />
               <select
                 value={sectorFilter}
                 onChange={(e) => setSectorFilter(e.target.value)}
-                style={{ padding: "6px 10px", fontSize: 13, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}
               >
                 <option value="">Todos os setores</option>
                 <option value="conveniencia">Conveniência</option>
@@ -353,7 +356,6 @@ export default function ProfitManagementPage() {
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                style={{ padding: "6px 10px", fontSize: 13, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}
               >
                 <option value="">Todos os status</option>
                 <option value="abaixo_minimo">Abaixo do Mínimo</option>
@@ -361,6 +363,9 @@ export default function ProfitManagementPage() {
                 <option value="saudavel">Saudável</option>
                 <option value="acima_meta">Acima da Meta</option>
               </select>
+              <span className="profitFilterCount">
+                {filteredProducts.length}{products?.total ? ` de ${products.total}` : ""} produtos
+              </span>
             </div>
 
             {/* Products table */}
@@ -377,7 +382,7 @@ export default function ProfitManagementPage() {
                     <th style={{ textAlign: "right", padding: "8px 4px" }}>Margem</th>
                     <th style={{ textAlign: "right", padding: "8px 4px" }}>P.Ideal</th>
                     <th style={{ textAlign: "right", padding: "8px 4px" }}>Reajuste</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Impacto 60d</th>
+                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Potencial 60d</th>
                     <th style={{ textAlign: "center", padding: "8px 4px" }}>Status</th>
                   </tr>
                 </thead>
@@ -390,26 +395,22 @@ export default function ProfitManagementPage() {
                       <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(p.receita)}</td>
                       <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(p.preco_atual)}</td>
                       <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(p.custo_unitario)}</td>
-                      <td style={{ padding: "6px 4px", textAlign: "right", color: p.margem_bruta_pct >= 0.2 ? "#10b981" : p.margem_bruta_pct >= 0.1 ? "#f59e0b" : "#ef4444" }}>
+                      <td style={{ padding: "6px 4px", textAlign: "right", color: p.margem_bruta_pct >= 0.2 ? "var(--color-positive)" : p.margem_bruta_pct >= 0.1 ? "var(--color-warning)" : "var(--color-negative)" }}>
                         {fmtPct(p.margem_bruta_pct)}
                       </td>
                       <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(p.preco_ideal)}</td>
-                      <td style={{ padding: "6px 4px", textAlign: "right", color: p.reajuste_pct > 0 ? "#f59e0b" : "#10b981" }}>
+                      <td style={{ padding: "6px 4px", textAlign: "right", color: p.reajuste_pct > 0 ? "var(--color-warning)" : "var(--color-positive)" }}>
                         {p.reajuste_pct > 0 ? `+${fmtPct(p.reajuste_pct)}` : "—"}
                       </td>
-                      <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 500, color: p.impacto_60d > 0 ? "#3b82f6" : "#6b7280" }}>
+                      <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 500, color: p.impacto_60d > 0 ? "var(--color-info)" : "var(--color-neutral)" }}>
                         {p.impacto_60d > 0 ? formatCurrency(p.impacto_60d) : "—"}
                       </td>
                       <td style={{ padding: "6px 4px", textAlign: "center" }}>
                         <span
+                          className="statusPill"
                           style={{
-                            display: "inline-block",
-                            padding: "2px 8px",
-                            borderRadius: 12,
-                            fontSize: 11,
-                            fontWeight: 500,
                             backgroundColor: `${STATUS_COLORS[p.status] || "#d1d5db"}18`,
-                            color: STATUS_COLORS[p.status] || "#6b7280",
+                            color: STATUS_COLORS[p.status] || "var(--color-neutral)",
                           }}
                         >
                           {STATUS_LABELS[p.status] || p.status}
@@ -425,9 +426,9 @@ export default function ProfitManagementPage() {
                 </div>
               )}
             </div>
-            {products?.disclaimer && (
-              <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>{products.disclaimer}</div>
-            )}
+            <div className="calcFootnote">
+              {products?.disclaimer || "Estimativa baseada no volume vendido no mês anterior. Assume manutenção do volume."}
+            </div>
           </div>
         )}
 
@@ -436,22 +437,24 @@ export default function ProfitManagementPage() {
           <div style={{ marginTop: 16 }}>
             {repricing?.oportunidades?.length > 0 ? (
               <>
-                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-                  <div className="card kpi col-4">
-                    <div className="label">Impacto Total 60d</div>
-                    <div className="value" style={{ color: "#3b82f6" }}>
+                <div className="profitKpiStrip" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+                  <div className="profitKpiCard" style={{ "--kpi-accent": "var(--color-info)" } as React.CSSProperties}>
+                    <div className="profitKpiLabel">Potencial Total 60d</div>
+                    <div className="profitKpiValue" style={{ color: "var(--color-info)" }}>
                       {formatCurrency(repricing.impacto_total_60d)}
                     </div>
+                    <div className="profitKpiContext">Soma do impacto de todos os produtos listados</div>
                   </div>
-                  <div className="card kpi col-4">
-                    <div className="label">Oportunidades</div>
-                    <div className="value" style={{ color: "#f59e0b" }}>
+                  <div className="profitKpiCard" style={{ "--kpi-accent": "var(--color-warning)" } as React.CSSProperties}>
+                    <div className="profitKpiLabel">Oportunidades Identificadas</div>
+                    <div className="profitKpiValue" style={{ color: "var(--color-warning)" }}>
                       {repricing.total_oportunidades}
                     </div>
+                    <div className="profitKpiContext">Produtos com espaço para reajuste de preço</div>
                   </div>
                 </div>
 
-                <div className="card" style={{ overflowX: "auto" }}>
+                <div className="card" style={{ overflowX: "auto", marginTop: 16 }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ borderBottom: "2px solid var(--border)" }}>
@@ -461,7 +464,7 @@ export default function ProfitManagementPage() {
                         <th style={{ textAlign: "right", padding: "8px 4px" }}>Preço Ideal</th>
                         <th style={{ textAlign: "right", padding: "8px 4px" }}>Reajuste</th>
                         <th style={{ textAlign: "right", padding: "8px 4px" }}>Qtd/mês</th>
-                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Impacto 60d</th>
+                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Potencial 60d</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -470,10 +473,10 @@ export default function ProfitManagementPage() {
                           <td style={{ padding: "6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{op.nome_produto}</td>
                           <td style={{ padding: "6px 4px", textTransform: "capitalize" }}>{op.setor}</td>
                           <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(op.preco_atual)}</td>
-                          <td style={{ padding: "6px 4px", textAlign: "right", color: "#6366f1", fontWeight: 500 }}>{formatCurrency(op.preco_ideal)}</td>
-                          <td style={{ padding: "6px 4px", textAlign: "right", color: "#f59e0b", fontWeight: 500 }}>+{fmtPct(op.reajuste_pct)}</td>
+                          <td style={{ padding: "6px 4px", textAlign: "right", color: "var(--color-insight)", fontWeight: 500 }}>{formatCurrency(op.preco_ideal)}</td>
+                          <td style={{ padding: "6px 4px", textAlign: "right", color: "var(--color-warning)", fontWeight: 500 }}>+{fmtPct(op.reajuste_pct)}</td>
                           <td style={{ padding: "6px 4px", textAlign: "right" }}>{Number(op.qtd_mes_anterior).toFixed(0)}</td>
-                          <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 600, color: "#3b82f6" }}>{formatCurrency(op.impacto_60d)}</td>
+                          <td style={{ padding: "6px 4px", textAlign: "right", fontWeight: 600, color: "var(--color-info)" }}>{formatCurrency(op.impacto_60d)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -486,7 +489,7 @@ export default function ProfitManagementPage() {
                 detail="Todos os produtos analisados estão com preço saudável ou acima da meta."
               />
             )}
-            <div className="muted" style={{ marginTop: 8, fontSize: 11 }}>
+            <div className="calcFootnote" style={{ marginTop: 12 }}>
               {repricing?.disclaimer || "Estimativa baseada no volume vendido. Assume manutenção do volume. Não considera elasticidade de preço."}
             </div>
           </div>
@@ -495,18 +498,18 @@ export default function ProfitManagementPage() {
         {/* Explanations */}
         <div className="card" style={{ marginTop: 24, padding: 16 }}>
           <div className="sectionEyebrow">Entenda os cálculos</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 8, fontSize: 11 }} className="muted">
+          <div className="calcFootnoteGrid">
             <div>
-              <p><strong>Lucro Gerencial Estimado:</strong> Receita líquida − CMV − despesas operacionais rateadas.</p>
-              <p><strong>CMV:</strong> Custo da Mercadoria Vendida = qtd × custo unitário no momento da venda.</p>
-              <p><strong>Margem Bruta:</strong> Receita − CMV (antes das despesas).</p>
-              <p><strong>Desp. Rateada:</strong> Proporcional à receita de cada setor/produto.</p>
+              <p><strong>Lucro Gerencial Estimado:</strong> Receita líquida − CMV − despesas operacionais rateadas. Não é lucro contábil/fiscal.</p>
+              <p><strong>CMV:</strong> Custo da mercadoria vendida — quantidade × custo unitário no momento da venda.</p>
+              <p><strong>Margem Bruta:</strong> Receita − CMV, antes das despesas operacionais.</p>
+              <p><strong>Despesas Rateadas:</strong> Distribuídas proporcionalmente à participação de vendas de cada setor/produto.</p>
             </div>
             <div>
-              <p><strong>Preço Mínimo:</strong> Custo unitário + despesa por unidade (breakeven).</p>
-              <p><strong>Preço Ideal:</strong> Preço mínimo ÷ (1 − margem desejada). Padrão: 30% conveniência.</p>
-              <p><strong>Impacto 60d:</strong> (Preço ideal − preço atual) × qtd mês anterior × 2.</p>
-              <p><strong>Atenção:</strong> Não é lucro contábil/fiscal. É gerencial para decisão de preço.</p>
+              <p><strong>Preço Mínimo:</strong> Custo unitário + despesa por unidade — abaixo disso, o produto gera prejuízo.</p>
+              <p><strong>Preço Ideal:</strong> Preço mínimo ÷ (1 − margem desejada). Padrão: 30% conveniência, 8% combustível.</p>
+              <p><strong>Potencial 60d:</strong> (Preço ideal − preço atual) × volume mensal × 2. Estima o ganho em 60 dias.</p>
+              <p><strong>Importante:</strong> Estimativa gerencial para decisão de preço. Não substitui análise contábil/fiscal.</p>
             </div>
           </div>
         </div>

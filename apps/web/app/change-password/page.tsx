@@ -106,7 +106,7 @@ export default function ChangePasswordPage() {
               autoComplete="new-password"
             />
             {error && (
-              <div className="muted" style={{ color: "#fb7185" }}>
+              <div className="muted" style={{ color: "var(--color-negative)" }}>
                 {error}
               </div>
             )}

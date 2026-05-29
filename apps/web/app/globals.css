@@ -7,6 +7,30 @@
   --accent-copper-soft: rgba(184,115,51,0.22);
   --accent-risk: #f97316;
   --accent-good: #16a34a;
+
+  /* ── Semantic design tokens ── */
+  --color-positive: #10b981;
+  --color-negative: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+  --color-insight: #6366f1;
+  --color-neutral: #6b7280;
+  --color-positive-bg: rgba(16,185,129,0.10);
+  --color-negative-bg: rgba(239,68,68,0.10);
+  --color-warning-bg: rgba(245,158,11,0.10);
+  --color-info-bg: rgba(59,130,246,0.10);
+  --color-insight-bg: rgba(99,102,241,0.08);
+
+  /* ── Card tokens ── */
+  --card-bg: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+  --card-radius: 16px;
+  --card-padding: 16px 20px;
+
+  /* ── Typography tokens ── */
+  --font-kpi-value: clamp(22px, 3vw, 28px);
+  --font-kpi-label: 11px;
+  --font-body: 13px;
+  --font-footnote: 11px;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -1758,5 +1782,243 @@ body.product-shell .container {
   .platformInlineFilters,
   .platformActionCell {
     flex-wrap: wrap;
+  }
+}
+
+/* ═════════════════════════════════════════════════════════
+   Gestão de Lucro — KPI strip & design premium
+   ═════════════════════════════════════════════════════════ */
+
+.profitKpiStrip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.profitKpiCard {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 14px 16px;
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.profitKpiCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--kpi-accent, var(--border));
+  opacity: 0.7;
+}
+
+.profitKpiLabel {
+  font-size: var(--font-kpi-label);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profitKpiValue {
+  font-size: var(--font-kpi-value);
+  font-weight: 700;
+  line-height: 1.2;
+  word-break: break-word;
+}
+
+.profitKpiContext {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* Profit filter bar */
+.profitFilterBar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.profitFilterBar input,
+.profitFilterBar select {
+  padding: 7px 10px;
+  font-size: var(--font-body);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  min-width: 0;
+  transition: border-color 0.15s;
+}
+
+.profitFilterBar input:focus,
+.profitFilterBar select:focus {
+  border-color: var(--accent-copper);
+  outline: none;
+}
+
+.profitFilterBar input {
+  flex: 1;
+  min-width: 160px;
+  max-width: 280px;
+}
+
+.profitFilterBar select {
+  min-width: 140px;
+}
+
+.profitFilterCount {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Profit tabs */
+.profitTabs {
+  display: flex;
+  gap: 0;
+  margin-top: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.profitTab {
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.profitTab:hover {
+  color: var(--text);
+}
+
+.profitTab.active {
+  font-weight: 600;
+  color: var(--color-insight);
+  border-bottom-color: var(--color-insight);
+}
+
+/* DRE table */
+.dreTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.dreTable tr {
+  border-bottom: 1px solid var(--border);
+}
+
+.dreTable td {
+  padding: 8px 10px;
+  font-size: var(--font-body);
+}
+
+.dreTable td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: "IBM Plex Mono", "SF Mono", monospace;
+}
+
+.dreRow-subtotal td { font-weight: 600; }
+.dreRow-resultado td {
+  font-weight: 700;
+  background: var(--color-insight-bg);
+}
+
+/* Status badge */
+.statusPill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Calculation footnote */
+.calcFootnote {
+  margin-top: 8px;
+  font-size: var(--font-footnote);
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.calcFootnoteGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: var(--font-footnote);
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.calcFootnoteGrid strong {
+  color: var(--text);
+}
+
+/* ── Responsive: KPI strip ── */
+@media (max-width: 1100px) {
+  .profitKpiStrip {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .profitKpiStrip {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .profitKpiCard {
+    padding: 12px 14px;
+  }
+  .profitKpiValue {
+    font-size: clamp(18px, 4.5vw, 24px);
+  }
+  .profitFilterBar input {
+    min-width: 120px;
+    max-width: 100%;
+    flex: 1 1 100%;
+  }
+  .profitFilterBar select {
+    min-width: 0;
+    flex: 1 1 calc(50% - 4px);
+  }
+  .profitFilterCount {
+    flex-basis: 100%;
+    margin-left: 0;
+    text-align: right;
+  }
+  .calcFootnoteGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 390px) {
+  .profitKpiStrip {
+    grid-template-columns: 1fr;
+  }
+  .profitKpiValue {
+    font-size: 20px;
   }
 }

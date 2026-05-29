@@ -689,3 +689,43 @@ Checklist mínimo para garantir que o container API reflete a branch atual:
 - CDC_TOPIC_PATTERN corrigido: `^torqmind\..*` (escape simples no YAML).
 - `python3 -m pytest apps/cdc_consumer/tests/ -v`: 29 testes, todos passaram.
 - Scripts não imprimem senhas (validado com grep).
+
+---
+
+## Design System / UX TorqMind
+
+### Tokens Semânticos (globals.css :root)
+
+| Token | Uso | Hex |
+|-------|-----|-----|
+| `--color-positive` | Lucro, crescimento, ok | `#22c55e` |
+| `--color-negative` | Prejuízo, erro, alerta crítico | `#ef4444` |
+| `--color-warning` | Atenção, risco moderado | `#f59e0b` |
+| `--color-info` | Informativo, links, neutro positivo | `#3b82f6` |
+| `--color-insight` | Insight analítico, sugestão | `#8b5cf6` |
+| `--color-neutral` | Texto secundário | `#94a3b8` |
+| `--card-bg`, `--card-border`, etc. | Padrão de card | tema escuro marinho |
+
+### Regras de Design
+
+- Nunca usar hex hardcoded para cores semânticas — usar CSS var.
+- KPI cards usam `.profitKpiStrip` com grid responsivo (5 → 3 → 2 → 1 col).
+- Mobile first: breakpoints em 1100px, 720px, 390px.
+- Cards financeiros usam barra accent `::before` com cor semântica.
+- Status pills (`.statusPill`) com cores de fundo semânticas.
+- Tabelas DRE: `.dreTable`, subtotais e resultado com destaque.
+
+### Multi-filial (API)
+
+- `_extract_profit_scope()` retorna `(tenant_id, branch_ids: List[int])`.
+- Multi-branch: SQL usa `SUM()` para agregar receita, CMV, despesas.
+- Percentuais recalculados após soma (não média simples).
+- Produtos multi-filial: `GROUP BY id_produto`, preço médio ponderado, impacto somado.
+- Payload inclui `consolidado: true` e `filiais_count` quando multi-branch.
+
+### Arquivos Alterados
+
+- `apps/web/app/globals.css`: tokens semânticos + classes profit.
+- `apps/web/app/profit-management/page.tsx`: reescrito com design system.
+- `apps/api/app/routes_profit.py`: multi-filial com SUM/GROUP BY.
+- 9 telas com cores migradas: dashboard, sales, goals, settings, fraud, customers, change-password, AppNav, platform/users.

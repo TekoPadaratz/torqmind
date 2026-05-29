@@ -170,7 +170,7 @@ export default function Dashboard() {
             {scopeOutdatedForRisk ? (
               <div
                 className="card homeBlock"
-                style={{ borderColor: "#f59e0b" }}
+                style={{ borderColor: "var(--color-warning)" }}
               >
                 <strong>
                   Período além da última janela de risco modelado.
