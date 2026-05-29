@@ -454,36 +454,51 @@ def profit_products(
     # For multi-branch, aggregate products by id_produto
     is_multi = len(branch_ids) > 1
     if is_multi:
+        # Two-level subquery to avoid ClickHouse 24.8 alias resolution conflicts
+        # Level 1 (innermost): raw aggregates only with unique alias names
+        # Level 2 (outer): derived metrics computed from the aggregated values
         sql = f"""
             SELECT
-                id_produto,
-                any(nome_produto) AS nome_produto,
-                any(nome_grupo_produto) AS nome_grupo_produto,
-                any(setor_gerencial) AS setor_gerencial,
-                SUM(qtd_vendida) AS qtd_vendida,
-                SUM(receita) AS receita,
-                SUM(receita) / nullIf(SUM(qtd_vendida), 0) AS preco_medio,
-                SUM(cmv) / nullIf(SUM(qtd_vendida), 0) AS custo_medio,
-                SUM(cmv) AS cmv,
-                1 - SUM(cmv) / nullIf(SUM(receita), 0) AS margem_bruta_pct,
-                SUM(desp_operacional_unitaria * qtd_vendida) / nullIf(SUM(qtd_vendida), 0) AS desp_operacional_unitaria,
-                (SUM(receita) - SUM(cmv) - SUM(desp_operacional_unitaria * qtd_vendida)) / nullIf(SUM(receita), 0) AS margem_gerencial_pct,
-                SUM(receita) / nullIf(SUM(cmv), 0) - 1 AS markup_real,
-                AVG(preco_minimo_saudavel) AS preco_minimo_saudavel,
-                AVG(preco_ideal_sugerido) AS preco_ideal_sugerido,
-                AVG(reajuste_sugerido_valor) AS reajuste_sugerido_valor,
-                AVG(reajuste_sugerido_pct) AS reajuste_sugerido_pct,
-                SUM(qtd_mes_anterior) AS qtd_mes_anterior,
-                SUM(impacto_estimado_60d) AS impacto_estimado_60d,
-                any(status_preco) AS status_preco,
-                any(recomendacao_curta) AS recomendacao_curta
-            FROM torqmind_mart_rt.profit_produto_mensal FINAL
-            WHERE id_empresa = %(id_empresa)s
-              {branch_clause}
-              AND ano_mes = %(ano_mes)s
-              AND qtd_vendida > 0
-              {filters}
-            GROUP BY id_produto
+                id_produto, nome_produto, nome_grupo_produto,
+                setor_gerencial, qtd_vendida_agg AS qtd_vendida,
+                receita_agg AS receita,
+                toFloat64(receita_agg) / nullIf(qtd_vendida_agg, 0) AS preco_medio,
+                toFloat64(cmv_agg) / nullIf(qtd_vendida_agg, 0) AS custo_medio,
+                cmv_agg AS cmv,
+                1 - toFloat64(cmv_agg) / nullIf(receita_agg, 0) AS margem_bruta_pct,
+                toFloat64(desp_op_total) / nullIf(qtd_vendida_agg, 0) AS desp_operacional_unitaria,
+                toFloat64(receita_agg - cmv_agg - desp_op_total) / nullIf(receita_agg, 0) AS margem_gerencial_pct,
+                toFloat64(receita_agg) / nullIf(cmv_agg, 0) - 1 AS markup_real,
+                preco_minimo_saudavel, preco_ideal_sugerido,
+                reajuste_sugerido_valor, reajuste_sugerido_pct,
+                qtd_mes_anterior, impacto_estimado_60d,
+                status_preco, recomendacao_curta
+            FROM (
+                SELECT
+                    id_produto,
+                    any(nome_produto) AS nome_produto,
+                    any(nome_grupo_produto) AS nome_grupo_produto,
+                    any(setor_gerencial) AS setor_gerencial,
+                    SUM(qtd_vendida) AS qtd_vendida_agg,
+                    SUM(receita) AS receita_agg,
+                    SUM(cmv) AS cmv_agg,
+                    SUM(desp_operacional_unitaria * qtd_vendida) AS desp_op_total,
+                    AVG(preco_minimo_saudavel) AS preco_minimo_saudavel,
+                    AVG(preco_ideal_sugerido) AS preco_ideal_sugerido,
+                    AVG(reajuste_sugerido_valor) AS reajuste_sugerido_valor,
+                    AVG(reajuste_sugerido_pct) AS reajuste_sugerido_pct,
+                    SUM(qtd_mes_anterior) AS qtd_mes_anterior,
+                    SUM(impacto_estimado_60d) AS impacto_estimado_60d,
+                    any(status_preco) AS status_preco,
+                    any(recomendacao_curta) AS recomendacao_curta
+                FROM torqmind_mart_rt.profit_produto_mensal FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  {branch_clause}
+                  AND ano_mes = %(ano_mes)s
+                GROUP BY id_produto
+                HAVING SUM(qtd_vendida) > 0
+            )
+            WHERE 1=1 {filters}
             ORDER BY {order_col} {order_dir}
             LIMIT %(limit)s OFFSET %(offset)s
         """
@@ -504,13 +519,16 @@ def profit_products(
     # Count total
     if is_multi:
         count_sql = f"""
-            SELECT uniqExact(id_produto) AS total
-            FROM torqmind_mart_rt.profit_produto_mensal FINAL
-            WHERE id_empresa = %(id_empresa)s
-              {branch_clause}
-              AND ano_mes = %(ano_mes)s
-              AND qtd_vendida > 0
-              {filters}
+            SELECT count() AS total FROM (
+                SELECT id_produto
+                FROM torqmind_mart_rt.profit_produto_mensal FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  {branch_clause}
+                  AND ano_mes = %(ano_mes)s
+                  {filters}
+                GROUP BY id_produto
+                HAVING SUM(qtd_vendida) > 0
+            )
         """
     else:
         count_sql = f"""
@@ -588,28 +606,40 @@ def profit_repricing(
     if is_multi:
         sql = f"""
             SELECT
-                id_produto,
-                any(nome_produto) AS nome_produto,
-                any(nome_grupo_produto) AS nome_grupo_produto,
-                any(setor_gerencial) AS setor_gerencial,
-                SUM(receita) / nullIf(SUM(qtd_vendida), 0) AS preco_medio,
-                AVG(preco_ideal_sugerido) AS preco_ideal_sugerido,
-                AVG(reajuste_sugerido_valor) AS reajuste_sugerido_valor,
-                AVG(reajuste_sugerido_pct) AS reajuste_sugerido_pct,
-                SUM(qtd_mes_anterior) AS qtd_mes_anterior,
-                SUM(impacto_estimado_60d) AS impacto_estimado_60d,
-                any(status_preco) AS status_preco,
-                1 - SUM(cmv) / nullIf(SUM(receita), 0) AS margem_bruta_pct
-            FROM torqmind_mart_rt.profit_produto_mensal FINAL
-            WHERE id_empresa = %(id_empresa)s
-              {branch_clause}
-              AND ano_mes = %(ano_mes)s
-              AND impacto_estimado_60d > 0
-              AND status_preco IN ('abaixo_minimo', 'abaixo_ideal')
-              AND entra_simulador_reajuste = 1
-            GROUP BY id_produto
-            HAVING SUM(impacto_estimado_60d) > 0
-            ORDER BY impacto_estimado_60d DESC
+                id_produto, nome_produto, nome_grupo_produto,
+                setor_gerencial,
+                toFloat64(receita_agg) / nullIf(qtd_vendida_agg, 0) AS preco_medio,
+                preco_ideal_sugerido,
+                reajuste_sugerido_valor, reajuste_sugerido_pct,
+                qtd_mes_anterior_agg AS qtd_mes_anterior,
+                impacto_60d_agg AS impacto_estimado_60d, status_preco,
+                1 - toFloat64(cmv_agg) / nullIf(receita_agg, 0) AS margem_bruta_pct
+            FROM (
+                SELECT
+                    id_produto,
+                    any(nome_produto) AS nome_produto,
+                    any(nome_grupo_produto) AS nome_grupo_produto,
+                    any(setor_gerencial) AS setor_gerencial,
+                    SUM(receita) AS receita_agg,
+                    SUM(qtd_vendida) AS qtd_vendida_agg,
+                    SUM(cmv) AS cmv_agg,
+                    AVG(preco_ideal_sugerido) AS preco_ideal_sugerido,
+                    AVG(reajuste_sugerido_valor) AS reajuste_sugerido_valor,
+                    AVG(reajuste_sugerido_pct) AS reajuste_sugerido_pct,
+                    SUM(qtd_mes_anterior) AS qtd_mes_anterior_agg,
+                    SUM(impacto_estimado_60d) AS impacto_60d_agg,
+                    any(status_preco) AS status_preco,
+                    SUM(entra_simulador_reajuste) AS entra_simulador_reajuste_sum
+                FROM torqmind_mart_rt.profit_produto_mensal FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  {branch_clause}
+                  AND ano_mes = %(ano_mes)s
+                GROUP BY id_produto
+                HAVING impacto_60d_agg > 0
+            )
+            WHERE status_preco IN ('abaixo_minimo', 'abaixo_ideal')
+              AND entra_simulador_reajuste_sum > 0
+            ORDER BY impacto_60d_agg DESC
             LIMIT %(limit)s
         """
     else:

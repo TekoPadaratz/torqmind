@@ -387,8 +387,8 @@ export default function ProfitManagementPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredProducts.map((p: any) => (
-                    <tr key={p.id_produto} style={{ borderBottom: "1px solid var(--border)" }}>
+                  {filteredProducts.map((p: any, idx: number) => (
+                    <tr key={`${p.id_produto}-${p.setor}-${idx}`} style={{ borderBottom: "1px solid var(--border)" }}>
                       <td style={{ padding: "6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nome_produto}</td>
                       <td style={{ padding: "6px 4px", textTransform: "capitalize" }}>{p.setor}</td>
                       <td style={{ padding: "6px 4px", textAlign: "right" }}>{Number(p.qtd_vendida).toFixed(0)}</td>
@@ -468,8 +468,8 @@ export default function ProfitManagementPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {repricing.oportunidades.map((op: any) => (
-                        <tr key={op.id_produto} style={{ borderBottom: "1px solid var(--border)" }}>
+                      {repricing.oportunidades.map((op: any, idx: number) => (
+                        <tr key={`${op.id_produto}-${idx}`} style={{ borderBottom: "1px solid var(--border)" }}>
                           <td style={{ padding: "6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{op.nome_produto}</td>
                           <td style={{ padding: "6px 4px", textTransform: "capitalize" }}>{op.setor}</td>
                           <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(op.preco_atual)}</td>
