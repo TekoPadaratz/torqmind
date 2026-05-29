@@ -687,7 +687,7 @@ def sales_overview_bundle(
     ]
 
     # --- Annual comparison ---
-    current_year = dt_fim.year
+    current_year = date.today().year
     prev_year = current_year - 1
     annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
     annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
@@ -2141,74 +2141,122 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Any, as_of: da
 
 
 def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0) -> Dict[str, Any]:
-    """Delinquency overview from stg_contasreceber in ClickHouse."""
+    """Delinquency overview from stg_contasreceber in ClickHouse.
+
+    Payload fields: DTAVCTO (vencimento ISO), VALOR, VLRPAGO, ID_ENTIDADE.
+    Dates come as ISO with TZ ('2023-08-10T00:00:00.000000-03:00') so we use substring(,1,10).
+    """
     filial = _branch_clause("id_filial", id_filial)
     as_of_str = as_of.isoformat()
 
+    # Step 1: Aggregate per client (lightweight, no join)
     rows = query_dict(f"""
         SELECT
-            toInt32(JSONExtractInt(payload, 'CODCLI')) AS id_cliente,
-            JSONExtractString(payload, 'CLIENTE') AS cliente_nome,
-            countIf(
-                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}})
-                AND toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}}) - 30
-            ) AS titulos_ate_30d,
-            sumIf(
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2),
-                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}})
-                AND toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}}) - 30
-            ) AS valor_ate_30d,
-            countIf(
-                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}}) - 30
-            ) AS titulos_acima_30d,
-            sumIf(
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2),
-                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}}) - 30
-            ) AS valor_acima_30d,
-            countIf(
-                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}})
-            ) AS titulos_a_vencer,
-            sumIf(
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2),
-                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}})
-            ) AS valor_a_vencer,
-            max(dateDiff('day', toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')), toDate({{as_of:String}}))) AS max_dias_atraso
-        FROM {CURRENT_DB}.stg_contasreceber FINAL
-        WHERE id_empresa = {{id_empresa:Int32}}
-          AND is_deleted = 0
-          AND (
-              toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2)
-          ) > 0
-          AND toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) IS NOT NULL
-          {filial}
-        GROUP BY id_cliente, cliente_nome
-        HAVING (titulos_ate_30d + titulos_acima_30d) > 0
-        ORDER BY titulos_acima_30d DESC, valor_ate_30d DESC
+            agg.id_cliente AS id_cliente,
+            COALESCE(e.nome, '') AS cliente_nome,
+            agg.titulos_1_30,
+            agg.valor_1_30,
+            agg.titulos_31_60,
+            agg.valor_31_60,
+            agg.titulos_61_90,
+            agg.valor_61_90,
+            agg.titulos_90_plus,
+            agg.valor_90_plus,
+            agg.titulos_a_vencer,
+            agg.valor_a_vencer,
+            agg.max_dias_atraso
+        FROM (
+            SELECT
+                toInt32(JSONExtractInt(payload, 'ID_ENTIDADE')) AS id_cliente,
+                countIf(
+                    vcto < toDate({{as_of:String}})
+                    AND vcto >= toDate({{as_of:String}}) - 30
+                ) AS titulos_1_30,
+                sumIf(saldo, vcto < toDate({{as_of:String}}) AND vcto >= toDate({{as_of:String}}) - 30) AS valor_1_30,
+                countIf(
+                    vcto < toDate({{as_of:String}}) - 30
+                    AND vcto >= toDate({{as_of:String}}) - 60
+                ) AS titulos_31_60,
+                sumIf(saldo, vcto < toDate({{as_of:String}}) - 30 AND vcto >= toDate({{as_of:String}}) - 60) AS valor_31_60,
+                countIf(
+                    vcto < toDate({{as_of:String}}) - 60
+                    AND vcto >= toDate({{as_of:String}}) - 90
+                ) AS titulos_61_90,
+                sumIf(saldo, vcto < toDate({{as_of:String}}) - 60 AND vcto >= toDate({{as_of:String}}) - 90) AS valor_61_90,
+                countIf(vcto < toDate({{as_of:String}}) - 90) AS titulos_90_plus,
+                sumIf(saldo, vcto < toDate({{as_of:String}}) - 90) AS valor_90_plus,
+                countIf(vcto >= toDate({{as_of:String}})) AS titulos_a_vencer,
+                sumIf(saldo, vcto >= toDate({{as_of:String}})) AS valor_a_vencer,
+                max(dateDiff('day', vcto, toDate({{as_of:String}}))) AS max_dias_atraso
+            FROM (
+                SELECT
+                    payload,
+                    toDateOrNull(substring(JSONExtractString(payload, 'DTAVCTO'), 1, 10)) AS vcto,
+                    toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2)
+                        - toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS saldo
+                FROM {CURRENT_DB}.stg_contasreceber FINAL
+                WHERE id_empresa = {{id_empresa:Int32}}
+                  AND is_deleted = 0
+                  {filial}
+            )
+            WHERE saldo > 0 AND vcto IS NOT NULL
+            GROUP BY id_cliente
+            HAVING (titulos_1_30 + titulos_31_60 + titulos_61_90 + titulos_90_plus) > 0
+            ORDER BY valor_90_plus DESC, valor_31_60 DESC, valor_1_30 DESC
+        ) AS agg
+        LEFT JOIN (
+            SELECT
+                toInt32(JSONExtractInt(payload, 'ID_ENTIDADE')) AS ent_id,
+                anyLast(JSONExtractString(payload, 'NOMEENTIDADE')) AS nome
+            FROM {CURRENT_DB}.stg_entidades FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} AND is_deleted = 0
+            GROUP BY ent_id
+        ) AS e ON agg.id_cliente = e.ent_id
     """, parameters={"id_empresa": int(id_empresa), "as_of": as_of_str})
 
     total_clientes = len(rows)
-    total_titulos = sum(_to_int(r.get("titulos_ate_30d")) + _to_int(r.get("titulos_acima_30d")) for r in rows)
-    valor_total = sum(_to_float(r.get("valor_ate_30d")) + _to_float(r.get("valor_acima_30d")) for r in rows)
-    sum_ate_30d = sum(_to_float(r.get("valor_ate_30d")) for r in rows)
-    sum_acima_30d = sum(_to_float(r.get("valor_acima_30d")) for r in rows)
-    tit_ate_30d = sum(_to_int(r.get("titulos_ate_30d")) for r in rows)
-    tit_acima_30d = sum(_to_int(r.get("titulos_acima_30d")) for r in rows)
+    total_titulos_vencidos = sum(
+        _to_int(r.get("titulos_1_30")) + _to_int(r.get("titulos_31_60"))
+        + _to_int(r.get("titulos_61_90")) + _to_int(r.get("titulos_90_plus"))
+        for r in rows
+    )
+    valor_total_vencido = sum(
+        _to_float(r.get("valor_1_30")) + _to_float(r.get("valor_31_60"))
+        + _to_float(r.get("valor_61_90")) + _to_float(r.get("valor_90_plus"))
+        for r in rows
+    )
+    sum_1_30 = sum(_to_float(r.get("valor_1_30")) for r in rows)
+    sum_31_60 = sum(_to_float(r.get("valor_31_60")) for r in rows)
+    sum_61_90 = sum(_to_float(r.get("valor_61_90")) for r in rows)
+    sum_90_plus = sum(_to_float(r.get("valor_90_plus")) for r in rows)
+    tit_1_30 = sum(_to_int(r.get("titulos_1_30")) for r in rows)
+    tit_31_60 = sum(_to_int(r.get("titulos_31_60")) for r in rows)
+    tit_61_90 = sum(_to_int(r.get("titulos_61_90")) for r in rows)
+    tit_90_plus = sum(_to_int(r.get("titulos_90_plus")) for r in rows)
     tit_a_vencer = sum(_to_int(r.get("titulos_a_vencer")) for r in rows)
     val_a_vencer = sum(_to_float(r.get("valor_a_vencer")) for r in rows)
     max_atraso = max((_to_int(r.get("max_dias_atraso")) for r in rows), default=0)
+    clientes_a_vencer = sum(1 for r in rows if _to_int(r.get("titulos_a_vencer")) > 0)
 
     customers_out = [
         {
             "id_cliente": _to_int(r.get("id_cliente")),
             "cliente_nome": r.get("cliente_nome") or "",
-            "titulos_ate_30d": _to_int(r.get("titulos_ate_30d")),
-            "valor_ate_30d": _to_float(r.get("valor_ate_30d")),
-            "titulos_acima_30d": _to_int(r.get("titulos_acima_30d")),
-            "valor_acima_30d": _to_float(r.get("valor_acima_30d")),
+            "titulos_1_30": _to_int(r.get("titulos_1_30")),
+            "valor_1_30": _to_float(r.get("valor_1_30")),
+            "titulos_31_60": _to_int(r.get("titulos_31_60")),
+            "valor_31_60": _to_float(r.get("valor_31_60")),
+            "titulos_61_90": _to_int(r.get("titulos_61_90")),
+            "valor_61_90": _to_float(r.get("valor_61_90")),
+            "titulos_90_plus": _to_int(r.get("titulos_90_plus")),
+            "valor_90_plus": _to_float(r.get("valor_90_plus")),
             "titulos_a_vencer": _to_int(r.get("titulos_a_vencer")),
             "valor_a_vencer": _to_float(r.get("valor_a_vencer")),
             "max_dias_atraso": _to_int(r.get("max_dias_atraso")),
-            "valor_total_vencido": round(_to_float(r.get("valor_ate_30d")) + _to_float(r.get("valor_acima_30d")), 2),
+            "valor_total_vencido": round(
+                _to_float(r.get("valor_1_30")) + _to_float(r.get("valor_31_60"))
+                + _to_float(r.get("valor_61_90")) + _to_float(r.get("valor_90_plus")), 2
+            ),
         }
         for r in rows
     ]
@@ -2216,19 +2264,22 @@ def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, a
     return {
         "summary": {
             "clientes_em_aberto": total_clientes,
-            "titulos_em_aberto": total_titulos,
-            "valor_total": round(valor_total, 2),
-            "titulos_ate_30d": tit_ate_30d,
-            "valor_ate_30d": round(sum_ate_30d, 2),
-            "titulos_acima_30d": tit_acima_30d,
-            "valor_acima_30d": round(sum_acima_30d, 2),
+            "titulos_em_aberto": total_titulos_vencidos,
+            "valor_total": round(valor_total_vencido, 2),
+            "titulos_ate_30d": tit_1_30,
+            "valor_ate_30d": round(sum_1_30, 2),
+            "titulos_acima_30d": tit_31_60 + tit_61_90 + tit_90_plus,
+            "valor_acima_30d": round(sum_31_60 + sum_61_90 + sum_90_plus, 2),
             "titulos_a_vencer": tit_a_vencer,
             "valor_a_vencer": round(val_a_vencer, 2),
+            "clientes_a_vencer": clientes_a_vencer,
             "max_dias_atraso": max_atraso,
         },
         "buckets": [
-            {"bucket": "1_30", "label": "Até 30 dias", "valor": round(sum_ate_30d, 2), "titulos": tit_ate_30d},
-            {"bucket": "31_plus", "label": "30+ dias", "valor": round(sum_acima_30d, 2), "titulos": tit_acima_30d},
+            {"bucket": "1_30", "label": "1-30 dias", "valor": round(sum_1_30, 2), "titulos": tit_1_30},
+            {"bucket": "31_60", "label": "31-60 dias", "valor": round(sum_31_60, 2), "titulos": tit_31_60},
+            {"bucket": "61_90", "label": "61-90 dias", "valor": round(sum_61_90, 2), "titulos": tit_61_90},
+            {"bucket": "90_plus", "label": "90+ dias", "valor": round(sum_90_plus, 2), "titulos": tit_90_plus},
         ],
         "customers": customers_out,
         "dt_ref": as_of.isoformat(),
