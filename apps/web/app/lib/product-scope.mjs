@@ -7,6 +7,7 @@ export const PRODUCT_LINKS = [
   { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
   { path: '/customers', label: 'Clientes', screen_key: 'customers' },
   { path: '/finance', label: 'Financeiro', screen_key: 'finance' },
+  { path: '/profit-management', label: 'Gestão de Lucro', screen_key: 'profit_management' },
   { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
   { path: '/goals', label: 'Metas & Equipe', screen_key: 'goals_team' },
 ];

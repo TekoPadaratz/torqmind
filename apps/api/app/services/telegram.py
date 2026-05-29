@@ -527,6 +527,21 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
         data_emissao = _format_datetime(_get_any(row, ["DATAEMISSAO", "DATA_EMISSAO", "data_emissao", "DATA", "data"]) or "")
         id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario", "ID_USUARIO"]))
 
+        # NFE rows often lack ID_USUARIOS; resolve from parent comprovante
+        if not id_usuario and id_comprovante and id_filial:
+            try:
+                with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+                    user_row = conn.execute(
+                        "SELECT (payload->>'ID_USUARIOS')::int AS id_usuario "
+                        "FROM stg.comprovantes "
+                        "WHERE id_empresa=%s AND id_filial=%s AND id_comprovante=%s LIMIT 1",
+                        (id_empresa, id_filial, id_comprovante),
+                    ).fetchone()
+                    if user_row and user_row.get("id_usuario"):
+                        id_usuario = int(user_row["id_usuario"])
+            except Exception:
+                pass
+
         nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None
 
         try:

@@ -1,10 +1,10 @@
 BEGIN;
 
 -- ==========================================
--- Mart dedicada: Prioridades de CobranÁa (clientes inadimplentes)
+-- Mart dedicada: Prioridades de Cobran√ßa (clientes inadimplentes)
 -- Grain: (id_empresa, id_filial, id_cliente)
--- Apenas clientes com ao menos 1 tÌtulo vencido
--- Inclui tÌtulos a vencer do MESMO cliente inadimplente
+-- Apenas clientes com ao menos 1 t√≠tulo vencido
+-- Inclui t√≠tulos a vencer do MESMO cliente inadimplente
 -- ==========================================
 
 CREATE TABLE IF NOT EXISTS mart.customer_delinquency_summary (
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS mart.customer_delinquency_summary (
   PRIMARY KEY (id_empresa, id_filial, id_cliente)
 );
 
--- Sort por gravidade (default): primeiro quem tem mais vencidos 30+, depois atÈ 30d
+-- Sort por gravidade (default): primeiro quem tem mais vencidos 30+, depois at√© 30d
 CREATE INDEX IF NOT EXISTS ix_delinq_gravity
   ON mart.customer_delinquency_summary (id_empresa, id_filial, titulos_acima_30d DESC, titulos_ate_30d DESC, valor_total_vencido DESC);
 
@@ -117,16 +117,16 @@ BEGIN
       t.id_empresa,
       t.id_filial,
       t.id_cliente,
-      -- TÌtulos vencidos atÈ 30 dias
+      -- T√≠tulos vencidos at√© 30 dias
       COUNT(*) FILTER (WHERE t.is_vencido AND t.dias_atraso BETWEEN 1 AND 30)::int AS titulos_ate_30d,
       COALESCE(SUM(t.valor_aberto) FILTER (WHERE t.is_vencido AND t.dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_ate_30d,
-      -- TÌtulos vencidos acima de 30 dias
+      -- T√≠tulos vencidos acima de 30 dias
       COUNT(*) FILTER (WHERE t.is_vencido AND t.dias_atraso > 30)::int AS titulos_acima_30d,
       COALESCE(SUM(t.valor_aberto) FILTER (WHERE t.is_vencido AND t.dias_atraso > 30), 0)::numeric(18,2) AS valor_acima_30d,
-      -- TÌtulos a vencer (ainda n„o venceram mas cliente È inadimplente)
+      -- T√≠tulos a vencer (ainda n√£o venceram mas cliente √© inadimplente)
       COUNT(*) FILTER (WHERE NOT t.is_vencido)::int AS titulos_a_vencer,
       COALESCE(SUM(t.valor_aberto) FILTER (WHERE NOT t.is_vencido), 0)::numeric(18,2) AS valor_a_vencer,
-      -- MÈtricas gerais
+      -- M√©tricas gerais
       COALESCE(MAX(t.dias_atraso) FILTER (WHERE t.is_vencido), 0)::int AS max_dias_atraso,
       COALESCE(SUM(t.valor_aberto) FILTER (WHERE t.is_vencido), 0)::numeric(18,2) AS valor_total_vencido
     FROM titulos_com_saldo t
