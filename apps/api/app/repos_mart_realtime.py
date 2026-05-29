@@ -2047,6 +2047,1208 @@ def monthly_goal_projection(role: str, id_empresa: int, id_filial: Any, as_of: O
 
 
 # ================================================================
+# CUSTOMERS — top / rfm / delinquency / churn / retention
+# ================================================================
+
+def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
+    """Top customers by revenue in the period."""
+    filial = _branch_clause("s.id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            s.id_cliente,
+            coalesce(nullIf(c.nome, ''), concat('#ID ', toString(s.id_cliente))) AS cliente_nome,
+            sum(s.valor_total) AS faturamento,
+            toUInt32(count()) AS compras,
+            max(s.data_key) AS ultima_compra,
+            if(count() = 0, toDecimal64(0, 2), toDecimal64(sum(s.valor_total) / count(), 2)) AS ticket_medio
+        FROM {CURRENT_DB}.stg_comprovantes_slim AS s
+        LEFT JOIN (
+            SELECT id_empresa, id_cliente, argMax(nome, source_ts_ms) AS nome
+            FROM {CURRENT_DB}.dim_cliente FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} AND is_deleted = 0
+            GROUP BY id_empresa, id_cliente
+        ) AS c ON s.id_empresa = c.id_empresa AND s.id_cliente = c.id_cliente
+        WHERE s.id_empresa = {{id_empresa:Int32}}
+          AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND s.cancelado = 0 AND s.is_deleted = 0
+          AND s.situacao != 3
+          AND s.id_cliente > 0
+          {filial}
+        GROUP BY s.id_cliente, c.nome
+        ORDER BY faturamento DESC, compras DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "limit": int(limit),
+    })
+    return [
+        {
+            "id_cliente": _to_int(r.get("id_cliente")),
+            "cliente_nome": r.get("cliente_nome") or "",
+            "faturamento": _to_float(r.get("faturamento")),
+            "compras": _to_int(r.get("compras")),
+            "ultima_compra": r.get("ultima_compra"),
+            "ticket_medio": _to_float(r.get("ticket_medio")),
+        }
+        for r in rows
+    ]
+
+
+def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Any, as_of: date) -> Dict[str, Any]:
+    """Lightweight RFM-like snapshot."""
+    filial = _branch_clause("id_filial", id_filial)
+    dt_90 = as_of - timedelta(days=90)
+    dt_7 = as_of - timedelta(days=7)
+    dt_30 = as_of - timedelta(days=30)
+    row = query_dict(f"""
+        SELECT
+            uniqExact(id_cliente) AS clientes_identificados,
+            uniqExactIf(id_cliente, data_key >= {{key_7d:Int32}}) AS ativos_7d,
+            uniqExactIf(id_cliente, max_dk < {{key_30d:Int32}}) AS em_risco_30d_raw,
+            sum(valor_total) AS faturamento_90d
+        FROM (
+            SELECT
+                id_cliente,
+                sum(valor_total) AS valor_total,
+                max(data_key) AS max_dk,
+                min(data_key) AS min_dk
+            FROM {CURRENT_DB}.stg_comprovantes_slim
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND data_key BETWEEN {{key_90d:Int32}} AND {{key_as_of:Int32}}
+              AND cancelado = 0 AND is_deleted = 0 AND situacao != 3
+              AND id_cliente > 0
+              {filial}
+            GROUP BY id_cliente
+        )
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "key_90d": _date_key(dt_90),
+        "key_as_of": _date_key(as_of),
+        "key_7d": _date_key(dt_7),
+        "key_30d": _date_key(dt_30),
+    })
+    if row:
+        r = row[0]
+        return {
+            "clientes_identificados": _to_int(r.get("clientes_identificados")),
+            "ativos_7d": _to_int(r.get("ativos_7d")),
+            "em_risco_30d": _to_int(r.get("em_risco_30d_raw")),
+            "faturamento_90d": _to_float(r.get("faturamento_90d")),
+        }
+    return {"clientes_identificados": 0, "ativos_7d": 0, "em_risco_30d": 0, "faturamento_90d": 0.0}
+
+
+def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0) -> Dict[str, Any]:
+    """Delinquency overview from stg_contasreceber in ClickHouse."""
+    filial = _branch_clause("id_filial", id_filial)
+    as_of_str = as_of.isoformat()
+
+    rows = query_dict(f"""
+        SELECT
+            toInt32(JSONExtractInt(payload, 'CODCLI')) AS id_cliente,
+            JSONExtractString(payload, 'CLIENTE') AS cliente_nome,
+            countIf(
+                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}})
+                AND toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}}) - 30
+            ) AS titulos_ate_30d,
+            sumIf(
+                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2),
+                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}})
+                AND toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}}) - 30
+            ) AS valor_ate_30d,
+            countIf(
+                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}}) - 30
+            ) AS titulos_acima_30d,
+            sumIf(
+                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2),
+                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) < toDate({{as_of:String}}) - 30
+            ) AS valor_acima_30d,
+            countIf(
+                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}})
+            ) AS titulos_a_vencer,
+            sumIf(
+                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2),
+                toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) >= toDate({{as_of:String}})
+            ) AS valor_a_vencer,
+            max(dateDiff('day', toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')), toDate({{as_of:String}}))) AS max_dias_atraso
+        FROM {CURRENT_DB}.stg_contasreceber FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND (
+              toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) - toDecimal64OrZero(JSONExtractString(payload, 'VALORPAGO'), 2)
+          ) > 0
+          AND toDateOrNull(JSONExtractString(payload, 'VENCIMENTO')) IS NOT NULL
+          {filial}
+        GROUP BY id_cliente, cliente_nome
+        HAVING (titulos_ate_30d + titulos_acima_30d) > 0
+        ORDER BY titulos_acima_30d DESC, valor_ate_30d DESC
+    """, parameters={"id_empresa": int(id_empresa), "as_of": as_of_str})
+
+    total_clientes = len(rows)
+    total_titulos = sum(_to_int(r.get("titulos_ate_30d")) + _to_int(r.get("titulos_acima_30d")) for r in rows)
+    valor_total = sum(_to_float(r.get("valor_ate_30d")) + _to_float(r.get("valor_acima_30d")) for r in rows)
+    sum_ate_30d = sum(_to_float(r.get("valor_ate_30d")) for r in rows)
+    sum_acima_30d = sum(_to_float(r.get("valor_acima_30d")) for r in rows)
+    tit_ate_30d = sum(_to_int(r.get("titulos_ate_30d")) for r in rows)
+    tit_acima_30d = sum(_to_int(r.get("titulos_acima_30d")) for r in rows)
+    tit_a_vencer = sum(_to_int(r.get("titulos_a_vencer")) for r in rows)
+    val_a_vencer = sum(_to_float(r.get("valor_a_vencer")) for r in rows)
+    max_atraso = max((_to_int(r.get("max_dias_atraso")) for r in rows), default=0)
+
+    customers_out = [
+        {
+            "id_cliente": _to_int(r.get("id_cliente")),
+            "cliente_nome": r.get("cliente_nome") or "",
+            "titulos_ate_30d": _to_int(r.get("titulos_ate_30d")),
+            "valor_ate_30d": _to_float(r.get("valor_ate_30d")),
+            "titulos_acima_30d": _to_int(r.get("titulos_acima_30d")),
+            "valor_acima_30d": _to_float(r.get("valor_acima_30d")),
+            "titulos_a_vencer": _to_int(r.get("titulos_a_vencer")),
+            "valor_a_vencer": _to_float(r.get("valor_a_vencer")),
+            "max_dias_atraso": _to_int(r.get("max_dias_atraso")),
+            "valor_total_vencido": round(_to_float(r.get("valor_ate_30d")) + _to_float(r.get("valor_acima_30d")), 2),
+        }
+        for r in rows
+    ]
+
+    return {
+        "summary": {
+            "clientes_em_aberto": total_clientes,
+            "titulos_em_aberto": total_titulos,
+            "valor_total": round(valor_total, 2),
+            "titulos_ate_30d": tit_ate_30d,
+            "valor_ate_30d": round(sum_ate_30d, 2),
+            "titulos_acima_30d": tit_acima_30d,
+            "valor_acima_30d": round(sum_acima_30d, 2),
+            "titulos_a_vencer": tit_a_vencer,
+            "valor_a_vencer": round(val_a_vencer, 2),
+            "max_dias_atraso": max_atraso,
+        },
+        "buckets": [
+            {"bucket": "1_30", "label": "Até 30 dias", "valor": round(sum_ate_30d, 2), "titulos": tit_ate_30d},
+            {"bucket": "31_plus", "label": "30+ dias", "valor": round(sum_acima_30d, 2), "titulos": tit_acima_30d},
+        ],
+        "customers": customers_out,
+        "dt_ref": as_of.isoformat(),
+    }
+
+
+def customers_churn_bundle(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    as_of: Optional[date] = None,
+    min_score: int = 60,
+    limit: int = 20,
+) -> Dict[str, Any]:
+    """Churn bundle using recency/frequency from stg_comprovantes_slim."""
+    effective_as_of = as_of or business_today(id_empresa)
+    filial = _branch_clause("id_filial", id_filial)
+
+    rows = query_dict(f"""
+        SELECT
+            id_cliente,
+            any(cliente_nome) AS cliente_nome,
+            max(data_key) AS last_purchase_key,
+            dateDiff('day', toDate(toString(max(data_key)), 'yyyyMMdd'), toDate({{as_of:String}})) AS recency_days,
+            toUInt32(countIf(data_key >= {{key_30d:Int32}})) AS frequency_30,
+            toUInt32(countIf(data_key >= {{key_90d:Int32}})) AS frequency_90,
+            sumIf(valor_total, data_key >= {{key_30d:Int32}}) AS monetary_30,
+            sumIf(valor_total, data_key >= {{key_90d:Int32}}) AS monetary_90,
+            if(frequency_30 > 0, monetary_30 / frequency_30, toDecimal64(0, 2)) AS ticket_30,
+            -- Simple churn score: higher recency + lower frequency = higher risk
+            toInt32(least(100, greatest(0,
+                toInt32(recency_days) * 2
+                - toInt32(frequency_30) * 10
+                - toInt32(frequency_90) * 3
+                + 40
+            ))) AS churn_score
+        FROM (
+            SELECT
+                s.id_cliente,
+                coalesce(nullIf(c.nome, ''), concat('#ID ', toString(s.id_cliente))) AS cliente_nome,
+                s.data_key,
+                s.valor_total
+            FROM {CURRENT_DB}.stg_comprovantes_slim AS s
+            LEFT JOIN (
+                SELECT id_empresa, id_cliente, argMax(nome, source_ts_ms) AS nome
+                FROM {CURRENT_DB}.dim_cliente FINAL
+                WHERE id_empresa = {{id_empresa:Int32}} AND is_deleted = 0
+                GROUP BY id_empresa, id_cliente
+            ) AS c ON s.id_empresa = c.id_empresa AND s.id_cliente = c.id_cliente
+            WHERE s.id_empresa = {{id_empresa:Int32}}
+              AND s.data_key BETWEEN {{key_180d:Int32}} AND {{key_as_of:Int32}}
+              AND s.cancelado = 0 AND s.is_deleted = 0 AND s.situacao != 3
+              AND s.id_cliente > 0
+              {filial}
+        )
+        GROUP BY id_cliente
+        HAVING churn_score >= {{min_score:Int32}}
+        ORDER BY churn_score DESC, monetary_30 DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "as_of": effective_as_of.isoformat(),
+        "key_30d": _date_key(effective_as_of - timedelta(days=30)),
+        "key_90d": _date_key(effective_as_of - timedelta(days=90)),
+        "key_180d": _date_key(effective_as_of - timedelta(days=180)),
+        "key_as_of": _date_key(effective_as_of),
+        "min_score": int(min_score),
+        "limit": int(limit),
+    })
+
+    formatted = [
+        {
+            "id_cliente": _to_int(r.get("id_cliente")),
+            "cliente_nome": r.get("cliente_nome") or "",
+            "last_purchase": r.get("last_purchase_key"),
+            "recency_days": _to_int(r.get("recency_days")),
+            "frequency_30": _to_int(r.get("frequency_30")),
+            "frequency_90": _to_int(r.get("frequency_90")),
+            "monetary_30": _to_float(r.get("monetary_30")),
+            "monetary_90": _to_float(r.get("monetary_90")),
+            "ticket_30": _to_float(r.get("ticket_30")),
+            "churn_score": _to_int(r.get("churn_score")),
+            "revenue_at_risk_30d": _to_float(r.get("monetary_30")),
+            "recommendation": "Ativar contato comercial",
+            "reasons": "Recência elevada e frequência em queda",
+            "dt_ref": effective_as_of.isoformat(),
+        }
+        for r in rows
+    ]
+
+    avg_score = round(sum(r.get("churn_score", 0) for r in formatted) / len(formatted), 2) if formatted else 0.0
+    total_risk = sum(_to_float(r.get("revenue_at_risk_30d")) for r in formatted)
+
+    return {
+        "top_risk": formatted,
+        "summary": {
+            "total_top_risk": len(formatted),
+            "avg_churn_score": avg_score,
+            "revenue_at_risk_30d": round(total_risk, 2),
+        },
+        "snapshot_meta": {
+            "snapshot_status": "operational_current",
+            "precision_mode": "operational_current",
+            "effective_dt_ref": effective_as_of.isoformat(),
+            "source_table": "stg_comprovantes_slim",
+            "source_kind": "realtime",
+        },
+    }
+
+
+def customers_churn_snapshot_meta(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    as_of: Optional[date],
+) -> Dict[str, Any]:
+    """Churn snapshot meta summary."""
+    effective_as_of = as_of or business_today(id_empresa)
+    filial = _branch_clause("id_filial", id_filial)
+
+    row = query_dict(f"""
+        SELECT
+            uniqExact(id_cliente) AS total_risk,
+            avg(churn_score) AS average_score
+        FROM (
+            SELECT
+                id_cliente,
+                toInt32(least(100, greatest(0,
+                    toInt32(dateDiff('day', toDate(toString(max(data_key)), 'yyyyMMdd'), toDate({{as_of:String}}))) * 2
+                    - toInt32(countIf(data_key >= {{key_30d:Int32}})) * 10
+                    - toInt32(countIf(data_key >= {{key_90d:Int32}})) * 3
+                    + 40
+                ))) AS churn_score
+            FROM {CURRENT_DB}.stg_comprovantes_slim
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND data_key BETWEEN {{key_180d:Int32}} AND {{key_as_of:Int32}}
+              AND cancelado = 0 AND is_deleted = 0 AND situacao != 3
+              AND id_cliente > 0
+              {filial}
+            GROUP BY id_cliente
+            HAVING churn_score >= 40
+        )
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "as_of": effective_as_of.isoformat(),
+        "key_30d": _date_key(effective_as_of - timedelta(days=30)),
+        "key_90d": _date_key(effective_as_of - timedelta(days=90)),
+        "key_180d": _date_key(effective_as_of - timedelta(days=180)),
+        "key_as_of": _date_key(effective_as_of),
+    })
+
+    r = row[0] if row else {}
+    return {
+        "total_risk": _to_int(r.get("total_risk")),
+        "average_score": _to_float(r.get("average_score")),
+        "computed_at": effective_as_of.isoformat(),
+        "snapshot_status": "operational_current",
+        "precision_mode": "operational_current",
+        "effective_dt_ref": effective_as_of.isoformat(),
+        "source_table": "stg_comprovantes_slim",
+        "source_kind": "realtime",
+    }
+
+
+def customer_churn_drilldown(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    id_cliente: int,
+    dt_ini: date,
+    dt_fim: date,
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Churn drilldown for a specific customer."""
+    filial = _branch_clause("id_filial", id_filial)
+    series = query_dict(f"""
+        SELECT
+            data_key,
+            sum(valor_total) AS faturamento,
+            toUInt32(count()) AS compras
+        FROM {CURRENT_DB}.stg_comprovantes_slim
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND id_cliente = {{id_cliente:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND cancelado = 0 AND is_deleted = 0 AND situacao != 3
+          {filial}
+        GROUP BY data_key
+        ORDER BY data_key
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "id_cliente": int(id_cliente),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+
+    snapshot_meta = customers_churn_snapshot_meta(role, id_empresa, id_filial, as_of)
+    return {
+        "snapshot": {},
+        "series": [{"data_key": r.get("data_key"), "faturamento": _to_float(r.get("faturamento")), "compras": _to_int(r.get("compras"))} for r in series],
+        "snapshot_meta": snapshot_meta,
+    }
+
+
+def anonymous_retention_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    """Anonymous retention overview from comprovantes."""
+    filial = _branch_clause("id_filial", id_filial)
+    # Compare period with prior 28 days
+    period_days = max((dt_fim - dt_ini).days + 1, 1)
+    prior_start = dt_ini - timedelta(days=28)
+
+    row = query_dict(f"""
+        SELECT
+            sumIf(valor_total, id_cliente <= 0 AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}) AS anon_faturamento_7d,
+            sumIf(valor_total, id_cliente <= 0 AND data_key BETWEEN {{prior_ini:Int32}} AND {{prior_fim:Int32}}) AS anon_faturamento_prev_28d,
+            sumIf(valor_total, data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}) AS total_faturamento_period,
+            uniqExactIf(id_cliente, id_cliente > 0 AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}) AS identified_period,
+            uniqExactIf(id_cliente, id_cliente > 0 AND data_key BETWEEN {{prior_ini:Int32}} AND {{prior_fim:Int32}}) AS identified_prior
+        FROM {CURRENT_DB}.stg_comprovantes_slim
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{prior_ini:Int32}} AND {{fim:Int32}}
+          AND cancelado = 0 AND is_deleted = 0 AND situacao != 3
+          {filial}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "prior_ini": _date_key(prior_start),
+        "prior_fim": _date_key(dt_ini - timedelta(days=1)),
+    })
+
+    r = row[0] if row else {}
+    anon_current = _to_float(r.get("anon_faturamento_7d"))
+    anon_prev = _to_float(r.get("anon_faturamento_prev_28d"))
+    total_period = _to_float(r.get("total_faturamento_period"))
+    trend_pct = round(((anon_current - anon_prev) / anon_prev * 100) if anon_prev > 0 else 0.0, 2)
+    anon_share = round((anon_current / total_period * 100) if total_period > 0 else 0.0, 2)
+    repeat_idx = round((_to_float(r.get("identified_period")) / max(_to_float(r.get("identified_prior")), 1)) * 100, 2)
+    impact = round(anon_current * max(0, -trend_pct) / 100, 2) if trend_pct < 0 else 0.0
+
+    recommendation = (
+        "Recorrência anônima caiu. Ajuste a operação por horário/dia, reveja o mix de produtos e acione promoções de retorno."
+        if trend_pct < -8
+        else "Recorrência anônima estável. Monitore horários de maior queda e mantenha ações de fidelização."
+    )
+
+    return {
+        "kpis": {
+            "impact_estimated_7d": impact,
+            "trend_pct": trend_pct,
+            "repeat_proxy_idx": repeat_idx,
+            "severity": "CRITICAL" if trend_pct <= -15 else ("WARN" if trend_pct <= -8 else "OK"),
+            "recommendation": recommendation,
+        },
+        "latest": [],
+        "series": [],
+        "breakdown_dow": [],
+        "breakdown_hour": [],
+        "mix": [],
+    }
+
+
+# ================================================================
+# FINANCE — series / aging
+# ================================================================
+
+def finance_series(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    """Daily finance series from finance_overview_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            tipo_titulo,
+            faixa,
+            id_filial,
+            qtd_titulos,
+            valor_total,
+            valor_pago_total,
+            valor_em_aberto
+        FROM {MART_RT_DB}.finance_overview_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+    """, parameters={"id_empresa": int(id_empresa)})
+
+    # Map to daily-like format for compatibility
+    return [
+        {
+            "data_key": _date_key(dt_ini),
+            "id_filial": _to_int(r.get("id_filial")),
+            "tipo_titulo": _to_int(r.get("tipo_titulo")),
+            "valor_total": _to_float(r.get("valor_total")),
+            "valor_pago": _to_float(r.get("valor_pago_total")),
+            "valor_aberto": _to_float(r.get("valor_em_aberto")),
+        }
+        for r in rows
+    ]
+
+
+def finance_aging_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Finance aging overview from finance_overview_rt."""
+    requested_as_of = as_of or business_today(id_empresa)
+    filial = _branch_clause("id_filial", id_filial)
+
+    rows = query_dict(f"""
+        SELECT
+            tipo_titulo,
+            faixa,
+            sum(qtd_titulos) AS qtd_titulos,
+            sum(valor_total) AS valor_total,
+            sum(valor_pago_total) AS valor_pago_total,
+            sum(valor_em_aberto) AS valor_em_aberto
+        FROM {MART_RT_DB}.finance_overview_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+        GROUP BY tipo_titulo, faixa
+    """, parameters={"id_empresa": int(id_empresa)})
+
+    receber_total = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 1)
+    receber_vencido = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 1 and str(r.get("faixa", "")).startswith("venc"))
+    pagar_total = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 0)
+    pagar_vencido = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 0 and str(r.get("faixa", "")).startswith("venc"))
+
+    return {
+        "dt_ref": requested_as_of.isoformat(),
+        "receber_total_aberto": round(receber_total, 2),
+        "receber_total_vencido": round(receber_vencido, 2),
+        "pagar_total_aberto": round(pagar_total, 2),
+        "pagar_total_vencido": round(pagar_vencido, 2),
+        "bucket_0_7": 0.0,
+        "bucket_8_15": 0.0,
+        "bucket_16_30": 0.0,
+        "bucket_31_60": 0.0,
+        "bucket_60_plus": 0.0,
+        "top5_concentration_pct": 0.0,
+        "data_gaps": receber_total == 0 and pagar_total == 0,
+        "snapshot_rows": len(rows),
+        "snapshot_status": "operational_current",
+        "precision_mode": "operational_current",
+        "effective_dt_ref": requested_as_of.isoformat(),
+        "source": "realtime",
+    }
+
+
+# ================================================================
+# RISK — kpis / series / last_events / by_turn_local / window / coverage
+# ================================================================
+
+def risk_kpis(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    """Risk KPIs from risk_recent_events_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    row = query_dict(f"""
+        SELECT
+            toUInt32(count()) AS total_eventos,
+            toUInt32(countIf(score_level = 'HIGH' OR score_level = 'CRITICAL')) AS eventos_alto_risco,
+            sum(impacto_estimado) AS impacto_total,
+            avg(score_risco) AS score_medio
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+    r = row[0] if row else {}
+    return {
+        "total_eventos": _to_int(r.get("total_eventos")),
+        "eventos_alto_risco": _to_int(r.get("eventos_alto_risco")),
+        "impacto_total": _to_float(r.get("impacto_total")),
+        "score_medio": _to_float(r.get("score_medio")),
+    }
+
+
+def risk_series(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    """Daily risk series."""
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            data_key,
+            id_filial,
+            toUInt32(count()) AS eventos_risco_total,
+            toUInt32(countIf(score_level = 'HIGH' OR score_level = 'CRITICAL')) AS eventos_alto_risco,
+            sum(impacto_estimado) AS impacto_estimado_total,
+            avg(score_risco) AS score_medio,
+            quantile(0.95)(score_risco) AS p95_score
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial}
+        GROUP BY data_key, id_filial
+        ORDER BY data_key, id_filial
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+    return [
+        {
+            "data_key": _to_int(r.get("data_key")),
+            "id_filial": _to_int(r.get("id_filial")),
+            "eventos_risco_total": _to_int(r.get("eventos_risco_total")),
+            "eventos_alto_risco": _to_int(r.get("eventos_alto_risco")),
+            "impacto_estimado_total": _to_float(r.get("impacto_estimado_total")),
+            "score_medio": _to_float(r.get("score_medio")),
+            "p95_score": _to_float(r.get("p95_score")),
+        }
+        for r in rows
+    ]
+
+
+def risk_last_events(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 30,
+) -> List[Dict[str, Any]]:
+    """Last risk events from risk_recent_events_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            id,
+            id_filial,
+            data_key,
+            event_type,
+            nome_operador,
+            id_funcionario,
+            nome_funcionario,
+            valor_total,
+            impacto_estimado,
+            score_risco,
+            score_level,
+            reasons
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial}
+        ORDER BY data_key DESC, id DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "limit": int(limit),
+    })
+    result = []
+    for r in rows:
+        funcionario_nome = r.get("nome_funcionario") or r.get("nome_operador") or ""
+        result.append({
+            "id": _to_int(r.get("id")),
+            "id_filial": _to_int(r.get("id_filial")),
+            "filial_nome": "",
+            "data_key": _to_int(r.get("data_key")),
+            "event_type": r.get("event_type") or "",
+            "id_funcionario": r.get("id_funcionario"),
+            "funcionario_nome": funcionario_nome,
+            "valor_total": _to_float(r.get("valor_total")),
+            "impacto_estimado": _to_float(r.get("impacto_estimado")),
+            "score_risco": _to_int(r.get("score_risco")),
+            "score_level": r.get("score_level") or "",
+            "reasons": r.get("reasons") or "{}",
+            "filial_label": _filial_label(_to_int(r.get("id_filial")), ""),
+            "funcionario_label": funcionario_nome or f"#{r.get('id_funcionario') or 0}",
+            "event_label": r.get("event_type") or "",
+        })
+    return result
+
+
+def risk_by_turn_local(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    """Risk aggregated by turn from risk_recent_events_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            id_filial,
+            id_usuario AS id_turno,
+            toUInt32(count()) AS eventos,
+            toUInt32(countIf(score_level = 'HIGH' OR score_level = 'CRITICAL')) AS alto_risco,
+            sum(impacto_estimado) AS impacto_estimado,
+            avg(score_risco) AS score_medio
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial}
+        GROUP BY id_filial, id_usuario
+        ORDER BY impacto_estimado DESC, score_medio DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "limit": int(limit),
+    })
+    return [
+        {
+            "id_filial": _to_int(r.get("id_filial")),
+            "filial_nome": "",
+            "id_turno": _to_int(r.get("id_turno")),
+            "eventos": _to_int(r.get("eventos")),
+            "alto_risco": _to_int(r.get("alto_risco")),
+            "impacto_estimado": _to_float(r.get("impacto_estimado")),
+            "score_medio": _to_float(r.get("score_medio")),
+            "filial_label": _filial_label(_to_int(r.get("id_filial")), ""),
+            "turno_label": _turno_label(None, _to_int(r.get("id_turno"))),
+        }
+        for r in rows
+    ]
+
+
+def risk_data_window(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]:
+    """Data window available for risk."""
+    filial = _branch_clause("id_filial", id_filial)
+    row = query_dict(f"""
+        SELECT
+            min(data_key) AS min_data_key,
+            max(data_key) AS max_data_key,
+            toUInt32(count()) AS rows
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+    """, parameters={"id_empresa": int(id_empresa)})
+    r = row[0] if row else {}
+    return {
+        "min_data_key": r.get("min_data_key") if _to_int(r.get("rows")) > 0 else None,
+        "max_data_key": r.get("max_data_key") if _to_int(r.get("rows")) > 0 else None,
+        "rows": _to_int(r.get("rows")),
+    }
+
+
+def risk_model_coverage(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    """Model coverage based on risk data window."""
+    risk_window = risk_data_window(role, id_empresa, id_filial)
+    requested_start_key = _date_key(dt_ini)
+    requested_end_key = _date_key(dt_fim)
+    requested_days = max((dt_fim - dt_ini).days + 1, 0)
+    window_start_key = _to_int(risk_window.get("min_data_key"))
+    window_end_key = _to_int(risk_window.get("max_data_key"))
+
+    if window_start_key <= 0 or window_end_key <= 0:
+        return {
+            "status": "unavailable",
+            "covered_fully": False,
+            "requested_days": requested_days,
+            "covered_days": 0,
+            "requested_start_key": requested_start_key,
+            "requested_end_key": requested_end_key,
+            "covered_start_key": None,
+            "covered_end_key": None,
+            "message": "A leitura modelada ainda não tem janela pronta para este escopo. A leitura operacional segue válida no período.",
+        }
+
+    covered_start_key = max(requested_start_key, window_start_key)
+    covered_end_key = min(requested_end_key, window_end_key)
+
+    # Parse date keys
+    def _date_from_key(k: int) -> date:
+        s = str(k)
+        return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+    covered_start = _date_from_key(covered_start_key)
+    covered_end = _date_from_key(covered_end_key)
+    covered_days = max((covered_end - covered_start).days + 1, 0) if covered_end >= covered_start else 0
+    covered_fully = window_start_key <= requested_start_key and window_end_key >= requested_end_key
+
+    if covered_fully:
+        status = "covered"
+        message = "A leitura modelada cobre todo o período selecionado."
+    elif covered_days > 0:
+        status = "partial"
+        message = f"A leitura modelada cobre de {covered_start.strftime('%d/%m/%Y')} a {covered_end.strftime('%d/%m/%Y')}."
+    else:
+        status = "not_covered"
+        message = "A leitura modelada não cobre este período."
+
+    return {
+        "status": status,
+        "covered_fully": covered_fully,
+        "requested_days": requested_days,
+        "covered_days": covered_days,
+        "requested_start_key": requested_start_key,
+        "requested_end_key": requested_end_key,
+        "covered_start_key": covered_start_key if covered_days > 0 else None,
+        "covered_end_key": covered_end_key if covered_days > 0 else None,
+        "window_start_key": window_start_key,
+        "window_end_key": window_end_key,
+        "message": message,
+    }
+
+
+# ================================================================
+# PAYMENTS — anomalies
+# ================================================================
+
+def payments_anomalies(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Payment anomalies from payments_by_type_rt (threshold-based)."""
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            data_key,
+            id_filial,
+            tipo_forma,
+            label,
+            category,
+            valor_total,
+            qtd_transacoes
+        FROM {MART_RT_DB}.payments_by_type_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND (category = '' OR category = 'DESCONHECIDO')
+          {filial}
+        ORDER BY valor_total DESC
+        LIMIT {{limit:UInt32}}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+        "limit": int(limit),
+    })
+    return [
+        {
+            "data_key": _to_int(r.get("data_key")),
+            "id_filial": _to_int(r.get("id_filial")),
+            "filial_nome": "",
+            "event_type": "UNKNOWN_PAYMENT",
+            "severity": "WARN",
+            "score": 50,
+            "impacto_estimado": _to_float(r.get("valor_total")),
+            "reasons": f'{{"label": "{r.get("label") or ""}", "qtd": {_to_int(r.get("qtd_transacoes"))}}}',
+            "filial_label": _filial_label(_to_int(r.get("id_filial")), ""),
+            "event_label": f"Pagamento sem classificação: {r.get('label') or 'N/A'}",
+        }
+        for r in rows
+    ]
+
+
+# ================================================================
+# SALES — operational current
+# ================================================================
+
+def sales_operational_current(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    as_of: Optional[date] = None,
+) -> Optional[Dict[str, Any]]:
+    """Sales operational current from stg_comprovantes_slim (today only)."""
+    if as_of is None or dt_ini != dt_fim or dt_fim != as_of:
+        return None
+    filial = _branch_clause("id_filial", id_filial)
+    today_key = _date_key(as_of)
+
+    row = query_dict(f"""
+        SELECT
+            sum(valor_total) AS faturamento,
+            toUInt32(count()) AS vendas,
+            avg(valor_total) AS ticket_medio,
+            sumIf(valor_total, cancelado = 1) AS valor_cancelado,
+            toUInt32(countIf(cancelado = 1)) AS cancelamentos
+        FROM {CURRENT_DB}.stg_comprovantes_slim
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key = {{today:Int32}}
+          AND is_deleted = 0 AND situacao != 3
+          {filial}
+    """, parameters={"id_empresa": int(id_empresa), "today": today_key})
+
+    r = row[0] if row else {}
+    if _to_float(r.get("faturamento")) == 0 and _to_int(r.get("vendas")) == 0:
+        return None
+
+    return {
+        "kpis": {
+            "faturamento": _to_float(r.get("faturamento")),
+            "margem": 0.0,
+            "ticket_medio": _to_float(r.get("ticket_medio")),
+            "devolucoes": 0.0,
+        },
+        "commercial_kpis": {
+            "saidas": _to_float(r.get("faturamento")),
+            "qtd_saidas": _to_int(r.get("vendas")),
+            "cancelamentos": _to_float(r.get("valor_cancelado")),
+            "qtd_cancelamentos": _to_int(r.get("cancelamentos")),
+        },
+        "stats": {"vendas": _to_int(r.get("vendas"))},
+        "reading_status": "operational_current",
+        "source": "realtime",
+    }
+
+
+# ================================================================
+# MISC — commercial_window / health_score / insights / operational_score / jarvis
+# ================================================================
+
+def commercial_window_coverage(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    """Commercial window coverage from sales_daily_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    row = query_dict(f"""
+        SELECT
+            min(data_key) AS min_data_key,
+            max(data_key) AS max_data_key
+        FROM {MART_RT_DB}.sales_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial}
+    """, parameters={"id_empresa": int(id_empresa)})
+
+    r = row[0] if row else {}
+    min_dk = r.get("min_data_key")
+    max_dk = r.get("max_data_key")
+    requested_start_key = _date_key(dt_ini)
+    requested_end_key = _date_key(dt_fim)
+
+    if not min_dk or not max_dk or _to_int(min_dk) == 0:
+        return {
+            "status": "no_data",
+            "covered_fully": False,
+            "requested_start_key": requested_start_key,
+            "requested_end_key": requested_end_key,
+            "available_start_key": None,
+            "available_end_key": None,
+            "source_label": "sales_daily_rt",
+        }
+
+    min_key = _to_int(min_dk)
+    max_key = _to_int(max_dk)
+    covered_fully = min_key <= requested_start_key and max_key >= requested_end_key
+
+    return {
+        "status": "covered" if covered_fully else "partial",
+        "covered_fully": covered_fully,
+        "requested_start_key": requested_start_key,
+        "requested_end_key": requested_end_key,
+        "available_start_key": min_key,
+        "available_end_key": max_key,
+        "source_label": "sales_daily_rt",
+    }
+
+
+def health_score_latest(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    as_of: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Health score based on source_freshness."""
+    row = query_dict(f"""
+        SELECT
+            count() AS total_domains,
+            countIf(status = 'ok') AS ok_domains,
+            max(lag_seconds) AS max_lag
+        FROM {MART_RT_DB}.source_freshness FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} OR id_empresa = 0
+    """, parameters={"id_empresa": int(id_empresa)})
+
+    r = row[0] if row else {}
+    total = max(_to_int(r.get("total_domains")), 1)
+    ok = _to_int(r.get("ok_domains"))
+    max_lag = _to_float(r.get("max_lag"))
+
+    # Score: % of OK domains, penalized by lag
+    freshness_score = round((ok / total) * 100, 2)
+    lag_penalty = min(30, max_lag / 3600 * 10) if max_lag > 300 else 0
+    score_total = round(max(0, min(100, freshness_score - lag_penalty)), 2)
+
+    return {
+        "dt_ref": (as_of or business_today(id_empresa)).isoformat(),
+        "score_total": score_total,
+        "components": {
+            "freshness": freshness_score,
+            "lag_penalty": round(lag_penalty, 2),
+        },
+        "reasons": {
+            "total_domains": total,
+            "ok_domains": ok,
+            "max_lag_seconds": round(max_lag, 0),
+        },
+        "snapshot_status": "operational_current",
+        "precision_mode": "realtime",
+        "source": "realtime",
+    }
+
+
+def insights_base(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> List[Dict[str, Any]]:
+    """Insights base data from sales_daily_rt."""
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            data_key,
+            id_filial,
+            faturamento AS faturamento_dia,
+            toDecimal64(0, 2) AS faturamento_mes_acum,
+            toDecimal64(0, 2) AS comparativo_mes_anterior
+        FROM {MART_RT_DB}.sales_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial}
+        ORDER BY data_key, id_filial
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+    return [
+        {
+            "data_key": _to_int(r.get("data_key")),
+            "id_filial": _to_int(r.get("id_filial")),
+            "faturamento_dia": _to_float(r.get("faturamento_dia")),
+            "faturamento_mes_acum": _to_float(r.get("faturamento_mes_acum")),
+            "comparativo_mes_anterior": _to_float(r.get("comparativo_mes_anterior")),
+        }
+        for r in rows
+    ]
+
+
+def operational_score(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    """Operational score from sales_daily_rt + risk_recent_events_rt."""
+    filial_sales = _branch_clause("id_filial", id_filial)
+    filial_risk = _branch_clause("id_filial", id_filial)
+
+    sales_row = query_dict(f"""
+        SELECT
+            sum(faturamento) AS faturamento,
+            sum(margem_total) AS margem,
+            avg(ticket_medio) AS ticket_medio
+        FROM {MART_RT_DB}.sales_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial_sales}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+
+    risk_row = query_dict(f"""
+        SELECT
+            toUInt32(countIf(score_level = 'HIGH' OR score_level = 'CRITICAL')) AS eventos_alto_risco,
+            toUInt32(count()) AS eventos_risco_total,
+            sum(impacto_estimado) AS impacto_estimado_total
+        FROM {MART_RT_DB}.risk_recent_events_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {filial_risk}
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+
+    s = sales_row[0] if sales_row else {}
+    rk = risk_row[0] if risk_row else {}
+
+    faturamento = _to_float(s.get("faturamento"))
+    margem = _to_float(s.get("margem"))
+    ticket = _to_float(s.get("ticket_medio"))
+    eventos_alto = _to_int(rk.get("eventos_alto_risco"))
+    eventos_total = _to_int(rk.get("eventos_risco_total"))
+    impacto = _to_float(rk.get("impacto_estimado_total"))
+
+    margem_ratio = (margem / faturamento) if faturamento > 0 else 0.0
+    margem_score = min(100.0, max(0.0, (margem_ratio / 0.15) * 100))
+    risk_density = (eventos_alto / eventos_total) if eventos_total > 0 else 0.0
+    risk_score = max(0.0, 100.0 - min(100.0, risk_density * 120.0 + (impacto / max(faturamento, 1.0)) * 100.0))
+    ticket_score = min(100.0, max(0.0, (ticket / 120.0) * 100.0))
+
+    score = round((margem_score * 0.45) + (risk_score * 0.40) + (ticket_score * 0.15), 2)
+
+    return {
+        "score": max(0, min(100, score)),
+        "components": {
+            "margem_score": round(margem_score, 2),
+            "risk_score": round(risk_score, 2),
+            "ticket_score": round(ticket_score, 2),
+        },
+    }
+
+
+def jarvis_briefing(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ref: date,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Simplified Jarvis briefing using realtime data."""
+    dt_ini = dt_ref - timedelta(days=6)
+
+    # Gather context
+    try:
+        risk = risk_kpis(role, id_empresa, id_filial, dt_ini, dt_ref)
+    except Exception:
+        risk = {"total_eventos": 0, "eventos_alto_risco": 0, "impacto_total": 0, "score_medio": 0}
+
+    try:
+        fin = finance_aging_overview(role, id_empresa, id_filial, as_of=dt_ref)
+    except Exception:
+        fin = {}
+
+    # Build briefing
+    receiving_overdue = _to_float(fin.get("receber_total_vencido"))
+    risk_total = _to_int(risk.get("total_eventos"))
+    risk_alto = _to_int(risk.get("eventos_alto_risco"))
+    impacto = _to_float(risk.get("impacto_total"))
+
+    candidates: List[Dict[str, Any]] = []
+
+    if risk_alto > 0:
+        candidates.append({
+            "kind": "fraud",
+            "weight": impacto + risk_alto * 500,
+            "impact_value": impacto,
+            "priority": "Imediatamente" if risk_alto >= 5 else "Hoje",
+            "headline": "Auditar cancelamentos e descontos relevantes antes do próximo fechamento.",
+            "cause": "A modelagem de risco encontrou concentração relevante em cancelamentos.",
+            "action": "Abrir o antifraude, revisar o turno mais sensível e validar o colaborador mais exposto.",
+            "evidence": [f"{risk_alto} evento(s) de alto risco", f"Impacto: R$ {impacto:,.2f}"],
+        })
+
+    if receiving_overdue > 0:
+        candidates.append({
+            "kind": "finance",
+            "weight": receiving_overdue,
+            "impact_value": receiving_overdue,
+            "priority": "Hoje",
+            "headline": "Cobrar hoje os vencidos mais concentrados para aliviar a pressão de caixa.",
+            "cause": "A carteira vencida concentra recursos que já deveriam estar no caixa.",
+            "action": "Ativar régua de cobrança nos maiores títulos vencidos.",
+            "evidence": [f"Receber vencido: R$ {receiving_overdue:,.2f}"],
+        })
+
+    if not candidates:
+        return {
+            "title": "Copiloto operacional",
+            "data_ref": dt_ref.isoformat(),
+            "status": "ok",
+            "headline": "Operação estável no período atual, sem foco crítico acima da linha de corte.",
+            "summary": "O momento pede disciplina de execução e acompanhamento.",
+            "priority": "Acompanhar",
+            "impact_value": 0.0,
+            "impact_label": "Sem exposição crítica material",
+            "problem": "Sem frente crítica acima da linha de corte.",
+            "cause": "Fraude, caixa, clientes e financeiro seguiram dentro da faixa esperada.",
+            "action": "Sustentar o ritmo comercial e manter a rotina de acompanhamento diário.",
+            "confidence_label": "Moderada",
+            "confidence_level": "medium",
+            "confidence_reason": "Leitura realtime com base operacional.",
+            "data_freshness": {},
+            "primary_kind": None,
+            "primary_shortcut": None,
+            "evidence": ["Sem alertas críticos acima do corte"],
+            "secondary_focus": [],
+            "signals": {},
+            "highlights": ["A operação seguiu estável no período."],
+        }
+
+    candidates.sort(key=lambda c: float(c.get("weight") or 0), reverse=True)
+    primary = candidates[0]
+    secondary = candidates[1:3]
+    status = "critical" if primary.get("priority") == "Imediatamente" else ("warn" if primary.get("priority") == "Hoje" else "ok")
+
+    return {
+        "title": "Copiloto operacional",
+        "data_ref": dt_ref.isoformat(),
+        "status": status,
+        "headline": primary["headline"],
+        "summary": primary["cause"],
+        "priority": primary["priority"],
+        "impact_value": round(float(primary.get("impact_value") or 0), 2),
+        "impact_label": f"R$ {float(primary.get('impact_value') or 0):,.2f} em jogo",
+        "problem": primary["headline"],
+        "cause": primary["cause"],
+        "action": primary["action"],
+        "confidence_label": "Moderada",
+        "confidence_level": "medium",
+        "confidence_reason": "Leitura realtime com base operacional.",
+        "data_freshness": {},
+        "primary_kind": primary.get("kind"),
+        "primary_shortcut": None,
+        "evidence": [item for item in primary.get("evidence", []) if item],
+        "secondary_focus": [
+            {
+                "kind": item.get("kind"),
+                "label": item["headline"],
+                "impact_label": f"R$ {float(item.get('impact_value') or 0):,.2f}",
+                "priority": item["priority"],
+            }
+            for item in secondary
+        ],
+        "signals": {},
+        "highlights": [primary["action"]] + [item["headline"] for item in secondary][:2],
+    }
+
+
+# ================================================================
 # INVENTORY (for analytics facade routing)
 # ================================================================
 
@@ -2073,4 +3275,27 @@ REALTIME_FUNCTIONS = {
     "streaming_health",
     "goals_today",
     "monthly_goal_projection",
+    "customers_summary_paginated",
+    "customers_top",
+    "customers_rfm_snapshot",
+    "customers_delinquency_overview",
+    "customers_churn_bundle",
+    "customers_churn_snapshot_meta",
+    "customer_churn_drilldown",
+    "anonymous_retention_overview",
+    "finance_series",
+    "finance_aging_overview",
+    "risk_kpis",
+    "risk_series",
+    "risk_last_events",
+    "risk_by_turn_local",
+    "risk_data_window",
+    "risk_model_coverage",
+    "payments_anomalies",
+    "sales_operational_current",
+    "commercial_window_coverage",
+    "health_score_latest",
+    "insights_base",
+    "operational_score",
+    "jarvis_briefing",
 }

@@ -213,6 +213,9 @@ class MartBuilder:
 
                     if tables & {"financeiro", "contaspagar", "contasreceber", "contasreceberbaixa", "contaspagarbaixa"}:
                         results.append(self._refresh_finance_overview_stg(client))
+
+                    if tables & {"comprovantes", "entidades"}:
+                        results.append(self._refresh_mart_clientes_resumo_stg(client))
                 else:
                     # DW-origin path (already typed, no slim needed)
                     if tables & {"fact_venda", "fact_venda_item", "fact_comprovante"}:
@@ -1607,6 +1610,64 @@ class MartBuilder:
         """
         rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("finance_overview_rt", rows, int((time.time() - t0) * 1000))
+
+    def _refresh_mart_clientes_resumo_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
+        """Refresh mart_clientes_resumo from dim_cliente + stg_comprovantes_slim (30d/all)."""
+        t0 = time.time()
+        empresa_filter = f"AND id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter = f"AND id_filial = {int(id_filial)}" if id_filial else ""
+
+        # Full replace — small enough table for full rebuild
+        delete_where = "WHERE 1=1"
+        if id_empresa:
+            delete_where += f" AND id_empresa = {int(id_empresa)}"
+        if id_filial:
+            delete_where += f" AND id_filial = {int(id_filial)}"
+        client.command(f"ALTER TABLE {self.mart_rt_db}.mart_clientes_resumo DELETE {delete_where}")
+
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.mart_clientes_resumo
+        WITH vendas AS (
+            SELECT
+                id_empresa, id_filial, id_cliente,
+                sumIf(valor_total, data_key >= toInt32(formatDateTime(today() - 30, '%Y%m%d'))) AS total_30d,
+                countIf(data_key >= toInt32(formatDateTime(today() - 30, '%Y%m%d'))) AS qtd_30d,
+                sum(valor_total) AS total_all,
+                count() AS qtd_all,
+                max(data_key) AS ultima_compra_key
+            FROM {self.current_db}.stg_comprovantes_slim FINAL
+            WHERE cancelado = 0 AND situacao != 3 AND id_cliente > 0
+              AND data_key >= toInt32(formatDateTime(today() - 365, '%Y%m%d'))
+              {empresa_filter} {filial_filter}
+            GROUP BY id_empresa, id_filial, id_cliente
+        )
+        SELECT
+            c.id_empresa, c.id_filial, c.id_cliente, c.nome, c.documento,
+            '', '', '', '',
+            COALESCE(v.total_30d, toDecimal128(0, 2)),
+            toUInt32(COALESCE(v.qtd_30d, 0)),
+            if(COALESCE(v.qtd_30d, 0) > 0, toDecimal128(v.total_30d / v.qtd_30d, 2), toDecimal128(0, 2)),
+            COALESCE(v.total_all, toDecimal128(0, 2)),
+            toUInt32(COALESCE(v.qtd_all, 0)),
+            toInt32(COALESCE(v.ultima_compra_key, 0)),
+            toUInt32(if(COALESCE(v.ultima_compra_key, 0) > 0,
+                dateDiff('day', parseDateTimeBestEffort(toString(v.ultima_compra_key)), now()), 9999)),
+            now64(6)
+        FROM (SELECT * FROM {self.current_db}.dim_cliente FINAL WHERE id_cliente > 0 AND is_deleted = 0 {empresa_filter} {filial_filter}) AS c
+        LEFT JOIN vendas AS v ON c.id_empresa = v.id_empresa AND c.id_filial = v.id_filial AND c.id_cliente = v.id_cliente
+        """
+        result = client.command(sql)
+        rows = _parse_insert_count(result) if result else 0
+        # Get actual count as fallback
+        if rows == 0:
+            count_where = "WHERE 1=1"
+            if id_empresa:
+                count_where += f" AND id_empresa = {int(id_empresa)}"
+            if id_filial:
+                count_where += f" AND id_filial = {int(id_filial)}"
+            count_result = client.query(f"SELECT count() FROM {self.mart_rt_db}.mart_clientes_resumo {count_where}")
+            rows = int(count_result.result_rows[0][0]) if count_result.result_rows else 0
+        return MartRefreshResult("mart_clientes_resumo", rows, int((time.time() - t0) * 1000))
 
     def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Dashboard home from slim tables.

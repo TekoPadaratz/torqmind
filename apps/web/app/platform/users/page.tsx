@@ -274,9 +274,30 @@ export default function PlatformUsersPage() {
       resetForms();
     } catch (err: any) {
       const apiError = err?.response?.data?.error;
-      const apiMessage = err?.response?.data?.detail?.message;
+      const apiDetail = err?.response?.data?.detail;
+      let apiMessage: string | undefined;
+      if (Array.isArray(apiDetail)) {
+        // Pydantic validation errors: extract user-friendly messages
+        const msgs = apiDetail.map((e: any) => {
+          const field = e?.loc?.slice(-1)?.[0] || '';
+          const msg = e?.msg || '';
+          if (field === 'password' && msg.includes('at least 8')) return 'Senha deve ter no mínimo 8 caracteres.';
+          if (field === 'password') return `Senha: ${msg}`;
+          if (field === 'email') return `Email: ${msg}`;
+          if (field === 'username') return `Usuário: ${msg}`;
+          if (field === 'nome') return `Nome: ${msg}`;
+          return msg;
+        });
+        apiMessage = msgs.filter(Boolean).join(' ') || 'Erro de validação.';
+      } else {
+        apiMessage = apiDetail?.message;
+      }
       if (apiError === 'username_conflict') {
         setError(apiMessage || 'Nome de usuário já está em uso.');
+      } else if (apiError === 'email_conflict') {
+        setError(apiMessage || 'Email já está em uso.');
+      } else if (apiError === 'validation_error') {
+        setError(apiMessage || 'Erro de validação.');
       } else if (apiMessage && String(apiMessage).includes('Nome de usuário')) {
         setError(apiMessage);
       } else {

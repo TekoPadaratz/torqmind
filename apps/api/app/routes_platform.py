@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.deps import get_current_claims
@@ -18,6 +20,8 @@ from app.schemas_platform import (
     UserContactRequest,
     UserUpsertRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -110,6 +114,9 @@ def users_create(body: UserUpsertRequest, request: Request, claims=Depends(get_c
         return repos_platform.upsert_user(claims, body.model_dump(), ip=_ip(request), user_id=None)
     except repos_platform.AuthError as exc:
         _raise(exc)
+    except Exception as exc:
+        logger.exception("users_create unhandled error")
+        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": str(exc) or "Falha ao criar usuário."})
 
 
 @router.patch("/users/{user_id}")
@@ -118,6 +125,9 @@ def users_update(user_id: str, body: UserUpsertRequest, request: Request, claims
         return repos_platform.upsert_user(claims, body.model_dump(), ip=_ip(request), user_id=user_id)
     except repos_platform.AuthError as exc:
         _raise(exc)
+    except Exception as exc:
+        logger.exception("users_update unhandled error")
+        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": str(exc) or "Falha ao atualizar usuário."})
 
 
 @router.put("/users/{user_id}/contacts")
