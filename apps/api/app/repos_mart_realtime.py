@@ -2105,7 +2105,7 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Any, as_of: da
     row = query_dict(f"""
         SELECT
             uniqExact(id_cliente) AS clientes_identificados,
-            uniqExactIf(id_cliente, data_key >= {{key_7d:Int32}}) AS ativos_7d,
+            uniqExactIf(id_cliente, max_dk >= {{key_7d:Int32}}) AS ativos_7d,
             uniqExactIf(id_cliente, max_dk < {{key_30d:Int32}}) AS em_risco_30d_raw,
             sum(valor_total) AS faturamento_90d
         FROM (

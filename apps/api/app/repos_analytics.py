@@ -44,6 +44,8 @@ _POSTGRES_OWNED_FUNCTIONS = {
     "competitor_fuel_product_ids",
     "upsert_goal",
     "risk_insights",
+    "fraud_definitions",
+    "finance_definitions",
     "notifications_list",
     "notifications_unread_count",
     "notification_mark_read",

@@ -1217,7 +1217,7 @@ def fraud_overview(
         risk_kpis = repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim)
         risk_series = repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim)
         risk_window = repos_mart.risk_data_window(role, tenant, filial)
-        model_coverage = repos_mart.risk_model_coverage(dt_ini, dt_fim, risk_window)
+        model_coverage = repos_mart.risk_model_coverage(role, tenant, filial, dt_ini, dt_fim)
         risk_top_employees = repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=10)
         risk_by_turn_local = repos_mart.risk_by_turn_local(role, tenant, filial, dt_ini, dt_fim, limit=10)
         risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
