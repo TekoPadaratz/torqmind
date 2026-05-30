@@ -3773,8 +3773,16 @@ def customers_delinquency_overview(
     as_of: date,
     *,
     limit: int = 0,
+    sort_by: str = "gravity",
 ) -> Dict[str, Any]:
-    """Delinquency overview from mart.customer_delinquency_summary (fast indexed read)."""
+    """Delinquency overview from mart.customer_delinquency_summary (fast indexed read).
+
+    sort_by options:
+      - gravity (default): 30+ titles DESC, then 30d DESC, then total value
+      - valor: valor_total_aberto DESC
+      - atraso: max_dias_atraso DESC
+      - comprando: compras_30d DESC (only customers still buying), then valor_total_vencido DESC
+    """
     where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
 
     # Summary aggregation from mart
@@ -3790,14 +3798,24 @@ def customers_delinquency_overview(
         COALESCE(SUM(m.titulos_a_vencer), 0)::int AS titulos_a_vencer,
         COALESCE(SUM(m.valor_a_vencer), 0)::numeric(18,2) AS valor_a_vencer,
         COALESCE(MAX(m.max_dias_atraso), 0)::int AS max_dias_atraso,
-        COUNT(*) FILTER (WHERE m.titulos_a_vencer > 0)::int AS clientes_a_vencer
+        COUNT(*) FILTER (WHERE m.titulos_a_vencer > 0)::int AS clientes_a_vencer,
+        COALESCE(SUM(m.valor_total_aberto), 0)::numeric(18,2) AS valor_total_aberto
       FROM mart.customer_delinquency_summary m
       WHERE m.id_empresa = %s
         {where_filial}
     """
     summary_params = [id_empresa] + branch_params
 
-    # Customer list ordered by gravity
+    # Sort order based on sort_by parameter
+    order_clauses = {
+        "gravity": "m.titulos_acima_30d DESC, m.titulos_ate_30d DESC, m.valor_total_vencido DESC, m.id_cliente",
+        "valor": "m.valor_total_aberto DESC, m.valor_total_vencido DESC, m.id_cliente",
+        "atraso": "m.max_dias_atraso DESC, m.valor_total_vencido DESC, m.id_cliente",
+        "comprando": "m.compras_30d DESC, m.valor_total_vencido DESC, m.id_cliente",
+    }
+    order_clause = order_clauses.get(sort_by, order_clauses["gravity"])
+
+    # Customer list ordered by selected criterion
     customers_sql = f"""
       SELECT
         m.id_cliente,
@@ -3809,11 +3827,14 @@ def customers_delinquency_overview(
         m.titulos_a_vencer,
         m.valor_a_vencer,
         m.max_dias_atraso,
-        m.valor_total_vencido
+        m.valor_total_vencido,
+        m.valor_total_aberto,
+        m.compras_30d,
+        m.ultima_compra_dt
       FROM mart.customer_delinquency_summary m
       WHERE m.id_empresa = %s
         {where_filial}
-      ORDER BY m.titulos_acima_30d DESC, m.titulos_ate_30d DESC, m.valor_total_vencido DESC, m.id_cliente
+      ORDER BY {order_clause}
     """
     customers_params = [id_empresa] + branch_params
 
@@ -3856,6 +3877,7 @@ def customers_delinquency_overview(
             "titulos_a_vencer": int(summary_row.get("titulos_a_vencer") or 0),
             "valor_a_vencer": round(float(summary_row.get("valor_a_vencer") or 0), 2),
             "max_dias_atraso": int(summary_row.get("max_dias_atraso") or 0),
+            "valor_total_aberto": round(float(summary_row.get("valor_total_aberto") or 0), 2),
         },
         "buckets": [
             {
@@ -3883,9 +3905,13 @@ def customers_delinquency_overview(
                 "valor_a_vencer": round(float(c.get("valor_a_vencer") or 0), 2),
                 "max_dias_atraso": int(c.get("max_dias_atraso") or 0),
                 "valor_total_vencido": round(float(c.get("valor_total_vencido") or 0), 2),
+                "valor_total_aberto": round(float(c.get("valor_total_aberto") or 0), 2),
+                "compras_30d": int(c.get("compras_30d") or 0),
+                "ultima_compra_dt": str(c.get("ultima_compra_dt") or "") if c.get("ultima_compra_dt") else None,
             }
             for c in customers
         ],
+        "sort_by": sort_by,
         "dt_ref": as_of.isoformat(),
     }
 

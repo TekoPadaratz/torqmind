@@ -64,6 +64,7 @@ export default function CustomersPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
   const [delinquencyPage, setDelinquencyPage] = useState(0);
+  const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -92,7 +93,28 @@ export default function CustomersPage() {
   const anonKpis = anon?.kpis || {};
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
-  const delinquencyCustomers = delinquency?.customers || [];
+  const delinquencyCustomers = useMemo(() => {
+    const customers = [...(delinquency?.customers || [])];
+    switch (delinquencySort) {
+      case "valor":
+        customers.sort((a: any, b: any) => (b.valor_total_aberto || (b.valor_total_vencido || 0) + (b.valor_a_vencer || 0)) - (a.valor_total_aberto || (a.valor_total_vencido || 0) + (a.valor_a_vencer || 0)));
+        break;
+      case "atraso":
+        customers.sort((a: any, b: any) => (b.max_dias_atraso || 0) - (a.max_dias_atraso || 0));
+        break;
+      case "comprando":
+        customers.sort((a: any, b: any) => {
+          const aCompras = a.compras_30d || 0;
+          const bCompras = b.compras_30d || 0;
+          if (bCompras !== aCompras) return bCompras - aCompras;
+          return (b.valor_total_vencido || 0) - (a.valor_total_vencido || 0);
+        });
+        break;
+      default: // gravity - default from API
+        break;
+    }
+    return customers;
+  }, [delinquency?.customers, delinquencySort]);
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
@@ -323,6 +345,30 @@ export default function CustomersPage() {
                     <div className="muted" style={{ marginTop: 8 }}>
                       Clientes inadimplentes ordenados por gravidade. Mostra títulos vencidos (até 30d e 30+) e títulos ainda a vencer desses mesmos clientes — se está em atraso, não deveria estar comprando.
                     </div>
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {([
+                        { key: "gravity", label: "Gravidade" },
+                        { key: "valor", label: "Maior valor" },
+                        { key: "atraso", label: "Maior atraso" },
+                        { key: "comprando", label: "Atrasado comprando" },
+                      ] as const).map((opt) => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          className="btn"
+                          style={{
+                            fontSize: 12,
+                            padding: "4px 10px",
+                            background: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
+                            color: delinquencySort === opt.key ? "#fff" : undefined,
+                            borderColor: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
+                          }}
+                          onClick={() => { setDelinquencySort(opt.key); setDelinquencyPage(0); }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   {delinquencyCustomers.length > delinquencyPageSize ? (
                     <div className="inlinePager">
@@ -365,24 +411,34 @@ export default function CustomersPage() {
                         <th>R$ até 30d</th>
                         <th>30+ dias</th>
                         <th>R$ 30+</th>
+                        <th>Total vencido</th>
                         <th>A vencer</th>
                         <th>R$ a vencer</th>
+                        <th>Total aberto</th>
                         <th>Maior atraso</th>
+                        <th>Compras 30d</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {delinquencyPageItems.map((item: any) => (
+                      {delinquencyPageItems.map((item: any) => {
+                        const totalVencido = item.valor_total_vencido || ((item.valor_ate_30d || 0) + (item.valor_acima_30d || 0));
+                        const totalAberto = item.valor_total_aberto || (totalVencido + (item.valor_a_vencer || 0));
+                        return (
                         <tr key={item.id_cliente}>
                           <td>{item.cliente_nome}</td>
-                          <td>{item.titulos_ate_30d ?? item.titulos_30 ?? 0}</td>
-                          <td>{formatCurrency(item.valor_ate_30d ?? item.valor_30 ?? 0)}</td>
-                          <td style={{ fontWeight: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? 700 : 400, color: (item.titulos_acima_30d ?? (item.titulos_60 || 0) + (item.titulos_90_plus || 0)) > 0 ? 'var(--color-negative)' : undefined }}>{item.titulos_acima_30d ?? ((item.titulos_60 || 0) + (item.titulos_90_plus || 0))}</td>
-                          <td style={{ color: (item.valor_acima_30d ?? (item.valor_60 || 0) + (item.valor_90_plus || 0)) > 0 ? 'var(--color-negative)' : undefined }}>{formatCurrency(item.valor_acima_30d ?? ((item.valor_60 || 0) + (item.valor_90_plus || 0)))}</td>
+                          <td>{item.titulos_ate_30d ?? 0}</td>
+                          <td>{formatCurrency(item.valor_ate_30d ?? 0)}</td>
+                          <td style={{ fontWeight: (item.titulos_acima_30d || 0) > 0 ? 700 : 400, color: (item.titulos_acima_30d || 0) > 0 ? 'var(--color-negative)' : undefined }}>{item.titulos_acima_30d ?? 0}</td>
+                          <td style={{ color: (item.valor_acima_30d || 0) > 0 ? 'var(--color-negative)' : undefined }}>{formatCurrency(item.valor_acima_30d ?? 0)}</td>
+                          <td style={{ fontWeight: 700 }}>{formatCurrency(totalVencido)}</td>
                           <td style={{ fontWeight: (item.titulos_a_vencer || 0) > 0 ? 700 : 400, color: (item.titulos_a_vencer || 0) > 0 ? 'var(--color-warning)' : undefined }}>{item.titulos_a_vencer || 0}</td>
                           <td style={{ color: (item.valor_a_vencer || 0) > 0 ? 'var(--color-warning)' : undefined }}>{formatCurrency(item.valor_a_vencer || 0)}</td>
+                          <td style={{ fontWeight: 700 }}>{formatCurrency(totalAberto)}</td>
                           <td>{item.max_dias_atraso}d</td>
+                          <td style={{ fontWeight: (item.compras_30d || 0) > 0 ? 700 : 400, color: (item.compras_30d || 0) > 0 ? 'var(--color-warning)' : undefined }}>{item.compras_30d || 0}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

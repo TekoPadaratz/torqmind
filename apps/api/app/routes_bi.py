@@ -1408,6 +1408,24 @@ def customers_overview(
     ), claims)
 
 
+@router.get("/customers/delinquency")
+def customers_delinquency(
+    dt_ref: Optional[date] = Query(None, description="Reference date"),
+    sort_by: str = Query("gravity", description="Sort: gravity|valor|atraso|comprando"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
+):
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    as_of = resolve_business_date(dt_ref, tenant)
+    if sort_by not in ("gravity", "valor", "atraso", "comprando"):
+        sort_by = "gravity"
+    return repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of, sort_by=sort_by)
+
+
 @router.get("/clients/churn")
 def clients_churn(
     dt_ini: date,
