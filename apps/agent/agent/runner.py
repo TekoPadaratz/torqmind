@@ -1038,7 +1038,7 @@ class AgentRunner:
     # ------------------------------------------------------------------
     # Rescan datasets (commercial datasets that benefit from re-extraction)
     # ------------------------------------------------------------------
-    RESCAN_DATASETS = ("comprovantes", "itenscomprovantes", "formas_pgto_comprovantes", "nfe")
+    RESCAN_DATASETS = ("comprovantes", "itenscomprovantes", "formas_pgto_comprovantes", "nfe", "contasreceber", "contasreceberbaixa")
 
     def _rescan_window(self, hours: int) -> None:
         """Run backfill for the last N hours on all commercial datasets."""

@@ -12,6 +12,7 @@ import { isConfirmedSessionInvalidation } from "./lib/session-state.mjs";
 export default function LoginPage() {
   const [identifier, setIdentifier] = useState<string>(LOGIN_FORM_DEFAULTS.identifier);
   const [password, setPassword] = useState<string>(LOGIN_FORM_DEFAULTS.password);
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
 
@@ -109,15 +110,30 @@ export default function LoginPage() {
               spellCheck={false}
               disabled={checkingSession}
             />
-            <input
-              className="input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="senha"
-              autoComplete="current-password"
-              disabled={checkingSession}
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                className="input"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="senha"
+                autoComplete="current-password"
+                disabled={checkingSession}
+                style={{ paddingRight: 40 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                style={{
+                  position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+                  color: 'var(--muted, #94a3b8)', fontSize: 18, lineHeight: 1,
+                }}
+              >
+                {showPassword ? '🙈' : '👁'}
+              </button>
+            </div>
             {error && (
               <div className="muted" style={{ color: "#fb7185" }}>
                 {error}

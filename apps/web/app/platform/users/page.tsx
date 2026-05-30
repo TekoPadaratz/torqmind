@@ -94,6 +94,7 @@ export default function PlatformUsersPage() {
   const [branchesMap, setBranchesMap] = useState<Record<string, any[]>>({});
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [form, setForm] = useState<any>(emptyUser());
+  const [showFormPassword, setShowFormPassword] = useState(false);
   const [contactForm, setContactForm] = useState<any>(emptyContact());
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -369,13 +370,28 @@ export default function PlatformUsersPage() {
                 autoCorrect="off"
                 spellCheck={false}
               />
-              <input
-                className="input"
-                type="password"
-                placeholder={editingUserId ? 'Nova senha opcional' : 'Senha inicial'}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  className="input"
+                  type={showFormPassword ? "text" : "password"}
+                  placeholder={editingUserId ? 'Nova senha opcional' : 'Senha inicial'}
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  style={{ paddingRight: 40 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowFormPassword(!showFormPassword)}
+                  aria-label={showFormPassword ? "Ocultar senha" : "Mostrar senha"}
+                  style={{
+                    position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+                    color: 'var(--muted, #94a3b8)', fontSize: 18, lineHeight: 1,
+                  }}
+                >
+                  {showFormPassword ? '🙈' : '👁'}
+                </button>
+              </div>
               <select className="input" value={form.role} onChange={(e) => setRole(e.target.value)}>
                 <option value="tenant_admin">tenant_admin</option>
                 <option value="tenant_manager">tenant_manager</option>

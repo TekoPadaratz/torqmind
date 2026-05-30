@@ -8,6 +8,9 @@ export default function ChangePasswordPage() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -72,39 +75,84 @@ export default function ChangePasswordPage() {
             <label className="muted" htmlFor="current-password">
               Senha atual
             </label>
-            <input
-              id="current-password"
-              className="input"
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              placeholder="Senha atual"
-              autoComplete="current-password"
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                id="current-password"
+                className="input"
+                type={showCurrent ? "text" : "password"}
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="Senha atual"
+                autoComplete="current-password"
+                style={{ paddingRight: 40 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowCurrent(!showCurrent)}
+                aria-label={showCurrent ? "Ocultar senha" : "Mostrar senha"}
+                style={{
+                  position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+                  color: 'var(--muted, #94a3b8)', fontSize: 18, lineHeight: 1,
+                }}
+              >
+                {showCurrent ? '🙈' : '👁'}
+              </button>
+            </div>
             <label className="muted" htmlFor="new-password">
               Nova senha (mín. 8 caracteres)
             </label>
-            <input
-              id="new-password"
-              className="input"
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="Nova senha"
-              autoComplete="new-password"
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                id="new-password"
+                className="input"
+                type={showNew ? "text" : "password"}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Nova senha"
+                autoComplete="new-password"
+                style={{ paddingRight: 40 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowNew(!showNew)}
+                aria-label={showNew ? "Ocultar senha" : "Mostrar senha"}
+                style={{
+                  position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+                  color: 'var(--muted, #94a3b8)', fontSize: 18, lineHeight: 1,
+                }}
+              >
+                {showNew ? '🙈' : '👁'}
+              </button>
+            </div>
             <label className="muted" htmlFor="confirm-password">
               Confirme a nova senha
             </label>
-            <input
-              id="confirm-password"
-              className="input"
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Confirme a nova senha"
-              autoComplete="new-password"
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                id="confirm-password"
+                className="input"
+                type={showConfirm ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirme a nova senha"
+                autoComplete="new-password"
+                style={{ paddingRight: 40 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirm(!showConfirm)}
+                aria-label={showConfirm ? "Ocultar senha" : "Mostrar senha"}
+                style={{
+                  position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+                  color: 'var(--muted, #94a3b8)', fontSize: 18, lineHeight: 1,
+                }}
+              >
+                {showConfirm ? '🙈' : '👁'}
+              </button>
+            </div>
             {error && (
               <div className="muted" style={{ color: "var(--color-negative)" }}>
                 {error}

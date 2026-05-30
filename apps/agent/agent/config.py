@@ -330,10 +330,15 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "revisit_open_clause": "c.DTAPGTO IS NULL AND CAST(c.DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)",
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DTACONTA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            "(CAST(c.DTAPGTO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASRECEBER c"
         ),
         "enabled": True,
@@ -347,7 +352,10 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "query": (
             "SELECT c.*, "
             "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DATABAIXA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASRECEBERBAIXA c"
         ),
         "enabled": True,
