@@ -5,7 +5,7 @@ import copy
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
@@ -1706,6 +1706,126 @@ def goals_target(
         body.target_value,
     )
     return {"goal": result}
+
+
+# ------------------------
+# Team Commissions
+# ------------------------
+
+from app import repos_commission  # noqa: E402
+
+
+@router.get("/team/commissions/config")
+def team_commissions_config(
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Get commission configuration for a branch."""
+    role = claims["role"]
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    # Ensure config exists (creates default if needed)
+    config = repos_commission.ensure_default_config(tenant, id_filial)
+    config_id = config["id"]
+
+    groups_selected = repos_commission.get_config_groups(config_id)
+    tiers = repos_commission.get_config_tiers(config_id)
+    groups_available = repos_commission.get_available_groups(tenant, id_filial)
+
+    # Mark selected groups
+    selected_ids = {g["id_grupo_produto"] for g in groups_selected}
+    for g in groups_available:
+        g["selected"] = g["id_grupo_produto"] in selected_ids
+
+    return {
+        "config": {
+            "id": config_id,
+            "name": config["name"],
+            "default_payment_mode": config["default_payment_mode"],
+        },
+        "groups": groups_available,
+        "tiers": [
+            {
+                "tier_key": t["tier_key"],
+                "tier_name": t["tier_name"],
+                "min_sales_amount": float(t["min_sales_amount"]),
+                "commission_percent": float(t["commission_percent"]),
+                "sort_order": t["sort_order"],
+                "is_active": t["is_active"],
+            }
+            for t in tiers
+        ],
+    }
+
+
+@router.put("/team/commissions/config")
+def team_commissions_config_save(
+    body: dict = Body(...),
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Save commission configuration. Restricted to OWNER/MASTER."""
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem configurar comissão.")
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    groups = body.get("groups", [])
+    tiers = body.get("tiers", [])
+    payment_mode = body.get("default_payment_mode", "team_total")
+
+    # Validate payment_mode
+    if payment_mode not in ("team_total", "equal_split", "individual_sales"):
+        raise HTTPException(status_code=422, detail="Modo de pagamento inválido.")
+
+    # Validate tiers
+    if not tiers:
+        raise HTTPException(status_code=422, detail="Ao menos um nível deve ser configurado.")
+    valid_keys = {"bronze", "silver", "gold", "diamond"}
+    prev_amount = -1
+    for t in sorted(tiers, key=lambda x: x.get("sort_order", 0)):
+        if t.get("tier_key") not in valid_keys:
+            raise HTTPException(status_code=422, detail=f"Chave de nível inválida: {t.get('tier_key')}")
+        amount = float(t.get("min_sales_amount", 0))
+        percent = float(t.get("commission_percent", 0))
+        if amount < 0:
+            raise HTTPException(status_code=422, detail="Valor mínimo deve ser positivo.")
+        if percent < 0:
+            raise HTTPException(status_code=422, detail="Percentual deve ser >= 0.")
+        if t.get("is_active", True) and amount <= prev_amount:
+            raise HTTPException(status_code=422, detail="Faixas devem estar em ordem crescente de valor.")
+        if t.get("is_active", True):
+            prev_amount = amount
+
+    repos_commission.save_config(tenant, id_filial, groups, tiers, payment_mode)
+    return {"ok": True, "message": "Configuração salva com sucesso."}
+
+
+@router.get("/team/commissions/results")
+def team_commissions_results(
+    id_filial: int = Query(..., description="Branch ID"),
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2020, le=2100),
+    payment_mode: Optional[str] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Get commission calculation results for a specific month/year."""
+    role = claims["role"]
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    # Determine payment mode
+    mode = payment_mode or "team_total"
+    if mode not in ("team_total", "equal_split", "individual_sales"):
+        raise HTTPException(status_code=422, detail="Modo de pagamento inválido.")
+
+    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, mode)
+    return result
 
 
 # ------------------------

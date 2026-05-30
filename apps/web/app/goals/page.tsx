@@ -16,6 +16,8 @@ import { extractApiError } from '../lib/errors';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { formatGoalTargetInputFromNumber, normalizeGoalTargetInput, parseGoalTargetInput } from '../lib/goal-target-input.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
+import CommissionsTab from './CommissionsTab';
+import CommissionConfigTab from './CommissionConfigTab';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +47,8 @@ export default function GoalsPage() {
   const [metaError, setMetaError] = useState('');
   const singleBranchId = scope.id_filial || (scope.id_filiais.length === 1 ? scope.id_filiais[0] : null);
   const metaEditable = Boolean(singleBranchId);
+  const [activeTab, setActiveTab] = useState<'metas' | 'comissoes' | 'config'>('metas');
+  const [commissionRefresh, setCommissionRefresh] = useState(0);
 
   const userLabel = useMemo(() => {
     return buildUserLabel(claims);
@@ -135,6 +139,52 @@ export default function GoalsPage() {
     <div>
       <AppNav title="Metas e Equipe" userLabel={userLabel} />
       <div className="container">
+        {/* Tab navigation */}
+        <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0, marginTop: 8 }}>
+          {[
+            { key: 'metas' as const, label: 'Metas & Equipe' },
+            { key: 'comissoes' as const, label: 'Comissões' },
+            { key: 'config' as const, label: 'Configuração' },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              style={{
+                padding: '10px 20px',
+                fontSize: 13,
+                fontWeight: activeTab === tab.key ? 700 : 400,
+                background: 'transparent',
+                border: 'none',
+                borderBottom: activeTab === tab.key ? '2px solid var(--color-accent, #3b82f6)' : '2px solid transparent',
+                color: activeTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Commission tabs */}
+        {activeTab === 'comissoes' && (
+          <CommissionsTab
+            key={commissionRefresh}
+            idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+            idFilial={singleBranchId ? Number(singleBranchId) : null}
+          />
+        )}
+        {activeTab === 'config' && (
+          <CommissionConfigTab
+            idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+            idFilial={singleBranchId ? Number(singleBranchId) : null}
+            onSaved={() => setCommissionRefresh((n) => n + 1)}
+          />
+        )}
+
+        {/* Original Metas & Equipe content */}
+        {activeTab === 'metas' && (
+          <>
         {error ? <div className="card errorCard">{error}</div> : null}
         {!data ? (
           <div style={{ marginTop: 12 }}>
@@ -524,6 +574,8 @@ export default function GoalsPage() {
           </div>
 
           </div>
+        )}
+          </>
         )}
       </div>
     </div>
