@@ -5,6 +5,17 @@ import { apiGet, apiPut } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 
+/** Format number as BRL display (e.g. 30000 → "30.000") */
+function formatBRL(value: number): string {
+  return value.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+}
+
+/** Parse BRL display string back to number (e.g. "30.000" → 30000) */
+function parseBRL(text: string): number {
+  const clean = text.replace(/[^\d]/g, "");
+  return clean ? parseInt(clean, 10) : 0;
+}
+
 const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> = {
   bronze: { color: "#cd7f32", bg: "rgba(205,127,50,0.08)", icon: "🥉" },
   silver: { color: "#a0a0a0", bg: "rgba(160,160,160,0.08)", icon: "🥈" },
@@ -78,17 +89,21 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
     const activeTiers = tiers.filter((t) => t.is_active);
     for (let i = 1; i < activeTiers.length; i++) {
       if (activeTiers[i].min_sales_amount <= activeTiers[i - 1].min_sales_amount) {
-        setError("As faixas ativas devem estar em ordem crescente de valor mínimo.");
+        setError(`O valor mínimo de "${activeTiers[i].tier_name}" deve ser maior que "${activeTiers[i - 1].tier_name}" (R$ ${formatBRL(activeTiers[i - 1].min_sales_amount)}).`);
+        return;
+      }
+      if (activeTiers[i].commission_percent <= activeTiers[i - 1].commission_percent) {
+        setError(`O percentual de "${activeTiers[i].tier_name}" (${activeTiers[i].commission_percent}%) deve ser maior que "${activeTiers[i - 1].tier_name}" (${activeTiers[i - 1].commission_percent}%).`);
         return;
       }
     }
     for (const t of tiers) {
-      if (t.min_sales_amount < 0) {
-        setError("Valor mínimo deve ser positivo.");
+      if (t.is_active && t.min_sales_amount <= 0) {
+        setError(`O valor mínimo de "${t.tier_name}" deve ser maior que zero.`);
         return;
       }
-      if (t.commission_percent < 0) {
-        setError("Percentual deve ser >= 0.");
+      if (t.is_active && t.commission_percent <= 0) {
+        setError(`O percentual de "${t.tier_name}" deve ser maior que zero.`);
         return;
       }
     }
@@ -242,11 +257,10 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>R$</span>
                   <input
-                    type="number"
-                    min={0}
-                    step={1000}
-                    value={tier.min_sales_amount}
-                    onChange={(e) => updateTier(i, "min_sales_amount", Number(e.target.value))}
+                    type="text"
+                    inputMode="numeric"
+                    value={formatBRL(tier.min_sales_amount)}
+                    onChange={(e) => updateTier(i, "min_sales_amount", parseBRL(e.target.value))}
                     style={{
                       width: 100,
                       padding: "4px 6px",
