@@ -249,6 +249,7 @@ Funcoes Postgres por desenho:
 - `competitor_pricing_upsert`: escrita OLTP app.
 - `competitor_fuel_product_ids`: dimensao/app para formulario.
 - `goals_today`, `upsert_goal`: app goals.
+- `get_config`, `ensure_default_config`, `save_config`, `calculate_commission_results`: commission tiers (repos_commission.py).
 - `get_filial_params`, `upsert_filial_params`: parametros configuraveis por filial (thresholds ABC, exclusao de combustivel). Tabela `app.filial_params`.
 - `risk_insights`: app/insights operacionais.
 - `notifications_list`, `notifications_unread_count`, `notification_mark_read`: app notifications.
@@ -510,7 +511,7 @@ PostgreSQL (stg.*, app.*) → Debezium → Redpanda → CDC Consumer → ClickHo
 STG vendas: `comprovantes`, `itenscomprovantes`, `formas_pgto_comprovantes`.
 STG cadastros/operacional: `turnos`, `entidades` (clientes), `produtos`, `grupoprodutos`, `funcionarios`, `usuarios`, `localvendas`, `filiais` quando existir.
 STG financeiro: `contaspagar`, `contasreceber`, `financeiro` quando disponível.
-App: `payment_type_map`, `competitor_fuel_prices`/`goals` quando existirem.
+App: `payment_type_map`, `competitor_fuel_prices`/`goals`/`commission_config`/`commission_config_group`/`commission_config_tier` quando existirem.
 DW: `fact_*`/`dim_*` podem permanecer capturados apenas para reconciliacao/rollback.
 
 ### Tópicos Redpanda
@@ -729,3 +730,50 @@ Checklist mínimo para garantir que o container API reflete a branch atual:
 - `apps/web/app/profit-management/page.tsx`: reescrito com design system.
 - `apps/api/app/routes_profit.py`: multi-filial com SUM/GROUP BY.
 - 9 telas com cores migradas: dashboard, sales, goals, settings, fraud, customers, change-password, AppNav, platform/users.
+
+---
+
+## Módulo de Comissão (Metas & Equipe)
+
+### Tabelas PostgreSQL (schema `app`)
+
+| Tabela | Descrição |
+|--------|-----------|
+| `app.commission_config` | Config ativa por empresa/filial (1 ativa por par) |
+| `app.commission_config_group` | Grupos de produto vinculados a config |
+| `app.commission_config_tier` | Faixas de premiação (bronze/silver/gold/diamond) |
+
+### View (`mart` schema)
+
+| View | Descrição |
+|------|-----------|
+| `mart.commission_sales_monthly` | Venda mensal por grupo+vendedor (source: `dw.fact_venda` + `dw.fact_venda_item`) |
+
+### Endpoints API
+
+| Método | Path | Descrição |
+|--------|------|-----------|
+| GET | `/bi/team/commissions/config` | Retorna config, groups (com faturamento 30d), tiers |
+| PUT | `/bi/team/commissions/config` | Salva config (OWNER/MASTER only) |
+| GET | `/bi/team/commissions/results` | Calcula comissão: tier, percentual, vendedores |
+
+### Modos de pagamento
+
+- `team_total`: equipe recebe comissão total.
+- `equal_split`: comissão dividida igualmente entre elegíveis.
+- `individual_sales`: cada vendedor recebe % sobre sua venda individual.
+
+### Frontend
+
+- `apps/web/app/goals/page.tsx`: 3 abas (Metas/Comissões/Configuração).
+- `apps/web/app/goals/CommissionsTab.tsx`: KPIs, progress bar, employee grid.
+- `apps/web/app/goals/CommissionConfigTab.tsx`: grupo selection, tier editor.
+
+### Tiers padrão
+
+| Tier | Valor mínimo | Percentual |
+|------|-------------|-----------|
+| Bronze | R$ 30.000 | 0.5% |
+| Prata | R$ 50.000 | 1.0% |
+| Ouro | R$ 80.000 | 1.5% |
+| Diamante | R$ 120.000 | 2.0% |
