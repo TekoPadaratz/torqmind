@@ -1349,6 +1349,137 @@ def cash_overview(
         ORDER BY valor_total DESC
     """, parameters=params)
 
+    # Safety fallback: if mart payments exceed commercial sales, rebuild mix from slim with
+    # per-reference deduplication against document total (or item total when available).
+    fallback_payments_raw = []
+    payments_total_mart = sum(float(p.get("valor_total") or 0) for p in payments_raw)
+    sales_total = float(sales_kpi.get("total_vendas") or 0)
+    if sales_total > 0 and payments_total_mart > sales_total + 0.01:
+        payments_date_range = _date_range_filter(dt_ini, dt_fim, "p.data_key") if dt_ini and dt_fim else ""
+        payments_filial = _branch_clause("p.id_filial", id_filial)
+        docs_date_range = _date_range_filter(dt_ini, dt_fim, "c.data_key") if dt_ini and dt_fim else ""
+        docs_filial = _branch_clause("c.id_filial", id_filial)
+        items_date_range = _date_range_filter(dt_ini, dt_fim, "i.data_key") if dt_ini and dt_fim else ""
+        items_filial = _branch_clause("i.id_filial", id_filial)
+
+        fallback_payments_raw = query_dict(f"""
+            WITH docs AS (
+                SELECT
+                    c.id_empresa,
+                    c.id_filial,
+                    c.data_key,
+                    c.referencia,
+                    concat(
+                        toString(c.id_empresa), '|', toString(c.id_filial), '|',
+                        toString(c.data_key), '|', toString(c.referencia)
+                    ) AS ref_key,
+                    argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible,
+                    argMax(c.valor_total, c.source_ts_ms) AS venda_doc
+                FROM {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+                WHERE c.id_empresa = {{id_empresa:Int32}} {docs_date_range} {docs_filial}
+                  AND c.is_deleted = 0
+                  AND c.referencia > 0
+                GROUP BY c.id_empresa, c.id_filial, c.data_key, c.referencia
+            ),
+            overpaid_refs AS (
+                SELECT
+                    p.ref_key AS ref_key
+                FROM (
+                    SELECT
+                        p.id_empresa,
+                        p.id_filial,
+                        p.data_key,
+                        p.id_referencia,
+                        concat(
+                            toString(p.id_empresa), '|', toString(p.id_filial), '|',
+                            toString(p.data_key), '|', toString(p.id_referencia)
+                        ) AS ref_key,
+                        sum(p.valor) AS total_pag_ref
+                    FROM {CURRENT_DB}.stg_formas_pgto_slim AS p FINAL
+                    INNER JOIN docs
+                        ON docs.id_empresa = p.id_empresa
+                       AND docs.id_filial = p.id_filial
+                       AND docs.data_key = p.data_key
+                       AND docs.referencia = p.id_referencia
+                    WHERE p.id_empresa = {{id_empresa:Int32}} {payments_date_range} {payments_filial}
+                      AND p.is_deleted = 0
+                      AND docs.commercial_eligible = 1
+                    GROUP BY p.id_empresa, p.id_filial, p.data_key, p.id_referencia
+                ) AS p
+                INNER JOIN docs AS d
+                    ON d.ref_key = p.ref_key
+                LEFT JOIN (
+                    SELECT
+                        concat(
+                            toString(c.id_empresa), '|', toString(c.id_filial), '|',
+                            toString(i.data_key), '|', toString(c.referencia)
+                        ) AS ref_key,
+                        sum(i.total) AS venda_itens
+                    FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+                    INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+                        ON c.id_empresa = i.id_empresa
+                       AND c.id_filial = i.id_filial
+                       AND c.id_db = i.id_db
+                       AND c.id_comprovante = i.id_comprovante
+                    WHERE i.id_empresa = {{id_empresa:Int32}} {items_date_range} {items_filial}
+                      AND i.is_deleted = 0
+                      AND c.is_deleted = 0
+                      AND c.commercial_eligible = 1
+                      AND c.referencia > 0
+                      AND i.cfop > 5000
+                                        GROUP BY ref_key
+                ) AS s
+                                    ON s.ref_key = p.ref_key
+                WHERE if(coalesce(s.venda_itens, 0) > 0, s.venda_itens, d.venda_doc) > 0
+                  AND p.total_pag_ref > if(coalesce(s.venda_itens, 0) > 0, s.venda_itens, d.venda_doc) + 0.01
+            ),
+            pay_rows AS (
+                SELECT
+                    p.id_empresa,
+                    p.id_filial,
+                    p.data_key,
+                    p.id_referencia,
+                    p.tipo_forma,
+                    p.valor,
+                    p.source_ts_ms,
+                    row_number() OVER (
+                        PARTITION BY p.id_empresa, p.id_filial, p.data_key, p.id_referencia, p.valor
+                        ORDER BY p.source_ts_ms DESC, p.tipo_forma DESC
+                    ) AS dup_rank
+                FROM {CURRENT_DB}.stg_formas_pgto_slim AS p FINAL
+                INNER JOIN docs
+                    ON docs.id_empresa = p.id_empresa
+                   AND docs.id_filial = p.id_filial
+                   AND docs.data_key = p.data_key
+                   AND docs.referencia = p.id_referencia
+                WHERE p.id_empresa = {{id_empresa:Int32}} {payments_date_range} {payments_filial}
+                  AND p.is_deleted = 0
+                  AND docs.commercial_eligible = 1
+            )
+            SELECT
+                coalesce(m.label, concat('Forma ', toString(p.tipo_forma))) AS label,
+                coalesce(m.category, 'Outros') AS category,
+                sum(p.valor) AS valor_total,
+                toUInt32(count()) AS qtd_transacoes
+            FROM pay_rows AS p
+            LEFT JOIN {CURRENT_DB}.payment_type_map AS m FINAL
+                ON p.tipo_forma = m.tipo_forma
+            WHERE NOT (
+                (
+                    concat(
+                        toString(p.id_empresa), '|', toString(p.id_filial), '|',
+                        toString(p.data_key), '|', toString(p.id_referencia)
+                    ) IN (SELECT ref_key FROM overpaid_refs)
+                )
+                AND p.dup_rank > 1
+            )
+            GROUP BY label, category
+            ORDER BY valor_total DESC
+        """, parameters=params)
+
+    if fallback_payments_raw:
+        payments_raw = fallback_payments_raw
+
     payments = [
         {
             "label": p.get("label"),
