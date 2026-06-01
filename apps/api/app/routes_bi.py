@@ -1744,6 +1744,8 @@ def team_commissions_config(
             "id": config_id,
             "name": config["name"],
             "default_payment_mode": config["default_payment_mode"],
+            "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
+            "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
         },
         "groups": groups_available,
         "tiers": [
@@ -1777,10 +1779,19 @@ def team_commissions_config_save(
     groups = body.get("groups", [])
     tiers = body.get("tiers", [])
     payment_mode = body.get("default_payment_mode", "team_total")
+    manager_commission_mode = body.get("manager_commission_mode", "use_tiers")
+    manager_commission_percent = float(body.get("manager_commission_percent", 0) or 0)
 
     # Validate payment_mode
     if payment_mode not in ("team_total", "equal_split", "individual_sales"):
         raise HTTPException(status_code=422, detail="Modo de pagamento inválido.")
+
+    if manager_commission_mode not in ("use_tiers", "fixed_percent"):
+        raise HTTPException(status_code=422, detail="Modo de comissão do gerente inválido.")
+    if manager_commission_mode == "fixed_percent" and manager_commission_percent <= 0:
+        raise HTTPException(status_code=422, detail="Percentual fixo do gerente deve ser maior que zero.")
+    if manager_commission_percent < 0 or manager_commission_percent > 100:
+        raise HTTPException(status_code=422, detail="Percentual de comissão do gerente deve estar entre 0 e 100.")
 
     # Validate tiers
     if not tiers:
@@ -1809,7 +1820,15 @@ def team_commissions_config_save(
             prev_amount = amount
             prev_percent = percent
 
-    repos_commission.save_config(tenant, id_filial, groups, tiers, payment_mode)
+    repos_commission.save_config(
+        tenant,
+        id_filial,
+        groups,
+        tiers,
+        payment_mode,
+        manager_commission_mode,
+        manager_commission_percent,
+    )
     return {"ok": True, "message": "Configuração salva com sucesso."}
 
 

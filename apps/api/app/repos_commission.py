@@ -26,7 +26,8 @@ def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
 def get_config(id_empresa: int, id_filial: int) -> Optional[Dict[str, Any]]:
     """Get active commission config for empresa/filial."""
     sql = """
-      SELECT id, id_empresa, id_filial, name, is_active, default_payment_mode,
+          SELECT id, id_empresa, id_filial, name, is_active, default_payment_mode,
+              manager_commission_mode, manager_commission_percent,
              created_at, updated_at
       FROM app.commission_config
       WHERE id_empresa = %s AND id_filial = %s AND is_active = true
@@ -95,13 +96,23 @@ def ensure_default_config(id_empresa: int, id_filial: int) -> Dict[str, Any]:
     if existing:
         return existing
 
-    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        row = conn.execute("""
-          INSERT INTO app.commission_config (id_empresa, id_filial, name, is_active, default_payment_mode)
-          VALUES (%s, %s, 'Comissao padrao', true, 'team_total')
-          ON CONFLICT DO NOTHING
-          RETURNING id, id_empresa, id_filial, name, is_active, default_payment_mode, created_at, updated_at
-        """, [id_empresa, id_filial]).fetchone()
+        with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+                row = conn.execute("""
+                    INSERT INTO app.commission_config (
+                        id_empresa,
+                        id_filial,
+                        name,
+                        is_active,
+                        default_payment_mode,
+                        manager_commission_mode,
+                        manager_commission_percent
+                    )
+                    VALUES (%s, %s, 'Comissao padrao', true, 'team_total', 'use_tiers', 0)
+                    ON CONFLICT DO NOTHING
+                    RETURNING id, id_empresa, id_filial, name, is_active, default_payment_mode,
+                                        manager_commission_mode, manager_commission_percent,
+                                        created_at, updated_at
+                """, [id_empresa, id_filial]).fetchone()
 
         if not row:
             # Conflict: config was created concurrently
@@ -132,6 +143,8 @@ def save_config(
     groups: List[Dict[str, Any]],
     tiers: List[Dict[str, Any]],
     default_payment_mode: str = "team_total",
+    manager_commission_mode: str = "use_tiers",
+    manager_commission_percent: float = 0.0,
 ) -> Dict[str, Any]:
     """Save/update commission configuration atomically."""
     config = ensure_default_config(id_empresa, id_filial)
@@ -141,9 +154,12 @@ def save_config(
         # Update config
         conn.execute("""
           UPDATE app.commission_config
-          SET default_payment_mode = %s, updated_at = now()
+          SET default_payment_mode = %s,
+              manager_commission_mode = %s,
+              manager_commission_percent = %s,
+              updated_at = now()
           WHERE id = %s
-        """, [default_payment_mode, config_id])
+        """, [default_payment_mode, manager_commission_mode, manager_commission_percent, config_id])
 
         # Replace groups: deactivate all, then insert/activate selected
         conn.execute("""
@@ -270,7 +286,12 @@ def calculate_commission_results(
 
     manager_sales = float((manager_row or {}).get("venda_total_sem_combustiveis") or 0)
     manager_tier = _determine_tier(manager_sales, tiers)
-    manager_percent = float(manager_tier["commission_percent"]) if manager_tier else 0.0
+    manager_mode = str(config.get("manager_commission_mode") or "use_tiers")
+    manager_fixed_percent = float(config.get("manager_commission_percent") or 0)
+    if manager_mode == "fixed_percent":
+        manager_percent = manager_fixed_percent
+    else:
+        manager_percent = float(manager_tier["commission_percent"]) if manager_tier else 0.0
     manager_commission_gross = round(manager_sales * manager_percent / 100, 2)
 
     if not rows:
@@ -289,6 +310,8 @@ def calculate_commission_results(
                     "min_sales_amount": float(manager_tier["min_sales_amount"]),
                 } if manager_tier else None,
                 "percentual_aplicado": manager_percent,
+                "modo_comissao": manager_mode,
+                "percentual_configurado": manager_fixed_percent,
                 "comissao_bruta": manager_commission_gross,
             },
         )
@@ -358,12 +381,16 @@ def calculate_commission_results(
                 "min_sales_amount": float(manager_tier["min_sales_amount"]),
             } if manager_tier else None,
             "percentual_aplicado": manager_percent,
+            "modo_comissao": manager_mode,
+            "percentual_configurado": manager_fixed_percent,
             "comissao_bruta": manager_commission_gross,
         },
         "config": {
             "id": config_id,
             "name": config["name"],
             "default_payment_mode": config["default_payment_mode"],
+            "manager_commission_mode": manager_mode,
+            "manager_commission_percent": manager_fixed_percent,
         },
     }
 
@@ -413,6 +440,8 @@ def _empty_results(
             "venda_total_sem_combustiveis": 0,
             "nivel_atingido": None,
             "percentual_aplicado": 0,
+            "modo_comissao": "use_tiers",
+            "percentual_configurado": 0,
             "comissao_bruta": 0,
         },
         "config": None,

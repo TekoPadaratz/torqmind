@@ -39,13 +39,18 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
     return Number.isNaN(date.getTime()) ? today : date;
   }, [referenceDate, today]);
 
-  const month = parsedRef.getMonth() + 1;
-  const year = parsedRef.getFullYear();
+  const [selectedMonth, setSelectedMonth] = useState(parsedRef.getMonth() + 1);
+  const [selectedYear, setSelectedYear] = useState(parsedRef.getFullYear());
 
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [lossInput, setLossInput] = useState("0,00");
+
+  useEffect(() => {
+    setSelectedMonth(parsedRef.getMonth() + 1);
+    setSelectedYear(parsedRef.getFullYear());
+  }, [parsedRef]);
 
   const fetchResults = useCallback(async () => {
     if (!idFilial) return;
@@ -55,8 +60,8 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
       const params = new URLSearchParams();
       params.set("id_filial", String(idFilial));
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
-      params.set("month", String(month));
-      params.set("year", String(year));
+      params.set("month", String(selectedMonth));
+      params.set("year", String(selectedYear));
       const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`);
       setData(resp);
     } catch (err: any) {
@@ -64,7 +69,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
     } finally {
       setLoading(false);
     }
-  }, [idEmpresa, idFilial, month, year]);
+  }, [idEmpresa, idFilial, selectedMonth, selectedYear]);
 
   useEffect(() => {
     fetchResults();
@@ -89,7 +94,49 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
   return (
     <div style={{ marginTop: 16 }}>
       <div className="card" style={{ padding: "12px 16px", fontSize: 13 }}>
-        Relatório individual de comissão ({String(month).padStart(2, "0")}/{year})
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            Relatório individual de comissão ({String(selectedMonth).padStart(2, "0")}/{selectedYear})
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(Number(e.target.value))}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--card-bg)",
+                color: "inherit",
+                fontSize: 12,
+              }}
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                <option key={m} value={m}>
+                  {String(m).padStart(2, "0")}
+                </option>
+              ))}
+            </select>
+            <select
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(Number(e.target.value))}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--card-bg)",
+                color: "inherit",
+                fontSize: 12,
+              }}
+            >
+              {Array.from({ length: 6 }, (_, i) => parsedRef.getFullYear() - 3 + i).map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       {error && <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div>}

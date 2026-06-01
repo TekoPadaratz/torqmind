@@ -42,6 +42,8 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
   const [groups, setGroups] = useState<any[]>([]);
   const [tiers, setTiers] = useState<TierDraft[]>([]);
   const [paymentMode, setPaymentMode] = useState("team_total");
+  const [managerMode, setManagerMode] = useState<"use_tiers" | "fixed_percent">("use_tiers");
+  const [managerPercent, setManagerPercent] = useState(0);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -59,6 +61,8 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
       setGroups(resp.groups || []);
       setTiers(resp.tiers || []);
       setPaymentMode(resp.config?.default_payment_mode || "team_total");
+      setManagerMode(resp.config?.manager_commission_mode === "fixed_percent" ? "fixed_percent" : "use_tiers");
+      setManagerPercent(Number(resp.config?.manager_commission_percent || 0));
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Falha ao carregar configuração.");
     } finally {
@@ -107,6 +111,14 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         return;
       }
     }
+    if (managerMode === "fixed_percent" && managerPercent <= 0) {
+      setError("Quando usar percentual fixo para o gerente, o valor deve ser maior que zero.");
+      return;
+    }
+    if (managerPercent < 0 || managerPercent > 100) {
+      setError("Percentual do gerente deve estar entre 0 e 100.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -120,6 +132,8 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         groups: selectedGroups,
         tiers,
         default_payment_mode: paymentMode,
+        manager_commission_mode: managerMode,
+        manager_commission_percent: Number(managerPercent || 0),
       });
       setMessage("Configuração salva com sucesso!");
       if (onSaved) onSaved();
@@ -175,6 +189,88 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
           <option value="individual_sales">Individual por vendedor</option>
         </select>
         <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Define o modo padrão ao abrir a aba Comissões.</div>
+      </div>
+
+      {/* Manager commission */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>Comissão do gerente</div>
+
+        <div style={{ display: "grid", gap: 10 }}>
+          <label
+            style={{
+              display: "grid",
+              gridTemplateColumns: "18px 1fr",
+              alignItems: "center",
+              gap: 10,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              background: managerMode === "use_tiers" ? "rgba(79,156,247,0.08)" : "transparent",
+            }}
+          >
+            <input
+              type="radio"
+              name="manager-commission-mode"
+              checked={managerMode === "use_tiers"}
+              onChange={() => setManagerMode("use_tiers")}
+            />
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>Usar os mesmos níveis dos vendedores</div>
+              <div className="muted" style={{ fontSize: 11 }}>
+                O gerente recebe o percentual do nível atingido pela venda sem combustíveis.
+              </div>
+            </div>
+          </label>
+
+          <label
+            style={{
+              display: "grid",
+              gridTemplateColumns: "18px 1fr",
+              alignItems: "start",
+              gap: 10,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              background: managerMode === "fixed_percent" ? "rgba(212,160,23,0.10)" : "transparent",
+            }}
+          >
+            <input
+              type="radio"
+              name="manager-commission-mode"
+              checked={managerMode === "fixed_percent"}
+              onChange={() => setManagerMode("fixed_percent")}
+              style={{ marginTop: 2 }}
+            />
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Usar percentual fixo para gerente</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={managerPercent}
+                  onChange={(e) => setManagerPercent(Number(e.target.value))}
+                  disabled={managerMode !== "fixed_percent"}
+                  style={{
+                    width: 90,
+                    padding: "4px 6px",
+                    borderRadius: 4,
+                    border: "1px solid var(--border)",
+                    background: "var(--card-bg)",
+                    color: "inherit",
+                    fontSize: 13,
+                    opacity: managerMode === "fixed_percent" ? 1 : 0.6,
+                  }}
+                />
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>%</span>
+              </div>
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                Defina um percentual único aplicado sobre a venda sem combustíveis.
+              </div>
+            </div>
+          </label>
+        </div>
       </div>
 
       {/* Groups selection */}
