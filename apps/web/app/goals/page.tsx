@@ -172,6 +172,7 @@ export default function GoalsPage() {
             key={commissionRefresh}
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
+            referenceDate={scope.dt_ref || scope.dt_fim || null}
           />
         )}
         {activeTab === 'config' && (

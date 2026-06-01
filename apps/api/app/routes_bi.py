@@ -1786,20 +1786,28 @@ def team_commissions_config_save(
     if not tiers:
         raise HTTPException(status_code=422, detail="Ao menos um nível deve ser configurado.")
     valid_keys = {"bronze", "silver", "gold", "diamond"}
-    prev_amount = -1
+    prev_amount = None
+    prev_percent = None
     for t in sorted(tiers, key=lambda x: x.get("sort_order", 0)):
         if t.get("tier_key") not in valid_keys:
             raise HTTPException(status_code=422, detail=f"Chave de nível inválida: {t.get('tier_key')}")
         amount = float(t.get("min_sales_amount", 0))
         percent = float(t.get("commission_percent", 0))
-        if amount < 0:
-            raise HTTPException(status_code=422, detail="Valor mínimo deve ser positivo.")
-        if percent < 0:
-            raise HTTPException(status_code=422, detail="Percentual deve ser >= 0.")
-        if t.get("is_active", True) and amount <= prev_amount:
-            raise HTTPException(status_code=422, detail="Faixas devem estar em ordem crescente de valor.")
-        if t.get("is_active", True):
+        active = bool(t.get("is_active", True))
+
+        if active and amount <= 0:
+            raise HTTPException(status_code=422, detail=f"Valor mínimo de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
+        if active and percent <= 0:
+            raise HTTPException(status_code=422, detail=f"Percentual de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
+
+        if active and prev_amount is not None and amount <= prev_amount:
+            raise HTTPException(status_code=422, detail="Faixas ativas devem ter valor mínimo crescente.")
+        if active and prev_percent is not None and percent <= prev_percent:
+            raise HTTPException(status_code=422, detail="Faixas ativas devem ter percentual crescente.")
+
+        if active:
             prev_amount = amount
+            prev_percent = percent
 
     repos_commission.save_config(tenant, id_filial, groups, tiers, payment_mode)
     return {"ok": True, "message": "Configuração salva com sucesso."}
@@ -1819,12 +1827,9 @@ def team_commissions_results(
     role = claims["role"]
     tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
 
-    # Determine payment mode
-    mode = payment_mode or "team_total"
-    if mode not in ("team_total", "equal_split", "individual_sales"):
-        raise HTTPException(status_code=422, detail="Modo de pagamento inválido.")
-
-    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, mode)
+    # Relatório de comissão é sempre individual por funcionário.
+    _ = payment_mode
+    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, "individual_sales")
     return result
 
 

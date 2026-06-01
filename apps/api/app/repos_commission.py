@@ -147,16 +147,16 @@ def save_config(
 
         # Replace groups: deactivate all, then insert/activate selected
         conn.execute("""
-          UPDATE app.commission_config_group SET is_active = false WHERE config_id = %s
+            UPDATE app.commission_config_group SET is_active = false WHERE config_id = %s
         """, [config_id])
 
         for g in groups:
             conn.execute("""
-              INSERT INTO app.commission_config_group
-                (config_id, id_grupo_produto, nome_grupo_produto_snapshot, is_active)
-              VALUES (%s, %s, %s, true)
-              ON CONFLICT (config_id, id_grupo_produto) WHERE is_active = true
-              DO UPDATE SET is_active = true, nome_grupo_produto_snapshot = EXCLUDED.nome_grupo_produto_snapshot
+                INSERT INTO app.commission_config_group
+                    (config_id, id_grupo_produto, nome_grupo_produto_snapshot, is_active)
+                VALUES (%s, %s, %s, true)
+                ON CONFLICT (config_id, id_grupo_produto) WHERE is_active = true
+                DO UPDATE SET is_active = true, nome_grupo_produto_snapshot = EXCLUDED.nome_grupo_produto_snapshot
             """, [config_id, g["id_grupo_produto"], g.get("nome", "")])
 
         # Replace tiers
@@ -167,8 +167,8 @@ def save_config(
                 (config_id, tier_key, tier_name, min_sales_amount, commission_percent, sort_order, is_active)
               VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, [config_id, tier["tier_key"], tier["tier_name"],
-                  tier["min_sales_amount"], tier["commission_percent"],
-                  tier["sort_order"], tier.get("is_active", True)])
+                                    tier["min_sales_amount"], tier["commission_percent"],
+                                    tier["sort_order"], tier.get("is_active", True)])
 
     return get_config(id_empresa, id_filial)
 
@@ -203,24 +203,24 @@ def calculate_commission_results(
     id_filial: int,
     month: int,
     year: int,
-    payment_mode: str = "team_total",
+    payment_mode: str = "individual_sales",
 ) -> Dict[str, Any]:
-    """Calculate commission results for a month/year using current config."""
+    """Calculate commission results for a month/year using individual commission rules."""
     config = get_config(id_empresa, id_filial)
     if not config:
-        return _empty_results(month, year, id_filial, payment_mode, reason="no_config")
+        return _empty_results(month, year, id_filial, reason="no_config")
 
     config_id = config["id"]
     groups = get_config_groups(config_id)
     tiers = get_config_tiers(config_id)
 
     if not groups:
-        return _empty_results(month, year, id_filial, payment_mode, reason="no_groups")
+        return _empty_results(month, year, id_filial, reason="no_groups")
 
     group_ids = [g["id_grupo_produto"] for g in groups]
     ano_mes = year * 100 + month
 
-    # Query monthly sales by group and employee
+    # Query monthly sales by configured group and employee (only valid employees)
     placeholders = ",".join(["%s"] * len(group_ids))
     sql = f"""
       SELECT
@@ -234,6 +234,7 @@ def calculate_commission_results(
       WHERE id_empresa = %s
         AND id_filial = %s
         AND ano_mes = %s
+        AND id_funcionario > 0
         AND id_grupo_produto IN ({placeholders})
       GROUP BY id_funcionario, nome_vendedor, id_grupo_produto, nome_grupo_produto
     """
@@ -242,12 +243,55 @@ def calculate_commission_results(
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-    if not rows:
-        return _empty_results(month, year, id_filial, payment_mode, reason="no_sales",
-                              groups=groups, tiers=tiers)
+    # Manager base: all sales except combustiveis, independent of employee linkage.
+    manager_sql = """
+      SELECT COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total_sem_combustiveis
+      FROM dw.fact_venda v
+      JOIN dw.fact_venda_item i
+        ON i.id_empresa = v.id_empresa
+       AND i.id_filial = v.id_filial
+       AND i.id_db = v.id_db
+       AND i.id_comprovante = v.id_comprovante
+      LEFT JOIN dw.dim_grupo_produto g
+        ON g.id_empresa = i.id_empresa
+       AND g.id_filial = i.id_filial
+       AND g.id_grupo_produto = i.id_grupo_produto
+      WHERE v.id_empresa = %s
+        AND v.id_filial = %s
+        AND EXTRACT(YEAR FROM v.data)::integer = %s
+        AND EXTRACT(MONTH FROM v.data)::integer = %s
+        AND COALESCE(v.cancelado, false) = false
+        AND COALESCE(i.cfop, 0) >= 5000
+        AND COALESCE(UPPER(g.nome), '') NOT LIKE 'COMBUST%%'
+    """
 
-    # Aggregate totals
-    total_eligible = sum(float(r["venda_total"] or 0) for r in rows)
+    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        manager_row = conn.execute(manager_sql, [id_empresa, id_filial, year, month]).fetchone()
+
+    manager_sales = float((manager_row or {}).get("venda_total_sem_combustiveis") or 0)
+    manager_tier = _determine_tier(manager_sales, tiers)
+    manager_percent = float(manager_tier["commission_percent"]) if manager_tier else 0.0
+    manager_commission_gross = round(manager_sales * manager_percent / 100, 2)
+
+    if not rows:
+        return _empty_results(
+            month,
+            year,
+            id_filial,
+            reason="no_sales",
+            groups=groups,
+            tiers=tiers,
+            manager_data={
+                "venda_total_sem_combustiveis": round(manager_sales, 2),
+                "nivel_atingido": {
+                    "tier_key": manager_tier["tier_key"],
+                    "tier_name": manager_tier["tier_name"],
+                    "min_sales_amount": float(manager_tier["min_sales_amount"]),
+                } if manager_tier else None,
+                "percentual_aplicado": manager_percent,
+                "comissao_bruta": manager_commission_gross,
+            },
+        )
 
     # Per-employee aggregation
     employees: Dict[int, Dict[str, Any]] = {}
@@ -263,27 +307,26 @@ def calculate_commission_results(
         employees[emp_id]["venda_elegivel"] += float(r["venda_total"] or 0)
         employees[emp_id]["quantidade_vendas"] += int(r["quantidade_vendas"] or 0)
 
-    # Determine tier
-    current_tier = _determine_tier(total_eligible, tiers)
-    next_tier = _next_tier(current_tier, tiers)
-    percent_applied = float(current_tier["commission_percent"]) if current_tier else 0.0
-    commission_total = round(total_eligible * percent_applied / 100, 2)
-
-    # Calculate per-employee commission
-    eligible_employees = [e for e in employees.values() if e["venda_elegivel"] > 0]
-    num_eligible = len(eligible_employees)
-
+    # Individual commission: each employee gets tier/percent based on own sales.
+    commission_total = 0.0
     for emp in employees.values():
-        if payment_mode == "team_total":
-            emp["comissao_estimada"] = None
-        elif payment_mode == "equal_split":
-            emp["comissao_estimada"] = round(commission_total / num_eligible, 2) if num_eligible > 0 else 0
-        elif payment_mode == "individual_sales":
-            emp["comissao_estimada"] = round(emp["venda_elegivel"] * percent_applied / 100, 2)
-        emp["participacao"] = round(emp["venda_elegivel"] / total_eligible * 100, 2) if total_eligible > 0 else 0
+        emp_tier = _determine_tier(float(emp["venda_elegivel"]), tiers)
+        emp_percent = float(emp_tier["commission_percent"]) if emp_tier else 0.0
+        emp_commission = round(float(emp["venda_elegivel"]) * emp_percent / 100, 2)
+        commission_total += emp_commission
+
+        emp["nivel_atingido"] = {
+            "tier_key": emp_tier["tier_key"],
+            "tier_name": emp_tier["tier_name"],
+            "min_sales_amount": float(emp_tier["min_sales_amount"]),
+        } if emp_tier else None
+        emp["percentual_aplicado"] = emp_percent
+        emp["comissao_estimada"] = emp_commission
 
     # Sort by venda_elegivel DESC
     employee_list = sorted(employees.values(), key=lambda e: e["venda_elegivel"], reverse=True)
+
+    total_eligible = sum(float(e["venda_elegivel"] or 0) for e in employee_list)
 
     # Group summary
     group_totals = {}
@@ -293,46 +336,30 @@ def calculate_commission_results(
             group_totals[gid] = {"id_grupo_produto": gid, "nome": r["nome_grupo_produto"], "venda_total": 0}
         group_totals[gid]["venda_total"] += float(r["venda_total"] or 0)
 
-    falta_proximo = 0.0
-    if next_tier:
-        falta_proximo = round(float(next_tier["min_sales_amount"]) - total_eligible, 2)
-
-    # Build tier progress
-    tier_progress = []
-    for t in sorted(tiers, key=lambda x: x["sort_order"]):
-        if not t.get("is_active", True):
-            continue
-        tier_progress.append({
-            "tier_key": t["tier_key"],
-            "tier_name": t["tier_name"],
-            "min_sales_amount": float(t["min_sales_amount"]),
-            "commission_percent": float(t["commission_percent"]),
-            "achieved": total_eligible >= float(t["min_sales_amount"]),
-        })
-
     return {
         "month": month,
         "year": year,
         "id_filial": id_filial,
-        "payment_mode": payment_mode,
+        "payment_mode": "individual_sales",
         "venda_elegivel": round(total_eligible, 2),
-        "nivel_atingido": {
-            "tier_key": current_tier["tier_key"] if current_tier else None,
-            "tier_name": current_tier["tier_name"] if current_tier else None,
-            "min_sales_amount": float(current_tier["min_sales_amount"]) if current_tier else None,
-        } if current_tier else None,
-        "percentual_aplicado": percent_applied,
-        "comissao_total": commission_total,
-        "proximo_nivel": {
-            "tier_key": next_tier["tier_key"],
-            "tier_name": next_tier["tier_name"],
-            "min_sales_amount": float(next_tier["min_sales_amount"]),
-            "falta": max(falta_proximo, 0),
-        } if next_tier else None,
+        "nivel_atingido": None,
+        "percentual_aplicado": None,
+        "comissao_total": round(commission_total, 2),
+        "proximo_nivel": None,
         "vendedores": employee_list,
-        "vendedores_elegiveis": num_eligible,
+        "vendedores_elegiveis": len(employee_list),
         "grupos_configurados": list(group_totals.values()),
-        "tier_progress": tier_progress,
+        "tier_progress": [],
+        "gerente": {
+            "venda_total_sem_combustiveis": round(manager_sales, 2),
+            "nivel_atingido": {
+                "tier_key": manager_tier["tier_key"],
+                "tier_name": manager_tier["tier_name"],
+                "min_sales_amount": float(manager_tier["min_sales_amount"]),
+            } if manager_tier else None,
+            "percentual_aplicado": manager_percent,
+            "comissao_bruta": manager_commission_gross,
+        },
         "config": {
             "id": config_id,
             "name": config["name"],
@@ -342,10 +369,13 @@ def calculate_commission_results(
 
 
 def _empty_results(
-    month: int, year: int, id_filial: int, payment_mode: str,
+    month: int,
+    year: int,
+    id_filial: int,
     reason: str = "no_config",
     groups: Optional[List] = None,
     tiers: Optional[List] = None,
+    manager_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return empty structure with appropriate message."""
     messages = {
@@ -369,16 +399,22 @@ def _empty_results(
         "month": month,
         "year": year,
         "id_filial": id_filial,
-        "payment_mode": payment_mode,
+        "payment_mode": "individual_sales",
         "venda_elegivel": 0,
         "nivel_atingido": None,
-        "percentual_aplicado": 0,
+        "percentual_aplicado": None,
         "comissao_total": 0,
-        "proximo_nivel": tier_progress[0] if tier_progress else None,
+        "proximo_nivel": None,
         "vendedores": [],
         "vendedores_elegiveis": 0,
         "grupos_configurados": [],
-        "tier_progress": tier_progress,
+        "tier_progress": [],
+        "gerente": manager_data or {
+            "venda_total_sem_combustiveis": 0,
+            "nivel_atingido": None,
+            "percentual_aplicado": 0,
+            "comissao_bruta": 0,
+        },
         "config": None,
         "message": messages.get(reason, ""),
     }

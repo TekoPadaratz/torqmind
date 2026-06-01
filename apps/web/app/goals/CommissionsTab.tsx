@@ -13,25 +13,39 @@ const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> =
   diamond: { color: "#4f9cf7", bg: "rgba(79,156,247,0.12)", icon: "💎" },
 };
 
-const MODE_LABELS: Record<string, string> = {
-  team_total: "Geral / Equipe",
-  equal_split: "Rateio igual por equipe",
-  individual_sales: "Individual por vendedor",
-};
+function parseBrCurrency(input: string): number {
+  const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "");
+  const value = Number(normalized);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function formatBrCurrencyInput(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  const cents = Number(digits || "0");
+  return (cents / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 interface CommissionsTabProps {
   idEmpresa: number | null;
   idFilial: number | null;
+  referenceDate?: string | null;
 }
 
-export default function CommissionsTab({ idEmpresa, idFilial }: CommissionsTabProps) {
-  const now = new Date();
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [year, setYear] = useState(now.getFullYear());
-  const [mode, setMode] = useState<string>("team_total");
+export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: CommissionsTabProps) {
+  const today = useMemo(() => new Date(), []);
+  const parsedRef = useMemo(() => {
+    if (!referenceDate) return today;
+    const date = new Date(`${referenceDate}T00:00:00`);
+    return Number.isNaN(date.getTime()) ? today : date;
+  }, [referenceDate, today]);
+
+  const month = parsedRef.getMonth() + 1;
+  const year = parsedRef.getFullYear();
+
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [lossInput, setLossInput] = useState("0,00");
 
   const fetchResults = useCallback(async () => {
     if (!idFilial) return;
@@ -43,7 +57,6 @@ export default function CommissionsTab({ idEmpresa, idFilial }: CommissionsTabPr
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
       params.set("month", String(month));
       params.set("year", String(year));
-      params.set("payment_mode", mode);
       const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`);
       setData(resp);
     } catch (err: any) {
@@ -51,7 +64,7 @@ export default function CommissionsTab({ idEmpresa, idFilial }: CommissionsTabPr
     } finally {
       setLoading(false);
     }
-  }, [idEmpresa, idFilial, month, year, mode]);
+  }, [idEmpresa, idFilial, month, year]);
 
   useEffect(() => {
     fetchResults();
@@ -68,59 +81,15 @@ export default function CommissionsTab({ idEmpresa, idFilial }: CommissionsTabPr
     );
   }
 
-  const tierProgress = data?.tier_progress || [];
-  const currentTier = data?.nivel_atingido;
-  const vendaElegivel = data?.venda_elegivel || 0;
-  const maxTierAmount = tierProgress.length > 0
-    ? Math.max(...tierProgress.map((t: any) => t.min_sales_amount))
-    : 120000;
-  const progressPercent = Math.min((vendaElegivel / (maxTierAmount * 1.1)) * 100, 100);
-
-  const months = [
-    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-  ];
+  const manager = data?.gerente || {};
+  const managerGross = Number(manager?.comissao_bruta || 0);
+  const managerLoss = parseBrCurrency(lossInput);
+  const managerNet = Math.max(managerGross - managerLoss, 0);
 
   return (
     <div style={{ marginTop: 16 }}>
-      {/* Filters */}
-      <div className="card" style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "12px 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <label style={{ fontWeight: 500, fontSize: 13 }}>Mês:</label>
-          <select
-            value={month}
-            onChange={(e) => setMonth(Number(e.target.value))}
-            style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card-bg)", color: "inherit" }}
-          >
-            {months.map((m, i) => (
-              <option key={i} value={i + 1}>{m}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <label style={{ fontWeight: 500, fontSize: 13 }}>Ano:</label>
-          <select
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card-bg)", color: "inherit" }}
-          >
-            {[2024, 2025, 2026].map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <label style={{ fontWeight: 500, fontSize: 13 }}>Modo:</label>
-          <select
-            value={mode}
-            onChange={(e) => setMode(e.target.value)}
-            style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card-bg)", color: "inherit" }}
-          >
-            <option value="team_total">Geral / Equipe</option>
-            <option value="equal_split">Rateio igual</option>
-            <option value="individual_sales">Individual</option>
-          </select>
-        </div>
+      <div className="card" style={{ padding: "12px 16px", fontSize: 13 }}>
+        Relatório individual de comissão ({String(month).padStart(2, "0")}/{year})
       </div>
 
       {error && <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div>}
@@ -139,151 +108,85 @@ export default function CommissionsTab({ idEmpresa, idFilial }: CommissionsTabPr
 
           {!data.message && (
             <>
-              {/* KPI Cards */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 12 }}>
-                <div className="card" style={{ textAlign: "center", padding: "16px 12px" }}>
-                  <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>Venda elegível</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{formatCurrency(vendaElegivel)}</div>
-                </div>
-                <div className="card" style={{ textAlign: "center", padding: "16px 12px" }}>
-                  <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>Nível atingido</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: currentTier ? TIER_STYLES[currentTier.tier_key]?.color : undefined }}>
-                    {currentTier ? `${TIER_STYLES[currentTier.tier_key]?.icon || ""} ${currentTier.tier_name}` : "Sem nível"}
+              <div className="card" style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Comissão de gerente</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                  <div>
+                    <div className="muted" style={{ fontSize: 11 }}>Venda total (sem combustíveis)</div>
+                    <div style={{ fontWeight: 700, fontSize: 18 }}>{formatCurrency(manager.venda_total_sem_combustiveis || 0)}</div>
                   </div>
-                </div>
-                <div className="card" style={{ textAlign: "center", padding: "16px 12px" }}>
-                  <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>Comissão estimada</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: "#22c55e" }}>{formatCurrency(data.comissao_total)}</div>
-                </div>
-                <div className="card" style={{ textAlign: "center", padding: "16px 12px" }}>
-                  <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>Percentual aplicado</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>{data.percentual_aplicado}%</div>
-                </div>
-                {data.proximo_nivel && (
-                  <div className="card" style={{ textAlign: "center", padding: "16px 12px" }}>
-                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5 }}>Próximo nível</div>
-                    <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4, color: TIER_STYLES[data.proximo_nivel.tier_key]?.color }}>
-                      {TIER_STYLES[data.proximo_nivel.tier_key]?.icon} {data.proximo_nivel.tier_name}
-                    </div>
-                    <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-                      Faltam {formatCurrency(data.proximo_nivel.falta)}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Progress Bar */}
-              {tierProgress.length > 0 && (
-                <div className="card" style={{ marginTop: 12, padding: "16px 20px" }}>
-                  <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 600 }}>Progresso por nível</div>
-                  <div style={{ position: "relative", height: 28, background: "rgba(255,255,255,0.05)", borderRadius: 14, overflow: "hidden" }}>
-                    <div
+                  <div>
+                    <div className="muted" style={{ fontSize: 11 }}>Perdas no mês (informado pelo gerente)</div>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={lossInput}
+                      onChange={(e) => setLossInput(formatBrCurrencyInput(e.target.value))}
                       style={{
-                        position: "absolute",
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        width: `${progressPercent}%`,
-                        background: currentTier
-                          ? `linear-gradient(90deg, ${TIER_STYLES[currentTier.tier_key]?.color}40, ${TIER_STYLES[currentTier.tier_key]?.color}90)`
-                          : "rgba(100,100,100,0.3)",
-                        borderRadius: 14,
-                        transition: "width 0.5s ease",
+                        marginTop: 4,
+                        width: "100%",
+                        maxWidth: 200,
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        background: "var(--card-bg)",
+                        color: "inherit",
                       }}
                     />
-                    {tierProgress.map((tier: any) => {
-                      const pos = (tier.min_sales_amount / (maxTierAmount * 1.1)) * 100;
-                      return (
-                        <div
-                          key={tier.tier_key}
-                          style={{
-                            position: "absolute",
-                            left: `${pos}%`,
-                            top: 0,
-                            bottom: 0,
-                            width: 2,
-                            background: tier.achieved ? TIER_STYLES[tier.tier_key]?.color : "rgba(255,255,255,0.2)",
-                          }}
-                          title={`${tier.tier_name}: ${formatCurrency(tier.min_sales_amount)}`}
-                        />
-                      );
-                    })}
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-                    {tierProgress.map((tier: any) => (
-                      <div key={tier.tier_key} style={{ fontSize: 10, color: tier.achieved ? TIER_STYLES[tier.tier_key]?.color : "var(--text-muted)", textAlign: "center" }}>
-                        <div>{tier.tier_name}</div>
-                        <div>{formatCurrency(tier.min_sales_amount)}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {/* Motivational text */}
-                  <div style={{ marginTop: 10, fontSize: 13, fontStyle: "italic", color: "var(--text-muted)" }}>
-                    {!currentTier && data.proximo_nivel
-                      ? `Faltam ${formatCurrency(data.proximo_nivel.falta)} para iniciar a comissão da equipe.`
-                      : currentTier && data.proximo_nivel
-                        ? `A equipe já atingiu ${currentTier.tier_name}. Faltam ${formatCurrency(data.proximo_nivel.falta)} para chegar em ${data.proximo_nivel.tier_name}.`
-                        : currentTier && !data.proximo_nivel
-                          ? `${currentTier.tier_name} atingido! A filial chegou ao maior nível configurado.`
-                          : ""}
-                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: 11 }}>Comissão líquida gerente</div>
+                    <div style={{ fontWeight: 800, fontSize: 20, color: "#22c55e" }}>{formatCurrency(managerNet)}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>
+                      Bruta {formatCurrency(managerGross)} {manager?.percentual_aplicado ? `(${manager.percentual_aplicado}%)` : ""}
+                    </div>
                 </div>
-              )}
+                </div>
+              </div>
 
               {/* Employee Grid */}
               <div className="card" style={{ marginTop: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <h2 style={{ margin: 0, fontSize: 15 }}>Vendedores</h2>
                   <span className="muted" style={{ fontSize: 12 }}>
-                    Modo: {MODE_LABELS[mode] || mode} • {data.vendedores_elegiveis} elegíveis
+                    {data.vendedores_elegiveis} elegíveis
                   </span>
                 </div>
 
-                {mode === "team_total" && data.comissao_total > 0 && (
-                  <div style={{ padding: "8px 12px", background: "rgba(34,197,94,0.08)", borderRadius: 8, marginBottom: 10, fontSize: 13 }}>
-                    Comissão total da equipe: <strong>{formatCurrency(data.comissao_total)}</strong>
-                  </div>
-                )}
-                {mode === "equal_split" && (
-                  <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                    Rateio igual considera vendedores com venda elegível no mês.
-                  </div>
-                )}
+                <div style={{ padding: "8px 12px", background: "rgba(34,197,94,0.08)", borderRadius: 8, marginBottom: 10, fontSize: 13 }}>
+                  Comissão total de vendedores: <strong>{formatCurrency(data.comissao_total || 0)}</strong>
+                </div>
 
                 {(data.vendedores || []).length === 0 ? (
-                  <EmptyState title="Sem vendedores" detail="Não há vendedores identificados nas vendas elegíveis deste mês." />
+                  <EmptyState title="Sem vendedores" detail="Não há vendedores com identificação válida para o mês selecionado." />
                 ) : (
                   <div style={{ overflowX: "auto" }}>
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Vendedor</th>
-                          <th>Venda elegível</th>
-                          <th>Participação</th>
-                          <th>Vendas</th>
-                          {mode !== "team_total" && <th>Comissão estimada</th>}
-                          <th>Obs.</th>
+                          <th>Funcionário</th>
+                          <th>Venda</th>
+                          <th>Nível</th>
+                          <th>%</th>
+                          <th>Comissão</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(data.vendedores || []).map((emp: any) => (
                           <tr key={emp.id_funcionario}>
-                            <td style={{ fontWeight: 500 }}>
-                              {emp.id_funcionario === -1 ? (
-                                <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>Sem vendedor identificado</span>
-                              ) : emp.nome_vendedor}
-                            </td>
+                            <td style={{ fontWeight: 500 }}>{emp.nome_vendedor}</td>
                             <td>{formatCurrency(emp.venda_elegivel)}</td>
-                            <td>{emp.participacao}%</td>
-                            <td>{emp.quantidade_vendas}</td>
-                            {mode !== "team_total" && (
-                              <td style={{ fontWeight: 600, color: "#22c55e" }}>
-                                {emp.comissao_estimada != null ? formatCurrency(emp.comissao_estimada) : "—"}
-                              </td>
-                            )}
-                            <td className="muted" style={{ fontSize: 11 }}>
-                              {emp.id_funcionario === -1 ? "Venda sem vendedor" : ""}
+                            <td>
+                              {emp.nivel_atingido ? (
+                                <span style={{ color: TIER_STYLES[emp.nivel_atingido.tier_key]?.color }}>
+                                  {TIER_STYLES[emp.nivel_atingido.tier_key]?.icon} {emp.nivel_atingido.tier_name}
+                                </span>
+                              ) : (
+                                <span className="muted">Sem nível</span>
+                              )}
                             </td>
+                            <td>{Number(emp.percentual_aplicado || 0).toFixed(2)}%</td>
+                            <td style={{ fontWeight: 700, color: "#22c55e" }}>{formatCurrency(emp.comissao_estimada || 0)}</td>
                           </tr>
                         ))}
                       </tbody>

@@ -1253,8 +1253,21 @@ class MartBuilder:
         filial_filter_p = f"AND p.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
             self._delete_mart_batch(client, "payments_by_type_rt", data_keys, id_empresa, id_filial)
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_join_docs = (
+            "LEFT JOIN nfe_latest "
+            "ON c.id_empresa = nfe_latest.id_empresa "
+            "AND c.id_filial = nfe_latest.id_filial "
+            "AND c.id_db = nfe_latest.id_db "
+            "AND c.id_comprovante = nfe_latest.id_comprovante"
+        ) if has_nfe else ""
+        nfe_filter_docs = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status NOT IN (4, 5))" if has_nfe else ""
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.payments_by_type_rt
+        {nfe_with}
         SELECT
             p.id_empresa, p.id_filial, p.data_key,
             toDate(toString(p.data_key), '%Y%m%d') AS dt,
@@ -1272,7 +1285,9 @@ class MartBuilder:
                 c.referencia,
                 argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible
             FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+                        {nfe_join_docs}
             WHERE c.is_deleted = 0 AND c.referencia > 0
+                            {nfe_filter_docs}
             GROUP BY c.id_empresa, c.id_filial, c.referencia
         ) AS docs
             ON docs.id_empresa = p.id_empresa
