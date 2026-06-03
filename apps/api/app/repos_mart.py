@@ -2895,6 +2895,27 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
     return rows
 
 
+def fraud_troca_forma_pgto(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    only_suspeita: bool = True,
+    limit: int = 200,
+    **kwargs: Any,
+) -> List[Dict[str, Any]]:
+    """Payment-form-change antifraud events.
+
+    There is no PostgreSQL mart for this contract: the canonical source lives in
+    the realtime ClickHouse mart (``torqmind_mart_rt.mart_troca_forma_pgto_rt``)
+    served via ``repos_mart_realtime.fraud_troca_forma_pgto``. This legacy stub
+    exists only so the analytics facade can register the function and dispatch to
+    realtime; on the legacy path it safely returns no rows.
+    """
+    return []
+
+
 # ========================
 # Risk Scoring / Insights
 # ========================

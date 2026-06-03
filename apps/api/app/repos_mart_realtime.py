@@ -3603,6 +3603,7 @@ REALTIME_FUNCTIONS = {
     "fraud_series",
     "fraud_top_users",
     "fraud_last_events",
+    "fraud_troca_forma_pgto",
     "risk_top_employees",
     "finance_kpis",
     "streaming_health",

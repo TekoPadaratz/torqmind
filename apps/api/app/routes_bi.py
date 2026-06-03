@@ -1175,7 +1175,7 @@ def update_filial_params_endpoint(
     claims=Depends(get_current_claims),
 ):
     role = claims["role"]
-    if role not in ("platform_master", "owner"):
+    if role not in ("MASTER", "OWNER"):
         raise HTTPException(403, "Apenas proprietário pode alterar parâmetros")
     tenant = claims["id_empresa"]
     filial = body.get("id_filial")
@@ -1224,8 +1224,8 @@ def fraud_overview(
         risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
         payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
         open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
-        # Payment-form-change antifraud: sensitive — only platform_master/owner.
-        if role in ("platform_master", "owner"):
+        # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
+        if role in ("MASTER", "OWNER"):
             troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
                 role, tenant, filial, dt_ini, dt_fim,
                 only_suspeita=troca_only_suspeita, limit=200,
