@@ -76,6 +76,15 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _key_to_iso(value: Any) -> Optional[str]:
+    """Convert a YYYYMMDD integer data_key into an ISO date string."""
+    key = _to_int(value)
+    if key < 10000101:
+        return None
+    s = str(key)
+    return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+
+
 def _sales_product_meta_subquery() -> str:
     return f"""
         SELECT
@@ -2271,7 +2280,7 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Any, as_of: da
     return {"clientes_identificados": 0, "ativos_7d": 0, "em_risco_30d": 0, "faturamento_90d": 0.0}
 
 
-def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0) -> Dict[str, Any]:
+def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0, sort_by: str = "gravity") -> Dict[str, Any]:
     """Delinquency overview from stg_contasreceber in ClickHouse.
 
     Payload fields: DTAVCTO (vencimento ISO), VALOR, VLRPAGO, ID_ENTIDADE.
@@ -2295,7 +2304,9 @@ def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, a
             agg.valor_90_plus,
             agg.titulos_a_vencer,
             agg.valor_a_vencer,
-            agg.max_dias_atraso
+            agg.max_dias_atraso,
+            cr.qtd_compras_30d AS compras_30d,
+            cr.ultima_compra_key AS ultima_compra_key
         FROM (
             SELECT
                 toInt32(JSONExtractInt(payload, 'ID_ENTIDADE')) AS id_cliente,
@@ -2343,6 +2354,11 @@ def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, a
             WHERE id_empresa = {{id_empresa:Int32}} AND is_deleted = 0
             GROUP BY ent_id
         ) AS e ON agg.id_cliente = e.ent_id
+        LEFT JOIN (
+            SELECT id_cliente, qtd_compras_30d, ultima_compra_key
+            FROM {MART_RT_DB}.mart_clientes_resumo FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+        ) AS cr ON agg.id_cliente = cr.id_cliente
     """, parameters={"id_empresa": int(id_empresa), "as_of": as_of_str})
 
     total_clientes = len(rows)
@@ -2369,28 +2385,50 @@ def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, a
     max_atraso = max((_to_int(r.get("max_dias_atraso")) for r in rows), default=0)
     clientes_a_vencer = sum(1 for r in rows if _to_int(r.get("titulos_a_vencer")) > 0)
 
-    customers_out = [
-        {
+    customers_out = []
+    for r in rows:
+        v_vencido = round(
+            _to_float(r.get("valor_1_30")) + _to_float(r.get("valor_31_60"))
+            + _to_float(r.get("valor_61_90")) + _to_float(r.get("valor_90_plus")), 2
+        )
+        v_a_vencer = _to_float(r.get("valor_a_vencer"))
+        t_31_60 = _to_int(r.get("titulos_31_60"))
+        t_61_90 = _to_int(r.get("titulos_61_90"))
+        t_90_plus = _to_int(r.get("titulos_90_plus"))
+        customers_out.append({
             "id_cliente": _to_int(r.get("id_cliente")),
             "cliente_nome": r.get("cliente_nome") or "",
             "titulos_1_30": _to_int(r.get("titulos_1_30")),
             "valor_1_30": _to_float(r.get("valor_1_30")),
-            "titulos_31_60": _to_int(r.get("titulos_31_60")),
+            "titulos_31_60": t_31_60,
             "valor_31_60": _to_float(r.get("valor_31_60")),
-            "titulos_61_90": _to_int(r.get("titulos_61_90")),
+            "titulos_61_90": t_61_90,
             "valor_61_90": _to_float(r.get("valor_61_90")),
-            "titulos_90_plus": _to_int(r.get("titulos_90_plus")),
+            "titulos_90_plus": t_90_plus,
             "valor_90_plus": _to_float(r.get("valor_90_plus")),
             "titulos_a_vencer": _to_int(r.get("titulos_a_vencer")),
-            "valor_a_vencer": _to_float(r.get("valor_a_vencer")),
+            "valor_a_vencer": v_a_vencer,
             "max_dias_atraso": _to_int(r.get("max_dias_atraso")),
-            "valor_total_vencido": round(
-                _to_float(r.get("valor_1_30")) + _to_float(r.get("valor_31_60"))
-                + _to_float(r.get("valor_61_90")) + _to_float(r.get("valor_90_plus")), 2
-            ),
-        }
-        for r in rows
-    ]
+            "valor_total_vencido": v_vencido,
+            "valor_total_aberto": round(v_vencido + v_a_vencer, 2),
+            "compras_30d": _to_int(r.get("compras_30d")),
+            "ultima_compra_dt": _key_to_iso(r.get("ultima_compra_key")),
+            "_titulos_acima_30d": t_31_60 + t_61_90 + t_90_plus,
+        })
+
+    # Server-side ordering mirrors the legacy PostgreSQL delinquency contract
+    # (sort_by: gravity|valor|atraso|comprando). The frontend can still re-sort.
+    _sort_keys = {
+        "gravity": lambda c: (c["_titulos_acima_30d"], c["titulos_1_30"], c["valor_total_vencido"]),
+        "valor": lambda c: (c["valor_total_aberto"], c["valor_total_vencido"]),
+        "atraso": lambda c: (c["max_dias_atraso"], c["valor_total_vencido"]),
+        "comprando": lambda c: (c["compras_30d"], c["valor_total_vencido"]),
+    }
+    customers_out.sort(key=_sort_keys.get(sort_by, _sort_keys["gravity"]), reverse=True)
+    for c in customers_out:
+        c.pop("_titulos_acima_30d", None)
+    if limit and limit > 0:
+        customers_out = customers_out[:limit]
 
     return {
         "summary": {

@@ -49,7 +49,6 @@ _POSTGRES_OWNED_FUNCTIONS = {
     "notifications_list",
     "notifications_unread_count",
     "notification_mark_read",
-    "customers_delinquency_overview",
 }
 
 # Analytical functions that remain on the legacy path until a mart exists with
