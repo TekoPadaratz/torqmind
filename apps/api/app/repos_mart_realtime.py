@@ -1301,33 +1301,92 @@ def cash_overview(
             s.qtd_vendas,
             s.total_cancelamentos,
             s.qtd_cancelamentos,
-            coalesce(pay.total_pagamentos, 0) AS total_pagamentos,
+            toFloat64(0) AS total_pagamentos,
             round(s.total_vendas - s.total_cancelamentos, 2) AS saldo_comercial
         FROM turn_sales AS s
-                LEFT JOIN (
-                        SELECT
-                        c.id_filial AS id_filial,
-                        c.id_turno AS id_turno,
-                                round(sum(fp.valor), 2) AS total_pagamentos
-                        FROM {CURRENT_DB}.stg_formas_pgto_slim AS fp FINAL
-                        INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
-                            ON c.id_empresa = fp.id_empresa
-                         AND c.id_filial = fp.id_filial
-                         AND c.referencia = fp.id_referencia
-                        WHERE c.id_empresa = {{id_empresa:Int32}} {sales_date_range} {sales_filial}
-                            AND c.is_deleted = 0
-                            AND fp.is_deleted = 0
-                            AND c.id_turno > 0
-                        GROUP BY c.id_filial, c.id_turno
-                ) AS pay
-          ON pay.id_filial = s.id_filial
-         AND pay.id_turno = s.id_turno
         LEFT JOIN turn_meta AS m
           ON m.id_filial = s.id_filial
          AND m.id_turno = s.id_turno
         ORDER BY s.total_vendas DESC, s.qtd_vendas DESC, s.last_event_at DESC
         LIMIT 15
     """, parameters=params)
+
+    # Pagamentos por turno deduplicando correcoes de forma no ERP origem. Quando a forma
+    # de pagamento e alterada (ex DINHEIRO->PRAZO) o ERP insere uma nova linha sem marcar
+    # a antiga is_deleted; como a chave do ReplacingMergeTree inclui tipo_forma, o FINAL
+    # mantem as duas e o valor duplica. Removemos a duplicata SO quando a referencia esta
+    # superpaga (sum > venda), preservando splits legitimos de mesmo valor.
+    #
+    # Executado como query top-level (nao como subquery aninhada num LEFT JOIN): o
+    # ClickHouse apresenta resultado nao-deterministico (as vezes vazio) ao aninhar
+    # window functions sobre CTEs com JOIN dentro de um LEFT JOIN externo. Isolada, a
+    # query e deterministica. O merge com os turnos e feito em Python.
+    pay_by_turno_raw = query_dict(f"""
+        WITH docs AS (
+            SELECT
+                c.id_empresa AS id_empresa,
+                c.id_filial AS id_filial,
+                c.id_turno AS id_turno,
+                c.referencia AS referencia,
+                argMax(c.valor_total, c.source_ts_ms) AS venda,
+                argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible
+            FROM {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+            WHERE c.id_empresa = {{id_empresa:Int32}} {sales_date_range} {sales_filial}
+              AND c.is_deleted = 0
+              AND c.id_turno > 0
+              AND c.referencia > 0
+            GROUP BY c.id_empresa, c.id_filial, c.id_turno, c.referencia
+        ),
+        pay AS (
+            SELECT
+                fp.id_empresa AS id_empresa,
+                fp.id_filial AS id_filial,
+                docs.id_turno AS id_turno,
+                fp.id_referencia AS id_referencia,
+                fp.tipo_forma AS tipo_forma,
+                fp.valor AS valor,
+                fp.source_ts_ms AS source_ts_ms,
+                docs.venda AS venda
+            FROM {CURRENT_DB}.stg_formas_pgto_slim AS fp FINAL
+            INNER JOIN docs
+                ON docs.id_empresa = fp.id_empresa
+               AND docs.id_filial = fp.id_filial
+               AND docs.referencia = fp.id_referencia
+            WHERE fp.is_deleted = 0
+              AND docs.commercial_eligible = 1
+        ),
+        ranked AS (
+            SELECT
+                id_filial,
+                id_turno,
+                valor,
+                venda,
+                sum(valor) OVER (PARTITION BY id_empresa, id_filial, id_referencia) AS ref_pago,
+                row_number() OVER (
+                    PARTITION BY id_empresa, id_filial, id_referencia, valor
+                    ORDER BY source_ts_ms DESC, tipo_forma DESC
+                ) AS dup_rank
+            FROM pay
+        )
+        SELECT
+            id_filial,
+            id_turno,
+            round(sum(valor), 2) AS total_pagamentos
+        FROM ranked
+        WHERE NOT (ref_pago > venda + 0.01 AND dup_rank > 1)
+        GROUP BY id_filial, id_turno
+    """, parameters=params)
+    pay_by_turno = {
+        (int(r["id_filial"]), int(r["id_turno"])): float(r.get("total_pagamentos") or 0)
+        for r in pay_by_turno_raw
+        if r.get("id_filial") is not None and r.get("id_turno") is not None
+    }
+    for r in all_turnos_raw:
+        if r.get("id_filial") is not None and r.get("id_turno") is not None:
+            r["total_pagamentos"] = pay_by_turno.get(
+                (int(r["id_filial"]), int(r["id_turno"])),
+                r.get("total_pagamentos") or 0.0,
+            )
 
     label_source_rows = turnos_raw + all_turnos_raw
     filial_names = _load_current_filial_names(id_empresa, label_source_rows)
