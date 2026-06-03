@@ -330,7 +330,10 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
-        "revisit_open_clause": "c.DTAPGTO IS NULL AND CAST(c.DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)",
+        # revisit_open_clause roda no WHERE externo (SELECT * FROM (base) AS src),
+        # onde o alias `c` da query base nao existe. As colunas vem de `c.*`, entao
+        # devem ser referenciadas SEM prefixo (senao "multi-part identifier could not be bound").
+        "revisit_open_clause": "DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)",
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "

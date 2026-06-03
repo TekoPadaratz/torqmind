@@ -1650,6 +1650,7 @@ class MartBuilder:
 
         forma_de_expr = (
             "coalesce("
+            "nullIf(JSONExtractString(pc.payload, 'NOMEPLANODECONTAS'), ''), "
             "nullIf(JSONExtractString(pc.payload, 'DESCRICAO'), ''), "
             "nullIf(JSONExtractString(pc.payload, 'NOME'), ''), "
             "nullIf(JSONExtractString(pc.payload, 'CONTA'), ''), "
@@ -1717,7 +1718,7 @@ class MartBuilder:
                 ON fp.id_empresa = ct.id_empresa AND fp.id_filial = ct.id_filial
                 AND fp.id_referencia = mc.referencia_shadow AND fp.is_deleted = 0
             LEFT JOIN {self.current_db}.payment_type_map AS ptm FINAL
-                ON ptm.id_empresa = ct.id_empresa AND ptm.tipo_forma = fp.tipo_forma
+                ON ptm.tipo_forma = fp.tipo_forma
             LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
                 ON u.id_empresa = ct.id_empresa AND u.id_filial = ct.id_filial
                 AND u.id_usuario = ct.id_usuario_shadow
