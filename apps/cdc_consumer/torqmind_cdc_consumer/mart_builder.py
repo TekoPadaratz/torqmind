@@ -1255,7 +1255,7 @@ class MartBuilder:
             self._delete_mart_batch(client, "payments_by_type_rt", data_keys, id_empresa, id_filial)
 
         has_nfe = self._nfe_slim_table_exists(client)
-        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_cte = f"{self._nfe_latest_status_cte('nfe_latest')}," if has_nfe else ""
         nfe_join_docs = (
             "LEFT JOIN nfe_latest "
             "ON c.id_empresa = nfe_latest.id_empresa "
@@ -1265,40 +1265,79 @@ class MartBuilder:
         ) if has_nfe else ""
         nfe_filter_docs = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status NOT IN (4, 5))" if has_nfe else ""
 
+        # ROOT-CAUSE FIX (payment form corrections):
+        # When a payment form is changed in the source ERP (e.g. DINHEIRO -> PRAZO),
+        # the original formas_pgto row is NOT flagged is_deleted. Because the slim
+        # ReplacingMergeTree key includes tipo_forma, FINAL keeps BOTH the stale and
+        # the corrected row, double-counting the value (chiefly inflating DINHEIRO).
+        # We deduplicate only on OVERPAID references (sum of payments > sale value),
+        # keeping the latest version per (referencia, valor). This preserves
+        # legitimate same-value splits (e.g. R$50 cash + R$50 card on a R$100 sale,
+        # which is not overpaid) while removing correction ghosts. This mirrors the
+        # serving-side fallback in repos_mart_realtime.payments_overview.
         sql = f"""
         INSERT INTO {self.mart_rt_db}.payments_by_type_rt
-        {nfe_with}
-        SELECT
-            p.id_empresa, p.id_filial, p.data_key,
-            toDate(toString(p.data_key), '%Y%m%d') AS dt,
-            p.tipo_forma,
-            coalesce(m.label, concat('Forma ', toString(p.tipo_forma))) AS label,
-            coalesce(m.category, 'Outros') AS category,
-            sum(p.valor) AS valor_total,
-            toUInt32(count()) AS qtd_transacoes,
-            now64(6) AS published_at
-        FROM {self.current_db}.stg_formas_pgto_slim AS p FINAL
-        INNER JOIN (
+        WITH
+        {nfe_cte}
+        docs AS (
             SELECT
                 c.id_empresa,
                 c.id_filial,
                 c.referencia,
-                argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible
+                argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible,
+                argMax(c.valor_total, c.source_ts_ms) AS venda
             FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
                         {nfe_join_docs}
             WHERE c.is_deleted = 0 AND c.referencia > 0
                             {nfe_filter_docs}
             GROUP BY c.id_empresa, c.id_filial, c.referencia
-        ) AS docs
-            ON docs.id_empresa = p.id_empresa
-           AND docs.id_filial = p.id_filial
-           AND docs.referencia = p.id_referencia
+        ),
+        pay AS (
+            SELECT
+                p.id_empresa,
+                p.id_filial,
+                p.data_key,
+                p.id_referencia,
+                p.tipo_forma,
+                p.valor,
+                p.source_ts_ms,
+                docs.venda AS venda
+            FROM {self.current_db}.stg_formas_pgto_slim AS p FINAL
+            INNER JOIN docs
+                ON docs.id_empresa = p.id_empresa
+               AND docs.id_filial = p.id_filial
+               AND docs.referencia = p.id_referencia
+            WHERE {kf} AND p.is_deleted = 0
+              AND docs.commercial_eligible = 1
+              {empresa_filter_p} {filial_filter_p}
+        ),
+        ranked AS (
+            SELECT
+                id_empresa, id_filial, data_key, id_referencia,
+                tipo_forma, valor, venda,
+                sum(valor) OVER (
+                    PARTITION BY id_empresa, id_filial, id_referencia
+                ) AS ref_pago,
+                row_number() OVER (
+                    PARTITION BY id_empresa, id_filial, data_key, id_referencia, valor
+                    ORDER BY source_ts_ms DESC, tipo_forma DESC
+                ) AS dup_rank
+            FROM pay
+        )
+        SELECT
+            r.id_empresa, r.id_filial, r.data_key,
+            toDate(toString(r.data_key), '%Y%m%d') AS dt,
+            r.tipo_forma,
+            coalesce(m.label, concat('Forma ', toString(r.tipo_forma))) AS label,
+            coalesce(m.category, 'Outros') AS category,
+            sum(r.valor) AS valor_total,
+            toUInt32(count()) AS qtd_transacoes,
+            now64(6) AS published_at
+        FROM ranked AS r
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
-            ON p.tipo_forma = m.tipo_forma
-        WHERE {kf} AND p.is_deleted = 0
-          AND docs.commercial_eligible = 1
-          {empresa_filter_p} {filial_filter_p}
-        GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
+            ON r.tipo_forma = m.tipo_forma
+        WHERE NOT (r.ref_pago > r.venda + 0.01 AND r.dup_rank > 1)
+        GROUP BY r.id_empresa, r.id_filial, r.data_key, r.tipo_forma, label, category
         """
         rows = self._insert_and_count(client, "payments_by_type_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("payments_by_type_rt", rows, int((time.time() - t0) * 1000))
