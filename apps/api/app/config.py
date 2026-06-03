@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     db_pool_min_size: int = 2
     db_pool_max_size: int = 30
     db_pool_timeout_seconds: int = 30
+    # Batch ETL needs a higher statement_timeout than the 55s interactive cap set
+    # in get_conn(): bulk/full-snapshot reingestions make heavy fact loaders
+    # (e.g. load_fact_comprovante / load_fact_financeiro) legitimately exceed 55s.
+    # Applied only to the ETL session in etl_orchestrator, not to API requests.
+    etl_statement_timeout_seconds: int = 600
     db_pool_max_idle_seconds: int = 300
 
     # Database (ClickHouse - Analytics)

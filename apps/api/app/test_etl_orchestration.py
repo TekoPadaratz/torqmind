@@ -300,12 +300,13 @@ class EtlOrchestrationTest(unittest.TestCase):
 
         self.assertTrue(summary["ok"])
         set_config_calls = [item for item in conn.calls if "set_config" in item[0]]
-        self.assertEqual(len(set_config_calls), 5)
-        self.assertEqual(set_config_calls[0][1], ("etl.ref_date", "2026-04-30"))
-        self.assertEqual(set_config_calls[1][1], ("etl.from_date", "2025-01-01"))
-        self.assertEqual(set_config_calls[2][1], ("etl.to_date", "2025-12-31"))
-        self.assertEqual(set_config_calls[3][1], ("etl.branch_id", "14458"))
-        self.assertEqual(set_config_calls[4][1], ("etl.force_full_scan", "true"))
+        self.assertEqual(len(set_config_calls), 6)
+        self.assertEqual(set_config_calls[0][1], ("statement_timeout", "600000"))
+        self.assertEqual(set_config_calls[1][1], ("etl.ref_date", "2026-04-30"))
+        self.assertEqual(set_config_calls[2][1], ("etl.from_date", "2025-01-01"))
+        self.assertEqual(set_config_calls[3][1], ("etl.to_date", "2025-12-31"))
+        self.assertEqual(set_config_calls[4][1], ("etl.branch_id", "14458"))
+        self.assertEqual(set_config_calls[5][1], ("etl.force_full_scan", "true"))
 
     @patch("app.cli.etl_incremental.list_target_tenants", return_value=[{"id_empresa": 7, "nome": "Tenant 7", "status": "active", "is_active": True}])
     @patch("app.cli.etl_incremental.run_incremental_cycle", return_value={"ok": True, "failed": 0, "items": []})

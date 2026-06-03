@@ -229,6 +229,13 @@ def _apply_runtime_scope(
     branch_id: int | None,
     force_full: bool,
 ) -> None:
+    # Raise the statement_timeout for the batch ETL session. get_conn() applies a
+    # 55s interactive cap meant for API requests; bulk/full-snapshot reingestions
+    # make heavy fact loaders (load_fact_comprovante, load_fact_financeiro, ...)
+    # legitimately exceed 55s, which previously killed the whole track and stalled
+    # the watermark. This affects only the current ETL session (not API requests).
+    etl_timeout = max(60, int(getattr(settings, "etl_statement_timeout_seconds", 600) or 600))
+    _set_runtime_setting(conn, "statement_timeout", str(etl_timeout * 1000))
     _set_runtime_setting(conn, "etl.ref_date", ref_date.isoformat())
     _set_runtime_setting(conn, "etl.from_date", from_date.isoformat() if from_date else None)
     _set_runtime_setting(conn, "etl.to_date", to_date.isoformat() if to_date else None)
