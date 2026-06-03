@@ -419,6 +419,80 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         ),
         "enabled": True,
     },
+    # Antifraude: auditoria de troca de forma de pagamento.
+    # CONTROLE_TROCA_PGTO = quem/quando trocou (DATA = data da troca);
+    # aponta para o lancamento financeiro ANTIGO via ID_MOVLCTOSCANCELADOS.
+    "controle_troca_pgto": {
+        "table": "dbo.CONTROLE_TROCA_PGTO",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID", "ID_DB"],
+        "contract_name": "controle_troca_pgto_pk",
+        "required_fields": ["ID", "ID_FILIAL", "ID_DB"],
+        "unique_key_fields": ["ID_FILIAL", "ID", "ID_DB"],
+        "preflight_tables": {
+            "dbo.CONTROLE_TROCA_PGTO": [
+                "ID",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_MOVLCTOSCANCELADOS",
+                "USUARIO",
+                "DATA",
+            ],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT t.*, "
+            "CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(t.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(t.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONTROLE_TROCA_PGTO t"
+        ),
+        "enabled": True,
+    },
+    # Antifraude: lancamentos financeiros CANCELADOS (forma DE da troca).
+    # A "forma" e a conta ID_PLANODECONTAS (-> PLANODECONTAS.NOMEPLANODECONTAS).
+    # DTACONTA = data contabil do lancamento; TIPO aqui = debito/credito (NAO tipo_forma).
+    "movlctoscancelados": {
+        "table": "dbo.MOVLCTOSCANCELADOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_MOVLCTOSCANCELADOS", "ID_DB"],
+        "contract_name": "movlctoscancelados_pk",
+        "required_fields": ["ID_MOVLCTOSCANCELADOS", "ID_FILIAL", "ID_DB", "ID_PLANODECONTAS"],
+        "unique_key_fields": ["ID_FILIAL", "ID_MOVLCTOSCANCELADOS", "ID_DB"],
+        "preflight_tables": {
+            "dbo.MOVLCTOSCANCELADOS": [
+                "ID_MOVLCTOSCANCELADOS",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_PLANODECONTAS",
+                "REFERENCIA",
+                "VALOR",
+                "DTACONTA",
+                "ID_TURNOS",
+            ],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(m.DTACONTA AS datetime2)), "
+            f"       (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVLCTOSCANCELADOS m"
+        ),
+        "enabled": True,
+    },
 }
 
 

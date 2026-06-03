@@ -359,3 +359,48 @@ datasets:
              CAST(n.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
              CAST(n.DATA AS datetime2) AS TORQMIND_WATERMARK
       FROM dbo.NFE n
+
+  # Antifraude - troca de forma de pagamento.
+  # CONTROLE_TROCA_PGTO = auditoria da troca (quem=USUARIO, quando=DATA),
+  # aponta para o lancamento ANTIGO via ID_MOVLCTOSCANCELADOS.
+  # ID_FILIAL como chave primaria padrao (cursor_pk_columns / watermark_order_by).
+  controle_troca_pgto:
+    enabled: true
+    table: dbo.CONTROLE_TROCA_PGTO
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID, ID_DB
+    cursor_pk_columns: [ID_FILIAL, ID, ID_DB]
+    bootstrap_days: 365
+    watermark_overlap_seconds: 120
+    query: |
+      SELECT t.*,
+             CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
+             (SELECT MAX(v.dt)
+                FROM (VALUES
+                    (CAST(t.DATA AS datetime2)),
+                    (NULLIF(CAST(t.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
+                ) AS v(dt)) AS TORQMIND_WATERMARK
+      FROM dbo.CONTROLE_TROCA_PGTO t
+
+  # Antifraude - lancamentos financeiros CANCELADOS (forma DE da troca).
+  # A forma e a conta ID_PLANODECONTAS (-> PLANODECONTAS.NOMEPLANODECONTAS).
+  # DTACONTA = data contabil; TIPO aqui e debito/credito, NAO tipo_forma da venda.
+  movlctoscancelados:
+    enabled: true
+    table: dbo.MOVLCTOSCANCELADOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB
+    cursor_pk_columns: [ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB]
+    bootstrap_days: 365
+    watermark_overlap_seconds: 120
+    query: |
+      SELECT m.*,
+             CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
+             (SELECT MAX(v.dt)
+                FROM (VALUES
+                    (CAST(m.DTACONTA AS datetime2)),
+                    (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
+                ) AS v(dt)) AS TORQMIND_WATERMARK
+      FROM dbo.MOVLCTOSCANCELADOS m

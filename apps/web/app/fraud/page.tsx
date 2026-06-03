@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -35,6 +35,7 @@ import {
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { apiGet } from "../lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +82,55 @@ export default function FraudPage() {
     : buildModuleLoadingCopy("antifraude");
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
+
+  // Antifraude — troca de forma de pagamento (sensível: só master/owner).
+  const trocaAllowed = useMemo(
+    () =>
+      ["platform_master", "owner"].includes(
+        String((claims as any)?.user_role || (claims as any)?.role || "").toLowerCase(),
+      ),
+    [claims],
+  );
+  const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(true);
+  const [trocaAll, setTrocaAll] = useState<any[] | null>(null);
+  const [trocaLoading, setTrocaLoading] = useState(false);
+  const scopeKey = useMemo(
+    () => buildScopeParams(scope).toString(),
+    [scope],
+  );
+  // Reset cache "Todas" quando o escopo/janela muda.
+  useEffect(() => {
+    setTrocaAll(null);
+    setTrocaSoSuspeitas(true);
+  }, [scopeKey]);
+  useEffect(() => {
+    if (trocaSoSuspeitas || trocaAll !== null || !trocaAllowed) return;
+    let cancelled = false;
+    setTrocaLoading(true);
+    const params = buildScopeParams(scope);
+    params.set("troca_only_suspeita", "false");
+    apiGet(`/bi/fraud/overview?${params.toString()}`)
+      .then((res: any) => {
+        if (!cancelled) setTrocaAll(res?.troca_forma_pgto || []);
+      })
+      .catch(() => {
+        if (!cancelled) setTrocaAll([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTrocaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [trocaSoSuspeitas, trocaAll, trocaAllowed, scope, scopeKey]);
+  const trocaRows: any[] = trocaSoSuspeitas
+    ? data?.troca_forma_pgto || []
+    : trocaAll || [];
+  const trocaTotalValor = useMemo(
+    () =>
+      trocaRows.reduce((acc: number, r: any) => acc + Number(r?.valor || 0), 0),
+    [trocaRows],
+  );
 
   const byDay = useMemo(
     () =>
@@ -1047,6 +1097,152 @@ export default function FraudPage() {
                   </table>
                 </div>
               </div>
+
+              {trocaAllowed ? (
+                <div className="card col-12">
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div>
+                      <div className="sectionEyebrow">Risco financeiro</div>
+                      <h2 style={{ marginTop: 4 }}>Troca de forma de pagamento</h2>
+                      <div className="muted" style={{ marginTop: 4 }}>
+                        Pagamentos que foram recebidos e depois trocados para uma
+                        forma a receber (prazo, cheque, convênio, crediário). A
+                        troca de uma venda já quitada para &quot;a receber&quot; é
+                        o padrão clássico de desvio de caixa.
+                      </div>
+                    </div>
+                    <div
+                      role="tablist"
+                      aria-label="Filtro de trocas"
+                      style={{ display: "inline-flex", gap: 6 }}
+                    >
+                      <button
+                        type="button"
+                        className={`btn ${trocaSoSuspeitas ? "btnPrimary" : ""}`}
+                        aria-pressed={trocaSoSuspeitas}
+                        onClick={() => setTrocaSoSuspeitas(true)}
+                      >
+                        Só suspeitas
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn ${!trocaSoSuspeitas ? "btnPrimary" : ""}`}
+                        aria-pressed={!trocaSoSuspeitas}
+                        onClick={() => setTrocaSoSuspeitas(false)}
+                      >
+                        Todas
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                      gap: 10,
+                      marginTop: 12,
+                    }}
+                  >
+                    <div className="card" style={{ padding: 12 }}>
+                      <div className="label">Trocas no período</div>
+                      <div style={{ fontSize: 22, fontWeight: 800 }}>
+                        {trocaRows.length}
+                      </div>
+                    </div>
+                    <div className="card" style={{ padding: 12 }}>
+                      <div className="label">Valor envolvido</div>
+                      <div style={{ fontSize: 22, fontWeight: 800 }}>
+                        {formatCurrency(trocaTotalValor)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    {trocaLoading ? (
+                      <div className="muted">Carregando trocas…</div>
+                    ) : !trocaRows.length ? (
+                      <EmptyState
+                        title={
+                          trocaSoSuspeitas
+                            ? "Sem trocas suspeitas no período."
+                            : "Sem trocas de forma de pagamento no período."
+                        }
+                        detail="Nenhum registro de alteração de forma de pagamento foi encontrado para a janela atual."
+                      />
+                    ) : (
+                      <div className="tableScroll">
+                        <table className="table compact">
+                          <thead>
+                            <tr>
+                              <th>Documento</th>
+                              <th>Forma anterior</th>
+                              <th>Forma nova</th>
+                              <th>Usuário</th>
+                              <th>Quando</th>
+                              <th style={{ textAlign: "right" }}>Valor</th>
+                              <th>Risco</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {trocaRows.map((row: any) => (
+                              <tr
+                                key={`${row.troca_id}`}
+                                style={
+                                  row.is_suspeita
+                                    ? { background: "rgba(239,68,68,0.06)" }
+                                    : undefined
+                                }
+                              >
+                                <td>{row.documento || `#${row.troca_id}`}</td>
+                                <td>{row.forma_de || "Não identificada"}</td>
+                                <td>
+                                  <strong>{row.forma_para || "Não identificada"}</strong>
+                                </td>
+                                <td>
+                                  {row.nome_operador ||
+                                    (row.id_usuario
+                                      ? `Operador #${row.id_usuario}`
+                                      : "Não resolvido")}
+                                </td>
+                                <td>
+                                  {row.data_troca_ts
+                                    ? formatDateTime(row.data_troca_ts)
+                                    : formatDateKey(row.data_key)}
+                                </td>
+                                <td style={{ textAlign: "right" }}>
+                                  {formatCurrency(row.valor)}
+                                </td>
+                                <td>
+                                  {row.is_suspeita ? (
+                                    <span
+                                      style={{
+                                        color: "var(--color-negative)",
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      Suspeita
+                                    </span>
+                                  ) : (
+                                    <span className="muted">Normal</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
             <div className="card" style={{ marginTop: 12 }}>
               <div className="muted">

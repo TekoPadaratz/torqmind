@@ -1202,6 +1202,7 @@ def fraud_overview(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    troca_only_suspeita: bool = Query(True, description="Troca de forma de pgto: só suspeitas (default) ou todas"),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("fraud")),
 ):
@@ -1223,6 +1224,14 @@ def fraud_overview(
         risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
         payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
         open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
+        # Payment-form-change antifraud: sensitive — only platform_master/owner.
+        if role in ("platform_master", "owner"):
+            troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
+                role, tenant, filial, dt_ini, dt_fim,
+                only_suspeita=troca_only_suspeita, limit=200,
+            )
+        else:
+            troca_forma_pgto = []
         operational_summary = {
             "kind": "operational",
             "kpis": operational_kpis,
@@ -1262,6 +1271,8 @@ def fraud_overview(
             "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=15),
             "payments_risk": payments_risk,
             "open_cash": open_cash,
+            "troca_forma_pgto": troca_forma_pgto,
+            "troca_only_suspeita": troca_only_suspeita,
         }
 
     return redact_sensitive(_with_cached_response(

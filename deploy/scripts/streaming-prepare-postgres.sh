@@ -81,6 +81,9 @@ DECLARE
     optional_tables text[] := ARRAY[
         'stg.clientes',
         'stg.filiais',
+        'stg.controle_troca_pgto',
+        'stg.movlctoscancelados',
+        'stg.planodecontas',
         'app.competitor_fuel_prices',
         'app.goals',
         'dw.fact_venda',

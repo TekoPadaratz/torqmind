@@ -1925,6 +1925,60 @@ def fraud_top_users(
     return rows
 
 
+def fraud_troca_forma_pgto(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    only_suspeita: bool = True,
+    limit: int = 200,
+    **kwargs: Any,
+) -> List[Dict[str, Any]]:
+    """Payment-form-change events (antifraud).
+
+    Reconstructs the "from" form (RECEBIDA -> A_RECEBER pattern) and the "to"
+    form. By default returns only suspicious changes (RECEBIDA -> A_RECEBER);
+    set ``only_suspeita=False`` to return all changes.
+
+    Sensitive antifraud data: callers MUST restrict to platform_master/owner.
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+    suspeita = "AND is_suspeita = 1" if only_suspeita else ""
+    try:
+        lim = max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        lim = 200
+
+    return query_dict(f"""
+        SELECT
+            troca_id,
+            id_filial,
+            filial_nome,
+            data_key,
+            dt,
+            documento,
+            id_turno,
+            id_usuario,
+            nome_operador,
+            forma_de,
+            categoria_de,
+            forma_para,
+            categoria_para,
+            valor,
+            data_troca_ts,
+            hora,
+            is_suspeita,
+            score_risco,
+            reasons
+        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita}
+        ORDER BY data_key DESC, troca_id DESC
+        LIMIT {lim}
+    """, parameters={"id_empresa": id_empresa})
+
+
 # ================================================================
 # FINANCE
 # ================================================================

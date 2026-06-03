@@ -256,6 +256,23 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "data_inutilizacao_shadow": _parse_ts(_get_any(obj, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]), tenant_id=None),
             "valor_nfe_shadow": _to_numeric(_get_any(obj, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"])),
         }
+    if dataset_key == "controle_troca_pgto":
+        return {
+            "id_movlctoscancelados_shadow": _to_int(_get_any(obj, ["ID_MOVLCTOSCANCELADOS", "id_movlctoscancelados"])),
+            "id_usuario_shadow": _to_int(_get_any(obj, ["USUARIO", "ID_USUARIOS", "ID_USUARIO", "id_usuario", "usuario"])),
+            "data_troca_shadow": _parse_ts(_get_any(obj, ["DATA", "TORQMIND_DT_EVENTO", "data"]), tenant_id=None),
+        }
+    if dataset_key == "movlctoscancelados":
+        return {
+            "id_planodecontas_shadow": _to_int(_get_any(obj, ["ID_PLANODECONTAS", "id_planodecontas"])),
+            "referencia_shadow": _to_int(_get_any(obj, ["REFERENCIA", "referencia", "ID_REFERENCIA", "id_referencia"])),
+            "tipo_shadow": _to_int(_get_any(obj, ["TIPO", "tipo"])),
+            "valor_shadow": _to_numeric(_get_any(obj, ["VALOR", "VLR", "valor"])),
+            "dtaconta_shadow": _parse_ts(_get_any(obj, ["DTACONTA", "TORQMIND_DT_EVENTO", "dtaconta"]), tenant_id=None),
+            "id_turno_shadow": _to_int(_get_any(obj, ["ID_TURNOS", "ID_TURNO", "id_turnos", "id_turno"])),
+            "ref_operacao_shadow": _to_int(_get_any(obj, ["REF_OPERACAO", "ref_operacao"])),
+            "documento_shadow": _get_any(obj, ["DOCUMENTO", "documento"]),
+        }
     return {}
 
 
@@ -348,6 +365,27 @@ def _batch_columns(dataset_key: str, spec: DatasetSpec) -> List[str]:
                 "data_cancelamento_shadow",
                 "data_inutilizacao_shadow",
                 "valor_nfe_shadow",
+            ]
+        )
+    elif dataset_key == "controle_troca_pgto":
+        columns.extend(
+            [
+                "id_movlctoscancelados_shadow",
+                "id_usuario_shadow",
+                "data_troca_shadow",
+            ]
+        )
+    elif dataset_key == "movlctoscancelados":
+        columns.extend(
+            [
+                "id_planodecontas_shadow",
+                "referencia_shadow",
+                "tipo_shadow",
+                "valor_shadow",
+                "dtaconta_shadow",
+                "id_turno_shadow",
+                "ref_operacao_shadow",
+                "documento_shadow",
             ]
         )
     columns.append("payload")
@@ -614,6 +652,26 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_db", ["ID_DB", "id_db"]),
             ("id_comprovante", ["ID_COMPROVANTE", "id_comprovante"]),
             ("id_nfe", ["ID_NFE", "id_nfe"]),
+        ],
+    ),
+
+    # Antifraude - troca de forma de pagamento
+    "controle_troca_pgto": DatasetSpec(
+        table="stg.controle_troca_pgto",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id", ["ID", "id"]),
+        ],
+    ),
+    "movlctoscancelados": DatasetSpec(
+        table="stg.movlctoscancelados",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_movlctoscancelados"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_movlctoscancelados", ["ID_MOVLCTOSCANCELADOS", "id_movlctoscancelados"]),
         ],
     ),
 }

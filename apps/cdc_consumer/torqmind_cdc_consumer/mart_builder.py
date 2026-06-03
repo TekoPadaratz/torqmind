@@ -103,6 +103,7 @@ class MartBuilder:
         "payments_by_type_rt", "dashboard_home_rt", "fraud_daily_rt",
         "risk_recent_events_rt", "cash_overview_rt", "finance_overview_rt",
         "nfe_inutilizations_rt", "mart_antifraude_eventos",
+        "mart_troca_forma_pgto_rt",
         "source_freshness", "mart_publication_log",
     ]
 
@@ -207,6 +208,9 @@ class MartBuilder:
 
                     if tables & {"formas_pgto_comprovantes", "payment_type_map"}:
                         results.append(self._refresh_payments_by_type_stg(client, data_keys))
+
+                    if tables & {"controle_troca_pgto", "movlctoscancelados"}:
+                        results.append(self._refresh_troca_forma_pgto_stg(client, data_keys))
 
                     if tables & {"turnos", "usuarios", "comprovantes"}:
                         results.append(self._refresh_cash_overview_stg(client, data_keys))
@@ -469,6 +473,17 @@ class MartBuilder:
                 results.append(self._refresh_cash_overview_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
                 results.append(self._refresh_risk_recent_events_stg(client, id_empresa=id_empresa, id_filial=id_filial))
                 results.append(self._refresh_antifraude_eventos_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial, skip_delete=True))
+                # Antifraude troca: small source tables, full rebuild scoped to tenant.
+                if self._troca_tables_exist(client):
+                    troca_where = "1=1"
+                    if id_empresa:
+                        troca_where += f" AND id_empresa = {int(id_empresa)}"
+                    if id_filial:
+                        troca_where += f" AND id_filial = {int(id_filial)}"
+                    client.command(
+                        f"DELETE FROM {self.mart_rt_db}.mart_troca_forma_pgto_rt WHERE {troca_where}"
+                    )
+                results.append(self._refresh_troca_forma_pgto_stg(client, [], id_empresa=id_empresa, id_filial=id_filial, skip_delete=True))
                 results.append(self._refresh_finance_overview_stg(client, id_empresa=id_empresa, id_filial=id_filial))
                 results.append(self._refresh_nfe_inutilizations_rt_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
             else:
@@ -1580,6 +1595,159 @@ class MartBuilder:
         """
         rows = self._insert_and_count(client, "mart_antifraude_eventos", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("mart_antifraude_eventos", rows, int((time.time() - t0) * 1000))
+
+    def _troca_categoria_expr(self, text_expr: str) -> str:
+        """Classify a payment-form name into RECEBIDA / A_RECEBER.
+
+        A_RECEBER (deferred): venda a prazo / convenio / cheque / duplicata /
+        crediario / fiado / boleto / promissoria. Anything else is treated as
+        already RECEBIDA (cash, card, pix, etc.). Deterministic, accent-tolerant
+        via uppercased ASCII alternation.
+        """
+        upper = f"upperUTF8(ifNull({text_expr}, ''))"
+        pattern = (
+            "PRAZO|RECEBER|A_RECEBER|CONVENIO|CONV.NIO|CHEQUE|DUPLICATA|"
+            "CREDIARIO|CREDI.RIO|FIADO|BOLETO|PROMISSORIA|PROMISS.RIA|CARTEIRA"
+        )
+        return f"if(match({upper}, '{pattern}'), 'A_RECEBER', 'RECEBIDA')"
+
+    def _refresh_troca_forma_pgto_stg(
+        self,
+        client: Any,
+        data_keys: list[int],
+        id_empresa: int = 0,
+        id_filial: Optional[int] = None,
+        skip_delete: bool = False,
+    ) -> MartRefreshResult:
+        """Antifraude: reconstruct DE -> PARA payment-form change per troca.
+
+        Grain: 1 row per CONTROLE_TROCA_PGTO. Source tables are small and carry
+        typed shadow columns, so we read directly from torqmind_current (no slim).
+
+        is_suspeita = (categoria_de = 'RECEBIDA' AND categoria_para = 'A_RECEBER')
+        -> a form already received (cash/card) converted into a deferred form,
+        the classic cash-skimming signal.
+        """
+        t0 = time.time()
+        if not self._troca_tables_exist(client):
+            return MartRefreshResult("mart_troca_forma_pgto_rt", 0, int((time.time() - t0) * 1000))
+
+        if not skip_delete:
+            self._delete_mart_batch(client, "mart_troca_forma_pgto_rt", data_keys, id_empresa, id_filial)
+
+        empresa_filter = f"AND ct.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter = f"AND ct.id_filial = {int(id_filial)}" if id_filial else ""
+
+        # data_key MUST match the consumer's _extract_data_key (UTC date of the
+        # troca event) so incremental refresh filters line up with marked keys.
+        ts_utc = (
+            "coalesce(ct.data_troca_shadow, ct.dt_evento, "
+            "ct.received_at, ct.ingested_at, now64(6))"
+        )
+        ts_local = f"toTimezone({ts_utc}, '{self._BUSINESS_TZ}')"
+        data_key_expr = f"toInt32(formatDateTime({ts_utc}, '%Y%m%d'))"
+        kf = self._stg_keys_filter(data_key_expr, data_keys)
+
+        forma_de_expr = (
+            "coalesce("
+            "nullIf(JSONExtractString(pc.payload, 'DESCRICAO'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'NOME'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'CONTA'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'PLANODECONTAS'), ''), "
+            "'')"
+        )
+        categoria_de_expr = self._troca_categoria_expr("forma_de")
+        # PARA side: classify the comprovante's resulting form by label + category.
+        para_label_expr = (
+            "coalesce(nullIf(ptm.label, ''), concat('Forma ', toString(fp.tipo_forma)))"
+        )
+        para_categoria_expr = self._troca_categoria_expr(
+            "concat(ifNull(ptm.category, ''), ' ', ifNull(ptm.label, ''))"
+        )
+
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.mart_troca_forma_pgto_rt
+        SELECT
+            id_empresa, id_filial, filial_nome, data_key, dt, troca_id,
+            id_movlctoscancelados, referencia, documento, id_turno, id_usuario,
+            nome_operador, id_planodecontas_de, forma_de, categoria_de,
+            forma_para, categoria_para, valor, data_troca_ts, hora,
+            toUInt8(categoria_de = 'RECEBIDA' AND categoria_para = 'A_RECEBER') AS is_suspeita,
+            if(categoria_de = 'RECEBIDA' AND categoria_para = 'A_RECEBER', 85, 20) AS score_risco,
+            concat(
+                '{{"rule":"troca_forma_pgto","de":"', replaceAll(categoria_de, '"', ''),
+                '","para":"', replaceAll(categoria_para, '"', ''), '"}}'
+            ) AS reasons,
+            now64(6) AS published_at
+        FROM (
+            SELECT
+                ct.id_empresa AS id_empresa,
+                ct.id_filial AS id_filial,
+                coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
+                {data_key_expr} AS data_key,
+                toDate({ts_local}) AS dt,
+                toInt64(ct.id) AS troca_id,
+                toInt64(ifNull(ct.id_movlctoscancelados_shadow, 0)) AS id_movlctoscancelados,
+                toInt64(ifNull(mc.referencia_shadow, 0)) AS referencia,
+                ifNull(mc.documento_shadow, '') AS documento,
+                toInt32(ifNull(mc.id_turno_shadow, 0)) AS id_turno,
+                toInt32(ifNull(ct.id_usuario_shadow, 0)) AS id_usuario,
+                coalesce(
+                    nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''),
+                    nullIf(JSONExtractString(u.payload, 'NOME'), ''),
+                    ''
+                ) AS nome_operador,
+                toInt32(ifNull(mc.id_planodecontas_shadow, 0)) AS id_planodecontas_de,
+                {forma_de_expr} AS forma_de,
+                {categoria_de_expr} AS categoria_de,
+                argMax({para_label_expr}, ifNull(fp.valor, toDecimal64(0, 2))) AS forma_para,
+                argMax({para_categoria_expr}, ifNull(fp.valor, toDecimal64(0, 2))) AS categoria_para,
+                toDecimal64(ifNull(mc.valor_shadow, toDecimal64(0, 2)), 2) AS valor,
+                {ts_local} AS data_troca_ts,
+                toUInt8(toHour({ts_local})) AS hora
+            FROM {self.current_db}.stg_controle_troca_pgto AS ct FINAL
+            LEFT JOIN {self.current_db}.stg_movlctoscancelados AS mc FINAL
+                ON mc.id_empresa = ct.id_empresa AND mc.id_filial = ct.id_filial
+                AND mc.id_db = ct.id_db
+                AND mc.id_movlctoscancelados = ct.id_movlctoscancelados_shadow
+            LEFT JOIN {self.current_db}.stg_planodecontas AS pc FINAL
+                ON pc.id_empresa = ct.id_empresa AND pc.id_filial = ct.id_filial
+                AND pc.id_planodecontas = mc.id_planodecontas_shadow
+            LEFT JOIN {self.current_db}.stg_formas_pgto_slim AS fp FINAL
+                ON fp.id_empresa = ct.id_empresa AND fp.id_filial = ct.id_filial
+                AND fp.id_referencia = mc.referencia_shadow AND fp.is_deleted = 0
+            LEFT JOIN {self.current_db}.payment_type_map AS ptm FINAL
+                ON ptm.id_empresa = ct.id_empresa AND ptm.tipo_forma = fp.tipo_forma
+            LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
+                ON u.id_empresa = ct.id_empresa AND u.id_filial = ct.id_filial
+                AND u.id_usuario = ct.id_usuario_shadow
+            LEFT JOIN {self.current_db}.stg_filiais AS f FINAL
+                ON f.id_empresa = ct.id_empresa AND f.id_filial = ct.id_filial
+            WHERE ct.is_deleted = 0 AND {kf}
+              {empresa_filter} {filial_filter}
+            GROUP BY
+                ct.id_empresa, ct.id_filial, filial_nome, data_key, dt,
+                ct.id, ct.id_movlctoscancelados_shadow, mc.referencia_shadow,
+                mc.documento_shadow, mc.id_turno_shadow, ct.id_usuario_shadow,
+                nome_operador, mc.id_planodecontas_shadow, forma_de, categoria_de,
+                mc.valor_shadow, data_troca_ts, hora
+        ) AS t
+        """
+        rows = self._insert_and_count(
+            client, "mart_troca_forma_pgto_rt", sql, data_keys, id_empresa, id_filial
+        )
+        return MartRefreshResult("mart_troca_forma_pgto_rt", rows, int((time.time() - t0) * 1000))
+
+    def _troca_tables_exist(self, client: Any) -> bool:
+        """Check that the antifraude troca source tables exist in ClickHouse."""
+        try:
+            result = client.query(
+                f"SELECT count() FROM system.tables WHERE database = '{self.current_db}' "
+                f"AND name IN ('stg_controle_troca_pgto', 'stg_movlctoscancelados')"
+            )
+            return bool(result.result_rows and result.result_rows[0][0] >= 2)
+        except Exception:
+            return False
 
     def _refresh_finance_overview_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
         """Finance overview. Reads payload from finance tables (small volume)."""
