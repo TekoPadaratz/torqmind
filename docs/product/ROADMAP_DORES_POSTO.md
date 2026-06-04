@@ -8,6 +8,15 @@
 > Data inicial: 2026-06-03. Cliente de referência: rede Xpert (SQL Server origem).
 > Arquitetura fixa: `SQL Server Xpert -> Agent -> API ingest -> PostgreSQL STG ->
 > Debezium/Redpanda -> CDC Consumer -> ClickHouse current/mart_rt -> API -> Web`.
+>
+> **Atualização 2026-06-03 (rodada de mapeamento):** conectamos direto na base
+> Xpert (`ATXDADOS`, SQL Server 2017, via `tools/xpert_source_explorer.py`) e
+> mapeamos as tabelas reais de estoque/tanque/bico/aferição/cartão. Os achados
+> confirmados estão registrados em cada seção abaixo (§1, §2, §6). O status do
+> Telegram (§4) foi corrigido após auditoria do código real: a infraestrutura é
+> bem mais completa do que estava documentado — ver §4. Novas dores acrescentadas:
+> §8 (revenda de vale-combustível por funcionário) e §9 (validação de
+> assinatura/cheque por IA — só documentação).
 
 ---
 
@@ -18,10 +27,12 @@
 | 1 | Controle de estoque de combustível por bomba/tanque | **ENTRA — prioridade máxima.** Quer logo no dashboard geral. | Nova trilha de dados (encerrante/tanque) + KPI no dashboard |
 | 2 | Conciliação de cartão/TEF (bandeiras + taxas) | **ENTRA.** Tratar no Financeiro, após rastreio de cadastro de bandeiras/taxas. | `/finance` + novo mart de conciliação |
 | 3 | Contas a pagar | **ENTRA (a levantar).** Sempre quebrado no cliente; detalhar requisitos com ele depois. | `/finance` |
-| 4 | Alerta de caixa aberto >24h no celular (Telegram) | **ENTRA — fácil e rápido.** Já existe alerta in-app; falta o push. | Notificação externa (Telegram) |
+| 4 | Alerta de caixa aberto >24h no celular (Telegram) | **ENTRA.** Infra Telegram já existe e o disparo de caixa já está codado/ligado, mas lê mart PG morto pós-cutover. Falta repontar p/ realtime. Ver §4. | Notificação externa (Telegram) |
 | 5 | Benchmark entre filiais | **ENTRA como enriquecimento visual.** Ciência da injustiça estrada × cidade. | Tela de Metas & Equipe |
-| 6 | Aferição/INMETRO de bombas | **ENTRA se a Xpert guardar isso no SQL.** Mapear tabela; principal valor é notificação Telegram. | Ingestão Xpert + Telegram |
+| 6 | Aferição/INMETRO de bombas | **ENTRA — confirmado.** Tabela `AFERICAO` existe na Xpert, viva e atual. Ver §6. | Ingestão Xpert + Telegram |
 | 7 | Jarvis IA (briefing no dashboard) | **REAVALIAR.** Dono não vê mais sentido hoje. Ver §7 para recomendação. | Decisão: repaginar ou remover |
+| 8 | Revenda de vale-combustível por funcionário | **ENTRA (a levantar).** Dor real de fraude: funcionário revende o vale dele. Verificar se há controle no sistema. Ver §8. | Antifraude / RH operacional |
+| 9 | Validação de assinatura/cheque por IA | **FUTURO — só documentação.** Complexo; sem foto de documento assinado mapeada hoje. Ver §9. | Futuro / pesquisa |
 | — | Loja de conveniência em tela separada | **FORA.** O que é separado já está separado internamente nas telas. | — |
 | — | Programa de fidelidade | **FORA.** Já oferecido ao cliente, não foi aceito. | — |
 
@@ -88,17 +99,57 @@ Sem isso, o dono perde milhares de reais por mês no tanque sem enxergar.
   produto/tanque, saldo atual estimado, % do tanque e **alerta de quebra** quando
   passar a tolerância. Esse é o "uau" que o dono pediu de cara.
 
-### Rastreio necessário ANTES de codar (com SSH Produção / origem Xpert)
-- [ ] Localizar no SQL Server Xpert as tabelas de **tanque, bico/bomba e
-      ligação bico↔produto↔tanque** (candidatas: nomes com BICO/BOMBA/TANQUE/
-      ENCERRANTE/ABASTECIMENTO; o explorer `tools/xpert_source_explorer.py` já
-      classifica domínio `estoque`).
-- [ ] Localizar a tabela de **leituras do sensor/sonda** (medição diária) e
-      avaliar **confiabilidade** com amostra real (sensor × saldo calculado).
-- [ ] Localizar a **entrada de combustível** (nota da distribuidora: volume,
-      tanque, data, custo). Confirmar se já está em alguma STG hoje.
-- [ ] Definir a **tolerância de quebra por produto** com o cliente (ex.: % de
-      evaporação aceitável para etanol vs diesel).
+### Mapeamento confirmado na Xpert (2026-06-03)
+Conexão direta no SQL Server `ATXDADOS` via `tools/xpert_source_explorer.py`.
+Tabelas reais encontradas (linhas aproximadas):
+
+| Camada | Tabela Xpert | Chave / colunas úteis | Linhas | Estado |
+|--------|--------------|-----------------------|--------|--------|
+| Estoque geral (por produto) | `ESTOQUE` | `ID_FILIAL, ID_PRODUTOS, ID_LOCALVENDAS, QTDEATUAL` | 757.873 | populada |
+| Cadastro de tanque | `TANQUES` | `ID_TANQUES, ID_FILIAL, ID_PRODUTOS, CAPACIDADE, QTDEMINIMA, ATIVO` | 87 | populada |
+| Saldo atual por tanque | `QTDESTANQUES` | `ID_TANQUES, ID_FILIAL, QTDEATUAL` | 87 | populada |
+| Medição física do tanque | `MOVTANQUES` | `ID_TURNOS, ID_TANQUES, LEITURA, QTDESISTEMA, CENTIMETROS, ABERTURA, DTACONTA` | 46.206 | **viva** (2026-06-02) |
+| Cadastro de bico | `BICOS` | `ID_BICOS, ID_FILIAL, ID_TANQUES, LEITURAATUAL, BICODEFEITO` | 267 | populada |
+| Cadastro de bomba | `BOMBAS` | `ID_BOMBA, ID_FILIAL` | 76 | populada |
+| Volumetria por bico/turno | `ENCERRANTESTURNOS` | `ID_BICOS, ID_TURNOS, ENCERRANTEABERTURA, ENCERRANTEFECHAMENTO, AFERICAO, PPL` | 1.267.978 | **CONGELADA** (máx 2025-09-19) |
+| LMC (livro ANP) — cabeçalho | `LMC` | livro de movimentação de combustíveis | 95.163 | **viva** (2026-05-26) |
+| LMC por tanque | `LMCTANQUES` | `ID_TANQUES, QTDETANQUE, QTDECONCILIACAO` | 106.601 | **viva** (2026-05-26) |
+| LMC por bico | `LMCBICOS` | `ID_BICOS, ID_TANQUES, ENCERRANTEABERTURA/FECHAMENTO, AFERICAO, VENDAS, PPL` | 324.070 | **viva** (2026-05-26) |
+| Entradas de combustível | `LMCENTRADATANQUES` | entradas por tanque | 34.970 | populada |
+| Aferição (ver §6) | `AFERICAO` | `ID_BICOS, ID_TURNOS, QTDE, DATA, ID_USUARIOS, ID_USUARIOS_LIB` | 19.525 | **viva** (2026-06-03) |
+
+**Conclusões do mapeamento (respondem ao que o dono perguntou):**
+- **Estoque total por produto:** controlado para TODAS as filiais ativas
+  (`ESTOQUE`, ~17,5 mil produtos por filial = catálogo completo, inclui
+  conveniência). É a base de "estoque absoluto" geral.
+- **Estoque por tanque:** controlado em todos os postos (4 a 7 tanques cada) via
+  `TANQUES` + `QTDESTANQUES` (saldo) + `MOVTANQUES` (medição física régua/
+  centímetros vs sistema, **atual** 2026-06). Filiais administrativas/parada/
+  distribuidora (14126, 14779, 14780, 14930, 15121, 17719) não têm tanque — é o
+  esperado, não são pontos de combustível.
+- **Controle por bico:** existe — 267 bicos cadastrados (266 OK, 1 em defeito
+  por `BICODEFEITO`; o campo `STATUS` está vazio e não deve ser usado como flag
+  de ativo). Cada bico liga a um tanque (`BICOS.ID_TANQUES`).
+- **Volumetria viva é o LMC, NÃO o encerrante-turno.** `ENCERRANTESTURNOS` e
+  `ENCERRANTES` pararam de replicar em **2025-09-19** (congeladas há ~8 meses).
+  A fonte canônica e atual de litros por bico/tanque é a família **`LMC` /
+  `LMCBICOS` / `LMCTANQUES` / `LMCENTRADATANQUES`** (Livro de Movimentação de
+  Combustíveis, obrigatório ANP), atualizada até 2026-05-26. **Implicação direta:
+  a trilha de estoque de combustível deve ler do LMC, não do encerrante-turno.**
+
+### Rastreio que ainda falta (com o cliente / SSH Produção)
+- [x] ~~Localizar tabelas de tanque/bico/bomba e ligação bico↔produto↔tanque~~
+      → `TANQUES`, `BICOS`, `BOMBAS`, `QTDESTANQUES` (mapeado acima).
+- [x] ~~Localizar a entrada de combustível~~ → `LMCENTRADATANQUES` (+ `LMC`).
+- [ ] **Sensor/sonda físico:** `MOVTANQUES` traz `LEITURA`/`CENTIMETROS`
+      (medição física) e `QTDESISTEMA`; confirmar com o cliente se a `LEITURA`
+      vem de sonda automática ou medição manual, e avaliar confiabilidade
+      (série sensor × saldo calculado em alguns dias). `LEITURASTANQUES`
+      (5 linhas) e `TANQUE_MEDIDOR` (0) sugerem que a sonda automática quase não
+      é usada — provável medição manual via régua.
+- [ ] **Tolerância de quebra por produto** com o cliente (% evaporação aceitável
+      etanol vs diesel) — `LMC_DIVERGENCIAS` (103 linhas) já registra divergências
+      no padrão do próprio sistema; vale comparar nosso cálculo com o dele.
 
 ### Risco / cuidado
 - Não inventar volume nem custo: sem dado confiável de sensor/entrada, mostrar
@@ -149,6 +200,32 @@ ninguém vê. Também não há detecção de "vendi no cartão mas não caiu na 
 - **Fase 2 — Líquido esperado:** aplicar taxa cadastrada → valor líquido previsto.
 - **Fase 3 — Conciliação real:** importar extrato da adquirente → divergências.
 
+### Mapeamento confirmado na Xpert (2026-06-03)
+Tabelas reais de cartão/convênio encontradas:
+
+| Função | Tabela Xpert | Linhas | Observação |
+|--------|--------------|--------|------------|
+| Cadastro operadora/cartão débito | `CARTAODEBITO` | 748 | operadoras/redes |
+| Redes TEF | `REDETEF` | 748 | — |
+| Bandeiras | `BANDEIRASTEF` / `CFGBANDEIRASTEF` | 1.078 / 968 | normalização de bandeira |
+| Códigos administradoras TEF | `CODIGOSADMTEF` | 34 | — |
+| Cadastro de convênios (faturado) | `CONVENIOS` | 2.221 | clientes/empresas convênio |
+| Movimento cartão | `MOVCARTAODEBITO` | 2.827.823 | transações cartão |
+| Movimento convênio | `MOVCONVENIOS` | 3.105.392 | transações convênio |
+| Baixa/conciliação cartão | `BAIXACARTAO` / `CARTAODABAIXACARTAO` | 6.659 / 8.711 | baixa de recebíveis |
+| Conciliação EDI | `CONCILIACAOVENDASCARTOES_EDI` | 85 | extrato adquirente (EDI) |
+| Taxas venda a prazo | `TAXASVENDASPRAZO` | 22 | parcial |
+| **Taxas da administradora** | `TAXASADMINISTRADORA` | **0** | **VAZIA** |
+
+**Achado crítico para a Fase 0:** `TAXASADMINISTRADORA` está **vazia** — o cliente
+**não cadastra a taxa por adquirente/bandeira na Xpert**. Logo, o cálculo de
+líquido (Fase 2) **não tem fonte de taxa hoje**. Caminhos: (a) criar cadastro de
+taxas no próprio TorqMind (schema `app`), ou (b) extrair a taxa efetiva do
+extrato EDI (`CONCILIACAOVENDASCARTOES_EDI`, que já tem 85 linhas) comparando
+bruto × líquido depositado. A Fase 1 (vendas por bandeira) é viável já, pois o
+movimento e as bandeiras existem. A conciliação real (Fase 3) já tem semente no
+EDI — vale avaliar a qualidade dessas 85 linhas com o cliente.
+
 ### Onde aparece
 - Tela `/finance` (Financeiro), seção "Conciliação de cartões". Nunca expor
   margem/custo a gerente/vendedor; taxa de cartão é informação financeira
@@ -179,37 +256,70 @@ levantamento dedicado.
 
 ---
 
-## 4. Alerta de caixa aberto >24h no celular (Telegram) — RÁPIDO
+## 4. Alerta de caixa aberto >24h no celular (Telegram)
 
 ### A dor real
 O cliente já pediu e **já alertamos no sistema** (in-app:
-`alerta_caixa_aberto` / `open_cash_monitor`), mas **não alertamos no celular**.
-O dono quer o "ping" no telefone.
+`alerta_caixa_aberto` / `open_cash_monitor`), mas **não chega no celular** o
+alerta de caixa. O dono quer o "ping" no telefone, com mensagem bonita e dados
+reais (sem "caixa ?" sem nome).
 
-### O que JÁ existe
-- Detecção de caixa aberto pronta: mart `alerta_caixa_aberto` com `status`,
-  `hours_open`, `severity`; função `open_cash_monitor`; alertas de cancelamento
-  já existem in-app. Só falta o **canal externo**.
+### O que JÁ existe — MUITO mais do que parecia (auditoria 2026-06-03)
+A infraestrutura de Telegram **já é madura e funcional** (o alerta de
+**cancelamento de venda** já roda em produção por ela):
+- **Serviço completo:** `apps/api/app/services/telegram.py` — `send_telegram_alert(id_empresa, payload, force)`
+  com: gate por severidade (`settings.notify_min_severity`, default CRITICAL),
+  resolução de destinatários (`app.telegram_settings` por empresa, ou OWNER/MASTER
+  via `app.user_notification_settings`), **de-duplicação diária**
+  (`app.telegram_dispatch_log`, hash `empresa|filial|insight|data`), envio com
+  retry/backoff. Token em env (`TELEGRAM_BOT_TOKEN`).
+- **Disparo de caixa JÁ CODADO E JÁ LIGADO:** `_dispatch_cash_telegram_alerts`
+  em `apps/api/app/services/etl_orchestrator.py` já lê o mart de caixa aberto,
+  monta o payload `CASH_OPEN_OVER_24H` (filial, operador, horas) e chama
+  `send_telegram_alert`. É invocado no pós-refresh do orquestrador quando
+  `cash_notifications > 0`. **Não é "criar do zero".**
+- **Mensagem já é boa:** a `mart.alerta_caixa_aberto` (migration 033) já gera
+  título *"Caixa {turno} aberto há {h} horas"* e corpo com filial + operador,
+  com `COALESCE` de fallback (*"Filial {id}"* / *"não identificado"*). **Nunca
+  produz "caixa ?"** — o número do caixa (`id_turno`) está sempre presente.
 
-### O que FALTA (gap técnico — pequeno)
-1. **Canal Telegram**: bot + envio de mensagem. Mais simples e gratuito que
-   WhatsApp (sem custo por mensagem, sem aprovação de template).
-2. **Serviço de notificação externa** reaproveitável (igual fizemos o
-   `email_service.py`): `telegram_service.py` env-driven, no-op seguro quando não
-   configurado (`TELEGRAM_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` por
-   destinatário/filial).
-3. **Regra de disparo + de-duplicação**: dispara uma vez quando cruza 24h, não a
-   cada ciclo do cron. Reaproveitar o hash de insights / tabela de notificações.
-4. **Destinatários por escopo**: qual chat recebe alertas de qual filial.
+### Causa-raiz REAL de não chegar no celular (o gap verdadeiro)
+O disparo existe, mas **a fonte que ele lê está morta em produção**:
+- `mart.alerta_caixa_aberto` (PostgreSQL) está **vazia em prod** (0 linhas,
+  `updated_at` NULL). No **cutover realtime**, os marts migraram para ClickHouse
+  `torqmind_mart_rt` e essa materialized view do PG **deixou de ser atualizada**.
+- No ClickHouse **não existe** `torqmind_mart_rt.alerta_caixa_aberto`. O dado de
+  caixa aberto vive em `torqmind_mart_rt.cash_overview_rt` (usado por
+  `repos_mart_realtime.open_cash_monitor`: `is_aberto=1`, `abertura_ts`,
+  `nome_operador`).
+- Por isso o **cancelamento** chega (usa caminho raw realtime independente:
+  `raw_comprovante_is_cancelled` → `app.alert_comprovante_cancelado`), mas o
+  **caixa aberto não** (depende do mart PG morto).
 
-### Plano
-- Começar por **caixa aberto >24h** (já pedido). Estrutura serve depois para
-  fraude, quebra de combustível (§1) e aferição (§6).
-- Disparo a partir do cron operacional que já roda (`prod-etl-pipeline.sh`).
+### O que FALTA (correto e enxuto)
+Repontar o disparo de caixa para a fonte realtime — **não** criar serviço novo:
+1. **Novo dispatcher realtime** que consulta `torqmind_mart_rt.cash_overview_rt`
+   (`is_aberto=1` e `now() − abertura_ts >= 24h`), pegando `nome_operador`,
+   `id_filial`, `id_turno`, `abertura_ts`. Reaproveita 100% o `send_telegram.py`
+   (severidade, destinatários, de-dup diário, mensagem). Mensagem no mesmo padrão
+   do cancelamento.
+2. **Gatilho:** acoplar a um ciclo que já roda periodicamente em prod (cron
+   operacional / loop realtime). Definir intervalo (ex.: a cada 30–60 min basta
+   para 24h).
+3. **De-dup:** já resolvido pelo `_register_dispatch_once` (1x/dia por turno).
+
+### Decisão pendente (apresentar ao dono)
+Como o caminho correto **não é trivial** (mexe no hot path realtime + precisa de
+validação em prod + health check), **não foi implementado nesta rodada de
+mapeamento**. É uma tarefa pronta para a próxima rodada, com fonte e formato já
+definidos acima. Centralizar tudo em `telegram.py` (como o dono cogitou) **já é
+o estado atual** — o serviço já é centralizado; o que falta é só o dispatcher
+realtime de caixa.
 
 ### Cuidado
 - Token do bot é segredo → só em `/etc/torqmind/prod.app.env`, nunca no código.
 - Não vazar margem/custo em mensagem para grupo de gerentes/vendedores.
+- Reusar o de-dup para não floodar (1 alerta por turno por dia).
 
 ---
 
@@ -255,16 +365,28 @@ isso do SQL da Xpert**, podemos exibir e — principalmente — **notificar no
 Telegram** quando uma aferição estiver vencendo/vencida (risco de multa).
 
 ### O que FALTA (gap técnico)
-1. **Mapear a tabela de aferição** no SQL Server da Xpert (data da última
-   aferição, validade, bomba/bico, status). Usar `xpert_source_explorer.py`.
-2. **Ingerir** como entidade STG (`stg.afericoes` — nome a confirmar).
-3. **Exibir** num lugar discreto (provável: dentro do contexto de bombas/estoque
+1. ~~Mapear a tabela de aferição~~ — **FEITO (2026-06-03).** Tabela `AFERICAO`
+   confirmada na Xpert: `ID_AFERICAO, ID_FILIAL, ID_BICOS, ID_TURNOS, QTDE,
+   DATA, ID_USUARIOS, ID_USUARIOS_LIB`. **19.525 linhas, viva** (última
+   2026-06-03). Há também o campo `AFERICAO` dentro de `ENCERRANTESTURNOS` e de
+   `LMCBICOS`. É a aferição operacional diária do bico (com usuário que executou
+   e usuário liberador) — cobertura por filial já validada (quase todos os
+   postos com aferição recente; ver matriz em §1).
+2. **Atenção ao conceito:** `AFERICAO` registra o **ato** de aferir o bico (qtde
+   aferida no turno), não uma "data de validade INMETRO". O alerta de
+   *vencimento legal* (calibração INMETRO periódica) depende de outra fonte —
+   confirmar com o cliente se a validade INMETRO é controlada em algum cadastro
+   (candidatos: `BICOS.DATALACRE`/`NROLACREBOMBA`, que trazem lacre e data).
+3. **Ingerir** como entidade STG (`stg.afericoes` — nome a confirmar).
+4. **Exibir** num lugar discreto (provável: dentro do contexto de bombas/estoque
    da §1, ou um card de "conformidade").
-4. **Notificar no Telegram** (reaproveita §4) quando faltar X dias para vencer.
+5. **Notificar no Telegram** (reaproveita §4) — ex.: bico sem aferição no período
+   esperado, ou lacre vencendo (`BICOS.DATALACRE`).
 
 ### Rastreio
-- [ ] Localizar a estrutura de aferição no banco Xpert e validar que é confiável
-      e atualizada.
+- [x] ~~Localizar a estrutura de aferição no banco Xpert~~ → `AFERICAO` (viva).
+- [ ] Confirmar com o cliente onde mora a **validade legal INMETRO** (lacre/
+      calibração periódica) vs a aferição operacional diária.
 
 ---
 
@@ -314,6 +436,67 @@ governança de prompt prontos — jogar fora seria desperdício. O ajuste é de
 
 ---
 
+## 8. Revenda de vale-combustível por funcionário (fraude — a levantar)
+
+### A dor real
+O posto concede a funcionários um **valor mensal de vale-combustível** (ex.: "X
+reais para abastecer"). O dono relata que **funcionários revendem esse vale para
+terceiros**: o terceiro abastece, o funcionário "passa no nome dele" (consome a
+cota), e há a troca por dinheiro por fora. É **desvio de benefício / fraude
+operacional** — o benefício deixa de cumprir sua função e vira renda paralela.
+
+### O que precisa ser levantado ANTES de codar
+- [ ] Confirmar **como o vale é controlado hoje** na Xpert: é lançado como uma
+      forma de pagamento/convênio interno, como abastecimento "no nome do
+      funcionário", ou fora do sistema (caderneta)? Candidatos mapeados:
+      `VALECOMBUSTIVEL` (0 linhas hoje), `INSVALECOMBUSTIVEL`/`...BAIXA` (0),
+      `CONVENIOS`/`MOVCONVENIOS` (se o vale for modelado como convênio do
+      funcionário). **Hoje as tabelas dedicadas de vale estão zeradas** — forte
+      indício de que o vale **não é controlado no sistema** ou usa outro caminho.
+- [ ] Se for via convênio/funcionário: cruzar **abastecimentos no nome do
+      funcionário × cota** e procurar padrões de fraude (volume acima do razoável,
+      múltiplos veículos/placas, horários incompatíveis com turno do funcionário).
+
+### Possível direção (depois do levantamento)
+- Se houver dado: card/relatório de **consumo de vale por funcionário** com
+  alertas (cota estourada, placa recorrente que não é do funcionário). Encaixa no
+  módulo de **Antifraude** ou num "RH operacional". Reusa o canal Telegram (§4).
+- Se não houver dado confiável: documentar como **limitação de origem** e propor
+  ao cliente passar a registrar o vale no sistema (pré-requisito).
+
+### Cuidado
+- Tema sensível (relação trabalhista). Tratar como indicador de auditoria, não
+  acusação automática. Permissão restrita (não é tela de vendedor/gerente comum).
+
+---
+
+## 9. Validação de assinatura / cheque por IA (FUTURO — só documentação)
+
+### A ideia
+Validar automaticamente **assinaturas em comprovantes/recibos** e **cheques**
+(preenchimento, assinatura, CMC-7, valor por extenso × numérico) usando IA de
+visão, para reduzir fraude e devolução de cheque.
+
+### Por que é só documentação agora
+- **Não há, no mapeamento atual, fonte com a imagem do documento assinado.** A
+  Xpert guarda dados estruturados (valores, datas, NSU), não a digitalização do
+  cheque/assinatura. Sem a imagem, não há o que a IA analise.
+- É um item **complexo e de alto custo** (captura de imagem no PDV, OCR/visão,
+  base de assinaturas de referência, LGPD sobre documentos pessoais).
+
+### Pré-requisitos para sair do papel (futuro)
+- [ ] Existir captura/armazenamento da **imagem** do cheque/assinatura (no PDV ou
+      por upload), com consentimento/LGPD.
+- [ ] Definir o caso de uso preciso (cheque pré-datado? recibo de fiado?
+      autorização de frota?).
+- [ ] Só então avaliar modelo de visão + custo + acurácia mínima aceitável.
+
+### Decisão
+- **Não implementar.** Manter registrado como visão de futuro; reabrir quando
+  houver fonte de imagem e demanda concreta do cliente.
+
+---
+
 ## Ordem sugerida de execução (proposta)
 
 1. **§1 Estoque de combustível** — maior dor e maior diferencial; começa pelo
@@ -325,7 +508,11 @@ governança de prompt prontos — jogar fora seria desperdício. O ajuste é de
 4. **§6 Aferição** — depende do mesmo rastreio Xpert da §1 e do canal Telegram da §4.
 5. **§5 Benchmark entre filiais** — enriquecimento visual; sem dependência externa.
 6. **§3 Contas a pagar** — só após levantamento do dono com o cliente.
-7. **§7 Jarvis** — decisão de produto; pode andar a qualquer momento.
+7. **§8 Revenda de vale-combustível** — após levantar como o vale é (ou não)
+   controlado no sistema; hoje as tabelas dedicadas estão zeradas.
+8. **§7 Jarvis** — decisão de produto; pode andar a qualquer momento.
+9. **§9 Validação de assinatura/cheque por IA** — futuro; só quando houver fonte
+   de imagem e demanda concreta.
 
 ---
 
