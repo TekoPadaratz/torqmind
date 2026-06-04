@@ -154,6 +154,122 @@ def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
         ).fetchone()
 
 
+# ── Password reset tokens ────────────────────────────────────
+# Segurança: o token bruto NUNCA é persistido. Guardamos apenas o SHA-256;
+# o link enviado por e-mail carrega só o token aleatório (sem e-mail embutido).
+
+def _hash_reset_token(raw_token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_password_reset_token(
+    user_id: str,
+    ttl_minutes: int,
+    requested_ip: Optional[str] = None,
+    requested_user_agent: Optional[str] = None,
+) -> str:
+    """Generate a high-entropy token, invalidate prior unused tokens for the user,
+    persist only its hash, and return the raw token (to be emailed)."""
+    import secrets
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(raw_token)
+
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        # Invalida pedidos anteriores ainda não usados (single active token).
+        conn.execute(
+            """
+            UPDATE auth.password_reset_tokens
+            SET used_at = now()
+            WHERE user_id = %s::uuid AND used_at IS NULL
+            """,
+            (user_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO auth.password_reset_tokens
+              (user_id, token_hash, expires_at, requested_ip, requested_user_agent)
+            VALUES (%s::uuid, %s, now() + (%s || ' minutes')::interval, %s, %s)
+            """,
+            (user_id, token_hash, str(int(ttl_minutes)), requested_ip, requested_user_agent),
+        )
+        conn.commit()
+
+    return raw_token
+
+
+def get_reset_token_user(raw_token: str) -> Optional[Dict[str, Any]]:
+    """Return the user (id, email, nome) tied to a valid (unused, unexpired) token,
+    or None. Does not consume the token."""
+    if not raw_token:
+        return None
+    token_hash = _hash_reset_token(raw_token)
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        return conn.execute(
+            """
+            SELECT u.id, u.email, u.nome, u.is_active
+            FROM auth.password_reset_tokens t
+            JOIN auth.users u ON u.id = t.user_id
+            WHERE t.token_hash = %s
+              AND t.used_at IS NULL
+              AND t.expires_at > now()
+            """,
+            (token_hash,),
+        ).fetchone()
+
+
+def reset_password_with_token(raw_token: str, new_password_hash: str) -> Optional[str]:
+    """Consume a valid token and set the user's password atomically.
+
+    Returns the user_id on success, or None if the token is invalid/expired/used.
+    Marks the token (and any other open tokens for the user) as used.
+    """
+    if not raw_token:
+        return None
+    token_hash = _hash_reset_token(raw_token)
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        row = conn.execute(
+            """
+            UPDATE auth.password_reset_tokens
+            SET used_at = now()
+            WHERE token_hash = %s
+              AND used_at IS NULL
+              AND expires_at > now()
+            RETURNING user_id
+            """,
+            (token_hash,),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return None
+
+        user_id = str(row["id"]) if isinstance(row, dict) and "id" in row else str(row["user_id"])
+        conn.execute(
+            """
+            UPDATE auth.users
+            SET password_hash = %s,
+                must_change_password = FALSE,
+                password_changed_at = now(),
+                updated_at = now()
+            WHERE id = %s::uuid
+            """,
+            (new_password_hash, user_id),
+        )
+        # Invalida quaisquer outros tokens abertos do mesmo usuário.
+        conn.execute(
+            """
+            UPDATE auth.password_reset_tokens
+            SET used_at = now()
+            WHERE user_id = %s::uuid AND used_at IS NULL
+            """,
+            (user_id,),
+        )
+        conn.commit()
+        return user_id
+
+
 def _list_user_access_rows(user_id: str) -> list[dict[str, Any]]:
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         rows = conn.execute(

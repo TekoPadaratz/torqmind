@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app import repos_auth
+from app.config import settings
 from app.deps import get_current_claims, get_current_claims_allow_password_change
+from app.email_service import send_password_reset_email
+from app.password_policy import policy_message, validate_password
 from app.schemas_auth import LoginRequest, LoginResponse
 from app.security import create_access_token, decode_token, hash_password, verify_password
 
@@ -108,6 +111,17 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
         if body.current_password == body.new_password:
             raise HTTPException(status_code=400, detail={"error": "same_password", "message": "New password must differ from current"})
 
+        policy_errors = validate_password(body.new_password)
+        if policy_errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "weak_password",
+                    "message": policy_message(),
+                    "unmet_rules": policy_errors,
+                },
+            )
+
         new_hash = hash_password(body.new_password)
         conn.execute(
             """
@@ -159,3 +173,110 @@ def refresh_token(claims=Depends(get_current_claims)):
     token_minutes = 1440 if user_role == "tenant_kiosk" else None
     token = create_access_token(new_payload, minutes=token_minutes)
     return {"ok": True, "access_token": token}
+
+
+# ── Password reset ("esqueci minha senha") ──────────────────
+# Fluxo seguro: o usuário informa um identificador (e-mail ou username); se ele
+# existir e estiver ativo, geramos um token aleatório de alta entropia, guardamos
+# apenas o hash, e enviamos por e-mail um link que carrega SOMENTE o token (sem
+# e-mail embutido). A resposta é sempre genérica para evitar enumeração de contas.
+
+_GENERIC_FORGOT_MESSAGE = (
+    "Se houver uma conta para este e-mail, enviaremos um link de recuperação em instantes."
+)
+
+
+def _build_reset_url(raw_token: str) -> str:
+    base = (settings.web_public_url or "").rstrip("/")
+    path = settings.password_reset_link_path or "/reset-password"
+    if not path.startswith("/"):
+        path = "/" + path
+    from urllib.parse import quote
+
+    return f"{base}{path}?token={quote(raw_token, safe='')}"
+
+
+def _client_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or None
+    return request.client.host if request.client else None
+
+
+class ForgotPasswordRequest(BaseModel):
+    identifier: str = Field(..., min_length=1, max_length=320)
+
+
+@router.post("/forgot-password")
+def forgot_password(body: ForgotPasswordRequest, request: Request):
+    """Start a password reset. Always returns a generic success (anti-enumeration)."""
+    generic = {"ok": True, "message": _GENERIC_FORGOT_MESSAGE}
+
+    user = repos_auth.get_user_by_identifier(body.identifier)
+    if not user or not user.get("is_active") or not user.get("email"):
+        return generic
+
+    raw_token = repos_auth.create_password_reset_token(
+        user_id=str(user["id"]),
+        ttl_minutes=settings.password_reset_token_ttl_minutes,
+        requested_ip=_client_ip(request),
+        requested_user_agent=(request.headers.get("user-agent") or "")[:512] or None,
+    )
+    reset_url = _build_reset_url(raw_token)
+    send_password_reset_email(
+        to_email=user["email"],
+        reset_url=reset_url,
+        nome=user.get("nome"),
+        ttl_minutes=settings.password_reset_token_ttl_minutes,
+    )
+    return generic
+
+
+@router.get("/reset-password/validate")
+def validate_reset_token(token: str):
+    """Validate a reset token and return the associated email for display.
+
+    The token alone authorizes this lookup (it proves inbox possession), so the
+    email is never passed in the URL by the client.
+    """
+    user = repos_auth.get_reset_token_user(token)
+    if not user or not user.get("is_active"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_token", "message": "Link inválido ou expirado. Solicite um novo."},
+        )
+    return {"valid": True, "email": user["email"], "rules_message": policy_message()}
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=1, max_length=128)
+
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest):
+    """Complete a password reset using a valid token."""
+    user = repos_auth.get_reset_token_user(body.token)
+    if not user or not user.get("is_active"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_token", "message": "Link inválido ou expirado. Solicite um novo."},
+        )
+
+    policy_errors = validate_password(body.new_password)
+    if policy_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "weak_password", "message": policy_message(), "unmet_rules": policy_errors},
+        )
+
+    new_hash = hash_password(body.new_password)
+    user_id = repos_auth.reset_password_with_token(body.token, new_hash)
+    if not user_id:
+        # Token consumido/expirado entre a validação e o commit.
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_token", "message": "Link inválido ou expirado. Solicite um novo."},
+        )
+
+    return {"ok": True, "message": "Senha redefinida com sucesso. Você já pode entrar com a nova senha."}

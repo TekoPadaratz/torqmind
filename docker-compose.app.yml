@@ -58,6 +58,21 @@ services:
       DB_POOL_MAX_IDLE_SECONDS: ${DB_POOL_MAX_IDLE_SECONDS:-300}
       BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-America/Sao_Paulo}
       BUSINESS_TENANT_TIMEZONES: ${BUSINESS_TENANT_TIMEZONES:-}
+      # Password reset ("esqueci minha senha")
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:3000}
+      PASSWORD_RESET_TOKEN_TTL_MINUTES: ${PASSWORD_RESET_TOKEN_TTL_MINUTES:-30}
+      PASSWORD_RESET_LINK_PATH: ${PASSWORD_RESET_LINK_PATH:-/reset-password}
+      # SMTP / e-mail transacional (recuperação de senha). Desligado por padrão.
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
+      SMTP_FROM: ${SMTP_FROM:-master@torqmind.com}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-TorqMind}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-20}
     expose:
       - "8000"
     volumes:

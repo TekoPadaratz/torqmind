@@ -62,6 +62,25 @@ class Settings(BaseSettings):
     api_access_token_minutes: int = 480
     platform_sovereign_emails: str = "teko94@gmail.com"
 
+    # Password reset ("esqueci minha senha")
+    # Base pública do frontend usada para montar o link do e-mail (sem barra final).
+    web_public_url: str = "http://localhost:3000"
+    password_reset_token_ttl_minutes: int = 30
+    password_reset_link_path: str = "/reset-password"
+
+    # SMTP / e-mail transacional (recuperação de senha).
+    # Tudo opcional: se SMTP_ENABLED=false (padrão), o envio é ignorado com log.
+    smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_from: str = "master@torqmind.com"
+    smtp_from_name: str = "TorqMind"
+    smtp_timeout_seconds: int = 20
+
     # Ingestion
     # If True, /ingest requires X-Ingest-Key (recommended for production).
     ingest_require_key: bool = False

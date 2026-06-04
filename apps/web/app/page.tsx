@@ -146,6 +146,13 @@ export default function LoginPage() {
                 </span>
               ) : 'Entrar'}
             </button>
+            <a
+              href="/forgot-password"
+              className="muted"
+              style={{ textAlign: 'center', textDecoration: 'none', fontSize: 13 }}
+            >
+              Esqueci minha senha
+            </a>
           </form>
         </div>
       </div>
