@@ -826,3 +826,23 @@ Fluxo seguro de reset de senha, ponta a ponta, pronto para SMTP. Commit `c72d6e8
 | POST | `/auth/forgot-password` | não | genérica `{ok, message}` (200 sempre) |
 | GET | `/auth/reset-password/validate?token=` | não | `{valid, email, rules_message}` ou 400 |
 | POST | `/auth/reset-password` | não | sucesso ou 422 `weak_password` / 400 `invalid_token` |
+
+---
+
+## Roadmap de Produto / Dores a Resolver — 2026-06-03
+
+Documento de planejamento: `docs/product/ROADMAP_DORES_POSTO.md`. Lista dores reais de dono de posto ainda não resolvidas, o que já existe na base, o gap técnico e o rastreio antes de implementar. Resumo das decisões do dono:
+
+| # | Tema | Status |
+|---|------|--------|
+| 1 | **Estoque de combustível por bomba/tanque (litros, conciliação encerrante × sensor × venda)** | ENTRA — prioridade máxima, KPI no dashboard geral. Encerrante (`ENCERRANTEFECHAMENTO` de `dbo.TURNOS`) já é ingerido mas só usado p/ "caixa aberto"; falta tanque/bico/sensor/entrada e mart `mart_estoque_combustivel_rt` (resolve dívida técnica `stock_position_summary`). |
+| 2 | **Conciliação de cartão/TEF (bandeiras + taxas)** | ENTRA no Financeiro. `bandeira/rede/tef/nsu/autorizacao` já vêm na STG de formas de pagamento; falta cadastro de taxas + extrato da adquirente + mart de conciliação. Fase 0 = rastrear qualidade de cadastro de bandeiras/taxas. |
+| 3 | Contas a pagar | ENTRA (a levantar com cliente; dado "sempre quebrado"). Financeiro só cobre receber hoje. |
+| 4 | **Alerta caixa aberto >24h no Telegram** | ENTRA — rápido. Detecção in-app pronta (`alerta_caixa_aberto`/`open_cash_monitor`); falta canal externo. Criar `telegram_service.py` env-driven no-op-seguro (padrão do `email_service.py`). Base reusável p/ §1 e §6. |
+| 5 | Benchmark entre filiais | ENTRA como enriquecimento visual em Metas & Equipe. Usar indicadores normalizados (R$/m³, ticket, venda/frentista, % meta), agrupar estrada × cidade (comparação bruta é injusta). |
+| 6 | Aferição/INMETRO | ENTRA se a Xpert guardar no SQL. Mapear tabela, ingerir STG, notificar Telegram (risco de multa). |
+| 7 | **Jarvis IA** | REAVALIAR. Recomendação: não deletar o encanamento (cache/fallback/custo prontos); repaginar de briefing diário automático → IA sob demanda ancorada em evento ("explique este alerta / o que faço?"); desligar geração diária. Remover se uso seguir baixo. |
+| — | Loja de conveniência em tela separada | FORA (já separado internamente). |
+| — | Programa de fidelidade | FORA (cliente não aceitou). |
+
+Ordem sugerida: §1 → §4 → §2 → §6 → §5 → §3 → §7.
