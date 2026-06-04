@@ -17,6 +17,8 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -31,6 +33,7 @@ export default function ResetPasswordPage() {
       .then((res) => {
         setTokenValid(true);
         setEmail(res.data?.email || "");
+        setMfaRequired(Boolean(res.data?.mfa_required));
       })
       .catch((err) => {
         setError(extractApiError(err, "Link inválido ou expirado. Solicite um novo."));
@@ -40,7 +43,7 @@ export default function ResetPasswordPage() {
 
   const ruleState = evaluatePassword(newPassword);
   const passwordsMatch = newPassword.length > 0 && newPassword === confirmPassword;
-  const canSubmit = isValidPassword(newPassword) && passwordsMatch && !loading;
+  const canSubmit = isValidPassword(newPassword) && passwordsMatch && !loading && (!mfaRequired || totpCode.trim().length >= 6);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -57,7 +60,9 @@ export default function ResetPasswordPage() {
 
     setLoading(true);
     try {
-      await api.post("/auth/reset-password", { token, new_password: newPassword });
+      const payload: Record<string, unknown> = { token, new_password: newPassword };
+      if (mfaRequired) payload.totp_code = totpCode.trim();
+      await api.post("/auth/reset-password", payload);
       setDone(true);
     } catch (err: any) {
       setError(extractApiError(err, "Não foi possível redefinir a senha."));
@@ -216,6 +221,27 @@ export default function ResetPasswordPage() {
                   <div className="muted" style={{ color: "var(--color-warning)", fontSize: 12.5 }}>
                     As senhas não conferem.
                   </div>
+                )}
+
+                {mfaRequired && (
+                  <>
+                    <label className="muted" htmlFor="reset-totp">
+                      Código do aplicativo autenticador
+                    </label>
+                    <div className="muted" style={{ fontSize: 12.5 }}>
+                      Esta conta tem 2FA ativo. Informe o código de 6 dígitos do seu app autenticador (ou um código de recuperação).
+                    </div>
+                    <input
+                      id="reset-totp"
+                      className="input"
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value.replace(/[^0-9A-Za-z-]/g, ""))}
+                      placeholder="000000"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={14}
+                    />
+                  </>
                 )}
 
                 {error && (

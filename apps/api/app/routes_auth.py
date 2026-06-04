@@ -27,6 +27,18 @@ def login(body: LoginRequest):
     except repos_auth.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
 
+    # Two-factor: if the user has TOTP enabled, do NOT issue a final token yet.
+    # Return a short-lived challenge; the client completes via /auth/mfa/verify.
+    from app import repos_mfa
+    from app.routes_mfa import issue_mfa_challenge_token
+
+    mfa_state = repos_mfa.get_mfa_state(session["sub"]) or {}
+    if mfa_state.get("totp_enabled"):
+        challenge = issue_mfa_challenge_token(
+            session["sub"], session.get("id_empresa"), session.get("id_filial")
+        )
+        return LoginResponse(mfa_required=True, mfa_challenge_token=challenge)
+
     payload = {
         "sub": session["sub"],
         "email": session["email"],
@@ -84,6 +96,7 @@ def me(authorization: str | None = Header(default=None)):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=8, max_length=128)
+    totp_code: str | None = Field(default=None, max_length=16)
 
 
 @router.post("/change-password")
@@ -94,6 +107,24 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
     Returns a fresh access token with must_change_password=False.
     """
     user_id = claims["sub"]
+
+    # If the user has 2FA enabled, require a valid TOTP (or recovery) code.
+    from app import repos_mfa
+    from app.totp import decrypt_secret, hash_recovery_code, verify_code
+
+    enc = repos_mfa.get_encrypted_secret(user_id, require_enabled=True)
+    if enc:
+        code = (body.totp_code or "").strip()
+        ok = False
+        if code:
+            try:
+                ok = verify_code(decrypt_secret(enc), code)
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok and repos_mfa.consume_recovery_code(user_id, hash_recovery_code(code)):
+                ok = True
+        if not ok:
+            raise HTTPException(status_code=401, detail={"error": "mfa_required", "message": "Código do autenticador é obrigatório."})
 
     from app.db import get_conn
 
@@ -245,12 +276,21 @@ def validate_reset_token(token: str):
             status_code=400,
             detail={"error": "invalid_token", "message": "Link inválido ou expirado. Solicite um novo."},
         )
-    return {"valid": True, "email": user["email"], "rules_message": policy_message()}
+    from app import repos_mfa
+
+    mfa_state = repos_mfa.get_mfa_state(str(user["id"])) or {}
+    return {
+        "valid": True,
+        "email": user["email"],
+        "rules_message": policy_message(),
+        "mfa_required": bool(mfa_state.get("totp_enabled")),
+    }
 
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=1, max_length=128)
+    totp_code: str | None = Field(default=None, max_length=16)
 
 
 @router.post("/reset-password")
@@ -269,6 +309,25 @@ def reset_password(body: ResetPasswordRequest):
             status_code=422,
             detail={"error": "weak_password", "message": policy_message(), "unmet_rules": policy_errors},
         )
+
+    # If the user has 2FA enabled, a valid TOTP (or recovery) code is required to
+    # complete the reset — a leaked reset link alone must not bypass 2FA.
+    from app import repos_mfa
+    from app.totp import decrypt_secret, hash_recovery_code, verify_code
+
+    enc = repos_mfa.get_encrypted_secret(str(user["id"]), require_enabled=True)
+    if enc:
+        code = (body.totp_code or "").strip()
+        ok = False
+        if code:
+            try:
+                ok = verify_code(decrypt_secret(enc), code)
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok and repos_mfa.consume_recovery_code(str(user["id"]), hash_recovery_code(code)):
+                ok = True
+        if not ok:
+            raise HTTPException(status_code=401, detail={"error": "mfa_required", "message": "Código do autenticador é obrigatório para concluir a redefinição."})
 
     new_hash = hash_password(body.new_password)
     user_id = repos_auth.reset_password_with_token(body.token, new_hash)

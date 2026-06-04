@@ -138,6 +138,15 @@ def users_contacts_update(user_id: str, body: UserContactRequest, request: Reque
         _raise(exc)
 
 
+@router.post("/users/{user_id}/mfa-reset")
+def users_mfa_reset(user_id: str, claims=Depends(get_current_claims)):
+    """Admin reset of a user's 2FA (TOTP). Forces reconfiguration on next setup."""
+    try:
+        return repos_platform.admin_reset_mfa(claims, user_id)
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
 @router.get("/notifications/subscriptions")
 def subscriptions_list(
     tenant_id: int | None = Query(None),

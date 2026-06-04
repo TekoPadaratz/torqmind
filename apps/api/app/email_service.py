@@ -36,9 +36,28 @@ from app.config import settings
 logger = logging.getLogger("torqmind.email")
 
 
+def _resolve_sender() -> str:
+    """Resolve the From address from env, preferring SMTP_FROM_EMAIL.
+
+    Guards against accidentally sending from an unowned domain: if the configured
+    sender is on torqmind.com (domain not yet under our control / SPF-DKIM-DMARC),
+    we log a clear warning so it surfaces to admins instead of silently failing
+    deliverability.
+    """
+    sender = (settings.smtp_from_email or settings.smtp_from or "").strip()
+    if sender.lower().endswith("@torqmind.com"):
+        logger.warning(
+            "SMTP sender %r uses torqmind.com — only use this once the domain is "
+            "controlled with SPF/DKIM/DMARC; otherwise mail will fail deliverability.",
+            sender,
+        )
+    return sender
+
+
 def is_email_configured() -> bool:
     """True when SMTP is enabled and minimally configured to actually send."""
-    return bool(settings.smtp_enabled and settings.smtp_host and settings.smtp_from)
+    return bool(settings.smtp_enabled and settings.smtp_host and _resolve_sender())
+
 
 
 def _send_via_smtp(message: EmailMessage) -> None:
@@ -72,7 +91,7 @@ def send_email(to_email: str, subject: str, html_body: str, text_body: str | Non
         return False
 
     message = EmailMessage()
-    message["From"] = formataddr((settings.smtp_from_name or "TorqMind", settings.smtp_from))
+    message["From"] = formataddr((settings.smtp_from_name or "TorqMind", _resolve_sender()))
     message["To"] = to_email
     message["Subject"] = subject
     message.set_content(text_body or "Abra este e-mail em um cliente compatível com HTML.")

@@ -233,7 +233,6 @@ Funcoes ClickHouse implementadas:
 | `cash_commercial_overview` | `/bi/cash/overview` | vendas + caixa | comercial caixa |
 | `cash_overview` | `/bi/cash/overview` | caixa marts | payload caixa |
 | `open_cash_monitor` | `/bi/cash/overview` | `alerta_caixa_aberto` | alertas caixa |
-| `health_score_latest` | dashboard/home | `health_score_daily` | score saude |
 | `leaderboard_employees` | `/bi/goals/overview` | `agg_funcionarios_diaria` | ranking metas |
 | `sales_peak_hours_signal` | Jarvis/insights | `agg_vendas_hora` | sinal horarios |
 | `sales_declining_products_signal` | Jarvis/insights | `agg_produtos_diaria` | sinal produtos |
@@ -271,6 +270,14 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - **Tela**: `apps/web/app/customers/page.tsx` (grid "Prioridades de cobranca"), so pagina/ordena o payload.
 - **Roteamento**: com `USE_REALTIME_MARTS=true`, `repos_mart_realtime.customers_delinquency_overview` DELEGA para `repos_mart.customers_delinquency_overview` (mart PG reconciliada). A query ClickHouse-direct anterior multiplicava o cliente pelo numero de filiais (join com `mart_clientes_resumo` por `id_cliente`) e ignorava baixas — removida.
 - **Prova de reconciliacao (2026-06-04)**: cliente 7383 (TRANSPORTES E.A.E., filial 14122) — Xpert = DW = mart PG = API: titulos 631, vencido 953.772,35, a vencer 35.599,30, aberto 989.371,65. Payload sem `id_cliente` duplicado.
+
+### Forma de pagamento das vendas (Caixa/Financeiro) — conciliado 2026-06-04
+
+- **Fonte canonica**: comprovantes + itens + formas de pagamento (Xpert). Grao por `(id_empresa, id_filial, referencia)` ANTES de agregar por forma. Aberto/elegivel pela mesma regra de vendas (commercial_eligible, NFE status fora 4/5, cancelados fora).
+- **Mart**: `torqmind_mart_rt.payments_by_type_rt` (CDC, `mart_builder._refresh_payments_by_type_stg`). Dedup de **troca de forma de pagamento**: quando a forma e corrigida na origem, a linha antiga NAO vem `is_deleted` e o ReplacingMergeTree mantem as duas (chave inclui `tipo_forma`), inflando (tipicamente DINHEIRO). Fix: remover duplicatas **apenas em referencias com pago > venda** (`ref_pago > venda+0.01 AND dup_rank>1`), preservando splits legitimos (ex.: R$50 dinheiro + R$50 cartao numa venda de R$100).
+- **Conciliacao na API** (`repos_mart_realtime._reconcile_payment_mix`): `cash_overview` e `payments_overview` retornam `total_vendas`, `total_pagamentos_conciliado`, `diferenca_conciliacao`, e o `payment_mix` recebe uma linha **explicita** "Nao conciliado (operacional)" (`category=reconciliation`) quando ha gap residual (fiado/prazo nao registrado, fantasma de troca remanescente, arredondamento) — assim `sum(payment_mix) == total_vendas`, sem esconder nem jogar em forma errada.
+- **Frontend** (`cash/page.tsx`): card "Recebimentos" mostra "Nao conciliado: X" quando |dif|>0.01.
+- **Prova (2026-06-04, filial 14122)**: dia 0604 vendas=pagamentos=134.791,72 (dif 0). Mai-jun: vendas 6.029.219,42, formas 6.039.516,75, dif -10.297,33. Ano: vendas 26.693.000,20, formas 26.677.317,61, dif +15.682,59. `sum(mix)==vendas` em todos.
 
 ## 6. Mapa das marts ClickHouse
 
@@ -806,7 +813,7 @@ Fluxo seguro de reset de senha, ponta a ponta, pronto para SMTP. Commit `c72d6e8
 | Arquivo | Conteúdo |
 |---------|----------|
 | `password_policy.py` | Política canônica: 8+ chars, minúscula, maiúscula, número, especial. `validate_password()`, `is_valid_password()`, `describe_rules()`, `policy_message()`. Max 128. |
-| `email_service.py` | Envio SMTP via `smtplib`, env-driven. `is_email_configured()`, `send_email()` (nunca levanta exceção, no-op seguro se não configurado), `send_password_reset_email()`. Assunto "Recuperação de senha do TorqMind", remetente `master@torqmind.com`. HTML com identidade visual (botão cobre `#b87333`). Doc de Brevo no header. |
+| `email_service.py` | Envio SMTP via `smtplib`, env-driven. `is_email_configured()`, `_resolve_sender()` (prefere `SMTP_FROM_EMAIL`, cai em `SMTP_FROM`; **alerta no log se remetente for `@torqmind.com`** — domínio ainda não controlado/sem SPF-DKIM-DMARC), `send_email()` (no-op seguro se não configurado), `send_password_reset_email()`. **Remetente padrão vazio**; definir via env. |
 | `repos_auth.py` | `_hash_reset_token()` (sha256), `create_password_reset_token(user_id, ttl, ip, ua)` (token bruto = `secrets.token_urlsafe(32)`, grava só hash, invalida anteriores), `get_reset_token_user(raw)`, `reset_password_with_token(raw, new_hash)` (atômico, single-use). |
 | `routes_auth.py` | `POST /auth/forgot-password` (resposta genérica anti-enumeração, sem auth), `GET /auth/reset-password/validate?token=` (retorna valid/email/rules_message), `POST /auth/reset-password` (valida política 422, consome token). Política também aplicada em `change-password`. |
 | `config.py` | Settings: `web_public_url`, `password_reset_token_ttl_minutes=30`, `password_reset_link_path=/reset-password`, `smtp_enabled=false`, `smtp_host/port/user/password/use_tls/use_ssl/from/from_name/timeout_seconds`. Todos opcionais (não entram nas validações de segredo). |
@@ -837,9 +844,36 @@ Fluxo seguro de reset de senha, ponta a ponta, pronto para SMTP. Commit `c72d6e8
 |--------|------|------|----------|
 | POST | `/auth/forgot-password` | não | genérica `{ok, message}` (200 sempre) |
 | GET | `/auth/reset-password/validate?token=` | não | `{valid, email, rules_message}` ou 400 |
-| POST | `/auth/reset-password` | não | sucesso ou 422 `weak_password` / 400 `invalid_token` |
+| POST | `/auth/reset-password` | não | sucesso ou 422 `weak_password` / 400 `invalid_token`; exige `totp_code` se o usuário tem 2FA |
 
 ---
+
+## Autenticação em dois fatores (TOTP) — 2026-06-04
+
+TOTP (RFC 6238) gratuito/offline, compatível com Google/Microsoft Authenticator, Authy, Bitwarden, 1Password, Proton. **Opt-in** (default desligado). Sem SMS/e-mail como 2º fator. Sem WebAuthn nesta rodada.
+
+### Backend
+- `app/totp.py`: algoritmo TOTP em **stdlib** (`hmac`/`hashlib`/`struct`), sem pyotp. Segredo cifrado em repouso com **Fernet** (`cryptography`) via `TOTP_ENCRYPTION_KEY`. `generate_secret`, `encrypt/decrypt_secret`, `verify_code` (janela de tolerância, comparação constante), `provisioning_uri`, `generate_recovery_codes`/`hash_recovery_code`. Nunca loga segredo/código.
+- `app/repos_mfa.py`: estado 2FA em `auth.users` (sem expor segredo). `stage_secret`, `enable_after_confirm`, `mark_used`, `disable`, `set_required`, `admin_reset`, recovery codes (`replace`/`consume`).
+- `app/routes_mfa.py` (`/auth/mfa/*`): `setup/start` (otpauth+secret), `setup/confirm` (valida 1º código → habilita → 8 recovery codes), `verify` (troca challenge+código por access token), `disable`, `status`. Limite de tentativas in-process + TTL do desafio.
+- `routes_auth.login`: se `totp_enabled`, retorna `mfa_required=true` + `mfa_challenge_token` curto (sem access token). `deps._resolve_session` rejeita challenge tokens (`scope=mfa_challenge`).
+- `change-password` e `reset-password`: exigem `totp_code` (TOTP ou recovery) quando o usuário tem 2FA — link de reset vazado **não** burla 2FA.
+- Admin reset: `POST /platform/users/{id}/mfa-reset` (`repos_platform.admin_reset_mfa`, reusa visibilidade de plataforma).
+
+### Schema (migration 091, aditiva/idempotente)
+- `auth.users`: `totp_enabled`, `totp_secret_encrypted`, `totp_confirmed_at`, `totp_required`, `totp_last_used_at`, `mfa_reset_required`.
+- `auth.user_recovery_codes` (hash + used_at).
+
+### Env (compose `docker-compose.app.yml` serviço api)
+- `TOTP_ENCRYPTION_KEY` (Fernet base64; **segredo**, só em `/etc/torqmind/prod.app.env` mode 600, nunca commitado; sem ela 2FA fica indisponível — setup retorna 503). `TOTP_ISSUER`, `TOTP_VALID_WINDOW`, `MFA_CHALLENGE_TTL_MINUTES`, `MFA_MAX_ATTEMPTS`.
+
+### Frontend
+- `page.tsx` (login): 2º passo de código quando `mfa_required`.
+- `reset-password/page.tsx`: campo de código quando `validate` retorna `mfa_required`.
+- `platform/users/page.tsx`: botão "Resetar 2FA" ao editar usuário.
+
+### SMTP / domínio (decisão)
+- **NÃO usar `@torqmind.com`** até o domínio estar comprado e com SPF/DKIM/DMARC. `SMTP_FROM`/`SMTP_FROM_EMAIL` padrão vazio; `_resolve_sender()` alerta no log se cair em torqmind.com. Usar provedor transacional (ex.: Brevo) com remetente de domínio próprio.
 
 ## Roadmap de Produto / Dores a Resolver — 2026-06-03
 

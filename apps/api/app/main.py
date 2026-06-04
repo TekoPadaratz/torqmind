@@ -16,6 +16,7 @@ from app.db import get_conn
 from app.security import decode_token
 
 from app.routes_auth import router as auth_router
+from app.routes_mfa import router as mfa_router
 from app.routes_dashboard import router as dashboard_router
 from app.routes_ingest import router as ingest_router
 from app.routes_etl import router as etl_router
@@ -151,6 +152,7 @@ class LoginRateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(LoginRateLimitMiddleware)
 
 app.include_router(auth_router)
+app.include_router(mfa_router)
 app.include_router(dashboard_router)
 app.include_router(bi_router)
 app.include_router(competitor_pricing_router)

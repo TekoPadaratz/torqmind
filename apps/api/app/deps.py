@@ -19,6 +19,11 @@ def _resolve_session(authorization: Optional[str]) -> dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
 
+    # MFA challenge tokens are intermediate (password verified, 2FA pending) and
+    # must never authorize normal endpoints — only /auth/mfa/verify accepts them.
+    if payload.get("scope") == "mfa_challenge" or payload.get("mfa_pending"):
+        raise HTTPException(status_code=401, detail={"error": "mfa_required", "message": "Two-factor authentication required."})
+
     user_id = str(payload.get("sub") or "").strip()
     if not user_id:
         raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})

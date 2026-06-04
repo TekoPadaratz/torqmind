@@ -163,6 +163,11 @@ export default function CashPage() {
                 <div className="value">
                   {loading ? "..." : formatCurrency(commercialKpis?.total_pagamentos)}
                 </div>
+                {!loading && Math.abs(Number(commercialKpis?.diferenca_conciliacao || 0)) > 0.01 ? (
+                  <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                    Não conciliado: {formatCurrency(commercialKpis?.diferenca_conciliacao)}
+                  </div>
+                ) : null}
               </div>
               <div className="card kpi col-3">
                 <div className="label">Saldo comercial</div>

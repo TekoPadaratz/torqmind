@@ -309,6 +309,21 @@ export default function PlatformUsersPage() {
     }
   }
 
+  async function resetUserMfa() {
+    if (!editingUserId) return;
+    if (!window.confirm('Resetar o 2FA deste usuário? Ele precisará reconfigurar o autenticador no próximo acesso.')) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.post(`/platform/users/${editingUserId}/mfa-reset`);
+      await load(me);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail?.message || 'Falha ao resetar 2FA do usuário.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveContacts(event: FormEvent) {
     event.preventDefault();
     if (!contactForm.user_id) return;
@@ -527,6 +542,18 @@ export default function PlatformUsersPage() {
               <button className="btn" type="submit" disabled={saving}>
                 {saving ? 'Salvando...' : editingUserId ? 'Salvar usuário' : 'Criar usuário'}
               </button>
+              {editingUserId ? (
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={saving}
+                  onClick={resetUserMfa}
+                  style={{ background: 'transparent', border: '1px solid var(--border)' }}
+                  title="Remove o 2FA do usuário; ele precisará reconfigurar no próximo acesso."
+                >
+                  Resetar 2FA
+                </button>
+              ) : null}
             </div>
           </form>
         </div>

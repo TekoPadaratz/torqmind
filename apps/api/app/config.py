@@ -77,9 +77,27 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
-    smtp_from: str = "master@torqmind.com"
+    # Remetente: NÃO usar um domínio que não controlamos (ex.: @torqmind.com)
+    # enquanto o domínio não estiver comprado e com SPF/DKIM/DMARC configurados.
+    # Por padrão fica vazio; deve ser definido via env (SMTP_FROM_EMAIL) apontando
+    # para um remetente de um domínio sob nosso controle.
+    smtp_from: str = ""
+    smtp_from_email: str = ""
     smtp_from_name: str = "TorqMind"
     smtp_timeout_seconds: int = 20
+
+    # 2FA / MFA por TOTP (Google/Microsoft Authenticator etc.).
+    # Chave Fernet (base64 urlsafe, 32 bytes) para cifrar o segredo TOTP em repouso.
+    # Vazio = 2FA inativo (setup recusado com erro claro). Definir via env em prod.
+    totp_encryption_key: str = ""
+    totp_issuer: str = "TorqMind"
+    # Janela de tolerância de relógio (passos de 30s para cada lado).
+    totp_valid_window: int = 1
+    # TTL do desafio MFA intermediário no login (minutos).
+    mfa_challenge_ttl_minutes: int = 5
+    # Máximo de tentativas de código antes de invalidar o desafio.
+    mfa_max_attempts: int = 5
+
 
     # Ingestion
     # If True, /ingest requires X-Ingest-Key (recommended for production).

@@ -1166,11 +1166,22 @@ def payments_overview(
         }
         for r in by_type_raw
     ]
+    # Commercial sales total for the same scope, to reconcile the payment mix.
+    sales_rows = query_dict(f"""
+        SELECT round(sum(faturamento), 2) AS total_vendas
+        FROM {MART_RT_DB}.sales_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
+    """, parameters={"id_empresa": id_empresa})
+    total_vendas = float((sales_rows[0] if sales_rows else {}).get("total_vendas") or 0)
+    mix, total_pagamentos_conciliado, diferenca_conciliacao = _reconcile_payment_mix(mix, total_vendas)
     total_val = round(sum(r["total_valor"] for r in mix), 2)
     source_status = "ok" if mix else "unavailable"
     return {
         "kpis": {
             "total_valor": total_val,
+            "total_vendas": total_vendas,
+            "total_pagamentos_conciliado": total_pagamentos_conciliado,
+            "diferenca_conciliacao": diferenca_conciliacao,
             "source_status": source_status,
             "mix": mix,
             "source": "realtime",
@@ -1230,6 +1241,40 @@ def _enrich_open_turno(
         "saldo_comercial": saldo_comercial,
         "horas_aberto": horas_aberto,
     }
+
+
+def _reconcile_payment_mix(
+    payments: List[Dict[str, Any]],
+    total_vendas: float,
+) -> tuple[List[Dict[str, Any]], float, float]:
+    """Reconcile recorded payment forms against commercial sales.
+
+    The payment forms come from the deduplicated ``payments_by_type_rt`` mart
+    (which already strips troca-de-forma ghosts on overpaid references). When
+    their sum still diverges from commercial sales — unrecorded fiado/prazo,
+    residual correction ghosts, or rounding — the gap is surfaced as an explicit,
+    non-hidden ``reconciliation`` line so the mix total matches ``total_vendas``
+    instead of silently mismatching. Nothing is bucketed into a real payment form.
+
+    Returns ``(mix_with_reconciliation, total_pagamentos_conciliado, diferenca)``
+    where ``total_pagamentos_conciliado`` is the sum of the *real* forms and
+    ``diferenca = total_vendas - total_pagamentos_conciliado``.
+    """
+    total_pagamentos = round(sum(float(p.get("total_valor") or 0) for p in payments), 2)
+    diferenca = round(float(total_vendas or 0) - total_pagamentos, 2)
+    mix = list(payments)
+    if abs(diferenca) > 0.01:
+        mix.append({
+            "tipo_forma": None,
+            "label": "Não conciliado (operacional)",
+            "category": "reconciliation",
+            "category_label": "Não conciliado (operacional)",
+            "total_valor": diferenca,
+            "qtd_comprovantes": 0,
+            "qtd_transacoes": 0,
+            "is_reconciliation": True,
+        })
+    return mix, total_pagamentos, diferenca
 
 
 def cash_overview(
@@ -1563,14 +1608,20 @@ def cash_overview(
 
     total_vendas = float(sales_kpi.get("total_vendas") or 0)
     total_cancelamentos = float(sales_kpi.get("total_cancelamentos") or 0)
-    total_pagamentos = sum(p["total_valor"] for p in payments)
     saldo_comercial = total_vendas - total_cancelamentos
+
+    # Reconcile recorded payment forms against commercial sales. Residual gaps
+    # (unrecorded fiado/prazo, leftover troca-de-forma ghosts, rounding) become an
+    # explicit non-hidden line so payment_mix totals match total_vendas.
+    payments, total_pagamentos, diferenca_conciliacao = _reconcile_payment_mix(payments, total_vendas)
 
     commercial_kpis = {
         "total_vendas": total_vendas,
         "total_cancelamentos": total_cancelamentos,
         "cancelamentos_periodo": total_cancelamentos,
         "total_pagamentos": total_pagamentos,
+        "total_pagamentos_conciliado": total_pagamentos,
+        "diferenca_conciliacao": diferenca_conciliacao,
         "recebimentos_periodo": total_pagamentos,
         "saldo_comercial": saldo_comercial,
         "qtd_vendas": int(sales_kpi.get("qtd_vendas") or 0),

@@ -15,6 +15,9 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     const t = getToken();
@@ -53,26 +56,53 @@ export default function LoginPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setSubmitting(true);
     try {
       clearAuth();
       const res = await api.post("/auth/login", { identifier, password });
-      const token = res.data.access_token as string;
-      setToken(token);
-      const session = cacheSession(res.data?.session || res.data || null);
-
-      // Force password change redirect
-      if (session?.must_change_password) {
-        window.location.href = '/change-password';
+      // Two-factor: the password step may return a challenge instead of a token.
+      if (res.data?.mfa_required && res.data?.mfa_challenge_token) {
+        setMfaChallenge(res.data.mfa_challenge_token as string);
+        setMfaCode("");
         return;
       }
-
-      window.location.href = buildCanonicalProductHref(
-        res.data?.home_path || "/dashboard",
-        session,
-        { scopeEpoch: createScopeEpoch() },
-      );
+      finishLogin(res.data);
     } catch (err: any) {
       setError(extractApiError(err, "Falha no login"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function finishLogin(data: any) {
+    const token = data?.access_token as string;
+    setToken(token);
+    const session = cacheSession(data?.session || data || null);
+    if (session?.must_change_password) {
+      window.location.href = '/change-password';
+      return;
+    }
+    window.location.href = buildCanonicalProductHref(
+      data?.home_path || "/dashboard",
+      session,
+      { scopeEpoch: createScopeEpoch() },
+    );
+  }
+
+  async function onSubmitMfa(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await api.post("/auth/mfa/verify", {
+        mfa_challenge_token: mfaChallenge,
+        code: mfaCode.trim(),
+      });
+      finishLogin(res.data);
+    } catch (err: any) {
+      setError(extractApiError(err, "Código inválido"));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -94,6 +124,44 @@ export default function LoginPage() {
             Acesse sua visão consolidada da operação, do caixa, do risco e do financeiro.
           </div>
           <div style={{ height: 16 }} />
+          {mfaChallenge ? (
+            <form onSubmit={onSubmitMfa} className="row" style={{ gap: 12 }}>
+              <label className="muted" htmlFor="mfa-code">
+                Código do aplicativo autenticador
+              </label>
+              <div className="muted" style={{ fontSize: 13 }}>
+                Abra seu Google Authenticator, Microsoft Authenticator ou app compatível e informe o código de 6 dígitos.
+              </div>
+              <input
+                id="mfa-code"
+                className="input"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value.replace(/[^0-9A-Za-z-]/g, ""))}
+                placeholder="000000"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                maxLength={14}
+                disabled={submitting}
+              />
+              {error && (
+                <div className="muted" style={{ color: "#fb7185" }}>
+                  {error}
+                </div>
+              )}
+              <button className="btn" type="submit" disabled={submitting || !mfaCode.trim()}>
+                {submitting ? "Verificando…" : "Confirmar código"}
+              </button>
+              <button
+                type="button"
+                className="muted"
+                onClick={() => { setMfaChallenge(null); setMfaCode(""); setError(null); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13 }}
+              >
+                Voltar
+              </button>
+            </form>
+          ) : (
           <form onSubmit={onSubmit} className="row" style={{ gap: 12 }}>
             <label className="muted" htmlFor="login-identifier">
               {LOGIN_IDENTIFIER_LABEL}
@@ -154,6 +222,7 @@ export default function LoginPage() {
               Esqueci minha senha
             </a>
           </form>
+          )}
         </div>
       </div>
     </div>

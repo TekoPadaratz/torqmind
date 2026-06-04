@@ -70,9 +70,18 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
       SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
-      SMTP_FROM: ${SMTP_FROM:-master@torqmind.com}
+      # Remetente: NÃO usar @torqmind.com sem domínio controlado (SPF/DKIM/DMARC).
+      # Padrão vazio; defina SMTP_FROM_EMAIL via env apontando para domínio próprio.
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-TorqMind}
       SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-20}
+      # 2FA / MFA por TOTP. Sem TOTP_ENCRYPTION_KEY o 2FA fica indisponível.
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      TOTP_ISSUER: ${TOTP_ISSUER:-TorqMind}
+      TOTP_VALID_WINDOW: ${TOTP_VALID_WINDOW:-1}
+      MFA_CHALLENGE_TTL_MINUTES: ${MFA_CHALLENGE_TTL_MINUTES:-5}
+      MFA_MAX_ATTEMPTS: ${MFA_MAX_ATTEMPTS:-5}
     expose:
       - "8000"
     volumes:
