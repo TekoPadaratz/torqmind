@@ -777,3 +777,52 @@ Checklist mínimo para garantir que o container API reflete a branch atual:
 | Prata | R$ 50.000 | 1.0% |
 | Ouro | R$ 80.000 | 1.5% |
 | Diamante | R$ 120.000 | 2.0% |
+
+---
+
+## Recuperação de Senha ("Esqueci minha senha") — 2026-06-03
+
+Fluxo seguro de reset de senha, ponta a ponta, pronto para SMTP. Commit `c72d6e8` (branch `fase-4-xpert-source-explorer`). Em produção e validado.
+
+### Migration
+
+- `sql/migrations/089_password_reset_tokens_secure.sql`: aditiva e idempotente. Garante `auth.password_reset_tokens` (`CREATE TABLE IF NOT EXISTS`) e adiciona `token_hash text` (sha256 hex), `requested_ip inet`, `requested_user_agent text`. Índices: único parcial `uq_password_reset_token_hash (token_hash) WHERE token_hash IS NOT NULL`, `ix_password_reset_user_active (user_id) WHERE used_at IS NULL`, `ix_password_reset_expires_at (expires_at)`.
+- GOTCHA prod: a tabela NÃO existia em produção mesmo com `001_auth.sql` marcada baseline (prod buildado do `reset_db_v2`). Por isso 089 é auto-contida. O runner `python -m app.cli.migrate` falha em 076 por gap de tracking pré-existente (não relacionado); aplicar 089 isolada via `psql -f` e registrar manualmente em `app.schema_migrations`.
+
+### Backend (`apps/api/app`)
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `password_policy.py` | Política canônica: 8+ chars, minúscula, maiúscula, número, especial. `validate_password()`, `is_valid_password()`, `describe_rules()`, `policy_message()`. Max 128. |
+| `email_service.py` | Envio SMTP via `smtplib`, env-driven. `is_email_configured()`, `send_email()` (nunca levanta exceção, no-op seguro se não configurado), `send_password_reset_email()`. Assunto "Recuperação de senha do TorqMind", remetente `master@torqmind.com`. HTML com identidade visual (botão cobre `#b87333`). Doc de Brevo no header. |
+| `repos_auth.py` | `_hash_reset_token()` (sha256), `create_password_reset_token(user_id, ttl, ip, ua)` (token bruto = `secrets.token_urlsafe(32)`, grava só hash, invalida anteriores), `get_reset_token_user(raw)`, `reset_password_with_token(raw, new_hash)` (atômico, single-use). |
+| `routes_auth.py` | `POST /auth/forgot-password` (resposta genérica anti-enumeração, sem auth), `GET /auth/reset-password/validate?token=` (retorna valid/email/rules_message), `POST /auth/reset-password` (valida política 422, consome token). Política também aplicada em `change-password`. |
+| `config.py` | Settings: `web_public_url`, `password_reset_token_ttl_minutes=30`, `password_reset_link_path=/reset-password`, `smtp_enabled=false`, `smtp_host/port/user/password/use_tls/use_ssl/from/from_name/timeout_seconds`. Todos opcionais (não entram nas validações de segredo). |
+
+### Frontend (`apps/web/app`)
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `forgot-password/page.tsx` | Informa e-mail + botão "Recuperar senha". Resposta genérica (done state). Padrão visual TorqMind, responsivo. |
+| `reset-password/page.tsx` | Lê token da URL, valida no mount, e-mail fixo read-only, 2 campos de senha com checklist de regras ao vivo + confirmação + show/hide. Estados: válido / token inválido / sucesso. |
+| `page.tsx` (login) | Link "Esqueci minha senha". |
+| `lib/password-policy.mjs` (+ `.test.mjs`) | Espelha a política do backend. Adicionado ao script `test` do `package.json`. |
+
+### Segurança do token
+
+- Token bruto só vive no link de e-mail; banco guarda apenas o SHA-256. URL carrega **só o token** (sem e-mail embutido).
+- `forgot-password` retorna mensagem genérica idêntica para e-mail existente/inexistente (anti-enumeração).
+- Único token ativo por usuário, TTL 30 min, uso único, invalida anteriores ao usar.
+
+### Config SMTP (compose: `docker-compose.app.yml`, serviço `api` usa bloco `environment:` explícito, NÃO `env_file`)
+
+- Defaults seguros: `SMTP_ENABLED=false`, `SMTP_HOST=` vazio → no-op (log "SMTP not configured; skipping").
+- **PENDÊNCIA p/ ativar envio real**: setar em `/etc/torqmind/prod.app.env` (valores digitados direto, são segredos): `SMTP_ENABLED=true`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_USE_TLS=true`. Sugestão grátis: Brevo (`smtp-relay.brevo.com:587`, 300/dia). `WEB_PUBLIC_URL` já existe no env (define o link do e-mail). Depois `docker compose -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env up -d api`.
+
+### Endpoints (resumo)
+
+| Método | Path | Auth | Resposta |
+|--------|------|------|----------|
+| POST | `/auth/forgot-password` | não | genérica `{ok, message}` (200 sempre) |
+| GET | `/auth/reset-password/validate?token=` | não | `{valid, email, rules_message}` ou 400 |
+| POST | `/auth/reset-password` | não | sucesso ou 422 `weak_password` / 400 `invalid_token` |
