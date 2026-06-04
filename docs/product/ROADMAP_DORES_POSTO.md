@@ -27,7 +27,7 @@
 | 1 | Controle de estoque de combustível por bomba/tanque | **ENTRA — prioridade máxima.** Quer logo no dashboard geral. | Nova trilha de dados (encerrante/tanque) + KPI no dashboard |
 | 2 | Conciliação de cartão/TEF (bandeiras + taxas) | **ENTRA.** Tratar no Financeiro, após rastreio de cadastro de bandeiras/taxas. | `/finance` + novo mart de conciliação |
 | 3 | Contas a pagar | **ENTRA (a levantar).** Sempre quebrado no cliente; detalhar requisitos com ele depois. | `/finance` |
-| 4 | Alerta de caixa aberto >24h no celular (Telegram) | **ENTRA.** Infra Telegram já existe e o disparo de caixa já está codado/ligado, mas lê mart PG morto pós-cutover. Falta repontar p/ realtime. Ver §4. | Notificação externa (Telegram) |
+| 4 | Alerta de caixa aberto >24h no celular (Telegram) | **FEITO (2026-06-03, migration 090).** Infra Telegram já existia e disparo já estava ligado; faltava refrescar a mart PG no fast-path operacional. Corrigido e validado em prod (2 alertas reais). Ver §4. | Notificação externa (Telegram) |
 | 5 | Benchmark entre filiais | **ENTRA como enriquecimento visual.** Ciência da injustiça estrada × cidade. | Tela de Metas & Equipe |
 | 6 | Aferição/INMETRO de bombas | **ENTRA — confirmado.** Tabela `AFERICAO` existe na Xpert, viva e atual. Ver §6. | Ingestão Xpert + Telegram |
 | 7 | Jarvis IA (briefing no dashboard) | **REAVALIAR.** Dono não vê mais sentido hoje. Ver §7 para recomendação. | Decisão: repaginar ou remover |
@@ -296,25 +296,34 @@ O disparo existe, mas **a fonte que ele lê está morta em produção**:
   `raw_comprovante_is_cancelled` → `app.alert_comprovante_cancelado`), mas o
   **caixa aberto não** (depende do mart PG morto).
 
-### O que FALTA (correto e enxuto)
-Repontar o disparo de caixa para a fonte realtime — **não** criar serviço novo:
-1. **Novo dispatcher realtime** que consulta `torqmind_mart_rt.cash_overview_rt`
-   (`is_aberto=1` e `now() − abertura_ts >= 24h`), pegando `nome_operador`,
-   `id_filial`, `id_turno`, `abertura_ts`. Reaproveita 100% o `send_telegram.py`
-   (severidade, destinatários, de-dup diário, mensagem). Mensagem no mesmo padrão
-   do cancelamento.
-2. **Gatilho:** acoplar a um ciclo que já roda periodicamente em prod (cron
-   operacional / loop realtime). Definir intervalo (ex.: a cada 30–60 min basta
-   para 24h).
-3. **De-dup:** já resolvido pelo `_register_dispatch_once` (1x/dia por turno).
+### Correção aplicada (2026-06-03) — migration 090
+Em vez de criar um dispatcher novo lendo ClickHouse (que **perderia o filtro
+`is_operational_live` de 96h** e dispararia ~145 turnos antigos/ruído nunca
+fechados), a correção mais simples e semanticamente correta foi **restaurar o
+refresh da própria mart PG dentro do fast-path operacional**:
+- **`sql/migrations/090_cash_open_notifications_refresh_marts.sql`**: redefine
+  `etl.sync_cash_open_notifications(int)` para dar
+  `REFRESH MATERIALIZED VIEW mart.agg_caixa_turno_aberto` e depois
+  `mart.alerta_caixa_aberto` **antes** de ler/upsertar em `app.notifications`.
+- Essa função **já é chamada todo ciclo** pelo track operacional sempre que há
+  caixa aberto (`cash_changed OR clock_cash_notifications`, via
+  `etl.collect_tenant_clock_meta` → `clock_cash_notifications`), inclusive
+  **sem ingestão nova** (clock-driven). Logo as marts voltam a ficar frescas a
+  cada execução do cron operacional (`*/2 min`).
+- O REFRESH é barato (fonte é `dw.fact_caixa_turno` filtrada por `is_aberto`) e
+  o filtro `is_operational_live` (atividade ≤ 96h) + `horas_aberto >= 24` da
+  própria `mart.alerta_caixa_aberto` mantém só o **sinal real**.
+- O dispatcher `_dispatch_cash_telegram_alerts` (já codado/ligado) então
+  encontra `cash_notifications > 0` e dispara o Telegram com a mensagem boa.
 
-### Decisão pendente (apresentar ao dono)
-Como o caminho correto **não é trivial** (mexe no hot path realtime + precisa de
-validação em prod + health check), **não foi implementado nesta rodada de
-mapeamento**. É uma tarefa pronta para a próxima rodada, com fonte e formato já
-definidos acima. Centralizar tudo em `telegram.py` (como o dono cogitou) **já é
-o estado atual** — o serviço já é centralizado; o que falta é só o dispatcher
-realtime de caixa.
+**Validação prod (2026-06-03):** após aplicar a 090,
+`etl.sync_cash_open_notifications(1)` ⇒ `sync_rows=2`; `mart.alerta_caixa_aberto`
+⇒ `2` linhas (sinal real, não os 145 de ruído); `app.notifications` de caixa nos
+últimos 5 min ⇒ `2`. Mensagem sem "caixa ?" (turno + filial + operador presentes).
+
+> Nota: `etl.sync_payment_anomaly_notifications` tem o **mesmo padrão** (lê mart
+> sem refrescar). Pagamentos seguem outro caminho de refresh, mas vale auditar
+> em rodada futura se as anomalias de pagamento também precisam do mesmo fix.
 
 ### Cuidado
 - Token do bot é segredo → só em `/etc/torqmind/prod.app.env`, nunca no código.
