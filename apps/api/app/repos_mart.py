@@ -2916,6 +2916,29 @@ def fraud_troca_forma_pgto(
     return []
 
 
+def fraud_troca_forma_pgto_kpis(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Period-wide totals for payment-form-change events (antifraud).
+
+    Like :func:`fraud_troca_forma_pgto`, the canonical source is the realtime
+    ClickHouse mart served via ``repos_mart_realtime``. This legacy stub returns
+    zeroed totals so the analytics facade can register the function and dispatch
+    to realtime.
+    """
+    return {
+        "suspeitas_qtd": 0,
+        "suspeitas_valor": 0.0,
+        "todas_qtd": 0,
+        "todas_valor": 0.0,
+    }
+
+
 # ========================
 # Risk Scoring / Insights
 # ========================

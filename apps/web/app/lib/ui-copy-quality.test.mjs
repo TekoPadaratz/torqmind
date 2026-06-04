@@ -65,7 +65,9 @@ const PROHIBITED_RULES = [
   {
     key: 'forma_codigo',
     reason: 'Não exponha códigos técnicos de forma de pagamento.',
-    patterns: [/FORMA_/gi],
+    // Catches customer-facing codes like FORMA_01; ignores lowercase internal
+    // property accessors such as troca_forma_pgto / forma_de / forma_para.
+    patterns: [/\bFORMA_[A-Z0-9]/g],
   },
   {
     key: 'data_sentinela',

@@ -666,6 +666,9 @@ def _safe_fraud_overview_payload(tenant_id: int, dt_ini: date, dt_fim: date, dt_
             "insights": [],
             "payments_risk": [],
             "open_cash": {"source_status": "unavailable", "severity": "UNAVAILABLE", "summary": "Monitor operacional indisponível.", "items": []},
+            "troca_forma_pgto": [],
+            "troca_forma_pgto_totais": {"suspeitas_qtd": 0, "suspeitas_valor": 0.0, "todas_qtd": 0, "todas_valor": 0.0},
+            "troca_only_suspeita": True,
         },
         fallback_state="preparing",
         message="O antifraude ainda não tem um snapshot confiável para este recorte. A tela evita mostrar zero como se fosse dado real.",
@@ -1230,8 +1233,19 @@ def fraud_overview(
                 role, tenant, filial, dt_ini, dt_fim,
                 only_suspeita=troca_only_suspeita, limit=200,
             )
+            # Period-wide totals (independent of the 200-row listing limit and the
+            # suspeitas/todas toggle) so the KPIs reflect the real totals.
+            troca_forma_pgto_totais = repos_mart.fraud_troca_forma_pgto_kpis(
+                role, tenant, filial, dt_ini, dt_fim,
+            )
         else:
             troca_forma_pgto = []
+            troca_forma_pgto_totais = {
+                "suspeitas_qtd": 0,
+                "suspeitas_valor": 0.0,
+                "todas_qtd": 0,
+                "todas_valor": 0.0,
+            }
         operational_summary = {
             "kind": "operational",
             "kpis": operational_kpis,
@@ -1272,6 +1286,7 @@ def fraud_overview(
             "payments_risk": payments_risk,
             "open_cash": open_cash,
             "troca_forma_pgto": troca_forma_pgto,
+            "troca_forma_pgto_totais": troca_forma_pgto_totais,
             "troca_only_suspeita": troca_only_suspeita,
         }
 

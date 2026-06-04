@@ -126,11 +126,16 @@ export default function FraudPage() {
   const trocaRows: any[] = trocaSoSuspeitas
     ? data?.troca_forma_pgto || []
     : trocaAll || [];
-  const trocaTotalValor = useMemo(
-    () =>
-      trocaRows.reduce((acc: number, r: any) => acc + Number(r?.valor || 0), 0),
-    [trocaRows],
-  );
+  // KPIs usam os totais reais do período (server-side, sem o LIMIT do grid e
+  // independentes do toggle "todas/suspeitas"). O grid abaixo é só a listagem
+  // das 200 trocas mais recentes do recorte selecionado.
+  const trocaTotais = data?.troca_forma_pgto_totais || {};
+  const trocaTotalQtd = trocaSoSuspeitas
+    ? Number(trocaTotais.suspeitas_qtd || 0)
+    : Number(trocaTotais.todas_qtd || 0);
+  const trocaTotalValor = trocaSoSuspeitas
+    ? Number(trocaTotais.suspeitas_valor || 0)
+    : Number(trocaTotais.todas_valor || 0);
 
   const byDay = useMemo(
     () =>
@@ -1152,9 +1157,11 @@ export default function FraudPage() {
                     }}
                   >
                     <div className="card" style={{ padding: 12 }}>
-                      <div className="label">Trocas no período</div>
+                      <div className="label">
+                        {trocaSoSuspeitas ? "Trocas suspeitas" : "Trocas no período"}
+                      </div>
                       <div style={{ fontSize: 22, fontWeight: 800 }}>
-                        {trocaRows.length}
+                        {trocaTotalQtd}
                       </div>
                     </div>
                     <div className="card" style={{ padding: 12 }}>
@@ -1179,6 +1186,12 @@ export default function FraudPage() {
                       />
                     ) : (
                       <div className="tableScroll">
+                        {trocaTotalQtd > trocaRows.length ? (
+                          <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
+                            Exibindo as {trocaRows.length} trocas mais recentes de{" "}
+                            {trocaTotalQtd} no período.
+                          </div>
+                        ) : null}
                         <table className="table compact">
                           <thead>
                             <tr>
@@ -1202,9 +1215,9 @@ export default function FraudPage() {
                                 }
                               >
                                 <td>{row.documento || `#${row.troca_id}`}</td>
-                                <td>{row.forma_de || "Não identificada"}</td>
+                                <td>{row.forma_de || "Sem cadastro"}</td>
                                 <td>
-                                  <strong>{row.forma_para || "Não identificada"}</strong>
+                                  <strong>{row.forma_para || "Sem cadastro"}</strong>
                                 </td>
                                 <td>
                                   {row.nome_operador ||

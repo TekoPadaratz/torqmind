@@ -1979,6 +1979,45 @@ def fraud_troca_forma_pgto(
     """, parameters={"id_empresa": id_empresa})
 
 
+def fraud_troca_forma_pgto_kpis(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Period-wide totals for payment-form-change events (antifraud).
+
+    Returns the TRUE aggregates (count and amount) over the whole window, for
+    both suspicious-only and all changes, independent of any row LIMIT applied
+    to the listing. The grid list is capped for display; KPIs must use these
+    totals so they don't change with the "todas/suspeitas" toggle.
+
+    Sensitive antifraud data: callers MUST restrict to platform_master/owner.
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+
+    rows = query_dict(f"""
+        SELECT
+            countIf(is_suspeita = 1) AS suspeitas_qtd,
+            sumIf(valor, is_suspeita = 1) AS suspeitas_valor,
+            count() AS todas_qtd,
+            sum(valor) AS todas_valor
+        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+    """, parameters={"id_empresa": id_empresa})
+
+    row = rows[0] if rows else {}
+    return {
+        "suspeitas_qtd": int(row.get("suspeitas_qtd") or 0),
+        "suspeitas_valor": float(row.get("suspeitas_valor") or 0.0),
+        "todas_qtd": int(row.get("todas_qtd") or 0),
+        "todas_valor": float(row.get("todas_valor") or 0.0),
+    }
+
+
 # ================================================================
 # FINANCE
 # ================================================================
@@ -3604,6 +3643,7 @@ REALTIME_FUNCTIONS = {
     "fraud_top_users",
     "fraud_last_events",
     "fraud_troca_forma_pgto",
+    "fraud_troca_forma_pgto_kpis",
     "risk_top_employees",
     "finance_kpis",
     "streaming_health",
