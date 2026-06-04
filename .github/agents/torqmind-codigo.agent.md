@@ -36,6 +36,24 @@ Usar componentes/padrão visual do TorqMind, mobile-first quando operacional, lo
 - Marts devem ser populadas se forem usadas.
 - Se Mart não existe/está vazia, não apontar API para ela.
 
+## Leitura realtime (ClickHouse-first) — armadilhas recorrentes
+
+Produção roda `USE_REALTIME_MARTS=true` / `FALLBACK=false`: o caminho ativo é
+`repos_mart_realtime`. Testes locais batem no PostgreSQL, então bug de grão
+aparece SÓ em produção. Antes de escrever/alterar uma leitura realtime:
+
+- Confira o GRÃO de cada tabela antes do JOIN. Ex.:
+  `torqmind_mart_rt.mart_clientes_resumo` é por empresa/filial/cliente — JOIN
+  só por `id_cliente` multiplica o cliente pelo nº de filiais (duplicação).
+- Saldo de recebível subtrai baixas reais (`stg_contasreceberbaixa`), não só
+  `VALOR - VLRPAGO`.
+- Dedupe é no grão da mart/SQL. NUNCA deduplicar no frontend.
+- Prefira delegar para uma mart PG já reconciliada (rápida, indexada, grão
+  correto) a manter uma query pesada por requisição no endpoint.
+- `etl.refresh_marts` (publicação PG legada) está desligado no cutover; uma
+  materialized view PG só está fresca se a função tiver REFRESH próprio no
+  fast-path operacional. Valide a freshness, não presuma.
+
 ## Checklist de qualidade
 
 ```bash

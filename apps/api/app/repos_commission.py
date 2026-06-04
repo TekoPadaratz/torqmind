@@ -96,23 +96,23 @@ def ensure_default_config(id_empresa: int, id_filial: int) -> Dict[str, Any]:
     if existing:
         return existing
 
-        with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-                row = conn.execute("""
-                    INSERT INTO app.commission_config (
-                        id_empresa,
-                        id_filial,
-                        name,
-                        is_active,
-                        default_payment_mode,
-                        manager_commission_mode,
-                        manager_commission_percent
-                    )
-                    VALUES (%s, %s, 'Comissao padrao', true, 'team_total', 'use_tiers', 0)
-                    ON CONFLICT DO NOTHING
-                    RETURNING id, id_empresa, id_filial, name, is_active, default_payment_mode,
-                                        manager_commission_mode, manager_commission_percent,
-                                        created_at, updated_at
-                """, [id_empresa, id_filial]).fetchone()
+    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        row = conn.execute("""
+            INSERT INTO app.commission_config (
+                id_empresa,
+                id_filial,
+                name,
+                is_active,
+                default_payment_mode,
+                manager_commission_mode,
+                manager_commission_percent
+            )
+            VALUES (%s, %s, 'Comissao padrao', true, 'team_total', 'use_tiers', 0)
+            ON CONFLICT DO NOTHING
+            RETURNING id, id_empresa, id_filial, name, is_active, default_payment_mode,
+                      manager_commission_mode, manager_commission_percent,
+                      created_at, updated_at
+        """, [id_empresa, id_filial]).fetchone()
 
         if not row:
             # Conflict: config was created concurrently
@@ -230,8 +230,16 @@ def calculate_commission_results(
     groups = get_config_groups(config_id)
     tiers = get_config_tiers(config_id)
 
+    # Resolve the effective payment mode: an explicit valid request wins,
+    # otherwise fall back to the configured default for the filial.
+    valid_modes = ("team_total", "equal_split", "individual_sales")
+    config_default_mode = str(config.get("default_payment_mode") or "team_total")
+    effective_mode = payment_mode if payment_mode in valid_modes else config_default_mode
+    if effective_mode not in valid_modes:
+        effective_mode = "individual_sales"
+
     if not groups:
-        return _empty_results(month, year, id_filial, reason="no_groups")
+        return _empty_results(month, year, id_filial, reason="no_groups", payment_mode=effective_mode)
 
     group_ids = [g["id_grupo_produto"] for g in groups]
     ano_mes = year * 100 + month
@@ -300,6 +308,7 @@ def calculate_commission_results(
             year,
             id_filial,
             reason="no_sales",
+            payment_mode=effective_mode,
             groups=groups,
             tiers=tiers,
             manager_data={
@@ -330,26 +339,61 @@ def calculate_commission_results(
         employees[emp_id]["venda_elegivel"] += float(r["venda_total"] or 0)
         employees[emp_id]["quantidade_vendas"] += int(r["quantidade_vendas"] or 0)
 
-    # Individual commission: each employee gets tier/percent based on own sales.
-    commission_total = 0.0
-    for emp in employees.values():
-        emp_tier = _determine_tier(float(emp["venda_elegivel"]), tiers)
-        emp_percent = float(emp_tier["commission_percent"]) if emp_tier else 0.0
-        emp_commission = round(float(emp["venda_elegivel"]) * emp_percent / 100, 2)
-        commission_total += emp_commission
-
-        emp["nivel_atingido"] = {
-            "tier_key": emp_tier["tier_key"],
-            "tier_name": emp_tier["tier_name"],
-            "min_sales_amount": float(emp_tier["min_sales_amount"]),
-        } if emp_tier else None
-        emp["percentual_aplicado"] = emp_percent
-        emp["comissao_estimada"] = emp_commission
-
-    # Sort by venda_elegivel DESC
+    # Sort by venda_elegivel DESC and compute the team eligible base.
     employee_list = sorted(employees.values(), key=lambda e: e["venda_elegivel"], reverse=True)
-
     total_eligible = sum(float(e["venda_elegivel"] or 0) for e in employee_list)
+    n_eligible = sum(1 for e in employee_list if float(e["venda_elegivel"] or 0) > 0)
+
+    team_tier_payload = None
+    team_percent: Optional[float] = None
+    next_tier_payload = None
+
+    if effective_mode == "individual_sales":
+        # Each employee earns a tier/percent based on their OWN eligible sales.
+        commission_total = 0.0
+        for emp in employee_list:
+            emp_tier = _determine_tier(float(emp["venda_elegivel"]), tiers)
+            emp_percent = float(emp_tier["commission_percent"]) if emp_tier else 0.0
+            emp_commission = round(float(emp["venda_elegivel"]) * emp_percent / 100, 2)
+            commission_total += emp_commission
+            emp["nivel_atingido"] = {
+                "tier_key": emp_tier["tier_key"],
+                "tier_name": emp_tier["tier_name"],
+                "min_sales_amount": float(emp_tier["min_sales_amount"]),
+            } if emp_tier else None
+            emp["percentual_aplicado"] = emp_percent
+            emp["comissao_estimada"] = emp_commission
+        commission_total = round(commission_total, 2)
+    else:
+        # team_total / equal_split: one tier/percent for the whole team, based on
+        # the team's TOTAL eligible sales.
+        team_tier = _determine_tier(total_eligible, tiers)
+        team_percent = float(team_tier["commission_percent"]) if team_tier else 0.0
+        commission_total = round(total_eligible * team_percent / 100, 2)
+        team_tier_payload = {
+            "tier_key": team_tier["tier_key"],
+            "tier_name": team_tier["tier_name"],
+            "min_sales_amount": float(team_tier["min_sales_amount"]),
+        } if team_tier else None
+        next_tier_raw = _next_tier(team_tier, tiers)
+        next_tier_payload = {
+            "tier_key": next_tier_raw["tier_key"],
+            "tier_name": next_tier_raw["tier_name"],
+            "min_sales_amount": float(next_tier_raw["min_sales_amount"]),
+            "falta": round(max(0.0, float(next_tier_raw["min_sales_amount"]) - total_eligible), 2),
+        } if next_tier_raw else None
+        equal_share = round(commission_total / n_eligible, 2) if n_eligible else 0.0
+        for emp in employee_list:
+            emp_eligible = float(emp["venda_elegivel"] or 0)
+            emp["nivel_atingido"] = team_tier_payload
+            emp["percentual_aplicado"] = team_percent
+            if effective_mode == "equal_split":
+                emp["comissao_estimada"] = equal_share if emp_eligible > 0 else 0.0
+            else:  # team_total: proportional share of the team commission
+                emp["comissao_estimada"] = (
+                    round(commission_total * (emp_eligible / total_eligible), 2)
+                    if total_eligible > 0 else 0.0
+                )
 
     # Group summary
     group_totals = {}
@@ -363,12 +407,12 @@ def calculate_commission_results(
         "month": month,
         "year": year,
         "id_filial": id_filial,
-        "payment_mode": "individual_sales",
+        "payment_mode": effective_mode,
         "venda_elegivel": round(total_eligible, 2),
-        "nivel_atingido": None,
-        "percentual_aplicado": None,
+        "nivel_atingido": team_tier_payload if effective_mode != "individual_sales" else None,
+        "percentual_aplicado": team_percent if effective_mode != "individual_sales" else None,
         "comissao_total": round(commission_total, 2),
-        "proximo_nivel": None,
+        "proximo_nivel": next_tier_payload if effective_mode != "individual_sales" else None,
         "vendedores": employee_list,
         "vendedores_elegiveis": len(employee_list),
         "grupos_configurados": list(group_totals.values()),
@@ -400,6 +444,7 @@ def _empty_results(
     year: int,
     id_filial: int,
     reason: str = "no_config",
+    payment_mode: str = "individual_sales",
     groups: Optional[List] = None,
     tiers: Optional[List] = None,
     manager_data: Optional[Dict[str, Any]] = None,
@@ -426,7 +471,7 @@ def _empty_results(
         "month": month,
         "year": year,
         "id_filial": id_filial,
-        "payment_mode": "individual_sales",
+        "payment_mode": payment_mode,
         "venda_elegivel": 0,
         "nivel_atingido": None,
         "percentual_aplicado": None,

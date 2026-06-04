@@ -249,7 +249,7 @@ Funcoes Postgres por desenho:
 - `competitor_pricing_upsert`: escrita OLTP app.
 - `competitor_fuel_product_ids`: dimensao/app para formulario.
 - `goals_today`, `upsert_goal`: app goals.
-- `get_config`, `ensure_default_config`, `save_config`, `calculate_commission_results`: commission tiers (repos_commission.py).
+- `get_config`, `ensure_default_config`, `save_config`, `calculate_commission_results`: commission tiers (repos_commission.py). **Fix 2026-06-04:** (1) `ensure_default_config` criava a config default em bloco indentado dentro de `if existing:` (inalcançável → 500/UnboundLocalError em filial sem config) — corrigido. (2) `calculate_commission_results` aceita `payment_mode` e calcula os 3 modos: `team_total` (tier/percentual sobre a venda total da equipe, rateio proporcional), `equal_split` (comissão total dividida igualmente entre vendedores elegíveis), `individual_sales` (tier por vendedor) — antes ignorava o modo e forçava individual. (3) Rota `GET /bi/team/commissions/results` valida `payment_mode` e cai no `default_payment_mode` da config quando ausente. (4) Frontend `apps/web/app/goals/CommissionsTab.tsx` expõe seletor de modo e envia `payment_mode`. Comissão zero é legítima quando a venda elegível atribuída (`id_funcionario>0`) fica abaixo do menor tier.
 - `get_filial_params`, `upsert_filial_params`: parametros configuraveis por filial (thresholds ABC, exclusao de combustivel). Tabela `app.filial_params`.
 - `risk_insights`: app/insights operacionais.
 - `notifications_list`, `notifications_unread_count`, `notification_mark_read`: app notifications.
@@ -257,8 +257,20 @@ Funcoes Postgres por desenho:
 Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 
 - `stock_position_summary`: falta mart de estoque.
-- `customers_delinquency_overview`: falta mart customer-level de inadimplencia.
 - `monthly_goal_projection`: mistura `app.goals` com serie analitica.
+
+### customers_delinquency_overview (Prioridades de cobranca) — corrigido 2026-06-04
+
+- **Fonte canonica**: SQL Server Xpert `CONTASRECEBER` + `CONTASRECEBERBAIXA` + `ENTIDADES`. Chave do titulo: `(ID_FILIAL, ID_DB, ID_CONTASRECEBER)`. Aberto = `DTAPGTO IS NULL`. Saldo do titulo = `VALOR - GREATEST(VLRPAGO, SUM(VALORBAIXA))`.
+- **Mart real (grao correto)**: `mart.customer_delinquency_summary` (migrations 081/084), grao `(id_empresa, id_filial, id_cliente)`, alimentada por `etl.refresh_customer_delinquency_summary` a partir de `dw.fact_financeiro` + `stg.contasreceberbaixa` + `dw.dim_cliente` + `dw.fact_venda`. Refrescada todo ciclo operacional (etl_orchestrator pos-refresh, em `sales_changed`/`finance_changed`).
+- **Regra de saldo/baixa**: subtrai baixas reais (`GREATEST(valor_pago, total_baixa)`); só entram titulos com saldo > 0.
+- **Inadimplente**: cliente com >= 1 titulo vencido e saldo aberto positivo. Titulos a vencer só entram para clientes ja inadimplentes.
+- **Deduplicacao**: garantida no grao da mart (uma linha por empresa/filial/cliente). NUNCA deduplicar no frontend.
+- **Contrato de payload**: `summary` (clientes_em_aberto, titulos_em_aberto, valor_total, titulos/valor_ate_30d, titulos/valor_acima_30d, titulos/valor_a_vencer, clientes_a_vencer, max_dias_atraso, valor_total_aberto), `buckets[]`, `customers[]` (id_cliente, cliente_nome, titulos/valor por faixa, valor_total_vencido, valor_total_aberto, max_dias_atraso, compras_30d, ultima_compra_dt), `sort_by`, `dt_ref`.
+- **Rota API**: `/bi/customers/overview` (bloco `delinquency`) e `/bi/customers/delinquency?sort_by=gravity|valor|atraso|comprando`.
+- **Tela**: `apps/web/app/customers/page.tsx` (grid "Prioridades de cobranca"), so pagina/ordena o payload.
+- **Roteamento**: com `USE_REALTIME_MARTS=true`, `repos_mart_realtime.customers_delinquency_overview` DELEGA para `repos_mart.customers_delinquency_overview` (mart PG reconciliada). A query ClickHouse-direct anterior multiplicava o cliente pelo numero de filiais (join com `mart_clientes_resumo` por `id_cliente`) e ignorava baixas — removida.
+- **Prova de reconciliacao (2026-06-04)**: cliente 7383 (TRANSPORTES E.A.E., filial 14122) — Xpert = DW = mart PG = API: titulos 631, vencido 953.772,35, a vencer 35.599,30, aberto 989.371,65. Payload sem `id_cliente` duplicado.
 
 ## 6. Mapa das marts ClickHouse
 

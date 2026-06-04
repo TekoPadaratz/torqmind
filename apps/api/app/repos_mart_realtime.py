@@ -17,6 +17,9 @@ from app.business_time import business_today
 from app.config import settings
 from app.db_clickhouse import query_dict, query_scalar
 from app.repos_mart import _cash_operator_label, _filial_label, _turno_label
+from app.repos_mart import (
+    customers_delinquency_overview as _pg_customers_delinquency_overview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2433,178 +2436,29 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Any, as_of: da
 
 
 def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0, sort_by: str = "gravity") -> Dict[str, Any]:
-    """Delinquency overview from stg_contasreceber in ClickHouse.
+    """Delinquency overview served from the reconciled PostgreSQL mart.
 
-    Payload fields: DTAVCTO (vencimento ISO), VALOR, VLRPAGO, ID_ENTIDADE.
-    Dates come as ISO with TZ ('2023-08-10T00:00:00.000000-03:00') so we use substring(,1,10).
+    The previous ClickHouse-direct implementation produced two production bugs:
+      1. Duplication: it LEFT JOINed ``torqmind_mart_rt.mart_clientes_resumo``
+         (grain empresa/filial/cliente) by ``id_cliente`` only, with no GROUP BY
+         and no branch filter, multiplying every customer by the number of
+         branches (observed 22x for empresa 1) — "mil vezes o mesmo cliente".
+      2. Wrong balances: it computed ``VALOR - VLRPAGO`` and ignored partial
+         baixas in ``stg_contasreceberbaixa``.
+
+    ``mart.customer_delinquency_summary`` (migrations 081/084) has the correct
+    grain (empresa, filial, cliente), subtracts real baixas
+    ``GREATEST(valor_pago, total_baixa)``, includes a-vencer titles for already
+    overdue customers, and is refreshed every operational ETL cycle
+    (CDC -> STG -> DW -> mart). It reconciles to the cent with the Xpert source
+    of truth (validated client 7383: venc 953.772,35 / aberto 989.371,65). It
+    also emits exactly the payload contract the Customers screen consumes.
+    Deduplication is therefore enforced at the mart grain, not in the frontend.
     """
-    filial = _branch_clause("id_filial", id_filial)
-    as_of_str = as_of.isoformat()
-
-    # Step 1: Aggregate per client (lightweight, no join)
-    rows = query_dict(f"""
-        SELECT
-            agg.id_cliente AS id_cliente,
-            COALESCE(e.nome, '') AS cliente_nome,
-            agg.titulos_1_30,
-            agg.valor_1_30,
-            agg.titulos_31_60,
-            agg.valor_31_60,
-            agg.titulos_61_90,
-            agg.valor_61_90,
-            agg.titulos_90_plus,
-            agg.valor_90_plus,
-            agg.titulos_a_vencer,
-            agg.valor_a_vencer,
-            agg.max_dias_atraso,
-            cr.qtd_compras_30d AS compras_30d,
-            cr.ultima_compra_key AS ultima_compra_key
-        FROM (
-            SELECT
-                toInt32(JSONExtractInt(payload, 'ID_ENTIDADE')) AS id_cliente,
-                countIf(
-                    vcto < toDate({{as_of:String}})
-                    AND vcto >= toDate({{as_of:String}}) - 30
-                ) AS titulos_1_30,
-                sumIf(saldo, vcto < toDate({{as_of:String}}) AND vcto >= toDate({{as_of:String}}) - 30) AS valor_1_30,
-                countIf(
-                    vcto < toDate({{as_of:String}}) - 30
-                    AND vcto >= toDate({{as_of:String}}) - 60
-                ) AS titulos_31_60,
-                sumIf(saldo, vcto < toDate({{as_of:String}}) - 30 AND vcto >= toDate({{as_of:String}}) - 60) AS valor_31_60,
-                countIf(
-                    vcto < toDate({{as_of:String}}) - 60
-                    AND vcto >= toDate({{as_of:String}}) - 90
-                ) AS titulos_61_90,
-                sumIf(saldo, vcto < toDate({{as_of:String}}) - 60 AND vcto >= toDate({{as_of:String}}) - 90) AS valor_61_90,
-                countIf(vcto < toDate({{as_of:String}}) - 90) AS titulos_90_plus,
-                sumIf(saldo, vcto < toDate({{as_of:String}}) - 90) AS valor_90_plus,
-                countIf(vcto >= toDate({{as_of:String}})) AS titulos_a_vencer,
-                sumIf(saldo, vcto >= toDate({{as_of:String}})) AS valor_a_vencer,
-                max(dateDiff('day', vcto, toDate({{as_of:String}}))) AS max_dias_atraso
-            FROM (
-                SELECT
-                    payload,
-                    toDateOrNull(substring(JSONExtractString(payload, 'DTAVCTO'), 1, 10)) AS vcto,
-                    toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2)
-                        - toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS saldo
-                FROM {CURRENT_DB}.stg_contasreceber FINAL
-                WHERE id_empresa = {{id_empresa:Int32}}
-                  AND is_deleted = 0
-                  {filial}
-            )
-            WHERE saldo > 0 AND vcto IS NOT NULL
-            GROUP BY id_cliente
-            HAVING (titulos_1_30 + titulos_31_60 + titulos_61_90 + titulos_90_plus) > 0
-            ORDER BY valor_90_plus DESC, valor_31_60 DESC, valor_1_30 DESC
-        ) AS agg
-        LEFT JOIN (
-            SELECT
-                toInt32(JSONExtractInt(payload, 'ID_ENTIDADE')) AS ent_id,
-                anyLast(JSONExtractString(payload, 'NOMEENTIDADE')) AS nome
-            FROM {CURRENT_DB}.stg_entidades FINAL
-            WHERE id_empresa = {{id_empresa:Int32}} AND is_deleted = 0
-            GROUP BY ent_id
-        ) AS e ON agg.id_cliente = e.ent_id
-        LEFT JOIN (
-            SELECT id_cliente, qtd_compras_30d, ultima_compra_key
-            FROM {MART_RT_DB}.mart_clientes_resumo FINAL
-            WHERE id_empresa = {{id_empresa:Int32}}
-        ) AS cr ON agg.id_cliente = cr.id_cliente
-    """, parameters={"id_empresa": int(id_empresa), "as_of": as_of_str})
-
-    total_clientes = len(rows)
-    total_titulos_vencidos = sum(
-        _to_int(r.get("titulos_1_30")) + _to_int(r.get("titulos_31_60"))
-        + _to_int(r.get("titulos_61_90")) + _to_int(r.get("titulos_90_plus"))
-        for r in rows
+    return _pg_customers_delinquency_overview(
+        role, id_empresa, id_filial, as_of, limit=limit, sort_by=sort_by
     )
-    valor_total_vencido = sum(
-        _to_float(r.get("valor_1_30")) + _to_float(r.get("valor_31_60"))
-        + _to_float(r.get("valor_61_90")) + _to_float(r.get("valor_90_plus"))
-        for r in rows
-    )
-    sum_1_30 = sum(_to_float(r.get("valor_1_30")) for r in rows)
-    sum_31_60 = sum(_to_float(r.get("valor_31_60")) for r in rows)
-    sum_61_90 = sum(_to_float(r.get("valor_61_90")) for r in rows)
-    sum_90_plus = sum(_to_float(r.get("valor_90_plus")) for r in rows)
-    tit_1_30 = sum(_to_int(r.get("titulos_1_30")) for r in rows)
-    tit_31_60 = sum(_to_int(r.get("titulos_31_60")) for r in rows)
-    tit_61_90 = sum(_to_int(r.get("titulos_61_90")) for r in rows)
-    tit_90_plus = sum(_to_int(r.get("titulos_90_plus")) for r in rows)
-    tit_a_vencer = sum(_to_int(r.get("titulos_a_vencer")) for r in rows)
-    val_a_vencer = sum(_to_float(r.get("valor_a_vencer")) for r in rows)
-    max_atraso = max((_to_int(r.get("max_dias_atraso")) for r in rows), default=0)
-    clientes_a_vencer = sum(1 for r in rows if _to_int(r.get("titulos_a_vencer")) > 0)
 
-    customers_out = []
-    for r in rows:
-        v_vencido = round(
-            _to_float(r.get("valor_1_30")) + _to_float(r.get("valor_31_60"))
-            + _to_float(r.get("valor_61_90")) + _to_float(r.get("valor_90_plus")), 2
-        )
-        v_a_vencer = _to_float(r.get("valor_a_vencer"))
-        t_31_60 = _to_int(r.get("titulos_31_60"))
-        t_61_90 = _to_int(r.get("titulos_61_90"))
-        t_90_plus = _to_int(r.get("titulos_90_plus"))
-        customers_out.append({
-            "id_cliente": _to_int(r.get("id_cliente")),
-            "cliente_nome": r.get("cliente_nome") or "",
-            "titulos_1_30": _to_int(r.get("titulos_1_30")),
-            "valor_1_30": _to_float(r.get("valor_1_30")),
-            "titulos_31_60": t_31_60,
-            "valor_31_60": _to_float(r.get("valor_31_60")),
-            "titulos_61_90": t_61_90,
-            "valor_61_90": _to_float(r.get("valor_61_90")),
-            "titulos_90_plus": t_90_plus,
-            "valor_90_plus": _to_float(r.get("valor_90_plus")),
-            "titulos_a_vencer": _to_int(r.get("titulos_a_vencer")),
-            "valor_a_vencer": v_a_vencer,
-            "max_dias_atraso": _to_int(r.get("max_dias_atraso")),
-            "valor_total_vencido": v_vencido,
-            "valor_total_aberto": round(v_vencido + v_a_vencer, 2),
-            "compras_30d": _to_int(r.get("compras_30d")),
-            "ultima_compra_dt": _key_to_iso(r.get("ultima_compra_key")),
-            "_titulos_acima_30d": t_31_60 + t_61_90 + t_90_plus,
-        })
-
-    # Server-side ordering mirrors the legacy PostgreSQL delinquency contract
-    # (sort_by: gravity|valor|atraso|comprando). The frontend can still re-sort.
-    _sort_keys = {
-        "gravity": lambda c: (c["_titulos_acima_30d"], c["titulos_1_30"], c["valor_total_vencido"]),
-        "valor": lambda c: (c["valor_total_aberto"], c["valor_total_vencido"]),
-        "atraso": lambda c: (c["max_dias_atraso"], c["valor_total_vencido"]),
-        "comprando": lambda c: (c["compras_30d"], c["valor_total_vencido"]),
-    }
-    customers_out.sort(key=_sort_keys.get(sort_by, _sort_keys["gravity"]), reverse=True)
-    for c in customers_out:
-        c.pop("_titulos_acima_30d", None)
-    if limit and limit > 0:
-        customers_out = customers_out[:limit]
-
-    return {
-        "summary": {
-            "clientes_em_aberto": total_clientes,
-            "titulos_em_aberto": total_titulos_vencidos,
-            "valor_total": round(valor_total_vencido, 2),
-            "titulos_ate_30d": tit_1_30,
-            "valor_ate_30d": round(sum_1_30, 2),
-            "titulos_acima_30d": tit_31_60 + tit_61_90 + tit_90_plus,
-            "valor_acima_30d": round(sum_31_60 + sum_61_90 + sum_90_plus, 2),
-            "titulos_a_vencer": tit_a_vencer,
-            "valor_a_vencer": round(val_a_vencer, 2),
-            "clientes_a_vencer": clientes_a_vencer,
-            "max_dias_atraso": max_atraso,
-        },
-        "buckets": [
-            {"bucket": "1_30", "label": "1-30 dias", "valor": round(sum_1_30, 2), "titulos": tit_1_30},
-            {"bucket": "31_60", "label": "31-60 dias", "valor": round(sum_31_60, 2), "titulos": tit_31_60},
-            {"bucket": "61_90", "label": "61-90 dias", "valor": round(sum_61_90, 2), "titulos": tit_61_90},
-            {"bucket": "90_plus", "label": "90+ dias", "valor": round(sum_90_plus, 2), "titulos": tit_90_plus},
-        ],
-        "customers": customers_out,
-        "dt_ref": as_of.isoformat(),
-    }
 
 
 def customers_churn_bundle(

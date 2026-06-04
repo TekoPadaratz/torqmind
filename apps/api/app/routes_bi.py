@@ -1872,9 +1872,16 @@ def team_commissions_results(
     role = claims["role"]
     tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
 
-    # Relatório de comissão é sempre individual por funcionário.
-    _ = payment_mode
-    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, "individual_sales")
+    # Resolve payment mode: explicit valid request wins, else fall back to the
+    # filial's configured default. calculate_commission_results re-validates.
+    valid_modes = ("team_total", "equal_split", "individual_sales")
+    effective_mode = payment_mode if payment_mode in valid_modes else None
+    if effective_mode is None:
+        config = repos_commission.get_config(tenant, id_filial)
+        effective_mode = str((config or {}).get("default_payment_mode") or "team_total")
+        if effective_mode not in valid_modes:
+            effective_mode = "individual_sales"
+    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, effective_mode)
     return result
 
 

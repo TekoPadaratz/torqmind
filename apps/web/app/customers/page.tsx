@@ -278,33 +278,17 @@ export default function CustomersPage() {
                 </div>
               </div>
 
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Vencido 1-30 dias</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_30)}
+              {(delinquency?.buckets || []).map((b: any) => (
+                <div className="card kpi col-4 riskCard" key={b?.bucket || b?.label}>
+                  <div className="label">{`Vencido ${b?.label || b?.bucket || ""}`}</div>
+                  <div className="value">
+                    {loading ? "..." : formatCurrency(Number(b?.valor || 0))}
+                  </div>
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    {loading ? "..." : `${Number(b?.titulos || 0)} título(s)`}
+                  </div>
                 </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_30 || 0)} título(s)`}
-                </div>
-              </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Vencido 31-60 dias</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_60)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_60 || 0)} título(s)`}
-                </div>
-              </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Vencido 90+ dias</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_90_plus)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_90_plus || 0)} título(s)`}
-                </div>
-              </div>
+              ))}
 
               <div className="card col-12 chartCard">
                 <h2>Distribuição por faixa de atraso</h2>

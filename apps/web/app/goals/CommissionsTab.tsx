@@ -13,6 +13,13 @@ const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> =
   diamond: { color: "#4f9cf7", bg: "rgba(79,156,247,0.12)", icon: "💎" },
 };
 
+// Commission payment modes (kept in sync with the API contract).
+const PAYMENT_MODE_LABELS: Record<string, string> = {
+  team_total: "Equipe (comissão total)",
+  equal_split: "Divisão igual entre vendedores",
+  individual_sales: "Individual por vendas",
+};
+
 function parseBrCurrency(input: string): number {
   const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "");
   const value = Number(normalized);
@@ -41,6 +48,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
 
   const [selectedMonth, setSelectedMonth] = useState(parsedRef.getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState(parsedRef.getFullYear());
+  const [paymentMode, setPaymentMode] = useState<string>("");
 
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -62,6 +70,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
       params.set("month", String(selectedMonth));
       params.set("year", String(selectedYear));
+      if (paymentMode) params.set("payment_mode", paymentMode);
       const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`);
       setData(resp);
     } catch (err: any) {
@@ -69,7 +78,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
     } finally {
       setLoading(false);
     }
-  }, [idEmpresa, idFilial, selectedMonth, selectedYear]);
+  }, [idEmpresa, idFilial, selectedMonth, selectedYear, paymentMode]);
 
   useEffect(() => {
     fetchResults();
@@ -96,9 +105,32 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
       <div className="card" style={{ padding: "12px 16px", fontSize: 13 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
-            Relatório individual de comissão ({String(selectedMonth).padStart(2, "0")}/{selectedYear})
+            Relatório de comissão ({String(selectedMonth).padStart(2, "0")}/{selectedYear})
+            {data?.payment_mode ? (
+              <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+                · {PAYMENT_MODE_LABELS[data.payment_mode] || data.payment_mode}
+              </span>
+            ) : null}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select
+              value={paymentMode}
+              onChange={(e) => setPaymentMode(e.target.value)}
+              title="Modo de cálculo da comissão"
+              style={{
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--card-bg)",
+                color: "inherit",
+                fontSize: 12,
+              }}
+            >
+              <option value="">Modo: padrão da config</option>
+              <option value="team_total">Equipe (comissão total)</option>
+              <option value="equal_split">Divisão igual</option>
+              <option value="individual_sales">Individual por vendas</option>
+            </select>
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(Number(e.target.value))}
