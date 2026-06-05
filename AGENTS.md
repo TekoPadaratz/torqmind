@@ -61,6 +61,14 @@ Nunca:
 - `manager`/gerente: empresa/filiais definidas, menus por checkbox, nunca vê margem/lucro/custo.
 - `tenant_kiosk`/vendedor/TV: modo TV, sem menu normal, apenas dashboards permitidos, só logout, sem margem/lucro/custo.
 
+## Identidade visual e UX de escopo
+
+- Personalização visual é por empresa (`app.company_branding`, chave `id_empresa`), com fallback para o padrão TorqMind; trocar imagem não exige novo deploy.
+- Uploads ficam em storage persistente (volume `torqmind_branding` em `/app/var/branding`), nunca em pasta apagada no deploy.
+- Validar imagem por magic-number (não só extensão/MIME declarado); rejeitar SVG e executável renomeado; limitar tamanho; nome de arquivo gerado pelo servidor (sem path traversal).
+- Não trocar favicon/ícone principal do TorqMind sem decisão explícita.
+- Esconder seletor de empresa/filial no frontend é UX; a API continua bloqueando escopo/permissão (frontend nunca é a fronteira de segurança).
+
 Permissão real precisa ser aplicada na API. Esconder menu no frontend não é suficiente.
 
 ## Regras de domínio para postos

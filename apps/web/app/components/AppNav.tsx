@@ -301,6 +301,19 @@ export default function AppNav({
     };
   }, [activeScope.id_empresa, auxiliaryLoadsEnabled, draft.id_empresa, scopeControls.branchLocked, session?.id_filial]);
 
+  // Let BrandingApplier follow the active company (multi-company users) so the
+  // ambient background/logo switches without a full session reload.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const companyId = Number(activeScope.id_empresa || 0);
+    if (!companyId) return;
+    try {
+      window.dispatchEvent(new CustomEvent('torqmind:company', { detail: companyId }));
+    } catch {
+      /* no-op */
+    }
+  }, [activeScope.id_empresa]);
+
   const currentUserLabel =
     userLabel ||
     session?.name ||
@@ -369,6 +382,10 @@ export default function AppNav({
   const applying = scopeTransition.active;
 
   const selectedCompanyLabel = companyLabel(session, activeScope.id_empresa || draft.id_empresa || null);
+  // FASE 13: only show the company dropdown when the user can switch AND has more
+  // than one company. A single-company owner/admin sees a fixed label instead of
+  // a useless one-option dropdown (UX only — the API still enforces access).
+  const showCompanySelector = scopeControls.canSwitchCompany && companies.length > 1;
   const selectedBranchLabel = branchSelectionLabel(
     branches,
     draft.id_filiais,
@@ -513,7 +530,7 @@ export default function AppNav({
 
           <label className="productField">
             <span>Empresa</span>
-            {scopeControls.canSwitchCompany ? (
+            {showCompanySelector ? (
               <select
                 className="input"
                 value={draft.id_empresa}

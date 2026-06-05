@@ -292,6 +292,22 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - **Tela**: `apps/web/app/fraud/page.tsx` (`modeledEvents = risk_last_events`): fila de revisao "Destaques para localizar no ERP" (prioridade/quando/filial/**comprovante**/categoria/operador/frentista/**turno operacional**/valor/score/motivo) + "Concentracao por turno e operador". Tabelas com scroll interno; cards estreitos usam `.tableScroll--compact` (sem `min-width: 680px`).
 - **Prova (2026-06-05, empresa 1, mai-jun)**: backfill antifraude = 1097 linhas (911 turno operacional 1..5 + 186 caixa geral), `nro_comprovante`/`id_comprovante` 100% preenchidos. API `/bi/fraud/overview`: `risk_last_events` 30 eventos -> turno_label so 1..5, documento_source `documento_venda` 30/30 (ex.: "Comprovante 503752", "Turno 3", "TAINA M", "AUTO POSTO VR 04 LTDA"); zero "Turno 34292", zero "Turno · Filial". `risk_by_turn_local` 10 turnos operacionais (1..5), nenhum `turno_numero < 1`.
 
+### Identidade visual por empresa (branding) — 2026-06-05
+
+- **Objetivo**: fundo e logo por empresa, sem novo deploy para trocar imagem. Empresa sem branding usa o padrao TorqMind. Favicon/icone do sistema continua TorqMind (nao troca).
+- **Tabela**: `app.company_branding` (migration 092), grao `id_empresa` (PK + FK `app.tenants`). Colunas: `background_image_path/mime/size/version`, `logo_image_path/mime/size/version`, `updated_by`, timestamps. So metadados; os arquivos ficam no storage persistente.
+- **Storage**: volume Docker nomeado `torqmind_branding` montado em `/app/var/branding` na API (`BRANDING_STORAGE_DIR`). Sobrevive a deploy/rebuild. Nome de arquivo gerado pelo servidor: `company_{id}_{kind}_{versionHash}.{ext}` (sem path traversal). Limite `BRANDING_MAX_FILE_BYTES` (6 MB).
+- **Backend**: `repos_branding.py` (validacao por magic-number — PNG/JPEG/WebP/GIF; SVG e executavel renomeado REJEITADOS; reusa `repos_platform._assert_company_mutable/_visible` p/ permissao) + `routes_branding.py`. Endpoints: `GET /branding/{id}` (metadados, publico), `GET /branding/{id}/{kind}` (serve bytes, publico, `Cache-Control immutable`), `GET/POST/DELETE /platform/companies/{id}/branding[/background|/logo]` (permissionado). Upload le o corpo bruto da requisicao (sem `python-multipart`).
+- **Permissao**: editar exige operacao de plataforma + visibilidade da empresa; serve/metadata sao publicos (assets nao sensiveis; bearer nao viaja em `url()` de CSS). A API bloqueia, o frontend so esconde.
+- **Sessao**: `repos_auth._safe_branding` injeta `session.branding` (`background_url`, `logo_url`, `*_version`, `uses_default`) para a empresa selecionada; nunca quebra a sessao.
+- **Frontend**: `BrandingApplier.tsx` (montado em `layout.tsx`) seta `--brand-company-bg` no `html`; `globals.css` `body::after` aplica o fundo com overlay escuro (so visivel com `html[data-company-bg="1"]`). Troca de empresa: `AppNav` dispara `torqmind:company` -> applier busca `/branding/{id}` e re-aplica (multi-empresa sem reload). `BrandingEditor.tsx` em `platform/companies/[tenantId]` (preview + enviar/trocar + remover/restaurar padrao). Cache-busting pela URL versionada (`?v=hash`).
+- **Prova (2026-06-05, empresa 1)**: upload background+logo (PNG) -> 200 + URLs versionadas; serve publico 200 `image/png`; SVG -> 422 `unsupported_format`; upload sem bearer -> 401; delete background depois logo -> `uses_default=true`; serve apos delete -> 404.
+
+### Seletor empresa/filial contextual — 2026-06-05
+
+- `AppNav.tsx`: dropdown de empresa so aparece quando `canSwitchCompany && companies.length > 1`. Dono/owner de uma so empresa ve label fixo (nao dropdown de 1 opcao). Gerente monofilial (`branchLocked`) ja via label fixo da filial. UX apenas — a API continua aplicando escopo/permissao.
+
+
 ## 6. Mapa das marts ClickHouse
 
 | Tabela | Finalidade | Colunas-chave | Consumidores |

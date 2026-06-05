@@ -13,6 +13,14 @@ export function cacheSession(session: any | null) {
   if (!session) return null;
   sessionCache = session;
   setClaims(session);
+  if (typeof window !== 'undefined') {
+    // Let branding (and any future session-aware UI) react to company switches.
+    try {
+      window.dispatchEvent(new CustomEvent('torqmind:session', { detail: session }));
+    } catch {
+      /* no-op */
+    }
+  }
   return sessionCache;
 }
 

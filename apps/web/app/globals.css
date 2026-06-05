@@ -58,6 +58,29 @@ body::before {
   z-index: 0;
 }
 
+/* Company branding ambient layer (set by BrandingApplier via --brand-company-bg).
+   Only visible when a company has a background; otherwise the default TorqMind
+   identity (gradient + logo watermark above) shows through. A dark overlay keeps
+   text legible on bright images. Favicon is never affected. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(to bottom, rgba(8, 10, 14, 0.78), rgba(8, 10, 14, 0.88)),
+    var(--brand-company-bg, none);
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: cover;
+  opacity: 0;
+  transition: opacity 240ms ease;
+  pointer-events: none;
+  z-index: 0;
+}
+html[data-company-bg="1"] body::after {
+  opacity: 1;
+}
+
 body > * {
   position: relative;
   z-index: 1;

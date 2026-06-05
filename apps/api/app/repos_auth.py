@@ -836,6 +836,23 @@ def _serialize_access_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_branding(id_empresa: int | None) -> dict[str, Any]:
+    """Branding contract for the active company; never breaks the session."""
+    try:
+        from app import repos_branding
+
+        return repos_branding.get_branding_public(id_empresa)
+    except Exception:
+        return {
+            "id_empresa": int(id_empresa) if id_empresa else 0,
+            "background_url": None,
+            "logo_url": None,
+            "background_version": None,
+            "logo_version": None,
+            "uses_default": True,
+        }
+
+
 def _build_session_context(
     user: dict[str, Any],
     access_rows: list[dict[str, Any]],
@@ -1070,6 +1087,7 @@ def _build_session_context(
         ),
         "tenant_ids": tenant_ids,
         "product_companies": product_companies,
+        "branding": _safe_branding(selected_tenant_id),
     }
 
 
