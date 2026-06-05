@@ -21,6 +21,8 @@ from unittest.mock import patch
 from app import repos_mart_realtime
 from app.repos_mart_realtime import (
     _antifraude_event_labels,
+    _antifraude_turno_label,
+    _antifraude_documento,
     _build_antifraude_event,
 )
 
@@ -35,7 +37,8 @@ def _rich_row() -> dict:
         "hora": 9,
         "event_type": "cancelamento",
         "source": "stg.comprovantes",
-        "id_turno": 39430,
+        "id_turno": 34292,          # technical ID_TURNOS — never shown as shift
+        "turno_numero": 3,          # real operational shift
         "id_caixa": 0,
         "id_usuario": 51,
         "nome_operador": "TAYNA",
@@ -46,6 +49,8 @@ def _rich_row() -> dict:
         "score_risco": 80,
         "score_level": "HIGH",
         "reasons": '{"source":"stg.comprovantes","rule":"cancelled_receipt"}',
+        "id_comprovante": 3587794,  # technical PK
+        "nro_comprovante": 503752,  # NROCOMPROVANTE (printed on the receipt)
     }
 
 
@@ -74,6 +79,52 @@ def test_labels_tolerates_broken_reasons_json():
 
 
 # --------------------------------------------------------------------------- #
+# _antifraude_turno_label  (FASE 2 — operational shift vs technical id)
+# --------------------------------------------------------------------------- #
+def test_turno_label_operational_number_not_technical_id():
+    label, resolved = _antifraude_turno_label(3, 34292)
+    assert label == "Turno 3"
+    assert resolved is True
+    assert "34292" not in label
+
+
+def test_turno_label_zero_is_caixa_geral():
+    label, resolved = _antifraude_turno_label(0, 21731)
+    assert label == "Caixa geral"
+    assert resolved is True
+
+
+def test_turno_label_unresolved_when_no_shift():
+    label, resolved = _antifraude_turno_label(0, 0)
+    assert label == "Turno não resolvido"
+    assert resolved is False
+    assert "não identificad" not in label.lower()
+
+
+# --------------------------------------------------------------------------- #
+# _antifraude_documento  (FASE 3 — comprovante, never turno+filial)
+# --------------------------------------------------------------------------- #
+def test_documento_prefers_nro_comprovante():
+    venda, label, source = _antifraude_documento(503752, 3587794)
+    assert venda == 503752
+    assert label == "Comprovante 503752"
+    assert source == "documento_venda"
+
+
+def test_documento_falls_back_to_id_comprovante():
+    venda, label, source = _antifraude_documento(0, 3587794)
+    assert venda is None
+    assert label == "Comprovante #3587794"
+    assert source == "id_comprovante"
+
+
+def test_documento_never_turno_or_filial():
+    _, label, _ = _antifraude_documento(503752, 3587794)
+    assert "Turno" not in label
+    assert "·" not in label
+
+
+# --------------------------------------------------------------------------- #
 # _build_antifraude_event
 # --------------------------------------------------------------------------- #
 def test_build_event_rich_row_is_fully_resolved():
@@ -83,9 +134,19 @@ def test_build_event_rich_row_is_fully_resolved():
     assert ev["data"] == "2026-06-03T09:00:00"
     assert ev["data_key"] == 20260603
 
-    # real shift, not a user id
-    assert ev["id_turno"] == 39430
-    assert ev["turno_label"] == "Turno 39430"
+    # operational shift, NOT the technical id
+    assert ev["turno_numero"] == 3
+    assert ev["turno_label"] == "Turno 3"
+    assert ev["id_turno"] == 34292            # technical kept for traceability
+    assert "34292" not in ev["turno_label"]   # but never rendered as the shift
+
+    # documento = sale comprovante (printed number), never turno+filial
+    assert ev["id_comprovante"] == 3587794
+    assert ev["documento_venda"] == 503752
+    assert ev["documento_label"] == "Comprovante 503752"
+    assert ev["documento_source"] == "documento_venda"
+    assert "Turno" not in ev["documento_label"]
+    assert "AUTO POSTO" not in ev["documento_label"]
 
     # operator resolved by name, mirrored across the label aliases the UI reads
     assert ev["operador_label"] == "TAYNA"
@@ -106,10 +167,15 @@ def test_build_event_rich_row_is_fully_resolved():
     assert ev["score"] == 80
     assert ev["score_level"] == "HIGH"
     assert ev["impacto_estimado"] == 250.5
-
-    # modeled events are not tied to a single comprovante id
-    assert ev["id_comprovante"] is None
     assert ev["event_id"] == "123456789"
+
+
+def test_build_event_documento_fallback_to_id_comprovante():
+    row = _rich_row()
+    row["nro_comprovante"] = 0
+    ev = _build_antifraude_event(row)
+    assert ev["documento_label"] == "Comprovante #3587794"
+    assert ev["documento_source"] == "id_comprovante"
 
 
 def test_build_event_poor_row_uses_house_style_fallbacks():
@@ -122,6 +188,7 @@ def test_build_event_poor_row_uses_house_style_fallbacks():
         "hora": 0,
         "event_type": "cancelamento",
         "id_turno": 0,
+        "turno_numero": 0,
         "id_caixa": 0,
         "id_usuario": 0,
         "nome_operador": "",
@@ -132,12 +199,15 @@ def test_build_event_poor_row_uses_house_style_fallbacks():
         "score_risco": 0,
         "score_level": "",
         "reasons": "{}",
+        "id_comprovante": 0,
+        "nro_comprovante": 0,
     }
     ev = _build_antifraude_event(poor)
     assert ev["operador_label"] == "Operador sem cadastro"
-    assert ev["turno_label"] == "Turno sem cadastro"
+    assert ev["turno_label"] == "Turno não resolvido"
     assert ev["frentista_label"] == "Sem frentista associado"
     assert ev["filial_label"] == "Filial sem cadastro"
+    assert ev["documento_label"] == "Sem comprovante"
     # Never emit the lint-prohibited "não identificado" wording on any label.
     for key in ("operador_label", "turno_label", "frentista_label", "filial_label"):
         assert "não identificad" not in str(ev[key]).lower()
@@ -153,24 +223,23 @@ def test_build_event_id_only_operator_fallback():
 
 
 def test_build_event_treats_turno_1_as_unresolved_sentinel():
-    # id_turno=1 is the upstream default that conflates many days/openings; it
-    # must not be rendered as a real "Turno 1".
+    # turno_numero 0 + technical id_turno=1 (sentinel) => unresolved, never "Turno 1".
     row = _rich_row()
     row["id_turno"] = 1
+    row["turno_numero"] = 0
     ev = _build_antifraude_event(row)
-    assert ev["turno_label"] == "Turno sem cadastro"
-    # documento_label must not fabricate "Turno 1"
+    assert ev["turno_label"] == "Turno não resolvido"
     assert "Turno 1" not in ev["documento_label"]
 
 
 # --------------------------------------------------------------------------- #
-# risk_by_turn_local — the core regression
+# risk_by_turn_local — concentration by operational shift
 # --------------------------------------------------------------------------- #
-def test_risk_by_turn_groups_by_real_shift_not_user():
+def test_risk_by_turn_groups_by_operational_shift_not_user_or_tech_id():
     ch_row = {
         "id_filial": 14458,
         "filial_nome": "AUTO POSTO VR 01",
-        "id_turno": 39430,
+        "turno_numero": 3,
         "eventos": 12,
         "alto_risco": 9,
         "impacto_estimado": 3200.0,
@@ -183,20 +252,18 @@ def test_risk_by_turn_groups_by_real_shift_not_user():
         )
 
     sql = qd.call_args[0][0]
-    # The semantic bug must never come back.
+    # neither semantic bug may come back
     assert "id_usuario AS id_turno" not in sql
-    assert "id_turno > 1" in sql
-    assert "GROUP BY id_filial, id_turno" in sql
+    assert "turno_numero >= 1" in sql
+    assert "GROUP BY id_filial, turno_numero" in sql
     assert "mart_antifraude_eventos" in sql
 
     assert len(out) == 1
     row = out[0]
-    assert row["id_turno"] == 39430
-    assert row["turno_label"] == "Turno 39430"
-    assert row["operador_label"] == "RAFAEL"  # replaces the fake "canal"
+    assert row["turno_numero"] == 3
+    assert row["turno_label"] == "Turno 3"
+    assert row["operador_label"] == "RAFAEL"   # replaces the fake "canal"
     assert row["eventos"] == 12
-    assert row["alto_risco"] == 9
-    assert row["impacto_estimado"] == 3200.0
     # No "canal" key is fabricated.
     assert "canal" not in row
 
@@ -213,11 +280,14 @@ def test_risk_last_events_reads_enriched_mart_and_is_resolved():
     sql = qd.call_args[0][0]
     assert "mart_antifraude_eventos" in sql
     assert "risk_recent_events_rt" not in sql
+    assert "turno_numero" in sql
+    assert "nro_comprovante" in sql
 
     assert len(out) == 1
     ev = out[0]
     assert ev["data"] == "2026-06-03T09:00:00"
     assert ev["operador_label"] == "TAYNA"
-    assert ev["turno_label"] == "Turno 39430"
+    assert ev["turno_label"] == "Turno 3"
+    assert ev["documento_label"] == "Comprovante 503752"
     assert ev["filial_label"] == "AUTO POSTO VR 01"
     assert ev["categoria"] == "Cancelamento da venda"

@@ -55,7 +55,13 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_antifraude_eventos (
     score_level         LowCardinality(String) NOT NULL DEFAULT '',
     reasons             String NOT NULL DEFAULT '{}',
     hora                UInt8 NOT NULL DEFAULT 0,
-    published_at        DateTime64(6, 'UTC') NOT NULL DEFAULT now64(6)
+    published_at        DateTime64(6, 'UTC') NOT NULL DEFAULT now64(6),
+    -- Documento operacional: id_comprovante (PK tecnico) + nro_comprovante
+    -- (NROCOMPROVANTE, numero impresso no comprovante de venda). turno_numero
+    -- e o turno OPERACIONAL (1..N; 0 = caixa geral), NUNCA o id_turno tecnico.
+    id_comprovante      Int32 NOT NULL DEFAULT 0,
+    nro_comprovante     Int64 NOT NULL DEFAULT 0,
+    turno_numero        Int32 NOT NULL DEFAULT 0
 ) ENGINE = ReplacingMergeTree(published_at)
 ORDER BY (id_empresa, id_filial, data_key, event_id)
 PARTITION BY toYYYYMM(dt)

@@ -1578,7 +1578,10 @@ class MartBuilder:
             'HIGH' AS score_level,
             '{{"source":"stg.comprovantes","rule":"cancelled_receipt"}}' AS reasons,
             toUInt8(toHour(c.dt_evento_local)) AS hora,
-            now64(6) AS published_at
+            now64(6) AS published_at,
+            c.id_comprovante AS id_comprovante,
+            toInt64OrZero(JSONExtractString(p.payload, 'NROCOMPROVANTE')) AS nro_comprovante,
+            toInt32OrZero(JSONExtractString(t.payload, 'TURNO')) AS turno_numero
         FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
@@ -1588,6 +1591,8 @@ class MartBuilder:
             ON c.id_empresa = f.id_empresa AND c.id_filial = f.id_filial
         LEFT JOIN {self.current_db}.stg_turnos AS t FINAL
             ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
+        LEFT JOIN {self.current_db}.stg_comprovantes AS p FINAL
+            ON c.id_empresa = p.id_empresa AND c.id_filial = p.id_filial AND c.id_db = p.id_db AND c.id_comprovante = p.id_comprovante
         {nfe_join}
         WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
           {nfe_filter}

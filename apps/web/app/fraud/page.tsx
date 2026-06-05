@@ -59,12 +59,9 @@ function riskCategoryLabel(eventType: string) {
 
 function riskGridReference(event: any) {
   if (event?.documento_label) return event.documento_label;
-  if (event?.id_comprovante) return `Documento ${event.id_comprovante}`;
-  if (event?.id_movprodutos) return `Movimento ${event.id_movprodutos}`;
-  const turnoLabel = formatTurnoLabel(event?.id_turno, event?.turno_label);
-  if (turnoLabel && turnoLabel !== "Turno sem cadastro")
-    return turnoLabel.startsWith("Turno ") ? turnoLabel : `Turno ${turnoLabel}`;
-  return "Sem referência operacional";
+  if (event?.documento_venda) return `Comprovante ${event.documento_venda}`;
+  if (event?.id_comprovante) return `Comprovante #${event.id_comprovante}`;
+  return "Sem comprovante";
 }
 
 function scoreLevelLabel(level: string) {
@@ -214,7 +211,7 @@ export default function FraudPage() {
         referencia: riskGridReference(row),
         filial:
           row.filial_label || formatFilialLabel(row.id_filial, row.filial_nome),
-        turno: formatTurnoLabel(row.id_turno, row.turno_label),
+        turno: formatTurnoLabel(row.turno_numero, row.turno_label),
         operador:
           row.operador_label ||
           row.operador_caixa_label ||
@@ -1038,10 +1035,12 @@ export default function FraudPage() {
               <div className="card col-12">
                 <h2>Concentração por turno e operador</h2>
                 <div className="muted" style={{ marginBottom: 8 }}>
-                  Turnos reais com maior impacto estimado no período e o operador
-                  mais associado a cada turno. Não há canal/local confiável na
-                  fonte, então mostramos o responsável operacional. Eventos sem
-                  turno resolvido aparecem na fila de revisão abaixo.
+                  Turnos operacionais (1..N) com maior impacto estimado no
+                  período e o operador mais associado a cada turno. O turno 0
+                  (caixa geral) e eventos sem turno operacional ficam fora desta
+                  concentração, mas continuam na fila de revisão. Não há
+                  canal/local confiável na fonte, então mostramos o responsável
+                  operacional.
                 </div>
                 {!loading && !(data?.risk_by_turn_local || []).length ? (
                   <EmptyState
@@ -1066,12 +1065,12 @@ export default function FraudPage() {
                       {(data?.risk_by_turn_local || [])
                         .slice(0, 10)
                         .map((r: any, idx: number) => (
-                          <tr key={`${r.id_filial}-${r.id_turno}-${idx}`}>
+                          <tr key={`${r.id_filial}-${r.turno_numero}-${idx}`}>
                             <td>
                               {r.filial_label ||
                                 formatFilialLabel(r.id_filial, r.filial_nome)}
                             </td>
-                            <td style={{ whiteSpace: "nowrap" }}>{formatTurnoLabel(r.id_turno, r.turno_label)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatTurnoLabel(r.turno_numero, r.turno_label)}</td>
                             <td>{r.operador_label || "Operador sem cadastro"}</td>
                             <td style={{ textAlign: "right" }}>{r.eventos}</td>
                             <td style={{ textAlign: "right" }}>{r.alto_risco}</td>

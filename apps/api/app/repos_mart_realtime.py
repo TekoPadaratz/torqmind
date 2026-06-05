@@ -1859,51 +1859,22 @@ def fraud_last_events(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
-    # Try enriched mart first (has id_turno, id_caixa, hora, filial_nome)
+    # Try enriched mart first (has turno_numero, id_comprovante, nro_comprovante)
     try:
         rows = query_dict(f"""
-            SELECT event_id AS id, id_filial, filial_nome, data_key, event_type, source,
-                   id_turno, id_caixa, id_usuario, nome_operador,
-                   id_funcionario, nome_funcionario, valor_total,
-                   impacto_estimado, score_risco, score_level, reasons, hora,
-                   dt
+            SELECT event_id, id_filial, filial_nome, data_key, dt, hora,
+                   event_type, source, id_turno, turno_numero, id_caixa, id_usuario, nome_operador,
+                   id_funcionario, nome_funcionario, valor_total, impacto_estimado,
+                   score_risco, score_level, reasons, id_comprovante, nro_comprovante
             FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
-            ORDER BY event_id DESC
+            ORDER BY data_key DESC, score_risco DESC, event_id DESC
             LIMIT {limit}
         """, parameters={"id_empresa": id_empresa})
         if rows:
-            for row in rows:
-                # Build real datetime from dt (Date) + hora (UInt8)
-                dt_val = row.get("dt")
-                hora_val = row.get("hora", 0)
-                if dt_val:
-                    from datetime import datetime as _dt
-                    if isinstance(dt_val, str):
-                        row["data"] = f"{dt_val} {int(hora_val):02d}:00:00"
-                    else:
-                        row["data"] = _dt.combine(dt_val, _dt.min.time().replace(hour=int(hora_val))).isoformat()
-                else:
-                    row["data"] = None
-                # Derive usuario_label / usuario_source
-                nome_op = (row.get("nome_operador") or "").strip()
-                id_usr = row.get("id_usuario", 0)
-                if nome_op:
-                    row["usuario_label"] = nome_op
-                    row["usuario_source"] = "comprovante"
-                elif id_usr:
-                    row["usuario_label"] = f"Operador #{id_usr}"
-                    row["usuario_source"] = "id_only"
-                else:
-                    row["usuario_label"] = "Operador não resolvido"
-                    row["usuario_source"] = "unresolved"
-                # Derive filial_label
-                fn = (row.get("filial_nome") or "").strip()
-                row["filial_label"] = fn if fn else f"Filial {row.get('id_filial', '?')}"
-                # Derive turno_label
-                id_turno = row.get("id_turno", 0)
-                row["turno_label"] = f"Turno {id_turno}" if id_turno else ""
-            return rows
+            # Single shared contract with risk_last_events: operational turno,
+            # comprovante-based documento, resolved operator/filial/date.
+            return [_build_antifraude_event(r) for r in rows]
     except Exception:
         pass
 
@@ -2953,6 +2924,34 @@ def _antifraude_event_labels(event_type: str, reasons: str) -> tuple[str, str]:
     return categoria, motivo
 
 
+def _antifraude_turno_label(turno_numero: int, id_turno: int) -> tuple[str, bool]:
+    """Operational shift label. ``turno_numero`` is the REAL operational shift
+    (1..N; 0 = caixa geral). ``id_turno`` (=ID_TURNOS) is the technical id and is
+    NEVER shown as the shift number. Returns (label, resolved).
+    """
+    if turno_numero >= 1:
+        return f"Turno {turno_numero}", True
+    if id_turno > 1:
+        # bound to a real technical shift, but the operational number is 0 ->
+        # caixa geral / turno geral (not an operational shift 1..N).
+        return "Caixa geral", True
+    return "Turno não resolvido", False
+
+
+def _antifraude_documento(nro_comprovante: int, id_comprovante: int) -> tuple[Optional[int], str, str]:
+    """Operational sale-document label for the fraud screen.
+
+    Preference: NROCOMPROVANTE (number printed on the sale receipt, the operator
+    can locate it in the caixa/ERP). Fallback: id_comprovante (technical PK, also
+    traceable). NEVER ``Turno + Filial``. Returns (documento_venda, label, source).
+    """
+    if nro_comprovante and nro_comprovante > 0:
+        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda"
+    if id_comprovante and id_comprovante > 0:
+        return None, f"Comprovante #{id_comprovante}", "id_comprovante"
+    return None, "Sem comprovante", "fallback"
+
+
 def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
     """Map an enriched mart_antifraude_eventos row to the fraud-screen contract.
 
@@ -2977,12 +2976,9 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 data_iso = None
 
-    id_turno = _to_int(r.get("id_turno"))
-    # id_turno in {0,1} is the upstream default used when the real shift could
-    # not be bound (one id_turno=1 bucket conflates many days/openings); treat
-    # it as unresolved instead of presenting a fake "Turno 1".
-    turno_resolved = id_turno > 1
-    turno_label = f"Turno {id_turno}" if turno_resolved else "Turno sem cadastro"
+    id_turno = _to_int(r.get("id_turno"))  # technical ID_TURNOS, traceability only
+    turno_numero = _to_int(r.get("turno_numero"))  # operational shift (1..N; 0=caixa geral)
+    turno_label, turno_resolved = _antifraude_turno_label(turno_numero, id_turno)
 
     id_caixa = _to_int(r.get("id_caixa"))
     id_usuario = _to_int(r.get("id_usuario"))
@@ -3006,18 +3002,19 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
     categoria, motivo = _antifraude_event_labels(event_type, reasons)
 
     event_id = r.get("event_id") if r.get("event_id") is not None else r.get("id")
-    documento_label = (
-        f"Caixa {id_caixa} · {turno_label}" if id_caixa
-        else f"{turno_label} · {filial_label}" if turno_resolved
-        else "Sem referência operacional"
-    )
+    id_comprovante = _to_int(r.get("id_comprovante"))
+    nro_comprovante = _to_int(r.get("nro_comprovante"))
+    documento_venda, documento_label, documento_source = _antifraude_documento(nro_comprovante, id_comprovante)
 
     return {
         "id_evento": str(event_id) if event_id is not None else None,
         "id": str(event_id) if event_id is not None else None,
         "event_id": str(event_id) if event_id is not None else None,
-        "id_comprovante": None,
+        "id_comprovante": id_comprovante or None,
+        "documento_venda": documento_venda,
         "documento_label": documento_label,
+        "documento_source": documento_source,
+        "documento_fiscal": None,
         "referencia": documento_label,
         "id_filial": id_filial,
         "filial_nome": filial_nome,
@@ -3026,6 +3023,7 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
         "data_key": _to_int(r.get("data_key")),
         "hora": hora_val,
         "id_turno": id_turno,
+        "turno_numero": turno_numero,
         "turno_label": turno_label,
         "id_caixa": id_caixa,
         "id_usuario": id_usuario,
@@ -3072,9 +3070,9 @@ def risk_last_events(
     rows = query_dict(f"""
         SELECT
             event_id, id_filial, filial_nome, data_key, dt, hora,
-            event_type, source, id_turno, id_caixa, id_usuario, nome_operador,
+            event_type, source, id_turno, turno_numero, id_caixa, id_usuario, nome_operador,
             id_funcionario, nome_funcionario, valor_total, impacto_estimado,
-            score_risco, score_level, reasons
+            score_risco, score_level, reasons, id_comprovante, nro_comprovante
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
@@ -3098,21 +3096,22 @@ def risk_by_turn_local(
     dt_fim: date,
     limit: int = 15,
 ) -> List[Dict[str, Any]]:
-    """Risk concentration by REAL shift (id_turno) + most-exposed operator.
+    """Risk concentration by REAL operational shift (turno_numero) + operator.
 
-    Fixes the previous semantic bug (`id_usuario AS id_turno`). Groups by the
-    real ``id_turno`` from the enriched mart and surfaces the operator most
-    associated with each shift (there is no reliable "canal"/local in source).
-    ``id_turno <= 1`` is the upstream unresolved-shift sentinel (one bucket
-    conflates many days/openings), so it is excluded here to keep the per-shift
-    concentration honest; those events still surface in the review queue.
+    Fixes two semantic bugs: (1) the old `id_usuario AS id_turno` (a user is not
+    a shift) and (2) showing the technical ``id_turno`` (ID_TURNOS, e.g. 34292)
+    as the shift number. Groups by the REAL operational shift ``turno_numero``
+    (1..N) per filial and surfaces the operator most associated with it. Shift 0
+    (caixa geral) and unresolved shifts are excluded from this per-shift
+    concentration (they still appear in the review queue); there is no reliable
+    "canal"/local in source, so we show the operational responsible instead.
     """
     filial = _branch_clause("id_filial", id_filial)
     rows = query_dict(f"""
         SELECT
             id_filial,
             any(filial_nome) AS filial_nome,
-            id_turno,
+            turno_numero,
             toUInt32(count()) AS eventos,
             toUInt32(countIf(score_level = 'HIGH' OR score_level = 'CRITICAL')) AS alto_risco,
             sum(impacto_estimado) AS impacto_estimado,
@@ -3121,9 +3120,9 @@ def risk_by_turn_local(
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND id_turno > 1
+          AND turno_numero >= 1
           {filial}
-        GROUP BY id_filial, id_turno
+        GROUP BY id_filial, turno_numero
         ORDER BY impacto_estimado DESC, score_medio DESC
         LIMIT {{limit:UInt32}}
     """, parameters={
@@ -3136,14 +3135,14 @@ def risk_by_turn_local(
     for r in rows:
         id_filial_r = _to_int(r.get("id_filial"))
         filial_nome = (r.get("filial_nome") or "").strip()
-        id_turno = _to_int(r.get("id_turno"))
+        turno_numero = _to_int(r.get("turno_numero"))
         operador_top = (r.get("operador_top") or "").strip()
         result.append({
             "id_filial": id_filial_r,
             "filial_nome": filial_nome,
             "filial_label": filial_nome or (f"Filial {id_filial_r}" if id_filial_r else "Filial sem cadastro"),
-            "id_turno": id_turno,
-            "turno_label": f"Turno {id_turno}" if id_turno else "Turno sem cadastro",
+            "turno_numero": turno_numero,
+            "turno_label": f"Turno {turno_numero}" if turno_numero >= 1 else "Caixa geral",
             "operador_label": operador_top or "Operador sem cadastro",
             "eventos": _to_int(r.get("eventos")),
             "alto_risco": _to_int(r.get("alto_risco")),
