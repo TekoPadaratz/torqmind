@@ -50,6 +50,9 @@ Nunca:
 - NFE `status=5` é inutilização fiscal, não venda, não fraude, não cancelamento real.
 - NFE usa `DATA`; nunca usar `DATAREPL` como watermark/filtro.
 - Caixa/turno `0` não entra em rankings operacionais.
+- Turno operacional exibido é `stg_turnos.payload.TURNO` (1..N; `0` = caixa geral). Nunca exibir `id_turno`/`ID_TURNOS` técnico (ex.: `34292`) como número de turno; ele serve só para join/rastreabilidade. Sem número operacional resolvido, usar fallback honesto (`Turno não resolvido`).
+- Documento operacional da venda é o comprovante: preferir `NROCOMPROVANTE`, fallback `id_comprovante`. Nunca montar documento como `Turno + Filial`, nunca usar nota fiscal como referência principal da venda, nunca voltar a `MOVPRODUTOS`.
+- Em telas de risco/fraude, dado sem responsável/turno/documento deve ser investigado na fonte/mart antes de criar fallback visual; grid vazio em área nobre vira empty state compacto.
 
 ## Controle de acesso
 
