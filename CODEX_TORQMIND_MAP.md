@@ -210,8 +210,8 @@ Funcoes ClickHouse implementadas:
 | `risk_series` | `/bi/risk/overview` | `agg_risco_diaria` | serie risco |
 | `risk_data_window` | `/bi/risk/overview` | `agg_risco_diaria` | janela dados |
 | `risk_top_employees` | `/bi/risk/overview` | `risco_top_funcionarios_diaria` | ranking risco |
-| `risk_last_events` | `/bi/risk/overview` | `risco_eventos_recentes` | eventos risco |
-| `risk_by_turn_local` | `/bi/risk/overview` | `risco_turno_local_diaria` | risco turno/local |
+| `risk_last_events` | `/bi/fraud/overview` + `/bi/risk/overview` | `mart_antifraude_eventos` | eventos antifraude enriquecidos (filial/turno/operador/data); contrato unico via `_build_antifraude_event` |
+| `risk_by_turn_local` | `/bi/fraud/overview` + `/bi/risk/overview` | `mart_antifraude_eventos` | concentracao por turno REAL + operador mais associado (sem canal; NUNCA `id_usuario` como `id_turno`) |
 | `operational_score` | `/bi/risk/overview` | risco + vendas + caixa | score operacional |
 | `customers_top` | `/bi/customers/overview` | `customer_rfm_daily` | top clientes |
 | `customers_rfm_snapshot` | `/bi/customers/overview` | `customer_rfm_daily` | snapshot RFM |
@@ -278,6 +278,17 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - **Conciliacao na API** (`repos_mart_realtime._reconcile_payment_mix`): `cash_overview` e `payments_overview` retornam `total_vendas`, `total_pagamentos_conciliado`, `diferenca_conciliacao`, e o `payment_mix` recebe uma linha **explicita** "Nao conciliado (operacional)" (`category=reconciliation`) quando ha gap residual (fiado/prazo nao registrado, fantasma de troca remanescente, arredondamento) — assim `sum(payment_mix) == total_vendas`, sem esconder nem jogar em forma errada.
 - **Frontend** (`cash/page.tsx`): card "Recebimentos" mostra "Nao conciliado: X" quando |dif|>0.01. **Financeiro** (`finance/page.tsx`): bloco separado "Concilia\u00e7\u00e3o das formas de pagamento" (Total de vendas / Conciliado em formas / Diferen\u00e7a operacional + status conciliado/revisar); o donut filtra positivos mas a diferen\u00e7a aparece nesse bloco \u2014 nunca escondida. Distingue "formas de pagamento das vendas" de "recebimentos financeiros".
 - **Prova (2026-06-04, filial 14122)**: dia 0604 vendas=pagamentos=134.791,72 (dif 0). Mai-jun: vendas 6.029.219,42, formas 6.039.516,75, dif -10.297,33. Ano: vendas 26.693.000,20, formas 26.677.317,61, dif +15.682,59. `sum(mix)==vendas` em todos.
+
+### Antifraude (eventos / turno e operador) — reconciliado 2026-06-04
+
+- **Fonte canonica**: `stg.comprovantes` (regra `cancelled_receipt` = cancelamento da venda na origem). Materializada enriquecida em `torqmind_mart_rt.mart_antifraude_eventos` (id_filial, filial_nome, data_key, dt, hora, event_id, event_type, source, **id_turno real**, id_caixa, id_usuario, **nome_operador**, id_funcionario, nome_funcionario, valor_total, impacto_estimado, score_risco, score_level, reasons JSON).
+- **Contrato unico** (`repos_mart_realtime._build_antifraude_event`): `risk_last_events` e `fraud_last_events` emitem a MESMA chave (filial_label, data ISO real, turno_label, operador_label/operador_caixa_label/responsavel_label, frentista_label, categoria, motivo, score, impacto). Nada de `id_comprovante` (evento modelado nao e 1 documento) — usa `documento_label` (caixa/turno/filial). `_antifraude_event_labels` deriva categoria+motivo do `event_type`+`reasons.rule` (PT-BR, nunca jargao).
+- **Armadilha corrigida**: `risk_last_events` lia a tabela pobre `risk_recent_events_rt` (sem data, sem turno, sem nome de operador) -> tela mostrava "Operador sem cadastro", "Turno sem cadastro", "quando -". `risk_by_turn_local` fazia `id_usuario AS id_turno` (usuario NAO e turno) -> "Turno sem cadastro" + "canal nao informado". Ambas agora leem `mart_antifraude_eventos` e agrupam pelo **id_turno real** (`GROUP BY id_filial, id_turno`), trazendo o operador mais associado ao turno (`argMax(nome_operador)`).
+- **Sentinela de turno**: `id_turno IN (0,1)` e o DEFAULT de origem quando o turno nao foi vinculado (a "Turno 1" sozinha junta 85 eventos em 25 dias / 11 aberturas; todo turno real = 1 dia / 1 abertura). Tratado como **nao resolvido**: `_build_antifraude_event` rotula "Turno sem cadastro" (sem inventar "Turno 1") e `risk_by_turn_local` usa `id_turno > 1` para a concentracao por turno nao ser dominada por um balde sentinela. Esses eventos continuam na fila de revisao e nos KPIs.
+- **Sem canal**: a fonte NAO tem canal/local confiavel; o bloco "Concentracao por turno e operador" mostra o responsavel operacional, nunca um "canal nao informado" inventado.
+- **Copy padrao da casa**: fallback humano usa "sem cadastro" / "Sem frentista associado" (gate `apps/web/app/lib/ui-copy-quality.test.mjs` PROIBE "nao identificado"). Strings de fallback do backend tambem seguem isso, pois fluem direto para a tela.
+- **Tela**: `apps/web/app/fraud/page.tsx` (`modeledEvents = risk_last_events`): fila de revisao "Destaques para localizar no ERP" (prioridade/quando/filial/documento/categoria/operador/frentista/turno/valor/score/motivo) + "Concentracao por turno e operador". Tabelas com scroll interno; cards estreitos usam `.tableScroll--compact` (sem `min-width: 680px`).
+- **Prova (2026-06-04)**: `mart_antifraude_eventos` empresa 1 = 6581 linhas, max data_key 20260604, 15 filiais, 3236 turnos, 0 turno-zero, 0 operador vazio. `risk_last_events` retorna data=2026-06-04T18:00:00, filial="AUTO POSTO VR 04 LTDA", turno="Turno 34292", operador="TAINA M", motivo="Comprovante cancelado na origem...", todos sentinelas zero (data_null/turno_sem/op_sem/nao_ident=0). `risk_by_turn_local` retorna turnos reais (id_turno>1) com operador_top, sem chave `canal`.
 
 ## 6. Mapa das marts ClickHouse
 

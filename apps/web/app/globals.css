@@ -2037,3 +2037,78 @@ body.product-shell .container {
     font-size: 16px;
   }
 }
+
+/* =====================================================================
+   Premium global scrollbars (TorqMind)
+   WebKit/Chromium + Firefox. Discreet rail, copper-tinted thumb that
+   gets more visible on hover. Never fully hidden (accessibility), never
+   thick. Applies everywhere; utility containers below inherit it.
+   ===================================================================== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(184, 115, 51, 0.45) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(184, 115, 51, 0.65);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* Containers that scroll get a slightly stronger copper accent. */
+.tableScroll,
+.scrollArea,
+.productBranchChecklist,
+.pricingTabs,
+.histScroll {
+  scrollbar-color: rgba(184, 115, 51, 0.5) transparent;
+}
+.tableScroll::-webkit-scrollbar-thumb,
+.scrollArea::-webkit-scrollbar-thumb,
+.productBranchChecklist::-webkit-scrollbar-thumb,
+.pricingTabs::-webkit-scrollbar-thumb,
+.histScroll::-webkit-scrollbar-thumb {
+  background: rgba(184, 115, 51, 0.42);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.tableScroll::-webkit-scrollbar-thumb:hover,
+.scrollArea::-webkit-scrollbar-thumb:hover,
+.productBranchChecklist::-webkit-scrollbar-thumb:hover,
+.pricingTabs::-webkit-scrollbar-thumb:hover,
+.histScroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(184, 115, 51, 0.78);
+}
+
+/* =====================================================================
+   Anti horizontal-scroll: never let the page itself scroll sideways.
+   Wide tables keep their own internal .tableScroll. Narrow cards opt
+   into .tableScroll--compact to avoid the 680px min-width forcing
+   overflow inside small (col-3/col-4) cards.
+   ===================================================================== */
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+.tableScroll--compact .table {
+  min-width: 0;
+}
+.scrollArea {
+  overflow: auto;
+}
+

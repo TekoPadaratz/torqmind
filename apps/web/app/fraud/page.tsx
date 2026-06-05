@@ -58,12 +58,22 @@ function riskCategoryLabel(eventType: string) {
 }
 
 function riskGridReference(event: any) {
+  if (event?.documento_label) return event.documento_label;
   if (event?.id_comprovante) return `Documento ${event.id_comprovante}`;
   if (event?.id_movprodutos) return `Movimento ${event.id_movprodutos}`;
   const turnoLabel = formatTurnoLabel(event?.id_turno, event?.turno_label);
   if (turnoLabel && turnoLabel !== "Turno sem cadastro")
     return turnoLabel.startsWith("Turno ") ? turnoLabel : `Turno ${turnoLabel}`;
   return "Sem referência operacional";
+}
+
+function scoreLevelLabel(level: string) {
+  const normalized = String(level || "").toUpperCase();
+  if (normalized === "CRITICAL") return { label: "Crítico", color: "var(--color-negative)" };
+  if (normalized === "HIGH") return { label: "Alto", color: "var(--color-warning)" };
+  if (normalized === "MEDIUM" || normalized === "MEDIO") return { label: "Médio", color: "var(--color-info)" };
+  if (normalized === "LOW" || normalized === "BAIXO") return { label: "Baixo", color: "#94a3b8" };
+  return { label: normalized || "—", color: "#94a3b8" };
 }
 
 export default function FraudPage() {
@@ -196,18 +206,24 @@ export default function FraudPage() {
   );
   const highlightRows = useMemo(
     () =>
-      modeledEvents.slice(0, 12).map((row: any) => ({
+      modeledEvents.slice(0, 20).map((row: any) => ({
         id: `${row.id || row.id_comprovante || row.id_movprodutos}`,
+        prioridade: scoreLevelLabel(row.score_level),
+        score: Number(row.score ?? row.score_risco ?? 0),
         categoria: riskCategoryLabel(row.event_type),
         referencia: riskGridReference(row),
+        filial:
+          row.filial_label || formatFilialLabel(row.id_filial, row.filial_nome),
+        turno: formatTurnoLabel(row.id_turno, row.turno_label),
         operador:
+          row.operador_label ||
           row.operador_caixa_label ||
           row.responsavel_label ||
           "Operador sem cadastro",
-        frentista: row.funcionario_label || "Sem frentista associado",
-        valor: row.impacto_estimado,
+        frentista: row.frentista_label || row.funcionario_label || "Sem frentista associado",
+        valor: row.impacto_estimado ?? row.valor,
         data: row.data,
-        motivo: row.reason_summary || "Evento destacado pelo motor de risco.",
+        motivo: row.motivo || row.reason_summary || "Evento destacado pelo motor de risco.",
       })),
     [modeledEvents],
   );
@@ -629,7 +645,8 @@ export default function FraudPage() {
                       {topModeledEvent.event_label}
                     </div>
                     <div className="muted" style={{ marginTop: 6 }}>
-                      {topModeledEvent.operador_caixa_label ||
+                      {topModeledEvent.operador_label ||
+                        topModeledEvent.operador_caixa_label ||
                         topModeledEvent.responsavel_label ||
                         "Responsável sem cadastro"}{" "}
                       · {formatDateTime(topModeledEvent.data)}
@@ -878,16 +895,18 @@ export default function FraudPage() {
                     <tbody>
                       {cancelationRows.map((row: any) => (
                         <tr key={row.id}>
-                          <td>{formatDateTime(row.data)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(row.data)}</td>
                           <td>{riskCategoryLabel(row.event_type)}</td>
                           <td>
-                            {row.operador_caixa_label ||
+                            {row.operador_label ||
+                              row.operador_caixa_label ||
                               row.responsavel_label ||
                               "Operador sem cadastro"}
                           </td>
-                          <td>{formatCurrency(row.impacto_estimado)}</td>
-                          <td>
-                            {row.reason_summary ||
+                          <td style={{ textAlign: "right" }}>{formatCurrency(row.impacto_estimado)}</td>
+                          <td style={{ minWidth: 200 }}>
+                            {row.motivo ||
+                              row.reason_summary ||
                               "Evento destacado para revisão."}
                           </td>
                         </tr>
@@ -919,17 +938,18 @@ export default function FraudPage() {
                     <tbody>
                       {suspiciousOperationRows.map((row: any) => (
                         <tr key={row.id}>
-                          <td>{formatDateTime(row.data)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(row.data)}</td>
                           <td>{riskCategoryLabel(row.event_type)}</td>
                           <td>
-                            {row.operador_caixa_label ||
+                            {row.operador_label ||
+                              row.operador_caixa_label ||
                               row.responsavel_label ||
                               "Operador sem cadastro"}
                           </td>
                           <td>
-                            {row.funcionario_label || "Sem frentista associado"}
+                            {row.frentista_label || row.funcionario_label || "Sem frentista associado"}
                           </td>
-                          <td>{formatCurrency(row.impacto_estimado)}</td>
+                          <td style={{ textAlign: "right" }}>{formatCurrency(row.impacto_estimado)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -987,14 +1007,15 @@ export default function FraudPage() {
                     detail="O período não trouxe evento de pagamento acima do limiar de atenção."
                   />
                 ) : null}
-                <div className="tableScroll">
+                {paymentsRiskRows.length ? (
+                <div className="tableScroll tableScroll--compact">
                   <table className="table compact">
                     <thead>
                       <tr>
                         <th>Data</th>
                         <th>Turno</th>
                         <th>Evento</th>
-                        <th>Score</th>
+                        <th style={{ textAlign: "right" }}>Score</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1002,22 +1023,29 @@ export default function FraudPage() {
                         .slice(0, 8)
                         .map((e: any, idx: number) => (
                           <tr key={`${e.insight_id || e.event_type}-${idx}`}>
-                            <td>{formatDateKey(e.data_key)}</td>
-                            <td>{formatTurnoLabel(e.id_turno, e.turno_label)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatDateKey(e.data_key)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatTurnoLabel(e.id_turno, e.turno_label)}</td>
                             <td>{e.event_label || e.event_type}</td>
-                            <td>{Number(e.score || 0)}</td>
+                            <td style={{ textAlign: "right" }}>{Number(e.score || 0)}</td>
                           </tr>
                         ))}
                     </tbody>
                   </table>
                 </div>
+                ) : null}
               </div>
 
               <div className="card col-12">
-                <h2>Concentração por turno e canal</h2>
+                <h2>Concentração por turno e operador</h2>
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  Turnos reais com maior impacto estimado no período e o operador
+                  mais associado a cada turno. Não há canal/local confiável na
+                  fonte, então mostramos o responsável operacional. Eventos sem
+                  turno resolvido aparecem na fila de revisão abaixo.
+                </div>
                 {!loading && !(data?.risk_by_turn_local || []).length ? (
                   <EmptyState
-                    title="Sem concentração por turno e canal."
+                    title="Sem concentração por turno."
                     detail="Nenhum agrupamento material apareceu no período selecionado."
                   />
                 ) : null}
@@ -1027,28 +1055,28 @@ export default function FraudPage() {
                       <tr>
                         <th>Filial</th>
                         <th>Turno</th>
-                        <th>Canal</th>
-                        <th>Eventos</th>
-                        <th>Alto risco</th>
-                        <th>Impacto</th>
-                        <th>Score médio</th>
+                        <th>Operador</th>
+                        <th style={{ textAlign: "right" }}>Eventos</th>
+                        <th style={{ textAlign: "right" }}>Alto risco</th>
+                        <th style={{ textAlign: "right" }}>Impacto</th>
+                        <th style={{ textAlign: "right" }}>Score médio</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(data?.risk_by_turn_local || [])
                         .slice(0, 10)
                         .map((r: any, idx: number) => (
-                          <tr key={`${r.id_turno}-${r.id_local_venda}-${idx}`}>
+                          <tr key={`${r.id_filial}-${r.id_turno}-${idx}`}>
                             <td>
                               {r.filial_label ||
                                 formatFilialLabel(r.id_filial, r.filial_nome)}
                             </td>
-                            <td>{formatTurnoLabel(r.id_turno, r.turno_label)}</td>
-                            <td>{r.local_label || "Canal não informado"}</td>
-                            <td>{r.eventos}</td>
-                            <td>{r.alto_risco}</td>
-                            <td>{formatCurrency(r.impacto_estimado)}</td>
-                            <td>{Number(r.score_medio || 0).toFixed(1)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatTurnoLabel(r.id_turno, r.turno_label)}</td>
+                            <td>{r.operador_label || "Operador sem cadastro"}</td>
+                            <td style={{ textAlign: "right" }}>{r.eventos}</td>
+                            <td style={{ textAlign: "right" }}>{r.alto_risco}</td>
+                            <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(r.impacto_estimado)}</td>
+                            <td style={{ textAlign: "right" }}>{Number(r.score_medio || 0).toFixed(1)}</td>
                           </tr>
                         ))}
                     </tbody>
@@ -1077,25 +1105,44 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
+                        <th>Prioridade</th>
+                        <th>Quando</th>
+                        <th>Filial</th>
+                        <th>Documento</th>
                         <th>Categoria</th>
-                        <th>Referência</th>
                         <th>Operador</th>
                         <th>Frentista</th>
-                        <th>Valor</th>
-                        <th>Quando</th>
+                        <th>Turno</th>
+                        <th style={{ textAlign: "right" }}>Valor</th>
+                        <th style={{ textAlign: "right" }}>Score</th>
                         <th>Motivo</th>
                       </tr>
                     </thead>
                     <tbody>
                       {highlightRows.map((row: any) => (
                         <tr key={row.id}>
+                          <td>
+                            <span
+                              className="pill"
+                              style={{
+                                background: "color-mix(in srgb, " + row.prioridade.color + " 16%, transparent)",
+                                color: row.prioridade.color,
+                                fontWeight: 600,
+                              }}
+                            >
+                              {row.prioridade.label}
+                            </span>
+                          </td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(row.data)}</td>
+                          <td>{row.filial}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{row.referencia}</td>
                           <td>{row.categoria}</td>
-                          <td>{row.referencia}</td>
                           <td>{row.operador}</td>
                           <td>{row.frentista}</td>
-                          <td>{formatCurrency(row.valor)}</td>
-                          <td>{formatDateTime(row.data)}</td>
-                          <td>{row.motivo}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{row.turno}</td>
+                          <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(row.valor)}</td>
+                          <td style={{ textAlign: "right" }}>{row.score}</td>
+                          <td style={{ minWidth: 220 }}>{row.motivo}</td>
                         </tr>
                       ))}
                     </tbody>
