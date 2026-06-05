@@ -66,6 +66,12 @@ export default function LoginPage() {
         setMfaCode("");
         return;
       }
+      // Enforced enrollment: account requires 2FA but has not configured it yet.
+      if (res.data?.mfa_setup_required && res.data?.mfa_setup_token) {
+        sessionStorage.setItem("torqmind.mfa_setup", res.data.mfa_setup_token as string);
+        window.location.href = "/security?setup=1";
+        return;
+      }
       finishLogin(res.data);
     } catch (err: any) {
       setError(extractApiError(err, "Falha no login"));

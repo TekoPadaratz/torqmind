@@ -30,7 +30,7 @@ def login(body: LoginRequest):
     # Two-factor: if the user has TOTP enabled, do NOT issue a final token yet.
     # Return a short-lived challenge; the client completes via /auth/mfa/verify.
     from app import repos_mfa
-    from app.routes_mfa import issue_mfa_challenge_token
+    from app.routes_mfa import issue_mfa_challenge_token, issue_mfa_setup_token
 
     mfa_state = repos_mfa.get_mfa_state(session["sub"]) or {}
     if mfa_state.get("totp_enabled"):
@@ -38,6 +38,15 @@ def login(body: LoginRequest):
             session["sub"], session.get("id_empresa"), session.get("id_filial")
         )
         return LoginResponse(mfa_required=True, mfa_challenge_token=challenge)
+
+    # Enforced enrollment: account requires 2FA but has not configured it yet.
+    # Issue a setup-scoped token so the client can complete the mandatory
+    # enrollment before receiving a full session.
+    if mfa_state.get("totp_required"):
+        setup_token = issue_mfa_setup_token(
+            session["sub"], session.get("id_empresa"), session.get("id_filial")
+        )
+        return LoginResponse(mfa_setup_required=True, mfa_setup_token=setup_token)
 
     payload = {
         "sub": session["sub"],

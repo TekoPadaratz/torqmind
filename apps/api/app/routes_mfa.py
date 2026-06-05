@@ -20,12 +20,12 @@ import logging
 import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app import repos_auth, repos_mfa
 from app.config import settings
-from app.deps import get_current_claims
+from app.deps import _resolve_session, get_current_claims
 from app.security import create_access_token, decode_token
 from app.totp import (
     decrypt_secret,
@@ -35,6 +35,7 @@ from app.totp import (
     hash_recovery_code,
     is_totp_configured,
     provisioning_uri,
+    qr_svg_data_uri,
     verify_code,
 )
 
@@ -77,6 +78,51 @@ def issue_mfa_challenge_token(user_id: str, id_empresa: Optional[int], id_filial
         "id_filial": id_filial,
     }
     return create_access_token(payload, minutes=settings.mfa_challenge_ttl_minutes)
+
+
+def issue_mfa_setup_token(user_id: str, id_empresa: Optional[int], id_filial: Optional[int]) -> str:
+    """Short-lived token for FORCED 2FA setup (totp_required, not yet enabled).
+
+    Authorizes only the setup endpoints (start/confirm); ``mfa_pending=True`` so
+    it is rejected as a normal bearer everywhere else.
+    """
+    payload = {
+        "sub": user_id,
+        "scope": "mfa_setup",
+        "mfa_pending": True,
+        "id_empresa": id_empresa,
+        "id_filial": id_filial,
+    }
+    return create_access_token(payload, minutes=settings.mfa_challenge_ttl_minutes)
+
+
+def setup_claims(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
+    """Authorize 2FA setup via either a full session OR an mfa_setup token.
+
+    The mfa_setup path lets a ``totp_required`` user complete the mandatory
+    enrollment right after the password step, without a full session.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail={"error": "missing_bearer", "message": "Missing bearer token"})
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
+    if payload.get("scope") == "mfa_setup":
+        uid = str(payload.get("sub") or "").strip()
+        if not uid:
+            raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
+        return {
+            "sub": uid,
+            "email": payload.get("email"),
+            "id_empresa": payload.get("id_empresa"),
+            "id_filial": payload.get("id_filial"),
+            "mode": "setup",
+        }
+    session = _resolve_session(authorization)
+    session["mode"] = "session"
+    return session
 
 
 def _issue_session_token(user_id: str, id_empresa: Optional[int], id_filial: Optional[int]) -> dict[str, Any]:
@@ -163,7 +209,7 @@ def mfa_verify(body: MfaVerifyRequest):
 # ── Setup (authenticated) ────────────────────────────────────
 
 @router.post("/setup/start")
-def mfa_setup_start(claims=Depends(get_current_claims)):
+def mfa_setup_start(claims=Depends(setup_claims)):
     """Generate a new secret and return otpauth URI for QR provisioning."""
     if not is_totp_configured():
         raise HTTPException(status_code=503, detail={"error": "mfa_unavailable", "message": "2FA indisponível: chave de criptografia não configurada."})
@@ -171,9 +217,11 @@ def mfa_setup_start(claims=Depends(get_current_claims)):
     account = claims.get("email") or claims.get("user_role") or user_id
     secret = generate_secret()
     repos_mfa.stage_secret(user_id, encrypt_secret(secret))
+    otpauth = provisioning_uri(secret, str(account))
     return {
         "secret": secret,
-        "otpauth_uri": provisioning_uri(secret, str(account)),
+        "otpauth_uri": otpauth,
+        "qr_svg": qr_svg_data_uri(otpauth),
         "issuer": settings.totp_issuer,
         "account": account,
     }
@@ -184,8 +232,12 @@ class MfaConfirmRequest(BaseModel):
 
 
 @router.post("/setup/confirm")
-def mfa_setup_confirm(body: MfaConfirmRequest, claims=Depends(get_current_claims)):
-    """Validate the first code, enable 2FA, and return one-time recovery codes."""
+def mfa_setup_confirm(body: MfaConfirmRequest, claims=Depends(setup_claims)):
+    """Validate the first code, enable 2FA, and return one-time recovery codes.
+
+    When invoked through a forced-setup token (``totp_required``), also returns a
+    full access token so the user lands logged in right after enrollment.
+    """
     user_id = claims["sub"]
     enc = repos_mfa.get_encrypted_secret(user_id, require_enabled=False)
     if not enc:
@@ -200,7 +252,14 @@ def mfa_setup_confirm(body: MfaConfirmRequest, claims=Depends(get_current_claims
     repos_mfa.enable_after_confirm(user_id)
     codes = generate_recovery_codes()
     repos_mfa.replace_recovery_codes(user_id, [hash_recovery_code(c) for c in codes])
-    return {"ok": True, "totp_enabled": True, "recovery_codes": codes}
+    result: dict[str, Any] = {"ok": True, "totp_enabled": True, "recovery_codes": codes}
+    if claims.get("mode") == "setup":
+        # Forced enrollment just completed → issue the final session token.
+        try:
+            result["login"] = _issue_session_token(user_id, claims.get("id_empresa"), claims.get("id_filial"))
+        except repos_auth.AuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
+    return result
 
 
 class MfaDisableRequest(BaseModel):

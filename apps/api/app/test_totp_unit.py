@@ -97,3 +97,14 @@ def test_secret_never_equals_encrypted(monkeypatch):
     enc = totp.encrypt_secret(secret)
     # Encrypted token must not leak the plaintext secret substring.
     assert secret not in enc
+
+
+def test_qr_svg_data_uri_renders():
+    secret = totp.generate_secret()
+    uri = totp.provisioning_uri(secret, "user@example.com")
+    data_uri = totp.qr_svg_data_uri(uri)
+    assert data_uri is not None
+    assert data_uri.startswith("data:image/svg+xml;base64,")
+    # The base64 payload must be non-trivial (a real SVG).
+    assert len(data_uri) > 200
+

@@ -487,6 +487,9 @@ export default function AppNav({
                         <Link className="btn" href="/settings">
                           Configurações
                         </Link>
+                        <Link className="btn" href="/security">
+                          Minha Segurança
+                        </Link>
             <button className="btn" onClick={onLogout} aria-label="Sair da conta">
               Sair
             </button>

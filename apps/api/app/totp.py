@@ -115,6 +115,31 @@ def provisioning_uri(secret_b32: str, account_label: str, issuer: str | None = N
     return f"otpauth://totp/{label}?{params}"
 
 
+def qr_svg_data_uri(otpauth_uri: str) -> str | None:
+    """Render the otpauth URI as an SVG QR code data URI (server-side, no leak).
+
+    Returns a ``data:image/svg+xml;base64,...`` string the frontend can drop into
+    an ``<img>``. Returns ``None`` if QR rendering is unavailable so the caller
+    can still fall back to the manual key.
+    """
+    try:
+        import base64
+        import io
+
+        import qrcode
+        import qrcode.image.svg
+
+        img = qrcode.make(otpauth_uri, image_factory=qrcode.image.svg.SvgPathImage)
+        buf = io.BytesIO()
+        img.save(buf)
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/svg+xml;base64,{encoded}"
+    except Exception:  # noqa: BLE001 — QR is a convenience; manual key always works
+        logger.warning("QR rendering unavailable; falling back to manual key")
+        return None
+
+
+
 # ── One-time recovery codes ──────────────────────────────────
 
 def generate_recovery_codes(count: int = 8) -> list[str]:

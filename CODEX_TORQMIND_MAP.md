@@ -276,7 +276,7 @@ Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 - **Fonte canonica**: comprovantes + itens + formas de pagamento (Xpert). Grao por `(id_empresa, id_filial, referencia)` ANTES de agregar por forma. Aberto/elegivel pela mesma regra de vendas (commercial_eligible, NFE status fora 4/5, cancelados fora).
 - **Mart**: `torqmind_mart_rt.payments_by_type_rt` (CDC, `mart_builder._refresh_payments_by_type_stg`). Dedup de **troca de forma de pagamento**: quando a forma e corrigida na origem, a linha antiga NAO vem `is_deleted` e o ReplacingMergeTree mantem as duas (chave inclui `tipo_forma`), inflando (tipicamente DINHEIRO). Fix: remover duplicatas **apenas em referencias com pago > venda** (`ref_pago > venda+0.01 AND dup_rank>1`), preservando splits legitimos (ex.: R$50 dinheiro + R$50 cartao numa venda de R$100).
 - **Conciliacao na API** (`repos_mart_realtime._reconcile_payment_mix`): `cash_overview` e `payments_overview` retornam `total_vendas`, `total_pagamentos_conciliado`, `diferenca_conciliacao`, e o `payment_mix` recebe uma linha **explicita** "Nao conciliado (operacional)" (`category=reconciliation`) quando ha gap residual (fiado/prazo nao registrado, fantasma de troca remanescente, arredondamento) — assim `sum(payment_mix) == total_vendas`, sem esconder nem jogar em forma errada.
-- **Frontend** (`cash/page.tsx`): card "Recebimentos" mostra "Nao conciliado: X" quando |dif|>0.01.
+- **Frontend** (`cash/page.tsx`): card "Recebimentos" mostra "Nao conciliado: X" quando |dif|>0.01. **Financeiro** (`finance/page.tsx`): bloco separado "Concilia\u00e7\u00e3o das formas de pagamento" (Total de vendas / Conciliado em formas / Diferen\u00e7a operacional + status conciliado/revisar); o donut filtra positivos mas a diferen\u00e7a aparece nesse bloco \u2014 nunca escondida. Distingue "formas de pagamento das vendas" de "recebimentos financeiros".
 - **Prova (2026-06-04, filial 14122)**: dia 0604 vendas=pagamentos=134.791,72 (dif 0). Mai-jun: vendas 6.029.219,42, formas 6.039.516,75, dif -10.297,33. Ano: vendas 26.693.000,20, formas 26.677.317,61, dif +15.682,59. `sum(mix)==vendas` em todos.
 
 ## 6. Mapa das marts ClickHouse
@@ -855,10 +855,11 @@ TOTP (RFC 6238) gratuito/offline, compatível com Google/Microsoft Authenticator
 ### Backend
 - `app/totp.py`: algoritmo TOTP em **stdlib** (`hmac`/`hashlib`/`struct`), sem pyotp. Segredo cifrado em repouso com **Fernet** (`cryptography`) via `TOTP_ENCRYPTION_KEY`. `generate_secret`, `encrypt/decrypt_secret`, `verify_code` (janela de tolerância, comparação constante), `provisioning_uri`, `generate_recovery_codes`/`hash_recovery_code`. Nunca loga segredo/código.
 - `app/repos_mfa.py`: estado 2FA em `auth.users` (sem expor segredo). `stage_secret`, `enable_after_confirm`, `mark_used`, `disable`, `set_required`, `admin_reset`, recovery codes (`replace`/`consume`).
-- `app/routes_mfa.py` (`/auth/mfa/*`): `setup/start` (otpauth+secret), `setup/confirm` (valida 1º código → habilita → 8 recovery codes), `verify` (troca challenge+código por access token), `disable`, `status`. Limite de tentativas in-process + TTL do desafio.
-- `routes_auth.login`: se `totp_enabled`, retorna `mfa_required=true` + `mfa_challenge_token` curto (sem access token). `deps._resolve_session` rejeita challenge tokens (`scope=mfa_challenge`).
+- `app/routes_mfa.py` (`/auth/mfa/*`): `setup/start` (otpauth + `secret` + `qr_svg` SVG data-uri gerado server-side), `setup/confirm` (valida 1º código → habilita → 8 recovery codes; em fluxo forçado retorna `login.access_token`), `verify` (troca challenge+código por access token), `disable`, `status`. `setup_claims` autoriza setup por sessão normal OU por `mfa_setup` token. Limite de tentativas in-process + TTL do desafio.
+- `routes_auth.login`: se `totp_enabled`, retorna `mfa_required=true` + `mfa_challenge_token` (sem access token). Se `totp_required=true` mas não configurado, retorna `mfa_setup_required=true` + `mfa_setup_token` (força enrollment). `deps._resolve_session` rejeita ambos (`scope=mfa_challenge`/`mfa_setup`, `mfa_pending`).
 - `change-password` e `reset-password`: exigem `totp_code` (TOTP ou recovery) quando o usuário tem 2FA — link de reset vazado **não** burla 2FA.
-- Admin reset: `POST /platform/users/{id}/mfa-reset` (`repos_platform.admin_reset_mfa`, reusa visibilidade de plataforma).
+- Admin: `POST /platform/users/{id}/mfa-reset` (`admin_reset_mfa`) e `POST /platform/users/{id}/mfa-require` (`admin_set_mfa_required`), reusam visibilidade de plataforma. `list_users` expõe `totp_enabled`/`totp_required`/`mfa_reset_required`.
+- QR: `totp.qr_svg_data_uri()` (dep `qrcode`, SVG sem Pillow, fallback para chave manual).
 
 ### Schema (migration 091, aditiva/idempotente)
 - `auth.users`: `totp_enabled`, `totp_secret_encrypted`, `totp_confirmed_at`, `totp_required`, `totp_last_used_at`, `mfa_reset_required`.
@@ -868,12 +869,20 @@ TOTP (RFC 6238) gratuito/offline, compatível com Google/Microsoft Authenticator
 - `TOTP_ENCRYPTION_KEY` (Fernet base64; **segredo**, só em `/etc/torqmind/prod.app.env` mode 600, nunca commitado; sem ela 2FA fica indisponível — setup retorna 503). `TOTP_ISSUER`, `TOTP_VALID_WINDOW`, `MFA_CHALLENGE_TTL_MINUTES`, `MFA_MAX_ATTEMPTS`.
 
 ### Frontend
-- `page.tsx` (login): 2º passo de código quando `mfa_required`.
+- `security/page.tsx` (**Minha Segurança**, rota `/security`, link no `AppNav`): status (ativo/desativado/obrigatório/reset), ativar com **QR Code + chave manual**, confirmar com código de 6 dígitos, **recovery codes exibidos uma única vez**, desativar com código. Suporta enrollment forçado via `?setup=1` + token em `sessionStorage` (`torqmind.mfa_setup`).
+- `page.tsx` (login): 2º passo de código quando `mfa_required`; redireciona para `/security?setup=1` quando `mfa_setup_required`.
 - `reset-password/page.tsx`: campo de código quando `validate` retorna `mfa_required`.
-- `platform/users/page.tsx`: botão "Resetar 2FA" ao editar usuário.
+- `platform/users/page.tsx`: botões "Resetar 2FA" e "Exigir/Não exigir 2FA" ao editar usuário.
+- Linguagem: "Aplicativo autenticador", "Google Authenticator, Microsoft Authenticator ou app compatível", "Código de 6 dígitos" (nunca "Google obrigatório").
+
+### Fluxo `totp_required` (enrollment forçado)
+- `totp_required=true` + `totp_enabled=false`: login emite `mfa_setup_token` (escopo `mfa_setup`), frontend vai para `/security?setup=1`, usuário configura, `setup/confirm` retorna o token de sessão pleno. Não quebra login de quem tem `totp_required=false`. Admin liga/desliga via `mfa-require`.
 
 ### SMTP / domínio (decisão)
-- **NÃO usar `@torqmind.com`** até o domínio estar comprado e com SPF/DKIM/DMARC. `SMTP_FROM`/`SMTP_FROM_EMAIL` padrão vazio; `_resolve_sender()` alerta no log se cair em torqmind.com. Usar provedor transacional (ex.: Brevo) com remetente de domínio próprio.
+- **NÃO usar `@torqmind.com`** até o domínio estar comprado e com SPF/DKIM/DMARC. `SMTP_FROM`/`SMTP_FROM_EMAIL` padrão vazio; `_resolve_sender()` (prefere `SMTP_FROM_EMAIL`) alerta no log se cair em torqmind.com. Usar provedor transacional (ex.: Brevo) com remetente de domínio próprio. Exemplos atualizados em `.env.production.example` e `deploy/env/prod.app.env.example`.
+
+### Roadmap oficial de próximos passos
+- Arquivo oficial: `docs/product/TORQMIND_PROXIMOS_PASSOS.md` (blindagem atual, 2FA, comissão, exportação PDF/Excel, saúde de dados, estoque, tanques/bicos/aferção, LMC, conciliação de cartões, preço concorrente, alertas, gestão de lucro, priorização por fase). Detalhe dor-a-dor em `docs/product/ROADMAP_DORES_POSTO.md`.
 
 ## Roadmap de Produto / Dores a Resolver — 2026-06-03
 

@@ -5,10 +5,19 @@ Tudo é dirigido por variáveis de ambiente (ver app.config). Se o SMTP não
 estiver configurado, o envio é ignorado de forma segura (retorna False e loga),
 sem quebrar o fluxo de recuperação de senha — útil em dev/homolog.
 
-Para ir ao ar, basta configurar um provedor SMTP. Sugestão gratuita e fácil:
+Para ir ao ar, basta configurar um provedor SMTP transacional confiável.
+Sugestão gratuita e fácil:
   - Brevo (ex-Sendinblue): 300 e-mails/dia grátis. SMTP host smtp-relay.brevo.com,
     porta 587 (STARTTLS), usuário/senha do painel.
   - Mailtrap / Resend (SMTP) também funcionam.
+
+IMPORTANTE sobre o remetente:
+  - NÃO use um remetente em um domínio que você não controla (ex.: @torqmind.com
+    enquanto o domínio não estiver comprado/configurado). Mensagens de domínio
+    não controlado falham deliverability e podem ser marcadas como spam/spoof.
+  - Antes de usar um domínio próprio, configure SPF, DKIM e DMARC no DNS.
+  - Use o nome real do código: `SMTP_FROM_EMAIL` (preferencial) ou `SMTP_FROM`.
+
 Defina no .env (ou /etc/torqmind/prod.app.env):
   SMTP_ENABLED=true
   SMTP_HOST=smtp-relay.brevo.com
@@ -16,7 +25,7 @@ Defina no .env (ou /etc/torqmind/prod.app.env):
   SMTP_USER=<login_smtp>
   SMTP_PASSWORD=<senha_smtp>
   SMTP_USE_TLS=true
-  SMTP_FROM=master@torqmind.com
+  SMTP_FROM_EMAIL=nao-responda@dominio-controlado.com.br
   SMTP_FROM_NAME=TorqMind
 
 EN: Env-driven SMTP sender. Safe no-op when unconfigured.

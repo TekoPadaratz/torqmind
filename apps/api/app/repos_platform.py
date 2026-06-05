@@ -267,6 +267,9 @@ def _load_user_rows() -> list[dict[str, Any]]:
               u.locked_until,
               u.created_at,
               u.updated_at,
+              u.totp_enabled,
+              u.totp_required,
+              u.mfa_reset_required,
               n.telegram_chat_id,
               n.telegram_username,
               n.telegram_enabled,
@@ -352,6 +355,24 @@ def admin_reset_mfa(claims: dict[str, Any], user_id: str) -> dict[str, Any]:
         raise AuthError(403, "platform_forbidden", "Usuário fora do seu escopo.")
     repos_mfa.admin_reset(user_id)
     return {"ok": True, "user_id": user_id, "totp_enabled": False, "mfa_reset_required": True}
+
+
+def admin_set_mfa_required(claims: dict[str, Any], user_id: str, required: bool) -> dict[str, Any]:
+    """Admin action: require (or stop requiring) 2FA for a user.
+
+    When required and the user has not enrolled, the next login forces setup.
+    """
+    from app import repos_mfa
+
+    _require_platform_operations(claims)
+    accesses = _load_user_access_rows([user_id])
+    target = repos_mfa.get_mfa_state(user_id)
+    if not target:
+        raise AuthError(404, "user_not_found", "Usuário não encontrado.")
+    if not _user_visible_to_platform(claims, target, accesses):
+        raise AuthError(403, "platform_forbidden", "Usuário fora do seu escopo.")
+    repos_mfa.set_required(user_id, bool(required))
+    return {"ok": True, "user_id": user_id, "totp_required": bool(required)}
 
 
 def _group_user_accesses(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

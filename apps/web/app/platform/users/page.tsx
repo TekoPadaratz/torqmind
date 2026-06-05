@@ -324,6 +324,20 @@ export default function PlatformUsersPage() {
     }
   }
 
+  async function requireUserMfa(required: boolean) {
+    if (!editingUserId) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.post(`/platform/users/${editingUserId}/mfa-require`, { required });
+      await load(me);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail?.message || 'Falha ao atualizar exigência de 2FA.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveContacts(event: FormEvent) {
     event.preventDefault();
     if (!contactForm.user_id) return;
@@ -553,6 +567,24 @@ export default function PlatformUsersPage() {
                 >
                   Resetar 2FA
                 </button>
+              ) : null}
+              {editingUserId ? (
+                (() => {
+                  const eu = items.find((u) => u.id === editingUserId);
+                  const isRequired = !!eu?.totp_required;
+                  return (
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={saving}
+                      onClick={() => requireUserMfa(!isRequired)}
+                      style={{ background: 'transparent', border: '1px solid var(--border)' }}
+                      title={isRequired ? 'Deixar de exigir 2FA para este usuário.' : 'Exigir 2FA: o usuário será obrigado a configurar no próximo acesso.'}
+                    >
+                      {isRequired ? 'Não exigir 2FA' : 'Exigir 2FA'}
+                    </button>
+                  );
+                })()
               ) : null}
             </div>
           </form>

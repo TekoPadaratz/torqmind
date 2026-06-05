@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from app.deps import get_current_claims
 from app import repos_auth, repos_platform
@@ -143,6 +144,19 @@ def users_mfa_reset(user_id: str, claims=Depends(get_current_claims)):
     """Admin reset of a user's 2FA (TOTP). Forces reconfiguration on next setup."""
     try:
         return repos_platform.admin_reset_mfa(claims, user_id)
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
+class MfaRequireRequest(BaseModel):
+    required: bool
+
+
+@router.post("/users/{user_id}/mfa-require")
+def users_mfa_require(user_id: str, body: MfaRequireRequest, claims=Depends(get_current_claims)):
+    """Admin: require (or stop requiring) 2FA for a user. Forces setup at next login."""
+    try:
+        return repos_platform.admin_set_mfa_required(claims, user_id, body.required)
     except repos_platform.AuthError as exc:
         _raise(exc)
 

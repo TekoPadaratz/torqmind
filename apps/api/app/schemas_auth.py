@@ -45,3 +45,6 @@ class LoginResponse(BaseModel):
     # a short-lived challenge instead of a final access token.
     mfa_required: bool = False
     mfa_challenge_token: Optional[str] = None
+    # Enforced enrollment: account requires 2FA but has not configured it yet.
+    mfa_setup_required: bool = False
+    mfa_setup_token: Optional[str] = None

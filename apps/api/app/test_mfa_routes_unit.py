@@ -85,6 +85,38 @@ def test_login_normal_when_totp_disabled(client, monkeypatch):
     assert body["access_token"]
 
 
+def test_login_forces_setup_when_required_not_enrolled(client, monkeypatch):
+    from app import repos_auth, repos_mfa
+
+    session = {
+        "sub": "55555555-5555-5555-5555-555555555555",
+        "email": "r@example.com",
+        "user_role": "tenant_admin",
+        "role": "tenant_admin",
+        "id_empresa": 1,
+        "id_filial": None,
+        "home_path": "/dashboard",
+    }
+    monkeypatch.setattr(repos_auth, "verify_login", lambda *a, **k: dict(session))
+    monkeypatch.setattr(repos_mfa, "get_mfa_state", lambda uid: {"totp_enabled": False, "totp_required": True})
+
+    resp = client.post("/auth/login", json={"identifier": "r@example.com", "password": "x"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mfa_setup_required"] is True
+    assert body["mfa_setup_token"]
+    assert body.get("access_token") is None  # no session until enrolled
+
+
+def test_setup_token_cannot_be_used_as_normal_bearer(client, monkeypatch):
+    from app.routes_mfa import issue_mfa_setup_token
+
+    token = issue_mfa_setup_token("66666666-6666-6666-6666-666666666666", 1, None)
+    # A normal authenticated endpoint must reject the setup-scoped token.
+    resp = client.get("/auth/mfa/status", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
 def test_full_mfa_verify_issues_token(client, key, monkeypatch):
     from app import repos_auth, repos_mfa
     from app.routes_mfa import issue_mfa_challenge_token
