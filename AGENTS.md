@@ -53,6 +53,7 @@ Nunca:
 - Turno operacional exibido é `stg_turnos.payload.TURNO` (1..N; `0` = caixa geral). Nunca exibir `id_turno`/`ID_TURNOS` técnico (ex.: `34292`) como número de turno; ele serve só para join/rastreabilidade. Sem número operacional resolvido, usar fallback honesto (`Turno não resolvido`).
 - Documento operacional da venda é o comprovante: preferir `NROCOMPROVANTE`, fallback `id_comprovante`. Nunca montar documento como `Turno + Filial`, nunca usar nota fiscal como referência principal da venda, nunca voltar a `MOVPRODUTOS`.
 - Em telas de risco/fraude, dado sem responsável/turno/documento deve ser investigado na fonte/mart antes de criar fallback visual; grid vazio em área nobre vira empty state compacto.
+- Contas a receber: `DATAREPL` NÃO reflete pagamento/baixa direta de `CONTASRECEBER` (DTAPGTO/VLRPAGO mudam sem mexer em DATAREPL). A janela de revisita do agent deve reler títulos abertos E recém-pagos (últimos ~120d por DTAPGTO). Nunca declarar PASS em inadimplência/contas a receber sem validar o cliente/título no Xpert (fonte→tela). Bug de inadimplência não se corrige no frontend — corrige a sincronização STG→DW→mart.
 
 ## Controle de acesso
 

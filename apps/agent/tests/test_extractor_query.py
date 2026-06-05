@@ -154,6 +154,31 @@ class TestExtractorQuery(unittest.TestCase):
         self.assertEqual(plan.query_mode, "param")
         self.assertEqual(len(plan.params), 1)
 
+    def test_contasreceber_revisit_recaptures_recently_paid_titles(self):
+        # Direct payment regression: a title PAID in CONTASRECEBER (DTAPGTO set)
+        # with DATAREPL stuck at the sentinel and a poisoned watermark must still
+        # be re-read. The revisit clause has to cover BOTH still-open titles and
+        # recently-paid ones, otherwise paid titles freeze as "open" in STG.
+        from agent.config import DEFAULT_DATASETS
+
+        cr = DEFAULT_DATASETS["contasreceber"]
+        cfg = self._cfg()
+        cfg.datasets["contasreceber"] = {**cr, "enabled": True}
+        ex = SQLServerExtractor(cfg, _DummyLogger())
+        plan = ex._build_query_plan(
+            dataset="contasreceber",
+            watermark_dt=datetime(2026, 6, 1, 0, 0, 0),
+            dt_from=None,
+            dt_to=None,
+            watermark_type_detected="datetime",
+            watermark_style=None,
+        )
+        # still-open titles (existing safety net)
+        self.assertIn("DTAPGTO IS NULL AND CAST(DTACONTA AS date) >=", plan.sql)
+        # recently-paid titles (the fix) — no table alias prefix on columns
+        self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
+        self.assertNotIn("c.DTAPGTO", plan.sql)
+
 
 if __name__ == "__main__":
     unittest.main()

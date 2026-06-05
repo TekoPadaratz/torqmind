@@ -333,7 +333,18 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # revisit_open_clause roda no WHERE externo (SELECT * FROM (base) AS src),
         # onde o alias `c` da query base nao existe. As colunas vem de `c.*`, entao
         # devem ser referenciadas SEM prefixo (senao "multi-part identifier could not be bound").
-        "revisit_open_clause": "DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)",
+        #
+        # IMPORTANTE (pagamento direto): quando um titulo e PAGO direto na
+        # CONTASRECEBER (DTAPGTO/VLRPAGO preenchidos) o ERP NAO atualiza DATAREPL
+        # (fica no sentinela 1900-01-01) e o watermark composto pode estar
+        # envenenado por linha suja (data futura), entao o incremental nao captura
+        # a baixa. A rede de seguranca precisa reler tanto os titulos AINDA ABERTOS
+        # quanto os RECEM-PAGOS (ultimos 120 dias por DTAPGTO), senao o titulo pago
+        # congela como aberto no STG -> DW -> mart de inadimplencia.
+        "revisit_open_clause": (
+            "(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)) "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
+        ),
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "

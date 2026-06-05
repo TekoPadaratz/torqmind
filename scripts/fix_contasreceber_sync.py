@@ -1,42 +1,116 @@
 #!/usr/bin/env python3
-"""
-Fix contasreceber sync: re-extracts all CONTASRECEBER from Xpert SQL Server
-and updates STG + DW + Mart in PostgreSQL.
+"""Reconcile CONTASRECEBER / CONTASRECEBERBAIXA between Xpert and TorqMind.
 
-Root cause: The Agent bootstrap on 2026-05-22 captured DATAREPL=1900-01-01 titles
-but DTAPGTO/VLRPAGO were NULL at that time. When clients paid in Xpert,
-the incremental sync didn't capture the updates because DATAREPL didn't change.
+Root cause this heals
+---------------------
+A title PAID directly in ``CONTASRECEBER`` (DTAPGTO/VLRPAGO set on the row) does
+NOT bump ``DATAREPL`` in the ERP, and the agent's composite watermark for
+``contasreceber`` can be poisoned to a future date by a dirty row. The agent's
+incremental therefore misses the payment, and its ``revisit_open_clause`` only
+re-reads STILL-OPEN titles (``DTAPGTO IS NULL``). So once a title is paid it
+freezes as "open" in ``stg.contasreceber`` -> ``dw.fact_financeiro`` keeps
+``data_pagamento IS NULL`` -> the delinquency mart shows it as overdue.
+
+The canonical fix is in the agent (``apps/agent/agent/config.py`` revisit clause
+now also re-reads recently-paid titles). This script is the server-side
+reconciliation / safety net that heals already-stale data and can run on the App
+VM (which can reach the Xpert SQL Server) on a schedule.
+
+What it does (idempotent, hot-window, NOT a full table scan)
+------------------------------------------------------------
+1. Pulls from Xpert only the titles that are OPEN or RECENTLY PAID (last
+   ``--paid-days`` days by DTAPGTO), plus recent baixas.
+2. Upserts ``stg.contasreceber`` / ``stg.contasreceberbaixa`` by PK, bumping
+   ``received_at`` ONLY when the payment fields actually changed (minimal churn).
+3. Calls the CANONICAL ETL functions ``etl.load_fact_financeiro`` and
+   ``etl.refresh_customer_delinquency_summary`` (no TRUNCATE, no inline mart SQL).
+
+Security
+--------
+No hardcoded credentials. SQL Server comes from ``SQLSERVER_*`` env vars (or
+``--sqlserver-env-file``, e.g. ``config/source-explorer.env``); PostgreSQL from
+``POSTGRES_*`` / ``PG_*`` env vars (e.g. ``/etc/torqmind/prod.app.env``).
+
+Usage
+-----
+    set -a; source /etc/torqmind/prod.app.env; set +a
+    python scripts/fix_contasreceber_sync.py \
+        --sqlserver-env-file config/source-explorer.env --id-empresa 1
+    # preview only:
+    python scripts/fix_contasreceber_sync.py ... --dry-run
 """
-import sys
-import pymssql
-import psycopg2
-import psycopg2.extras
+from __future__ import annotations
+
+import argparse
 import json
-from datetime import datetime, date, timezone
+import logging
+import os
+import sys
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Any
 
-# Connection configs
-MSSQL_CONFIG = {
-    "server": "172.30.0.12",
-    "port": 1433,
-    "user": "sa",
-    "password": "XPT2000",
-    "database": "ATXDADOS",
-}
-
-PG_CONFIG = {
-    "host": "172.30.0.8",
-    "port": 5432,
-    "dbname": "torqmind",
-    "user": "torqmind",
-    "password": "ox6C7HxOsRqrwueJ8J3VoxsoBYKEDSx5lZP5j8rH4o",
-}
-
-ID_EMPRESA = 1
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger("reconcile_contasreceber")
 
 
-def json_serial(obj):
-    """JSON serializer for objects not serializable by default."""
+# --------------------------------------------------------------------------- #
+# Config from environment (NO hardcoded secrets)
+# --------------------------------------------------------------------------- #
+def _load_env_file(path: str) -> None:
+    """Load KEY=VALUE pairs from a file into os.environ (setdefault)."""
+    if not path or not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            os.environ.setdefault(key, val)
+
+
+def _mssql_config() -> dict[str, Any]:
+    host = os.getenv("SQLSERVER_HOST", "")
+    user = os.getenv("SQLSERVER_USER", "")
+    password = os.getenv("SQLSERVER_PASSWORD", "")
+    database = os.getenv("SQLSERVER_DATABASE", "")
+    if not (host and user and database):
+        log.error(
+            "Missing SQL Server env (SQLSERVER_HOST/USER/PASSWORD/DATABASE). "
+            "Pass --sqlserver-env-file config/source-explorer.env or export them."
+        )
+        sys.exit(2)
+    return {
+        "server": host,
+        "port": int(os.getenv("SQLSERVER_PORT", "1433")),
+        "user": user,
+        "password": password,
+        "database": database,
+        "timeout": int(os.getenv("SQLSERVER_TIMEOUT_SECONDS", "30")),
+        "login_timeout": int(os.getenv("SQLSERVER_TIMEOUT_SECONDS", "30")),
+    }
+
+
+def _pg_dsn() -> dict[str, Any]:
+    host = os.getenv("PG_HOST") or os.getenv("POSTGRES_HOST", "")
+    if not host:
+        log.error("Missing PG_HOST/POSTGRES_HOST env (source /etc/torqmind/prod.app.env).")
+        sys.exit(2)
+    return {
+        "host": host,
+        "port": int(os.getenv("PG_PORT") or os.getenv("POSTGRES_PORT", "5432")),
+        "dbname": os.getenv("PG_DATABASE") or os.getenv("POSTGRES_DB", "torqmind"),
+        "user": os.getenv("PG_USER") or os.getenv("POSTGRES_USER", "torqmind"),
+        "password": os.getenv("PG_PASSWORD") or os.getenv("POSTGRES_PASSWORD", ""),
+    }
+
+
+def _json_default(obj: Any) -> Any:
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     if isinstance(obj, Decimal):
@@ -46,270 +120,215 @@ def json_serial(obj):
     raise TypeError(f"Type {type(obj)} not serializable")
 
 
-def extract_from_xpert():
-    """Extract all CONTASRECEBER from Xpert SQL Server."""
-    print("[1/5] Connecting to Xpert SQL Server...")
-    conn = pymssql.connect(**MSSQL_CONFIG)
-    cur = conn.cursor(as_dict=True)
+# --------------------------------------------------------------------------- #
+# Xpert extract (hot window only)
+# --------------------------------------------------------------------------- #
+def _mssql_connect(cfg: dict[str, Any]):
+    import pymssql
 
-    print("[1/5] Extracting CONTASRECEBER...")
-    cur.execute("SELECT c.* FROM dbo.CONTASRECEBER c")
-    rows = cur.fetchall()
-    print(f"  Extracted {len(rows)} rows from CONTASRECEBER")
+    return pymssql.connect(
+        server=cfg["server"],
+        port=cfg["port"],
+        user=cfg["user"],
+        password=cfg["password"],
+        database=cfg["database"],
+        timeout=cfg["timeout"],
+        login_timeout=cfg["login_timeout"],
+    )
 
-    conn.close()
+
+def extract_contasreceber(cfg: dict[str, Any], paid_days: int) -> list[dict[str, Any]]:
+    """Open titles + titles paid in the last ``paid_days`` days."""
+    sql = (
+        "SELECT c.* FROM dbo.CONTASRECEBER c "
+        "WHERE c.DTAPGTO IS NULL "
+        "   OR CAST(c.DTAPGTO AS date) >= CAST(DATEADD(day, %d, GETDATE()) AS date)"
+        % (-abs(paid_days),)
+    )
+    conn = _mssql_connect(cfg)
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute(sql)
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    log.info("Xpert CONTASRECEBER hot-window rows: %d", len(rows))
     return rows
 
 
-def extract_baixas_from_xpert():
-    """Extract all CONTASRECEBERBAIXA from Xpert."""
-    print("[1.5/5] Extracting CONTASRECEBERBAIXA...")
-    conn = pymssql.connect(**MSSQL_CONFIG)
-    cur = conn.cursor(as_dict=True)
-    cur.execute("SELECT c.* FROM dbo.CONTASRECEBERBAIXA c")
-    rows = cur.fetchall()
-    print(f"  Extracted {len(rows)} rows from CONTASRECEBERBAIXA")
-    conn.close()
+def extract_baixas(cfg: dict[str, Any], paid_days: int) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT c.* FROM dbo.CONTASRECEBERBAIXA c "
+        "WHERE CAST(c.DATABAIXA AS date) >= CAST(DATEADD(day, %d, GETDATE()) AS date)"
+        % (-abs(paid_days),)
+    )
+    conn = _mssql_connect(cfg)
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute(sql)
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    log.info("Xpert CONTASRECEBERBAIXA hot-window rows: %d", len(rows))
     return rows
 
 
-def upsert_stg(pg_conn, rows, table_name, id_col):
-    """Upsert rows into stg table using ON CONFLICT on PK (id_empresa, id_filial, id_db, id_xxx)."""
-    print(f"[2/5] Upserting {len(rows)} rows into stg.{table_name}...")
-    cur = pg_conn.cursor()
+# --------------------------------------------------------------------------- #
+# STG upsert (only bump received_at when payment fields changed)
+# --------------------------------------------------------------------------- #
+def upsert_stg(
+    pg,
+    rows: list[dict[str, Any]],
+    table: str,
+    id_col: str,
+    id_empresa: int,
+    change_keys: tuple[str, ...],
+    dt_evento_key: str,
+    dry_run: bool,
+) -> int:
+    if not rows:
+        return 0
+    import psycopg2.extras
 
     now = datetime.now(timezone.utc)
-    batch_size = 1000
-    upserted = 0
+    values = []
+    for row in rows:
+        id_filial = int(row["ID_FILIAL"])
+        id_db = int(row.get("ID_DB") or id_filial)
+        id_record = int(row[id_col.upper()])
+        dt_evento = row.get(dt_evento_key)
+        payload = json.dumps(row, default=_json_default)
+        values.append((id_empresa, id_filial, id_db, id_record, payload, now, now, dt_evento))
 
-    for i in range(0, len(rows), batch_size):
-        batch = rows[i:i + batch_size]
-        values = []
-        for row in batch:
-            id_filial = row["ID_FILIAL"]
-            id_db = row.get("ID_DB", id_filial)
-            id_record = row[id_col]
-            payload = json.dumps(row, default=json_serial)
-            values.append((ID_EMPRESA, id_filial, id_db, id_record, payload, now))
-
+    # Only update (and bump received_at) when a payment-relevant field changed,
+    # so the DW loader (received_at > watermark) reprocesses ONLY healed titles.
+    change_pred = " OR ".join(
+        f"(stg.{table}.payload->>'{k}') IS DISTINCT FROM (EXCLUDED.payload->>'{k}')"
+        for k in change_keys
+    )
+    sql = f"""
+        INSERT INTO stg.{table}
+            (id_empresa, id_filial, id_db, id_{table}, payload, ingested_at, received_at, dt_evento)
+        VALUES %s
+        ON CONFLICT (id_empresa, id_filial, id_db, id_{table})
+        DO UPDATE SET
+            payload = EXCLUDED.payload,
+            ingested_at = EXCLUDED.ingested_at,
+            received_at = EXCLUDED.received_at,
+            dt_evento = EXCLUDED.dt_evento
+        WHERE {change_pred}
+    """
+    cur = pg.cursor()
+    if dry_run:
+        # Count how many would actually change (INSERT or payment-field UPDATE).
+        cur.execute(
+            f"CREATE TEMP TABLE _recon_{table} "
+            f"(id_empresa int, id_filial int, id_db int, id_{table} int, payload jsonb) ON COMMIT DROP"
+        )
         psycopg2.extras.execute_values(
             cur,
-            f"""INSERT INTO stg.{table_name}
-                (id_empresa, id_filial, id_db, id_{table_name}, payload, ingested_at)
-                VALUES %s
-                ON CONFLICT (id_empresa, id_filial, id_db, id_{table_name})
-                DO UPDATE SET
-                    payload = EXCLUDED.payload,
-                    ingested_at = EXCLUDED.ingested_at
-            """,
-            values,
-            template="(%s, %s, %s, %s, %s::jsonb, %s)",
-            page_size=batch_size
+            f"INSERT INTO _recon_{table} VALUES %s",
+            [(v[0], v[1], v[2], v[3], v[4]) for v in values],
+            template="(%s,%s,%s,%s,%s::jsonb)",
+            page_size=1000,
         )
-        upserted += len(batch)
-        if upserted % 10000 == 0:
-            print(f"  ... {upserted}/{len(rows)}")
-
-    pg_conn.commit()
-    print(f"  Upserted {upserted} rows into stg.{table_name}")
-    return upserted
-
-
-def rebuild_dw_fact_financeiro(pg_conn):
-    """Rebuild dw.fact_financeiro from STG."""
-    print("[3/5] Rebuilding dw.fact_financeiro...")
-    cur = pg_conn.cursor()
-
-    # Truncate and rebuild
-    cur.execute("TRUNCATE TABLE dw.fact_financeiro;")
-
-    # Insert from contasreceber (tipo_titulo=1)
-    cur.execute("""
-        INSERT INTO dw.fact_financeiro (
-            id_empresa, id_filial, id_db, tipo_titulo, id_titulo, id_entidade,
-            data_emissao, data_key_emissao, vencimento, data_key_venc,
-            data_pagamento, data_key_pgto, valor, valor_pago, payload,
-            created_at, updated_at
+        diff_pred = " OR ".join(
+            f"(s.payload->>'{k}') IS DISTINCT FROM (t.payload->>'{k}')" for k in change_keys
         )
-        SELECT
-            id_empresa,
-            id_filial,
-            COALESCE((payload->>'ID_DB')::int, id_filial) as id_db,
-            1 as tipo_titulo,
-            id_contasreceber as id_titulo,
-            (payload->>'ID_ENTIDADE')::int as id_entidade,
-            CASE WHEN payload->>'DTACONTA' IS NOT NULL AND payload->>'DTACONTA' != ''
-                 THEN (payload->>'DTACONTA')::timestamp::date END as data_emissao,
-            CASE WHEN payload->>'DTACONTA' IS NOT NULL AND payload->>'DTACONTA' != ''
-                 THEN TO_CHAR((payload->>'DTACONTA')::timestamp::date, 'YYYYMMDD')::int END as data_key_emissao,
-            CASE WHEN payload->>'DTAVCTO' IS NOT NULL AND payload->>'DTAVCTO' != ''
-                 THEN (payload->>'DTAVCTO')::timestamp::date END as vencimento,
-            CASE WHEN payload->>'DTAVCTO' IS NOT NULL AND payload->>'DTAVCTO' != ''
-                 THEN TO_CHAR((payload->>'DTAVCTO')::timestamp::date, 'YYYYMMDD')::int END as data_key_venc,
-            CASE WHEN payload->>'DTAPGTO' IS NOT NULL AND payload->>'DTAPGTO' != ''
-                 AND (payload->>'DTAPGTO')::timestamp::date > '1900-01-01'
-                 THEN (payload->>'DTAPGTO')::timestamp::date END as data_pagamento,
-            CASE WHEN payload->>'DTAPGTO' IS NOT NULL AND payload->>'DTAPGTO' != ''
-                 AND (payload->>'DTAPGTO')::timestamp::date > '1900-01-01'
-                 THEN TO_CHAR((payload->>'DTAPGTO')::timestamp::date, 'YYYYMMDD')::int END as data_key_pgto,
-            COALESCE((payload->>'VALOR')::numeric, 0) as valor,
-            COALESCE((payload->>'VLRPAGO')::numeric, 0) as valor_pago,
-            payload,
-            ingested_at as created_at,
-            NOW() as updated_at
-        FROM stg.contasreceber
-        WHERE id_empresa = 1;
-    """)
-    cnt = cur.rowcount
-    print(f"  Inserted {cnt} rows into dw.fact_financeiro from contasreceber")
-
-    pg_conn.commit()
-    return cnt
-
-
-def rebuild_mart_delinquency(pg_conn):
-    """Rebuild mart.customer_delinquency_summary."""
-    print("[4/5] Rebuilding mart.customer_delinquency_summary...")
-    cur = pg_conn.cursor()
-
-    cur.execute("TRUNCATE TABLE mart.customer_delinquency_summary;")
-
-    cur.execute("""
-        INSERT INTO mart.customer_delinquency_summary (
-            id_empresa, id_filial, id_cliente, cliente_nome,
-            titulos_ate_30d, valor_ate_30d,
-            titulos_acima_30d, valor_acima_30d,
-            titulos_a_vencer, valor_a_vencer,
-            max_dias_atraso, valor_total_vencido,
-            dt_ref, updated_at
+        cur.execute(
+            f"""
+            SELECT count(*) FROM _recon_{table} t
+            LEFT JOIN stg.{table} s
+              ON s.id_empresa=t.id_empresa AND s.id_filial=t.id_filial
+             AND s.id_db=t.id_db AND s.id_{table}=t.id_{table}
+            WHERE s.id_{table} IS NULL OR ({diff_pred})
+            """
         )
-        SELECT
-            f.id_empresa,
-            f.id_filial,
-            f.id_entidade as id_cliente,
-            COALESCE(
-                (SELECT e.payload->>'FANTASIA' FROM stg.entidades e
-                 WHERE e.id_empresa = f.id_empresa AND e.id_entidade = f.id_entidade LIMIT 1),
-                (SELECT e.payload->>'NOME' FROM stg.entidades e
-                 WHERE e.id_empresa = f.id_empresa AND e.id_entidade = f.id_entidade LIMIT 1),
-                'Cliente ' || f.id_entidade
-            ) as cliente_nome,
-            COUNT(*) FILTER (WHERE f.vencimento < CURRENT_DATE AND (CURRENT_DATE - f.vencimento) <= 30) as titulos_ate_30d,
-            COALESCE(SUM(f.valor - COALESCE(f.valor_pago, 0)) FILTER (WHERE f.vencimento < CURRENT_DATE AND (CURRENT_DATE - f.vencimento) <= 30), 0) as valor_ate_30d,
-            COUNT(*) FILTER (WHERE f.vencimento < CURRENT_DATE AND (CURRENT_DATE - f.vencimento) > 30) as titulos_acima_30d,
-            COALESCE(SUM(f.valor - COALESCE(f.valor_pago, 0)) FILTER (WHERE f.vencimento < CURRENT_DATE AND (CURRENT_DATE - f.vencimento) > 30), 0) as valor_acima_30d,
-            COUNT(*) FILTER (WHERE f.vencimento >= CURRENT_DATE) as titulos_a_vencer,
-            COALESCE(SUM(f.valor - COALESCE(f.valor_pago, 0)) FILTER (WHERE f.vencimento >= CURRENT_DATE), 0) as valor_a_vencer,
-            COALESCE(MAX(CURRENT_DATE - f.vencimento) FILTER (WHERE f.vencimento < CURRENT_DATE), 0) as max_dias_atraso,
-            COALESCE(SUM(f.valor - COALESCE(f.valor_pago, 0)) FILTER (WHERE f.vencimento < CURRENT_DATE), 0) as valor_total_vencido,
-            CURRENT_DATE as dt_ref,
-            NOW() as updated_at
-        FROM dw.fact_financeiro f
-        WHERE f.id_empresa = 1
-          AND f.tipo_titulo = 1
-          AND f.data_pagamento IS NULL
-          AND (f.valor - COALESCE(f.valor_pago, 0)) > 0.01
-        GROUP BY f.id_empresa, f.id_filial, f.id_entidade;
-    """)
-    cnt = cur.rowcount
-    print(f"  Inserted {cnt} rows into mart.customer_delinquency_summary")
+        n = int(cur.fetchone()[0])
+        pg.rollback()
+        log.info("[dry-run] stg.%s would change %d/%d rows", table, n, len(rows))
+        return n
 
-    pg_conn.commit()
-    return cnt
+    psycopg2.extras.execute_values(
+        cur,
+        sql,
+        values,
+        template="(%s,%s,%s,%s,%s::jsonb,%s,%s,%s)",
+        page_size=1000,
+    )
+    changed = cur.rowcount
+    pg.commit()
+    log.info("stg.%s upserted; %d rows changed (received_at bumped)", table, changed)
+    return changed
 
 
-def update_watermark(pg_conn):
-    """Create/update watermark for contasreceber dataset."""
-    print("[5/5] Updating watermark...")
-    cur = pg_conn.cursor()
-    now = datetime.now(timezone.utc)
+# --------------------------------------------------------------------------- #
+# Canonical DW + mart refresh
+# --------------------------------------------------------------------------- #
+def refresh_dw_and_mart(pg, id_empresa: int) -> None:
+    cur = pg.cursor()
+    cur.execute("SELECT etl.load_fact_financeiro(%s) AS rows", (id_empresa,))
+    dw_rows = cur.fetchone()[0]
+    pg.commit()
+    log.info("etl.load_fact_financeiro(%s) -> %s rows", id_empresa, dw_rows)
 
-    cur.execute("""
-        INSERT INTO etl.watermark (id_empresa, dataset, last_ingested_at, updated_at, last_ts)
-        VALUES (%s, 'contasreceber', %s, %s, %s)
-        ON CONFLICT (id_empresa, dataset)
-        DO UPDATE SET last_ingested_at = EXCLUDED.last_ingested_at,
-                      updated_at = EXCLUDED.updated_at,
-                      last_ts = EXCLUDED.last_ts;
-    """, (ID_EMPRESA, now, now, now))
-
-    cur.execute("""
-        INSERT INTO etl.watermark (id_empresa, dataset, last_ingested_at, updated_at, last_ts)
-        VALUES (%s, 'contasreceberbaixa', %s, %s, %s)
-        ON CONFLICT (id_empresa, dataset)
-        DO UPDATE SET last_ingested_at = EXCLUDED.last_ingested_at,
-                      updated_at = EXCLUDED.updated_at,
-                      last_ts = EXCLUDED.last_ts;
-    """, (ID_EMPRESA, now, now, now))
-
-    pg_conn.commit()
-    print("  Watermark updated for contasreceber and contasreceberbaixa")
+    cur.execute("SELECT etl.refresh_customer_delinquency_summary(%s) AS rows", (id_empresa,))
+    mart_rows = cur.fetchone()[0]
+    pg.commit()
+    log.info("etl.refresh_customer_delinquency_summary(%s) -> %s rows", id_empresa, mart_rows)
 
 
-def verify_results(pg_conn):
-    """Verify the fix by comparing with Xpert."""
-    print("\n=== VERIFICATION ===")
-    cur = pg_conn.cursor()
+# --------------------------------------------------------------------------- #
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Reconcile CONTASRECEBER Xpert->TorqMind (hot window).")
+    ap.add_argument("--id-empresa", type=int, default=int(os.getenv("RECON_ID_EMPRESA", "1")))
+    ap.add_argument("--paid-days", type=int, default=120, help="Re-read titles paid in the last N days.")
+    ap.add_argument("--sqlserver-env-file", default=None, help="Optional KEY=VALUE file with SQLSERVER_* vars.")
+    ap.add_argument("--dry-run", action="store_true", help="Preview changes; do not write.")
+    ap.add_argument("--no-refresh", action="store_true", help="Skip DW/mart refresh.")
+    args = ap.parse_args()
 
-    # Check entity 7383
-    cur.execute("""
-        SELECT
-            COUNT(*) as total,
-            COUNT(*) FILTER (WHERE data_pagamento IS NULL AND (valor - COALESCE(valor_pago, 0)) > 0.01) as abertos,
-            COALESCE(SUM(valor - COALESCE(valor_pago, 0)) FILTER (
-                WHERE data_pagamento IS NULL AND (valor - COALESCE(valor_pago, 0)) > 0.01 AND vencimento < CURRENT_DATE
-            ), 0) as vencido,
-            COALESCE(SUM(valor - COALESCE(valor_pago, 0)) FILTER (
-                WHERE data_pagamento IS NULL AND (valor - COALESCE(valor_pago, 0)) > 0.01 AND vencimento >= CURRENT_DATE
-            ), 0) as a_vencer
-        FROM dw.fact_financeiro
-        WHERE id_empresa=1 AND id_filial=14122 AND id_entidade=7383 AND tipo_titulo=1
-    """)
-    row = cur.fetchone()
-    print(f"\nEntidade 7383 (Transporte E.A.E):")
-    print(f"  Total títulos: {row[0]}")
-    print(f"  Abertos com saldo: {row[1]}")
-    print(f"  VENCIDO: R$ {row[2]:,.2f}")
-    print(f"  A VENCER: R$ {row[3]:,.2f}")
+    if args.sqlserver_env_file:
+        _load_env_file(args.sqlserver_env_file)
 
-    # Compare with Xpert (known values)
-    print(f"\n  Xpert real (SQL Server direto): Vencido=R$ 953,772.35, A vencer=R$ 24,846.16")
-    print(f"  Diferença vencido: R$ {row[2] - Decimal('953772.35'):,.2f}")
-    print(f"  Diferença a_vencer: R$ {row[3] - Decimal('24846.16'):,.2f}")
+    import psycopg2
 
+    mssql = _mssql_config()
+    pg_dsn = _pg_dsn()
 
-def main():
-    print("=" * 60)
-    print("FIX CONTASRECEBER SYNC")
-    print("=" * 60)
-    print(f"Started at: {datetime.now()}")
+    log.info("=== Reconcile CONTASRECEBER (id_empresa=%s, paid_days=%s, dry_run=%s) ===",
+             args.id_empresa, args.paid_days, args.dry_run)
 
-    # Extract from Xpert
-    rows = extract_from_xpert()
-    baixas = extract_baixas_from_xpert()
+    cr_rows = extract_contasreceber(mssql, args.paid_days)
+    bx_rows = extract_baixas(mssql, args.paid_days)
 
-    # Connect to PostgreSQL
-    pg_conn = psycopg2.connect(**PG_CONFIG)
+    pg = psycopg2.connect(**pg_dsn)
+    try:
+        cr_changed = upsert_stg(
+            pg, cr_rows, "contasreceber", "id_contasreceber", args.id_empresa,
+            change_keys=("DTAPGTO", "VLRPAGO"), dt_evento_key="DTACONTA", dry_run=args.dry_run,
+        )
+        bx_changed = upsert_stg(
+            pg, bx_rows, "contasreceberbaixa", "id_contasreceberbaixa", args.id_empresa,
+            change_keys=("VALORBAIXA", "DATABAIXA"), dt_evento_key="DATABAIXA", dry_run=args.dry_run,
+        )
 
-    # Upsert into STG
-    upsert_stg(pg_conn, rows, "contasreceber", "ID_CONTASRECEBER")
-    upsert_stg(pg_conn, baixas, "contasreceberbaixa", "ID_CONTASRECEBERBAIXA")
+        if args.dry_run:
+            log.info("[dry-run] DONE. contasreceber=%d contasreceberbaixa=%d would change.",
+                     cr_changed, bx_changed)
+            return
 
-    # Rebuild DW
-    rebuild_dw_fact_financeiro(pg_conn)
+        if not args.no_refresh and (cr_changed or bx_changed):
+            refresh_dw_and_mart(pg, args.id_empresa)
+        elif args.no_refresh:
+            log.info("Skipping DW/mart refresh (--no-refresh).")
+        else:
+            log.info("Nothing changed; skipping DW/mart refresh.")
+    finally:
+        pg.close()
 
-    # Rebuild Mart
-    rebuild_mart_delinquency(pg_conn)
-
-    # Update watermark
-    update_watermark(pg_conn)
-
-    # Verify
-    verify_results(pg_conn)
-
-    pg_conn.close()
-    print(f"\nCompleted at: {datetime.now()}")
-    print("=" * 60)
+    log.info("=== DONE. contasreceber changed=%d, contasreceberbaixa changed=%d ===",
+             cr_changed, bx_changed)
 
 
 if __name__ == "__main__":
