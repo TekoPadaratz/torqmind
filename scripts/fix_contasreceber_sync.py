@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -173,6 +174,104 @@ def extract_baixas(cfg: dict[str, Any], paid_days: int) -> list[dict[str, Any]]:
     return rows
 
 
+def _fetch_titles_by_keys(cfg: dict[str, Any], keys: set[tuple[int, int]]) -> list[dict[str, Any]]:
+    """Batch-fetch CONTASRECEBER rows by (ID_DB, ID_CONTASRECEBER) — the true
+    unique key (ID_CONTASRECEBER is numbered per ID_DB)."""
+    if not keys:
+        return []
+    rows: list[dict[str, Any]] = []
+    conn = _mssql_connect(cfg)
+    try:
+        cur = conn.cursor(as_dict=True)
+        klist = list(keys)
+        for i in range(0, len(klist), 400):
+            chunk = klist[i:i + 400]
+            ors = " OR ".join(
+                f"(c.ID_DB={int(db)} AND c.ID_CONTASRECEBER={int(idc)})" for db, idc in chunk
+            )
+            cur.execute(f"SELECT c.* FROM dbo.CONTASRECEBER c WHERE {ors}")
+            rows.extend(cur.fetchall())
+    finally:
+        conn.close()
+    return rows
+
+
+def _key_db_idc(row: dict[str, Any]) -> tuple[int, int]:
+    db = row.get("ID_DB")
+    if db is None:
+        db = row.get("ID_FILIAL")
+    return (int(db), int(row["ID_CONTASRECEBER"]))
+
+
+def close_phantoms(pg, cfg: dict[str, Any], cr_rows: list[dict[str, Any]], id_empresa: int, dry_run: bool) -> tuple[int, int]:
+    """Close STG-open titles that are no longer OPEN in Xpert (the deletion side
+    a pure UPSERT misses).
+
+    A title can disappear from "open" in Xpert by being (a) paid longer ago than
+    the reconcile window, or (b) deleted/renumbered. The reconcile already pulls
+    the COMPLETE current open set (``DTAPGTO IS NULL`` has no date filter), so any
+    STG-open title whose (ID_DB, ID_CONTASRECEBER) is absent from it is stale. We
+    re-fetch those exact titles from Xpert and:
+      * upsert whatever Xpert returns (paid stragglers, truthful real data); and
+      * tombstone the rest (deleted/renumbered) with a ``TORQMIND_RECONCILED_ABSENT``
+        payload marker so the delinquency mart excludes them (migration 094).
+    Returns (reupserted, tombstoned).
+    """
+    xpert_open = {_key_db_idc(r) for r in cr_rows if r.get("DTAPGTO") is None}
+
+    cur = pg.cursor()
+    cur.execute(
+        """
+        SELECT id_filial, id_db, id_contasreceber
+        FROM stg.contasreceber
+        WHERE id_empresa = %s
+          AND NOT (payload ? 'TORQMIND_RECONCILED_ABSENT')
+          AND (payload->>'DTAPGTO' IS NULL OR payload->>'DTAPGTO' = '')
+        """,
+        (id_empresa,),
+    )
+    stg_open = cur.fetchall()
+    phantoms = [(f, db, idc) for (f, db, idc) in stg_open if (int(db), int(idc)) not in xpert_open]
+    if not phantoms:
+        log.info("phantom closure: 0 phantoms (all STG-open titles still open in Xpert).")
+        return 0, 0
+
+    keys = {(int(db), int(idc)) for (_f, db, idc) in phantoms}
+    found = _fetch_titles_by_keys(cfg, keys)
+    found_keys = {_key_db_idc(r) for r in found}
+    deleted = [(f, db, idc) for (f, db, idc) in phantoms if (int(db), int(idc)) not in found_keys]
+
+    if dry_run:
+        log.info("[dry-run] phantom closure: %d STG-open not open in Xpert -> %d re-upsert (paid), %d tombstone (deleted).",
+                 len(phantoms), len(found), len(deleted))
+        return len(found), len(deleted)
+
+    reupserted = 0
+    if found:
+        reupserted = upsert_stg(
+            pg, found, "contasreceber", "id_contasreceber", id_empresa,
+            change_keys=("DTAPGTO", "VLRPAGO"), dt_evento_key="DTACONTA", dry_run=False,
+        )
+
+    if deleted:
+        now = datetime.now(timezone.utc)
+        for (f, db, idc) in deleted:
+            cur.execute(
+                """
+                UPDATE stg.contasreceber
+                SET payload = jsonb_set(payload, '{TORQMIND_RECONCILED_ABSENT}', to_jsonb(%s::text), true),
+                    received_at = %s
+                WHERE id_empresa = %s AND id_filial = %s AND id_db = %s AND id_contasreceber = %s
+                """,
+                (now.isoformat(), now, id_empresa, f, db, idc),
+            )
+        pg.commit()
+
+    log.info("phantom closure: %d phantoms -> %d re-upserted (paid stragglers), %d tombstoned (deleted).",
+             len(phantoms), reupserted, len(deleted))
+    return reupserted, len(deleted)
+
+
 # --------------------------------------------------------------------------- #
 # STG upsert (only bump received_at when payment fields changed)
 # --------------------------------------------------------------------------- #
@@ -267,15 +366,71 @@ def upsert_stg(
 # --------------------------------------------------------------------------- #
 def refresh_dw_and_mart(pg, id_empresa: int) -> None:
     cur = pg.cursor()
+    # Force a full re-scan of the finance STG for THIS transaction only. The
+    # shared 'financeiro' watermark is advanced by the */2 ETL orchestrator,
+    # which races us: a healed/tombstoned title written just now can have
+    # received_at <= watermark by the time we load, so an incremental load would
+    # skip it. force_full_scan re-reads every stg.contasreceber row (upsert is
+    # still guarded by "payload IS DISTINCT", so only changed titles are
+    # rewritten). SET LOCAL must share the transaction with the load, so we do
+    # NOT commit between them. (psycopg2 with autocommit off already holds an
+    # open transaction here.)
+    cur.execute("SET LOCAL etl.force_full_scan = 'true'")
     cur.execute("SELECT etl.load_fact_financeiro(%s) AS rows", (id_empresa,))
     dw_rows = cur.fetchone()[0]
     pg.commit()
-    log.info("etl.load_fact_financeiro(%s) -> %s rows", id_empresa, dw_rows)
+    log.info("etl.load_fact_financeiro(%s) [full-scan] -> %s rows", id_empresa, dw_rows)
 
-    cur.execute("SELECT etl.refresh_customer_delinquency_summary(%s) AS rows", (id_empresa,))
-    mart_rows = cur.fetchone()[0]
+    # Belt-and-suspenders: directly sync dw.fact_financeiro <- stg.contasreceber
+    # for any receivable whose payload still diverges. id_titulo (ID_CONTASRECEBER)
+    # is NOT globally unique (numbered per ID_DB), and the shared watermark race
+    # can leave the incremental loader skipping a just-healed title; this targeted
+    # sync is the same canonical payload copy the loader performs, so the DW can
+    # never stay stale after STG was healed.
+    cur.execute(
+        """
+        UPDATE dw.fact_financeiro f
+        SET payload = s.payload,
+            data_pagamento = (etl.safe_timestamp(s.payload->>'DTAPGTO'))::date,
+            data_key_pgto = etl.date_key(etl.safe_timestamp(s.payload->>'DTAPGTO')),
+            valor = etl.safe_numeric(s.payload->>'VALOR')::numeric(18,2),
+            valor_pago = etl.safe_numeric(s.payload->>'VLRPAGO')::numeric(18,2),
+            updated_at = now()
+        FROM stg.contasreceber s
+        WHERE f.id_empresa = s.id_empresa
+          AND f.id_filial = s.id_filial
+          AND f.id_db = s.id_db
+          AND f.tipo_titulo = 1
+          AND f.id_titulo = s.id_contasreceber
+          AND f.id_empresa = %s
+          AND f.payload IS DISTINCT FROM s.payload
+        """,
+        (id_empresa,),
+    )
+    synced = cur.rowcount
     pg.commit()
-    log.info("etl.refresh_customer_delinquency_summary(%s) -> %s rows", id_empresa, mart_rows)
+    if synced:
+        log.info("DW payload sync (race-proof): %s receivables reconciled DW<-STG", synced)
+
+    # The mart refresh is serialized server-side by a per-empresa advisory lock
+    # (migration 093), so concurrent callers wait instead of racing. We still
+    # retry a couple of times as defense-in-depth: STG/DW are already healed, so
+    # the mart MUST end up refreshed — never leave it stale after a transient
+    # error.
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            cur.execute("SELECT etl.refresh_customer_delinquency_summary(%s) AS rows", (id_empresa,))
+            mart_rows = cur.fetchone()[0]
+            pg.commit()
+            log.info("etl.refresh_customer_delinquency_summary(%s) -> %s rows", id_empresa, mart_rows)
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+            pg.rollback()
+            log.warning("mart refresh attempt %d/3 failed: %s", attempt, exc)
+            time.sleep(2 * attempt)
+    raise RuntimeError(f"mart refresh failed after retries: {last_err}")
 
 
 # --------------------------------------------------------------------------- #
@@ -313,12 +468,16 @@ def main() -> None:
             change_keys=("VALORBAIXA", "DATABAIXA"), dt_evento_key="DATABAIXA", dry_run=args.dry_run,
         )
 
+        # Close the deletion side a pure UPSERT misses: STG-open titles no longer
+        # open in Xpert (paid stragglers re-upserted; deleted ones tombstoned).
+        ph_up, ph_tomb = close_phantoms(pg, mssql, cr_rows, args.id_empresa, dry_run=args.dry_run)
+
         if args.dry_run:
-            log.info("[dry-run] DONE. contasreceber=%d contasreceberbaixa=%d would change.",
-                     cr_changed, bx_changed)
+            log.info("[dry-run] DONE. contasreceber=%d contasreceberbaixa=%d phantoms(reupsert=%d,tombstone=%d) would change.",
+                     cr_changed, bx_changed, ph_up, ph_tomb)
             return
 
-        if not args.no_refresh and (cr_changed or bx_changed):
+        if not args.no_refresh and (cr_changed or bx_changed or ph_up or ph_tomb):
             refresh_dw_and_mart(pg, args.id_empresa)
         elif args.no_refresh:
             log.info("Skipping DW/mart refresh (--no-refresh).")
@@ -327,8 +486,8 @@ def main() -> None:
     finally:
         pg.close()
 
-    log.info("=== DONE. contasreceber changed=%d, contasreceberbaixa changed=%d ===",
-             cr_changed, bx_changed)
+    log.info("=== DONE. contasreceber changed=%d, contasreceberbaixa changed=%d, phantoms reupsert=%d tombstone=%d ===",
+             cr_changed, bx_changed, ph_up, ph_tomb)
 
 
 if __name__ == "__main__":
