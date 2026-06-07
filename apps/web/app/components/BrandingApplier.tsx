@@ -8,11 +8,15 @@ import { readCachedSession } from '../lib/session';
 /**
  * Applies the active company's background image as an ambient layer.
  *
- * - Default: reads ``session.branding.background_url`` (the logged-in user's
- *   own company), versioned/cache-busted by the API.
- * - Multi-company users: on a ``torqmind:company`` event (company switch) it
- *   fetches the lightweight ``/branding/{id}`` metadata and applies that.
- * - Falls back to the default TorqMind identity when a company has no branding.
+ * The source of truth is the ACTIVE (selected) company, not the raw session:
+ * - Single-company users (owner/manager): the session already resolves their
+ *   company's branding, so it is applied directly (no extra request).
+ * - Internal users (platform_master/platform_admin): their session carries the
+ *   default identity (no ``id_empresa``); the active company comes from the
+ *   ``torqmind:company`` event the AppNav dispatches when a company is selected.
+ *   Session refreshes (``torqmind:session``) and window ``focus`` must NOT wipe
+ *   the active company's background back to the default.
+ * - Falls back to the default TorqMind identity when no company / no branding.
  * - Never touches the favicon (TorqMind identity stays).
  */
 function applyBrandingUrl(url: string | null) {
@@ -27,35 +31,66 @@ function applyBrandingUrl(url: string | null) {
   }
 }
 
-function applyFromSession(session: any) {
-  applyBrandingUrl(session?.branding?.background_url || null);
+/** Company the session itself resolves branding for (0/null for internal users). */
+function sessionCompanyId(session: any): number | null {
+  return Number(session?.id_empresa || session?.branding?.id_empresa || 0) || null;
 }
 
 export default function BrandingApplier() {
   useEffect(() => {
-    const session = readCachedSession();
-    applyFromSession(session);
+    // Company currently shown as the background (source of truth).
+    let activeCompany: number | null = null;
+    // Company whose URL is already applied — avoids refetch on focus/refresh.
+    let appliedFor: number | null = null;
 
-    let activeCompany = session?.branding?.id_empresa || session?.id_empresa || null;
-
-    const onSession = (event: Event) => {
-      const detail = (event as CustomEvent)?.detail || readCachedSession();
-      applyFromSession(detail);
-    };
-
-    const onCompany = async (event: Event) => {
-      const id = Number((event as CustomEvent)?.detail || 0);
-      if (!id || id === Number(activeCompany)) return;
+    const applyForCompany = async (id: number | null, session: any) => {
       activeCompany = id;
+      if (!id) {
+        appliedFor = null;
+        applyBrandingUrl(null);
+        return;
+      }
+      if (appliedFor === id) return; // already applied, keep it
+      // If the session already resolves this exact company, use it (no request).
+      if (sessionCompanyId(session) === id && session?.branding) {
+        appliedFor = id;
+        applyBrandingUrl(session.branding.background_url || null);
+        return;
+      }
       try {
         const meta = await apiGet(`/branding/${id}`);
-        applyBrandingUrl(meta?.background_url || null);
+        if (activeCompany === id) {
+          appliedFor = id;
+          applyBrandingUrl(meta?.background_url || null);
+        }
       } catch {
-        applyBrandingUrl(null);
+        if (activeCompany === id) {
+          appliedFor = id;
+          applyBrandingUrl(null);
+        }
       }
     };
 
-    const onFocus = () => applyFromSession(readCachedSession());
+    // A selected company (from AppNav) wins over the session's own company so a
+    // session refresh / focus never resets an internal user's chosen background.
+    const resolveFromSession = (session: any) => {
+      applyForCompany(activeCompany || sessionCompanyId(session), session);
+    };
+
+    resolveFromSession(readCachedSession());
+
+    const onSession = (event: Event) => {
+      const detail = (event as CustomEvent)?.detail || readCachedSession();
+      resolveFromSession(detail);
+    };
+
+    const onCompany = (event: Event) => {
+      const id = Number((event as CustomEvent)?.detail || 0) || null;
+      if (id === activeCompany) return;
+      applyForCompany(id, readCachedSession());
+    };
+
+    const onFocus = () => resolveFromSession(readCachedSession());
 
     window.addEventListener('torqmind:session', onSession as EventListener);
     window.addEventListener('torqmind:company', onCompany as EventListener);
