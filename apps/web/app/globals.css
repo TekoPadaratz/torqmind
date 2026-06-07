@@ -60,18 +60,23 @@ body::before {
 
 /* Company branding ambient layer (set by BrandingApplier via --brand-company-bg).
    Only visible when a company has a background; otherwise the default TorqMind
-   identity (gradient + logo watermark above) shows through. A dark overlay keeps
-   text legible on bright images. Favicon is never affected. */
+   identity (gradient + logo watermark above) shows through. The image is shown
+   WHOLE (``contain``): it scales keeping its aspect ratio until the larger side
+   touches the screen edge — never stretched/cropped. The leftover area is filled
+   with black, and a soft radial vignette fades the image edges into that black.
+   A light dark overlay keeps text legible. Favicon is never affected. */
 body::after {
   content: "";
   position: fixed;
   inset: 0;
+  background-color: #05070a;
   background-image:
-    linear-gradient(to bottom, rgba(8, 10, 14, 0.78), rgba(8, 10, 14, 0.88)),
+    radial-gradient(ellipse at center, rgba(5, 7, 10, 0) 62%, rgba(5, 7, 10, 0.85) 100%),
+    linear-gradient(to bottom, rgba(8, 10, 14, 0.45), rgba(8, 10, 14, 0.70)),
     var(--brand-company-bg, none);
   background-repeat: no-repeat;
   background-position: center center;
-  background-size: cover;
+  background-size: cover, cover, contain;
   opacity: 0;
   transition: opacity 240ms ease;
   pointer-events: none;
