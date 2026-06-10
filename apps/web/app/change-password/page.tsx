@@ -59,7 +59,7 @@ export default function ChangePasswordPage() {
         <div className="brand">
           <span>🧠</span>
           <span>TorqMind</span>
-          <span className="pill">BI operacional</span>
+          <span className="pill">Plataforma Operacional</span>
         </div>
         <div className="pill">Alterar Senha</div>
       </div>

@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { startTransition, useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiGet } from '../lib/api';
 import { clearAuth } from '../lib/auth';
@@ -134,6 +134,7 @@ export default function AppNav({
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
   const [navHidden, setNavHidden] = useState(false);
+  const headerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     document.body.classList.add('product-shell');
@@ -181,6 +182,29 @@ export default function AppNav({
       setUnread(initialUnread);
     }
   }, [initialUnread]);
+
+  // Keep the page content offset and sidebar position in sync with the REAL
+  // height of the fixed top navigation. When the menu wraps to 3+ lines the
+  // header grows; without this the content would be covered by the bar.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || typeof window === 'undefined') return;
+    const applyHeight = () => {
+      document.body.style.setProperty('--product-nav-h', `${header.offsetHeight}px`);
+    };
+    applyHeight();
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(applyHeight);
+      observer.observe(header);
+    }
+    window.addEventListener('resize', applyHeight);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', applyHeight);
+      document.body.style.removeProperty('--product-nav-h');
+    };
+  }, [session]);
 
   useEffect(() => {
     if (!deferAuxiliaryLoads) {
@@ -468,12 +492,12 @@ export default function AppNav({
 
   return (
     <>
-      <header className={`productTopNav${navHidden ? ' navHidden' : ''}`}>
+      <header ref={headerRef} className={`productTopNav${navHidden ? ' navHidden' : ''}`}>
         <div className="productTopBar">
           <div className="productBrand productBrandInline">
             <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={34} height={34} priority />
             <div>
-              <div className="productEyebrow">TorqMind BI</div>
+              <div className="productEyebrow">Plataforma Operacional</div>
               <div className="productTopTitle">{title}</div>
             </div>
           </div>

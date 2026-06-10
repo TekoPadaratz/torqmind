@@ -65,6 +65,7 @@ export default function CustomersPage() {
   useEnsureScopedProductUrl();
   const [delinquencyPage, setDelinquencyPage] = useState(0);
   const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
+  const [delinquencySearch, setDelinquencySearch] = useState("");
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -94,7 +95,13 @@ export default function CustomersPage() {
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
   const delinquencyCustomers = useMemo(() => {
-    const customers = [...(delinquency?.customers || [])];
+    let customers = [...(delinquency?.customers || [])];
+    const term = delinquencySearch.trim().toUpperCase();
+    if (term) {
+      customers = customers.filter((c: any) =>
+        String(c.cliente_nome || "").toUpperCase().includes(term),
+      );
+    }
     switch (delinquencySort) {
       case "valor":
         customers.sort((a: any, b: any) => (b.valor_total_aberto || (b.valor_total_vencido || 0) + (b.valor_a_vencer || 0)) - (a.valor_total_aberto || (a.valor_total_vencido || 0) + (a.valor_a_vencer || 0)));
@@ -114,7 +121,7 @@ export default function CustomersPage() {
         break;
     }
     return customers;
-  }, [delinquency?.customers, delinquencySort]);
+  }, [delinquency?.customers, delinquencySort, delinquencySearch]);
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
@@ -353,6 +360,20 @@ export default function CustomersPage() {
                         </button>
                       ))}
                     </div>
+                    <div style={{ marginTop: 8 }}>
+                      <input
+                        type="text"
+                        value={delinquencySearch}
+                        onChange={(e) => {
+                          setDelinquencySearch(e.target.value.toUpperCase());
+                          setDelinquencyPage(0);
+                        }}
+                        placeholder="BUSCAR CLIENTE PELO NOME"
+                        aria-label="Buscar cliente pelo nome"
+                        className="input"
+                        style={{ maxWidth: 320, textTransform: "uppercase", fontSize: 13 }}
+                      />
+                    </div>
                   </div>
                   {delinquencyCustomers.length > delinquencyPageSize ? (
                     <div className="inlinePager">
@@ -384,6 +405,12 @@ export default function CustomersPage() {
                   <EmptyState
                     title="Sem clientes em atraso para priorizar."
                     detail="Quando houver recebíveis vencidos, os maiores riscos aparecem aqui."
+                  />
+                ) : null}
+                {!loading && (delinquency?.customers || []).length > 0 && delinquencyCustomers.length === 0 ? (
+                  <EmptyState
+                    title="Nenhum cliente encontrado para a busca."
+                    detail={`Não há cliente com "${delinquencySearch}" no nome dentro das prioridades de cobrança.`}
                   />
                 ) : null}
                 <div className="tableScroll">
