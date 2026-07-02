@@ -23,6 +23,14 @@ from app.authz import (
     tenant_status_is_warning,
 )
 from app.db import get_conn
+from app.permissions import (
+    can_view_sensitive_financials as _can_view_sensitive,
+    get_allowed_screens as _get_allowed_screens_default,
+    is_kiosk_user as _is_kiosk,
+    load_user_screen_permissions,
+    resolve_default_route as _resolve_default,
+    ROLE_DEFAULT_SCREENS,
+)
 from app.security import verify_password
 from app.usernames import (
     identifier_looks_like_email,
@@ -146,6 +154,122 @@ def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
         ).fetchone()
 
 
+# ── Password reset tokens ────────────────────────────────────
+# Segurança: o token bruto NUNCA é persistido. Guardamos apenas o SHA-256;
+# o link enviado por e-mail carrega só o token aleatório (sem e-mail embutido).
+
+def _hash_reset_token(raw_token: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_password_reset_token(
+    user_id: str,
+    ttl_minutes: int,
+    requested_ip: Optional[str] = None,
+    requested_user_agent: Optional[str] = None,
+) -> str:
+    """Generate a high-entropy token, invalidate prior unused tokens for the user,
+    persist only its hash, and return the raw token (to be emailed)."""
+    import secrets
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(raw_token)
+
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        # Invalida pedidos anteriores ainda não usados (single active token).
+        conn.execute(
+            """
+            UPDATE auth.password_reset_tokens
+            SET used_at = now()
+            WHERE user_id = %s::uuid AND used_at IS NULL
+            """,
+            (user_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO auth.password_reset_tokens
+              (user_id, token_hash, expires_at, requested_ip, requested_user_agent)
+            VALUES (%s::uuid, %s, now() + (%s || ' minutes')::interval, %s, %s)
+            """,
+            (user_id, token_hash, str(int(ttl_minutes)), requested_ip, requested_user_agent),
+        )
+        conn.commit()
+
+    return raw_token
+
+
+def get_reset_token_user(raw_token: str) -> Optional[Dict[str, Any]]:
+    """Return the user (id, email, nome) tied to a valid (unused, unexpired) token,
+    or None. Does not consume the token."""
+    if not raw_token:
+        return None
+    token_hash = _hash_reset_token(raw_token)
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        return conn.execute(
+            """
+            SELECT u.id, u.email, u.nome, u.is_active
+            FROM auth.password_reset_tokens t
+            JOIN auth.users u ON u.id = t.user_id
+            WHERE t.token_hash = %s
+              AND t.used_at IS NULL
+              AND t.expires_at > now()
+            """,
+            (token_hash,),
+        ).fetchone()
+
+
+def reset_password_with_token(raw_token: str, new_password_hash: str) -> Optional[str]:
+    """Consume a valid token and set the user's password atomically.
+
+    Returns the user_id on success, or None if the token is invalid/expired/used.
+    Marks the token (and any other open tokens for the user) as used.
+    """
+    if not raw_token:
+        return None
+    token_hash = _hash_reset_token(raw_token)
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        row = conn.execute(
+            """
+            UPDATE auth.password_reset_tokens
+            SET used_at = now()
+            WHERE token_hash = %s
+              AND used_at IS NULL
+              AND expires_at > now()
+            RETURNING user_id
+            """,
+            (token_hash,),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return None
+
+        user_id = str(row["id"]) if isinstance(row, dict) and "id" in row else str(row["user_id"])
+        conn.execute(
+            """
+            UPDATE auth.users
+            SET password_hash = %s,
+                must_change_password = FALSE,
+                password_changed_at = now(),
+                updated_at = now()
+            WHERE id = %s::uuid
+            """,
+            (new_password_hash, user_id),
+        )
+        # Invalida quaisquer outros tokens abertos do mesmo usuário.
+        conn.execute(
+            """
+            UPDATE auth.password_reset_tokens
+            SET used_at = now()
+            WHERE user_id = %s::uuid AND used_at IS NULL
+            """,
+            (user_id,),
+        )
+        conn.commit()
+        return user_id
+
+
 def _list_user_access_rows(user_id: str) -> list[dict[str, Any]]:
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         rows = conn.execute(
@@ -258,6 +382,27 @@ def _all_active_tenant_ids() -> list[int]:
             """
         ).fetchall()
     return [int(row["id_empresa"]) for row in rows if row.get("id_empresa") is not None]
+
+
+def _list_active_branch_ids(tenant_id: int, today: date | None = None) -> list[int]:
+    reference_date = today or _user_now()[0]
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        rows = conn.execute(
+            """
+            SELECT id_filial, valid_from, valid_until
+            FROM auth.filiais
+            WHERE id_empresa = %s
+              AND is_active = true
+            ORDER BY id_filial
+            """,
+            (tenant_id,),
+        ).fetchall()
+
+    return [
+        int(row["id_filial"])
+        for row in rows
+        if row.get("id_filial") is not None and is_date_in_window(reference_date, row.get("valid_from"), row.get("valid_until"))
+    ]
 
 
 def _date_key_to_date(value: Any) -> date | None:
@@ -447,11 +592,13 @@ def _build_default_product_scope(tenant_id: int, branch_id: int | None) -> dict[
     dt_fim = scope_defaults["current_date"]
     default_days = int(scope_defaults["default_product_scope_days"])
     dt_ini = dt_fim - timedelta(days=max(default_days - 1, 0))
-    branch_ids = [int(branch_id)] if branch_id is not None else []
+    branch_ids = [int(branch_id)] if branch_id is not None else _list_active_branch_ids(tenant_id, scope_defaults["current_date"])
+    resolved_branch_id = int(branch_id) if branch_id is not None else branch_ids[0] if len(branch_ids) == 1 else None
     return {
         "id_empresa": tenant_id,
-        "id_filial": branch_id,
+        "id_filial": resolved_branch_id,
         "id_filiais": branch_ids,
+        "branch_scope": "all" if branch_id is None and len(branch_ids) > 1 else "",
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "dt_ref": scope_defaults["current_date"].isoformat(),
@@ -470,6 +617,7 @@ def _build_dashboard_home_path(
     include_dt_ref: bool = False,
     *,
     include_dates: bool = True,
+    base_route: str = "/dashboard",
 ) -> str:
     params: list[tuple[str, str]] = [("id_empresa", str(scope["id_empresa"]))]
     if include_dates:
@@ -489,7 +637,7 @@ def _build_dashboard_home_path(
     else:
         params.extend(("id_filiais", branch_id) for branch_id in branch_ids)
 
-    return f"/dashboard?{urlencode(params, doseq=True)}"
+    return f"{base_route}?{urlencode(params, doseq=True)}"
 
 
 def _record_failed_login(user_id: str) -> None:
@@ -688,6 +836,23 @@ def _serialize_access_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_branding(id_empresa: int | None) -> dict[str, Any]:
+    """Branding contract for the active company; never breaks the session."""
+    try:
+        from app import repos_branding
+
+        return repos_branding.get_branding_public(id_empresa)
+    except Exception:
+        return {
+            "id_empresa": int(id_empresa) if id_empresa else 0,
+            "background_url": None,
+            "logo_url": None,
+            "background_version": None,
+            "logo_version": None,
+            "uses_default": True,
+        }
+
+
 def _build_session_context(
     user: dict[str, Any],
     access_rows: list[dict[str, Any]],
@@ -844,8 +1009,27 @@ def _build_session_context(
         product_scope_branch = None
 
     default_scope = None
+
+    # ── Screen permissions & layout ──────────────────────────────────
+    user_id_str = str(user["id"])
+    if user_role in ROLE_DEFAULT_SCREENS:
+        allowed_screens = sorted(ROLE_DEFAULT_SCREENS[user_role])
+    else:
+        # tenant_manager / tenant_viewer / tenant_kiosk → DB lookup
+        with get_conn(role="MASTER", tenant_id=None) as _sc:
+            allowed_screens = sorted(load_user_screen_permissions(_sc, user_id_str))
+
+    layout_mode = "kiosk" if _is_kiosk({"user_role": user_role}) else "normal"
+    _claims_stub = {
+        "user_role": user_role,
+        "allowed_screens": allowed_screens,
+        "can_view_sensitive_financials": _can_view_sensitive({"user_role": user_role}),
+    }
+    default_route = _resolve_default(_claims_stub)
+    can_see_financials = _can_view_sensitive({"user_role": user_role})
+
     home_path = (
-        "/dashboard"
+        default_route
         if product_access_enabled
         else "/platform"
         if can_access_platform(user_role)
@@ -853,7 +1037,14 @@ def _build_session_context(
     )
     if include_default_scope and product_access_enabled and product_scope_tenant is not None:
         default_scope = _build_default_product_scope(product_scope_tenant, product_scope_branch)
-        home_path = _build_dashboard_home_path(default_scope, include_dt_ref=False, include_dates=False)
+        if layout_mode == "kiosk":
+            # Kiosk TV screens don't use product scope params
+            home_path = default_route
+        else:
+            home_path = _build_dashboard_home_path(
+                default_scope, include_dt_ref=False, include_dates=False,
+                base_route=default_route,
+            )
 
     return {
         "sub": str(user["id"]),
@@ -879,6 +1070,10 @@ def _build_session_context(
             "product": product_access_enabled,
             "product_readonly": product_readonly,
         },
+        "allowed_screens": allowed_screens,
+        "can_view_sensitive_financials": can_see_financials,
+        "layout_mode": layout_mode,
+        "default_route": default_route,
         "server_today": today.isoformat(),
         "default_scope": default_scope,
         "home_path": home_path,
@@ -892,6 +1087,7 @@ def _build_session_context(
         ),
         "tenant_ids": tenant_ids,
         "product_companies": product_companies,
+        "branding": _safe_branding(selected_tenant_id),
     }
 
 
@@ -906,6 +1102,12 @@ def verify_login(
     if not user:
         verify_password(password, DUMMY_PASSWORD_HASH)
         raise AuthError(401, "invalid_credentials", "Credenciais inválidas.")
+
+    # Check lockout BEFORE password verification to prevent brute-force during lock
+    today, now = _user_now()
+    if bool(user.get("locked_until")) and user["locked_until"] > now:
+        verify_password(password, DUMMY_PASSWORD_HASH)  # constant time
+        raise AuthError(423, "user_locked", "Usuário temporariamente bloqueado.")
 
     if not verify_password(password, user["password_hash"]):
         _record_failed_login(str(user["id"]))

@@ -1781,7 +1781,7 @@ def customers_delinquency_overview(
                     greatest(0, dateDiff('day', coalesce(f.vencimento, f.data_emissao), {{as_of:Date}})) AS dias_atraso
                 FROM (
                     SELECT *
-                    FROM torqmind_dw.fact_financeiro FINAL
+                    FROM torqmind_current.fact_financeiro FINAL
                 ) AS f
                 WHERE f.id_empresa = {{id_empresa:Int32}}
                     AND f.tipo_titulo = 1
@@ -1843,7 +1843,7 @@ def customers_delinquency_overview(
                         argMax(nome, updated_at) AS nome
                     FROM (
                         SELECT *
-                        FROM torqmind_dw.dim_cliente FINAL
+                        FROM torqmind_current.dim_cliente FINAL
                     )
                     WHERE id_empresa = {{id_empresa:Int32}}
                     GROUP BY id_empresa, id_filial, id_cliente
@@ -1854,7 +1854,7 @@ def customers_delinquency_overview(
                         argMax(nome, updated_at) AS nome
                     FROM (
                         SELECT *
-                        FROM torqmind_dw.dim_cliente FINAL
+                        FROM torqmind_current.dim_cliente FINAL
                     )
                     WHERE id_empresa = {{id_empresa:Int32}}
                     GROUP BY id_empresa, id_cliente
@@ -1895,7 +1895,7 @@ def customers_delinquency_overview(
                     ON da.id_empresa = {{id_empresa:Int32}}
                  AND da.id_cliente = p.id_cliente
                 GROUP BY p.id_cliente
-                ORDER BY valor_aberto DESC, max_dias_atraso DESC, id_cliente
+                ORDER BY max_dias_atraso DESC, valor_aberto DESC, id_cliente
                 LIMIT {{limit:UInt32}}
                 """,
                 {"id_empresa": int(id_empresa), "as_of": as_of, "limit": int(limit)},
@@ -2842,6 +2842,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
           toUnixTimestamp(max(updated_at)) AS latest_activity_epoch
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
+                    AND id_turno > 0
           {branch}
         """,
         {"id_empresa": int(id_empresa)},
@@ -2860,6 +2861,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
           AND severity != 'STALE'
+                    AND id_turno > 0
           {branch}
         ORDER BY multiIf(severity = 'CRITICAL', 0, severity = 'HIGH', 1, severity = 'WARN', 2, 3), horas_aberto DESC, updated_at DESC
         LIMIT 20
@@ -2879,6 +2881,7 @@ def _cash_live_now(role: str, id_empresa: int, id_filial: Any) -> Dict[str, Any]
         FROM torqmind_mart.agg_caixa_turno_aberto
         WHERE id_empresa = {{id_empresa:Int32}}
           AND severity = 'STALE'
+                    AND id_turno > 0
           {branch}
         ORDER BY updated_at DESC, horas_aberto DESC
         LIMIT 10
@@ -3090,8 +3093,84 @@ def cash_overview(role: str, id_empresa: int, id_filial: Any, dt_ini: Optional[d
         "payment_mix": historical.get("payment_mix") or [],
         "cancelamentos": historical.get("cancelamentos") or [],
         "alerts": live_now.get("alerts") or [],
+        "inutilizacoes": _cash_nfe_inutilizations(id_empresa, id_filial, effective_dt_ini, effective_dt_fim),
         "commercial_coverage": commercial_coverage,
     }
+
+
+def _cash_nfe_inutilizations(
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Query NFE inutilizations (status=5) for the cash page."""
+    if not _table_exists("torqmind_mart_rt", "nfe_inutilizations_rt", id_empresa):
+        return {"qtd": 0, "valor_total": 0.0, "items": []}
+
+    branch = _branch_clause("id_filial", id_filial)
+    from_key = int(dt_ini.strftime("%Y%m%d")) if dt_ini else 0
+    to_key = int(dt_fim.strftime("%Y%m%d")) if dt_fim else 99991231
+    date_filter = f"AND data_key >= {from_key} AND data_key <= {to_key}" if dt_ini and dt_fim else ""
+
+    summary_rows = _run(
+        f"""
+        SELECT
+            count() AS qtd,
+            sum(valor_comprovante) AS valor_total
+        FROM torqmind_mart_rt.nfe_inutilizations_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {branch} {date_filter}
+        """,
+        {"id_empresa": int(id_empresa)},
+        id_empresa,
+    )
+    summary = summary_rows[0] if summary_rows else {"qtd": 0, "valor_total": 0}
+    total_items = int(summary.get("qtd") or 0)
+    total_value = round(float(summary.get("valor_total") or 0), 2)
+    if total_items <= 0:
+        return {"qtd": 0, "valor_total": 0.0, "items": []}
+
+    rows = _run(
+        f"""
+        SELECT
+            id_filial, filial_nome, id_turno,
+            turno_abertura_ts, turno_fechamento_ts,
+            id_usuario, nome_operador,
+            id_comprovante, id_nfe, numero_nfe, serie_nfe,
+            chave_nfe, protocolo, modelo_nfe, data_emissao_nfe,
+            valor_comprovante, referencia, dt, hora
+        FROM torqmind_mart_rt.nfe_inutilizations_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {branch} {date_filter}
+        ORDER BY dt DESC, hora DESC
+        LIMIT 100
+        """,
+        {"id_empresa": int(id_empresa)},
+        id_empresa,
+    )
+    items = []
+    for row in rows:
+        items.append({
+            "id_filial": int(row.get("id_filial") or 0),
+            "filial_label": _filial_label(row.get("id_filial"), row.get("filial_nome")),
+            "id_turno": int(row.get("id_turno") or 0),
+            "turno_label": _turno_label(str(row.get("id_turno") or ""), row.get("id_turno")),
+            "turno_abertura_ts": str(row.get("turno_abertura_ts") or ""),
+            "turno_fechamento_ts": str(row.get("turno_fechamento_ts") or ""),
+            "usuario_label": _cash_operator_label(row.get("nome_operador"), row.get("id_usuario")),
+            "id_comprovante": row.get("id_comprovante"),
+            "id_nfe": row.get("id_nfe"),
+            "numero_nfe": str(row.get("numero_nfe") or ""),
+            "serie_nfe": str(row.get("serie_nfe") or ""),
+            "chave_nfe": str(row.get("chave_nfe") or ""),
+            "protocolo": str(row.get("protocolo") or ""),
+            "modelo_nfe": str(row.get("modelo_nfe") or ""),
+            "data_emissao_nfe": str(row.get("data_emissao_nfe") or ""),
+            "valor_comprovante": round(float(row.get("valor_comprovante") or 0), 2),
+            "referencia": str(row.get("referencia") or ""),
+            "dt": str(row.get("dt") or ""),
+            "hora": str(row.get("hora") or ""),
+        })
+    return {"qtd": total_items, "valor_total": total_value, "items": items}
 
 
 def health_score_latest(role: str, id_empresa: int, id_filial: Any, as_of: Optional[date] = None) -> Dict[str, Any]:

@@ -39,7 +39,7 @@ set +a
 PG_USER="${POSTGRES_USER:-${PG_USER:-postgres}}"
 PG_PASS="${POSTGRES_PASSWORD:-${PG_PASSWORD:-postgres}}"
 PG_DB="${POSTGRES_DB:-${PG_DATABASE:-TORQMIND}}"
-PG_HOST="${PG_HOST:-postgres}"
+PG_HOST="${PG_HOST:-${POSTGRES_HOST:-postgres}}"
 PG_PORT="${PG_PORT:-5432}"
 CH_USER="${CLICKHOUSE_USER:-torqmind}"
 CH_PASS="${CLICKHOUSE_PASSWORD:-torqmind}"
@@ -123,9 +123,10 @@ bootstrap_comprovantes() {
 bootstrap_itenscomprovantes() {
   log "Bootstrapping stg.itenscomprovantes → torqmind_current.stg_itenscomprovantes ..."
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'itenscomprovantes', '${PG_USER}', '${PG_PASS}', 'stg')"
+  local filter="id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
 
   local count
-  count="$(ch_exec -q "SELECT count() FROM $src WHERE id_empresa = $ID_EMPRESA" 2>/dev/null)"
+  count="$(ch_exec -q "SELECT count() FROM $src WHERE $filter" 2>/dev/null)"
   count="${count//[[:space:]]/}"
   log "  Source rows: $count"
 
@@ -151,7 +152,7 @@ bootstrap_itenscomprovantes() {
         total_shadow, desconto_shadow, custo_unitario_shadow,
         0, toInt64(toUnixTimestamp(coalesce(received_at, now())) * 1000)
     FROM $src
-    WHERE id_empresa = $ID_EMPRESA
+    WHERE $filter
   " 2>/dev/null
 
   local ch_count
@@ -162,9 +163,10 @@ bootstrap_itenscomprovantes() {
 bootstrap_formas_pgto() {
   log "Bootstrapping stg.formas_pgto_comprovantes → torqmind_current.stg_formas_pgto_comprovantes ..."
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'formas_pgto_comprovantes', '${PG_USER}', '${PG_PASS}', 'stg')"
+  local filter="id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
 
   local count
-  count="$(ch_exec -q "SELECT count() FROM $src WHERE id_empresa = $ID_EMPRESA" 2>/dev/null)"
+  count="$(ch_exec -q "SELECT count() FROM $src WHERE $filter" 2>/dev/null)"
   count="${count//[[:space:]]/}"
   log "  Source rows: $count"
 
@@ -187,7 +189,7 @@ bootstrap_formas_pgto() {
         rede_shadow, tef_shadow,
         0, toInt64(toUnixTimestamp(coalesce(received_at, now())) * 1000)
     FROM $src
-    WHERE id_empresa = $ID_EMPRESA
+    WHERE $filter
   " 2>/dev/null
 
   local ch_count
@@ -202,12 +204,13 @@ bootstrap_simple_stg() {
   local ch_table="$2"
   local pk_cols="$3"
   local required="$4"
+  local filter="${5:-id_empresa = $ID_EMPRESA}"
 
   log "Bootstrapping stg.$pg_table → torqmind_current.$ch_table ..."
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', '${pg_table}', '${PG_USER}', '${PG_PASS}', 'stg')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM stg.${pg_table} WHERE id_empresa = ${ID_EMPRESA}")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE ${filter}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -230,11 +233,94 @@ bootstrap_simple_stg() {
         id_db_shadow, id_chave_natural, received_at,
         0, toInt64(toUnixTimestamp(coalesce(received_at, now())) * 1000)
     FROM ${src}
-    WHERE id_empresa = $ID_EMPRESA
+    WHERE ${filter}
   " 2>/dev/null
 
   local ch_count
   ch_count="$(ch_exec -q "SELECT count() FROM torqmind_current.${ch_table} FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null)"
+  log "  ClickHouse total after: ${ch_count//[[:space:]]/}"
+}
+
+bootstrap_nfe_slim() {
+  log "Bootstrapping stg.nfe → torqmind_current.stg_nfe_slim ..."
+  local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'nfe', '${PG_USER}', '${PG_PASS}', 'stg')"
+  local filter="id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
+
+  local pg_count
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE ${filter}" 2>/dev/null || echo "0")"
+  pg_count="${pg_count//[[:space:]]/}"
+  log "  PG rows: $pg_count"
+
+  if (( pg_count == 0 )); then
+    log "  WARN: Optional table stg.nfe has 0 rows - skipping"
+    return 0
+  fi
+
+  ch_exec -q "
+    INSERT INTO torqmind_current.stg_nfe_slim (
+        id_empresa, id_filial, id_db, id_comprovante, id_nfe,
+      status, numero_nfe, serie, chave_nfe, protocolo, modelo,
+        data_emissao, valor_nfe, is_deleted, source_ts_ms
+    )
+    SELECT
+        id_empresa,
+        id_filial,
+        id_db,
+        id_comprovante,
+        id_nfe,
+        ifNull(status_shadow, toInt16OrZero(JSONExtractString(payload, 'STATUS'))) AS status,
+        coalesce(
+            nullIf(toString(numero_nfe_shadow), ''),
+          nullIf(JSONExtractString(payload, 'NRONF'), ''),
+            nullIf(JSONExtractString(payload, 'NUMERO'), ''),
+            nullIf(JSONExtractString(payload, 'NUMERONFE'), ''),
+            ''
+        ) AS numero_nfe,
+        coalesce(
+            nullIf(toString(serie_shadow), ''),
+            nullIf(JSONExtractString(payload, 'SERIE'), ''),
+            ''
+        ) AS serie,
+        coalesce(
+            nullIf(toString(chave_nfe_shadow), ''),
+          nullIf(JSONExtractString(payload, 'CHAVEACESSO'), ''),
+            nullIf(JSONExtractString(payload, 'CHAVE'), ''),
+            nullIf(JSONExtractString(payload, 'CHAVENFE'), ''),
+            nullIf(JSONExtractString(payload, 'CHAVE_ACESSO'), ''),
+            ''
+        ) AS chave_nfe,
+        coalesce(
+          nullIf(toString(protocolo_shadow), ''),
+          nullIf(JSONExtractString(payload, 'PROTOCOLO'), ''),
+          nullIf(JSONExtractString(payload, 'NPROTOCOLO'), ''),
+          ''
+        ) AS protocolo,
+        coalesce(
+            nullIf(toString(modelo_shadow), ''),
+          nullIf(JSONExtractString(payload, 'TIPO_DOC'), ''),
+            nullIf(JSONExtractString(payload, 'MODELO'), ''),
+            ''
+        ) AS modelo,
+        coalesce(
+            data_emissao_shadow,
+          parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATA')),
+          parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'TORQMIND_DT_EVENTO')),
+            parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATAEMISSAO')),
+            parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATA_EMISSAO'))
+        ) AS data_emissao,
+        coalesce(
+            valor_nfe_shadow,
+            toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2),
+            toDecimal64(0, 2)
+        ) AS valor_nfe,
+        0,
+        toInt64(toUnixTimestamp(coalesce(received_at, ingested_at, now())) * 1000)
+    FROM ${src}
+    WHERE ${filter}
+  " 2>/dev/null
+
+  local ch_count
+  ch_count="$(ch_exec -q "SELECT count() FROM torqmind_current.stg_nfe_slim FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null)"
   log "  ClickHouse total after: ${ch_count//[[:space:]]/}"
 }
 
@@ -243,7 +329,7 @@ bootstrap_contaspagar() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'contaspagar', '${PG_USER}', '${PG_PASS}', 'stg')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM stg.contaspagar WHERE id_empresa = ${ID_EMPRESA}")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE id_empresa = ${ID_EMPRESA}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -276,7 +362,7 @@ bootstrap_contasreceber() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'contasreceber', '${PG_USER}', '${PG_PASS}', 'stg')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM stg.contasreceber WHERE id_empresa = ${ID_EMPRESA}")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE id_empresa = ${ID_EMPRESA}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -309,7 +395,7 @@ bootstrap_payment_type_map() {
   local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', 'payment_type_map', '${PG_USER}', '${PG_PASS}', 'app')"
 
   local pg_count
-  pg_count="$(pg_scalar "SELECT count(*) FROM app.payment_type_map")"
+  pg_count="$(ch_exec -q "SELECT count() FROM ${src}" 2>/dev/null || echo "0")"
   pg_count="${pg_count//[[:space:]]/}"
   log "  PG rows: $pg_count"
 
@@ -392,7 +478,8 @@ validate_parity() {
     local filter="${5:-id_empresa = $ID_EMPRESA}"
 
     local pg_count ch_count
-    pg_count="$(pg_scalar "SELECT count(*) FROM ${pg_schema}.${pg_table} WHERE ${filter}")"
+    local src="postgresql('${PG_HOST}:${PG_PORT}', '${PG_DB}', '${pg_table}', '${PG_USER}', '${PG_PASS}', '${pg_schema}')"
+    pg_count="$(ch_exec -q "SELECT count() FROM ${src} WHERE ${filter}" 2>/dev/null || echo "0")"
     pg_count="${pg_count//[[:space:]]/}"
     ch_count="$(ch_exec -q "SELECT count() FROM torqmind_current.${ch_table} FINAL WHERE id_empresa=$ID_EMPRESA AND is_deleted=0" 2>/dev/null)"
     ch_count="${ch_count//[[:space:]]/}"
@@ -415,8 +502,8 @@ validate_parity() {
   }
 
   check_parity stg comprovantes stg_comprovantes required "id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
-  check_parity stg itenscomprovantes stg_itenscomprovantes required "id_empresa = $ID_EMPRESA"
-  check_parity stg formas_pgto_comprovantes stg_formas_pgto_comprovantes required "id_empresa = $ID_EMPRESA"
+  check_parity stg itenscomprovantes stg_itenscomprovantes required "id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
+  check_parity stg formas_pgto_comprovantes stg_formas_pgto_comprovantes required "id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
   check_parity stg produtos stg_produtos required "id_empresa = $ID_EMPRESA"
   check_parity stg grupoprodutos stg_grupoprodutos required "id_empresa = $ID_EMPRESA"
   check_parity stg usuarios stg_usuarios optional "id_empresa = $ID_EMPRESA"
@@ -426,6 +513,7 @@ validate_parity() {
   check_parity stg localvendas stg_localvendas optional "id_empresa = $ID_EMPRESA"
   check_parity stg contaspagar stg_contaspagar optional "id_empresa = $ID_EMPRESA"
   check_parity stg contasreceber stg_contasreceber optional "id_empresa = $ID_EMPRESA"
+  check_parity stg nfe stg_nfe_slim optional "id_empresa = $ID_EMPRESA AND dt_evento >= '$FROM_DATE'"
 
   if (( errors > 0 )); then
     log "PARITY CHECK FAILED: $errors required table(s) have data in PG but zero in ClickHouse"
@@ -455,6 +543,9 @@ main() {
   bootstrap_simple_stg entidades stg_entidades "id_empresa, id_filial, id_entidade" optional
   bootstrap_simple_stg funcionarios stg_funcionarios "id_empresa, id_filial, id_funcionario" optional
   bootstrap_simple_stg localvendas stg_localvendas "id_empresa, id_filial, id_localvendas" optional
+
+  # NFE fiscal documents load directly into slim because production does not expose torqmind_current.stg_nfe.
+  bootstrap_nfe_slim
 
   # Financial tables (4-part key)
   bootstrap_contaspagar

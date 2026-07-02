@@ -190,18 +190,25 @@ class TestSignatureParity:
 # ============================================================
 
 class TestDDLMartBuilderAlignment:
-    """Verify mart_builder.py INSERT columns match 041_mart_rt_tables.sql DDL."""
+    """Verify mart_builder.py INSERT columns match the tracked mart_rt DDL files."""
 
     @pytest.fixture(autouse=True)
     def _load_paths(self):
         self.root = Path(__file__).parent.parent.parent.parent
         self.ddl_db_path = self.root / "sql" / "clickhouse" / "streaming" / "040_mart_rt_database.sql"
         self.ddl_path = self.root / "sql" / "clickhouse" / "streaming" / "041_mart_rt_tables.sql"
+        self.ddl_nfe_path = self.root / "sql" / "clickhouse" / "streaming" / "042_mart_nfe_inutilizations.sql"
         self.builder_path = self.root / "apps" / "cdc_consumer" / "torqmind_cdc_consumer" / "mart_builder.py"
         self.realtime_repo_path = self.root / "apps" / "api" / "app" / "repos_mart_realtime.py"
 
     def _ddl_text(self) -> str:
-        return self.ddl_db_path.read_text() + "\n" + self.ddl_path.read_text()
+        return (
+            self.ddl_db_path.read_text()
+            + "\n"
+            + self.ddl_path.read_text()
+            + "\n"
+            + self.ddl_nfe_path.read_text()
+        )
 
     def _split_top_level_commas(self, text: str) -> list[str]:
         parts: list[str] = []
@@ -252,7 +259,7 @@ class TestDDLMartBuilderAlignment:
     def _select_part_for_insert(self, mart_name: str) -> str:
         """Extract SELECT column aliases from INSERT INTO statement for a mart."""
         code = self.builder_path.read_text()
-        pattern = rf"INSERT INTO\s+\{{self\.mart_rt_db\}}\.{mart_name}\s+SELECT\s+"
+        pattern = rf"INSERT INTO\s+\{{self\.mart_rt_db\}}\.{mart_name}\s+"
         match = re.search(pattern, code, re.DOTALL)
         if not match:
             return ""
@@ -260,6 +267,7 @@ class TestDDLMartBuilderAlignment:
         depth = 0
         quote: str | None = None
         i = start
+        select_start: int | None = None
         while i < len(code):
             ch = code[i]
             if quote:
@@ -279,11 +287,18 @@ class TestDDLMartBuilderAlignment:
                 depth -= 1
                 i += 1
                 continue
+            if depth == 0 and code[i : i + 6].upper() == "SELECT":
+                before = code[i - 1] if i > 0 else " "
+                after = code[i + 6] if i + 6 < len(code) else " "
+                if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+                    select_start = i + 6
+                    i = select_start
+                    continue
             if depth == 0 and code[i : i + 4].upper() == "FROM":
                 before = code[i - 1] if i > 0 else " "
                 after = code[i + 4] if i + 4 < len(code) else " "
                 if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
-                    return code[start:i].strip()
+                    return code[(select_start or start):i].strip()
             i += 1
         return ""
 
@@ -325,6 +340,7 @@ class TestDDLMartBuilderAlignment:
         "risk_recent_events_rt",
         "finance_overview_rt",
         "dashboard_home_rt",
+        "nfe_inutilizations_rt",
     ])
     def test_ddl_exists_for_mart_table(self, table: str):
         """Every mart table refreshed by builder must exist in DDL."""
@@ -371,6 +387,7 @@ class TestDDLMartBuilderAlignment:
         "risk_recent_events_rt",
         "finance_overview_rt",
         "dashboard_home_rt",
+        "nfe_inutilizations_rt",
         "source_freshness",
     ])
     def test_builder_insert_columns_match_ddl_order(self, table: str):
@@ -417,6 +434,7 @@ class TestDDLMartBuilderAlignment:
         "risk_recent_events_rt",
         "finance_overview_rt",
         "dashboard_home_rt",
+        "nfe_inutilizations_rt",
     ])
     def test_ddl_uses_replacing_merge_tree(self, table: str):
         """All mart_rt tables must use ReplacingMergeTree for idempotency."""

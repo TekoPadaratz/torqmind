@@ -53,18 +53,34 @@ def _get_any(d: Dict[str, Any], keys: List[str]) -> Any:
 
 
 def raw_comprovante_is_cancelled(row: Dict[str, Any]) -> bool:
-    """Resolve raw Xpert comprovante cancellation semantics."""
+    """Resolve raw Xpert comprovante cancellation semantics.
+
+    Only CANCELADO=true is a real cancellation of a SALE.
+    situacao=2 is NOT treated as cancellation (was previously assumed to be devolução).
+    CFOP < 5000 means entry/purchase note — never alert as cancelled sale.
+    """
 
     cancelado_raw = _get_any(row, ["CANCELADO", "cancelado"])
-    if cancelado_raw is not None:
-        return _to_bool(cancelado_raw)
-
-    situacao = _to_int(_get_any(row, ["SITUACAO", "situacao", "STATUS", "status"]))
-    if situacao == 2:
-        return True
-    if situacao in {3, 5}:
+    if cancelado_raw is None or not _to_bool(cancelado_raw):
         return False
-    return False
+
+    # Filter out entry notes (CFOP < 5000 = compra/entrada/transferência interna)
+    cfop_raw = _get_any(row, ["CFOP", "cfop"])
+    if cfop_raw is not None:
+        try:
+            cfop_num = int(str(cfop_raw).replace(".", "").replace(",", "").strip()[:4])
+            if cfop_num < 5000:
+                return False
+        except (ValueError, TypeError):
+            pass
+
+    return True
+
+
+def raw_nfe_is_voided(row: Dict[str, Any]) -> bool:
+    """Detect NFE with status=5 (inutilização fiscal)."""
+    status = _to_int(_get_any(row, ["STATUS", "status", "STATUSNFE", "STATUS_NFE"]))
+    return status == 5
 
 
 async def _send_telegram(chat_id: str, text: str) -> None:
@@ -108,8 +124,8 @@ def _get_recipients(id_empresa: int) -> List[str]:
       WHERE s.telegram_enabled = true
         AND s.telegram_chat_id IS NOT NULL
         AND (
-          (ut.role = 'OWNER' AND ut.id_empresa = %s)
-          OR (ut.role = 'MASTER')
+          (ut.role IN ('OWNER', 'owner') AND ut.id_empresa = %s)
+          OR (ut.role IN ('MASTER', 'platform_master'))
         )
     """
 
@@ -304,6 +320,61 @@ def _insert_alert_if_new(
         return bool(row)
 
 
+def _resolve_filial_nome(id_empresa: int, id_filial: int) -> str:
+    """Resolve branch name from auth.filiais. Returns short name or id_filial."""
+    sql = """
+      SELECT nome FROM auth.filiais
+      WHERE id_empresa = %s AND id_filial = %s
+      LIMIT 1
+    """
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(sql, (id_empresa, id_filial)).fetchone()
+            if row and row.get("nome"):
+                return str(row["nome"]).strip()
+    except Exception:
+        pass
+    return str(id_filial)
+
+
+def _format_datetime(raw: Any) -> str:
+    """Format ISO datetime string to 'dd/mm/aaaa HH:MM'."""
+    from datetime import datetime
+
+    if not raw:
+        return "(sem data)"
+    s = str(raw).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%d/%m/%Y %H:%M")
+        except (ValueError, TypeError):
+            continue
+    # Fallback: try parsing just the date part
+    try:
+        dt = datetime.strptime(s[:10], "%Y-%m-%d")
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return s
+
+
+def _resolve_usuario_nome(id_empresa: int, id_filial: int, id_usuario: int) -> Optional[str]:
+    """Resolve operator name from dw.dim_usuario_caixa."""
+    sql = """
+      SELECT nome FROM dw.dim_usuario_caixa
+      WHERE id_empresa = %s AND id_filial = %s AND id_usuario = %s
+      LIMIT 1
+    """
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(sql, (id_empresa, id_filial, id_usuario)).fetchone()
+            if row and row.get("nome"):
+                return str(row["nome"]).strip()
+    except Exception:
+        pass
+    return None
+
+
 def json_dumps(obj: Any) -> str:
     import json
 
@@ -311,15 +382,13 @@ def json_dumps(obj: Any) -> str:
 
 
 async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str, Any]]) -> None:
-    """Scan ingested comprovantes rows; persist alerts for operationally cancelled comprovantes."""
+    """Scan ingested comprovantes; send Telegram alert for each real cancellation (CANCELADO=true)."""
 
     if not settings.telegram_bot_token:
-        # Not configured; still record alerts (optional) but no external call.
-        pass
+        return
 
     recipients = _get_recipients(id_empresa)
     if not recipients:
-        # No one opted-in.
         return
 
     tasks: List[asyncio.Task] = []
@@ -348,19 +417,146 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
         if not inserted:
             continue
 
-        data = _get_any(row, ["DATA", "data"]) or "(sem data)"
+        filial_nome = _resolve_filial_nome(id_empresa, id_filial)
+        data_raw = _get_any(row, ["DATA", "data"]) or ""
+        data_fmt = _format_datetime(data_raw)
         valor_total = _get_any(row, ["VLRTOTAL", "valor_total"]) or 0
-        id_usuario = _get_any(row, ["ID_USUARIOS", "id_usuario"]) or "?"
-        id_turno = _get_any(row, ["ID_TURNOS", "id_turno"]) or "?"
+        id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario"]))
+        referencia = _get_any(row, ["REFERENCIA", "referencia"]) or ""
+
+        nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None
+
+        try:
+            valor_fmt = f"R$ {float(valor_total):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except (ValueError, TypeError):
+            valor_fmt = f"R$ {valor_total}"
 
         text = (
-            "🚨 CANCELAMENTO DETECTADO\n"
-            f"Empresa: {id_empresa}\n"
-            f"Filial: {id_filial} | DB: {id_db}\n"
-            f"Comprovante: {id_comprovante}\n"
-            f"Data: {data}\n"
-            f"Valor: R$ {valor_total}\n"
-            f"Usuário: {id_usuario} | Turno: {id_turno}"
+            f"🚨 VENDA CANCELADA na filial {filial_nome}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📄 Comprovante: {id_comprovante}"
+            + (f" (Ref: {referencia})" if referencia else "")
+            + f"\n"
+            f"💰 Valor: {valor_fmt}\n"
+            f"📅 Data: {data_fmt}\n"
+            f"👤 Operador: {nome_usuario or id_usuario or '?'}"
+        )
+
+        for chat_id in recipients:
+            tasks.append(asyncio.create_task(_send_telegram(chat_id, text)))
+
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) -> None:
+    """Scan ingested NFEs; send Telegram alert for each voided note (STATUS=5, inutilização)."""
+
+    if not settings.telegram_bot_token:
+        return
+
+    recipients = _get_recipients(id_empresa)
+    if not recipients:
+        return
+
+    tasks: List[asyncio.Task] = []
+
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+
+        if not raw_nfe_is_voided(row):
+            continue
+
+        id_filial = _to_int(_get_any(row, ["ID_FILIAL", "id_filial"]))
+        id_db = _to_int(_get_any(row, ["ID_DB", "id_db"]))
+        id_nfe = _to_int(_get_any(row, ["ID_NFE", "id_nfe", "ID_NOTASFISCAIS", "id_notasfiscais"]))
+
+        if id_filial is None or id_nfe is None:
+            continue
+
+        # Dedupe: use dispatch log to avoid sending same NFE twice
+        dedupe_raw = f"{id_empresa}|{id_filial}|NFE_INUTILIZADA|{id_nfe}"
+        dedupe_hash = hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
+        inserted = _register_dispatch_once(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            event_type="NFE_INUTILIZADA",
+            event_date=time.strftime("%Y-%m-%d"),
+            insight_id=None,
+            dedupe_hash=dedupe_hash,
+            payload={"id_nfe": id_nfe, "id_filial": id_filial, "id_db": id_db},
+        )
+        if not inserted:
+            continue
+
+        filial_nome = _resolve_filial_nome(id_empresa, id_filial)
+        numero_nfe = _get_any(row, ["NRONF", "NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]) or "?"
+
+        # Extract SERIE from CHAVEACESSO (positions 22-24) when not available directly
+        serie = _get_any(row, ["SERIE", "serie"])
+        if not serie:
+            chave = str(_get_any(row, ["CHAVEACESSO", "chaveacesso", "CHAVE_ACESSO"]) or "")
+            if len(chave) >= 25:
+                try:
+                    serie = str(int(chave[22:25]))
+                except (ValueError, TypeError):
+                    serie = None
+        serie = serie or "?"
+
+        # Lookup VALOR from comprovante when not available directly
+        valor = _get_any(row, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"])
+        id_comprovante = _to_int(_get_any(row, ["ID_COMPROVANTE", "id_comprovante"]))
+        if not valor and id_comprovante and id_filial:
+            try:
+                with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+                    comp_row = conn.execute(
+                        "SELECT (payload->>'VLRTOTAL')::numeric AS valor FROM stg.comprovantes WHERE id_empresa=%s AND id_filial=%s AND id_comprovante=%s LIMIT 1",
+                        (id_empresa, id_filial, id_comprovante),
+                    ).fetchone()
+                    if comp_row and comp_row.get("valor"):
+                        valor = comp_row["valor"]
+            except Exception:
+                pass
+        valor = valor or 0
+
+        # Use DATA as inutilização date (Xpert doesn't have separate DATAINUTILIZACAO)
+        data_inut = _format_datetime(
+            _get_any(row, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao", "DATA", "data"]) or ""
+        )
+        data_emissao = _format_datetime(_get_any(row, ["DATAEMISSAO", "DATA_EMISSAO", "data_emissao", "DATA", "data"]) or "")
+        id_usuario = _to_int(_get_any(row, ["ID_USUARIOS", "id_usuario", "ID_USUARIO"]))
+
+        # NFE rows often lack ID_USUARIOS; resolve from parent comprovante
+        if not id_usuario and id_comprovante and id_filial:
+            try:
+                with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+                    user_row = conn.execute(
+                        "SELECT (payload->>'ID_USUARIOS')::int AS id_usuario "
+                        "FROM stg.comprovantes "
+                        "WHERE id_empresa=%s AND id_filial=%s AND id_comprovante=%s LIMIT 1",
+                        (id_empresa, id_filial, id_comprovante),
+                    ).fetchone()
+                    if user_row and user_row.get("id_usuario"):
+                        id_usuario = int(user_row["id_usuario"])
+            except Exception:
+                pass
+
+        nome_usuario = _resolve_usuario_nome(id_empresa, id_filial, id_usuario) if id_usuario else None
+
+        try:
+            valor_fmt = f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except (ValueError, TypeError):
+            valor_fmt = f"R$ {valor}"
+
+        text = (
+            f"📋 NOTA INUTILIZADA na filial {filial_nome}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📄 NFe Nº: {numero_nfe} | Série: {serie}\n"
+            f"💰 Valor: {valor_fmt}\n"
+            f"📅 Emissão: {data_emissao}\n"
+            f"📅 Inutilização: {data_inut}\n"
+            f"👤 Operador: {nome_usuario or id_usuario or '?'}"
         )
 
         for chat_id in recipients:

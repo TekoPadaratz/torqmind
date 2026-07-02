@@ -96,6 +96,31 @@ class ReposAuthUnitTests(unittest.TestCase):
         self.assertEqual(scope["latest_operational_dt"], "2026-03-20")
         self.assertEqual(scope["latest_source"], "fact_comprovante")
 
+    def test_default_product_scope_includes_all_active_branches_for_company_level_scope(self):
+        with patch(
+            "app.repos_auth._load_product_scope_defaults",
+            return_value={
+                "default_product_scope_days": 7,
+                "latest_dt_ref": repos_auth.date(2026, 5, 11),
+                "current_date": repos_auth.date(2026, 5, 11),
+                "has_operational_data": True,
+                "latest_source": "fact_venda",
+            },
+        ), patch("app.repos_auth._list_active_branch_ids", return_value=[14458, 17337]), patch(
+            "app.repos_auth.business_timezone_name",
+            return_value="America/Sao_Paulo",
+        ):
+            scope = repos_auth._build_default_product_scope(1, None)
+
+        self.assertEqual(scope["id_empresa"], 1)
+        self.assertEqual(scope["id_filial"], None)
+        self.assertEqual(scope["id_filiais"], [14458, 17337])
+        self.assertEqual(scope["branch_scope"], "all")
+        self.assertEqual(
+            _build_dashboard_home_path(scope, include_dates=False),
+            "/dashboard?id_empresa=1&id_filiais=14458&id_filiais=17337",
+        )
+
     def test_email_lookup_uses_parameterized_query(self):
         fake_conn = _FakeConn()
 

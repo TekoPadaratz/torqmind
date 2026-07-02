@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     app_root_path: str = ""
     app_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
-    app_cors_origin_regex: str = r"^https?://([a-zA-Z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(:3000)?$"
+    app_cors_origin_regex: str = ""
 
     # Database (PostgreSQL)
     database_url: str | None = None
@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     db_pool_min_size: int = 2
     db_pool_max_size: int = 30
     db_pool_timeout_seconds: int = 30
+    # Batch ETL needs a higher statement_timeout than the 55s interactive cap set
+    # in get_conn(): bulk/full-snapshot reingestions make heavy fact loaders
+    # (e.g. load_fact_comprovante / load_fact_financeiro) legitimately exceed 55s.
+    # Applied only to the ETL session in etl_orchestrator, not to API requests.
+    etl_statement_timeout_seconds: int = 600
     db_pool_max_idle_seconds: int = 300
 
     # Database (ClickHouse - Analytics)
@@ -56,6 +61,43 @@ class Settings(BaseSettings):
     api_jwt_issuer: str = "torqmind-api"
     api_access_token_minutes: int = 480
     platform_sovereign_emails: str = "teko94@gmail.com"
+
+    # Password reset ("esqueci minha senha")
+    # Base pública do frontend usada para montar o link do e-mail (sem barra final).
+    web_public_url: str = "http://localhost:3000"
+    password_reset_token_ttl_minutes: int = 30
+    password_reset_link_path: str = "/reset-password"
+
+    # SMTP / e-mail transacional (recuperação de senha).
+    # Tudo opcional: se SMTP_ENABLED=false (padrão), o envio é ignorado com log.
+    smtp_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    # Remetente: NÃO usar um domínio que não controlamos (ex.: @torqmind.com)
+    # enquanto o domínio não estiver comprado e com SPF/DKIM/DMARC configurados.
+    # Por padrão fica vazio; deve ser definido via env (SMTP_FROM_EMAIL) apontando
+    # para um remetente de um domínio sob nosso controle.
+    smtp_from: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "TorqMind"
+    smtp_timeout_seconds: int = 20
+
+    # 2FA / MFA por TOTP (Google/Microsoft Authenticator etc.).
+    # Chave Fernet (base64 urlsafe, 32 bytes) para cifrar o segredo TOTP em repouso.
+    # Vazio = 2FA inativo (setup recusado com erro claro). Definir via env em prod.
+    totp_encryption_key: str = ""
+    totp_issuer: str = "TorqMind"
+    # Janela de tolerância de relógio (passos de 30s para cada lado).
+    totp_valid_window: int = 1
+    # TTL do desafio MFA intermediário no login (minutos).
+    mfa_challenge_ttl_minutes: int = 5
+    # Máximo de tentativas de código antes de invalidar o desafio.
+    mfa_max_attempts: int = 5
+
 
     # Ingestion
     # If True, /ingest requires X-Ingest-Key (recommended for production).

@@ -5,13 +5,14 @@ import copy
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
+from app.permissions import require_screen, redact_sensitive, require_not_kiosk
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
 from app import repos_analytics as repos_mart
 from app import repos_auth
@@ -222,7 +223,6 @@ def _with_cached_response(
 
     bypass_snapshot = snapshot_cache.route_snapshot_is_bypassed(scope_key)
     if bypass_snapshot:
-        guard_state = safe_hot_route_guard()
         try:
             payload = compute()
         except ROUTE_SNAPSHOT_FALLBACK_ERRORS as exc:
@@ -247,7 +247,7 @@ def _with_cached_response(
                     "exact_scope_match": True,
                     "updated_at": None,
                     "age_seconds": None,
-                    "busy_reasons": list(guard_state.get("reasons") or []),
+                    "busy_reasons": [],
                     "message": "A leitura ao vivo desta tela ficou indisponível agora. A resposta mantém indisponibilidade explícita em vez de reaproveitar snapshot stale.",
                 } | fallback_overrides
                 return payload
@@ -265,7 +265,7 @@ def _with_cached_response(
             "exact_scope_match": True,
             "updated_at": generated_at,
             "age_seconds": 0.0,
-            "busy_reasons": list(guard_state.get("reasons") or []),
+            "busy_reasons": [],
             "message": None,
         }
         return payload
@@ -666,6 +666,9 @@ def _safe_fraud_overview_payload(tenant_id: int, dt_ini: date, dt_fim: date, dt_
             "insights": [],
             "payments_risk": [],
             "open_cash": {"source_status": "unavailable", "severity": "UNAVAILABLE", "summary": "Monitor operacional indisponível.", "items": []},
+            "troca_forma_pgto": [],
+            "troca_forma_pgto_totais": {"suspeitas_qtd": 0, "suspeitas_valor": 0.0, "todas_qtd": 0, "todas_valor": 0.0},
+            "troca_only_suspeita": True,
         },
         fallback_state="preparing",
         message="O antifraude ainda não tem um snapshot confiável para este recorte. A tela evita mostrar zero como se fosse dado real.",
@@ -756,6 +759,9 @@ def _safe_customers_overview_payload(as_of: date) -> Dict[str, Any]:
                 "titulos_em_aberto": None,
                 "valor_total": None,
                 "max_dias_atraso": None,
+                "valor_a_vencer": None,
+                "titulos_a_vencer": None,
+                "clientes_a_vencer": None,
             },
             "buckets": [],
             "customers": [],
@@ -917,6 +923,7 @@ def _safe_cash_overview_payload() -> Dict[str, Any]:
         "payment_mix": [],
         "cancelamentos": [],
         "alerts": [],
+        "inutilizacoes": {"qtd": 0, "valor_total": 0.0, "items": []},
         },
         fallback_state="preparing",
         message="O caixa ainda está preparando a leitura consolidada do período. O payload sinaliza indisponibilidade transitória sem simular fechamento zerado.",
@@ -992,6 +999,7 @@ class CompetitorPriceUpsertRequest(BaseModel):
 def get_filiais(
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, _ = resolve_scope(claims, id_empresa_q=id_empresa, id_filial_q=None)
@@ -1016,13 +1024,14 @@ def dashboard_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
 
     if compact:
-        return {
+        payload = {
             "insights_generated": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=20),
             "risk": {
                 "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
@@ -1030,8 +1039,9 @@ def dashboard_overview(
             },
             "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
         }
+        return redact_sensitive(payload, claims)
 
-    return {
+    payload = {
         "kpis": repos_mart.dashboard_kpis(role, tenant, filial, dt_ini, dt_fim),
         "by_day": repos_mart.dashboard_series(role, tenant, filial, dt_ini, dt_fim),
         "insights": repos_mart.insights_base(role, tenant, filial, dt_ini, dt_fim),
@@ -1048,6 +1058,7 @@ def dashboard_overview(
         "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
         "notifications_unread": repos_mart.notifications_unread_count(role, tenant, filial),
     }
+    return redact_sensitive(payload, claims)
 
 
 @router.get("/dashboard/home", response_model=DashboardHomeResponse)
@@ -1059,11 +1070,12 @@ def dashboard_home(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="dashboard_home",
         role=role,
         tenant_id=tenant,
@@ -1073,7 +1085,7 @@ def dashboard_home(
         dt_ref=as_of,
         compute=lambda: repos_mart.dashboard_home_bundle(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim, dt_ref=as_of),
         safe_fallback=lambda: _safe_dashboard_home_payload(tenant, branch_scope, dt_ini, dt_fim, as_of),
-    )
+    ), claims)
 
 
 # ------------------------
@@ -1089,15 +1101,16 @@ def sales_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("sales")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
 
     def build_response() -> Dict[str, Any]:
-        return repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of)
+        return redact_sensitive(repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of), claims)
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="sales_overview",
         role=role,
         tenant_id=tenant,
@@ -1108,7 +1121,76 @@ def sales_overview(
         compute=build_response,
         extra_context={"module": "sales"},
         safe_fallback=lambda: _safe_sales_overview_payload(role, tenant, filial, dt_ini, dt_fim, as_of),
+    ), claims)
+
+
+@router.get("/sales/abc-curve")
+def sales_abc_curve(
+    dt_ini: date,
+    dt_fim: date,
+    sort_by: str = Query("faturamento", pattern="^(faturamento|quantidade|lucro)$"),
+    threshold_a: Optional[int] = Query(None, ge=1, le=98),
+    threshold_b: Optional[int] = Query(None, ge=2, le=99),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("sales")),
+):
+    role = claims["role"]
+    tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+
+    from app.repos_mart import get_filial_params
+    single_filial = filial if isinstance(filial, int) else None
+    params = get_filial_params(role, tenant, single_filial)
+    # Query params override DB values (allows immediate reclassification after save)
+    effective_a = threshold_a if threshold_a is not None else params["abc_threshold_a"]
+    effective_b = threshold_b if threshold_b is not None else params["abc_threshold_b"]
+    result = repos_mart.sales_abc_curve(
+        role, tenant, filial, dt_ini, dt_fim,
+        sort_by=sort_by,
+        threshold_a=effective_a,
+        threshold_b=effective_b,
+        exclude_fuel=params["abc_exclude_fuel"],
     )
+    return redact_sensitive(result, claims)
+
+
+# ------------------------
+# Filial Params (ABC thresholds)
+# ------------------------
+
+@router.get("/params/filial")
+def get_filial_params_endpoint(
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    from app.repos_mart import get_filial_params
+    return get_filial_params(role, tenant, filial)
+
+
+@router.put("/params/filial")
+def update_filial_params_endpoint(
+    body: dict,
+    claims=Depends(get_current_claims),
+):
+    role = claims["role"]
+    if role not in ("MASTER", "OWNER"):
+        raise HTTPException(403, "Apenas proprietário pode alterar parâmetros")
+    tenant = claims["id_empresa"]
+    filial = body.get("id_filial")
+    if not filial:
+        raise HTTPException(422, "id_filial obrigatório")
+    a = int(body.get("abc_threshold_a", 80))
+    b = int(body.get("abc_threshold_b", 95))
+    if not (1 <= a < b <= 99):
+        raise HTTPException(422, "Thresholds inválidos: A deve ser < B e ambos entre 1-99")
+    from app.repos_mart import upsert_filial_params
+    upsert_filial_params(role, tenant, int(filial), abc_threshold_a=a, abc_threshold_b=b, abc_exclude_fuel=body.get("abc_exclude_fuel", True))
+    return {"ok": True}
 
 
 # ------------------------
@@ -1123,7 +1205,9 @@ def fraud_overview(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    troca_only_suspeita: bool = Query(True, description="Troca de forma de pgto: só suspeitas (default) ou todas"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fraud")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1137,12 +1221,31 @@ def fraud_overview(
         risk_kpis = repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim)
         risk_series = repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim)
         risk_window = repos_mart.risk_data_window(role, tenant, filial)
-        model_coverage = repos_mart.risk_model_coverage(dt_ini, dt_fim, risk_window)
+        model_coverage = repos_mart.risk_model_coverage(role, tenant, filial, dt_ini, dt_fim)
         risk_top_employees = repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=10)
         risk_by_turn_local = repos_mart.risk_by_turn_local(role, tenant, filial, dt_ini, dt_fim, limit=10)
         risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
         payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
         open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
+        # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
+        if role in ("MASTER", "OWNER"):
+            troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
+                role, tenant, filial, dt_ini, dt_fim,
+                only_suspeita=troca_only_suspeita, limit=200,
+            )
+            # Period-wide totals (independent of the 200-row listing limit and the
+            # suspeitas/todas toggle) so the KPIs reflect the real totals.
+            troca_forma_pgto_totais = repos_mart.fraud_troca_forma_pgto_kpis(
+                role, tenant, filial, dt_ini, dt_fim,
+            )
+        else:
+            troca_forma_pgto = []
+            troca_forma_pgto_totais = {
+                "suspeitas_qtd": 0,
+                "suspeitas_valor": 0.0,
+                "todas_qtd": 0,
+                "todas_valor": 0.0,
+            }
         operational_summary = {
             "kind": "operational",
             "kpis": operational_kpis,
@@ -1182,9 +1285,12 @@ def fraud_overview(
             "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=15),
             "payments_risk": payments_risk,
             "open_cash": open_cash,
+            "troca_forma_pgto": troca_forma_pgto,
+            "troca_forma_pgto_totais": troca_forma_pgto_totais,
+            "troca_only_suspeita": troca_only_suspeita,
         }
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="fraud_overview",
         role=role,
         tenant_id=tenant,
@@ -1195,7 +1301,7 @@ def fraud_overview(
         compute=build_response,
         extra_context={"module": "fraud", "contract_version": 2},
         safe_fallback=lambda: _safe_fraud_overview_payload(tenant, dt_ini, dt_fim, as_of),
-    )
+    ), claims)
 
 
 @router.get("/risk/overview")
@@ -1208,11 +1314,12 @@ def risk_overview(
     status: Optional[str] = Query(None, description="NOVO/LIDO/RESOLVIDO"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fraud")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
 
-    return {
+    payload = {
         "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
         "by_day": repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim),
         "window": repos_mart.risk_data_window(role, tenant, filial),
@@ -1222,11 +1329,40 @@ def risk_overview(
         "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, status=status, limit=30),
         "operational_score": repos_mart.operational_score(role, tenant, filial, dt_ini, dt_fim),
     }
+    return redact_sensitive(payload, claims)
 
 
 # ------------------------
 # Clientes
 # ------------------------
+
+@router.get("/customers/summary")
+def customers_summary(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    sort_by: Optional[str] = Query("total_compras_30d"),
+    sort_order: Optional[str] = Query("DESC"),
+    search: Optional[str] = Query(""),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
+):
+    role = claims["role"]
+    tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    try:
+        return redact_sensitive(repos_mart.customers_summary_paginated(
+            role, tenant, filial,
+            page=page, page_size=page_size,
+            sort_by=sort_by or "total_compras_30d",
+            sort_order=sort_order or "DESC",
+            search=search or "",
+        ), claims)
+    except Exception as exc:
+        logger.warning("customers_summary fallback: %s", exc)
+        return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "source": "unavailable"}
+
 
 @router.get("/customers/overview")
 def customers_overview(
@@ -1237,6 +1373,7 @@ def customers_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1276,14 +1413,14 @@ def customers_overview(
         return {
             "top_customers": repos_mart.customers_top(role, tenant, filial, effective_dt_ini, effective_dt_fim, limit=15),
             "rfm": repos_mart.customers_rfm_snapshot(role, tenant, filial, as_of=as_of),
-            "delinquency": repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of, limit=15),
+            "delinquency": repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of),
             "churn_top": churn_top,
             "churn_snapshot": churn_bundle.get("snapshot_meta") or repos_mart.customers_churn_snapshot_meta(role, tenant, filial, as_of),
             "anonymous_retention": repos_mart.anonymous_retention_overview(role, tenant, filial, effective_dt_ini, effective_dt_fim),
             "commercial_coverage": commercial_coverage,
         }
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="customers_overview",
         role=role,
         tenant_id=tenant,
@@ -1294,7 +1431,25 @@ def customers_overview(
         compute=build_response,
         extra_context={"feature": "churn"},
         safe_fallback=lambda: _safe_customers_overview_payload(as_of),
-    )
+    ), claims)
+
+
+@router.get("/customers/delinquency")
+def customers_delinquency(
+    dt_ref: Optional[date] = Query(None, description="Reference date"),
+    sort_by: str = Query("gravity", description="Sort: gravity|valor|atraso|comprando"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
+):
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    as_of = resolve_business_date(dt_ref, tenant)
+    if sort_by not in ("gravity", "valor", "atraso", "comprando"):
+        sort_by = "gravity"
+    return repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of, sort_by=sort_by)
 
 
 @router.get("/clients/churn")
@@ -1309,6 +1464,7 @@ def clients_churn(
     limit: int = Query(20, ge=1, le=100),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1349,6 +1505,7 @@ def clients_retention_anonymous(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1380,6 +1537,7 @@ def finance_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1403,7 +1561,7 @@ def finance_overview(
             response["open_cash"] = repos_mart.open_cash_monitor(role, tenant, filial)
         return response
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="finance_overview",
         role=role,
         tenant_id=tenant,
@@ -1418,7 +1576,7 @@ def finance_overview(
             "include_operational": include_operational,
         },
         safe_fallback=lambda: _safe_finance_overview_payload(tenant, as_of, include_series, include_payments, include_operational),
-    )
+    ), claims)
 
 
 @router.get("/payments/overview")
@@ -1430,10 +1588,11 @@ def payments_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=30)
+    return redact_sensitive(repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=30), claims)
 
 
 # ------------------------
@@ -1449,10 +1608,11 @@ def cash_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("cash")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="cash_overview",
         role=role,
         tenant_id=tenant,
@@ -1463,48 +1623,8 @@ def cash_overview(
         compute=lambda: repos_mart.cash_overview(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim),
         extra_context={"module": "cash", "contract_version": 2},
         safe_fallback=_safe_cash_overview_payload,
-    )
+    ), claims)
 
-
-# ------------------------
-# Precificacao Concorrencia
-# ------------------------
-
-@router.get("/pricing/competitor/overview")
-def pricing_competitor_overview(
-    dt_ini: date,
-    dt_fim: date,
-    days_simulation: int = Query(10, ge=1, le=60),
-    id_filial: Optional[int] = Query(None),
-    id_filiais: Optional[List[int]] = Query(None),
-    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
-    claims=Depends(get_current_claims),
-):
-    role = claims["role"]
-    tenant, filial_scope, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    filial = primary_branch_id(filial_scope)
-    if filial is None:
-        raise HTTPException(status_code=400, detail="id_filial is required for competitor pricing simulation")
-
-    return _with_cached_response(
-        scope_key="pricing_competitor_overview",
-        role=role,
-        tenant_id=tenant,
-        branch_scope=branch_scope,
-        dt_ini=dt_ini,
-        dt_fim=dt_fim,
-        dt_ref=None,
-        compute=lambda: repos_mart.competitor_pricing_overview(
-            role,
-            tenant,
-            filial,
-            dt_ini=dt_ini,
-            dt_fim=dt_fim,
-            days_simulation=days_simulation,
-        ),
-        extra_context={"days_simulation": days_simulation},
-        safe_fallback=lambda: _safe_pricing_overview_payload(dt_ini, dt_fim, days_simulation),
-    )
 
 
 @router.get("/sync/status")
@@ -1513,57 +1633,10 @@ def sync_status(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     tenant, _, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return snapshot_cache.last_consolidated_sync(tenant_id=tenant, branch_id=primary_branch_id(branch_scope))
-
-
-@router.post("/pricing/competitor/prices")
-def pricing_competitor_prices_upsert(
-    payload: CompetitorPriceUpsertRequest,
-    id_filial: Optional[int] = Query(None),
-    id_filiais: Optional[List[int]] = Query(None),
-    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
-    claims=Depends(get_current_claims),
-):
-    role = claims["role"]
-    if role not in {"MASTER", "OWNER", "MANAGER"}:
-        raise HTTPException(status_code=403, detail="forbidden")
-    try:
-        repos_auth.assert_product_write_allowed(claims)
-    except repos_auth.AuthError as exc:
-        _raise_auth_error(exc)
-
-    tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    filial = primary_branch_id(filial_scope)
-    if filial is None:
-        raise HTTPException(status_code=400, detail="id_filial is required to save competitor prices")
-
-    if not payload.items:
-        return {"ok": True, "saved": 0}
-
-    requested_ids = [item.id_produto for item in payload.items]
-    allowed_ids = repos_mart.competitor_fuel_product_ids(role, tenant, filial, requested_ids)
-    invalid_ids = [pid for pid in requested_ids if pid not in allowed_ids]
-    if invalid_ids:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "competitor_invalid_product",
-                "message": "Só é permitido registrar preços para combustíveis ativos.",
-                "ids": invalid_ids,
-            },
-        )
-
-    items = [{"id_produto": it.id_produto, "competitor_price": it.competitor_price} for it in payload.items]
-    result = repos_mart.competitor_pricing_upsert(
-        role,
-        tenant,
-        filial,
-        items=items,
-        updated_by=str(claims.get("sub") or ""),
-    )
-    return {"ok": True, **result}
 
 
 # ------------------------
@@ -1579,6 +1652,7 @@ def goals_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1607,7 +1681,7 @@ def goals_overview(
             "commercial_coverage": commercial_coverage,
         }
 
-    return _with_cached_response(
+    return redact_sensitive(_with_cached_response(
         scope_key="goals_overview",
         role=role,
         tenant_id=tenant,
@@ -1618,7 +1692,7 @@ def goals_overview(
         compute=build_response,
         extra_context={"goal_date": as_of.isoformat()},
         safe_fallback=lambda: _safe_goals_overview_payload(tenant),
-    )
+    ), claims)
 
 
 @router.post("/goals/target")
@@ -1628,6 +1702,7 @@ def goals_target(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
 ):
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:
@@ -1660,6 +1735,157 @@ def goals_target(
 
 
 # ------------------------
+# Team Commissions
+# ------------------------
+
+from app import repos_commission  # noqa: E402
+
+
+@router.get("/team/commissions/config")
+def team_commissions_config(
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Get commission configuration for a branch."""
+    role = claims["role"]
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    # Ensure config exists (creates default if needed)
+    config = repos_commission.ensure_default_config(tenant, id_filial)
+    config_id = config["id"]
+
+    groups_selected = repos_commission.get_config_groups(config_id)
+    tiers = repos_commission.get_config_tiers(config_id)
+    groups_available = repos_commission.get_available_groups(tenant, id_filial)
+
+    # Mark selected groups
+    selected_ids = {g["id_grupo_produto"] for g in groups_selected}
+    for g in groups_available:
+        g["selected"] = g["id_grupo_produto"] in selected_ids
+
+    return {
+        "config": {
+            "id": config_id,
+            "name": config["name"],
+            "default_payment_mode": config["default_payment_mode"],
+            "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
+            "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
+        },
+        "groups": groups_available,
+        "tiers": [
+            {
+                "tier_key": t["tier_key"],
+                "tier_name": t["tier_name"],
+                "min_sales_amount": float(t["min_sales_amount"]),
+                "commission_percent": float(t["commission_percent"]),
+                "sort_order": t["sort_order"],
+                "is_active": t["is_active"],
+            }
+            for t in tiers
+        ],
+    }
+
+
+@router.put("/team/commissions/config")
+def team_commissions_config_save(
+    body: dict = Body(...),
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Save commission configuration. Restricted to OWNER/MASTER."""
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem configurar comissão.")
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    groups = body.get("groups", [])
+    tiers = body.get("tiers", [])
+    payment_mode = body.get("default_payment_mode", "team_total")
+    manager_commission_mode = body.get("manager_commission_mode", "use_tiers")
+    manager_commission_percent = float(body.get("manager_commission_percent", 0) or 0)
+
+    # Validate payment_mode
+    if payment_mode not in ("team_total", "equal_split", "individual_sales"):
+        raise HTTPException(status_code=422, detail="Modo de pagamento inválido.")
+
+    if manager_commission_mode not in ("use_tiers", "fixed_percent"):
+        raise HTTPException(status_code=422, detail="Modo de comissão do gerente inválido.")
+    if manager_commission_mode == "fixed_percent" and manager_commission_percent <= 0:
+        raise HTTPException(status_code=422, detail="Percentual fixo do gerente deve ser maior que zero.")
+    if manager_commission_percent < 0 or manager_commission_percent > 100:
+        raise HTTPException(status_code=422, detail="Percentual de comissão do gerente deve estar entre 0 e 100.")
+
+    # Validate tiers
+    if not tiers:
+        raise HTTPException(status_code=422, detail="Ao menos um nível deve ser configurado.")
+    valid_keys = {"bronze", "silver", "gold", "diamond"}
+    prev_amount = None
+    prev_percent = None
+    for t in sorted(tiers, key=lambda x: x.get("sort_order", 0)):
+        if t.get("tier_key") not in valid_keys:
+            raise HTTPException(status_code=422, detail=f"Chave de nível inválida: {t.get('tier_key')}")
+        amount = float(t.get("min_sales_amount", 0))
+        percent = float(t.get("commission_percent", 0))
+        active = bool(t.get("is_active", True))
+
+        if active and amount <= 0:
+            raise HTTPException(status_code=422, detail=f"Valor mínimo de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
+        if active and percent <= 0:
+            raise HTTPException(status_code=422, detail=f"Percentual de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
+
+        if active and prev_amount is not None and amount <= prev_amount:
+            raise HTTPException(status_code=422, detail="Faixas ativas devem ter valor mínimo crescente.")
+        if active and prev_percent is not None and percent <= prev_percent:
+            raise HTTPException(status_code=422, detail="Faixas ativas devem ter percentual crescente.")
+
+        if active:
+            prev_amount = amount
+            prev_percent = percent
+
+    repos_commission.save_config(
+        tenant,
+        id_filial,
+        groups,
+        tiers,
+        payment_mode,
+        manager_commission_mode,
+        manager_commission_percent,
+    )
+    return {"ok": True, "message": "Configuração salva com sucesso."}
+
+
+@router.get("/team/commissions/results")
+def team_commissions_results(
+    id_filial: int = Query(..., description="Branch ID"),
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2020, le=2100),
+    payment_mode: Optional[str] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Get commission calculation results for a specific month/year."""
+    role = claims["role"]
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    # Resolve payment mode: explicit valid request wins, else fall back to the
+    # filial's configured default. calculate_commission_results re-validates.
+    valid_modes = ("team_total", "equal_split", "individual_sales")
+    effective_mode = payment_mode if payment_mode in valid_modes else None
+    if effective_mode is None:
+        config = repos_commission.get_config(tenant, id_filial)
+        effective_mode = str((config or {}).get("default_payment_mode") or "team_total")
+        if effective_mode not in valid_modes:
+            effective_mode = "individual_sales"
+    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, effective_mode)
+    return result
+
+
+# ------------------------
 # Jarvis briefing
 # ------------------------
 
@@ -1670,10 +1896,11 @@ def jarvis_briefing(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return repos_mart.jarvis_briefing(role, tenant, primary_branch_id(filial_scope), dt_ref=dt_ref)
+    return redact_sensitive(repos_mart.jarvis_briefing(role, tenant, primary_branch_id(filial_scope), dt_ref=dt_ref), claims)
 
 
 @router.post("/jarvis/generate")
@@ -1685,6 +1912,7 @@ def jarvis_generate(
     force: bool = Query(False),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
 ):
     role = claims["role"]
     try:
@@ -1764,6 +1992,7 @@ class TelegramSettingsUpdate(BaseModel):
 @router.get("/me/telegram")
 def me_telegram_settings(
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     user_id = str(claims.get("sub") or "")
     if not user_id:
@@ -1775,6 +2004,7 @@ def me_telegram_settings(
 def me_telegram_update(
     body: TelegramSettingsUpdate,
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     user_id = str(claims.get("sub") or "")
     if not user_id:
@@ -1815,6 +2045,7 @@ def notifications_list(
     limit: int = Query(30, ge=1, le=200),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1831,6 +2062,7 @@ def notifications_mark_read(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1844,6 +2076,7 @@ def notifications_unread_count(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)

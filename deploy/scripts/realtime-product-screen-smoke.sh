@@ -1,28 +1,350 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BASE_URL="${BASE_URL:-http://localhost/api}"
-API_CONTAINER="${API_CONTAINER:-torqmind-api-1}"
-TENANT_ID="${TENANT_ID:-1}"
+ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.app.env}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.app.yml}"
+API_CONTAINER="${API_CONTAINER:-torqmind-api}"
+TENANT_ID="${TENANT_ID:-${PRODUCT_SMOKE_ID_EMPRESA:-1}}"
 BRANCH_ID="${BRANCH_ID:--1}"
 ROLE="${ROLE:-platform_master}"
 SUBJECT="${SUBJECT:-ad519ee4-56c9-41fd-8ab0-9192a26e8d0a}"
+LOGIN_IDENTIFIER="${PRODUCT_SMOKE_LOGIN_IDENTIFIER:-}"
+LOGIN_PASSWORD="${PRODUCT_SMOKE_LOGIN_PASSWORD:-}"
 WINDOW_DAYS="${WINDOW_DAYS:-30}"
-DT_FIM="${DT_FIM:-$(date +%F)}"
-DT_INI="${DT_INI:-$(date -d "${DT_FIM} -$((WINDOW_DAYS - 1)) days" +%F)}"
+DT_FIM="${DT_FIM:-${PRODUCT_SMOKE_DT_FIM:-$(date +%F)}}"
+DT_INI="${DT_INI:-${PRODUCT_SMOKE_DT_INI:-$(date -d "${DT_FIM} -$((WINDOW_DAYS - 1)) days" +%F)}}"
+PRODUCT_SMOKE_REQUIRE_MULTIVM="${PRODUCT_SMOKE_REQUIRE_MULTIVM:-false}"
+PRODUCT_SMOKE_CHECK_PAGES="${PRODUCT_SMOKE_CHECK_PAGES:-auto}"
+PRODUCT_SMOKE_CONNECT_MODE="${PRODUCT_SMOKE_CONNECT_MODE:-auto}"
+PRODUCT_SMOKE_CONNECT_HOST="${PRODUCT_SMOKE_CONNECT_HOST:-127.0.0.1}"
+PRODUCT_SMOKE_CONNECT_PORT="${PRODUCT_SMOKE_CONNECT_PORT:-}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-generate_token() {
-    docker exec "$API_CONTAINER" python -c "import sys; sys.path.insert(0, '/app'); from app.security import create_access_token; print(create_access_token({'sub': '${SUBJECT}', 'role': '${ROLE}', 'id_empresa': int('${TENANT_ID}'), 'id_filial': int('${BRANCH_ID}')}))"
+HAS_COMPOSE_ENV=false
+if [[ -f "$ENV_FILE" ]]; then
+  HAS_COMPOSE_ENV=true
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+LOGIN_IDENTIFIER="${LOGIN_IDENTIFIER:-${PLATFORM_MASTER_EMAIL:-${CHANNEL_BOOTSTRAP_EMAIL:-}}}"
+LOGIN_PASSWORD="${LOGIN_PASSWORD:-${PLATFORM_MASTER_PASSWORD:-${CHANNEL_BOOTSTRAP_PASSWORD:-}}}"
+LOGIN_IDENTIFIER_CANDIDATES="${LOGIN_IDENTIFIER}|${PLATFORM_MASTER_EMAIL:-}|${CHANNEL_BOOTSTRAP_EMAIL:-}|admin@torqmind.io|admin"
+
+PUBLIC_BASE_URL="${PRODUCT_SMOKE_BASE_URL:-${PUBLIC_URL:-http://127.0.0.1}}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
+BASE_URL="${BASE_URL:-${PRODUCT_SMOKE_API_BASE_URL:-${PUBLIC_BASE_URL}/api}}"
+BASE_URL="${BASE_URL%/}"
+
+declare -a PUBLIC_CURL_ROUTE_ARGS=()
+declare -a API_CURL_ROUTE_ARGS=()
+
+log() {
+  printf '%s [product-smoke] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+compose_app() {
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+compose_service_running() {
+  local service="$1"
+  [[ "$HAS_COMPOSE_ENV" == "true" ]] || return 1
+  command -v docker >/dev/null 2>&1 || return 1
+  compose_app ps --status running --services 2>/dev/null | grep -Fx "$service" >/dev/null
+}
+
+is_loopback_host() {
+  case "$1" in
+    localhost|127.*|::1)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+build_connect_args() {
+  local url="$1"
+  local target_name="$2"
+  local -n target_ref="$target_name"
+  local -a url_parts=()
+  local mode="$PRODUCT_SMOKE_CONNECT_MODE"
+  local scheme host port target_port
+
+  target_ref=()
+  if [[ "$mode" == "public" ]]; then
+    return 0
+  fi
+
+  mapfile -t url_parts < <(python3 - "$url" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+parsed = urlsplit(sys.argv[1])
+scheme = parsed.scheme or 'http'
+host = parsed.hostname or ''
+port = parsed.port or (443 if scheme == 'https' else 80)
+print(scheme)
+print(host)
+print(port)
+PY
+)
+
+  scheme="${url_parts[0]:-http}"
+  host="${url_parts[1]:-}"
+  port="${url_parts[2]:-}"
+
+  [[ -n "$host" && -n "$port" ]] || return 0
+  if [[ "$mode" == "auto" ]]; then
+    if is_loopback_host "$host"; then
+      return 0
+    fi
+    mode="local"
+  fi
+
+  [[ "$mode" == "local" ]] || return 0
+  target_port="$PRODUCT_SMOKE_CONNECT_PORT"
+  if [[ -z "$target_port" ]]; then
+    if [[ "$scheme" == "https" ]]; then
+      target_port=443
+    else
+      target_port=80
+    fi
+  fi
+
+  target_ref=(--connect-to "${host}:${port}:${PRODUCT_SMOKE_CONNECT_HOST}:${target_port}")
+}
+
+require_http_page() {
+  local name="$1"
+  local url="$2"
+  local body
+  body="$(curl -fsS --max-time 20 "${PUBLIC_CURL_ROUTE_ARGS[@]}" "$url")"
+  if [[ "$body" != *"__next"* && "$body" != *"TorqMind"* ]]; then
+    echo "FAIL $name did not look like a rendered Next.js/TorqMind page" >&2
+    return 1
+  fi
+  log "PASS $name page"
+}
+
+run_multivm_checks() {
+  if [[ "$PRODUCT_SMOKE_REQUIRE_MULTIVM" != "true" && "$PRODUCT_SMOKE_REQUIRE_MULTIVM" != "1" ]]; then
+    return 0
+  fi
+  if [[ "$HAS_COMPOSE_ENV" != "true" ]]; then
+    echo "ENV_FILE=$ENV_FILE not found; required for multi-VM smoke" >&2
+    exit 2
+  fi
+
+  log "Checking App compose services"
+  compose_service_running api
+  compose_service_running web
+  compose_service_running nginx
+
+  log "Checking API effective multi-VM flags"
+  compose_app exec -T api python - <<'PY'
+from app.config import settings
+
+assert settings.realtime_marts_fallback is False, "REALTIME_MARTS_FALLBACK must be false"
+assert settings.pg_host not in {"postgres", "localhost", "127.0.0.1"}, "PG_HOST must be remote in multi-VM"
+assert settings.clickhouse_host not in {"clickhouse", "localhost", "127.0.0.1"}, "CLICKHOUSE_HOST must be remote in multi-VM"
+print("API_FLAGS_OK")
+PY
+}
+
+run_public_page_checks() {
+  local should_check="$PRODUCT_SMOKE_CHECK_PAGES"
+  if [[ "$should_check" == "auto" ]]; then
+    should_check=false
+    if [[ "$PRODUCT_SMOKE_REQUIRE_MULTIVM" == "true" || "$PRODUCT_SMOKE_REQUIRE_MULTIVM" == "1" ]]; then
+      should_check=true
+    fi
+  fi
+  [[ "$should_check" == "true" || "$should_check" == "1" ]] || return 0
+
+  log "Checking public product pages through Nginx"
+  require_http_page login "$PUBLIC_BASE_URL/"
+  require_http_page dashboard "$PUBLIC_BASE_URL/dashboard?dt_ini=$DT_INI&dt_fim=$DT_FIM&id_empresa=$TENANT_ID&scope_epoch=prod-smoke"
+  require_http_page sales "$PUBLIC_BASE_URL/sales?dt_ini=$DT_INI&dt_fim=$DT_FIM&id_empresa=$TENANT_ID&scope_epoch=prod-smoke"
+}
+
+generate_token_in_compose() {
+  compose_app exec -T api env \
+  LOGIN_IDENTIFIER="$LOGIN_IDENTIFIER" \
+  LOGIN_PASSWORD="$LOGIN_PASSWORD" \
+  LOGIN_IDENTIFIER_CANDIDATES="$LOGIN_IDENTIFIER_CANDIDATES" \
+    TOKEN_TENANT_ID="$TENANT_ID" \
+    TOKEN_BRANCH_ID="$BRANCH_ID" \
+    python - <<'PY'
+import os
+
+from app import repos_auth
+from app.security import create_access_token
+
+branch_raw = os.environ.get("TOKEN_BRANCH_ID")
+branch_id = int(branch_raw) if branch_raw and int(branch_raw) >= 0 else None
+tenant_id = int(os.environ["TOKEN_TENANT_ID"])
+identifier = os.environ.get("LOGIN_IDENTIFIER", "").strip()
+password = os.environ.get("LOGIN_PASSWORD", "")
+candidates = []
+for raw in os.environ.get("LOGIN_IDENTIFIER_CANDIDATES", "").split("|"):
+  value = raw.strip()
+  if value and value not in candidates:
+    candidates.append(value)
+
+session = None
+if identifier and password:
+  try:
+    session = repos_auth.verify_login(
+      identifier,
+      password,
+      id_empresa=tenant_id,
+      id_filial=branch_id,
+      include_default_scope=True,
+    )
+  except Exception:
+    session = None
+
+if session is None:
+  for candidate in candidates:
+    user = repos_auth.get_user_by_identifier(candidate)
+    if not user:
+      continue
+    try:
+      candidate_session = repos_auth.get_session_context(
+        str(user["id"]),
+        id_empresa=tenant_id,
+        id_filial=branch_id,
+        include_default_scope=True,
+      )
+    except Exception:
+      continue
+    if not bool((candidate_session.get("access") or {}).get("product")):
+      continue
+    session = candidate_session
+    break
+
+if session is None:
+  raise SystemExit("No valid smoke auth identity was found")
+
+payload = {
+  "sub": session["sub"],
+  "email": session.get("email"),
+  "user_role": session["user_role"],
+  "role": session["role"],
+  "id_empresa": session.get("id_empresa"),
+  "id_filial": session.get("id_filial"),
+  "channel_id": session.get("channel_id"),
+}
+print(create_access_token(payload))
+PY
+}
+
+generate_token_in_container() {
+  local container="$1"
+  docker exec \
+  -e LOGIN_IDENTIFIER="$LOGIN_IDENTIFIER" \
+  -e LOGIN_PASSWORD="$LOGIN_PASSWORD" \
+  -e LOGIN_IDENTIFIER_CANDIDATES="$LOGIN_IDENTIFIER_CANDIDATES" \
+    -e TOKEN_TENANT_ID="$TENANT_ID" \
+    -e TOKEN_BRANCH_ID="$BRANCH_ID" \
+    "$container" \
+    python - <<'PY'
+import os
+
+from app import repos_auth
+from app.security import create_access_token
+
+branch_raw = os.environ.get("TOKEN_BRANCH_ID")
+branch_id = int(branch_raw) if branch_raw and int(branch_raw) >= 0 else None
+tenant_id = int(os.environ["TOKEN_TENANT_ID"])
+identifier = os.environ.get("LOGIN_IDENTIFIER", "").strip()
+password = os.environ.get("LOGIN_PASSWORD", "")
+candidates = []
+for raw in os.environ.get("LOGIN_IDENTIFIER_CANDIDATES", "").split("|"):
+  value = raw.strip()
+  if value and value not in candidates:
+    candidates.append(value)
+
+session = None
+if identifier and password:
+  try:
+    session = repos_auth.verify_login(
+      identifier,
+      password,
+      id_empresa=tenant_id,
+      id_filial=branch_id,
+      include_default_scope=True,
+    )
+  except Exception:
+    session = None
+
+if session is None:
+  for candidate in candidates:
+    user = repos_auth.get_user_by_identifier(candidate)
+    if not user:
+      continue
+    try:
+      candidate_session = repos_auth.get_session_context(
+        str(user["id"]),
+        id_empresa=tenant_id,
+        id_filial=branch_id,
+        include_default_scope=True,
+      )
+    except Exception:
+      continue
+    if not bool((candidate_session.get("access") or {}).get("product")):
+      continue
+    session = candidate_session
+    break
+
+if session is None:
+  raise SystemExit("No valid smoke auth identity was found")
+
+payload = {
+  "sub": session["sub"],
+  "email": session.get("email"),
+  "user_role": session["user_role"],
+  "role": session["role"],
+  "id_empresa": session.get("id_empresa"),
+  "id_filial": session.get("id_filial"),
+  "channel_id": session.get("channel_id"),
+}
+print(create_access_token(payload))
+PY
+}
+
+generate_token() {
+  if compose_service_running api; then
+    generate_token_in_compose
+    return
+  fi
+  if generate_token_in_container "$API_CONTAINER" 2>/dev/null; then
+    return
+  fi
+  generate_token_in_container torqmind-api-1
+}
+
+build_connect_args "$PUBLIC_BASE_URL/" PUBLIC_CURL_ROUTE_ARGS
+build_connect_args "$BASE_URL/health" API_CURL_ROUTE_ARGS
+if (( ${#PUBLIC_CURL_ROUTE_ARGS[@]} > 0 || ${#API_CURL_ROUTE_ARGS[@]} > 0 )); then
+  log "Using local route override for public smoke via ${PRODUCT_SMOKE_CONNECT_HOST}:${PRODUCT_SMOKE_CONNECT_PORT:-80}"
+fi
+
+run_multivm_checks
+run_public_page_checks
 
 if [[ -n "${TORQMIND_SMOKE_TOKEN:-}" ]]; then
   TOKEN="$TORQMIND_SMOKE_TOKEN"
 else
   if ! command -v docker >/dev/null 2>&1; then
-    echo "docker não encontrado e TORQMIND_SMOKE_TOKEN não foi informado" >&2
+    echo "docker not found and TORQMIND_SMOKE_TOKEN was not provided" >&2
     exit 2
   fi
   TOKEN="$(generate_token)"
@@ -33,7 +355,7 @@ fetch_json() {
   local path="$2"
   local status
 
-  status="$(curl -sS -o "$TMP_DIR/$name.json" -w '%{http_code}' "$BASE_URL$path" -H "Authorization: Bearer $TOKEN")"
+  status="$(curl -sS "${API_CURL_ROUTE_ARGS[@]}" -o "$TMP_DIR/$name.json" -w '%{http_code}' "$BASE_URL$path" -H "Authorization: Bearer $TOKEN")"
   printf '%s' "$status" > "$TMP_DIR/$name.status"
   if [[ "$status" != "200" ]]; then
     echo "FAIL $name HTTP $status" >&2
@@ -58,14 +380,18 @@ from pathlib import Path
 
 tmp_dir = Path(sys.argv[1])
 
+
 def load(name: str):
     return json.loads((tmp_dir / f"{name}.json").read_text(encoding="utf-8"))
+
 
 def truthy_sequence(value):
     return isinstance(value, list) and len(value) > 0
 
+
 def truthy_mapping(value):
     return isinstance(value, dict) and len(value) > 0
+
 
 checks = []
 
@@ -84,18 +410,17 @@ sales = load("sales")
 checks.append((
     "sales",
     truthy_mapping(sales.get("kpis")) and (truthy_sequence(sales.get("top_products")) or truthy_sequence(sales.get("by_day"))),
-    "sales sem KPIs ou sem produtos/série",
+    "sales sem KPIs ou sem produtos/serie",
 ))
 
 cash = load("cash")
 cash_kpis = cash.get("kpis") or {}
-cash_historical = (cash.get("historical") or {}).get("kpis") or {}
 checks.append((
     "cash",
     cash_kpis.get("total_pagamentos") is not None and cash_kpis.get("recebimentos_periodo") is not None and cash_kpis.get("cancelamentos_periodo") is not None and (
         truthy_sequence((cash.get("historical") or {}).get("payment_mix")) or truthy_sequence(cash.get("turnos"))
     ),
-    "cash sem aliases compatíveis ou sem mix/turnos",
+    "cash sem aliases compativeis ou sem mix/turnos",
 ))
 
 fraud = load("fraud")
@@ -117,7 +442,7 @@ projection_goal = ((projection.get("goal") or {}).get("target_value"))
 checks.append((
     "goals",
     truthy_sequence(goals.get("leaderboard")) or truthy_sequence(goals.get("risk_top_employees")) or projection_goal is not None,
-    "goals sem leaderboard, risco ou projeção",
+    "goals sem leaderboard, risco ou projecao",
 ))
 
 customers = load("customers")
@@ -132,7 +457,7 @@ checks.append((
         or truthy_sequence(delinquency.get("buckets"))
         or truthy_sequence(delinquency.get("customers"))
     ),
-    "customers sem RFM ou sem blocos materiais de churn/delinquência",
+    "customers sem RFM ou sem blocos materiais de churn/delinquencia",
 ))
 
 finance = load("finance")
@@ -152,7 +477,7 @@ platform = load("platform")
 checks.append((
     "platform",
     truthy_mapping(platform) and "use_realtime_marts" in platform and "source_freshness" in platform and "recent_errors" in platform,
-    "platform sem payload mínimo de saúde técnica",
+    "platform sem payload minimo de saude tecnica",
 ))
 
 failed = [item for item in checks if not item[1]]
@@ -165,4 +490,4 @@ if failed:
     raise SystemExit(1)
 PY
 
-echo "Smoke concluído para ${BASE_URL} no período ${DT_INI}..${DT_FIM}."
+echo "Smoke concluido para ${BASE_URL} no periodo ${DT_INI}..${DT_FIM}."

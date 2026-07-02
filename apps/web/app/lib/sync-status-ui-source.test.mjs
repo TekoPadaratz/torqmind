@@ -36,10 +36,10 @@ test('sales page uses customer-friendly sales labels', () => {
   assert.ok(!source.includes('Saídas normais'));
 });
 
-test('pricing page keeps typed competitor prices while refetching after save', () => {
+test('pricing page clears typed competitor prices after save to prevent stale data', () => {
   const source = readFileSync(new URL('../pricing/page.tsx', import.meta.url), 'utf8');
   assert.ok(source.includes('router.replace(buildProductHref'));
-  assert.ok(!source.includes('setPriceInputs({});'));
+  assert.ok(source.includes('setPrices({})'));
 });
 
 test('product navigation uses Plataforma label in Portuguese', () => {
@@ -48,4 +48,12 @@ test('product navigation uses Plataforma label in Portuguese', () => {
   assert.ok(source.includes('Plataforma'));
   assert.ok(!source.includes('>Platform<'));
   assert.ok(platformShell.includes('TorqMind Plataforma'));
+});
+
+test('AppNav mobile scroll does not auto-reveal on scroll up', () => {
+  const source = readFileSync(new URL('../components/AppNav.tsx', import.meta.url), 'utf8');
+  // Must NOT contain "y < lastY" pattern (old auto-reveal on any scroll up)
+  assert.ok(!source.includes('y < lastY'), 'scroll handler must not show nav on generic scroll up');
+  // Must show nav only when near top (scrollY <= small threshold)
+  assert.ok(source.includes('y <= 12') || source.includes('scrollY <= 12'), 'scroll handler must show nav only near top');
 });

@@ -103,10 +103,44 @@ PHASE_SQL_STEPS: tuple[tuple[str, str], ...] = (
     ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
 )
 
+OPTIONAL_PHASE_STEP_MESSAGES: dict[str, str] = {
+    "fact_estoque_atual": "SKIP estoque_atual: function not installed",
+}
+
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 logger = logging.getLogger(__name__)
+
+
+def _etl_loader_function_exists(conn, function_name: str) -> bool:
+    try:
+        row = conn.execute(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_proc p
+              JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = 'etl'
+                AND p.proname = %s
+            ) AS ok
+            """,
+            (function_name,),
+        ).fetchone()
+    except AssertionError:
+        return True
+    return bool((row or {}).get("ok"))
+
+
+def _optional_phase_step_skip_meta(conn, step_name: str) -> dict[str, Any] | None:
+    if step_name != "fact_estoque_atual":
+        return None
+    if _etl_loader_function_exists(conn, "load_fact_estoque_atual"):
+        return None
+    return {
+        "reason": "function_not_installed",
+        "message": OPTIONAL_PHASE_STEP_MESSAGES[step_name],
+    }
 
 
 def _env_positive_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -195,6 +229,13 @@ def _apply_runtime_scope(
     branch_id: int | None,
     force_full: bool,
 ) -> None:
+    # Raise the statement_timeout for the batch ETL session. get_conn() applies a
+    # 55s interactive cap meant for API requests; bulk/full-snapshot reingestions
+    # make heavy fact loaders (load_fact_comprovante, load_fact_financeiro, ...)
+    # legitimately exceed 55s, which previously killed the whole track and stalled
+    # the watermark. This affects only the current ETL session (not API requests).
+    etl_timeout = max(60, int(getattr(settings, "etl_statement_timeout_seconds", 600) or 600))
+    _set_runtime_setting(conn, "statement_timeout", str(etl_timeout * 1000))
     _set_runtime_setting(conn, "etl.ref_date", ref_date.isoformat())
     _set_runtime_setting(conn, "etl.from_date", from_date.isoformat() if from_date else None)
     _set_runtime_setting(conn, "etl.to_date", to_date.isoformat() if to_date else None)
@@ -1877,6 +1918,32 @@ def _run_tenant_phase(
         if _track_runs_operational(track):
             for step_name, query in PHASE_SQL_STEPS:
                 step_index += 1
+                skip_meta = _optional_phase_step_skip_meta(conn, step_name)
+                if skip_meta is not None:
+                    meta[step_name] = 0
+                    meta[f"{step_name}_ms"] = 0
+                    meta[f"{step_name}_skipped"] = True
+                    meta[f"{step_name}_skip_reason"] = skip_meta["reason"]
+                    meta[f"{step_name}_message"] = skip_meta["message"]
+                    _log_instant_step(
+                        conn,
+                        tenant_id,
+                        step_name,
+                        status="ok",
+                        rows_processed=0,
+                        meta={
+                            "stage": "phase",
+                            "track": track,
+                            "ref_date": ref_date.isoformat(),
+                            "step_index": step_index,
+                            "step_count": step_count,
+                            "skipped": True,
+                            **skip_meta,
+                        },
+                        progress_callback=progress_callback,
+                    )
+                    logger.warning("%s tenant_id=%s", skip_meta["message"], tenant_id)
+                    continue
                 if step_name == "fact_pagamento_comprovante":
                     operation = lambda: _run_payment_loader(
                         conn,
@@ -2217,6 +2284,28 @@ def _run_tenant_post_refresh(
                 "no_window" if runs_operational else "track_excludes_step",
             )
 
+        # Refresh customer_screen_summary (runs independently — reads from STG/DW directly)
+        if runs_operational:
+            rows, step_ms = _run_logged_count_step(
+                conn,
+                tenant_id,
+                "customer_screen_summary",
+                stage="post_refresh",
+                ref_date=ref_date,
+                operation=lambda: _run_sql_count(
+                    conn,
+                    "SELECT etl.refresh_customer_screen_summary(%s) AS rows",
+                    (tenant_id,),
+                ),
+                meta={},
+                progress_callback=progress_callback,
+            )
+            post_meta["customer_screen_summary_refreshed"] = True
+            post_meta["customer_screen_summary_rows"] = rows
+            post_meta["customer_screen_summary_ms"] = step_ms
+        else:
+            post_meta["customer_screen_summary_skipped"] = True
+
         if runs_operational and customer_rfm_start is not None and customer_rfm_end is not None and customer_rfm_start <= customer_rfm_end:
             clock_driven = not sales_changed
             rows, step_ms = _run_logged_count_step(
@@ -2308,6 +2397,28 @@ def _run_tenant_post_refresh(
         else:
             post_meta["finance_aging_skipped"] = True
             _skip_step("finance_aging_snapshot", "no_window" if runs_operational else "track_excludes_step")
+
+        # Refresh customer delinquency mart (depends on finance data)
+        if runs_operational and (post_meta.get("finance_aging_refreshed") or sales_changed or finance_changed):
+            rows, step_ms = _run_logged_count_step(
+                conn,
+                tenant_id,
+                "customer_delinquency_summary",
+                stage="post_refresh",
+                ref_date=ref_date,
+                operation=lambda: _run_sql_count(
+                    conn,
+                    "SELECT etl.refresh_customer_delinquency_summary(%s) AS rows",
+                    (tenant_id,),
+                ),
+                meta={},
+                progress_callback=progress_callback,
+            )
+            post_meta["customer_delinquency_refreshed"] = True
+            post_meta["customer_delinquency_rows"] = rows
+            post_meta["customer_delinquency_ms"] = step_ms
+        else:
+            post_meta["customer_delinquency_skipped"] = True
 
         if runs_risk and health_start is not None and health_end is not None and health_start <= health_end:
             clock_driven = not (sales_changed or finance_changed or risk_changed)

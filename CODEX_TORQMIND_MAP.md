@@ -210,8 +210,8 @@ Funcoes ClickHouse implementadas:
 | `risk_series` | `/bi/risk/overview` | `agg_risco_diaria` | serie risco |
 | `risk_data_window` | `/bi/risk/overview` | `agg_risco_diaria` | janela dados |
 | `risk_top_employees` | `/bi/risk/overview` | `risco_top_funcionarios_diaria` | ranking risco |
-| `risk_last_events` | `/bi/risk/overview` | `risco_eventos_recentes` | eventos risco |
-| `risk_by_turn_local` | `/bi/risk/overview` | `risco_turno_local_diaria` | risco turno/local |
+| `risk_last_events` | `/bi/fraud/overview` + `/bi/risk/overview` | `mart_antifraude_eventos` | eventos antifraude enriquecidos (filial/turno/operador/data); contrato unico via `_build_antifraude_event` |
+| `risk_by_turn_local` | `/bi/fraud/overview` + `/bi/risk/overview` | `mart_antifraude_eventos` | concentracao por turno OPERACIONAL (`turno_numero` 1..N) + operador mais associado (sem canal; NUNCA `id_usuario` nem `id_turno` tecnico como turno) |
 | `operational_score` | `/bi/risk/overview` | risco + vendas + caixa | score operacional |
 | `customers_top` | `/bi/customers/overview` | `customer_rfm_daily` | top clientes |
 | `customers_rfm_snapshot` | `/bi/customers/overview` | `customer_rfm_daily` | snapshot RFM |
@@ -233,11 +233,11 @@ Funcoes ClickHouse implementadas:
 | `cash_commercial_overview` | `/bi/cash/overview` | vendas + caixa | comercial caixa |
 | `cash_overview` | `/bi/cash/overview` | caixa marts | payload caixa |
 | `open_cash_monitor` | `/bi/cash/overview` | `alerta_caixa_aberto` | alertas caixa |
-| `health_score_latest` | dashboard/home | `health_score_daily` | score saude |
 | `leaderboard_employees` | `/bi/goals/overview` | `agg_funcionarios_diaria` | ranking metas |
 | `sales_peak_hours_signal` | Jarvis/insights | `agg_vendas_hora` | sinal horarios |
 | `sales_declining_products_signal` | Jarvis/insights | `agg_produtos_diaria` | sinal produtos |
 | `jarvis_briefing` | `/bi/jarvis/briefing` | marts analiticas | briefing |
+| `sales_abc_curve` | `/bi/sales/abc-curve` | `sales_products_rt` | curva ABC pareto; suporta sort_by (faturamento/quantidade/lucro), thresholds configuraveis, exclusao de combustiveis |
 
 Funcoes estaticas/definicoes tambem existem em CH: `cash_definitions`, `fraud_definitions`, `finance_definitions`, `risk_model_coverage`.
 
@@ -248,14 +248,86 @@ Funcoes Postgres por desenho:
 - `competitor_pricing_upsert`: escrita OLTP app.
 - `competitor_fuel_product_ids`: dimensao/app para formulario.
 - `goals_today`, `upsert_goal`: app goals.
+- `get_config`, `ensure_default_config`, `save_config`, `calculate_commission_results`: commission tiers (repos_commission.py). **Fix 2026-06-04:** (1) `ensure_default_config` criava a config default em bloco indentado dentro de `if existing:` (inalcançável → 500/UnboundLocalError em filial sem config) — corrigido. (2) `calculate_commission_results` aceita `payment_mode` e calcula os 3 modos: `team_total` (tier/percentual sobre a venda total da equipe, rateio proporcional), `equal_split` (comissão total dividida igualmente entre vendedores elegíveis), `individual_sales` (tier por vendedor) — antes ignorava o modo e forçava individual. (3) Rota `GET /bi/team/commissions/results` valida `payment_mode` e cai no `default_payment_mode` da config quando ausente. (4) Frontend `apps/web/app/goals/CommissionsTab.tsx` expõe seletor de modo e envia `payment_mode`. Comissão zero é legítima quando a venda elegível atribuída (`id_funcionario>0`) fica abaixo do menor tier.
+- `get_filial_params`, `upsert_filial_params`: parametros configuraveis por filial (thresholds ABC, exclusao de combustivel). Tabela `app.filial_params`.
 - `risk_insights`: app/insights operacionais.
 - `notifications_list`, `notifications_unread_count`, `notification_mark_read`: app notifications.
 
 Divida tecnica explicita quando `USE_CLICKHOUSE=true`:
 
 - `stock_position_summary`: falta mart de estoque.
-- `customers_delinquency_overview`: falta mart customer-level de inadimplencia.
 - `monthly_goal_projection`: mistura `app.goals` com serie analitica.
+
+### customers_delinquency_overview (Prioridades de cobranca) — corrigido 2026-06-04
+
+- **Fonte canonica**: SQL Server Xpert `CONTASRECEBER` + `CONTASRECEBERBAIXA` + `ENTIDADES`. Chave do titulo: `(ID_FILIAL, ID_DB, ID_CONTASRECEBER)`. Aberto = `DTAPGTO IS NULL`. Saldo do titulo = `VALOR - GREATEST(VLRPAGO, SUM(VALORBAIXA))`.
+- **Mart real (grao correto)**: `mart.customer_delinquency_summary` (migrations 081/084), grao `(id_empresa, id_filial, id_cliente)`, alimentada por `etl.refresh_customer_delinquency_summary` a partir de `dw.fact_financeiro` + `stg.contasreceberbaixa` + `dw.dim_cliente` + `dw.fact_venda`. Refrescada todo ciclo operacional (etl_orchestrator pos-refresh, em `sales_changed`/`finance_changed`).
+- **Regra de saldo/baixa**: subtrai baixas reais (`GREATEST(valor_pago, total_baixa)`); só entram titulos com saldo > 0.
+- **Inadimplente**: cliente com >= 1 titulo vencido e saldo aberto positivo. Titulos a vencer só entram para clientes ja inadimplentes.
+- **Deduplicacao**: garantida no grao da mart (uma linha por empresa/filial/cliente). NUNCA deduplicar no frontend.
+- **Contrato de payload**: `summary` (clientes_em_aberto, titulos_em_aberto, valor_total, titulos/valor_ate_30d, titulos/valor_acima_30d, titulos/valor_a_vencer, clientes_a_vencer, max_dias_atraso, valor_total_aberto), `buckets[]`, `customers[]` (id_cliente, cliente_nome, titulos/valor por faixa, valor_total_vencido, valor_total_aberto, max_dias_atraso, compras_30d, ultima_compra_dt), `sort_by`, `dt_ref`.
+- **Rota API**: `/bi/customers/overview` (bloco `delinquency`) e `/bi/customers/delinquency?sort_by=gravity|valor|atraso|comprando`.
+- **Tela**: `apps/web/app/customers/page.tsx` (grid "Prioridades de cobranca"), so pagina/ordena o payload.
+- **Roteamento**: com `USE_REALTIME_MARTS=true`, `repos_mart_realtime.customers_delinquency_overview` DELEGA para `repos_mart.customers_delinquency_overview` (mart PG reconciliada). A query ClickHouse-direct anterior multiplicava o cliente pelo numero de filiais (join com `mart_clientes_resumo` por `id_cliente`) e ignorava baixas — removida.
+- **Prova de reconciliacao (2026-06-04)**: cliente 7383 (TRANSPORTES E.A.E., filial 14122) — Xpert = DW = mart PG = API: titulos 631, vencido 953.772,35, a vencer 35.599,30, aberto 989.371,65. Payload sem `id_cliente` duplicado.
+
+### CONTASRECEBER pagamento direto / sincronizacao — corrigido 2026-06-05
+
+- **Armadilha (causa raiz)**: titulo PAGO DIRETO na `CONTASRECEBER` (DTAPGTO/VLRPAGO preenchidos na propria linha, SEM `CONTASRECEBERBAIXA`) NAO atualiza `DATAREPL` no ERP (fica no sentinela `1900-01-01`). Como o watermark composto do agent (`MAX(DTACONTA,DATAREPL,DTAPGTO)`) pode estar ENVENENADO por linha suja com data futura (~2033), o incremental nao captura a baixa. A unica rede de seguranca era o `revisit_open_clause` que so relia titulos AINDA ABERTOS (`DTAPGTO IS NULL`); apos o pagamento o titulo some dessa janela e CONGELA como aberto no STG -> `dw.fact_financeiro.data_pagamento=NULL` -> mart mostra vencido.
+- **REGRA**: `DATAREPL` NAO e fonte confiavel de incremental para pagamento/baixa de CONTASRECEBER. A janela de revisita do agent precisa reler titulos abertos E recem-pagos.
+- **Fix canonico (agent `apps/agent/agent/config.py`)**: `revisit_open_clause` do dataset `contasreceber` = `(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= -90d) OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= -120d)`. SEM prefixo de alias (roda no WHERE externo sobre `src`; ver nota do bug 2026-06-03). Vale para TODOS os clientes/filiais. O agent roda como exe Windows no SQL Server do cliente; canonico = config.py, hotfix = override no config.yaml do servidor.
+- **Reconciliacao server-side (`scripts/fix_contasreceber_sync.py`)**: rede de seguranca/heal que roda na App VM (alcança o Xpert). Hot-window: puxa do Xpert so titulos ABERTOS ou pagos nos ultimos `--paid-days` (120) dias + baixas recentes; upsert em `stg.contasreceber`/`stg.contasreceberbaixa` por PK, bumpando `received_at` SO quando DTAPGTO/VLRPAGO mudou; chama as funcoes CANONICAS `etl.load_fact_financeiro` + `etl.refresh_customer_delinquency_summary` (NUNCA TRUNCATE, NUNCA mart SQL inline). Env-based (sem segredo hardcoded): `--sqlserver-env-file config/source-explorer.env` + `POSTGRES_*`. Flags `--dry-run` e `--no-refresh`.
+- **Prova (2026-06-05, cliente 999 / VR09 = id_filial 15172)**: Xpert 6 titulos DTAPGTO=2026-06-03 VLRPAGO=VALOR (pagos diretos, 0 linhas em CONTASRECEBERBAIXA) + 2 a vencer 593,19. Antes: mart mostrava 6 vencidos = 1327,71. STG congelado (received_at 2026-05-30, DTAPGTO vazio). Apos reconciliacao (dry-run: 809 titulos stale na empresa 1 — sistemico, nao so 999): STG DTAPGTO=2026-06-03, DW data_pagamento=2026-06-03/valor_pago=valor, mart = 0 linhas (cliente sai de Prioridades). API `/bi/customers/delinquency?id_filial=15172` = 29 clientes, 999 AUSENTE. Amostra: cliente 115 (Xpert vencido 0 / a vencer 169,56) e 497 (tudo pago) ambos = 0 linhas na mart; VR05 (14122) cliente 7383 segue 953.772,35 vencido.
+- **Pendencia de seguranca**: `scripts/fix_contasreceber_sync.py` tinha credenciais hardcoded (SQL `sa` + senha PG + host) ja versionadas/pushadas (commits e59ba37, 74f58d2). Removidas no codigo atual, MAS continuam no historico do git — ROTACIONAR senha do SQL Server `sa` e do PostgreSQL fora desta rodada (force-push proibido).
+
+### CONTASRECEBER divergencia residual — corrigido 2026-06-06 (3 causas)
+
+O PASS de 2026-06-05 corrigiu o staleness de pagamento direto, mas a tela continuava divergindo. Reabriu com 3 causas adicionais (todas sistemicas, validadas fonte->tela):
+
+1. **Race de concorrencia na mart (causa principal da divergencia noturna)**: `etl.refresh_customer_delinquency_summary` faz `DELETE + INSERT` nao-atomico por empresa. DOIS agendadores a chamam: o orquestrador ETL `*/2` (`etl_orchestrator.py` post_refresh, em `finance_changed`) e o cron de reconciliacao (07:00 e 19:00). Locks separados (o `TENANT_TRACK_LOCK_NAMESPACE=62042` so serializa orquestrador-vs-orquestrador) -> corrida. Prova: log do cron 2026-06-05 19:00 = `UniqueViolation customer_delinquency_summary_pkey (1,10169,7425)`. O refresh aborta e a mart fica STALE ate o proximo refresh. FIX: **migration 093** = `pg_advisory_xact_lock(hashtext('etl.refresh_customer_delinquency_summary'), id_empresa)` no inicio da funcao (transacao-scoped). Provado: 2 refreshes concorrentes -> ambos 369, sem erro.
+2. **Titulos fantasma (phantom)**: `ID_CONTASRECEBER` e unico por `ID_DB`, NAO global. Quando um titulo e DELETADO/RENUMERADO no Xpert, o agent/reconcile (so UPSERT) nunca o fecha -> fica ABERTO no STG -> DW `data_pagamento` NULL -> mart mostra vencido (falso positivo). 6 fantasmas na empresa 1. FIX: **migration 094** (mart exclui `f.payload ? 'TORQMIND_RECONCILED_ABSENT'`) + `scripts/fix_contasreceber_sync.py close_phantoms()`: re-busca os titulos STG-abertos ausentes do conjunto Xpert-aberto por `(ID_DB, ID_CONTASRECEBER)`, re-upserta os pagos-tardios (verdade real) e tombstona os deletados (marca `TORQMIND_RECONCILED_ABSENT` que flui STG->DW.payload).
+3. **Race de watermark no DW**: `etl.load_fact_financeiro` avanca o watermark `financeiro` para MAX(received_at); o orquestrador `*/2` corre junto e passa o watermark a frente de um titulo recem-curado -> o loader incremental pula (`received_at <= watermark`). FIX: `refresh_dw_and_mart` faz `SET LOCAL etl.force_full_scan=true` + um `UPDATE dw.fact_financeiro <- stg.contasreceber WHERE payload IS DISTINCT` direto (a mesma copia canonica de payload que o loader faz), a prova de corrida.
+- **Regra**: a mart de inadimplencia roda sob advisory lock; titulos fantasma sao excluidos por marker; o DW nunca fica stale apos o STG ser curado (sync direto a prova de watermark).
+- **Prova (2026-06-06, VR09=15172 + VR05=14122)**: Xpert=107 / Mart=107 / MATCH=107 / MISMATCH=0 / falso-positivo=0 (conciliacao por cliente, vencido a cento). cli 534/VR05: era 4.553,81 -> 1.002,71 (= Xpert). cli 23599/VR09: era 50,00 (falso) -> AUSENTE (= Xpert). cli 999/VR09 segue ausente; cli 7383/VR05 segue 953.772,35. API `/bi/customers/delinquency`: cli 534 = 1.002,71, cli 23599/999 ausentes. Reconciliacao idempotente (run 2 = 0 fantasmas).
+
+### Forma de pagamento das vendas (Caixa/Financeiro) — conciliado 2026-06-04
+
+- **Fonte canonica**: comprovantes + itens + formas de pagamento (Xpert). Grao por `(id_empresa, id_filial, referencia)` ANTES de agregar por forma. Aberto/elegivel pela mesma regra de vendas (commercial_eligible, NFE status fora 4/5, cancelados fora).
+- **Mart**: `torqmind_mart_rt.payments_by_type_rt` (CDC, `mart_builder._refresh_payments_by_type_stg`). Dedup de **troca de forma de pagamento**: quando a forma e corrigida na origem, a linha antiga NAO vem `is_deleted` e o ReplacingMergeTree mantem as duas (chave inclui `tipo_forma`), inflando (tipicamente DINHEIRO). Fix: remover duplicatas **apenas em referencias com pago > venda** (`ref_pago > venda+0.01 AND dup_rank>1`), preservando splits legitimos (ex.: R$50 dinheiro + R$50 cartao numa venda de R$100).
+- **Conciliacao na API** (`repos_mart_realtime._reconcile_payment_mix`): `cash_overview` e `payments_overview` retornam `total_vendas`, `total_pagamentos_conciliado`, `diferenca_conciliacao`, e o `payment_mix` recebe uma linha **explicita** "Nao conciliado (operacional)" (`category=reconciliation`) quando ha gap residual (fiado/prazo nao registrado, fantasma de troca remanescente, arredondamento) — assim `sum(payment_mix) == total_vendas`, sem esconder nem jogar em forma errada.
+- **Frontend** (`cash/page.tsx`): card "Recebimentos" mostra "Nao conciliado: X" quando |dif|>0.01. **Financeiro** (`finance/page.tsx`): bloco separado "Concilia\u00e7\u00e3o das formas de pagamento" (Total de vendas / Conciliado em formas / Diferen\u00e7a operacional + status conciliado/revisar); o donut filtra positivos mas a diferen\u00e7a aparece nesse bloco \u2014 nunca escondida. Distingue "formas de pagamento das vendas" de "recebimentos financeiros".
+- **Prova (2026-06-04, filial 14122)**: dia 0604 vendas=pagamentos=134.791,72 (dif 0). Mai-jun: vendas 6.029.219,42, formas 6.039.516,75, dif -10.297,33. Ano: vendas 26.693.000,20, formas 26.677.317,61, dif +15.682,59. `sum(mix)==vendas` em todos.
+
+### Antifraude (eventos / turno e operador) — reconciliado 2026-06-04, turno+documento 2026-06-05
+
+- **Fonte canonica**: `stg.comprovantes` (regra `cancelled_receipt` = cancelamento da venda na origem). Materializada enriquecida em `torqmind_mart_rt.mart_antifraude_eventos` (id_filial, filial_nome, data_key, dt, hora, event_id, event_type, source, id_turno tecnico, **turno_numero operacional**, id_caixa, id_usuario, **nome_operador**, id_funcionario, nome_funcionario, valor_total, impacto_estimado, score_risco, score_level, reasons JSON, **id_comprovante**, **nro_comprovante**).
+- **REGRA GLOBAL TURNO**: `id_turno` (=`ID_TURNOS`, ex.: 34292, 59913) e o id TECNICO sequencial e NUNCA deve ser exibido como numero de turno. O turno operacional real e `stg_turnos.payload.TURNO` (1..N; tipicamente 1..5; **0 = caixa geral**). A mart guarda em `turno_numero`. `_antifraude_turno_label`: `turno_numero>=1` -> "Turno N"; `turno_numero=0` com turno tecnico vinculado -> "Caixa geral"; senao -> "Turno nao resolvido". `risk_by_turn_local` agrupa por `turno_numero` (`>= 1`), deixando caixa geral e nao resolvidos fora da concentracao (continuam na fila de revisao).
+- **REGRA GLOBAL DOCUMENTO**: documento operacional e o **comprovante de venda**, nao composicao inventada. `_antifraude_documento`: preferencial `nro_comprovante` (=`NROCOMPROVANTE`, numero impresso no comprovante; 100% preenchido nos cancelados) -> "Comprovante {nro}" (source `documento_venda`); fallback `id_comprovante` -> "Comprovante #{id}" (source `id_comprovante`); senao "Sem comprovante". NUNCA `Turno + Filial`, NUNCA nota fiscal como referencia principal de venda, NUNCA `MOVPRODUTOS` (fonte abandonada por incoerencia). `documento_fiscal` fica separado se um dia existir.
+- **Contrato unico** (`repos_mart_realtime._build_antifraude_event`): `risk_last_events` e `fraud_last_events` emitem a MESMA chave (filial_label, data ISO real, turno_numero/turno_label, operador_label/operador_caixa_label/responsavel_label, frentista_label, id_comprovante, documento_venda, documento_label, documento_source, categoria, motivo, score, impacto). `_antifraude_event_labels` deriva categoria+motivo do `event_type`+`reasons.rule` (PT-BR, nunca jargao).
+- **Armadilha corrigida (round 1)**: `risk_last_events` lia a tabela pobre `risk_recent_events_rt` (sem data, sem turno, sem nome de operador) e `risk_by_turn_local` fazia `id_usuario AS id_turno` (usuario NAO e turno). Ambas agora leem `mart_antifraude_eventos`.
+- **Armadilha corrigida (round 2)**: a tela mostrava `id_turno` tecnico como "Turno 34292" e montava o documento como "Turno X · Filial". Corrigido para turno operacional (`turno_numero`) e documento comprovante (`nro_comprovante`/`id_comprovante`).
+- **Sem canal**: a fonte NAO tem canal/local confiavel; o bloco "Concentracao por turno e operador" mostra o responsavel operacional, nunca um "canal nao informado" inventado.
+- **Copy padrao da casa**: fallback humano usa "sem cadastro" / "Sem frentista associado" / "Turno nao resolvido" / "Caixa geral" (gate `apps/web/app/lib/ui-copy-quality.test.mjs` PROIBE "nao identificado"). Strings de fallback do backend tambem seguem isso, pois fluem direto para a tela.
+- **Tela**: `apps/web/app/fraud/page.tsx` (`modeledEvents = risk_last_events`): fila de revisao "Destaques para localizar no ERP" (prioridade/quando/filial/**comprovante**/categoria/operador/frentista/**turno operacional**/valor/score/motivo) + "Concentracao por turno e operador". Tabelas com scroll interno; cards estreitos usam `.tableScroll--compact` (sem `min-width: 680px`).
+- **Prova (2026-06-05, empresa 1, mai-jun)**: backfill antifraude = 1097 linhas (911 turno operacional 1..5 + 186 caixa geral), `nro_comprovante`/`id_comprovante` 100% preenchidos. API `/bi/fraud/overview`: `risk_last_events` 30 eventos -> turno_label so 1..5, documento_source `documento_venda` 30/30 (ex.: "Comprovante 503752", "Turno 3", "TAINA M", "AUTO POSTO VR 04 LTDA"); zero "Turno 34292", zero "Turno · Filial". `risk_by_turn_local` 10 turnos operacionais (1..5), nenhum `turno_numero < 1`.
+
+### Identidade visual por empresa (branding) — 2026-06-05
+
+- **Objetivo**: fundo e logo por empresa, sem novo deploy para trocar imagem. Empresa sem branding usa o padrao TorqMind. Favicon/icone do sistema continua TorqMind (nao troca).
+- **Tabela**: `app.company_branding` (migration 092), grao `id_empresa` (PK + FK `app.tenants`). Colunas: `background_image_path/mime/size/version`, `logo_image_path/mime/size/version`, `updated_by`, timestamps. So metadados; os arquivos ficam no storage persistente.
+- **Storage**: volume Docker nomeado `torqmind_branding` montado em `/app/var/branding` na API (`BRANDING_STORAGE_DIR`). Sobrevive a deploy/rebuild. Nome de arquivo gerado pelo servidor: `company_{id}_{kind}_{versionHash}.{ext}` (sem path traversal). Limite `BRANDING_MAX_FILE_BYTES` (6 MB).
+- **Backend**: `repos_branding.py` (validacao por magic-number — PNG/JPEG/WebP/GIF; SVG e executavel renomeado REJEITADOS; reusa `repos_platform._assert_company_mutable/_visible` p/ permissao) + `routes_branding.py`. Endpoints: `GET /branding/{id}` (metadados, publico), `GET /branding/{id}/{kind}` (serve bytes, publico, `Cache-Control immutable`), `GET/POST/DELETE /platform/companies/{id}/branding[/background|/logo]` (permissionado). Upload le o corpo bruto da requisicao (sem `python-multipart`).
+- **Permissao**: editar exige operacao de plataforma + visibilidade da empresa; serve/metadata sao publicos (assets nao sensiveis; bearer nao viaja em `url()` de CSS). A API bloqueia, o frontend so esconde.
+- **Sessao**: `repos_auth._safe_branding` injeta `session.branding` para a empresa do vinculo, MAS para `platform_master`/`platform_admin`/`product_global` `selected_tenant_id=None` -> `session.branding` e o default (sem fundo). Para esses usuarios a empresa ATIVA vem do escopo (`AppNav.scopeFromSession` cai em `session.tenant_ids[0]` quando nao ha empresa propria) e e propagada pelo evento `torqmind:company`.
+- **Frontend**: `BrandingApplier.tsx` (montado em `layout.tsx`) seta `--brand-company-bg` no `html`; `globals.css` `body::after` aplica o fundo com overlay escuro (so visivel com `html[data-company-bg="1"]`). **Fonte da verdade = empresa ATIVA selecionada, nao a sessao crua**: o applier mantem `activeCompany`/`appliedFor`, e `torqmind:session`/`focus` NAO sobrescrevem o fundo da empresa ativa (`resolveFromSession` reusa `activeCompany`). `AppNav` dispara `torqmind:company` -> applier busca `/branding/{id}` e re-aplica (multi-empresa/master sem reload). `BrandingEditor.tsx` em `platform/companies/[tenantId]`. Cache-busting pela URL versionada (`?v=hash`).
+- **Bug corrigido 2026-06-07 (master nao via o fundo)**: o applier antigo (`applyFromSession`) lia `session.branding.background_url` em `onSession`/`onFocus`; como a sessao do master e default, qualquer refresh de `/auth/me` ou foco da janela APAGAVA o fundo da empresa selecionada (piscava e sumia). Fix: empresa ativa vira fonte da verdade; eventos de sessao/foco preservam `activeCompany`. Frontend-only (sem migration/dado).
+- **Prova (2026-06-05, empresa 1)**: upload background+logo (PNG) -> 200 + URLs versionadas; serve publico 200 `image/png`; SVG -> 422 `unsupported_format`; upload sem bearer -> 401; delete background depois logo -> `uses_default=true`; serve apos delete -> 404.
+- **Prova (2026-06-07, master, empresa 1)**: `app.company_branding` id_empresa=1 com background `c53d2ca64936.jpg` + logo; `/api/branding/1` -> `uses_default:false`; serve `200 image/jpeg`. Web rebuild+recreate (chunk `layout-5990b6ce...`), health web/api=200; fundo da empresa selecionada agora persiste para master apos refresh/foco.
+
+### Seletor empresa/filial contextual — 2026-06-05
+
+- `AppNav.tsx`: dropdown de empresa so aparece quando `canSwitchCompany && companies.length > 1`. Dono/owner de uma so empresa ve label fixo (nao dropdown de 1 opcao). Gerente monofilial (`branchLocked`) ja via label fixo da filial. UX apenas — a API continua aplicando escopo/permissao.
+
 
 ## 6. Mapa das marts ClickHouse
 
@@ -508,7 +580,7 @@ PostgreSQL (stg.*, app.*) → Debezium → Redpanda → CDC Consumer → ClickHo
 STG vendas: `comprovantes`, `itenscomprovantes`, `formas_pgto_comprovantes`.
 STG cadastros/operacional: `turnos`, `entidades` (clientes), `produtos`, `grupoprodutos`, `funcionarios`, `usuarios`, `localvendas`, `filiais` quando existir.
 STG financeiro: `contaspagar`, `contasreceber`, `financeiro` quando disponível.
-App: `payment_type_map`, `competitor_fuel_prices`/`goals` quando existirem.
+App: `payment_type_map`, `competitor_fuel_prices`/`goals`/`commission_config`/`commission_config_group`/`commission_config_tier` quando existirem.
 DW: `fact_*`/`dim_*` podem permanecer capturados apenas para reconciliacao/rollback.
 
 ### Tópicos Redpanda
@@ -687,3 +759,199 @@ Checklist mínimo para garantir que o container API reflete a branch atual:
 - CDC_TOPIC_PATTERN corrigido: `^torqmind\..*` (escape simples no YAML).
 - `python3 -m pytest apps/cdc_consumer/tests/ -v`: 29 testes, todos passaram.
 - Scripts não imprimem senhas (validado com grep).
+
+---
+
+## Design System / UX TorqMind
+
+### Tokens Semânticos (globals.css :root)
+
+| Token | Uso | Hex |
+|-------|-----|-----|
+| `--color-positive` | Lucro, crescimento, ok | `#22c55e` |
+| `--color-negative` | Prejuízo, erro, alerta crítico | `#ef4444` |
+| `--color-warning` | Atenção, risco moderado | `#f59e0b` |
+| `--color-info` | Informativo, links, neutro positivo | `#3b82f6` |
+| `--color-insight` | Insight analítico, sugestão | `#8b5cf6` |
+| `--color-neutral` | Texto secundário | `#94a3b8` |
+| `--card-bg`, `--card-border`, etc. | Padrão de card | tema escuro marinho |
+
+### Regras de Design
+
+- Nunca usar hex hardcoded para cores semânticas — usar CSS var.
+- KPI cards usam `.profitKpiStrip` com grid responsivo (5 → 3 → 2 → 1 col).
+- Mobile first: breakpoints em 1100px, 720px, 390px.
+- Cards financeiros usam barra accent `::before` com cor semântica.
+- Status pills (`.statusPill`) com cores de fundo semânticas.
+- Tabelas DRE: `.dreTable`, subtotais e resultado com destaque.
+
+### Multi-filial (API)
+
+- `_extract_profit_scope()` retorna `(tenant_id, branch_ids: List[int])`.
+- Multi-branch: SQL usa `SUM()` para agregar receita, CMV, despesas.
+- Percentuais recalculados após soma (não média simples).
+- Produtos multi-filial: `GROUP BY id_produto`, preço médio ponderado, impacto somado.
+- Payload inclui `consolidado: true` e `filiais_count` quando multi-branch.
+
+### Arquivos Alterados
+
+- `apps/web/app/globals.css`: tokens semânticos + classes profit.
+- `apps/web/app/profit-management/page.tsx`: reescrito com design system.
+- `apps/api/app/routes_profit.py`: multi-filial com SUM/GROUP BY.
+- 9 telas com cores migradas: dashboard, sales, goals, settings, fraud, customers, change-password, AppNav, platform/users.
+
+---
+
+## Módulo de Comissão (Metas & Equipe)
+
+### Tabelas PostgreSQL (schema `app`)
+
+| Tabela | Descrição |
+|--------|-----------|
+| `app.commission_config` | Config ativa por empresa/filial (1 ativa por par) |
+| `app.commission_config_group` | Grupos de produto vinculados a config |
+| `app.commission_config_tier` | Faixas de premiação (bronze/silver/gold/diamond) |
+
+### View (`mart` schema)
+
+| View | Descrição |
+|------|-----------|
+| `mart.commission_sales_monthly` | Venda mensal por grupo+vendedor (source: `dw.fact_venda` + `dw.fact_venda_item`) |
+
+### Endpoints API
+
+| Método | Path | Descrição |
+|--------|------|-----------|
+| GET | `/bi/team/commissions/config` | Retorna config, groups (com faturamento 30d), tiers |
+| PUT | `/bi/team/commissions/config` | Salva config (OWNER/MASTER only) |
+| GET | `/bi/team/commissions/results` | Calcula comissão: tier, percentual, vendedores |
+
+### Modos de pagamento
+
+- `team_total`: equipe recebe comissão total.
+- `equal_split`: comissão dividida igualmente entre elegíveis.
+- `individual_sales`: cada vendedor recebe % sobre sua venda individual.
+
+### Frontend
+
+- `apps/web/app/goals/page.tsx`: 3 abas (Metas/Comissões/Configuração).
+- `apps/web/app/goals/CommissionsTab.tsx`: KPIs, progress bar, employee grid.
+- `apps/web/app/goals/CommissionConfigTab.tsx`: grupo selection, tier editor.
+
+### Tiers padrão
+
+| Tier | Valor mínimo | Percentual |
+|------|-------------|-----------|
+| Bronze | R$ 30.000 | 0.5% |
+| Prata | R$ 50.000 | 1.0% |
+| Ouro | R$ 80.000 | 1.5% |
+| Diamante | R$ 120.000 | 2.0% |
+
+---
+
+## Recuperação de Senha ("Esqueci minha senha") — 2026-06-03
+
+Fluxo seguro de reset de senha, ponta a ponta, pronto para SMTP. Commit `c72d6e8` (branch `fase-4-xpert-source-explorer`). Em produção e validado.
+
+### Migration
+
+- `sql/migrations/089_password_reset_tokens_secure.sql`: aditiva e idempotente. Garante `auth.password_reset_tokens` (`CREATE TABLE IF NOT EXISTS`) e adiciona `token_hash text` (sha256 hex), `requested_ip inet`, `requested_user_agent text`. Índices: único parcial `uq_password_reset_token_hash (token_hash) WHERE token_hash IS NOT NULL`, `ix_password_reset_user_active (user_id) WHERE used_at IS NULL`, `ix_password_reset_expires_at (expires_at)`.
+- GOTCHA prod: a tabela NÃO existia em produção mesmo com `001_auth.sql` marcada baseline (prod buildado do `reset_db_v2`). Por isso 089 é auto-contida. O runner `python -m app.cli.migrate` falha em 076 por gap de tracking pré-existente (não relacionado); aplicar 089 isolada via `psql -f` e registrar manualmente em `app.schema_migrations`.
+
+### Backend (`apps/api/app`)
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `password_policy.py` | Política canônica: 8+ chars, minúscula, maiúscula, número, especial. `validate_password()`, `is_valid_password()`, `describe_rules()`, `policy_message()`. Max 128. |
+| `email_service.py` | Envio SMTP via `smtplib`, env-driven. `is_email_configured()`, `_resolve_sender()` (prefere `SMTP_FROM_EMAIL`, cai em `SMTP_FROM`; **alerta no log se remetente for `@torqmind.com`** — domínio ainda não controlado/sem SPF-DKIM-DMARC), `send_email()` (no-op seguro se não configurado), `send_password_reset_email()`. **Remetente padrão vazio**; definir via env. |
+| `repos_auth.py` | `_hash_reset_token()` (sha256), `create_password_reset_token(user_id, ttl, ip, ua)` (token bruto = `secrets.token_urlsafe(32)`, grava só hash, invalida anteriores), `get_reset_token_user(raw)`, `reset_password_with_token(raw, new_hash)` (atômico, single-use). |
+| `routes_auth.py` | `POST /auth/forgot-password` (resposta genérica anti-enumeração, sem auth), `GET /auth/reset-password/validate?token=` (retorna valid/email/rules_message), `POST /auth/reset-password` (valida política 422, consome token). Política também aplicada em `change-password`. |
+| `config.py` | Settings: `web_public_url`, `password_reset_token_ttl_minutes=30`, `password_reset_link_path=/reset-password`, `smtp_enabled=false`, `smtp_host/port/user/password/use_tls/use_ssl/from/from_name/timeout_seconds`. Todos opcionais (não entram nas validações de segredo). |
+
+### Frontend (`apps/web/app`)
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `forgot-password/page.tsx` | Informa e-mail + botão "Recuperar senha". Resposta genérica (done state). Padrão visual TorqMind, responsivo. |
+| `reset-password/page.tsx` | Lê token da URL, valida no mount, e-mail fixo read-only, 2 campos de senha com checklist de regras ao vivo + confirmação + show/hide. Estados: válido / token inválido / sucesso. |
+| `page.tsx` (login) | Link "Esqueci minha senha". |
+| `lib/password-policy.mjs` (+ `.test.mjs`) | Espelha a política do backend. Adicionado ao script `test` do `package.json`. |
+
+### Segurança do token
+
+- Token bruto só vive no link de e-mail; banco guarda apenas o SHA-256. URL carrega **só o token** (sem e-mail embutido).
+- `forgot-password` retorna mensagem genérica idêntica para e-mail existente/inexistente (anti-enumeração).
+- Único token ativo por usuário, TTL 30 min, uso único, invalida anteriores ao usar.
+
+### Config SMTP (compose: `docker-compose.app.yml`, serviço `api` usa bloco `environment:` explícito, NÃO `env_file`)
+
+- Defaults seguros: `SMTP_ENABLED=false`, `SMTP_HOST=` vazio → no-op (log "SMTP not configured; skipping").
+- **PENDÊNCIA p/ ativar envio real**: setar em `/etc/torqmind/prod.app.env` (valores digitados direto, são segredos): `SMTP_ENABLED=true`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_USE_TLS=true`. Sugestão grátis: Brevo (`smtp-relay.brevo.com:587`, 300/dia). `WEB_PUBLIC_URL` já existe no env (define o link do e-mail). Depois `docker compose -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env up -d api`.
+
+### Endpoints (resumo)
+
+| Método | Path | Auth | Resposta |
+|--------|------|------|----------|
+| POST | `/auth/forgot-password` | não | genérica `{ok, message}` (200 sempre) |
+| GET | `/auth/reset-password/validate?token=` | não | `{valid, email, rules_message}` ou 400 |
+| POST | `/auth/reset-password` | não | sucesso ou 422 `weak_password` / 400 `invalid_token`; exige `totp_code` se o usuário tem 2FA |
+
+---
+
+## Autenticação em dois fatores (TOTP) — 2026-06-04
+
+TOTP (RFC 6238) gratuito/offline, compatível com Google/Microsoft Authenticator, Authy, Bitwarden, 1Password, Proton. **Opt-in** (default desligado). Sem SMS/e-mail como 2º fator. Sem WebAuthn nesta rodada.
+
+### Backend
+- `app/totp.py`: algoritmo TOTP em **stdlib** (`hmac`/`hashlib`/`struct`), sem pyotp. Segredo cifrado em repouso com **Fernet** (`cryptography`) via `TOTP_ENCRYPTION_KEY`. `generate_secret`, `encrypt/decrypt_secret`, `verify_code` (janela de tolerância, comparação constante), `provisioning_uri`, `generate_recovery_codes`/`hash_recovery_code`. Nunca loga segredo/código.
+- `app/repos_mfa.py`: estado 2FA em `auth.users` (sem expor segredo). `stage_secret`, `enable_after_confirm`, `mark_used`, `disable`, `set_required`, `admin_reset`, recovery codes (`replace`/`consume`).
+- `app/routes_mfa.py` (`/auth/mfa/*`): `setup/start` (otpauth + `secret` + `qr_svg` SVG data-uri gerado server-side), `setup/confirm` (valida 1º código → habilita → 8 recovery codes; em fluxo forçado retorna `login.access_token`), `verify` (troca challenge+código por access token), `disable`, `status`. `setup_claims` autoriza setup por sessão normal OU por `mfa_setup` token. Limite de tentativas in-process + TTL do desafio.
+- `routes_auth.login`: se `totp_enabled`, retorna `mfa_required=true` + `mfa_challenge_token` (sem access token). Se `totp_required=true` mas não configurado, retorna `mfa_setup_required=true` + `mfa_setup_token` (força enrollment). `deps._resolve_session` rejeita ambos (`scope=mfa_challenge`/`mfa_setup`, `mfa_pending`).
+- `change-password` e `reset-password`: exigem `totp_code` (TOTP ou recovery) quando o usuário tem 2FA — link de reset vazado **não** burla 2FA.
+- Admin: `POST /platform/users/{id}/mfa-reset` (`admin_reset_mfa`) e `POST /platform/users/{id}/mfa-require` (`admin_set_mfa_required`), reusam visibilidade de plataforma. `list_users` expõe `totp_enabled`/`totp_required`/`mfa_reset_required`.
+- QR: `totp.qr_svg_data_uri()` (dep `qrcode`, SVG sem Pillow, fallback para chave manual).
+
+### Schema (migration 091, aditiva/idempotente)
+- `auth.users`: `totp_enabled`, `totp_secret_encrypted`, `totp_confirmed_at`, `totp_required`, `totp_last_used_at`, `mfa_reset_required`.
+- `auth.user_recovery_codes` (hash + used_at).
+
+### Env (compose `docker-compose.app.yml` serviço api)
+- `TOTP_ENCRYPTION_KEY` (Fernet base64; **segredo**, só em `/etc/torqmind/prod.app.env` mode 600, nunca commitado; sem ela 2FA fica indisponível — setup retorna 503). `TOTP_ISSUER`, `TOTP_VALID_WINDOW`, `MFA_CHALLENGE_TTL_MINUTES`, `MFA_MAX_ATTEMPTS`.
+
+### Frontend
+- `security/page.tsx` (**Minha Segurança**, rota `/security`, link no `AppNav`): status (ativo/desativado/obrigatório/reset), ativar com **QR Code + chave manual**, confirmar com código de 6 dígitos, **recovery codes exibidos uma única vez**, desativar com código. Suporta enrollment forçado via `?setup=1` + token em `sessionStorage` (`torqmind.mfa_setup`).
+- `page.tsx` (login): 2º passo de código quando `mfa_required`; redireciona para `/security?setup=1` quando `mfa_setup_required`.
+- `reset-password/page.tsx`: campo de código quando `validate` retorna `mfa_required`.
+- `platform/users/page.tsx`: botões "Resetar 2FA" e "Exigir/Não exigir 2FA" ao editar usuário.
+- Linguagem: "Aplicativo autenticador", "Google Authenticator, Microsoft Authenticator ou app compatível", "Código de 6 dígitos" (nunca "Google obrigatório").
+
+### Fluxo `totp_required` (enrollment forçado)
+- `totp_required=true` + `totp_enabled=false`: login emite `mfa_setup_token` (escopo `mfa_setup`), frontend vai para `/security?setup=1`, usuário configura, `setup/confirm` retorna o token de sessão pleno. Não quebra login de quem tem `totp_required=false`. Admin liga/desliga via `mfa-require`.
+
+### SMTP / domínio (decisão)
+- **NÃO usar `@torqmind.com`** até o domínio estar comprado e com SPF/DKIM/DMARC. `SMTP_FROM`/`SMTP_FROM_EMAIL` padrão vazio; `_resolve_sender()` (prefere `SMTP_FROM_EMAIL`) alerta no log se cair em torqmind.com. Usar provedor transacional (ex.: Brevo) com remetente de domínio próprio. Exemplos atualizados em `.env.production.example` e `deploy/env/prod.app.env.example`.
+
+### Roadmap oficial de próximos passos
+- Arquivo oficial: `docs/product/TORQMIND_PROXIMOS_PASSOS.md` (blindagem atual, 2FA, comissão, exportação PDF/Excel, saúde de dados, estoque, tanques/bicos/aferção, LMC, conciliação de cartões, preço concorrente, alertas, gestão de lucro, priorização por fase). Detalhe dor-a-dor em `docs/product/ROADMAP_DORES_POSTO.md`.
+
+## Roadmap de Produto / Dores a Resolver — 2026-06-03
+
+Documento de planejamento: `docs/product/ROADMAP_DORES_POSTO.md`. Lista dores reais de dono de posto ainda não resolvidas, o que já existe na base, o gap técnico e o rastreio antes de implementar. Resumo das decisões do dono:
+
+| # | Tema | Status |
+|---|------|--------|
+| 1 | **Estoque de combustível por bomba/tanque (litros, conciliação)** | ENTRA — prioridade máxima, KPI no dashboard geral. **Mapeamento Xpert confirmado (2026-06-03):** `ESTOQUE` (geral/produto), `TANQUES`+`QTDESTANQUES` (saldo por tanque), `MOVTANQUES` (medição física, viva), `BICOS`/`BOMBAS` (cadastro; flag de defeito é `BICODEFEITO`, não `STATUS`). **Volumetria viva = família `LMC`/`LMCBICOS`/`LMCTANQUES`/`LMCENTRADATANQUES` (livro ANP, atual 2026-05) — NÃO o `ENCERRANTESTURNOS`, que congelou em 2025-09-19.** Mart alvo `mart_estoque_combustivel_rt` (resolve dívida `stock_position_summary`). |
+| 2 | **Conciliação de cartão/TEF (bandeiras + taxas)** | ENTRA no Financeiro. **Mapeamento Xpert (2026-06-03):** cadastro `CARTAODEBITO`/`REDETEF`/`BANDEIRASTEF`/`CONVENIOS`; movimento `MOVCARTAODEBITO` (2,8M)/`MOVCONVENIOS` (3,1M); baixa `BAIXACARTAO`; EDI `CONCILIACAOVENDASCARTOES_EDI` (85). **Achado crítico: `TAXASADMINISTRADORA` está VAZIA — taxa por adquirente não é cadastrada na Xpert.** Líquido (Fase 2) precisa de cadastro novo no `app` ou extração via EDI. |
+| 3 | Contas a pagar | ENTRA (a levantar com cliente; dado "sempre quebrado"). Financeiro só cobre receber hoje. |
+| 4 | **Alerta caixa aberto >24h no Telegram** | **FEITO (2026-06-03, migration 090).** Infra Telegram madura (`services/telegram.py` + `app.telegram_settings`/`telegram_dispatch_log`) e disparo de caixa já codado/ligado (`_dispatch_cash_telegram_alerts`), mensagem boa (sem "caixa ?"). **Causa-raiz: `mart.alerta_caixa_aberto` (PG) ficou VAZIA pós-cutover realtime pois o `REFRESH` só rodava no `etl.refresh_marts` legado (desligado no ClickHouse-first).** **Fix:** `etl.sync_cash_open_notifications()` agora dá `REFRESH` em `mart.agg_caixa_turno_aberto`→`mart.alerta_caixa_aberto` antes de gerar notificações; essa função já roda todo ciclo operacional (inclusive clock-driven, sem ingestão nova). Filtro `is_operational_live` (≤96h) mantém só o sinal real (descartando ~145 turnos de ruído). Validado prod: 2 alertas reais. Preferido a um dispatcher CH novo, que perderia o filtro de 96h. |
+| 5 | Benchmark entre filiais | ENTRA como enriquecimento visual em Metas & Equipe. Indicadores normalizados (R$/m³, ticket, venda/frentista, % meta), agrupar estrada × cidade. Sem mapeamento SQL — só implementação. |
+| 6 | Aferição/INMETRO | ENTRA — **confirmado**: `AFERICAO` (Xpert) viva (19,5k linhas, 2026-06-03): `ID_BICOS, ID_TURNOS, QTDE, DATA, ID_USUARIOS, ID_USUARIOS_LIB`. É a aferição operacional do bico; validade legal INMETRO (lacre) pode estar em `BICOS.DATALACRE`. Ingerir STG + notificar Telegram. |
+| 7 | **Jarvis IA** | REAVALIAR. Não deletar o encanamento; repaginar de briefing diário → IA sob demanda ancorada em evento; desligar geração diária. Remover se uso seguir baixo. |
+| 8 | **Revenda de vale-combustível por funcionário (fraude)** | ENTRA (a levantar). Funcionário revende a cota de vale. Tabelas dedicadas `VALECOMBUSTIVEL`/`INSVALECOMBUSTIVEL` **zeradas** → provável não-controle no sistema ou via convênio. Levantar como é controlado antes de codar. Antifraude/RH, reusa Telegram. |
+| 9 | **Validação de assinatura/cheque por IA** | FUTURO — só documentação. Sem fonte de imagem do documento assinado hoje; complexo + LGPD. Reabrir quando houver captura de imagem. |
+| — | Loja de conveniência em tela separada | FORA (já separado internamente). |
+| — | Programa de fidelidade | FORA (cliente não aceitou). |
+
+Ordem sugerida: §1 → §4 → §2 → §6 → §5 → §3 → §8 → §7 → §9.
+
+**Acesso à base Xpert para mapeamento:** `tools/xpert_source_explorer.py <subcomando> --env config/source-explorer.env` (SQL Server `ATXDADOS` em 172.30.0.12, read-only). Subcomando `query --sql-file X --out Y` para descoberta ad-hoc.

@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir --upgrade pip
 
 # Copie primeiro o projeto (pyproject + código) para existir o pacote "app"
 COPY pyproject.toml /app/
+COPY pytest.ini conftest.py /app/
 COPY app /app/app
 
 # Agora sim instala

@@ -12,7 +12,7 @@ from agent.secrets import SecretStoreError, load_encrypted_json_file, save_encry
 
 
 COMMERCIAL_WINDOW_DAYS = 365
-DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 120
+DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 240
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
 LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
@@ -77,6 +77,13 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_order_by": "ID_GRUPOPRODUTOS, ID_FILIAL",
         "full_refresh": True,
         "enabled": False,
+    },
+    "planodecontas": {
+        "table": "dbo.PLANODECONTAS",
+        "watermark_column": "ID_PLANODECONTAS",
+        "watermark_order_by": "ID_PLANODECONTAS, ID_FILIAL",
+        "full_refresh": True,
+        "enabled": True,
     },
     "localvendas": {
         "table": "dbo.LOCALVENDAS",
@@ -308,41 +315,198 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "(SELECT MAX(v.dt) "
-            "   FROM (VALUES "
-            "       (CAST(c.DTACONTA AS datetime2)), "
-            "       (CAST(c.DTAVCTO AS datetime2)), "
-            "       (CAST(c.DTAPGTO AS datetime2)), "
-            "       (CAST(c.DATAPROGRAMACAO AS datetime2)), "
-            "       (CAST(c.API_DATE_TIME AS datetime2))"
-            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASPAGAR c"
         ),
-        "enabled": False,
+        "enabled": True,
     },
     "contasreceber": {
         "table": "dbo.CONTASRECEBER",
         "watermark_column": WATERMARK_ALIAS,
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # revisit_open_clause roda no WHERE externo (SELECT * FROM (base) AS src),
+        # onde o alias `c` da query base nao existe. As colunas vem de `c.*`, entao
+        # devem ser referenciadas SEM prefixo (senao "multi-part identifier could not be bound").
+        #
+        # IMPORTANTE (pagamento direto): quando um titulo e PAGO direto na
+        # CONTASRECEBER (DTAPGTO/VLRPAGO preenchidos) o ERP NAO atualiza DATAREPL
+        # (fica no sentinela 1900-01-01) e o watermark composto pode estar
+        # envenenado por linha suja (data futura), entao o incremental nao captura
+        # a baixa. A rede de seguranca precisa reler tanto os titulos AINDA ABERTOS
+        # quanto os RECEM-PAGOS (ultimos 120 dias por DTAPGTO), senao o titulo pago
+        # congela como aberto no STG -> DW -> mart de inadimplencia.
+        "revisit_open_clause": (
+            "(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)) "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
+        ),
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "(SELECT MAX(v.dt) "
-            "   FROM (VALUES "
-            "       (CAST(c.DTACONTA AS datetime2)), "
-            "       (CAST(c.DTAVCTO AS datetime2)), "
-            "       (CAST(c.DTAPGTO AS datetime2)), "
-            "       (CAST(c.DTAFECHAMENTO AS datetime2))"
-            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DTACONTA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            "(CAST(c.DTAPGTO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASRECEBER c"
         ),
-        "enabled": False,
+        "enabled": True,
+    },
+    "contasreceberbaixa": {
+        "table": "dbo.CONTASRECEBERBAIXA",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DATABAIXA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONTASRECEBERBAIXA c"
+        ),
+        "enabled": True,
+    },
+    "contaspagarbaixa": {
+        "table": "dbo.CONTASPAGARBAIXA",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONTASPAGARBAIXA c"
+        ),
+        "enabled": True,
+    },
+    "movlctos": {
+        "table": "dbo.MOVLCTOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(m.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVLCTOS m"
+        ),
+        "enabled": True,
     },
     "financeiro": {"table": "dbo.FINANCEIRO", "enabled": False},
+    "nfe": {
+        "table": "dbo.NFE",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_DB, ID_COMPROVANTE, ID_NFE",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "ID_NFE"],
+        "contract_name": "nfe_pk_required_fields",
+        "required_fields": ["ID_NFE", "ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "STATUS"],
+        "unique_key_fields": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "ID_NFE"],
+        "preflight_tables": {
+            "dbo.NFE": [
+                "ID_NFE",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_COMPROVANTE",
+                "DATA",
+                "STATUS",
+            ],
+        },
+        "retention_days": COMMERCIAL_WINDOW_DAYS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT n.*, "
+            "CAST(n.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(n.DATA AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.NFE n"
+        ),
+        "enabled": True,
+    },
+    # Antifraude: auditoria de troca de forma de pagamento.
+    # CONTROLE_TROCA_PGTO = quem/quando trocou (DATA = data da troca);
+    # aponta para o lancamento financeiro ANTIGO via ID_MOVLCTOSCANCELADOS.
+    "controle_troca_pgto": {
+        "table": "dbo.CONTROLE_TROCA_PGTO",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID", "ID_DB"],
+        "contract_name": "controle_troca_pgto_pk",
+        "required_fields": ["ID", "ID_FILIAL", "ID_DB"],
+        "unique_key_fields": ["ID_FILIAL", "ID", "ID_DB"],
+        "preflight_tables": {
+            "dbo.CONTROLE_TROCA_PGTO": [
+                "ID",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_MOVLCTOSCANCELADOS",
+                "USUARIO",
+                "DATA",
+            ],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT t.*, "
+            "CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(t.DATA AS datetime2)), "
+            f"       (NULLIF(CAST(t.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONTROLE_TROCA_PGTO t"
+        ),
+        "enabled": True,
+    },
+    # Antifraude: lancamentos financeiros CANCELADOS (forma DE da troca).
+    # A "forma" e a conta ID_PLANODECONTAS (-> PLANODECONTAS.NOMEPLANODECONTAS).
+    # DTACONTA = data contabil do lancamento; TIPO aqui = debito/credito (NAO tipo_forma).
+    "movlctoscancelados": {
+        "table": "dbo.MOVLCTOSCANCELADOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_MOVLCTOSCANCELADOS", "ID_DB"],
+        "contract_name": "movlctoscancelados_pk",
+        "required_fields": ["ID_MOVLCTOSCANCELADOS", "ID_FILIAL", "ID_DB", "ID_PLANODECONTAS"],
+        "unique_key_fields": ["ID_FILIAL", "ID_MOVLCTOSCANCELADOS", "ID_DB"],
+        "preflight_tables": {
+            "dbo.MOVLCTOSCANCELADOS": [
+                "ID_MOVLCTOSCANCELADOS",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_PLANODECONTAS",
+                "REFERENCIA",
+                "VALOR",
+                "DTACONTA",
+                "ID_TURNOS",
+            ],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(m.DTACONTA AS datetime2)), "
+            f"       (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVLCTOSCANCELADOS m"
+        ),
+        "enabled": True,
+    },
 }
 
 
@@ -380,6 +544,7 @@ class RuntimeConfig:
     retry_backoff_base_seconds: float = 1.0
     retry_backoff_max_seconds: float = 30.0
     retry_jitter_seconds: float = 0.0
+    batch_delay_seconds: float = 0.5
     gzip_enabled: bool = True
     state_dir: str = "state"
     spool_dir: str = "spool"
@@ -387,6 +552,9 @@ class RuntimeConfig:
     interval_seconds: int = 60
     summary_log_file: str = "logs/torqmind-agent-summary.txt"
     log_level: str = "INFO"
+    rescan_hourly_window_hours: int = 2
+    rescan_daily_window_days: int = 7
+    rescan_daily_after_hour: int = 0
 
     @property
     def effective_connect_timeout_seconds(self) -> int:
@@ -492,6 +660,7 @@ def build_default_raw_config() -> Dict[str, Any]:
             "retry_backoff_base_seconds": 1.0,
             "retry_backoff_max_seconds": 30.0,
             "retry_jitter_seconds": 0.0,
+            "batch_delay_seconds": 0.5,
             "gzip_enabled": True,
             "state_dir": "state",
             "spool_dir": "spool",
@@ -499,6 +668,9 @@ def build_default_raw_config() -> Dict[str, Any]:
             "interval_seconds": 60,
             "summary_log_file": "logs/torqmind-agent-summary.txt",
             "log_level": "INFO",
+            "rescan_hourly_window_hours": 2,
+            "rescan_daily_window_days": 7,
+            "rescan_daily_after_hour": 0,
         },
         "id_empresa": 1,
         "id_db": 1,
@@ -534,6 +706,7 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         "retry_backoff_base_seconds",
         "retry_backoff_max_seconds",
         "retry_jitter_seconds",
+        "batch_delay_seconds",
         "gzip_enabled",
         "state_dir",
         "spool_dir",
@@ -597,6 +770,10 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     runtime["retry_jitter_seconds"] = _env_float(
         "TORQMIND_RETRY_JITTER_SECONDS",
         float(runtime.get("retry_jitter_seconds", 0.0)),
+    )
+    runtime["batch_delay_seconds"] = _env_float(
+        "TORQMIND_BATCH_DELAY_SECONDS",
+        float(runtime.get("batch_delay_seconds", 0.5)),
     )
     runtime["gzip_enabled"] = _env_bool("TORQMIND_GZIP_ENABLED", bool(runtime.get("gzip_enabled", True)))
     runtime["state_dir"] = os.getenv("TORQMIND_STATE_DIR", runtime.get("state_dir", "state"))
@@ -722,6 +899,7 @@ def load_config(
         retry_backoff_base_seconds=float(runtime_raw.get("retry_backoff_base_seconds", 1.0)),
         retry_backoff_max_seconds=float(runtime_raw.get("retry_backoff_max_seconds", 30.0)),
         retry_jitter_seconds=float(runtime_raw.get("retry_jitter_seconds", 0.0)),
+        batch_delay_seconds=float(runtime_raw.get("batch_delay_seconds", 0.5)),
         gzip_enabled=bool(runtime_raw.get("gzip_enabled", True)),
         state_dir=str(runtime_raw.get("state_dir", "state")),
         spool_dir=str(runtime_raw.get("spool_dir", "spool")),
@@ -729,6 +907,9 @@ def load_config(
         interval_seconds=int(runtime_raw.get("interval_seconds", 60)),
         summary_log_file=str(runtime_raw.get("summary_log_file", "logs/torqmind-agent-summary.txt")),
         log_level=str(runtime_raw.get("log_level", "INFO")),
+        rescan_hourly_window_hours=int(runtime_raw.get("rescan_hourly_window_hours", 2)),
+        rescan_daily_window_days=int(runtime_raw.get("rescan_daily_window_days", 7)),
+        rescan_daily_after_hour=int(runtime_raw.get("rescan_daily_after_hour", 0)),
     )
 
     datasets = _merge_dataset_configs(raw.get("datasets") or {})

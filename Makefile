@@ -18,7 +18,7 @@ include $(ENV_FILE)
 export
 endif
 
-.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-sync-dw-full prod-clickhouse-sync-dw-incremental prod-clickhouse-refresh-marts-full prod-clickhouse-refresh-marts-incremental prod-clickhouse-init prod-data-reconcile prod-semantic-marts-audit prod-history-coverage-audit prod-sales-orphans-report prod-etl-pipeline prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-rebuild-derived-from-stg prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check prod-homologation-apply prod-homologation-apply-streaming prod-homologation-apply-full-stg streaming-up streaming-down streaming-init-clickhouse streaming-init-mart-rt streaming-register-debezium streaming-status streaming-validate-cdc streaming-logs streaming-config-check test-cdc-consumer realtime-cutover realtime-validate realtime-backfill realtime-rollback realtime-e2e-smoke
+.PHONY: setup up down logs migrate resetdb hard-resetdb backfill-snapshots backfill-snapshots-resume etl-incremental etl-operational etl-risk purge-sales-history analyze-hot-tables reconcile-sales operational-truth-diagnose operational-truth-preflight operational-truth-purge operational-truth-rebuild operational-truth-validate platform-billing-daily clickhouse-sync-dw clickhouse-dw-init clickhouse-wait-dw clickhouse-marts-init clickhouse-init clickhouse-mvs clickhouse-backfill clickhouse-native-backfill clickhouse-smoke analytics-smoke test test-agent lint ci prod-up prod-down prod-logs prod-migrate prod-seed prod-clickhouse-sync-dw prod-clickhouse-sync-dw-full prod-clickhouse-sync-dw-incremental prod-clickhouse-refresh-marts-full prod-clickhouse-refresh-marts-incremental prod-clickhouse-init prod-data-reconcile prod-semantic-marts-audit prod-history-coverage-audit prod-sales-orphans-report prod-etl-pipeline prod-etl-incremental prod-etl-operational prod-etl-risk prod-purge-sales-history prod-rebuild-derived-from-stg prod-reconcile-sales prod-platform-billing-daily prod-install-cron prod-post-boot-check prod-homologation-apply prod-homologation-apply-streaming prod-homologation-apply-full-stg prod-multivm-sync-code prod-multivm-up prod-multivm-bootstrap prod-multivm-install-cron prod-multivm-validate prod-multivm-proof prod-multivm-status streaming-up streaming-down streaming-init-clickhouse streaming-init-mart-rt streaming-register-debezium streaming-status streaming-validate-cdc streaming-logs streaming-config-check test-cdc-consumer realtime-cutover realtime-validate realtime-backfill realtime-rollback realtime-e2e-smoke
 
 setup:
 	@command -v docker >/dev/null || (echo "docker nao encontrado no PATH" && exit 1)
@@ -246,6 +246,27 @@ prod-reconcile-sales:
 
 prod-platform-billing-daily:
 	@ENV_FILE=$(PROD_ENV_FILE) ./deploy/scripts/platform-billing-daily.sh
+
+prod-multivm-sync-code:
+	@CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-sync-code.sh --yes
+
+prod-multivm-up:
+	@CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-up.sh --yes
+
+prod-multivm-bootstrap:
+	@ENV_FILE="$${ENV_FILE:-/etc/torqmind/prod.app.env}" CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-bootstrap.sh --yes --with-ddl --with-cron --validate
+
+prod-multivm-install-cron:
+	@CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-install-cron.sh --yes
+
+prod-multivm-validate:
+	@CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-validate.sh --yes
+
+prod-multivm-proof:
+	@CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-proof.sh
+
+prod-multivm-status:
+	@CLUSTER_ENV="$${CLUSTER_ENV:-/etc/torqmind/cluster.env}" ./deploy/scripts/prod-multivm-status.sh
 
 # ============================================================
 # Streaming / Event-Driven (CDC)

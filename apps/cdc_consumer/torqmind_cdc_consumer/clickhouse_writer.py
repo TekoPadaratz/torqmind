@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
 import time
 from typing import Any
 
@@ -14,6 +15,10 @@ from .logging import get_logger
 from .mappings import TableMapping, get_mapping
 
 logger = get_logger("clickhouse_writer")
+
+_CLICKHOUSE_DATE_MIN = date(1970, 1, 1)
+_CLICKHOUSE_DATE_MAX = date(2149, 6, 6)
+_CLICKHOUSE_DATE_COLUMNS = frozenset({"data_emissao", "vencimento", "data_pagamento"})
 
 
 class ClickHouseWriter:
@@ -96,6 +101,8 @@ class ClickHouseWriter:
         values: list[Any] = []
         for col in mapping.columns:
             val = record.get(col)
+            if col in _CLICKHOUSE_DATE_COLUMNS:
+                val = self._normalize_clickhouse_date(val)
             # Handle boolean→int conversion for ClickHouse UInt8
             if col in ("cancelado", "cancelado_shadow", "is_aberto", "active"):
                 val = 1 if val else 0
@@ -109,6 +116,32 @@ class ClickHouseWriter:
         values.append(event.source_ts_ms)
 
         return tuple(values)
+
+    def _normalize_clickhouse_date(self, value: Any) -> Any:
+        if value is None:
+            return None
+
+        parsed: date | None = None
+        if isinstance(value, datetime):
+            parsed = value.date()
+        elif isinstance(value, date):
+            parsed = value
+        elif isinstance(value, (int, float)):
+            parsed = date(1970, 1, 1) + timedelta(days=int(value))
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = date.fromisoformat(text[:10])
+            except ValueError:
+                return value
+
+        if parsed is None:
+            return value
+        if parsed < _CLICKHOUSE_DATE_MIN or parsed > _CLICKHOUSE_DATE_MAX:
+            return None
+        return parsed
 
     def _update_table_state(self, event: DebeziumEvent) -> None:
         """Track latest state per table for ops reporting."""

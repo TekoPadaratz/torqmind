@@ -63,3 +63,29 @@ test('browser local default scope uses Sao Paulo business date after 21h without
     globalThis.Date = RealDate;
   }
 });
+
+test('browser local default scope derives all accessible branches for company-level sessions', () => {
+  const scope = buildBrowserLocalDefaultScope({
+    id_empresa: 7,
+    id_filial: null,
+    accesses: [
+      { id_empresa: 7, id_filial: 11 },
+      { id_empresa: 7, id_filial: 13 },
+      { id_empresa: 7, id_filial: null },
+      { id_empresa: 9, id_filial: 21 },
+    ],
+    default_scope: {
+      id_empresa: 7,
+      days: 14,
+      dt_ini: '2026-04-01',
+      dt_fim: '2026-04-14',
+      dt_ref: '2026-04-14',
+      source: 'business_today_default',
+    },
+  });
+
+  assert.equal(scope.id_empresa, '7');
+  assert.equal(scope.id_filial, null);
+  assert.deepEqual(scope.id_filiais, ['11', '13']);
+  assert.equal(scope.branch_scope, 'all');
+});

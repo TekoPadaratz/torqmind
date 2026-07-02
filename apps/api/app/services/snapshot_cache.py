@@ -35,13 +35,14 @@ HOT_ROUTE_REFRESH_AFTER_SECONDS: dict[str, int] = {
     "pricing_competitor_overview": 300,
     "goals_overview": 300,
 }
-ROUTE_SNAPSHOT_BYPASS_KEYS = frozenset({"pricing_competitor_overview"})
+ROUTE_SNAPSHOT_BYPASS_KEYS = frozenset({"pricing_competitor_overview", "customers_overview"})
 REALTIME_TRUTH_BYPASS_KEYS = frozenset({
     "dashboard_home",
     "sales_overview",
     "cash_overview",
     "fraud_overview",
     "finance_overview",
+    "goals_overview",
 })
 SYNC_SNAPSHOT_KEYS = tuple(HOT_ROUTE_REFRESH_AFTER_SECONDS.keys())
 DB_BUSY_LONG_QUERY_SECONDS = 15

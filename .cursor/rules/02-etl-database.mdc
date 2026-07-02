@@ -42,6 +42,37 @@ etl.*   → Controle, logs e funções PL/pgSQL
 - Cargas novas podem chegar DURANTE a janela do ETL — o pipeline deve ser robusto a isso
 - Filiais administráveis via backoffice: o ETL jamais reverte mudanças administrativas
 
+## Realtime / cutover ClickHouse-first (estado atual de produção)
+
+- Produção roda `USE_REALTIME_MARTS=true`, `USE_CLICKHOUSE=true`,
+  `REALTIME_MARTS_FALLBACK=false`. O hot path analítico é
+  `repos_mart_realtime` (lê `torqmind_current` / `torqmind_mart_rt`).
+- A facade `repos_analytics` decide o backend por função
+  (`REALTIME_FUNCTIONS`). Se uma função realtime tem grão/contrato errado,
+  o bug aparece SÓ em produção (testes locais batem no PostgreSQL).
+- `etl.refresh_marts` (publicação legada PG) está DESLIGADO no cutover
+  (`_legacy_pg_marts_enabled()` = false). Marts PG só são atualizadas se a
+  função tiver REFRESH próprio no fast-path operacional. Não assuma que uma
+  materialized view PG está fresca só porque existe.
+- Ao escrever/auditar uma leitura realtime de ClickHouse:
+  - confira o GRÃO da tabela antes de fazer JOIN (ex.:
+    `torqmind_mart_rt.mart_clientes_resumo` é por empresa/filial/cliente —
+    JOIN só por `id_cliente` multiplica linhas pelo nº de filiais);
+  - saldo de recebível subtrai baixas reais
+    (`stg_contasreceberbaixa`), não só `VALOR - VLRPAGO`;
+  - prefira uma mart PG reconciliada (rápida, indexada, com grão correto) a
+    uma query pesada por requisição no endpoint.
+- Dedupe é responsabilidade do grão da mart/SQL. NUNCA deduplicar no frontend.
+
+## Migrations
+
+- Idempotentes e seguras (`CREATE OR REPLACE`, `IF NOT EXISTS`, `ON CONFLICT`).
+- Sequenciais `NNN_descricao.sql`. Montadas em `./sql/migrations:/app/sql/migrations:ro`.
+- Aplicar via `make migrate` / `deploy/scripts/prod-migrate.sh`. Se o runner
+  travar numa migration legada já aplicada, aplicar a nova via `psql -f` e
+  registrar em `app.schema_migrations(filename, checksum=sha256, execution_kind)`.
+
+
 ## Performance SQL
 
 - Prefira queries O(1) ou O(N) — evite N+1 absolutamente

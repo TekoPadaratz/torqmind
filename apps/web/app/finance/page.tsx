@@ -30,13 +30,14 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { describeFinanceCoverage } from "../lib/reading-copy.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
 
 export default function FinancePage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "finance_overview",
@@ -457,6 +458,69 @@ export default function FinancePage() {
                   ))}
                 </div>
               </div>
+
+              {Number(paymentsKpis?.total_vendas || 0) > 0 ? (
+                (() => {
+                  const vendas = Number(paymentsKpis?.total_vendas || 0);
+                  const conciliado = Number(
+                    paymentsKpis?.total_pagamentos_conciliado ?? paymentsKpis?.total_valor ?? 0,
+                  );
+                  const diff = Number(
+                    paymentsKpis?.diferenca_conciliacao ?? vendas - conciliado,
+                  );
+                  const ok = Math.abs(diff) <= 0.01;
+                  const accent = ok ? "#22c55e" : "var(--color-warning)";
+                  return (
+                    <div className="card col-12" style={{ borderColor: accent }}>
+                      <div className="sectionEyebrow">Conciliação das formas de pagamento</div>
+                      <h2 style={{ marginTop: 4 }}>Formas das vendas × vendas do período</h2>
+                      <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
+                        Distinto de "recebimentos financeiros": aqui comparamos as formas de
+                        pagamento das vendas do período com o total de vendas comerciais.
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 12,
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                          gap: 12,
+                        }}
+                      >
+                        <div className="card kpi col-12">
+                          <div className="label">Total de vendas</div>
+                          <div className="value">{formatCurrency(vendas)}</div>
+                        </div>
+                        <div className="card kpi col-12">
+                          <div className="label">Conciliado em formas</div>
+                          <div className="value">{formatCurrency(conciliado)}</div>
+                        </div>
+                        <div className="card kpi col-12">
+                          <div className="label">Diferença operacional</div>
+                          <div className="value" style={{ color: ok ? undefined : accent }}>
+                            {formatCurrency(diff)}
+                          </div>
+                          <div className="muted" style={{ marginTop: 6 }}>
+                            <span
+                              className="pill"
+                              style={{
+                                background: ok ? "rgba(34,197,94,0.12)" : "rgba(245,158,11,0.12)",
+                                color: accent,
+                              }}
+                            >
+                              {ok ? "Conciliado" : "Revisar"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      {!ok ? (
+                        <div className="muted" style={{ marginTop: 10, color: accent }}>
+                          Há diferença operacional entre vendas e formas registradas no período.
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })()
+              ) : null}
 
               <div className="card col-7">
                 <h2>Turnos e formas com maior exposição</h2>

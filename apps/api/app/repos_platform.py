@@ -267,6 +267,9 @@ def _load_user_rows() -> list[dict[str, Any]]:
               u.locked_until,
               u.created_at,
               u.updated_at,
+              u.totp_enabled,
+              u.totp_required,
+              u.mfa_reset_required,
               n.telegram_chat_id,
               n.telegram_username,
               n.telegram_enabled,
@@ -333,6 +336,43 @@ def _user_visible_to_platform(claims: dict[str, Any], user: dict[str, Any], acce
         if tenant_channel_id in visible_channels:
             return True
     return False
+
+
+def admin_reset_mfa(claims: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Admin action: wipe a user's 2FA so they must reconfigure from scratch.
+
+    Reuses the same platform visibility rules as user management. Never touches
+    or returns any secret.
+    """
+    from app import repos_mfa
+
+    _require_platform_operations(claims)
+    accesses = _load_user_access_rows([user_id])
+    target = repos_mfa.get_mfa_state(user_id)
+    if not target:
+        raise AuthError(404, "user_not_found", "Usuário não encontrado.")
+    if not _user_visible_to_platform(claims, target, accesses):
+        raise AuthError(403, "platform_forbidden", "Usuário fora do seu escopo.")
+    repos_mfa.admin_reset(user_id)
+    return {"ok": True, "user_id": user_id, "totp_enabled": False, "mfa_reset_required": True}
+
+
+def admin_set_mfa_required(claims: dict[str, Any], user_id: str, required: bool) -> dict[str, Any]:
+    """Admin action: require (or stop requiring) 2FA for a user.
+
+    When required and the user has not enrolled, the next login forces setup.
+    """
+    from app import repos_mfa
+
+    _require_platform_operations(claims)
+    accesses = _load_user_access_rows([user_id])
+    target = repos_mfa.get_mfa_state(user_id)
+    if not target:
+        raise AuthError(404, "user_not_found", "Usuário não encontrado.")
+    if not _user_visible_to_platform(claims, target, accesses):
+        raise AuthError(403, "platform_forbidden", "Usuário fora do seu escopo.")
+    repos_mfa.set_required(user_id, bool(required))
+    return {"ok": True, "user_id": user_id, "totp_required": bool(required)}
 
 
 def _group_user_accesses(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -695,6 +735,16 @@ def list_users(
     users = _load_user_rows()
     access_map = _group_user_accesses(_load_user_access_rows([str(user["id"]) for user in users]))
 
+    # Load screen permissions for all users
+    from app.db import get_conn as _get_conn_perms
+    screen_perms_map: dict[str, list[str]] = {}
+    if users:
+        with _get_conn_perms() as pconn:
+            rows = pconn.execute("SELECT user_id::text AS uid, screen_key FROM auth.user_screen_permissions").fetchall()
+            for row in rows:
+                uid = row["uid"]
+                screen_perms_map.setdefault(uid, []).append(row["screen_key"])
+
     filtered: list[dict[str, Any]] = []
     for user in users:
         accesses = access_map.get(str(user["id"]), [])
@@ -721,6 +771,7 @@ def list_users(
                 "is_enabled": bool(user.get("is_active", True)),
                 "telegram_configured": bool(user.get("telegram_enabled") and user.get("telegram_chat_id")),
                 "accesses": accesses,
+                "screen_permissions": screen_perms_map.get(str(user.get("id")), []),
             }
         )
 
@@ -835,15 +886,15 @@ def _validate_access_payload(actor_claims: dict[str, Any], user_role: str, acces
                 raise AuthError(422, "validation_error", "channel_admin não pode receber escopo de empresa ou filial.")
             if normalize_role(actor_claims.get("user_role")) == "channel_admin" and channel_id not in channel_ids:
                 raise AuthError(403, "channel_access_denied", "Canal não permitido.")
-        if role in {"tenant_admin", "tenant_manager", "tenant_viewer"}:
+        if role in {"tenant_admin", "tenant_manager", "tenant_viewer", "tenant_kiosk"}:
             if tenant_scope is None:
                 raise AuthError(422, "validation_error", "id_empresa é obrigatório para perfis tenant.")
             if channel_id is not None:
                 raise AuthError(422, "validation_error", "Perfis tenant não podem receber channel_id.")
             if role == "tenant_admin" and branch_scope is not None:
                 raise AuthError(422, "validation_error", "tenant_admin usa escopo por empresa, sem filial.")
-            if role in {"tenant_manager", "tenant_viewer"} and branch_scope is None:
-                raise AuthError(422, "validation_error", "id_filial é obrigatório para tenant_manager e tenant_viewer.")
+            if role in {"tenant_manager", "tenant_viewer", "tenant_kiosk"} and branch_scope is None:
+                raise AuthError(422, "validation_error", "id_filial é obrigatório para tenant_manager, tenant_viewer e tenant_kiosk.")
             if normalize_role(actor_claims.get("user_role")) == "channel_admin":
                 company = _assert_company_visible(actor_claims, int(tenant_scope))
                 if company.get("channel_id") not in set(actor_claims.get("channel_ids") or []):
@@ -999,6 +1050,14 @@ def upsert_user(
             )
 
         _ensure_user_contacts_row(conn, user_id)
+
+        # ── Save screen permissions ──
+        screen_permissions = payload.get("screen_permissions")
+        if screen_permissions is not None:
+            from app.permissions import save_user_screen_permissions, validate_screen_permissions_for_role
+            validate_screen_permissions_for_role(payload["role"], screen_permissions)
+            save_user_screen_permissions(conn, user_id, screen_permissions)
+
         current_user = conn.execute(
             """
             SELECT
@@ -1032,6 +1091,7 @@ def upsert_user(
             }
             for access in accesses
         ]
+        current["screen_permissions"] = screen_permissions or []
         _audit(conn, claims, "user.update" if previous else "user.create", "user", user_id, previous, current, ip)
         conn.commit()
     return current

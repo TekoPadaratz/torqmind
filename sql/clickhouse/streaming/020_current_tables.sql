@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda (
     saidas_entradas   Nullable(Int32),
     total_venda       Nullable(Decimal(18,2)),
     cancelado         UInt8 NOT NULL DEFAULT 0,
+    commercial_eligible UInt8 NOT NULL DEFAULT 1,
     is_deleted        UInt8 NOT NULL DEFAULT 0,
     source_ts_ms      Int64 NOT NULL,
     ingested_at       DateTime64(6, 'UTC') DEFAULT now64(6),
@@ -142,6 +143,9 @@ SETTINGS index_granularity = 8192;
 
 ALTER TABLE torqmind_current.fact_venda
     ADD COLUMN IF NOT EXISTS data Nullable(DateTime64(6, 'UTC')) AFTER data_key;
+
+ALTER TABLE torqmind_current.fact_venda
+    ADD COLUMN IF NOT EXISTS commercial_eligible UInt8 NOT NULL DEFAULT 1 AFTER cancelado;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_venda_item (
     id_empresa         Int32 NOT NULL,
@@ -181,6 +185,8 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_comprovante (
     id_cliente        Nullable(Int32),
     valor_total       Nullable(Decimal(18,2)),
     cancelado         UInt8 NOT NULL DEFAULT 0,
+    ignored_business  UInt8 NOT NULL DEFAULT 0,
+    commercial_eligible UInt8 NOT NULL DEFAULT 1,
     situacao          Nullable(Int32),
     is_deleted        UInt8 NOT NULL DEFAULT 0,
     source_ts_ms      Int64 NOT NULL,
@@ -190,6 +196,12 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_comprovante (
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id_empresa, id_filial, id_db, id_comprovante)
 SETTINGS index_granularity = 8192;
+
+ALTER TABLE torqmind_current.fact_comprovante
+    ADD COLUMN IF NOT EXISTS ignored_business UInt8 NOT NULL DEFAULT 0 AFTER cancelado;
+
+ALTER TABLE torqmind_current.fact_comprovante
+    ADD COLUMN IF NOT EXISTS commercial_eligible UInt8 NOT NULL DEFAULT 1 AFTER ignored_business;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_pagamento_comprovante (
     id_empresa        Int32 NOT NULL,
@@ -203,6 +215,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_pagamento_comprovante (
     valor             Decimal(18,2) NOT NULL DEFAULT 0,
     dt_evento         DateTime64(6, 'UTC') NOT NULL,
     data_key          Int32 NOT NULL,
+    cash_eligible     UInt8 NOT NULL DEFAULT 0,
     nsu               Nullable(String),
     autorizacao       Nullable(String),
     bandeira          Nullable(String),
@@ -215,6 +228,9 @@ CREATE TABLE IF NOT EXISTS torqmind_current.fact_pagamento_comprovante (
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id_empresa, id_filial, referencia, tipo_forma)
 SETTINGS index_granularity = 8192;
+
+ALTER TABLE torqmind_current.fact_pagamento_comprovante
+    ADD COLUMN IF NOT EXISTS cash_eligible UInt8 NOT NULL DEFAULT 0 AFTER data_key;
 
 CREATE TABLE IF NOT EXISTS torqmind_current.fact_caixa_turno (
     id_empresa              Int32 NOT NULL,
@@ -598,4 +614,105 @@ CREATE TABLE IF NOT EXISTS torqmind_current.stg_financeiro (
     source_ts_ms      Int64 NOT NULL
 ) ENGINE = ReplacingMergeTree(source_ts_ms)
 ORDER BY (id_empresa, id_filial, id_db, tipo_titulo, id_titulo)
+SETTINGS index_granularity = 8192;
+
+-- Partial payment tracking (baixas parciais)
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_contasreceberbaixa (
+    id_empresa            Int32 NOT NULL,
+    id_filial             Int32 NOT NULL,
+    id_db                 Int32 NOT NULL,
+    id_contasreceberbaixa Int32 NOT NULL,
+    payload               String NOT NULL DEFAULT '{}',
+    ingested_at           Nullable(DateTime64(6, 'UTC')),
+    dt_evento             Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow          Nullable(Int64),
+    id_chave_natural      Nullable(String),
+    received_at           Nullable(DateTime64(6, 'UTC')),
+    is_deleted            UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms          Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_contasreceberbaixa)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_contaspagarbaixa (
+    id_empresa            Int32 NOT NULL,
+    id_filial             Int32 NOT NULL,
+    id_db                 Int32 NOT NULL,
+    id_contaspagarbaixa   Int32 NOT NULL,
+    payload               String NOT NULL DEFAULT '{}',
+    ingested_at           Nullable(DateTime64(6, 'UTC')),
+    dt_evento             Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow          Nullable(Int64),
+    id_chave_natural      Nullable(String),
+    received_at           Nullable(DateTime64(6, 'UTC')),
+    is_deleted            UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms          Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_contaspagarbaixa)
+SETTINGS index_granularity = 8192;
+
+-- ============================================================
+-- Antifraude: troca de forma de pagamento (raw current mirrors)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_controle_troca_pgto (
+    id_empresa                    Int32 NOT NULL,
+    id_filial                     Int32 NOT NULL,
+    id_db                         Int32 NOT NULL,
+    id                            Int64 NOT NULL,
+    payload                       String NOT NULL DEFAULT '{}',
+    ingested_at                   Nullable(DateTime64(6, 'UTC')),
+    dt_evento                     Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow                  Nullable(Int64),
+    id_chave_natural              Nullable(String),
+    received_at                   Nullable(DateTime64(6, 'UTC')),
+    id_movlctoscancelados_shadow  Nullable(Int64),
+    id_usuario_shadow             Nullable(Int32),
+    data_troca_shadow             Nullable(DateTime64(6, 'UTC')),
+    is_deleted                    UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms                  Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_movlctoscancelados (
+    id_empresa                Int32 NOT NULL,
+    id_filial                 Int32 NOT NULL,
+    id_db                     Int32 NOT NULL,
+    id_movlctoscancelados     Int64 NOT NULL,
+    payload                   String NOT NULL DEFAULT '{}',
+    ingested_at               Nullable(DateTime64(6, 'UTC')),
+    dt_evento                 Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow              Nullable(Int64),
+    id_chave_natural          Nullable(String),
+    received_at               Nullable(DateTime64(6, 'UTC')),
+    id_planodecontas_shadow   Nullable(Int32),
+    referencia_shadow         Nullable(Int64),
+    tipo_shadow               Nullable(Int16),
+    valor_shadow              Nullable(Decimal(18,2)),
+    dtaconta_shadow           Nullable(DateTime64(6, 'UTC')),
+    id_turno_shadow           Nullable(Int32),
+    ref_operacao_shadow       Nullable(Int32),
+    documento_shadow          Nullable(String),
+    is_deleted                UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms              Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_movlctoscancelados)
+SETTINGS index_granularity = 8192;
+
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_planodecontas (
+    id_empresa          Int32 NOT NULL,
+    id_filial           Int32 NOT NULL,
+    id_planodecontas    Int32 NOT NULL,
+    payload             String NOT NULL DEFAULT '{}',
+    ingested_at         Nullable(DateTime64(6, 'UTC')),
+    dt_evento           Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow        Nullable(Int64),
+    id_chave_natural    Nullable(String),
+    received_at         Nullable(DateTime64(6, 'UTC')),
+    is_deleted          UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms        Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_planodecontas)
 SETTINGS index_granularity = 8192;

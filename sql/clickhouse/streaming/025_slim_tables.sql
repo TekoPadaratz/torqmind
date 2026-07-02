@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS torqmind_current.stg_comprovantes_slim (
     dt_evento_local     DateTime64(6, 'America/Sao_Paulo') NOT NULL DEFAULT '1970-01-01 00:00:00',
     valor_total         Decimal(18,2) NOT NULL DEFAULT 0,
     cancelado           UInt8 NOT NULL DEFAULT 0,
+    ignored_business    UInt8 NOT NULL DEFAULT 0,
+    commercial_eligible UInt8 NOT NULL DEFAULT 1,
     situacao            Int32 NOT NULL DEFAULT 0,
     id_turno            Int32 NOT NULL DEFAULT 0,
     id_usuario          Int32 NOT NULL DEFAULT 0,

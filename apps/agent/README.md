@@ -74,6 +74,12 @@ Para a semântica correta de Caixa e Antifraude, mantenha sempre habilitados:
 - `datasets.usuarios.enabled = true`
 - `datasets.turnos.enabled = true`
 
+Para NFE:
+- use sempre `DATA` como coluna de período, incremental e watermark
+- não use a coluna legada incorreta de emissão
+- não use `DATAREPL` para filtro temporal; mantenha apenas como campo informativo se necessário
+- não exija `SERIE`, porque a tabela `NFE` não expõe essa coluna
+
 Campos principais:
 - `sqlserver.dsn` **ou** `sqlserver.server/port/database/user/driver`
 - `api.base_url`

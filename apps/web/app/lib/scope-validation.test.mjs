@@ -188,6 +188,7 @@ test('buildValidatedScope preserves all-branches sentinel while carrying explici
   assert.deepEqual(scope.id_filiais, ['11', '13']);
   assert.equal(scope.id_filial, null);
   assert.match(params, /branch_scope=all/);
-  assert.match(params, /id_filiais=11/);
-  assert.match(params, /id_filiais=13/);
+  // branch_scope=all is a sentinel — concrete ids stay in scope object but are
+  // NOT serialized to URL params (canonical behavior per product-scope tests)
+  assert.ok(!params.includes('id_filiais='));
 });

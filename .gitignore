@@ -1,7 +1,7 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+.pytest_cache/
 venv/
 env/
 .venv/
@@ -53,6 +53,20 @@ arquivo.dump
 *.dump
 *.sql
 !sql/clickhouse/streaming/*.sql
+!sql/migrations/*.sql
 *.tar.gz
 apps/cdc_consumer/torqmind_cdc_consumer.egg-info/
 tmp/
+apps/api/torqmind_api.egg-info/
+
+# Xpert Source Explorer — real config and output (never commit)
+config/source-explorer.env
+logs/source_explorer/
+exports/source_explorer/
+imports/source_explorer/
+*.tgz
+*.zip
+
+# Build artifacts & backups
+tsconfig.tsbuildinfo
+*.env.bak

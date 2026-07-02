@@ -31,7 +31,7 @@ from app.business_time import business_today, business_date_for_datetime, coerce
 from app.config import settings
 from app.db import get_conn
 from app.services.etl_orchestrator import EtlCycleBusyError, TRACK_OPERATIONAL, run_incremental_cycle
-from app.services.telegram import notify_cancelled_comprovantes, raw_comprovante_is_cancelled
+from app.services.telegram import notify_cancelled_comprovantes, notify_voided_nfes, raw_comprovante_is_cancelled, raw_nfe_is_voided
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
@@ -242,6 +242,37 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "id_local_venda_shadow": _to_int(_get_any(obj, ["ID_LOCALVENDAS", "ID_LOCAL_VENDA", "id_localvendas"])),
             "qtd_atual_shadow": _to_numeric(_get_any(obj, ["QTDEATUAL", "QTD_ATUAL", "qtd_atual"])),
         }
+    if dataset_key == "nfe":
+        return {
+            "status_shadow": _to_int(_get_any(obj, ["STATUS", "status", "STATUSNFE", "STATUS_NFE"])),
+            "numero_nfe_shadow": _get_any(obj, ["NRONF", "NUMERO", "NUMERONFE", "NUMERO_NFE", "numero_nfe", "numero"]),
+            "serie_shadow": _get_any(obj, ["SERIE", "serie", "SERIENFE", "SERIE_NFE"]),
+            "chave_nfe_shadow": _get_any(obj, ["CHAVEACESSO", "CHAVE_ACESSO", "CHAVE", "CHAVENFE", "CHAVE_NFE", "chave_nfe"]),
+            "modelo_shadow": _get_any(obj, ["TIPO_DOC", "MODELO", "modelo", "MODELONFE", "MODELO_NFE"]),
+            "protocolo_shadow": _get_any(obj, ["PROTOCOLO", "protocolo", "NPROTOCOLO", "NPROTOCOLO_NFE"]),
+            "data_emissao_shadow": _parse_ts(_get_any(obj, ["DATA", "TORQMIND_DT_EVENTO", "DATAEMISSAO", "DATA_EMISSAO", "data_emissao"]), tenant_id=None),
+            "data_autorizacao_shadow": _parse_ts(_get_any(obj, ["DATAAUTORIZACAO", "DATA_AUTORIZACAO", "data_autorizacao"]), tenant_id=None),
+            "data_cancelamento_shadow": _parse_ts(_get_any(obj, ["DATACANCELAMENTO", "DATA_CANCELAMENTO", "data_cancelamento"]), tenant_id=None),
+            "data_inutilizacao_shadow": _parse_ts(_get_any(obj, ["DATAINUTILIZACAO", "DATA_INUTILIZACAO", "data_inutilizacao"]), tenant_id=None),
+            "valor_nfe_shadow": _to_numeric(_get_any(obj, ["VALOR", "VALORNFE", "VALOR_NFE", "VLRTOTAL", "valor_nfe"])),
+        }
+    if dataset_key == "controle_troca_pgto":
+        return {
+            "id_movlctoscancelados_shadow": _to_int(_get_any(obj, ["ID_MOVLCTOSCANCELADOS", "id_movlctoscancelados"])),
+            "id_usuario_shadow": _to_int(_get_any(obj, ["USUARIO", "ID_USUARIOS", "ID_USUARIO", "id_usuario", "usuario"])),
+            "data_troca_shadow": _parse_ts(_get_any(obj, ["DATA", "TORQMIND_DT_EVENTO", "data"]), tenant_id=None),
+        }
+    if dataset_key == "movlctoscancelados":
+        return {
+            "id_planodecontas_shadow": _to_int(_get_any(obj, ["ID_PLANODECONTAS", "id_planodecontas"])),
+            "referencia_shadow": _to_int(_get_any(obj, ["REFERENCIA", "referencia", "ID_REFERENCIA", "id_referencia"])),
+            "tipo_shadow": _to_int(_get_any(obj, ["TIPO", "tipo"])),
+            "valor_shadow": _to_numeric(_get_any(obj, ["VALOR", "VLR", "valor"])),
+            "dtaconta_shadow": _parse_ts(_get_any(obj, ["DTACONTA", "TORQMIND_DT_EVENTO", "dtaconta"]), tenant_id=None),
+            "id_turno_shadow": _to_int(_get_any(obj, ["ID_TURNOS", "ID_TURNO", "id_turnos", "id_turno"])),
+            "ref_operacao_shadow": _to_int(_get_any(obj, ["REF_OPERACAO", "ref_operacao"])),
+            "documento_shadow": _get_any(obj, ["DOCUMENTO", "documento"]),
+        }
     return {}
 
 
@@ -318,6 +349,43 @@ def _batch_columns(dataset_key: str, spec: DatasetSpec) -> List[str]:
                 "id_produto_shadow",
                 "id_local_venda_shadow",
                 "qtd_atual_shadow",
+            ]
+        )
+    elif dataset_key == "nfe":
+        columns.extend(
+            [
+                "status_shadow",
+                "numero_nfe_shadow",
+                "serie_shadow",
+                "chave_nfe_shadow",
+                "modelo_shadow",
+                "protocolo_shadow",
+                "data_emissao_shadow",
+                "data_autorizacao_shadow",
+                "data_cancelamento_shadow",
+                "data_inutilizacao_shadow",
+                "valor_nfe_shadow",
+            ]
+        )
+    elif dataset_key == "controle_troca_pgto":
+        columns.extend(
+            [
+                "id_movlctoscancelados_shadow",
+                "id_usuario_shadow",
+                "data_troca_shadow",
+            ]
+        )
+    elif dataset_key == "movlctoscancelados":
+        columns.extend(
+            [
+                "id_planodecontas_shadow",
+                "referencia_shadow",
+                "tipo_shadow",
+                "valor_shadow",
+                "dtaconta_shadow",
+                "id_turno_shadow",
+                "ref_operacao_shadow",
+                "documento_shadow",
             ]
         )
     columns.append("payload")
@@ -536,6 +604,24 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_contasreceber", ["ID_CONTASRECEBER", "id_contasreceber"]),
         ],
     ),
+    "contasreceberbaixa": DatasetSpec(
+        table="stg.contasreceberbaixa",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_contasreceberbaixa"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_contasreceberbaixa", ["ID_CONTASRECEBERBAIXA", "id_contasreceberbaixa"]),
+        ],
+    ),
+    "contaspagarbaixa": DatasetSpec(
+        table="stg.contaspagarbaixa",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_contaspagarbaixa"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_contaspagarbaixa", ["ID_CONTASPAGARBAIXA", "id_contaspagarbaixa"]),
+        ],
+    ),
     "financeiro": DatasetSpec(
         table="stg.financeiro",
         pk_cols=["id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"],
@@ -544,6 +630,48 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_db", ["ID_DB", "id_db"]),
             ("tipo_titulo", ["TIPO_TITULO", "tipo_titulo"]),
             ("id_titulo", ["ID_TITULO", "id_titulo"]),
+        ],
+    ),
+
+    # Plano de Contas (chart of accounts)
+    "planodecontas": DatasetSpec(
+        table="stg.planodecontas",
+        pk_cols=["id_empresa", "id_filial", "id_planodecontas"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_planodecontas", ["ID_PLANODECONTAS", "id_planodecontas"]),
+        ],
+    ),
+
+    # NFE (Nota Fiscal Eletrônica) - fiscal classification
+    "nfe": DatasetSpec(
+        table="stg.nfe",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_comprovante", "id_nfe"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_comprovante", ["ID_COMPROVANTE", "id_comprovante"]),
+            ("id_nfe", ["ID_NFE", "id_nfe"]),
+        ],
+    ),
+
+    # Antifraude - troca de forma de pagamento
+    "controle_troca_pgto": DatasetSpec(
+        table="stg.controle_troca_pgto",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id", ["ID", "id"]),
+        ],
+    ),
+    "movlctoscancelados": DatasetSpec(
+        table="stg.movlctoscancelados",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_movlctoscancelados"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_movlctoscancelados", ["ID_MOVLCTOSCANCELADOS", "id_movlctoscancelados"]),
         ],
     ),
 }
@@ -858,6 +986,7 @@ async def ingest_dataset(
     rejected_by_retention_count = 0
     rejected_samples: List[Dict[str, Any]] = []
     cancelled_rows: List[Dict[str, Any]] = []
+    voided_nfe_rows: List[Dict[str, Any]] = []
     inserted = 0
     updated = 0
     duplicates_in_batch = 0
@@ -921,6 +1050,9 @@ async def ingest_dataset(
         if dataset_key == "comprovantes" and raw_comprovante_is_cancelled(obj):
             cancelled_rows.append(obj)
 
+        if dataset_key == "nfe" and raw_nfe_is_voided(obj):
+            voided_nfe_rows.append(obj)
+
         id_db_shadow = _infer_id_db_shadow(obj)
         natural_key = _infer_natural_key(obj, pk)
         payload_json = json.dumps(obj, ensure_ascii=False)
@@ -978,6 +1110,13 @@ async def ingest_dataset(
             await notify_cancelled_comprovantes(id_empresa=id_empresa, raw_rows=cancelled_rows)
         except Exception:
             # Never fail ingestion due to notification issues.
+            pass
+
+    # Optional: send telegram notifications when there are voided NFEs (status=5)
+    if dataset_key == "nfe" and voided_nfe_rows:
+        try:
+            await notify_voided_nfes(id_empresa=id_empresa, raw_rows=voided_nfe_rows)
+        except Exception:
             pass
 
     etl_result = None

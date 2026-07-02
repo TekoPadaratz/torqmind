@@ -20,7 +20,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { describeChurnCoverage } from "../lib/reading-copy.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
@@ -62,7 +62,10 @@ function buildChurnSignal(customer: any) {
 
 export default function CustomersPage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const [delinquencyPage, setDelinquencyPage] = useState(0);
+  const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
+  const [delinquencySearch, setDelinquencySearch] = useState("");
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -91,7 +94,34 @@ export default function CustomersPage() {
   const anonKpis = anon?.kpis || {};
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
-  const delinquencyCustomers = delinquency?.customers || [];
+  const delinquencyCustomers = useMemo(() => {
+    let customers = [...(delinquency?.customers || [])];
+    const term = delinquencySearch.trim().toUpperCase();
+    if (term) {
+      customers = customers.filter((c: any) =>
+        String(c.cliente_nome || "").toUpperCase().includes(term),
+      );
+    }
+    switch (delinquencySort) {
+      case "valor":
+        customers.sort((a: any, b: any) => (b.valor_total_aberto || (b.valor_total_vencido || 0) + (b.valor_a_vencer || 0)) - (a.valor_total_aberto || (a.valor_total_vencido || 0) + (a.valor_a_vencer || 0)));
+        break;
+      case "atraso":
+        customers.sort((a: any, b: any) => (b.max_dias_atraso || 0) - (a.max_dias_atraso || 0));
+        break;
+      case "comprando":
+        customers.sort((a: any, b: any) => {
+          const aCompras = a.compras_30d || 0;
+          const bCompras = b.compras_30d || 0;
+          if (bCompras !== aCompras) return bCompras - aCompras;
+          return (b.valor_total_vencido || 0) - (a.valor_total_vencido || 0);
+        });
+        break;
+      default: // gravity - default from API
+        break;
+    }
+    return customers;
+  }, [delinquency?.customers, delinquencySort, delinquencySearch]);
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
@@ -101,7 +131,7 @@ export default function CustomersPage() {
       })),
     [delinquency],
   );
-  const delinquencyPageSize = 8;
+  const delinquencyPageSize = 10;
   const delinquencyPageCount = Math.max(
     1,
     Math.ceil(delinquencyCustomers.length / delinquencyPageSize),
@@ -183,15 +213,15 @@ export default function CustomersPage() {
               </div>
 
               <div className="card col-12">
-                <div className="sectionEyebrow">Inadimplência</div>
-                <h2 style={{ marginTop: 4 }}>Clientes com maior exposição em aberto</h2>
+                <div className="sectionEyebrow">Inadimplência e cobrança</div>
+                <h2 style={{ marginTop: 4 }}>Visão completa de contas vencidas e a vencer</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  A leitura executiva mostra buckets de atraso e prioriza os clientes com maior valor e maior risco.
+                  Apenas contas já vencidas entram no ranking de cobrança. As contas a vencer são exibidas como contexto para planejamento de fluxo de caixa.
                 </div>
               </div>
 
               <div className="card kpi col-3 riskCard">
-                <div className="label">Clientes em aberto</div>
+                <div className="label">Clientes em atraso</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -199,7 +229,7 @@ export default function CustomersPage() {
                 </div>
               </div>
               <div className="card kpi col-3 riskCard">
-                <div className="label">Títulos em aberto</div>
+                <div className="label">Títulos vencidos</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -207,7 +237,7 @@ export default function CustomersPage() {
                 </div>
               </div>
               <div className="card kpi col-3 riskCard">
-                <div className="label">Valor vencido</div>
+                <div className="label">Total vencido</div>
                 <div className="value">
                   {loading
                     ? "..."
@@ -223,43 +253,52 @@ export default function CustomersPage() {
                 </div>
               </div>
 
-              <div className="card col-12">
-                <h2>Buckets por atraso</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Os buckets mostram concentracao de titulos e valores para orientar a ordem de cobranca.
+              <div className="card kpi col-4">
+                <div className="label">Títulos a vencer</div>
+                <div className="value">
+                  {loading
+                    ? "..."
+                    : Number(delinquency?.summary?.titulos_a_vencer || 0)}
+                </div>
+              </div>
+              <div className="card kpi col-4">
+                <div className="label">Valor a vencer</div>
+                <div className="value">
+                  {loading
+                    ? "..."
+                    : formatCurrency(delinquency?.summary?.valor_a_vencer)}
+                </div>
+              </div>
+              <div className="card kpi col-4">
+                <div className="label">Clientes a vencer</div>
+                <div className="value">
+                  {loading
+                    ? "..."
+                    : Number(delinquency?.summary?.clientes_a_vencer || 0)}
                 </div>
               </div>
 
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Bucket 30 dias</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_30)}
-                </div>
+              <div className="card col-12">
+                <h2>Distribuição por faixa de atraso (vencidos)</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_30 || 0)} titulo(s)`}
+                  Concentração de títulos e valores vencidos por faixa de dias em atraso.
                 </div>
               </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Bucket 60 dias</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_60)}
+
+              {(delinquency?.buckets || []).map((b: any) => (
+                <div className="card kpi col-4 riskCard" key={b?.bucket || b?.label}>
+                  <div className="label">{`Vencido ${b?.label || b?.bucket || ""}`}</div>
+                  <div className="value">
+                    {loading ? "..." : formatCurrency(Number(b?.valor || 0))}
+                  </div>
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    {loading ? "..." : `${Number(b?.titulos || 0)} título(s)`}
+                  </div>
                 </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_60 || 0)} titulo(s)`}
-                </div>
-              </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Bucket 90+ dias</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(delinquency?.summary?.valor_90_plus)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {loading ? "..." : `${Number(delinquency?.summary?.titulos_90_plus || 0)} titulo(s)`}
-                </div>
-              </div>
+              ))}
 
               <div className="card col-12 chartCard">
-                <h2>Buckets por atraso</h2>
+                <h2>Distribuição por faixa de atraso</h2>
                 {!loading && !delinquencyChart.length ? (
                   <EmptyState
                     title="Sem inadimplência relevante no período."
@@ -295,7 +334,45 @@ export default function CustomersPage() {
                   <div>
                     <h2>Prioridades de cobrança</h2>
                     <div className="muted" style={{ marginTop: 8 }}>
-                      Ranking executivo dos clientes com maior pressao em aberto, separado pelos buckets 30, 60 e 90+ dias.
+                      Clientes inadimplentes ordenados por gravidade. Mostra títulos vencidos (até 30d e 30+) e títulos ainda a vencer desses mesmos clientes — se está em atraso, não deveria estar comprando.
+                    </div>
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {([
+                        { key: "gravity", label: "Gravidade" },
+                        { key: "valor", label: "Maior valor" },
+                        { key: "atraso", label: "Maior atraso" },
+                        { key: "comprando", label: "Atrasado comprando" },
+                      ] as const).map((opt) => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          className="btn"
+                          style={{
+                            fontSize: 12,
+                            padding: "4px 10px",
+                            background: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
+                            color: delinquencySort === opt.key ? "#fff" : undefined,
+                            borderColor: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
+                          }}
+                          onClick={() => { setDelinquencySort(opt.key); setDelinquencyPage(0); }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <input
+                        type="text"
+                        value={delinquencySearch}
+                        onChange={(e) => {
+                          setDelinquencySearch(e.target.value.toUpperCase());
+                          setDelinquencyPage(0);
+                        }}
+                        placeholder="BUSCAR CLIENTE PELO NOME"
+                        aria-label="Buscar cliente pelo nome"
+                        className="input"
+                        style={{ maxWidth: 320, textTransform: "uppercase", fontSize: 13 }}
+                      />
                     </div>
                   </div>
                   {delinquencyCustomers.length > delinquencyPageSize ? (
@@ -330,37 +407,49 @@ export default function CustomersPage() {
                     detail="Quando houver recebíveis vencidos, os maiores riscos aparecem aqui."
                   />
                 ) : null}
+                {!loading && (delinquency?.customers || []).length > 0 && delinquencyCustomers.length === 0 ? (
+                  <EmptyState
+                    title="Nenhum cliente encontrado para a busca."
+                    detail={`Não há cliente com "${delinquencySearch}" no nome dentro das prioridades de cobrança.`}
+                  />
+                ) : null}
                 <div className="tableScroll">
                   <table className="table compact">
                     <thead>
                       <tr>
                         <th>Cliente</th>
-                        <th>Bucket</th>
-                        <th>Titulos 30</th>
-                        <th>Titulos 60</th>
-                        <th>Titulos 90+</th>
-                        <th>Valores 30</th>
-                        <th>Valores 60</th>
-                        <th>Valores 90+</th>
-                        <th>Titulos totais</th>
-                        <th>Valor total</th>
+                        <th>Até 30d</th>
+                        <th>R$ até 30d</th>
+                        <th>30+ dias</th>
+                        <th>R$ 30+</th>
+                        <th>Total vencido</th>
+                        <th>A vencer</th>
+                        <th>R$ a vencer</th>
+                        <th>Total aberto</th>
+                        <th>Maior atraso</th>
+                        <th>Compras 30d</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {delinquencyPageItems.map((item: any) => (
+                      {delinquencyPageItems.map((item: any) => {
+                        const totalVencido = item.valor_total_vencido || ((item.valor_ate_30d || 0) + (item.valor_acima_30d || 0));
+                        const totalAberto = item.valor_total_aberto || (totalVencido + (item.valor_a_vencer || 0));
+                        return (
                         <tr key={item.id_cliente}>
                           <td>{item.cliente_nome}</td>
-                          <td>{item.bucket_label}</td>
-                          <td>{item.titulos_30}</td>
-                          <td>{item.titulos_60}</td>
-                          <td>{item.titulos_90_plus}</td>
-                          <td>{formatCurrency(item.valor_30)}</td>
-                          <td>{formatCurrency(item.valor_60)}</td>
-                          <td>{formatCurrency(item.valor_90_plus)}</td>
-                          <td>{item.titulos_totais}</td>
-                          <td>{formatCurrency(item.valor_total)}</td>
+                          <td>{item.titulos_ate_30d ?? 0}</td>
+                          <td>{formatCurrency(item.valor_ate_30d ?? 0)}</td>
+                          <td style={{ fontWeight: (item.titulos_acima_30d || 0) > 0 ? 700 : 400, color: (item.titulos_acima_30d || 0) > 0 ? 'var(--color-negative)' : undefined }}>{item.titulos_acima_30d ?? 0}</td>
+                          <td style={{ color: (item.valor_acima_30d || 0) > 0 ? 'var(--color-negative)' : undefined }}>{formatCurrency(item.valor_acima_30d ?? 0)}</td>
+                          <td style={{ fontWeight: 700 }}>{formatCurrency(totalVencido)}</td>
+                          <td style={{ fontWeight: (item.titulos_a_vencer || 0) > 0 ? 700 : 400, color: (item.titulos_a_vencer || 0) > 0 ? 'var(--color-warning)' : undefined }}>{item.titulos_a_vencer || 0}</td>
+                          <td style={{ color: (item.valor_a_vencer || 0) > 0 ? 'var(--color-warning)' : undefined }}>{formatCurrency(item.valor_a_vencer || 0)}</td>
+                          <td style={{ fontWeight: 700 }}>{formatCurrency(totalAberto)}</td>
+                          <td>{item.max_dias_atraso}d</td>
+                          <td style={{ fontWeight: (item.compras_30d || 0) > 0 ? 700 : 400, color: (item.compras_30d || 0) > 0 ? 'var(--color-warning)' : undefined }}>{item.compras_30d || 0}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

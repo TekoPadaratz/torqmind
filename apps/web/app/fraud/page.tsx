@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -33,8 +33,9 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { apiGet } from "../lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -57,16 +58,24 @@ function riskCategoryLabel(eventType: string) {
 }
 
 function riskGridReference(event: any) {
-  if (event?.id_comprovante) return `Documento ${event.id_comprovante}`;
-  if (event?.id_movprodutos) return `Movimento ${event.id_movprodutos}`;
-  const turnoLabel = formatTurnoLabel(event?.id_turno, event?.turno_label);
-  if (turnoLabel && turnoLabel !== "Turno sem cadastro")
-    return turnoLabel.startsWith("Turno ") ? turnoLabel : `Turno ${turnoLabel}`;
-  return "Sem referência operacional";
+  if (event?.documento_label) return event.documento_label;
+  if (event?.documento_venda) return `Comprovante ${event.documento_venda}`;
+  if (event?.id_comprovante) return `Comprovante #${event.id_comprovante}`;
+  return "Sem comprovante";
+}
+
+function scoreLevelLabel(level: string) {
+  const normalized = String(level || "").toUpperCase();
+  if (normalized === "CRITICAL") return { label: "Crítico", color: "var(--color-negative)" };
+  if (normalized === "HIGH") return { label: "Alto", color: "var(--color-warning)" };
+  if (normalized === "MEDIUM" || normalized === "MEDIO") return { label: "Médio", color: "var(--color-info)" };
+  if (normalized === "LOW" || normalized === "BAIXO") return { label: "Baixo", color: "#94a3b8" };
+  return { label: normalized || "—", color: "#94a3b8" };
 }
 
 export default function FraudPage() {
   const scope = useScopeQuery();
+  useEnsureScopedProductUrl();
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "fraud_overview",
@@ -80,6 +89,60 @@ export default function FraudPage() {
     : buildModuleLoadingCopy("antifraude");
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
+
+  // Antifraude — troca de forma de pagamento (sensível: só master/owner).
+  const trocaAllowed = useMemo(
+    () =>
+      ["platform_master", "owner"].includes(
+        String((claims as any)?.user_role || (claims as any)?.role || "").toLowerCase(),
+      ),
+    [claims],
+  );
+  const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(true);
+  const [trocaAll, setTrocaAll] = useState<any[] | null>(null);
+  const [trocaLoading, setTrocaLoading] = useState(false);
+  const scopeKey = useMemo(
+    () => buildScopeParams(scope).toString(),
+    [scope],
+  );
+  // Reset cache "Todas" quando o escopo/janela muda.
+  useEffect(() => {
+    setTrocaAll(null);
+    setTrocaSoSuspeitas(true);
+  }, [scopeKey]);
+  useEffect(() => {
+    if (trocaSoSuspeitas || trocaAll !== null || !trocaAllowed) return;
+    let cancelled = false;
+    setTrocaLoading(true);
+    const params = buildScopeParams(scope);
+    params.set("troca_only_suspeita", "false");
+    apiGet(`/bi/fraud/overview?${params.toString()}`)
+      .then((res: any) => {
+        if (!cancelled) setTrocaAll(res?.troca_forma_pgto || []);
+      })
+      .catch(() => {
+        if (!cancelled) setTrocaAll([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTrocaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [trocaSoSuspeitas, trocaAll, trocaAllowed, scope, scopeKey]);
+  const trocaRows: any[] = trocaSoSuspeitas
+    ? data?.troca_forma_pgto || []
+    : trocaAll || [];
+  // KPIs usam os totais reais do período (server-side, sem o LIMIT do grid e
+  // independentes do toggle "todas/suspeitas"). O grid abaixo é só a listagem
+  // das 200 trocas mais recentes do recorte selecionado.
+  const trocaTotais = data?.troca_forma_pgto_totais || {};
+  const trocaTotalQtd = trocaSoSuspeitas
+    ? Number(trocaTotais.suspeitas_qtd || 0)
+    : Number(trocaTotais.todas_qtd || 0);
+  const trocaTotalValor = trocaSoSuspeitas
+    ? Number(trocaTotais.suspeitas_valor || 0)
+    : Number(trocaTotais.todas_valor || 0);
 
   const byDay = useMemo(
     () =>
@@ -140,18 +203,24 @@ export default function FraudPage() {
   );
   const highlightRows = useMemo(
     () =>
-      modeledEvents.slice(0, 12).map((row: any) => ({
+      modeledEvents.slice(0, 20).map((row: any) => ({
         id: `${row.id || row.id_comprovante || row.id_movprodutos}`,
+        prioridade: scoreLevelLabel(row.score_level),
+        score: Number(row.score ?? row.score_risco ?? 0),
         categoria: riskCategoryLabel(row.event_type),
         referencia: riskGridReference(row),
+        filial:
+          row.filial_label || formatFilialLabel(row.id_filial, row.filial_nome),
+        turno: formatTurnoLabel(row.turno_numero, row.turno_label),
         operador:
+          row.operador_label ||
           row.operador_caixa_label ||
           row.responsavel_label ||
           "Operador sem cadastro",
-        frentista: row.funcionario_label || "Sem frentista associado",
-        valor: row.impacto_estimado,
+        frentista: row.frentista_label || row.funcionario_label || "Sem frentista associado",
+        valor: row.impacto_estimado ?? row.valor,
         data: row.data,
-        motivo: row.reason_summary || "Evento destacado pelo motor de risco.",
+        motivo: row.motivo || row.reason_summary || "Evento destacado pelo motor de risco.",
       })),
     [modeledEvents],
   );
@@ -191,7 +260,7 @@ export default function FraudPage() {
     : latestOperationalEvent
       ? `${latestOperationalEvent.usuario_label} lidera a revisão operacional mais recente em ${formatDateTime(latestOperationalEvent.data)}.`
       : "O período não trouxe concentração material para puxar a fila imediatamente.";
-  const fraudDonutColors = ["#f97316", "#ef4444", "#38bdf8", "#94a3b8"];
+  const fraudDonutColors = ["var(--color-warning)", "var(--color-negative)", "var(--color-info)", "#94a3b8"];
 
   return (
     <div>
@@ -213,7 +282,7 @@ export default function FraudPage() {
             {modelCoverageStatus !== "covered" ? (
               <div
                 className="card"
-                style={{ marginTop: 12, borderColor: "#f59e0b" }}
+                style={{ marginTop: 12, borderColor: "var(--color-warning)" }}
               >
                 <strong>
                   Leitura modelada com cobertura{" "}
@@ -573,7 +642,8 @@ export default function FraudPage() {
                       {topModeledEvent.event_label}
                     </div>
                     <div className="muted" style={{ marginTop: 6 }}>
-                      {topModeledEvent.operador_caixa_label ||
+                      {topModeledEvent.operador_label ||
+                        topModeledEvent.operador_caixa_label ||
                         topModeledEvent.responsavel_label ||
                         "Responsável sem cadastro"}{" "}
                       · {formatDateTime(topModeledEvent.data)}
@@ -822,16 +892,18 @@ export default function FraudPage() {
                     <tbody>
                       {cancelationRows.map((row: any) => (
                         <tr key={row.id}>
-                          <td>{formatDateTime(row.data)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(row.data)}</td>
                           <td>{riskCategoryLabel(row.event_type)}</td>
                           <td>
-                            {row.operador_caixa_label ||
+                            {row.operador_label ||
+                              row.operador_caixa_label ||
                               row.responsavel_label ||
                               "Operador sem cadastro"}
                           </td>
-                          <td>{formatCurrency(row.impacto_estimado)}</td>
-                          <td>
-                            {row.reason_summary ||
+                          <td style={{ textAlign: "right" }}>{formatCurrency(row.impacto_estimado)}</td>
+                          <td style={{ minWidth: 200 }}>
+                            {row.motivo ||
+                              row.reason_summary ||
                               "Evento destacado para revisão."}
                           </td>
                         </tr>
@@ -863,17 +935,18 @@ export default function FraudPage() {
                     <tbody>
                       {suspiciousOperationRows.map((row: any) => (
                         <tr key={row.id}>
-                          <td>{formatDateTime(row.data)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(row.data)}</td>
                           <td>{riskCategoryLabel(row.event_type)}</td>
                           <td>
-                            {row.operador_caixa_label ||
+                            {row.operador_label ||
+                              row.operador_caixa_label ||
                               row.responsavel_label ||
                               "Operador sem cadastro"}
                           </td>
                           <td>
-                            {row.funcionario_label || "Sem frentista associado"}
+                            {row.frentista_label || row.funcionario_label || "Sem frentista associado"}
                           </td>
-                          <td>{formatCurrency(row.impacto_estimado)}</td>
+                          <td style={{ textAlign: "right" }}>{formatCurrency(row.impacto_estimado)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -931,14 +1004,15 @@ export default function FraudPage() {
                     detail="O período não trouxe evento de pagamento acima do limiar de atenção."
                   />
                 ) : null}
-                <div className="tableScroll">
+                {paymentsRiskRows.length ? (
+                <div className="tableScroll tableScroll--compact">
                   <table className="table compact">
                     <thead>
                       <tr>
                         <th>Data</th>
                         <th>Turno</th>
                         <th>Evento</th>
-                        <th>Score</th>
+                        <th style={{ textAlign: "right" }}>Score</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -946,22 +1020,31 @@ export default function FraudPage() {
                         .slice(0, 8)
                         .map((e: any, idx: number) => (
                           <tr key={`${e.insight_id || e.event_type}-${idx}`}>
-                            <td>{formatDateKey(e.data_key)}</td>
-                            <td>{formatTurnoLabel(e.id_turno, e.turno_label)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatDateKey(e.data_key)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatTurnoLabel(e.id_turno, e.turno_label)}</td>
                             <td>{e.event_label || e.event_type}</td>
-                            <td>{Number(e.score || 0)}</td>
+                            <td style={{ textAlign: "right" }}>{Number(e.score || 0)}</td>
                           </tr>
                         ))}
                     </tbody>
                   </table>
                 </div>
+                ) : null}
               </div>
 
               <div className="card col-12">
-                <h2>Concentração por turno e canal</h2>
+                <h2>Concentração por turno e operador</h2>
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  Turnos operacionais (1..N) com maior impacto estimado no
+                  período e o operador mais associado a cada turno. O turno 0
+                  (caixa geral) e eventos sem turno operacional ficam fora desta
+                  concentração, mas continuam na fila de revisão. Não há
+                  canal/local confiável na fonte, então mostramos o responsável
+                  operacional.
+                </div>
                 {!loading && !(data?.risk_by_turn_local || []).length ? (
                   <EmptyState
-                    title="Sem concentração por turno e canal."
+                    title="Sem concentração por turno."
                     detail="Nenhum agrupamento material apareceu no período selecionado."
                   />
                 ) : null}
@@ -971,28 +1054,28 @@ export default function FraudPage() {
                       <tr>
                         <th>Filial</th>
                         <th>Turno</th>
-                        <th>Canal</th>
-                        <th>Eventos</th>
-                        <th>Alto risco</th>
-                        <th>Impacto</th>
-                        <th>Score médio</th>
+                        <th>Operador</th>
+                        <th style={{ textAlign: "right" }}>Eventos</th>
+                        <th style={{ textAlign: "right" }}>Alto risco</th>
+                        <th style={{ textAlign: "right" }}>Impacto</th>
+                        <th style={{ textAlign: "right" }}>Score médio</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(data?.risk_by_turn_local || [])
                         .slice(0, 10)
                         .map((r: any, idx: number) => (
-                          <tr key={`${r.id_turno}-${r.id_local_venda}-${idx}`}>
+                          <tr key={`${r.id_filial}-${r.turno_numero}-${idx}`}>
                             <td>
                               {r.filial_label ||
                                 formatFilialLabel(r.id_filial, r.filial_nome)}
                             </td>
-                            <td>{formatTurnoLabel(r.id_turno, r.turno_label)}</td>
-                            <td>{r.local_label || "Canal não informado"}</td>
-                            <td>{r.eventos}</td>
-                            <td>{r.alto_risco}</td>
-                            <td>{formatCurrency(r.impacto_estimado)}</td>
-                            <td>{Number(r.score_medio || 0).toFixed(1)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatTurnoLabel(r.turno_numero, r.turno_label)}</td>
+                            <td>{r.operador_label || "Operador sem cadastro"}</td>
+                            <td style={{ textAlign: "right" }}>{r.eventos}</td>
+                            <td style={{ textAlign: "right" }}>{r.alto_risco}</td>
+                            <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(r.impacto_estimado)}</td>
+                            <td style={{ textAlign: "right" }}>{Number(r.score_medio || 0).toFixed(1)}</td>
                           </tr>
                         ))}
                     </tbody>
@@ -1021,31 +1104,204 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
+                        <th>Prioridade</th>
+                        <th>Quando</th>
+                        <th>Filial</th>
+                        <th>Documento</th>
                         <th>Categoria</th>
-                        <th>Referência</th>
                         <th>Operador</th>
                         <th>Frentista</th>
-                        <th>Valor</th>
-                        <th>Quando</th>
+                        <th>Turno</th>
+                        <th style={{ textAlign: "right" }}>Valor</th>
+                        <th style={{ textAlign: "right" }}>Score</th>
                         <th>Motivo</th>
                       </tr>
                     </thead>
                     <tbody>
                       {highlightRows.map((row: any) => (
                         <tr key={row.id}>
+                          <td>
+                            <span
+                              className="pill"
+                              style={{
+                                background: "color-mix(in srgb, " + row.prioridade.color + " 16%, transparent)",
+                                color: row.prioridade.color,
+                                fontWeight: 600,
+                              }}
+                            >
+                              {row.prioridade.label}
+                            </span>
+                          </td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(row.data)}</td>
+                          <td>{row.filial}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{row.referencia}</td>
                           <td>{row.categoria}</td>
-                          <td>{row.referencia}</td>
                           <td>{row.operador}</td>
                           <td>{row.frentista}</td>
-                          <td>{formatCurrency(row.valor)}</td>
-                          <td>{formatDateTime(row.data)}</td>
-                          <td>{row.motivo}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{row.turno}</td>
+                          <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(row.valor)}</td>
+                          <td style={{ textAlign: "right" }}>{row.score}</td>
+                          <td style={{ minWidth: 220 }}>{row.motivo}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               </div>
+
+              {trocaAllowed ? (
+                <div className="card col-12">
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <div>
+                      <div className="sectionEyebrow">Risco financeiro</div>
+                      <h2 style={{ marginTop: 4 }}>Troca de forma de pagamento</h2>
+                      <div className="muted" style={{ marginTop: 4 }}>
+                        Pagamentos que foram recebidos e depois trocados para uma
+                        forma a receber (prazo, cheque, convênio, crediário). A
+                        troca de uma venda já quitada para &quot;a receber&quot; é
+                        o padrão clássico de desvio de caixa.
+                      </div>
+                    </div>
+                    <div
+                      role="tablist"
+                      aria-label="Filtro de trocas"
+                      style={{ display: "inline-flex", gap: 6 }}
+                    >
+                      <button
+                        type="button"
+                        className={`btn ${trocaSoSuspeitas ? "btnPrimary" : ""}`}
+                        aria-pressed={trocaSoSuspeitas}
+                        onClick={() => setTrocaSoSuspeitas(true)}
+                      >
+                        Só suspeitas
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn ${!trocaSoSuspeitas ? "btnPrimary" : ""}`}
+                        aria-pressed={!trocaSoSuspeitas}
+                        onClick={() => setTrocaSoSuspeitas(false)}
+                      >
+                        Todas
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                      gap: 10,
+                      marginTop: 12,
+                    }}
+                  >
+                    <div className="card" style={{ padding: 12 }}>
+                      <div className="label">
+                        {trocaSoSuspeitas ? "Trocas suspeitas" : "Trocas no período"}
+                      </div>
+                      <div style={{ fontSize: 22, fontWeight: 800 }}>
+                        {trocaTotalQtd}
+                      </div>
+                    </div>
+                    <div className="card" style={{ padding: 12 }}>
+                      <div className="label">Valor envolvido</div>
+                      <div style={{ fontSize: 22, fontWeight: 800 }}>
+                        {formatCurrency(trocaTotalValor)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12 }}>
+                    {trocaLoading ? (
+                      <div className="muted">Carregando trocas…</div>
+                    ) : !trocaRows.length ? (
+                      <EmptyState
+                        title={
+                          trocaSoSuspeitas
+                            ? "Sem trocas suspeitas no período."
+                            : "Sem trocas de forma de pagamento no período."
+                        }
+                        detail="Nenhum registro de alteração de forma de pagamento foi encontrado para a janela atual."
+                      />
+                    ) : (
+                      <div className="tableScroll">
+                        {trocaTotalQtd > trocaRows.length ? (
+                          <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
+                            Exibindo as {trocaRows.length} trocas mais recentes de{" "}
+                            {trocaTotalQtd} no período.
+                          </div>
+                        ) : null}
+                        <table className="table compact">
+                          <thead>
+                            <tr>
+                              <th>Documento</th>
+                              <th>Forma anterior</th>
+                              <th>Forma nova</th>
+                              <th>Usuário</th>
+                              <th>Quando</th>
+                              <th style={{ textAlign: "right" }}>Valor</th>
+                              <th>Risco</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {trocaRows.map((row: any) => (
+                              <tr
+                                key={`${row.troca_id}`}
+                                style={
+                                  row.is_suspeita
+                                    ? { background: "rgba(239,68,68,0.06)" }
+                                    : undefined
+                                }
+                              >
+                                <td>{row.documento || `#${row.troca_id}`}</td>
+                                <td>{row.forma_de || "Sem cadastro"}</td>
+                                <td>
+                                  <strong>{row.forma_para || "Sem cadastro"}</strong>
+                                </td>
+                                <td>
+                                  {row.nome_operador ||
+                                    (row.id_usuario
+                                      ? `Operador #${row.id_usuario}`
+                                      : "Não resolvido")}
+                                </td>
+                                <td>
+                                  {row.data_troca_ts
+                                    ? formatDateTime(row.data_troca_ts)
+                                    : formatDateKey(row.data_key)}
+                                </td>
+                                <td style={{ textAlign: "right" }}>
+                                  {formatCurrency(row.valor)}
+                                </td>
+                                <td>
+                                  {row.is_suspeita ? (
+                                    <span
+                                      style={{
+                                        color: "var(--color-negative)",
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      Suspeita
+                                    </span>
+                                  ) : (
+                                    <span className="muted">Normal</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
             <div className="card" style={{ marginTop: 12 }}>
               <div className="muted">

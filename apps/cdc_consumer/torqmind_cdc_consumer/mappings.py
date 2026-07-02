@@ -283,10 +283,60 @@ _register(TableMapping(
 ))
 
 _register(TableMapping(
+    source_schema="stg", source_table="contasreceberbaixa",
+    ch_database="torqmind_current", ch_table="stg_contasreceberbaixa",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_contasreceberbaixa"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "id_contasreceberbaixa"),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="contaspagarbaixa",
+    ch_database="torqmind_current", ch_table="stg_contaspagarbaixa",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_contaspagarbaixa"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_db", "id_contaspagarbaixa"),
+))
+
+_register(TableMapping(
     source_schema="stg", source_table="financeiro",
     ch_database="torqmind_current", ch_table="stg_financeiro",
     primary_key=("id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"),
     columns=_stg_columns("id_empresa", "id_filial", "id_db", "tipo_titulo", "id_titulo"),
+))
+
+
+# ---------- Antifraude: troca de forma de pagamento ----------
+
+_register(TableMapping(
+    source_schema="stg", source_table="controle_troca_pgto",
+    ch_database="torqmind_current", ch_table="stg_controle_troca_pgto",
+    primary_key=("id_empresa", "id_filial", "id_db", "id"),
+    columns=_stg_columns(
+        "id_empresa", "id_filial", "id_db", "id",
+        extra=(
+            "id_movlctoscancelados_shadow", "id_usuario_shadow", "data_troca_shadow",
+        ),
+    ),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="movlctoscancelados",
+    ch_database="torqmind_current", ch_table="stg_movlctoscancelados",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_movlctoscancelados"),
+    columns=_stg_columns(
+        "id_empresa", "id_filial", "id_db", "id_movlctoscancelados",
+        extra=(
+            "id_planodecontas_shadow", "referencia_shadow", "tipo_shadow",
+            "valor_shadow", "dtaconta_shadow", "id_turno_shadow",
+            "ref_operacao_shadow", "documento_shadow",
+        ),
+    ),
+))
+
+_register(TableMapping(
+    source_schema="stg", source_table="planodecontas",
+    ch_database="torqmind_current", ch_table="stg_planodecontas",
+    primary_key=("id_empresa", "id_filial", "id_planodecontas"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_planodecontas"),
 ))
 
 

@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { startTransition, useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiGet } from '../lib/api';
 import { clearAuth } from '../lib/auth';
@@ -19,7 +19,9 @@ import {
   buildProductHref,
   buildScopeSearchParams,
   createScopeEpoch,
+  filterProductLinks,
   getScopeControls,
+  hasExplicitBranchSelection,
   readScopeFromSearch,
 } from '../lib/product-scope.mjs';
 
@@ -40,6 +42,7 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
   const fallback = buildBrowserLocalDefaultScope(session);
   const parsed = readScopeFromSearch(searchParams, fallback);
   const controls = getScopeControls(session);
+  const explicitBranchSelection = hasExplicitBranchSelection(searchParams);
 
   const fallbackCompany =
     parsed.id_empresa ||
@@ -47,15 +50,26 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
     (session?.id_empresa != null ? String(session.id_empresa) : null) ||
     (session?.tenant_ids?.length ? String(session.tenant_ids[0]) : null);
 
+  const explicitBranchIds = uniqueBranchIds([
+    ...(parsed.id_filiais || []),
+    parsed.id_filial,
+  ]);
+
   const fallbackBranchIds = controls.branchLocked && session?.id_filial != null
     ? [String(session.id_filial)]
-    : uniqueBranchIds([
-        ...(parsed.id_filiais || []),
-        ...(fallback.id_filiais || []),
-        parsed.id_filial,
-        fallback.id_filial,
-        session?.id_filial,
-      ]);
+    : explicitBranchSelection
+      ? explicitBranchIds
+      : uniqueBranchIds([
+          ...(parsed.id_filiais || []),
+          ...(fallback.id_filiais || []),
+          parsed.id_filial,
+          fallback.id_filial,
+          session?.id_filial,
+        ]);
+
+  const branchScope = explicitBranchSelection
+    ? (parsed.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'))
+    : (parsed.branch_scope || fallback.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'));
 
   return {
     dt_ini: parsed.dt_ini || fallback.dt_ini || '',
@@ -66,7 +80,7 @@ function scopeFromSession(searchParams: URLSearchParams, session: any) {
     id_empresa: fallbackCompany,
     id_filial: fallbackBranchIds.length === 1 ? fallbackBranchIds[0] : null,
     id_filiais: fallbackBranchIds,
-    branch_scope: parsed.branch_scope || (fallbackBranchIds.length ? 'selected' : 'all'),
+    branch_scope: branchScope,
   };
 }
 
@@ -93,17 +107,19 @@ export default function AppNav({
   userLabel,
   initialUnread,
   deferAuxiliaryLoads = false,
+  hideScopeOnMobile = false,
 }: {
   title: string;
   userLabel?: string;
   initialUnread?: number;
   deferAuxiliaryLoads?: boolean;
+  hideScopeOnMobile?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const [session, setSession] = useState<any>(readCachedSession());
+  const [session, setSession] = useState<any>(null);
   const [draft, setDraft] = useState<ScopeDraft>({
     dt_ini: '',
     dt_fim: '',
@@ -117,16 +133,40 @@ export default function AppNav({
   const [unread, setUnread] = useState(initialUnread ?? 0);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
+  const [navHidden, setNavHidden] = useState(false);
+  const headerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     document.body.classList.add('product-shell');
     return () => document.body.classList.remove('product-shell');
   }, []);
 
+  // Hide nav on scroll down (mobile), show only when near the top
+  useEffect(() => {
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY;
+        if (y <= 12) {
+          setNavHidden(false);
+        } else if (y > 80) {
+          setNavHidden(true);
+        }
+        ticking = false;
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+
   useEffect(() => {
     let active = true;
 
     const hydrateSession = async () => {
+      const cached = readCachedSession();
+      if (active && cached) setSession(cached);
       const me = await loadSession(router, 'product');
       if (active && me) setSession(me);
     };
@@ -142,6 +182,29 @@ export default function AppNav({
       setUnread(initialUnread);
     }
   }, [initialUnread]);
+
+  // Keep the page content offset and sidebar position in sync with the REAL
+  // height of the fixed top navigation. When the menu wraps to 3+ lines the
+  // header grows; without this the content would be covered by the bar.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || typeof window === 'undefined') return;
+    const applyHeight = () => {
+      document.body.style.setProperty('--product-nav-h', `${header.offsetHeight}px`);
+    };
+    applyHeight();
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(applyHeight);
+      observer.observe(header);
+    }
+    window.addEventListener('resize', applyHeight);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', applyHeight);
+      document.body.style.removeProperty('--product-nav-h');
+    };
+  }, [session]);
 
   useEffect(() => {
     if (!deferAuxiliaryLoads) {
@@ -179,7 +242,7 @@ export default function AppNav({
       dt_ini: activeScope.dt_ini || '',
       dt_fim: activeScope.dt_fim || '',
       id_empresa: activeScope.id_empresa || '',
-      id_filiais: nextBranchIds,
+      id_filiais: selectionMode === 'all' ? [] : nextBranchIds,
       selectionMode,
     });
   }, [
@@ -239,10 +302,14 @@ export default function AppNav({
 
           const allowedIds = new Set(items.map((item) => String(item.id_filial)));
           const filteredIds = current.id_filiais.filter((branchId) => allowedIds.has(branchId));
+          const availableBranchIds = uniqueBranchIds(items.map((item) => item.id_filial));
+          const allAvailableSelected = current.selectionMode === 'all'
+            || (availableBranchIds.length > 0 && filteredIds.length === availableBranchIds.length);
+
           return {
             ...current,
-            id_filiais: filteredIds,
-            selectionMode: filteredIds.length ? 'selected' : 'all',
+            id_filiais: allAvailableSelected ? [] : filteredIds,
+            selectionMode: allAvailableSelected ? 'all' : (filteredIds.length ? 'selected' : 'all'),
           };
         });
       } catch {
@@ -257,6 +324,19 @@ export default function AppNav({
       active = false;
     };
   }, [activeScope.id_empresa, auxiliaryLoadsEnabled, draft.id_empresa, scopeControls.branchLocked, session?.id_filial]);
+
+  // Let BrandingApplier follow the active company (multi-company users) so the
+  // ambient background/logo switches without a full session reload.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const companyId = Number(activeScope.id_empresa || 0);
+    if (!companyId) return;
+    try {
+      window.dispatchEvent(new CustomEvent('torqmind:company', { detail: companyId }));
+    } catch {
+      /* no-op */
+    }
+  }, [activeScope.id_empresa]);
 
   const currentUserLabel =
     userLabel ||
@@ -326,6 +406,10 @@ export default function AppNav({
   const applying = scopeTransition.active;
 
   const selectedCompanyLabel = companyLabel(session, activeScope.id_empresa || draft.id_empresa || null);
+  // FASE 13: only show the company dropdown when the user can switch AND has more
+  // than one company. A single-company owner/admin sees a fixed label instead of
+  // a useless one-option dropdown (UX only — the API still enforces access).
+  const showCompanySelector = scopeControls.canSwitchCompany && companies.length > 1;
   const selectedBranchLabel = branchSelectionLabel(
     branches,
     draft.id_filiais,
@@ -364,15 +448,18 @@ export default function AppNav({
     triggerAuxiliaryLoads();
     setDraft((current) => {
       if (scopeControls.branchLocked) return current;
-      const isSelected = current.id_filiais.includes(branchId);
+      const availableBranchIds = uniqueBranchIds(branches.map((branch) => branch.id_filial));
+      const currentIds = current.selectionMode === 'all' ? [] : current.id_filiais;
+      const isSelected = currentIds.includes(branchId);
       const nextIds = isSelected
-        ? current.id_filiais.filter((item) => item !== branchId)
-        : uniqueBranchIds([...current.id_filiais, branchId]);
+        ? currentIds.filter((item) => item !== branchId)
+        : uniqueBranchIds([...currentIds, branchId]);
+      const allAvailableSelected = availableBranchIds.length > 0 && nextIds.length === availableBranchIds.length;
 
       return {
         ...current,
-        id_filiais: nextIds,
-        selectionMode: nextIds.length ? 'selected' : 'all',
+        id_filiais: allAvailableSelected ? [] : nextIds,
+        selectionMode: allAvailableSelected ? 'all' : (nextIds.length ? 'selected' : 'all'),
       };
     });
   };
@@ -405,18 +492,18 @@ export default function AppNav({
 
   return (
     <>
-      <header className="productTopNav">
+      <header ref={headerRef} className={`productTopNav${navHidden ? ' navHidden' : ''}`}>
         <div className="productTopBar">
           <div className="productBrand productBrandInline">
             <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={34} height={34} priority />
             <div>
-              <div className="productEyebrow">TorqMind BI</div>
+              <div className="productEyebrow">Plataforma Operacional</div>
               <div className="productTopTitle">{title}</div>
             </div>
           </div>
 
           <nav className="productTopLinks" aria-label="Navegação principal do produto">
-            {PRODUCT_LINKS.map((item) => {
+            {filterProductLinks(session?.allowed_screens).map((item: any) => {
               const isActive = pathname === item.path;
               return (
                 <Link
@@ -441,6 +528,9 @@ export default function AppNav({
                         <Link className="btn" href="/settings">
                           Configurações
                         </Link>
+                        <Link className="btn" href="/security">
+                          Minha Segurança
+                        </Link>
             <button className="btn" onClick={onLogout} aria-label="Sair da conta">
               Sair
             </button>
@@ -459,12 +549,12 @@ export default function AppNav({
           </div>
         </div>
 
-        <div className="productSidebarSection productFilters">
+        <div className={`productSidebarSection productFilters${hideScopeOnMobile ? ' scopeHiddenOnMobile' : ''}`}>
           <div className="productSectionLabel">Empresa e filiais</div>
 
           <label className="productField">
             <span>Empresa</span>
-            {scopeControls.canSwitchCompany ? (
+            {showCompanySelector ? (
               <select
                 className="input"
                 value={draft.id_empresa}
@@ -616,7 +706,7 @@ export default function AppNav({
             </div>
           </div>
           {!scopeValidation.ok ? (
-            <div className="muted" style={{ color: '#fca5a5' }} aria-live="polite">
+            <div className="muted" style={{ color: 'var(--color-negative)' }} aria-live="polite">
               {scopeValidation.error}
             </div>
           ) : null}

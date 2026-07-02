@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import BrandingApplier from "./components/BrandingApplier";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="pt-BR">
-      <body>{children}</body>
+      <body>
+        <BrandingApplier />
+        {children}
+      </body>
     </html>
   );
 }

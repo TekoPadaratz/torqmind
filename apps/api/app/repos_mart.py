@@ -27,12 +27,15 @@ from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.db import get_conn
 from app.sales_semantics import (
     CANCELLATION_STATUS,
+    COMMERCIAL_STATUSES,
+    IGNORED_BUSINESS_STATUS,
     RETURN_STATUS,
     SALE_STATUS,
     cash_net_value,
     comercial_cfop_class_sql,
     comercial_cfop_direction_sql,
     comercial_cfop_numeric_sql,
+    commercial_eligible_sql,
     sales_cfop_filter_sql,
     sales_status_filter_sql,
     sales_status_sql,
@@ -218,30 +221,21 @@ def _local_venda_label(id_local_venda: Any, local_nome: Any = None) -> str:
 def _turno_value_sql(payload_expr: str, id_turno_expr: str) -> str:
     return f"""
       COALESCE(
-        NULLIF(trim({payload_expr}->>'TURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NO_TURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NUMTURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NR_TURNO'), ''),
-        NULLIF(trim({payload_expr}->>'NROTURNO'), ''),
-        NULLIF(trim({payload_expr}->>'TURNO_CAIXA'), ''),
-        NULLIF(trim({payload_expr}->>'TURNOCAIXA'), ''),
-        CASE
-          WHEN {id_turno_expr} IS NOT NULL AND {id_turno_expr} > 0 THEN {id_turno_expr}::text
-          ELSE NULL
-        END
+        NULLIF(NULLIF(trim({payload_expr}->>'TURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NO_TURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NUMTURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NR_TURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'NROTURNO'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'TURNO_CAIXA'), ''), '0'),
+        NULLIF(NULLIF(trim({payload_expr}->>'TURNOCAIXA'), ''), '0')
       )
     """
 
 
 def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
     value = str(turno_value or "").strip()
-    if value:
+    if value and value != "0":
         return value
-    try:
-        if id_turno is not None and int(id_turno) > 0:
-            return str(int(id_turno))
-    except Exception:
-        pass
     return "Turno sem cadastro"
 
 
@@ -943,7 +937,8 @@ def _commercial_annual_comparison(
     }
 
 
-def risk_model_coverage(dt_ini: date, dt_fim: date, risk_window: Dict[str, Any]) -> Dict[str, Any]:
+def risk_model_coverage(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date) -> Dict[str, Any]:
+    risk_window = risk_data_window(role, id_empresa, id_filial)
     requested_start_key = _date_key(dt_ini)
     requested_end_key = _date_key(dt_fim)
     requested_days = max((dt_fim - dt_ini).days + 1, 0)
@@ -1827,8 +1822,6 @@ def _sales_window_fact_cte(
     params = (
         [id_empresa] + date_params + branch_params
         + [id_empresa] + item_branch_params
-        + [id_empresa] + date_params + branch_params
-        + [id_empresa] + item_branch_params
     )
     conn_branch_id = _conn_branch_id(id_filial)
     cte = f"""
@@ -1870,43 +1863,6 @@ def _sales_window_fact_cte(
           i.updated_at AS item_updated_at,
           i.created_at AS item_created_at
         FROM sale_headers v
-        JOIN dw.fact_venda_item i
-          ON i.id_empresa = v.id_empresa
-         AND i.id_filial = v.id_filial
-         AND i.id_db = v.id_db
-         AND i.id_comprovante = v.id_comprovante
-        WHERE i.id_empresa = %s
-          {where_filial_item}
-          AND {sales_cfop_filter_sql('i')}
-      ), return_headers AS MATERIALIZED (
-        SELECT
-          v.id_empresa,
-          v.id_filial,
-          v.id_db,
-          v.id_comprovante,
-          v.data,
-          v.data_key,
-          v.updated_at AS venda_updated_at,
-          v.created_at AS venda_created_at
-        FROM dw.fact_venda v
-        WHERE v.id_empresa = %s
-          AND {date_predicate_sql}
-          AND {sales_status_filter_sql('v', RETURN_STATUS)}
-          {where_filial_venda}
-      ), return_items AS MATERIALIZED (
-        SELECT
-          v.id_empresa,
-          v.id_filial,
-          v.id_db,
-          v.id_comprovante,
-          v.data,
-          v.data_key,
-          v.venda_updated_at,
-          v.venda_created_at,
-          i.total,
-          i.updated_at AS item_updated_at,
-          i.created_at AS item_created_at
-        FROM return_headers v
         JOIN dw.fact_venda_item i
           ON i.id_empresa = v.id_empresa
          AND i.id_filial = v.id_filial
@@ -1961,17 +1917,11 @@ def sales_operational_day_bundle(
           WHEN COUNT(DISTINCT si.doc_key) = 0 THEN 0::numeric(18,2)
           ELSE (SUM(si.total) / COUNT(DISTINCT si.doc_key))::numeric(18,2)
         END AS ticket_medio,
-        COALESCE((SELECT SUM(ri.total) FROM return_items ri), 0)::numeric(18,2) AS devolucoes,
+        0::numeric(18,2) AS devolucoes,
         COUNT(DISTINCT si.doc_key)::int AS vendas,
         (
-          SELECT MAX(sync_ts)
-          FROM (
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
+          SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data))
             FROM sale_items
-            UNION ALL
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
-            FROM return_items
-          ) sync_points
         ) AS latest_sync_at
       FROM sale_items si
     """
@@ -2120,17 +2070,11 @@ def sales_operational_range_bundle(
           WHEN COUNT(DISTINCT si.doc_key) = 0 THEN 0::numeric(18,2)
           ELSE (SUM(si.total) / COUNT(DISTINCT si.doc_key))::numeric(18,2)
         END AS ticket_medio,
-        COALESCE((SELECT SUM(ri.total) FROM return_items ri), 0)::numeric(18,2) AS devolucoes,
+        0::numeric(18,2) AS devolucoes,
         COUNT(DISTINCT si.doc_key)::int AS vendas,
         (
-          SELECT MAX(sync_ts)
-          FROM (
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
+          SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data))
             FROM sale_items
-            UNION ALL
-            SELECT MAX(COALESCE(venda_updated_at, item_updated_at, venda_created_at, item_created_at, data)) AS sync_ts
-            FROM return_items
-          ) sync_points
         ) AS latest_sync_at
       FROM sale_items si
     """
@@ -2328,6 +2272,86 @@ def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_in
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def sales_abc_curve(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs) -> Dict[str, Any]:
+    """ABC curve from PostgreSQL mart (fallback)."""
+    ini = _date_key(dt_ini)
+    fim = _date_key(dt_fim)
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa, ini, fim] + branch_params
+    sql = f"""
+      WITH base AS (
+        SELECT
+          id_produto,
+          MAX(produto_nome) AS nome_produto,
+          MAX(grupo_nome) AS nome_grupo,
+          SUM(faturamento)::numeric(18,2) AS faturamento,
+          SUM(qtd)::numeric(18,3) AS qtd,
+          SUM(custo_total)::numeric(18,2) AS custo_total,
+          (SUM(faturamento) - SUM(custo_total))::numeric(18,2) AS margem,
+          CASE WHEN SUM(qtd) > 0 THEN (SUM(faturamento) / SUM(qtd))::numeric(18,4) ELSE 0 END AS valor_unitario_medio
+        FROM mart.agg_produtos_diaria
+        WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+        {where_filial}
+        AND faturamento > 0
+        GROUP BY id_produto
+        HAVING SUM(faturamento) > 0
+      ),
+      ranked AS (
+        SELECT *,
+          ROW_NUMBER() OVER (ORDER BY faturamento DESC, id_produto) AS posicao,
+          faturamento / NULLIF(SUM(faturamento) OVER (), 0) * 100 AS participacao_pct,
+          SUM(faturamento) OVER (ORDER BY faturamento DESC, id_produto ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+            / NULLIF(SUM(faturamento) OVER (), 0) * 100 AS acumulado_pct
+        FROM base
+      )
+      SELECT *,
+        CASE WHEN acumulado_pct <= 80 THEN 'A' WHEN acumulado_pct <= 95 THEN 'B' ELSE 'C' END AS classe_abc
+      FROM ranked
+      ORDER BY posicao
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    if not rows:
+        return {
+            "summary": {"total_produtos": 0, "total_faturamento": 0, "classe_a_count": 0, "classe_a_pct": 0, "classe_b_count": 0, "classe_b_pct": 0, "classe_c_count": 0, "classe_c_pct": 0, "produto_lider": "", "produto_lider_pct": 0, "produto_lider_faturamento": 0, "concentration": "empty", "concentration_text": ""},
+            "chart_data": [], "ranking": [], "insights": [], "thresholds": {"a": 80, "b": 95, "c": 100}, "source": "postgres", "empty": True,
+        }
+
+    total_fat = sum(float(r.get("faturamento") or 0) for r in rows)
+    class_a = [r for r in rows if r.get("classe_abc") == "A"]
+    class_b = [r for r in rows if r.get("classe_abc") == "B"]
+    class_c = [r for r in rows if r.get("classe_abc") == "C"]
+    pct_a = sum(float(r.get("faturamento") or 0) for r in class_a) / total_fat * 100 if total_fat else 0
+    pct_b = sum(float(r.get("faturamento") or 0) for r in class_b) / total_fat * 100 if total_fat else 0
+    pct_c = sum(float(r.get("faturamento") or 0) for r in class_c) / total_fat * 100 if total_fat else 0
+    leader = rows[0]
+    leader_pct = float(leader.get("participacao_pct") or 0)
+    top5_pct = sum(float(r.get("participacao_pct") or 0) for r in rows[:5])
+
+    if top5_pct >= 70:
+        conc, conc_text = "high", f"Alta concentração: 5 produtos representam {top5_pct:.1f}% do faturamento."
+    elif len(class_c) > 50 and pct_c < 10:
+        conc, conc_text = "dispersed", f"Mix pulverizado: Classe C tem {len(class_c)} produtos com apenas {pct_c:.1f}% do faturamento."
+    else:
+        conc, conc_text = "healthy", "Concentração saudável do portfólio de produtos."
+
+    def _row_to_chart(r):
+        return {"posicao": int(r.get("posicao") or 0), "nome_produto": r.get("nome_produto") or "", "nome_grupo": r.get("nome_grupo") or "", "faturamento": float(r.get("faturamento") or 0), "qtd": float(r.get("qtd") or 0), "valor_unitario_medio": float(r.get("valor_unitario_medio") or 0), "participacao_pct": round(float(r.get("participacao_pct") or 0), 2), "acumulado_pct": round(float(r.get("acumulado_pct") or 0), 2), "classe_abc": r.get("classe_abc") or "C"}
+
+    def _row_to_ranking(r):
+        return {**_row_to_chart(r), "id_produto": r.get("id_produto"), "unidade": "", "quantity_kind": "unit", "custo_total": float(r.get("custo_total") or 0), "margem": float(r.get("margem") or 0)}
+
+    return {
+        "summary": {"total_produtos": len(rows), "total_faturamento": total_fat, "classe_a_count": len(class_a), "classe_a_pct": round(pct_a, 1), "classe_b_count": len(class_b), "classe_b_pct": round(pct_b, 1), "classe_c_count": len(class_c), "classe_c_pct": round(pct_c, 1), "produto_lider": leader.get("nome_produto") or "", "produto_lider_pct": round(leader_pct, 1), "produto_lider_faturamento": float(leader.get("faturamento") or 0), "concentration": conc, "concentration_text": conc_text},
+        "chart_data": [_row_to_chart(r) for r in rows[:40]],
+        "ranking": [_row_to_ranking(r) for r in rows],
+        "insights": [],
+        "thresholds": {"a": 80, "b": 95, "c": 100},
+        "source": "postgres",
+    }
 
 
 def sales_top_employees(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
@@ -2861,7 +2885,7 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
         AND data_key BETWEEN %s AND %s
         {where_filial}
       GROUP BY id_usuario
-      ORDER BY valor_cancelado DESC, cancelamentos DESC, id_usuario
+      ORDER BY cancelamentos DESC, valor_cancelado DESC, id_usuario
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
@@ -2869,6 +2893,50 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
     for row in rows:
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
     return rows
+
+
+def fraud_troca_forma_pgto(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    only_suspeita: bool = True,
+    limit: int = 200,
+    **kwargs: Any,
+) -> List[Dict[str, Any]]:
+    """Payment-form-change antifraud events.
+
+    There is no PostgreSQL mart for this contract: the canonical source lives in
+    the realtime ClickHouse mart (``torqmind_mart_rt.mart_troca_forma_pgto_rt``)
+    served via ``repos_mart_realtime.fraud_troca_forma_pgto``. This legacy stub
+    exists only so the analytics facade can register the function and dispatch to
+    realtime; on the legacy path it safely returns no rows.
+    """
+    return []
+
+
+def fraud_troca_forma_pgto_kpis(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Period-wide totals for payment-form-change events (antifraud).
+
+    Like :func:`fraud_troca_forma_pgto`, the canonical source is the realtime
+    ClickHouse mart served via ``repos_mart_realtime``. This legacy stub returns
+    zeroed totals so the analytics facade can register the function and dispatch
+    to realtime.
+    """
+    return {
+        "suspeitas_qtd": 0,
+        "suspeitas_valor": 0.0,
+        "todas_qtd": 0,
+        "todas_valor": 0.0,
+    }
 
 
 # ========================
@@ -3298,6 +3366,26 @@ def customers_top(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: 
 def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int], as_of: date) -> Dict[str, Any]:
     """Very lightweight RFM-like snapshot for *today* (rule-based, no ML yet)."""
 
+    mart_where_filial, mart_branch_params = _branch_scope_clause("id_filial", id_filial)
+    latest_snapshot_sql = f"""
+      SELECT MAX(dt_ref)::date AS dt_ref
+      FROM mart.customer_rfm_daily
+      WHERE id_empresa = %s
+        AND dt_ref <= %s::date
+        {mart_where_filial}
+    """
+    snapshot_sql = f"""
+      SELECT
+        COUNT(*) FILTER (WHERE id_cliente <> -1)::int AS clientes_identificados,
+        COUNT(*) FILTER (WHERE last_purchase >= (%s::date - interval '7 days'))::int AS ativos_7d,
+        COUNT(*) FILTER (WHERE last_purchase < (%s::date - interval '30 days'))::int AS em_risco_30d,
+        COALESCE(SUM(monetary_90),0)::numeric(18,2) AS faturamento_90d
+      FROM mart.customer_rfm_daily
+      WHERE id_empresa = %s
+        AND dt_ref = %s::date
+        {mart_where_filial}
+    """
+
     # Last 90 days window
     dt_ini = as_of - timedelta(days=90)
     ini = _date_key(dt_ini)
@@ -3330,6 +3418,19 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Optional[int],
 
     params2 = params + [as_of, as_of]
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        latest_snapshot = conn.execute(
+            latest_snapshot_sql,
+            [id_empresa, as_of] + mart_branch_params,
+        ).fetchone()
+        snapshot_dt = latest_snapshot.get("dt_ref") if latest_snapshot else None
+        if snapshot_dt:
+            row = conn.execute(
+                snapshot_sql,
+                [as_of, as_of, id_empresa, snapshot_dt] + mart_branch_params,
+            ).fetchone()
+            if row:
+                return row
+
         row = conn.execute(sql, params2).fetchone()
         return row or {
             "clientes_identificados": 0,
@@ -3715,203 +3816,146 @@ def customers_delinquency_overview(
     id_filial: Optional[int],
     as_of: date,
     *,
-    limit: int = 20,
+    limit: int = 0,
+    sort_by: str = "gravity",
 ) -> Dict[str, Any]:
-    where_filial, branch_params = _branch_scope_clause("f.id_filial", id_filial)
-    params = [as_of, id_empresa] + branch_params + [as_of, as_of, id_empresa, limit]
-    sql = f"""
-      WITH base AS (
-        SELECT
-          f.id_filial,
-          COALESCE(f.id_entidade, -1) AS id_cliente,
-          GREATEST(0::numeric, COALESCE(f.valor, 0) - COALESCE(f.valor_pago, 0))::numeric(18,2) AS valor_aberto,
-          GREATEST(0, %s::date - COALESCE(f.vencimento, f.data_emissao))::int AS dias_atraso
-        FROM dw.fact_financeiro f
-        WHERE f.id_empresa = %s
-          AND f.tipo_titulo = 1
-          {where_filial}
-          AND COALESCE(f.vencimento, f.data_emissao) < %s
-          AND (
-            f.data_pagamento IS NULL
-            OR f.data_pagamento > %s
-            OR (COALESCE(f.valor, 0) - COALESCE(f.valor_pago, 0)) > 0
-          )
-      ), open_rows AS (
-        SELECT *
-        FROM base
-        WHERE valor_aberto > 0
-          AND id_cliente <> -1
-      ), per_branch_customer AS (
-        SELECT
-          o.id_filial,
-          o.id_cliente,
-          COUNT(*)::int AS titulos,
-          MAX(o.dias_atraso)::int AS max_dias_atraso,
-          COALESCE(SUM(o.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
-          COUNT(*) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 30)::int AS titulos_30,
-          COUNT(*) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60)::int AS titulos_60,
-          COUNT(*) FILTER (WHERE o.dias_atraso > 60)::int AS titulos_90_plus,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_30,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
-          COALESCE(SUM(o.valor_aberto) FILTER (WHERE o.dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus
-        FROM open_rows o
-        GROUP BY o.id_filial, o.id_cliente
-      ), named AS (
-        SELECT
-          p.id_cliente,
-          COALESCE(NULLIF(d.nome, ''), '#ID ' || p.id_cliente::text) AS cliente_nome,
-          p.titulos,
-          p.max_dias_atraso,
-          p.valor_aberto,
-          p.titulos_30,
-          p.titulos_60,
-          p.titulos_90_plus,
-          p.valor_30,
-          p.valor_60,
-          p.valor_90_plus
-        FROM per_branch_customer p
-        LEFT JOIN LATERAL (
-          SELECT d.nome
-          FROM dw.dim_cliente d
-          WHERE d.id_empresa = %s
-            AND d.id_cliente = p.id_cliente
-          ORDER BY
-            CASE WHEN d.id_filial = p.id_filial THEN 0 ELSE 1 END,
-            d.updated_at DESC,
-            d.id_filial
-          LIMIT 1
-        ) d ON true
-      ), ranked AS (
-        SELECT
-          n.id_cliente,
-          MAX(n.cliente_nome) AS cliente_nome,
-          COALESCE(SUM(n.titulos), 0)::int AS titulos,
-          MAX(n.max_dias_atraso)::int AS max_dias_atraso,
-          COALESCE(SUM(n.valor_aberto), 0)::numeric(18,2) AS valor_aberto,
-          COALESCE(SUM(n.titulos_30), 0)::int AS titulos_30,
-          COALESCE(SUM(n.titulos_60), 0)::int AS titulos_60,
-          COALESCE(SUM(n.titulos_90_plus), 0)::int AS titulos_90_plus,
-          COALESCE(SUM(n.valor_30), 0)::numeric(18,2) AS valor_30,
-          COALESCE(SUM(n.valor_60), 0)::numeric(18,2) AS valor_60,
-          COALESCE(SUM(n.valor_90_plus), 0)::numeric(18,2) AS valor_90_plus
-        FROM named n
-        GROUP BY n.id_cliente
-      ), totals AS (
-        SELECT
-          COUNT(DISTINCT id_cliente)::int AS clientes_em_aberto,
-          COUNT(*)::int AS titulos_em_aberto,
-          COALESCE(SUM(valor_aberto), 0)::numeric(18,2) AS valor_total,
-          COUNT(*) FILTER (WHERE dias_atraso BETWEEN 1 AND 30)::int AS titulos_30,
-          COUNT(*) FILTER (WHERE dias_atraso BETWEEN 31 AND 60)::int AS titulos_60,
-          COUNT(*) FILTER (WHERE dias_atraso > 60)::int AS titulos_90_plus,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 1 AND 30), 0)::numeric(18,2) AS valor_30,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso BETWEEN 31 AND 60), 0)::numeric(18,2) AS valor_60,
-          COALESCE(SUM(valor_aberto) FILTER (WHERE dias_atraso > 60), 0)::numeric(18,2) AS valor_90_plus,
-          COALESCE(MAX(dias_atraso), 0)::int AS max_dias_atraso
-        FROM open_rows
-      )
-      SELECT
-        jsonb_build_object(
-          'clientes_em_aberto', t.clientes_em_aberto,
-          'titulos_em_aberto', t.titulos_em_aberto,
-          'valor_total', t.valor_total,
-          'titulos_30', t.titulos_30,
-          'titulos_60', t.titulos_60,
-          'titulos_90_plus', t.titulos_90_plus,
-          'valor_30', t.valor_30,
-          'valor_60', t.valor_60,
-          'valor_90_plus', t.valor_90_plus,
-          'max_dias_atraso', t.max_dias_atraso
-        ) AS summary,
-        jsonb_build_array(
-          jsonb_build_object('bucket', '1_30', 'label', '1-30 dias', 'valor', t.valor_30, 'titulos', t.titulos_30),
-          jsonb_build_object('bucket', '31_60', 'label', '31-60 dias', 'valor', t.valor_60, 'titulos', t.titulos_60),
-          jsonb_build_object('bucket', '61_plus', 'label', '61+ dias', 'valor', t.valor_90_plus, 'titulos', t.titulos_90_plus)
-        ) AS buckets,
-        COALESCE(
-          (
-            SELECT jsonb_agg(
-              jsonb_build_object(
-                'id_cliente', r.id_cliente,
-                'cliente_nome', r.cliente_nome,
-                'titulos', r.titulos,
-                'max_dias_atraso', r.max_dias_atraso,
-                'valor_aberto', r.valor_aberto,
-                'titulos_30', r.titulos_30,
-                'titulos_60', r.titulos_60,
-                'titulos_90_plus', r.titulos_90_plus,
-                'valor_30', r.valor_30,
-                'valor_60', r.valor_60,
-                'valor_90_plus', r.valor_90_plus,
-                'titulos_totais', r.titulos,
-                'valor_total', r.valor_aberto,
-                'bucket_label',
-                  CASE
-                    WHEN r.valor_90_plus > 0 THEN '61+ dias'
-                    WHEN r.valor_60 > 0 THEN '31-60 dias'
-                    ELSE '1-30 dias'
-                  END
-              )
-              ORDER BY r.valor_aberto DESC, r.max_dias_atraso DESC, r.id_cliente
-            )
-            FROM (
-              SELECT *
-              FROM ranked
-              ORDER BY valor_aberto DESC, max_dias_atraso DESC, id_cliente
-              LIMIT %s
-            ) r
-          ),
-          '[]'::jsonb
-        ) AS customers
-      FROM totals t
-    """
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        row = conn.execute(sql, params).fetchone() or {}
+    """Delinquency overview from mart.customer_delinquency_summary (fast indexed read).
 
-    summary = dict(row.get("summary") or {})
-    buckets = list(row.get("buckets") or [])
-    customers = list(row.get("customers") or [])
+    sort_by options:
+      - gravity (default): 30+ titles DESC, then 30d DESC, then total value
+      - valor: valor_total_aberto DESC
+      - atraso: max_dias_atraso DESC
+      - comprando: compras_30d DESC (only customers still buying), then valor_total_vencido DESC
+    """
+    where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
+
+    # Summary aggregation from mart
+    summary_sql = f"""
+      SELECT
+        COUNT(*)::int AS clientes_em_aberto,
+        COALESCE(SUM(m.titulos_ate_30d + m.titulos_acima_30d), 0)::int AS titulos_em_aberto,
+        COALESCE(SUM(m.valor_total_vencido), 0)::numeric(18,2) AS valor_total,
+        COALESCE(SUM(m.titulos_ate_30d), 0)::int AS titulos_ate_30d,
+        COALESCE(SUM(m.valor_ate_30d), 0)::numeric(18,2) AS valor_ate_30d,
+        COALESCE(SUM(m.titulos_acima_30d), 0)::int AS titulos_acima_30d,
+        COALESCE(SUM(m.valor_acima_30d), 0)::numeric(18,2) AS valor_acima_30d,
+        COALESCE(SUM(m.titulos_a_vencer), 0)::int AS titulos_a_vencer,
+        COALESCE(SUM(m.valor_a_vencer), 0)::numeric(18,2) AS valor_a_vencer,
+        COALESCE(MAX(m.max_dias_atraso), 0)::int AS max_dias_atraso,
+        COUNT(*) FILTER (WHERE m.titulos_a_vencer > 0)::int AS clientes_a_vencer,
+        COALESCE(SUM(m.valor_total_aberto), 0)::numeric(18,2) AS valor_total_aberto
+      FROM mart.customer_delinquency_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+    """
+    summary_params = [id_empresa] + branch_params
+
+    # Sort order based on sort_by parameter
+    order_clauses = {
+        "gravity": "m.titulos_acima_30d DESC, m.titulos_ate_30d DESC, m.valor_total_vencido DESC, m.id_cliente",
+        "valor": "m.valor_total_aberto DESC, m.valor_total_vencido DESC, m.id_cliente",
+        "atraso": "m.max_dias_atraso DESC, m.valor_total_vencido DESC, m.id_cliente",
+        "comprando": "m.compras_30d DESC, m.valor_total_vencido DESC, m.id_cliente",
+    }
+    order_clause = order_clauses.get(sort_by, order_clauses["gravity"])
+
+    # Customer list ordered by selected criterion
+    customers_sql = f"""
+      SELECT
+        m.id_cliente,
+        m.cliente_nome,
+        m.titulos_ate_30d,
+        m.valor_ate_30d,
+        m.titulos_acima_30d,
+        m.valor_acima_30d,
+        m.titulos_a_vencer,
+        m.valor_a_vencer,
+        m.max_dias_atraso,
+        m.valor_total_vencido,
+        m.valor_total_aberto,
+        m.compras_30d,
+        m.ultima_compra_dt
+      FROM mart.customer_delinquency_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+      ORDER BY {order_clause}
+    """
+    customers_params = [id_empresa] + branch_params
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        summary_row = conn.execute(summary_sql, summary_params).fetchone() or {}
+        customers = list(conn.execute(customers_sql, customers_params).fetchall())
+
+    if not customers:
+        # Mart may not be populated yet — return empty structure
+        return {
+            "summary": {
+                "clientes_em_aberto": 0,
+                "titulos_em_aberto": 0,
+                "valor_total": 0,
+                "titulos_ate_30d": 0,
+                "valor_ate_30d": 0,
+                "titulos_acima_30d": 0,
+                "valor_acima_30d": 0,
+                "titulos_a_vencer": 0,
+                "valor_a_vencer": 0,
+                "max_dias_atraso": 0,
+            },
+            "buckets": [
+                {"bucket": "1_30", "label": "Até 30 dias", "valor": 0, "titulos": 0},
+                {"bucket": "31_plus", "label": "30+ dias", "valor": 0, "titulos": 0},
+            ],
+            "customers": [],
+            "dt_ref": as_of.isoformat(),
+        }
+
     return {
         "summary": {
-            "clientes_em_aberto": int(summary.get("clientes_em_aberto") or 0),
-            "titulos_em_aberto": int(summary.get("titulos_em_aberto") or 0),
-            "valor_total": round(float(summary.get("valor_total") or 0), 2),
-            "titulos_30": int(summary.get("titulos_30") or 0),
-            "titulos_60": int(summary.get("titulos_60") or 0),
-            "titulos_90_plus": int(summary.get("titulos_90_plus") or 0),
-            "valor_30": round(float(summary.get("valor_30") or 0), 2),
-            "valor_60": round(float(summary.get("valor_60") or 0), 2),
-            "valor_90_plus": round(float(summary.get("valor_90_plus") or 0), 2),
-            "max_dias_atraso": int(summary.get("max_dias_atraso") or 0),
+            "clientes_em_aberto": int(summary_row.get("clientes_em_aberto") or 0),
+            "titulos_em_aberto": int(summary_row.get("titulos_em_aberto") or 0),
+            "valor_total": round(float(summary_row.get("valor_total") or 0), 2),
+            "titulos_ate_30d": int(summary_row.get("titulos_ate_30d") or 0),
+            "valor_ate_30d": round(float(summary_row.get("valor_ate_30d") or 0), 2),
+            "titulos_acima_30d": int(summary_row.get("titulos_acima_30d") or 0),
+            "valor_acima_30d": round(float(summary_row.get("valor_acima_30d") or 0), 2),
+            "titulos_a_vencer": int(summary_row.get("titulos_a_vencer") or 0),
+            "valor_a_vencer": round(float(summary_row.get("valor_a_vencer") or 0), 2),
+            "max_dias_atraso": int(summary_row.get("max_dias_atraso") or 0),
+            "valor_total_aberto": round(float(summary_row.get("valor_total_aberto") or 0), 2),
         },
         "buckets": [
             {
-                "bucket": item.get("bucket"),
-                "label": item.get("label"),
-                "valor": round(float(item.get("valor") or 0), 2),
-                "titulos": int(item.get("titulos") or 0),
-            }
-            for item in buckets
+                "bucket": "1_30",
+                "label": "Até 30 dias",
+                "valor": round(float(summary_row.get("valor_ate_30d") or 0), 2),
+                "titulos": int(summary_row.get("titulos_ate_30d") or 0),
+            },
+            {
+                "bucket": "31_plus",
+                "label": "30+ dias",
+                "valor": round(float(summary_row.get("valor_acima_30d") or 0), 2),
+                "titulos": int(summary_row.get("titulos_acima_30d") or 0),
+            },
         ],
         "customers": [
             {
-                "id_cliente": int(item.get("id_cliente") or 0),
-                "cliente_nome": item.get("cliente_nome"),
-                "titulos": int(item.get("titulos") or 0),
-                "max_dias_atraso": int(item.get("max_dias_atraso") or 0),
-                "valor_aberto": round(float(item.get("valor_aberto") or 0), 2),
-                "titulos_30": int(item.get("titulos_30") or 0),
-                "titulos_60": int(item.get("titulos_60") or 0),
-                "titulos_90_plus": int(item.get("titulos_90_plus") or 0),
-                "valor_30": round(float(item.get("valor_30") or 0), 2),
-                "valor_60": round(float(item.get("valor_60") or 0), 2),
-                "valor_90_plus": round(float(item.get("valor_90_plus") or 0), 2),
-                "titulos_totais": int(item.get("titulos_totais") or item.get("titulos") or 0),
-                "valor_total": round(float(item.get("valor_total") or item.get("valor_aberto") or 0), 2),
-                "bucket_label": item.get("bucket_label"),
+                "id_cliente": int(c.get("id_cliente") or 0),
+                "cliente_nome": c.get("cliente_nome"),
+                "titulos_ate_30d": int(c.get("titulos_ate_30d") or 0),
+                "valor_ate_30d": round(float(c.get("valor_ate_30d") or 0), 2),
+                "titulos_acima_30d": int(c.get("titulos_acima_30d") or 0),
+                "valor_acima_30d": round(float(c.get("valor_acima_30d") or 0), 2),
+                "titulos_a_vencer": int(c.get("titulos_a_vencer") or 0),
+                "valor_a_vencer": round(float(c.get("valor_a_vencer") or 0), 2),
+                "max_dias_atraso": int(c.get("max_dias_atraso") or 0),
+                "valor_total_vencido": round(float(c.get("valor_total_vencido") or 0), 2),
+                "valor_total_aberto": round(float(c.get("valor_total_aberto") or 0), 2),
+                "compras_30d": int(c.get("compras_30d") or 0),
+                "ultima_compra_dt": str(c.get("ultima_compra_dt") or "") if c.get("ultima_compra_dt") else None,
             }
-            for item in customers
+            for c in customers
         ],
+        "sort_by": sort_by,
         "dt_ref": as_of.isoformat(),
     }
 
@@ -4791,7 +4835,7 @@ def _cash_live_now_live_query(role: str, id_empresa: int, id_filial: Optional[in
     total_vendas = round(float(summary_row.get("total_vendas_abertas") or 0), 2)
     total_cancelamentos = round(float(summary_row.get("total_cancelamentos_abertas") or 0), 2)
     total_devolucoes = round(float(summary_row.get("total_devolucoes_abertas") or 0), 2)
-    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos)
     snapshot_ts = summary_row.get("snapshot_ts")
     latest_activity_ts = summary_row.get("latest_activity_ts")
     snapshot_ts_iso = _iso_or_none(snapshot_ts)
@@ -4808,7 +4852,6 @@ def _cash_live_now_live_query(role: str, id_empresa: int, id_filial: Optional[in
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
@@ -5124,7 +5167,6 @@ def _cash_live_now_from_marts(role: str, id_empresa: int, id_filial: Optional[in
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
@@ -5144,7 +5186,7 @@ def _cash_live_now_from_marts(role: str, id_empresa: int, id_filial: Optional[in
         row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
 
     total_devolucoes = round(sum(float(row.get("total_devolucoes") or 0) for row in open_rows), 2)
-    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos)
 
     payment_mix = [
         {
@@ -5299,7 +5341,7 @@ def _cash_sales_docs_cte(
         WHERE v.id_empresa = %s
           AND {date_key_sql}
           {where_filial}
-          AND {_sales_status_expression('v')} IN ({SALE_STATUS}, {CANCELLATION_STATUS}, {RETURN_STATUS})
+          AND {_sales_status_expression('v')} IN ({SALE_STATUS}, {CANCELLATION_STATUS})
           AND {sales_cfop_filter_sql('i')}
           AND {_resolved_cash_eligible_sql('c.cash_eligible', 'c.data', 'c.data_conta', 'c.id_turno')}
         GROUP BY
@@ -5342,9 +5384,6 @@ def _cash_historical_overview(
           COALESCE(SUM(total) FILTER (WHERE situacao = {CANCELLATION_STATUS}), 0)::numeric(18,2) AS total_cancelamentos,
           COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos,
           COUNT(DISTINCT (id_filial::text || ':' || id_turno::text)) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS caixas_com_cancelamento,
-          COALESCE(SUM(total) FILTER (WHERE situacao = {RETURN_STATUS}), 0)::numeric(18,2) AS total_devolucoes,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {RETURN_STATUS})::int AS qtd_devolucoes,
-          COUNT(DISTINCT (id_filial::text || ':' || id_turno::text)) FILTER (WHERE situacao = {RETURN_STATUS})::int AS caixas_com_devolucao,
           MIN(data_key)::int AS min_data_key,
           MAX(data_key)::int AS max_data_key
         FROM sales_docs
@@ -5365,9 +5404,6 @@ def _cash_historical_overview(
         v.total_cancelamentos,
         v.qtd_cancelamentos,
         v.caixas_com_cancelamento,
-        v.total_devolucoes,
-        v.qtd_devolucoes,
-        v.caixas_com_devolucao,
         v.min_data_key,
         v.max_data_key,
         p.total_pagamentos
@@ -5381,9 +5417,7 @@ def _cash_historical_overview(
           COUNT(DISTINCT (id_filial::text || ':' || id_turno::text))::int AS caixas,
           COALESCE(SUM(total) FILTER (WHERE situacao = {SALE_STATUS}), 0)::numeric(18,2) AS total_vendas,
           COALESCE(SUM(total) FILTER (WHERE situacao = {CANCELLATION_STATUS}), 0)::numeric(18,2) AS total_cancelamentos,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos,
-          COALESCE(SUM(total) FILTER (WHERE situacao = {RETURN_STATUS}), 0)::numeric(18,2) AS total_devolucoes,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {RETURN_STATUS})::int AS qtd_devolucoes
+          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos
         FROM sales_docs
         GROUP BY data_key
       ), pagamentos AS (
@@ -5403,8 +5437,6 @@ def _cash_historical_overview(
         COALESCE(v.total_vendas, 0)::numeric(18,2) AS total_vendas,
         COALESCE(v.total_cancelamentos, 0)::numeric(18,2) AS total_cancelamentos,
         COALESCE(v.qtd_cancelamentos, 0)::int AS qtd_cancelamentos,
-        COALESCE(v.total_devolucoes, 0)::numeric(18,2) AS total_devolucoes,
-        COALESCE(v.qtd_devolucoes, 0)::int AS qtd_devolucoes,
         COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
       FROM vendas v
       FULL OUTER JOIN pagamentos p
@@ -5447,9 +5479,7 @@ def _cash_historical_overview(
           COALESCE(SUM(total) FILTER (WHERE situacao = {SALE_STATUS}), 0)::numeric(18,2) AS total_vendas,
           COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {SALE_STATUS})::int AS qtd_vendas,
           COALESCE(SUM(total) FILTER (WHERE situacao = {CANCELLATION_STATUS}), 0)::numeric(18,2) AS total_cancelamentos,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos,
-          COALESCE(SUM(total) FILTER (WHERE situacao = {RETURN_STATUS}), 0)::numeric(18,2) AS total_devolucoes,
-          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {RETURN_STATUS})::int AS qtd_devolucoes
+          COUNT(DISTINCT doc_key) FILTER (WHERE situacao = {CANCELLATION_STATUS})::int AS qtd_cancelamentos
         FROM sales_docs
         GROUP BY id_filial, id_turno
       ), pagamentos AS (
@@ -5487,8 +5517,6 @@ def _cash_historical_overview(
         c.qtd_vendas,
         c.total_cancelamentos,
         c.qtd_cancelamentos,
-        c.total_devolucoes,
-        c.qtd_devolucoes,
         COALESCE(p.total_pagamentos, 0)::numeric(18,2) AS total_pagamentos
       FROM turnos c
       LEFT JOIN dw.fact_caixa_turno t
@@ -5511,7 +5539,7 @@ def _cash_historical_overview(
       LEFT JOIN pagamentos p
         ON p.id_filial = c.id_filial
        AND p.id_turno = c.id_turno
-      ORDER BY c.total_vendas DESC, c.total_cancelamentos DESC, c.total_devolucoes DESC, c.last_event_at DESC
+      ORDER BY c.total_vendas DESC, c.total_cancelamentos DESC, c.last_event_at DESC
       LIMIT 12
     """
 
@@ -5535,7 +5563,7 @@ def _cash_historical_overview(
     caixas_periodo = int(summary_row.get("caixas_periodo") or 0)
     qtd_cancelamentos = int(summary_row.get("qtd_cancelamentos") or 0)
     qtd_devolucoes = int(summary_row.get("qtd_devolucoes") or 0)
-    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos, total_devolucoes)
+    caixa_liquido = cash_net_value(total_vendas, total_cancelamentos)
     payment_mix = [
         {
             "label": row.get("label"),
@@ -5557,7 +5585,6 @@ def _cash_historical_overview(
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
 
     for row in top_turnos_rows:
@@ -5571,7 +5598,6 @@ def _cash_historical_overview(
         row["caixa_liquido"] = cash_net_value(
             row.get("total_vendas"),
             row.get("total_cancelamentos"),
-            row.get("total_devolucoes"),
         )
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
@@ -5737,7 +5763,7 @@ def _cash_historical_overview_from_marts(
             "total_devolucoes": 0.0,
             "qtd_devolucoes": 0,
             "caixas_com_devolucao": 0,
-            "caixa_liquido": cash_net_value(total_vendas, total_cancelamentos, 0.0),
+            "caixa_liquido": cash_net_value(total_vendas, total_cancelamentos),
         },
         "by_day": commercial.get("by_day") or [],
         "payment_mix": payment_mix,
@@ -5790,6 +5816,7 @@ def cash_overview(
         "payment_mix": historical.get("payment_mix") or [],
         "cancelamentos": historical.get("cancelamentos") or [],
         "alerts": live_now.get("alerts") or [],
+        "inutilizacoes": {"qtd": 0, "valor_total": 0.0, "items": []},
         "commercial_coverage": commercial_coverage,
     }
 
@@ -7054,3 +7081,133 @@ def notification_mark_read(
         row = conn.execute(sql, params).fetchone()
         conn.commit()
     return row or {"id": notification_id, "read_at": None}
+
+
+def customers_summary_paginated(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    sort_by: str = "total_compras_30d",
+    sort_order: str = "DESC",
+    search: str = "",
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Paginated customer summary from mart.customer_screen_summary (DB-level pagination)."""
+    # Map frontend sort keys to actual columns
+    sort_map = {
+        "total_compras_30d": "compras_30d",
+        "compras_30d": "compras_30d",
+        "faturamento_30d": "faturamento_30d",
+        "faturamento": "faturamento_30d",
+        "ticket_medio": "ticket_medio_30d",
+        "ticket_medio_30d": "ticket_medio_30d",
+        "ultima_compra": "ultima_compra",
+        "cliente_nome": "cliente_nome",
+    }
+    col = sort_map.get(sort_by, "faturamento_30d")
+    direction = "DESC" if sort_order.upper() == "DESC" else "ASC"
+    nulls = "NULLS LAST" if direction == "DESC" else "NULLS FIRST"
+    offset = (max(1, page) - 1) * page_size
+
+    where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
+    where_search = ""
+    search_params: list = []
+    if search and search.strip():
+        where_search = "AND m.cliente_nome ILIKE %s"
+        search_params = [f"%{search.strip()}%"]
+
+    count_sql = f"""
+      SELECT COUNT(*)::int AS total
+      FROM mart.customer_screen_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+        {where_search}
+    """
+    count_params = [id_empresa] + branch_params + search_params
+
+    data_sql = f"""
+      SELECT
+        m.id_cliente,
+        m.cliente_nome,
+        m.faturamento_30d AS faturamento,
+        m.compras_30d AS compras,
+        m.ultima_compra,
+        m.ticket_medio_30d AS ticket_medio,
+        m.faturamento_90d,
+        m.compras_90d,
+        m.ticket_medio_90d
+      FROM mart.customer_screen_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+        {where_search}
+      ORDER BY m.{col} {direction} {nulls}, m.id_cliente
+      LIMIT %s OFFSET %s
+    """
+    data_params = [id_empresa] + branch_params + search_params + [page_size, offset]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        total_row = conn.execute(count_sql, count_params).fetchone()
+        total = int(total_row["total"]) if total_row else 0
+        if total == 0:
+            # Fallback: mart may not be populated yet, use legacy approach
+            from datetime import timedelta
+            today = business_today(id_empresa)
+            dt_ini = today - timedelta(days=30)
+            items = customers_top(role, id_empresa, id_filial, dt_ini, today, limit=500)
+            if search:
+                s = search.lower()
+                items = [i for i in items if s in str(i.get("cliente_nome", "")).lower()]
+            total = len(items)
+            return {
+                "items": items[offset:offset + page_size],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
+                "source": "postgres_legacy",
+            }
+        items = list(conn.execute(data_sql, data_params).fetchall())
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0,
+        "source": "mart",
+    }
+
+
+# ================================================================
+# Filial Params (ABC thresholds, etc.)
+# ================================================================
+
+def get_filial_params(role: str, id_empresa: int, id_filial: Optional[int]) -> Dict[str, Any]:
+    """Return ABC params for a filial, or defaults if not configured."""
+    defaults = {"abc_threshold_a": 80, "abc_threshold_b": 95, "abc_exclude_fuel": True}
+    if not id_filial:
+        return defaults
+    sql = "SELECT abc_threshold_a, abc_threshold_b, abc_exclude_fuel FROM app.filial_params WHERE id_empresa = %s AND id_filial = %s"
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        row = conn.execute(sql, [id_empresa, id_filial]).fetchone()
+    if not row:
+        return defaults
+    return {"abc_threshold_a": int(row[0]), "abc_threshold_b": int(row[1]), "abc_exclude_fuel": bool(row[2])}
+
+
+def upsert_filial_params(role: str, id_empresa: int, id_filial: int, *, abc_threshold_a: int, abc_threshold_b: int, abc_exclude_fuel: bool) -> None:
+    """Insert or update filial params (ABC thresholds)."""
+    sql = """
+        INSERT INTO app.filial_params (id_empresa, id_filial, abc_threshold_a, abc_threshold_b, abc_exclude_fuel, updated_at)
+        VALUES (%s, %s, %s, %s, %s, now())
+        ON CONFLICT (id_empresa, id_filial)
+        DO UPDATE SET abc_threshold_a = EXCLUDED.abc_threshold_a,
+                      abc_threshold_b = EXCLUDED.abc_threshold_b,
+                      abc_exclude_fuel = EXCLUDED.abc_exclude_fuel,
+                      updated_at = now()
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+        conn.execute(sql, [id_empresa, id_filial, abc_threshold_a, abc_threshold_b, abc_exclude_fuel])

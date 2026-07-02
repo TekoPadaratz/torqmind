@@ -32,12 +32,19 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None
     token_type: str = "bearer"
-    role: str
-    user_role: str
+    role: Optional[str] = None
+    user_role: Optional[str] = None
     analytics_role: Optional[str] = None
     id_empresa: Optional[int] = None
     id_filial: Optional[int] = None
-    home_path: str
+    home_path: Optional[str] = None
     session: Optional[Dict[str, Any]] = None
+    # Two-factor (TOTP): when the user has 2FA enabled, the password step returns
+    # a short-lived challenge instead of a final access token.
+    mfa_required: bool = False
+    mfa_challenge_token: Optional[str] = None
+    # Enforced enrollment: account requires 2FA but has not configured it yet.
+    mfa_setup_required: bool = False
+    mfa_setup_token: Optional[str] = None

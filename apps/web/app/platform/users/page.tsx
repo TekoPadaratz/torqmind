@@ -28,6 +28,7 @@ function emptyUser(role = 'tenant_admin') {
     must_change_password: true,
     locked_until: '',
     reset_failed_login: false,
+    screen_permissions: [] as string[],
     accesses: [emptyAccess(role)],
   };
 }
@@ -55,7 +56,33 @@ function toDatetimeInput(value: any) {
 }
 
 function roleRequiresBranch(role: string) {
-  return role === 'tenant_manager' || role === 'tenant_viewer';
+  return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
+}
+
+const PRODUCT_SCREEN_OPTIONS = [
+  { key: 'dashboard_home', label: 'Dashboard Geral' },
+  { key: 'sales', label: 'Vendas' },
+  { key: 'cash', label: 'Caixa' },
+  { key: 'fraud', label: 'Antifraude' },
+  { key: 'customers', label: 'Clientes' },
+  { key: 'finance', label: 'Financeiro' },
+  { key: 'competitor_pricing', label: 'Preço Concorrente' },
+  { key: 'goals_team', label: 'Metas & Equipe' },
+];
+
+const TV_SCREEN_OPTIONS = [
+  { key: 'tv_sales_hourly', label: 'TV — Vendas/Hora' },
+  { key: 'tv_sales_ranking', label: 'TV — Ranking' },
+];
+
+function screenOptionsForRole(role: string) {
+  if (role === 'tenant_kiosk') return TV_SCREEN_OPTIONS;
+  if (role === 'tenant_manager' || role === 'tenant_viewer') return PRODUCT_SCREEN_OPTIONS;
+  return [...PRODUCT_SCREEN_OPTIONS, ...TV_SCREEN_OPTIONS];
+}
+
+function roleUsesScreenPermissions(role: string) {
+  return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
 }
 
 export default function PlatformUsersPage() {
@@ -64,8 +91,10 @@ export default function PlatformUsersPage() {
   const [items, setItems] = useState<any[]>([]);
   const [companies, setCompanies] = useState<any[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
+  const [branchesMap, setBranchesMap] = useState<Record<string, any[]>>({});
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [form, setForm] = useState<any>(emptyUser());
+  const [showFormPassword, setShowFormPassword] = useState(false);
   const [contactForm, setContactForm] = useState<any>(emptyContact());
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -111,6 +140,7 @@ export default function PlatformUsersPage() {
       must_change_password: Boolean(user.must_change_password),
       locked_until: toDatetimeInput(user.locked_until),
       reset_failed_login: false,
+      screen_permissions: Array.isArray(user.screen_permissions) ? user.screen_permissions : [],
       accesses: (user.accesses || []).length
         ? user.accesses.map((access: any) => ({
             role: access.role || firstRole,
@@ -131,6 +161,22 @@ export default function PlatformUsersPage() {
       email: user.contact_email || user.email || '',
       phone: user.contact_phone || '',
     });
+
+    // Pre-load branches for companies in existing accesses
+    const empresaIds: string[] = Array.from(new Set(
+      (user.accesses || []).map((a: any) => a.id_empresa).filter(Boolean).map(String)
+    ));
+    for (const eid of empresaIds) {
+      if (!branchesMap[eid]) {
+        apiGet(`/platform/companies/${eid}`)
+          .then((detail: any) => {
+            setBranchesMap((prev) => ({ ...prev, [eid]: detail?.branches || [] }));
+          })
+          .catch(() => {
+            setBranchesMap((prev) => ({ ...prev, [eid]: [] }));
+          });
+      }
+    }
   }
 
   useEffect(() => {
@@ -147,19 +193,40 @@ export default function PlatformUsersPage() {
   const isPlatformSuperuser = Boolean(me?.access?.platform_superuser);
 
   function setRole(role: string) {
-    setForm((current: any) => ({
-      ...current,
-      role,
-      accesses:
-        role === 'platform_admin' || role === 'platform_master' || role === 'product_global'
-          ? [emptyAccess(role)]
-          : current.accesses.map((access: any) => ({ ...access, role })),
-    }));
+    setForm((current: any) => {
+      // When role changes, clear screen_permissions not valid for new role
+      const validKeys = new Set(screenOptionsForRole(role).map(s => s.key));
+      const filteredPerms = (current.screen_permissions || []).filter((k: string) => validKeys.has(k));
+      return {
+        ...current,
+        role,
+        screen_permissions: filteredPerms,
+        accesses:
+          role === 'platform_admin' || role === 'platform_master' || role === 'product_global'
+            ? [emptyAccess(role)]
+            : current.accesses.map((access: any) => ({ ...access, role })),
+      };
+    });
   }
 
   function updateAccess(index: number, patch: any) {
     const accesses = [...form.accesses];
     accesses[index] = { ...accesses[index], ...patch, role: form.role };
+    // When company changes, reset branch and load branches for that company
+    if (patch.id_empresa !== undefined) {
+      accesses[index].id_filial = '';
+      const empresaId = patch.id_empresa;
+      if (empresaId && !branchesMap[empresaId]) {
+        apiGet(`/platform/companies/${empresaId}`)
+          .then((detail: any) => {
+            const branches = detail?.branches || [];
+            setBranchesMap((prev) => ({ ...prev, [empresaId]: branches }));
+          })
+          .catch(() => {
+            setBranchesMap((prev) => ({ ...prev, [empresaId]: [] }));
+          });
+      }
+    }
     setForm({ ...form, accesses });
   }
 
@@ -173,7 +240,7 @@ export default function PlatformUsersPage() {
       return;
     }
     if (roleRequiresBranch(form.role) && form.accesses.some((access: any) => !access.id_filial)) {
-      setError('tenant_manager e tenant_viewer exigem filial explícita em todos os vínculos.');
+      setError('tenant_manager, tenant_viewer e tenant_kiosk exigem filial explícita em todos os vínculos.');
       return;
     }
     setSaving(true);
@@ -185,6 +252,7 @@ export default function PlatformUsersPage() {
         valid_from: form.valid_from || null,
         valid_until: form.valid_until || null,
         locked_until: form.locked_until || null,
+        screen_permissions: roleUsesScreenPermissions(form.role) ? form.screen_permissions : null,
         accesses:
           form.role === 'platform_admin' || form.role === 'platform_master' || form.role === 'product_global'
             ? [{ role: form.role, channel_id: null, id_empresa: null, id_filial: null, is_enabled: true, valid_from: null, valid_until: null }]
@@ -207,14 +275,64 @@ export default function PlatformUsersPage() {
       resetForms();
     } catch (err: any) {
       const apiError = err?.response?.data?.error;
-      const apiMessage = err?.response?.data?.detail?.message;
+      const apiDetail = err?.response?.data?.detail;
+      let apiMessage: string | undefined;
+      if (Array.isArray(apiDetail)) {
+        // Pydantic validation errors: extract user-friendly messages
+        const msgs = apiDetail.map((e: any) => {
+          const field = e?.loc?.slice(-1)?.[0] || '';
+          const msg = e?.msg || '';
+          if (field === 'password' && msg.includes('at least 8')) return 'Senha deve ter no mínimo 8 caracteres.';
+          if (field === 'password') return `Senha: ${msg}`;
+          if (field === 'email') return `Email: ${msg}`;
+          if (field === 'username') return `Usuário: ${msg}`;
+          if (field === 'nome') return `Nome: ${msg}`;
+          return msg;
+        });
+        apiMessage = msgs.filter(Boolean).join(' ') || 'Erro de validação.';
+      } else {
+        apiMessage = apiDetail?.message;
+      }
       if (apiError === 'username_conflict') {
         setError(apiMessage || 'Nome de usuário já está em uso.');
+      } else if (apiError === 'email_conflict') {
+        setError(apiMessage || 'Email já está em uso.');
+      } else if (apiError === 'validation_error') {
+        setError(apiMessage || 'Erro de validação.');
       } else if (apiMessage && String(apiMessage).includes('Nome de usuário')) {
         setError(apiMessage);
       } else {
         setError(apiMessage || 'Falha ao salvar usuário.');
       }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resetUserMfa() {
+    if (!editingUserId) return;
+    if (!window.confirm('Resetar o 2FA deste usuário? Ele precisará reconfigurar o autenticador no próximo acesso.')) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.post(`/platform/users/${editingUserId}/mfa-reset`);
+      await load(me);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail?.message || 'Falha ao resetar 2FA do usuário.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function requireUserMfa(required: boolean) {
+    if (!editingUserId) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.post(`/platform/users/${editingUserId}/mfa-require`, { required });
+      await load(me);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail?.message || 'Falha ao atualizar exigência de 2FA.');
     } finally {
       setSaving(false);
     }
@@ -281,17 +399,33 @@ export default function PlatformUsersPage() {
                 autoCorrect="off"
                 spellCheck={false}
               />
-              <input
-                className="input"
-                type="password"
-                placeholder={editingUserId ? 'Nova senha opcional' : 'Senha inicial'}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  className="input"
+                  type={showFormPassword ? "text" : "password"}
+                  placeholder={editingUserId ? 'Nova senha opcional' : 'Senha inicial'}
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  style={{ paddingRight: 40 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowFormPassword(!showFormPassword)}
+                  aria-label={showFormPassword ? "Ocultar senha" : "Mostrar senha"}
+                  style={{
+                    position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+                    color: 'var(--muted, #94a3b8)', fontSize: 18, lineHeight: 1,
+                  }}
+                >
+                  {showFormPassword ? '🙈' : '👁'}
+                </button>
+              </div>
               <select className="input" value={form.role} onChange={(e) => setRole(e.target.value)}>
                 <option value="tenant_admin">tenant_admin</option>
                 <option value="tenant_manager">tenant_manager</option>
                 <option value="tenant_viewer">tenant_viewer</option>
+                <option value="tenant_kiosk">tenant_kiosk (Vendedor/TV)</option>
                 {me?.user_role === 'platform_master' ? <option value="channel_admin">channel_admin</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="product_global">product_global</option> : null}
                 {me?.user_role === 'platform_master' ? <option value="platform_admin">platform_admin</option> : null}
@@ -340,12 +474,23 @@ export default function PlatformUsersPage() {
 	                              </option>
 	                            ))}
 	                          </select>
-	                          <input
+	                          <select
 	                            className="input"
-	                            placeholder={roleRequiresBranch(form.role) ? 'Filial obrigatória' : 'Filial opcional'}
 	                            value={access.id_filial}
 	                            onChange={(e) => updateAccess(index, { id_filial: e.target.value })}
-	                          />
+	                          >
+	                            <option value="">{roleRequiresBranch(form.role) ? 'Filial obrigatória' : 'Filial opcional'}</option>
+	                            {(branchesMap[access.id_empresa] || []).map((branch: any) => (
+	                              <option key={branch.id_filial} value={branch.id_filial}>
+	                                {branch.id_filial} - {branch.nome || `Filial ${branch.id_filial}`}
+	                              </option>
+	                            ))}
+	                          </select>
+	                          {access.id_empresa && !branchesMap[access.id_empresa] ? (
+	                            <div className="platformFieldHint">Carregando filiais...</div>
+	                          ) : access.id_empresa && branchesMap[access.id_empresa]?.length === 0 ? (
+	                            <div className="platformFieldHint" style={{ color: 'var(--color-warning)' }}>Nenhuma filial encontrada para esta empresa.</div>
+	                          ) : null}
 	                        </>
 	                      )}
                       <input className="input" type="date" value={access.valid_from} onChange={(e) => updateAccess(index, { valid_from: e.target.value })} />
@@ -372,6 +517,30 @@ export default function PlatformUsersPage() {
                   Adicionar vínculo
                 </button>
               ) : null}
+
+              {roleUsesScreenPermissions(form.role) ? (
+                <div style={{ width: '100%', marginBottom: 8 }}>
+                  <div className="platformFieldHint" style={{ marginBottom: 4 }}>Telas permitidas:</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {screenOptionsForRole(form.role).map((screen) => (
+                      <label key={screen.key} className="platformCheckbox" style={{ minWidth: 160 }}>
+                        <input
+                          type="checkbox"
+                          checked={form.screen_permissions.includes(screen.key)}
+                          onChange={(e) => {
+                            const perms = e.target.checked
+                              ? [...form.screen_permissions, screen.key]
+                              : form.screen_permissions.filter((k: string) => k !== screen.key);
+                            setForm({ ...form, screen_permissions: perms });
+                          }}
+                        />
+                        {screen.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               <label className="platformCheckbox">
                 <input type="checkbox" checked={form.is_enabled} onChange={(e) => setForm({ ...form, is_enabled: e.target.checked })} />
                 Usuário habilitado
@@ -387,6 +556,36 @@ export default function PlatformUsersPage() {
               <button className="btn" type="submit" disabled={saving}>
                 {saving ? 'Salvando...' : editingUserId ? 'Salvar usuário' : 'Criar usuário'}
               </button>
+              {editingUserId ? (
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={saving}
+                  onClick={resetUserMfa}
+                  style={{ background: 'transparent', border: '1px solid var(--border)' }}
+                  title="Remove o 2FA do usuário; ele precisará reconfigurar no próximo acesso."
+                >
+                  Resetar 2FA
+                </button>
+              ) : null}
+              {editingUserId ? (
+                (() => {
+                  const eu = items.find((u) => u.id === editingUserId);
+                  const isRequired = !!eu?.totp_required;
+                  return (
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={saving}
+                      onClick={() => requireUserMfa(!isRequired)}
+                      style={{ background: 'transparent', border: '1px solid var(--border)' }}
+                      title={isRequired ? 'Deixar de exigir 2FA para este usuário.' : 'Exigir 2FA: o usuário será obrigado a configurar no próximo acesso.'}
+                    >
+                      {isRequired ? 'Não exigir 2FA' : 'Exigir 2FA'}
+                    </button>
+                  );
+                })()
+              ) : null}
             </div>
           </form>
         </div>

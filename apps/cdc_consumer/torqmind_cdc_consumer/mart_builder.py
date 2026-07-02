@@ -102,11 +102,14 @@ class MartBuilder:
         "sales_daily_rt", "sales_hourly_rt", "sales_products_rt", "sales_groups_rt",
         "payments_by_type_rt", "dashboard_home_rt", "fraud_daily_rt",
         "risk_recent_events_rt", "cash_overview_rt", "finance_overview_rt",
+        "nfe_inutilizations_rt", "mart_antifraude_eventos",
+        "mart_troca_forma_pgto_rt",
         "source_freshness", "mart_publication_log",
     ]
 
     REQUIRED_SLIM_TABLES = [
         "stg_comprovantes_slim", "stg_itenscomprovantes_slim", "stg_formas_pgto_slim",
+        "stg_nfe_slim",
     ]
 
     def __init__(
@@ -186,6 +189,8 @@ class MartBuilder:
                         self._populate_slim_itens(client, data_keys)
                     if tables & {"formas_pgto_comprovantes", "payment_type_map"}:
                         self._populate_slim_formas(client, data_keys)
+                    if tables & {"nfe"}:
+                        self._populate_slim_nfe(client, data_keys)
 
                     # Step 2: Build marts from slim tables
                     if tables & {"comprovantes", "itenscomprovantes"}:
@@ -196,15 +201,25 @@ class MartBuilder:
                         results.append(self._refresh_sales_groups_stg(client, data_keys))
                         results.append(self._refresh_fraud_daily_stg(client, data_keys))
                         results.append(self._refresh_risk_recent_events_stg(client))
+                        results.append(self._refresh_antifraude_eventos_stg(client, data_keys))
+
+                    if tables & {"comprovantes", "nfe"}:
+                        results.append(self._refresh_nfe_inutilizations_rt_stg(client, data_keys))
 
                     if tables & {"formas_pgto_comprovantes", "payment_type_map"}:
                         results.append(self._refresh_payments_by_type_stg(client, data_keys))
 
+                    if tables & {"controle_troca_pgto", "movlctoscancelados"}:
+                        results.append(self._refresh_troca_forma_pgto_stg(client, data_keys))
+
                     if tables & {"turnos", "usuarios", "comprovantes"}:
                         results.append(self._refresh_cash_overview_stg(client, data_keys))
 
-                    if tables & {"financeiro", "contaspagar", "contasreceber"}:
+                    if tables & {"financeiro", "contaspagar", "contasreceber", "contasreceberbaixa", "contaspagarbaixa"}:
                         results.append(self._refresh_finance_overview_stg(client))
+
+                    if tables & {"comprovantes", "entidades"}:
+                        results.append(self._refresh_mart_clientes_resumo_stg(client))
                 else:
                     # DW-origin path (already typed, no slim needed)
                     if tables & {"fact_venda", "fact_venda_item", "fact_comprovante"}:
@@ -356,7 +371,7 @@ class MartBuilder:
 
             if self.source == "stg" and not mart_only:
                 # Phase 1: Discover data_keys from raw STG for slim population
-                data_key_expr = self._stg_data_key_expr("c")
+                data_key_expr = self._stg_data_key_comprovante_expr("c")
                 raw_keys_rows = client.query(
                     f"SELECT DISTINCT {data_key_expr} AS dk "
                     f"FROM {self.current_db}.stg_comprovantes AS c FINAL "
@@ -382,20 +397,21 @@ class MartBuilder:
                     self._populate_slim_comprovantes(client, chunk)
                     self._populate_slim_itens(client, chunk)
                     self._populate_slim_formas(client, chunk)
+                    self._populate_slim_nfe(client, chunk)
 
             if self.source == "stg":
                 # Phase 2: Discover publishable data_keys from SLIM (canonical join)
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT c.data_key "
-                    f"FROM {self.current_db}.stg_comprovantes_slim AS c "
-                    f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i "
+                    f"FROM {self.current_db}.stg_comprovantes_slim AS c FINAL "
+                    f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL "
                     f"  ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial "
                     f"  AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante "
                     f"WHERE c.id_empresa = {{id_empresa:Int32}} "
                     f"  AND c.data_key >= {{from_key:Int32}} "
                     f"  AND c.data_key <= {{to_key:Int32}} "
                     f"  AND c.data_key > 0 "
-                    f"  AND c.cancelado = 0 "
+                    f"  AND c.commercial_eligible = 1 "
                     f"  AND c.is_deleted = 0 "
                     f"  AND i.is_deleted = 0 "
                     f"  AND i.cfop > 5000 "
@@ -409,7 +425,7 @@ class MartBuilder:
                 data_keys_rows = client.query(
                     f"SELECT DISTINCT data_key FROM {self.current_db}.fact_venda FINAL "
                     f"WHERE id_empresa = {{id_empresa:Int32}} AND data_key >= {{from_key:Int32}} "
-                    f"AND data_key <= {{to_key:Int32}} AND is_deleted = 0 {filial_filter_plain} "
+                    f"AND data_key <= {{to_key:Int32}} AND is_deleted = 0 AND commercial_eligible = 1 {filial_filter_plain} "
                     f"ORDER BY data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                 )
@@ -456,7 +472,20 @@ class MartBuilder:
             if self.source == "stg":
                 results.append(self._refresh_cash_overview_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
                 results.append(self._refresh_risk_recent_events_stg(client, id_empresa=id_empresa, id_filial=id_filial))
+                results.append(self._refresh_antifraude_eventos_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial, skip_delete=True))
+                # Antifraude troca: small source tables, full rebuild scoped to tenant.
+                if self._troca_tables_exist(client):
+                    troca_where = "1=1"
+                    if id_empresa:
+                        troca_where += f" AND id_empresa = {int(id_empresa)}"
+                    if id_filial:
+                        troca_where += f" AND id_filial = {int(id_filial)}"
+                    client.command(
+                        f"DELETE FROM {self.mart_rt_db}.mart_troca_forma_pgto_rt WHERE {troca_where}"
+                    )
+                results.append(self._refresh_troca_forma_pgto_stg(client, [], id_empresa=id_empresa, id_filial=id_filial, skip_delete=True))
                 results.append(self._refresh_finance_overview_stg(client, id_empresa=id_empresa, id_filial=id_filial))
+                results.append(self._refresh_nfe_inutilizations_rt_stg(client, data_keys, id_empresa=id_empresa, id_filial=id_filial))
             else:
                 results.append(self._refresh_cash_overview_dw(client, data_keys))
                 results.append(self._refresh_risk_recent_events_dw(client))
@@ -581,6 +610,8 @@ class MartBuilder:
                 dt_evento_local DateTime64(6, 'America/Sao_Paulo') NOT NULL DEFAULT '1970-01-01 00:00:00',
                 valor_total Decimal(18,2) NOT NULL DEFAULT 0,
                 cancelado UInt8 NOT NULL DEFAULT 0,
+                ignored_business UInt8 NOT NULL DEFAULT 0,
+                commercial_eligible UInt8 NOT NULL DEFAULT 0,
                 situacao Int32 NOT NULL DEFAULT 0,
                 id_turno Int32 NOT NULL DEFAULT 0,
                 id_usuario Int32 NOT NULL DEFAULT 0,
@@ -617,6 +648,23 @@ class MartBuilder:
             ) ENGINE = ReplacingMergeTree(source_ts_ms)
             ORDER BY (id_empresa, id_filial, id_referencia, tipo_forma)
             SETTINGS index_granularity = 8192""",
+            f"""CREATE TABLE IF NOT EXISTS {self.current_db}.stg_nfe_slim (
+                id_empresa Int32 NOT NULL, id_filial Int32 NOT NULL,
+                id_db Int32 NOT NULL, id_comprovante Int32 NOT NULL,
+                id_nfe Int32 NOT NULL,
+                status Int16 NOT NULL DEFAULT 0,
+                numero_nfe String NOT NULL DEFAULT '',
+                serie String NOT NULL DEFAULT '',
+                chave_nfe String NOT NULL DEFAULT '',
+                protocolo String NOT NULL DEFAULT '',
+                modelo String NOT NULL DEFAULT '',
+                data_emissao Nullable(DateTime64(6, 'America/Sao_Paulo')),
+                valor_nfe Decimal(18,2) NOT NULL DEFAULT 0,
+                is_deleted UInt8 NOT NULL DEFAULT 0,
+                source_ts_ms Int64 NOT NULL
+            ) ENGINE = ReplacingMergeTree(source_ts_ms)
+            ORDER BY (id_empresa, id_filial, id_db, id_comprovante, id_nfe)
+            SETTINGS index_granularity = 8192""",
         ]
         for ddl in ddls:
             client.command(ddl)
@@ -636,9 +684,10 @@ class MartBuilder:
         if kstr:
             client.command(
                 f"DELETE FROM {self.current_db}.stg_comprovantes_slim WHERE data_key IN ({kstr})",
+                settings={"mutations_sync": "1"},
             )
 
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
         # Resolve all fields from shadow columns with payload fallback
@@ -647,7 +696,9 @@ class MartBuilder:
             f"ifNull(c.cancelado_shadow, "
             f"if(lower(JSONExtractString(c.payload, 'CANCELADO')) IN ('true','t','1','s','sim','yes'), 1, 0))"
         )
-        cancelado_expr = f"toUInt8(multiIf({situacao} = 2, 1, {situacao} IN (3, 5), 0, {raw_cancelado}))"
+        cancelado_expr = f"toUInt8(if({situacao} = 2, 1, {raw_cancelado}))"
+        ignored_business_expr = f"toUInt8({situacao} = 3)"
+        commercial_eligible_expr = f"toUInt8(({cancelado_expr}) = 0 AND ({ignored_business_expr}) = 0)"
         valor_total = f"ifNull(c.valor_total_shadow, toDecimal64OrZero(JSONExtractString(c.payload, 'VLRTOTAL'), 2))"
         id_turno = f"ifNull(c.id_turno_shadow, toInt32OrZero(JSONExtractString(c.payload, 'ID_TURNOS')))"
         id_usuario = f"coalesce(c.id_usuario_shadow, toInt32OrZero(JSONExtractString(c.payload, 'ID_USUARIOS')), toInt32OrZero(JSONExtractString(c.payload, 'ID_USUARIO')))"
@@ -664,6 +715,8 @@ class MartBuilder:
             {ts_local} AS dt_evento_local,
             {valor_total} AS valor_total,
             {cancelado_expr} AS cancelado,
+            {ignored_business_expr} AS ignored_business,
+            {commercial_eligible_expr} AS commercial_eligible,
             {situacao} AS situacao,
             {id_turno} AS id_turno,
             {id_usuario} AS id_usuario,
@@ -689,9 +742,10 @@ class MartBuilder:
         if kstr:
             client.command(
                 f"DELETE FROM {self.current_db}.stg_itenscomprovantes_slim WHERE data_key IN ({kstr})",
+                settings={"mutations_sync": "1"},
             )
 
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
 
         id_produto = f"ifNull(i.id_produto_shadow, toInt32OrZero(JSONExtractString(i.payload, 'ID_PRODUTOS')))"
@@ -738,9 +792,10 @@ class MartBuilder:
         if kstr:
             client.command(
                 f"DELETE FROM {self.current_db}.stg_formas_pgto_slim WHERE data_key IN ({kstr})",
+                settings={"mutations_sync": "1"},
             )
 
-        data_key_expr = self._stg_data_key_expr("c")
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
         key_filter = self._stg_keys_filter(data_key_expr, data_keys)
         valor = f"ifNull(p.valor_shadow, toDecimal64OrZero(JSONExtractString(p.payload, 'VALOR'), 2))"
         ref = f"ifNull(c.referencia_shadow, toInt64OrZero(JSONExtractString(c.payload, 'REFERENCIA')))"
@@ -762,6 +817,102 @@ class MartBuilder:
         client.command(sql, settings=self._query_settings)
         elapsed = int((time.time() - t0) * 1000)
         logger.debug(f"Populated slim formas for {len(data_keys)} keys in {elapsed}ms")
+
+    def _populate_slim_nfe(self, client: Any, data_keys: list[int]) -> None:
+        """Extract typed columns from stg.nfe payload into slim NFE table.
+
+        NFE slim is used by mart queries to classify comprovante cancelamentos:
+        status 3=authorized, 4=cancelled_real, 5=voided/inutilized.
+        If stg_nfe table doesn't exist yet (no NFE data ingested), silently skip.
+        """
+        if not data_keys:
+            return
+        t0 = time.time()
+
+        # Check if source table exists
+        try:
+            exists = client.query(
+                f"SELECT count() FROM system.tables "
+                f"WHERE database = '{self.current_db}' AND name = 'stg_nfe'"
+            )
+            if not exists.result_rows or exists.result_rows[0][0] == 0:
+                logger.debug("stg_nfe not found in ClickHouse, skipping slim NFE population")
+                return
+        except Exception:
+            return
+
+        # Clean existing slim rows for this batch
+        kstr = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if not kstr:
+            return
+
+        # NFE doesn't have its own data_key — join with comprovantes to get it
+        data_key_expr = self._stg_data_key_comprovante_expr("c")
+        key_filter = self._stg_keys_filter(data_key_expr, data_keys)
+
+        sql = f"""
+        INSERT INTO {self.current_db}.stg_nfe_slim
+        SELECT
+            n.id_empresa, n.id_filial, n.id_db, n.id_comprovante, n.id_nfe,
+            ifNull(n.status_shadow, toInt16OrZero(JSONExtractString(n.payload, 'STATUS'))) AS status,
+            coalesce(
+                nullIf(toString(n.numero_nfe_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'NRONF'), ''),
+                nullIf(JSONExtractString(n.payload, 'NUMERO'), ''),
+                nullIf(JSONExtractString(n.payload, 'NUMERONFE'), ''),
+                ''
+            ) AS numero_nfe,
+            coalesce(
+                nullIf(toString(n.serie_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'SERIE'), ''),
+                ''
+            ) AS serie,
+            coalesce(
+                nullIf(toString(n.chave_nfe_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'CHAVEACESSO'), ''),
+                nullIf(JSONExtractString(n.payload, 'CHAVE'), ''),
+                nullIf(JSONExtractString(n.payload, 'CHAVENFE'), ''),
+                nullIf(JSONExtractString(n.payload, 'CHAVE_ACESSO'), ''),
+                ''
+            ) AS chave_nfe,
+            coalesce(
+                nullIf(toString(n.protocolo_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'PROTOCOLO'), ''),
+                nullIf(JSONExtractString(n.payload, 'NPROTOCOLO'), ''),
+                ''
+            ) AS protocolo,
+            coalesce(
+                nullIf(toString(n.modelo_shadow), ''),
+                nullIf(JSONExtractString(n.payload, 'TIPO_DOC'), ''),
+                nullIf(JSONExtractString(n.payload, 'MODELO'), ''),
+                ''
+            ) AS modelo,
+            coalesce(
+                n.data_emissao_shadow,
+                parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'DATA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'TORQMIND_DT_EVENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'DATAEMISSAO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(n.payload, 'DATA_EMISSAO'))
+            ) AS data_emissao,
+            coalesce(
+                n.valor_nfe_shadow,
+                toDecimal64OrZero(JSONExtractString(n.payload, 'VALOR'), 2),
+                toDecimal64(0, 2)
+            ) AS valor_nfe,
+            n.is_deleted,
+            n.source_ts_ms
+        FROM {self.current_db}.stg_nfe AS n FINAL
+        INNER JOIN {self.current_db}.stg_comprovantes AS c FINAL
+            ON c.id_empresa = n.id_empresa AND c.id_filial = n.id_filial
+            AND c.id_db = n.id_db AND c.id_comprovante = n.id_comprovante
+        WHERE {key_filter}
+        """
+        try:
+            client.command(sql, settings=self._query_settings)
+            elapsed = int((time.time() - t0) * 1000)
+            logger.debug(f"Populated slim NFE for {len(data_keys)} keys in {elapsed}ms")
+        except Exception as e:
+            logger.warning(f"Failed to populate slim NFE (table may not exist yet): {e}")
 
     # ================================================================
     # HELPER EXPRESSIONS (payload parsing for slim population only)
@@ -785,6 +936,22 @@ class MartBuilder:
     def _stg_data_key_expr(self, alias: str) -> str:
         """data_key (YYYYMMDD int) in local business timezone."""
         return f"toInt32(formatDateTime({self._stg_ts_local_expr(alias)}, '%Y%m%d'))"
+
+    def _stg_data_key_comprovante_expr(self, alias: str) -> str:
+        """data_key for comprovantes: prefer DTACONTA (accounting date) over DATA.
+
+        DTACONTA is the business/accounting date that determines which day a sale
+        belongs to. Falls back to standard timestamp-based data_key when DTACONTA
+        is not available.
+
+        DTACONTA is treated as a local date (no timezone conversion needed) since
+        it's already an accounting date in the client's timezone.
+        """
+        dtaconta_raw = f"JSONExtractString({alias}.payload, 'DTACONTA')"
+        dtaconta_key = (
+            f"toInt32OrNull(replaceAll(left({dtaconta_raw}, 10), '-', ''))"
+        )
+        return f"coalesce({dtaconta_key}, {self._stg_data_key_expr(alias)})"
 
     def _stg_keys_filter(self, expr: str, data_keys: list[int]) -> str:
         keys = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
@@ -812,6 +979,35 @@ class MartBuilder:
             f"{self._json_decimal_or_null(alias, 'VLRTOTAL', 2)}, "
             f"toDecimal64(0, 2))"
         )
+
+    def _nfe_latest_status_cte(self, alias: str = "nfe_latest") -> str:
+        """CTE: latest NFE status per comprovante (by source_ts_ms).
+
+        Returns (id_empresa, id_filial, id_db, id_comprovante, nfe_status).
+        Used to classify: status=4 → real cancellation, status=5 → voided/inutilized.
+        If stg_nfe_slim doesn't exist, returns empty result (safe LEFT JOIN).
+        """
+        return f"""
+        {alias} AS (
+            SELECT
+                id_empresa, id_filial, id_db, id_comprovante,
+                argMax(status, source_ts_ms) AS nfe_status
+            FROM {self.current_db}.stg_nfe_slim
+            WHERE is_deleted = 0
+            GROUP BY id_empresa, id_filial, id_db, id_comprovante
+        )
+        """
+
+    def _nfe_slim_table_exists(self, client: Any) -> bool:
+        """Check if stg_nfe_slim table exists in ClickHouse."""
+        try:
+            result = client.query(
+                f"SELECT count() FROM system.tables "
+                f"WHERE database = '{self.current_db}' AND name = 'stg_nfe_slim'"
+            )
+            return bool(result.result_rows and result.result_rows[0][0] > 0)
+        except Exception:
+            return False
 
     # ================================================================
     # STG-DIRECT MART QUERIES (read from SLIM tables - no payload!)
@@ -865,7 +1061,7 @@ class MartBuilder:
         - faturamento = sum of item totals for valid items (cfop > 5000)
         - qtd_vendas = distinct comprovantes with at least one valid item
         - qtd_itens = count of valid item rows
-        - cancelados = comprovantes with cancelado=1 (encodes PG etl.comprovante_is_cancelled)
+        - cancelados = comprovantes with cancelado=1 EXCLUDING NFE status=5 (inutilized)
         """
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
@@ -875,8 +1071,19 @@ class MartBuilder:
         filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
             self._delete_mart_batch(client, "sales_daily_rt", data_keys, id_empresa, id_filial)
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_join_cancel = (
+            f"LEFT JOIN nfe_latest "
+            f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
+            f"AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante "
+        ) if has_nfe else ""
+        nfe_filter_cancel = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.sales_daily_rt
+        {nfe_with}
         SELECT
             base.id_empresa, base.id_filial, base.data_key,
             toDate(toString(base.data_key), '%Y%m%d') AS dt,
@@ -896,12 +1103,13 @@ class MartBuilder:
                 sum(i.desconto) AS desconto_total,
                 sum(i.custo_total) AS custo_total,
                 sum(i.total) - sum(i.custo_total) AS margem_total
-            FROM {self.current_db}.stg_comprovantes_slim AS c
-            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-              AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                            AND c.commercial_eligible = 1 AND i.cfop > 5000
+                            AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -909,8 +1117,10 @@ class MartBuilder:
             SELECT c.id_empresa, c.id_filial, c.data_key,
                    uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_canceladas,
                    sum(c.valor_total) AS valor_cancelado
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            {nfe_join_cancel}
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
+              {nfe_filter_cancel}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
@@ -940,12 +1150,13 @@ class MartBuilder:
             uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
             toUInt32(count()) AS qtd_itens,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
-        INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+        INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
         """
@@ -970,15 +1181,15 @@ class MartBuilder:
             toDate(toString(i.data_key), '%Y%m%d') AS dt,
             i.id_produto,
             coalesce(nullIf(p.nome_produto, ''), 'Produto sem cadastro') AS nome_produto,
-            coalesce(p.id_grupo_produto, i.id_grupo_produto) AS id_grupo_produto_resolved,
+            coalesce(p.id_grupo_produto, i.id_grupo_produto) AS id_grupo_produto,
             coalesce(nullIf(g.nome_grupo, ''), 'Grupo sem cadastro') AS nome_grupo,
             sum(i.qtd) AS qtd,
             sum(i.total) AS faturamento,
             sum(i.custo_total) AS custo_total,
             sum(i.total) - sum(i.custo_total) AS margem,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_itenscomprovantes_slim AS i
-        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c FINAL
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         LEFT JOIN (
@@ -995,9 +1206,10 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
-        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto_resolved, nome_grupo
+        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
         """
         rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))
@@ -1023,8 +1235,8 @@ class MartBuilder:
             sum(i.custo_total) AS custo_total,
             sum(i.total) - sum(i.custo_total) AS margem,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_itenscomprovantes_slim AS i
-        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c FINAL
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         LEFT JOIN (
@@ -1040,7 +1252,8 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-          AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
         """
@@ -1055,23 +1268,91 @@ class MartBuilder:
         filial_filter_p = f"AND p.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
             self._delete_mart_batch(client, "payments_by_type_rt", data_keys, id_empresa, id_filial)
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_cte = f"{self._nfe_latest_status_cte('nfe_latest')}," if has_nfe else ""
+        nfe_join_docs = (
+            "LEFT JOIN nfe_latest "
+            "ON c.id_empresa = nfe_latest.id_empresa "
+            "AND c.id_filial = nfe_latest.id_filial "
+            "AND c.id_db = nfe_latest.id_db "
+            "AND c.id_comprovante = nfe_latest.id_comprovante"
+        ) if has_nfe else ""
+        nfe_filter_docs = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status NOT IN (4, 5))" if has_nfe else ""
+
+        # ROOT-CAUSE FIX (payment form corrections):
+        # When a payment form is changed in the source ERP (e.g. DINHEIRO -> PRAZO),
+        # the original formas_pgto row is NOT flagged is_deleted. Because the slim
+        # ReplacingMergeTree key includes tipo_forma, FINAL keeps BOTH the stale and
+        # the corrected row, double-counting the value (chiefly inflating DINHEIRO).
+        # We deduplicate only on OVERPAID references (sum of payments > sale value),
+        # keeping the latest version per (referencia, valor). This preserves
+        # legitimate same-value splits (e.g. R$50 cash + R$50 card on a R$100 sale,
+        # which is not overpaid) while removing correction ghosts. This mirrors the
+        # serving-side fallback in repos_mart_realtime.payments_overview.
         sql = f"""
         INSERT INTO {self.mart_rt_db}.payments_by_type_rt
+        WITH
+        {nfe_cte}
+        docs AS (
+            SELECT
+                c.id_empresa,
+                c.id_filial,
+                c.referencia,
+                argMax(c.commercial_eligible, c.source_ts_ms) AS commercial_eligible,
+                argMax(c.valor_total, c.source_ts_ms) AS venda
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+                        {nfe_join_docs}
+            WHERE c.is_deleted = 0 AND c.referencia > 0
+                            {nfe_filter_docs}
+            GROUP BY c.id_empresa, c.id_filial, c.referencia
+        ),
+        pay AS (
+            SELECT
+                p.id_empresa,
+                p.id_filial,
+                p.data_key,
+                p.id_referencia,
+                p.tipo_forma,
+                p.valor,
+                p.source_ts_ms,
+                docs.venda AS venda
+            FROM {self.current_db}.stg_formas_pgto_slim AS p FINAL
+            INNER JOIN docs
+                ON docs.id_empresa = p.id_empresa
+               AND docs.id_filial = p.id_filial
+               AND docs.referencia = p.id_referencia
+            WHERE {kf} AND p.is_deleted = 0
+              AND docs.commercial_eligible = 1
+              {empresa_filter_p} {filial_filter_p}
+        ),
+        ranked AS (
+            SELECT
+                id_empresa, id_filial, data_key, id_referencia,
+                tipo_forma, valor, venda,
+                sum(valor) OVER (
+                    PARTITION BY id_empresa, id_filial, id_referencia
+                ) AS ref_pago,
+                row_number() OVER (
+                    PARTITION BY id_empresa, id_filial, data_key, id_referencia, valor
+                    ORDER BY source_ts_ms DESC, tipo_forma DESC
+                ) AS dup_rank
+            FROM pay
+        )
         SELECT
-            p.id_empresa, p.id_filial, p.data_key,
-            toDate(toString(p.data_key), '%Y%m%d') AS dt,
-            p.tipo_forma,
-            coalesce(m.label, concat('Forma ', toString(p.tipo_forma))) AS label,
+            r.id_empresa, r.id_filial, r.data_key,
+            toDate(toString(r.data_key), '%Y%m%d') AS dt,
+            r.tipo_forma,
+            coalesce(m.label, concat('Forma ', toString(r.tipo_forma))) AS label,
             coalesce(m.category, 'Outros') AS category,
-            sum(p.valor) AS valor_total,
+            sum(r.valor) AS valor_total,
             toUInt32(count()) AS qtd_transacoes,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_formas_pgto_slim AS p
+        FROM ranked AS r
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
-            ON p.tipo_forma = m.tipo_forma
-        WHERE {kf} AND p.is_deleted = 0
-          {empresa_filter_p} {filial_filter_p}
-        GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
+            ON r.tipo_forma = m.tipo_forma
+        WHERE NOT (r.ref_pago > r.venda + 0.01 AND r.dup_rank > 1)
+        GROUP BY r.id_empresa, r.id_filial, r.data_key, r.tipo_forma, label, category
         """
         rows = self._insert_and_count(client, "payments_by_type_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("payments_by_type_rt", rows, int((time.time() - t0) * 1000))
@@ -1121,7 +1402,7 @@ class MartBuilder:
                 toInt32(formatDateTime(abertura_ts, '%Y%m%d')) AS data_key_abertura,
                 {is_aberto} AS is_aberto
             FROM {self.current_db}.stg_turnos AS t FINAL
-            WHERE t.is_deleted = 0 {empresa_filter_t} {filial_filter_t}
+            WHERE t.is_deleted = 0 AND t.id_turno > 0 {empresa_filter_t} {filial_filter_t}
         ) AS turnos
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON turnos.id_empresa = u.id_empresa AND turnos.id_filial = u.id_filial AND turnos.id_usuario = u.id_usuario
@@ -1129,8 +1410,8 @@ class MartBuilder:
             SELECT c.id_empresa, c.id_filial, c.id_turno,
                    sum(c.valor_total) AS faturamento,
                    toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS qtd
-            FROM {self.current_db}.stg_comprovantes_slim AS c
-            WHERE c.is_deleted = 0 AND c.cancelado = 0 {empresa_filter_c} {filial_filter_c}
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            WHERE c.is_deleted = 0 AND c.commercial_eligible = 1 AND c.id_turno > 0 {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.id_turno
         ) AS vendas ON turnos.id_empresa = vendas.id_empresa AND turnos.id_filial = vendas.id_filial
             AND turnos.id_turno = vendas.id_turno
@@ -1139,38 +1420,85 @@ class MartBuilder:
         return MartRefreshResult("cash_overview_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
-        """Fraud daily: count unique cancelled comprovantes per day."""
+        """Fraud daily: count unique cancelled comprovantes per day.
+
+        Excludes NFE status=5 (voided/inutilized) — those are NOT real cancellations.
+        Only counts: cancelado=1 AND (no NFE or NFE.status != 5).
+        """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
         empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
         filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
             self._delete_mart_batch(client, "fraud_daily_rt", data_keys, id_empresa, id_filial)
-        sql = f"""
-        INSERT INTO {self.mart_rt_db}.fraud_daily_rt
-        SELECT
-            c.id_empresa, c.id_filial, c.data_key,
-            toDate(toString(c.data_key), '%Y%m%d') AS dt,
-            'cancelamento' AS event_type,
-            uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_eventos,
-            sum(c.valor_total) AS impacto_total,
-            toDecimal64(80, 2) AS score_medio,
-            now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
-        WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
-          {empresa_filter_c} {filial_filter_c}
-        GROUP BY c.id_empresa, c.id_filial, c.data_key
-        """
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        if has_nfe:
+            nfe_join = (
+                f"LEFT JOIN ({self._nfe_latest_status_cte('nfe_latest').strip().lstrip('nfe_latest AS (').rstrip(')')}) AS nfe_latest "
+                if False else ""  # unused, using WITH instead
+            )
+            sql = f"""
+            INSERT INTO {self.mart_rt_db}.fraud_daily_rt
+            WITH {self._nfe_latest_status_cte('nfe_latest')}
+            SELECT
+                c.id_empresa, c.id_filial, c.data_key,
+                toDate(toString(c.data_key), '%Y%m%d') AS dt,
+                'cancelamento' AS event_type,
+                uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_eventos,
+                sum(c.valor_total) AS impacto_total,
+                toDecimal64(80, 2) AS score_medio,
+                now64(6) AS published_at
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            LEFT JOIN nfe_latest
+                ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial
+                AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
+            WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+              AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)
+              {empresa_filter_c} {filial_filter_c}
+            GROUP BY c.id_empresa, c.id_filial, c.data_key
+            """
+        else:
+            # No NFE data yet — fall back to original behavior (all cancelado=1)
+            sql = f"""
+            INSERT INTO {self.mart_rt_db}.fraud_daily_rt
+            SELECT
+                c.id_empresa, c.id_filial, c.data_key,
+                toDate(toString(c.data_key), '%Y%m%d') AS dt,
+                'cancelamento' AS event_type,
+                uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_eventos,
+                sum(c.valor_total) AS impacto_total,
+                toDecimal64(80, 2) AS score_medio,
+                now64(6) AS published_at
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+              {empresa_filter_c} {filial_filter_c}
+            GROUP BY c.id_empresa, c.id_filial, c.data_key
+            """
         rows = self._insert_and_count(client, "fraud_daily_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("fraud_daily_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_risk_recent_events_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
-        """Risk events from slim comprovantes + usuarios (small dim)."""
+        """Risk events from slim comprovantes + usuarios (small dim).
+
+        Excludes NFE status=5 (voided/inutilized) from risk events.
+        """
         t0 = time.time()
         empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
         filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_join = (
+            f"LEFT JOIN nfe_latest "
+            f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
+            f"AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante "
+        ) if has_nfe else ""
+        nfe_filter = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.risk_recent_events_rt
+        {nfe_with}
         SELECT
             toInt64(cityHash64(concat(toString(c.id_empresa), ':', toString(c.id_filial), ':', toString(c.id_db), ':', toString(c.id_comprovante))) % 9223372036854775807) AS id,
             c.id_empresa, c.id_filial, c.data_key,
@@ -1183,24 +1511,286 @@ class MartBuilder:
             80 AS score_risco, 'HIGH' AS score_level,
             '{{"source":"stg.comprovantes","rule":"cancelled_receipt"}}' AS reasons,
             now64(6) AS published_at
-        FROM {self.current_db}.stg_comprovantes_slim AS c
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
             ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
+        {nfe_join}
         WHERE c.is_deleted = 0 AND c.cancelado = 1
+          {nfe_filter}
           {empresa_filter_c} {filial_filter_c}
         ORDER BY c.data_key DESC, id DESC
         """
         rows = self._insert_and_count_nokey(client, "risk_recent_events_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("risk_recent_events_rt", rows, int((time.time() - t0) * 1000))
 
+    def _refresh_antifraude_eventos_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
+        """Enriched fraud events with operador, turno, caixa, filial_nome.
+
+        Writes to mart_antifraude_eventos. Excludes NFE status=5.
+        """
+        t0 = time.time()
+        kf = self._slim_keys_filter(data_keys, "c")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
+        if not skip_delete:
+            self._delete_mart_batch(client, "mart_antifraude_eventos", data_keys, id_empresa, id_filial)
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_join = (
+            f"LEFT JOIN nfe_latest "
+            f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
+            f"AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante "
+        ) if has_nfe else ""
+        nfe_filter = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
+
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.mart_antifraude_eventos
+        {nfe_with}
+        SELECT
+            c.id_empresa, c.id_filial,
+            coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
+            c.data_key,
+            toDate(toString(c.data_key), '%Y%m%d') AS dt,
+            toInt64(cityHash64(concat(toString(c.id_empresa), ':', toString(c.id_filial), ':', toString(c.id_db), ':', toString(c.id_comprovante))) % 9223372036854775807) AS event_id,
+            'cancelamento' AS event_type,
+            'STG' AS source,
+            c.id_turno,
+            coalesce(
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTABERTURA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAABERTURA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRABERTURA'))
+            ) AS turno_abertura_ts,
+            coalesce(
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTFECHAMENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO'))
+            ) AS turno_fechamento_ts,
+            toInt32(0) AS id_caixa,
+            c.id_usuario,
+            coalesce(nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''), nullIf(JSONExtractString(u.payload, 'NOME'), ''), nullIf(uc.nome, ''), '') AS nome_operador,
+            CAST(NULL, 'Nullable(Int32)') AS id_funcionario,
+            '' AS nome_funcionario,
+            c.valor_total,
+            c.valor_total AS impacto_estimado,
+            80 AS score_risco,
+            'HIGH' AS score_level,
+            '{{"source":"stg.comprovantes","rule":"cancelled_receipt"}}' AS reasons,
+            toUInt8(toHour(c.dt_evento_local)) AS hora,
+            now64(6) AS published_at,
+            c.id_comprovante AS id_comprovante,
+            toInt64OrZero(JSONExtractString(p.payload, 'NROCOMPROVANTE')) AS nro_comprovante,
+            toInt32OrZero(JSONExtractString(t.payload, 'TURNO')) AS turno_numero
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+        LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
+            ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
+        LEFT JOIN {self.current_db}.dim_usuario_caixa AS uc FINAL
+            ON c.id_empresa = uc.id_empresa AND c.id_filial = uc.id_filial AND nullIf(c.id_usuario, 0) = uc.id_usuario
+        LEFT JOIN {self.current_db}.stg_filiais AS f FINAL
+            ON c.id_empresa = f.id_empresa AND c.id_filial = f.id_filial
+        LEFT JOIN {self.current_db}.stg_turnos AS t FINAL
+            ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
+        LEFT JOIN {self.current_db}.stg_comprovantes AS p FINAL
+            ON c.id_empresa = p.id_empresa AND c.id_filial = p.id_filial AND c.id_db = p.id_db AND c.id_comprovante = p.id_comprovante
+        {nfe_join}
+        WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+          {nfe_filter}
+          {empresa_filter_c} {filial_filter_c}
+        """
+        rows = self._insert_and_count(client, "mart_antifraude_eventos", sql, data_keys, id_empresa, id_filial)
+        return MartRefreshResult("mart_antifraude_eventos", rows, int((time.time() - t0) * 1000))
+
+    def _troca_categoria_expr(self, text_expr: str) -> str:
+        """Classify a payment-form name into RECEBIDA / A_RECEBER.
+
+        A_RECEBER (deferred): venda a prazo / convenio / cheque / duplicata /
+        crediario / fiado / boleto / promissoria. Anything else is treated as
+        already RECEBIDA (cash, card, pix, etc.). Deterministic, accent-tolerant
+        via uppercased ASCII alternation.
+        """
+        upper = f"upperUTF8(ifNull({text_expr}, ''))"
+        pattern = (
+            "PRAZO|RECEBER|A_RECEBER|CONVENIO|CONV.NIO|CHEQUE|DUPLICATA|"
+            "CREDIARIO|CREDI.RIO|FIADO|BOLETO|PROMISSORIA|PROMISS.RIA|CARTEIRA"
+        )
+        return f"if(match({upper}, '{pattern}'), 'A_RECEBER', 'RECEBIDA')"
+
+    def _refresh_troca_forma_pgto_stg(
+        self,
+        client: Any,
+        data_keys: list[int],
+        id_empresa: int = 0,
+        id_filial: Optional[int] = None,
+        skip_delete: bool = False,
+    ) -> MartRefreshResult:
+        """Antifraude: reconstruct DE -> PARA payment-form change per troca.
+
+        Grain: 1 row per CONTROLE_TROCA_PGTO. Source tables are small and carry
+        typed shadow columns, so we read directly from torqmind_current (no slim).
+
+        is_suspeita = (categoria_de = 'RECEBIDA' AND categoria_para = 'A_RECEBER')
+        -> a form already received (cash/card) converted into a deferred form,
+        the classic cash-skimming signal.
+        """
+        t0 = time.time()
+        if not self._troca_tables_exist(client):
+            return MartRefreshResult("mart_troca_forma_pgto_rt", 0, int((time.time() - t0) * 1000))
+
+        if not skip_delete:
+            self._delete_mart_batch(client, "mart_troca_forma_pgto_rt", data_keys, id_empresa, id_filial)
+
+        empresa_filter = f"AND ct.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter = f"AND ct.id_filial = {int(id_filial)}" if id_filial else ""
+
+        # data_key MUST match the consumer's _extract_data_key (UTC date of the
+        # troca event) so incremental refresh filters line up with marked keys.
+        ts_utc = (
+            "coalesce(ct.data_troca_shadow, ct.dt_evento, "
+            "ct.received_at, ct.ingested_at, now64(6))"
+        )
+        ts_local = f"toTimezone({ts_utc}, '{self._BUSINESS_TZ}')"
+        data_key_expr = f"toInt32(formatDateTime({ts_utc}, '%Y%m%d'))"
+        kf = self._stg_keys_filter(data_key_expr, data_keys)
+
+        forma_de_expr = (
+            "coalesce("
+            "nullIf(JSONExtractString(pc.payload, 'NOMEPLANODECONTAS'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'DESCRICAO'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'NOME'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'CONTA'), ''), "
+            "nullIf(JSONExtractString(pc.payload, 'PLANODECONTAS'), ''), "
+            "'')"
+        )
+        categoria_de_expr = self._troca_categoria_expr("forma_de")
+        # PARA side: classify the comprovante's resulting form by label + category.
+        para_label_expr = (
+            "coalesce(nullIf(ptm.label, ''), concat('Forma ', toString(fp.tipo_forma)))"
+        )
+        para_categoria_expr = self._troca_categoria_expr(
+            "concat(ifNull(ptm.category, ''), ' ', ifNull(ptm.label, ''))"
+        )
+
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.mart_troca_forma_pgto_rt
+        SELECT
+            id_empresa, id_filial, filial_nome, data_key, dt, troca_id,
+            id_movlctoscancelados, referencia, documento, id_turno, id_usuario,
+            nome_operador, id_planodecontas_de, forma_de, categoria_de,
+            forma_para, categoria_para, valor, data_troca_ts, hora,
+            toUInt8(categoria_de = 'RECEBIDA' AND categoria_para = 'A_RECEBER') AS is_suspeita,
+            if(categoria_de = 'RECEBIDA' AND categoria_para = 'A_RECEBER', 85, 20) AS score_risco,
+            concat(
+                '{{"rule":"troca_forma_pgto","de":"', replaceAll(categoria_de, '"', ''),
+                '","para":"', replaceAll(categoria_para, '"', ''), '"}}'
+            ) AS reasons,
+            now64(6) AS published_at
+        FROM (
+            SELECT
+                ct.id_empresa AS id_empresa,
+                ct.id_filial AS id_filial,
+                coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
+                {data_key_expr} AS data_key,
+                toDate({ts_local}) AS dt,
+                toInt64(ct.id) AS troca_id,
+                toInt64(ifNull(ct.id_movlctoscancelados_shadow, 0)) AS id_movlctoscancelados,
+                toInt64(ifNull(mc.referencia_shadow, 0)) AS referencia,
+                ifNull(mc.documento_shadow, '') AS documento,
+                toInt32(ifNull(mc.id_turno_shadow, 0)) AS id_turno,
+                toInt32(ifNull(ct.id_usuario_shadow, 0)) AS id_usuario,
+                coalesce(
+                    nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''),
+                    nullIf(JSONExtractString(u.payload, 'NOME'), ''),
+                    ''
+                ) AS nome_operador,
+                toInt32(ifNull(mc.id_planodecontas_shadow, 0)) AS id_planodecontas_de,
+                {forma_de_expr} AS forma_de,
+                {categoria_de_expr} AS categoria_de,
+                argMax({para_label_expr}, ifNull(fp.valor, toDecimal64(0, 2))) AS forma_para,
+                argMax({para_categoria_expr}, ifNull(fp.valor, toDecimal64(0, 2))) AS categoria_para,
+                toDecimal64(ifNull(mc.valor_shadow, toDecimal64(0, 2)), 2) AS valor,
+                {ts_local} AS data_troca_ts,
+                toUInt8(toHour({ts_local})) AS hora
+            FROM {self.current_db}.stg_controle_troca_pgto AS ct FINAL
+            LEFT JOIN {self.current_db}.stg_movlctoscancelados AS mc FINAL
+                ON mc.id_empresa = ct.id_empresa AND mc.id_filial = ct.id_filial
+                AND mc.id_db = ct.id_db
+                AND mc.id_movlctoscancelados = ct.id_movlctoscancelados_shadow
+            LEFT JOIN {self.current_db}.stg_planodecontas AS pc FINAL
+                ON pc.id_empresa = ct.id_empresa AND pc.id_filial = ct.id_filial
+                AND pc.id_planodecontas = mc.id_planodecontas_shadow
+            LEFT JOIN {self.current_db}.stg_formas_pgto_slim AS fp FINAL
+                ON fp.id_empresa = ct.id_empresa AND fp.id_filial = ct.id_filial
+                AND fp.id_referencia = mc.referencia_shadow AND fp.is_deleted = 0
+            LEFT JOIN {self.current_db}.payment_type_map AS ptm FINAL
+                ON ptm.tipo_forma = fp.tipo_forma
+            LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
+                ON u.id_empresa = ct.id_empresa AND u.id_filial = ct.id_filial
+                AND u.id_usuario = ct.id_usuario_shadow
+            LEFT JOIN {self.current_db}.stg_filiais AS f FINAL
+                ON f.id_empresa = ct.id_empresa AND f.id_filial = ct.id_filial
+            WHERE ct.is_deleted = 0 AND {kf}
+              {empresa_filter} {filial_filter}
+            GROUP BY
+                ct.id_empresa, ct.id_filial, filial_nome, data_key, dt,
+                ct.id, ct.id_movlctoscancelados_shadow, mc.referencia_shadow,
+                mc.documento_shadow, mc.id_turno_shadow, ct.id_usuario_shadow,
+                nome_operador, mc.id_planodecontas_shadow, forma_de, categoria_de,
+                mc.valor_shadow, data_troca_ts, hora
+        ) AS t
+        """
+        rows = self._insert_and_count(
+            client, "mart_troca_forma_pgto_rt", sql, data_keys, id_empresa, id_filial
+        )
+        return MartRefreshResult("mart_troca_forma_pgto_rt", rows, int((time.time() - t0) * 1000))
+
+    def _troca_tables_exist(self, client: Any) -> bool:
+        """Check that the antifraude troca source tables exist in ClickHouse."""
+        try:
+            result = client.query(
+                f"SELECT count() FROM system.tables WHERE database = '{self.current_db}' "
+                f"AND name IN ('stg_controle_troca_pgto', 'stg_movlctoscancelados')"
+            )
+            return bool(result.result_rows and result.result_rows[0][0] >= 2)
+        except Exception:
+            return False
+
     def _refresh_finance_overview_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
         """Finance overview. Reads payload from finance tables (small volume)."""
         t0 = time.time()
         empresa_filter = f"AND id_empresa = {int(id_empresa)}" if id_empresa else ""
         filial_filter = f"AND id_filial = {int(id_filial)}" if id_filial else ""
+        # Aliased filters for JOIN sources
+        def _af(alias: str) -> str:
+            parts = []
+            if id_empresa:
+                parts.append(f"AND {alias}.id_empresa = {int(id_empresa)}")
+            if id_filial:
+                parts.append(f"AND {alias}.id_filial = {int(id_filial)}")
+            return " ".join(parts)
+
+        cp_filter = _af("cp")
+        cr_filter = _af("cr")
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
-        WITH src AS (
+        WITH baixa_receber AS (
+            SELECT id_empresa, id_filial,
+                   toInt32OrZero(JSONExtractString(payload, 'ID_CONTASRECEBER')) AS id_conta,
+                   sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
+            FROM {self.current_db}.stg_contasreceberbaixa FINAL
+            WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            GROUP BY id_empresa, id_filial, id_conta
+        ),
+        baixa_pagar AS (
+            SELECT id_empresa, id_filial,
+                   toInt32OrZero(JSONExtractString(payload, 'ID_CONTASPAGAR')) AS id_conta,
+                   sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
+            FROM {self.current_db}.stg_contaspagarbaixa FINAL
+            WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            GROUP BY id_empresa, id_filial, id_conta
+        ),
+        src AS (
             SELECT id_empresa, id_filial, tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
@@ -1208,19 +1798,33 @@ class MartBuilder:
                 toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
             FROM {self.current_db}.stg_financeiro FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
             UNION ALL
-            SELECT id_empresa, id_filial, 0 AS tipo_titulo,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
-                toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_contaspagar FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            SELECT cp.id_empresa, cp.id_filial, 0 AS tipo_titulo,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTAVCTO'))) AS vencimento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTAPGTO'))) AS data_pagamento,
+                toDecimal64OrZero(JSONExtractString(cp.payload, 'VALOR'), 2) AS valor,
+                greatest(
+                    toDecimal64OrZero(JSONExtractString(cp.payload, 'VLRPAGO'), 2),
+                    coalesce(bp.total_baixa, toDecimal64(0, 2))
+                ) AS valor_pago
+            FROM {self.current_db}.stg_contaspagar AS cp FINAL
+            LEFT JOIN baixa_pagar AS bp
+                ON cp.id_empresa = bp.id_empresa AND cp.id_filial = bp.id_filial
+                AND cp.id_contaspagar = bp.id_conta
+            WHERE cp.is_deleted = 0 {cp_filter}
             UNION ALL
-            SELECT id_empresa, id_filial, 1 AS tipo_titulo,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
-                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
-                toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
-                toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
-            FROM {self.current_db}.stg_contasreceber FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
+            SELECT cr.id_empresa, cr.id_filial, 1 AS tipo_titulo,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAVCTO'))) AS vencimento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAPGTO'))) AS data_pagamento,
+                toDecimal64OrZero(JSONExtractString(cr.payload, 'VALOR'), 2) AS valor,
+                greatest(
+                    toDecimal64OrZero(JSONExtractString(cr.payload, 'VLRPAGO'), 2),
+                    coalesce(br.total_baixa, toDecimal64(0, 2))
+                ) AS valor_pago
+            FROM {self.current_db}.stg_contasreceber AS cr FINAL
+            LEFT JOIN baixa_receber AS br
+                ON cr.id_empresa = br.id_empresa AND cr.id_filial = br.id_filial
+                AND cr.id_contasreceber = br.id_conta
+            WHERE cr.is_deleted = 0 {cr_filter}
         )
         SELECT id_empresa, id_filial, tipo_titulo,
             multiIf(data_pagamento IS NOT NULL, 'pago', vencimento < today(), 'vencido',
@@ -1235,8 +1839,69 @@ class MartBuilder:
         rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql, id_empresa, id_filial)
         return MartRefreshResult("finance_overview_rt", rows, int((time.time() - t0) * 1000))
 
+    def _refresh_mart_clientes_resumo_stg(self, client: Any, id_empresa: int = 0, id_filial: Optional[int] = None) -> MartRefreshResult:
+        """Refresh mart_clientes_resumo from dim_cliente + stg_comprovantes_slim (30d/all)."""
+        t0 = time.time()
+        empresa_filter = f"AND id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter = f"AND id_filial = {int(id_filial)}" if id_filial else ""
+
+        # Full replace — small enough table for full rebuild
+        delete_where = "WHERE 1=1"
+        if id_empresa:
+            delete_where += f" AND id_empresa = {int(id_empresa)}"
+        if id_filial:
+            delete_where += f" AND id_filial = {int(id_filial)}"
+        client.command(f"ALTER TABLE {self.mart_rt_db}.mart_clientes_resumo DELETE {delete_where}")
+
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.mart_clientes_resumo
+        WITH vendas AS (
+            SELECT
+                id_empresa, id_filial, id_cliente,
+                sumIf(valor_total, data_key >= toInt32(formatDateTime(today() - 30, '%Y%m%d'))) AS total_30d,
+                countIf(data_key >= toInt32(formatDateTime(today() - 30, '%Y%m%d'))) AS qtd_30d,
+                sum(valor_total) AS total_all,
+                count() AS qtd_all,
+                max(data_key) AS ultima_compra_key
+            FROM {self.current_db}.stg_comprovantes_slim FINAL
+            WHERE cancelado = 0 AND situacao != 3 AND id_cliente > 0
+              AND data_key >= toInt32(formatDateTime(today() - 365, '%Y%m%d'))
+              {empresa_filter} {filial_filter}
+            GROUP BY id_empresa, id_filial, id_cliente
+        )
+        SELECT
+            c.id_empresa, c.id_filial, c.id_cliente, c.nome, c.documento,
+            '', '', '', '',
+            COALESCE(v.total_30d, toDecimal128(0, 2)),
+            toUInt32(COALESCE(v.qtd_30d, 0)),
+            if(COALESCE(v.qtd_30d, 0) > 0, toDecimal128(v.total_30d / v.qtd_30d, 2), toDecimal128(0, 2)),
+            COALESCE(v.total_all, toDecimal128(0, 2)),
+            toUInt32(COALESCE(v.qtd_all, 0)),
+            toInt32(COALESCE(v.ultima_compra_key, 0)),
+            toUInt32(if(COALESCE(v.ultima_compra_key, 0) > 0,
+                dateDiff('day', parseDateTimeBestEffort(toString(v.ultima_compra_key)), now()), 9999)),
+            now64(6)
+        FROM (SELECT * FROM {self.current_db}.dim_cliente FINAL WHERE id_cliente > 0 AND is_deleted = 0 {empresa_filter} {filial_filter}) AS c
+        LEFT JOIN vendas AS v ON c.id_empresa = v.id_empresa AND c.id_filial = v.id_filial AND c.id_cliente = v.id_cliente
+        """
+        result = client.command(sql)
+        rows = _parse_insert_count(result) if result else 0
+        # Get actual count as fallback
+        if rows == 0:
+            count_where = "WHERE 1=1"
+            if id_empresa:
+                count_where += f" AND id_empresa = {int(id_empresa)}"
+            if id_filial:
+                count_where += f" AND id_filial = {int(id_filial)}"
+            count_result = client.query(f"SELECT count() FROM {self.mart_rt_db}.mart_clientes_resumo {count_where}")
+            rows = int(count_result.result_rows[0][0]) if count_result.result_rows else 0
+        return MartRefreshResult("mart_clientes_resumo", rows, int((time.time() - t0) * 1000))
+
     def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
-        """Dashboard home from slim tables."""
+        """Dashboard home from slim tables.
+
+        Cancellation count excludes NFE status=5 (voided/inutilized).
+        """
         t0 = time.time()
         kf_c = self._slim_keys_filter(data_keys, "c")
         kf_i = self._slim_keys_filter(data_keys, "i")
@@ -1244,8 +1909,19 @@ class MartBuilder:
         filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
         if not skip_delete:
             self._delete_mart_batch(client, "dashboard_home_rt", data_keys, id_empresa, id_filial)
+
+        has_nfe = self._nfe_slim_table_exists(client)
+        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_join_cancel = (
+            f"LEFT JOIN nfe_latest "
+            f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
+            f"AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante "
+        ) if has_nfe else ""
+        nfe_filter_cancel = "AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)" if has_nfe else ""
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.dashboard_home_rt
+        {nfe_with}
         SELECT
             base.id_empresa, base.id_filial, base.data_key,
             toDate(toString(base.data_key), '%Y%m%d') AS dt,
@@ -1261,12 +1937,13 @@ class MartBuilder:
                 sum(i.total) AS faturamento,
                 uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_vendas,
                 toUInt32(uniqExactIf(c.id_cliente, c.id_cliente > 0)) AS qtd_clientes
-            FROM {self.current_db}.stg_comprovantes_slim AS c
-            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-              AND c.cancelado = 0 AND i.cfop > 5000 AND {kf_i}
+                            AND c.commercial_eligible = 1 AND i.cfop > 5000
+                            AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS base
@@ -1274,8 +1951,10 @@ class MartBuilder:
             SELECT c.id_empresa, c.id_filial, c.data_key,
                    uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante) AS qtd_cancelamentos,
                    sum(c.valor_total) AS valor_cancelado
-            FROM {self.current_db}.stg_comprovantes_slim AS c
+            FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+            {nfe_join_cancel}
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
+              {nfe_filter_cancel}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
@@ -1285,6 +1964,105 @@ class MartBuilder:
         """
         rows = self._insert_and_count(client, "dashboard_home_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("dashboard_home_rt", rows, int((time.time() - t0) * 1000))
+
+    # ================================================================
+    # NFE INUTILIZATIONS MART
+    # ================================================================
+
+    def _refresh_nfe_inutilizations_rt_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
+        """NFE inutilizations mart: comprovantes linked to NFE status=5.
+
+        This mart tracks voided fiscal documents for operational/fiscal audit.
+        Displayed in the Caixa screen as a separate section.
+        """
+        t0 = time.time()
+
+        if not self._nfe_slim_table_exists(client):
+            logger.debug("stg_nfe_slim not found, skipping nfe_inutilizations_rt")
+            return MartRefreshResult("nfe_inutilizations_rt", 0, 0)
+
+        kf_c = self._slim_keys_filter(data_keys, "c")
+        empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_c = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
+        if not skip_delete:
+            self._delete_mart_batch(client, "nfe_inutilizations_rt", data_keys, id_empresa, id_filial)
+
+        tz = self._BUSINESS_TZ
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.nfe_inutilizations_rt
+        WITH {self._nfe_latest_status_cte('nfe_latest')}
+        SELECT
+            c.id_empresa, c.id_filial,
+            coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
+            c.id_db, c.id_comprovante, c.data_key,
+            toDate(toString(c.data_key), '%Y%m%d') AS dt,
+            c.hora,
+            c.id_turno,
+            coalesce(
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTABERTURA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAABERTURA')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRABERTURA'))
+            ) AS turno_abertura_ts,
+            coalesce(
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTFECHAMENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DATAFECHAMENTO')),
+                parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO'))
+            ) AS turno_fechamento_ts,
+            c.id_usuario,
+            coalesce(nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''), nullIf(JSONExtractString(u.payload, 'NOME'), ''), '') AS nome_operador,
+            nfe_detail.id_nfe,
+            toInt16(5) AS nfe_status,
+            'Inutilizada' AS nfe_status_label,
+            nfe_detail.numero_nfe,
+            nfe_detail.serie AS serie_nfe,
+            nfe_detail.chave_nfe,
+            nfe_detail.protocolo AS protocolo,
+            nfe_detail.modelo AS modelo_nfe,
+            nfe_detail.data_emissao AS data_emissao_nfe,
+            if(c.valor_total > 0, c.valor_total,
+               coalesce(items_agg.soma_itens, toDecimal64(0, 2))
+            ) AS valor_comprovante,
+            c.referencia,
+            now64(6) AS published_at
+        FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
+        INNER JOIN nfe_latest
+            ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial
+            AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
+        INNER JOIN (
+            SELECT id_empresa, id_filial, id_db, id_comprovante,
+                   argMax(id_nfe, source_ts_ms) AS id_nfe,
+                   argMax(numero_nfe, source_ts_ms) AS numero_nfe,
+                   argMax(serie, source_ts_ms) AS serie,
+                   argMax(chave_nfe, source_ts_ms) AS chave_nfe,
+                     argMax(protocolo, source_ts_ms) AS protocolo,
+                   argMax(modelo, source_ts_ms) AS modelo,
+                   argMax(data_emissao, source_ts_ms) AS data_emissao
+            FROM {self.current_db}.stg_nfe_slim
+            WHERE is_deleted = 0 AND status = 5
+            GROUP BY id_empresa, id_filial, id_db, id_comprovante
+        ) AS nfe_detail
+            ON c.id_empresa = nfe_detail.id_empresa AND c.id_filial = nfe_detail.id_filial
+            AND c.id_db = nfe_detail.id_db AND c.id_comprovante = nfe_detail.id_comprovante
+        LEFT JOIN {self.current_db}.stg_filiais AS f FINAL
+            ON c.id_empresa = f.id_empresa AND c.id_filial = f.id_filial
+        LEFT JOIN {self.current_db}.stg_turnos AS t FINAL
+            ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
+        LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
+            ON c.id_empresa = u.id_empresa AND c.id_filial = u.id_filial AND nullIf(c.id_usuario, 0) = u.id_usuario
+        LEFT JOIN (
+            SELECT id_empresa, id_filial, id_db, id_comprovante,
+                   sum(i.total) AS soma_itens
+            FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
+            GROUP BY id_empresa, id_filial, id_db, id_comprovante
+        ) AS items_agg
+            ON c.id_empresa = items_agg.id_empresa AND c.id_filial = items_agg.id_filial
+            AND c.id_db = items_agg.id_db AND c.id_comprovante = items_agg.id_comprovante
+                WHERE {kf_c} AND c.is_deleted = 0
+          AND nfe_latest.nfe_status = 5
+          {empresa_filter_c} {filial_filter_c}
+        """
+        rows = self._insert_and_count(client, "nfe_inutilizations_rt", sql, data_keys, id_empresa, id_filial)
+        return MartRefreshResult("nfe_inutilizations_rt", rows, int((time.time() - t0) * 1000))
 
     # ================================================================
     # DW-ORIGIN MART QUERIES (already typed, no payload)
@@ -1318,7 +2096,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -1350,7 +2128,7 @@ class MartBuilder:
             ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
             AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
         WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-          AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                    AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY v.id_empresa, v.id_filial, v.data_key, hora
         """
         client.command(sql, settings=self._query_settings)
@@ -1377,7 +2155,7 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.dim_grupo_produto AS g FINAL
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial AND vi.id_grupo_produto = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_produto, p.nome, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=self._query_settings)
@@ -1403,7 +2181,7 @@ class MartBuilder:
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial
             AND coalesce(vi.id_grupo_produto, 0) = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-          AND v.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=self._query_settings)
@@ -1422,7 +2200,7 @@ class MartBuilder:
         FROM {self.current_db}.fact_pagamento_comprovante AS p FINAL
         LEFT JOIN {self.current_db}.payment_type_map AS m FINAL
             ON p.tipo_forma = m.tipo_forma AND m.id_empresa = p.id_empresa
-        WHERE p.data_key IN ({keys_str}) AND p.is_deleted = 0
+        WHERE p.data_key IN ({keys_str}) AND p.is_deleted = 0 AND coalesce(p.cash_eligible, 0) = 1
         GROUP BY p.id_empresa, p.id_filial, p.data_key, p.tipo_forma, m.label, m.category
         """
         client.command(sql, settings=self._query_settings)
@@ -1442,13 +2220,13 @@ class MartBuilder:
             ON ct.id_empresa = u.id_empresa AND ct.id_filial = u.id_filial AND ct.id_usuario = u.id_usuario
         LEFT JOIN (
             SELECT id_empresa, id_filial, id_turno,
-                   sumIf(total_venda, cancelado = 0) AS faturamento,
-                   toUInt32(countIf(cancelado = 0)) AS qtd
-            FROM {self.current_db}.fact_venda FINAL WHERE is_deleted = 0
+                   sumIf(total_venda, commercial_eligible = 1) AS faturamento,
+                   toUInt32(countIf(commercial_eligible = 1)) AS qtd
+            FROM {self.current_db}.fact_venda FINAL WHERE is_deleted = 0 AND id_turno > 0
             GROUP BY id_empresa, id_filial, id_turno
         ) AS vendas ON ct.id_empresa = vendas.id_empresa AND ct.id_filial = vendas.id_filial
             AND ct.id_turno = vendas.id_turno
-        WHERE ct.is_deleted = 0
+        WHERE ct.is_deleted = 0 AND ct.id_turno > 0
         """
         client.command(sql, settings=self._query_settings)
         return MartRefreshResult("cash_overview_rt", 0, int((time.time() - t0) * 1000))
@@ -1526,7 +2304,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-              AND vi.is_deleted = 0 AND v.cancelado = 0 AND coalesce(vi.cfop, 0) > 5000
+                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -1631,15 +2409,15 @@ class MartBuilder:
             # Get data_keys with valid sales in slim (canonical join)
             slim_rows = client.query(
                 f"SELECT DISTINCT c.data_key "
-                f"FROM {self.current_db}.stg_comprovantes_slim AS c "
-                f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i "
+                f"FROM {self.current_db}.stg_comprovantes_slim AS c FINAL "
+                f"INNER JOIN {self.current_db}.stg_itenscomprovantes_slim AS i FINAL "
                 f"  ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial "
                 f"  AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante "
                 f"WHERE c.id_empresa = {{id_empresa:Int32}} "
                 f"  AND c.data_key >= {{from_key:Int32}} "
                 f"  AND c.data_key <= {{to_key:Int32}} "
                 f"  AND c.data_key > 0 "
-                f"  AND c.cancelado = 0 "
+                f"  AND c.commercial_eligible = 1 "
                 f"  AND c.is_deleted = 0 "
                 f"  AND i.is_deleted = 0 "
                 f"  AND i.cfop > 5000 "

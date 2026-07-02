@@ -13,6 +13,14 @@ export function cacheSession(session: any | null) {
   if (!session) return null;
   sessionCache = session;
   setClaims(session);
+  if (typeof window !== 'undefined') {
+    // Let branding (and any future session-aware UI) react to company switches.
+    try {
+      window.dispatchEvent(new CustomEvent('torqmind:session', { detail: session }));
+    } catch {
+      /* no-op */
+    }
+  }
   return sessionCache;
 }
 
@@ -48,6 +56,21 @@ export async function loadSession(router: any, area: 'product' | 'platform', opt
   try {
     const me = await fetchSession(Boolean(options?.force));
 
+    // Force password change redirect
+    if (me?.must_change_password) {
+      router.push('/change-password');
+      return null;
+    }
+
+    // Kiosk/TV mode redirect
+    if (me?.layout_mode === 'kiosk' && area === 'product') {
+      const tvRoute = me?.default_route || '/tv/sales-ranking';
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/tv')) {
+        router.push(tvRoute);
+        return null;
+      }
+    }
+
     const canUseProduct = Boolean(me?.access?.product);
     const canUsePlatform = Boolean(me?.access?.platform);
 
@@ -81,4 +104,16 @@ export function isPlatformFinance(me: any): boolean {
 
 export function isPlatformOps(me: any): boolean {
   return Boolean(me?.access?.platform_operations);
+}
+
+export function getAllowedScreens(me: any): string[] | null {
+  return me?.allowed_screens ?? null;
+}
+
+export function isKioskMode(me: any): boolean {
+  return me?.layout_mode === 'kiosk';
+}
+
+export function canViewSensitiveFinancials(me: any): boolean {
+  return Boolean(me?.can_view_sensitive_financials);
 }

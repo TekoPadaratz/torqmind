@@ -31,7 +31,7 @@ export function useBiScopeData<T>({
   const router = useRouter();
   const activeRequestRef = useRef('');
 
-  const [claims, setClaims] = useState<any>(readCachedSession());
+  const [claims, setClaims] = useState<any>(null);
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingUnavailable, setPendingUnavailable] = useState(false);
@@ -68,6 +68,11 @@ export function useBiScopeData<T>({
       setData(null);
 
       try {
+        const cached = readCachedSession();
+        if (!disposed && activeRequestRef.current === requestToken && cached) {
+          setClaims(cached);
+        }
+
         const me = await loadSession(router, 'product');
         if (!me) return;
         if (disposed || activeRequestRef.current !== requestToken) return;

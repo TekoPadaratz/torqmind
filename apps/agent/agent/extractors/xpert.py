@@ -294,23 +294,7 @@ class SQLServerExtractor(BaseExtractor):
         return normalized
 
     def _legacy_text_watermark_expr(self, base_wm_expr: str, style: int) -> str:
-        normalized = f"NULLIF(LTRIM(RTRIM(CAST({base_wm_expr} AS varchar(64)))), '')"
-        if int(style) == 103:
-            iso_expr = (
-                f"CASE WHEN {normalized} LIKE '[0-3][0-9]/[01][0-9]/[12][0-9][0-9][0-9]%' "
-                f"THEN SUBSTRING({normalized}, 7, 4) + '-' + SUBSTRING({normalized}, 4, 2) + '-' + SUBSTRING({normalized}, 1, 2) "
-                f"+ CASE WHEN LEN({normalized}) > 10 THEN SUBSTRING({normalized}, 11, LEN({normalized}) - 10) ELSE '' END "
-                "ELSE NULL END"
-            )
-            return self._clean_query(
-                f"CASE WHEN {iso_expr} IS NOT NULL AND ISDATE({iso_expr}) = 1 THEN CAST({iso_expr} AS datetime) ELSE NULL END"
-            )
-
-        canonical = f"REPLACE({normalized}, 'T', ' ')"
-        return self._clean_query(
-            f"CASE WHEN {canonical} IS NOT NULL AND {canonical} LIKE '[12][0-9][0-9][0-9]-%' AND ISDATE({canonical}) = 1 "
-            f"THEN CONVERT(datetime, {canonical}, {int(style)}) ELSE NULL END"
-        )
+        return self._clean_query(f"TRY_CONVERT(datetime2, {base_wm_expr}, {int(style)})")
 
     @staticmethod
     def _apply_row_aliases(ds_cfg: Dict[str, Any], row: Dict[str, Any]) -> None:
@@ -326,6 +310,7 @@ class SQLServerExtractor(BaseExtractor):
         explicit_wm_expr = ds_cfg.get("watermark_expr")
         explicit_order = ds_cfg.get("watermark_order_by")
         cursor_pk_columns = self._normalize_pk_columns(ds_cfg.get("cursor_pk_columns"))
+        revisit_open_clause = str(ds_cfg.get("revisit_open_clause") or "").strip()
         if not cursor_pk_columns and table:
             cursor_pk_columns = self._table_primary_key_columns(str(table))
         if cursor_pk_columns:
@@ -534,13 +519,14 @@ class SQLServerExtractor(BaseExtractor):
         )
         query_mode = "param"
         cursor_pk_columns = self._normalize_pk_columns(ds_cfg.get("cursor_pk_columns"))
+        revisit_open_clause = str(ds_cfg.get("revisit_open_clause") or "").strip()
 
         params: List = []
         wm_expr = base_wm_expr
         if watermark_type_detected == "text":
             style = watermark_style or 121
             wm_expr = self._legacy_text_watermark_expr(base_wm_expr, style)
-            query_mode = "legacy_case_convert"
+            query_mode = "try_convert"
         else:
             style = None
         if not event_date_expr:
@@ -550,13 +536,19 @@ class SQLServerExtractor(BaseExtractor):
             sql_watermark_dt = sqlserver_datetime_param(watermark_dt)
             if not sql_watermark_dt:
                 return
+            predicate: str
             if cursor_pk_tuple and cursor_pk_columns:
                 pk_sql, pk_params = self._build_lexicographic_pk_predicate(cursor_pk_columns, cursor_pk_tuple)
-                target_parts.append(f"({wm_expr} > ? OR ({wm_expr} = ? AND ({pk_sql})))")
+                predicate = f"({wm_expr} > ? OR ({wm_expr} = ? AND ({pk_sql})))"
                 params.extend([sql_watermark_dt, sql_watermark_dt, *pk_params])
+            else:
+                predicate = f"{wm_expr} > ?"
+                params.append(sql_watermark_dt)
+
+            if revisit_open_clause:
+                target_parts.append(f"({predicate} OR ({revisit_open_clause}))")
                 return
-            target_parts.append(f"{wm_expr} > ?")
-            params.append(sql_watermark_dt)
+            target_parts.append(predicate)
 
         if query:
             outer_where_parts: List[str] = []

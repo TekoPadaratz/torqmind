@@ -9,15 +9,25 @@ export const api = axios.create({
 });
 
 // Intercept 401 responses to redirect to login
+// Intercept 403 password_change_required to redirect to change-password
 api.interceptors.response.use(
   (response: any) => response,
   (error: any) => {
+    const status = error?.response?.status;
     if (
-      error?.response?.status === 401 &&
+      status === 401 &&
       typeof window !== "undefined" &&
       !window.location.pathname.match(/^\/?$/)
     ) {
       window.location.href = "/";
+    }
+    if (
+      status === 403 &&
+      typeof window !== "undefined" &&
+      error?.response?.data?.error === "password_change_required" &&
+      !window.location.pathname.startsWith("/change-password")
+    ) {
+      window.location.href = "/change-password";
     }
     return Promise.reject(error);
   }
@@ -43,6 +53,16 @@ export async function apiPost(path: string, body: any, config?: AxiosRequestConf
 
 export async function apiPatch(path: string, body: any, config?: AxiosRequestConfig) {
   const res = await api.patch(path, body, config);
+  return res.data;
+}
+
+export async function apiPut(path: string, body: any, config?: AxiosRequestConfig) {
+  const res = await api.put(path, body, config);
+  return res.data;
+}
+
+export async function apiDelete(path: string, config?: AxiosRequestConfig) {
+  const res = await api.delete(path, config);
   return res.data;
 }
 

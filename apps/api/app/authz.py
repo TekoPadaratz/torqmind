@@ -13,6 +13,7 @@ CANONICAL_ROLES = {
     "tenant_admin",
     "tenant_manager",
     "tenant_viewer",
+    "tenant_kiosk",
 }
 
 LEGACY_ROLE_MAP = {
@@ -29,6 +30,7 @@ ROLE_PRIORITY = {
     "tenant_admin": 4,
     "tenant_manager": 5,
     "tenant_viewer": 6,
+    "tenant_kiosk": 7,
 }
 
 TENANT_LOGIN_ALLOWED_STATUSES = {
@@ -57,7 +59,7 @@ def analytics_role_for_user_role(role: str | None) -> str | None:
         return "MASTER"
     if normalized == "tenant_admin":
         return "OWNER"
-    if normalized in {"tenant_manager", "tenant_viewer"}:
+    if normalized in {"tenant_manager", "tenant_viewer", "tenant_kiosk"}:
         return "MANAGER"
     return None
 
@@ -83,11 +85,12 @@ def can_access_product(role: str | None) -> bool:
         "tenant_admin",
         "tenant_manager",
         "tenant_viewer",
+        "tenant_kiosk",
     }
 
 
 def is_product_readonly_role(role: str | None) -> bool:
-    return normalize_role(role) == "tenant_viewer"
+    return normalize_role(role) in {"tenant_viewer", "tenant_kiosk"}
 
 
 def role_label(role: str | None) -> str:
@@ -100,6 +103,7 @@ def role_label(role: str | None) -> str:
         "tenant_admin": "Tenant Admin",
         "tenant_manager": "Tenant Manager",
         "tenant_viewer": "Tenant Viewer",
+        "tenant_kiosk": "Vendedor / TV",
     }.get(normalized, normalized or "Unknown")
 
 

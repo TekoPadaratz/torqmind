@@ -158,6 +158,9 @@ class _WatermarkResetConn:
             return _RowcountResult(12)
         return _LoaderCursor({})
 
+    def commit(self) -> None:
+        return None
+
 
 class EtlOrchestrationTest(unittest.TestCase):
     def test_cli_and_endpoint_share_same_incremental_cycle_function(self) -> None:
@@ -297,12 +300,13 @@ class EtlOrchestrationTest(unittest.TestCase):
 
         self.assertTrue(summary["ok"])
         set_config_calls = [item for item in conn.calls if "set_config" in item[0]]
-        self.assertEqual(len(set_config_calls), 5)
-        self.assertEqual(set_config_calls[0][1], ("etl.ref_date", "2026-04-30"))
-        self.assertEqual(set_config_calls[1][1], ("etl.from_date", "2025-01-01"))
-        self.assertEqual(set_config_calls[2][1], ("etl.to_date", "2025-12-31"))
-        self.assertEqual(set_config_calls[3][1], ("etl.branch_id", "14458"))
-        self.assertEqual(set_config_calls[4][1], ("etl.force_full_scan", "true"))
+        self.assertEqual(len(set_config_calls), 6)
+        self.assertEqual(set_config_calls[0][1], ("statement_timeout", "600000"))
+        self.assertEqual(set_config_calls[1][1], ("etl.ref_date", "2026-04-30"))
+        self.assertEqual(set_config_calls[2][1], ("etl.from_date", "2025-01-01"))
+        self.assertEqual(set_config_calls[3][1], ("etl.to_date", "2025-12-31"))
+        self.assertEqual(set_config_calls[4][1], ("etl.branch_id", "14458"))
+        self.assertEqual(set_config_calls[5][1], ("etl.force_full_scan", "true"))
 
     @patch("app.cli.etl_incremental.list_target_tenants", return_value=[{"id_empresa": 7, "nome": "Tenant 7", "status": "active", "is_active": True}])
     @patch("app.cli.etl_incremental.run_incremental_cycle", return_value={"ok": True, "failed": 0, "items": []})
@@ -370,18 +374,19 @@ class EtlOrchestrationTest(unittest.TestCase):
             },
         ]
 
-        summary = etl_orchestrator.run_incremental_cycle(
-            [1, 2],
-            ref_date=date(2026, 3, 19),
-            refresh_mart=True,
-            force_full=False,
-            fail_fast=False,
-            tenant_rows=[
-                {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
-                {"id_empresa": 2, "nome": "Tenant 2", "status": "active", "is_active": True},
-            ],
-            acquire_lock=False,
-        )
+        with patch("app.services.etl_orchestrator._legacy_pg_marts_enabled", return_value=True):
+            summary = etl_orchestrator.run_incremental_cycle(
+                [1, 2],
+                ref_date=date(2026, 3, 19),
+                refresh_mart=True,
+                force_full=False,
+                fail_fast=False,
+                tenant_rows=[
+                    {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
+                    {"id_empresa": 2, "nome": "Tenant 2", "status": "active", "is_active": True},
+                ],
+                acquire_lock=False,
+            )
 
         self.assertTrue(summary["ok"], summary)
         self.assertEqual(mock_refresh.call_count, 1)
@@ -495,17 +500,18 @@ class EtlOrchestrationTest(unittest.TestCase):
             "meta": {},
         }
 
-        summary = etl_orchestrator.run_incremental_cycle(
-            [1],
-            ref_date=date(2026, 3, 20),
-            refresh_mart=True,
-            force_full=False,
-            fail_fast=False,
-            tenant_rows=[
-                {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
-            ],
-            acquire_lock=False,
-        )
+        with patch("app.services.etl_orchestrator._legacy_pg_marts_enabled", return_value=True):
+            summary = etl_orchestrator.run_incremental_cycle(
+                [1],
+                ref_date=date(2026, 3, 20),
+                refresh_mart=True,
+                force_full=False,
+                fail_fast=False,
+                tenant_rows=[
+                    {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
+                ],
+                acquire_lock=False,
+            )
 
         self.assertTrue(summary["ok"], summary)
         self.assertEqual(mock_refresh.call_count, 1)
@@ -564,6 +570,7 @@ class EtlOrchestrationTest(unittest.TestCase):
                 refresh_mart=True,
                 force_full=False,
                 fail_fast=True,
+                track=etl_orchestrator.TRACK_OPERATIONAL,
                 tenant_rows=[
                     {"id_empresa": 1, "nome": "Tenant 1", "status": "active", "is_active": True},
                     {"id_empresa": 2, "nome": "Tenant 2", "status": "active", "is_active": True},
@@ -778,8 +785,10 @@ class EtlOrchestrationTest(unittest.TestCase):
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
+    @patch("app.services.etl_orchestrator._optional_phase_step_skip_meta")
     def test_tenant_phase_runs_explicit_steps_in_loader_order(
         self,
+        mock_step_skip_meta,
         mock_logged_step,
         _mock_log_instant,
         mock_stage_summary,
@@ -808,6 +817,7 @@ class EtlOrchestrationTest(unittest.TestCase):
             step_order.append(step_name)
             return manual_counts[step_name], manual_counts[step_name] * 10
 
+        mock_step_skip_meta.return_value = None
         mock_logged_step.side_effect = _logged_step_side_effect
 
         result = etl_orchestrator._run_tenant_phase(
@@ -827,6 +837,60 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertTrue(result["meta"]["refresh_domains"]["cash"])
         self.assertEqual(mock_stage_summary.call_count, 1)
         self.assertEqual(mock_stage_summary.call_args.args[2], "run_tenant_phase")
+
+    @patch("app.services.etl_orchestrator._hot_window_days", return_value=3)
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    @patch("app.services.etl_orchestrator._optional_phase_step_skip_meta")
+    def test_tenant_phase_skips_fact_estoque_atual_when_loader_is_not_installed(
+        self,
+        mock_step_skip_meta,
+        mock_logged_step,
+        mock_log_instant,
+        _mock_stage_summary,
+        _mock_hot_window_days,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 1, 10
+
+        def _skip_meta_side_effect(_conn, step_name):
+            if step_name == "fact_estoque_atual":
+                return {
+                    "reason": "function_not_installed",
+                    "message": "SKIP estoque_atual: function not installed",
+                }
+            return None
+
+        mock_step_skip_meta.side_effect = _skip_meta_side_effect
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        result = etl_orchestrator._run_tenant_phase(
+            _DummyConn(),
+            1,
+            False,
+            date(2026, 3, 23),
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+        )
+
+        self.assertEqual(
+            step_order,
+            [name for name, _query in etl_orchestrator.PHASE_SQL_STEPS if name != "fact_estoque_atual"],
+        )
+        self.assertEqual(result["meta"]["fact_estoque_atual"], 0)
+        self.assertTrue(result["meta"]["fact_estoque_atual_skipped"])
+        self.assertEqual(result["meta"]["fact_estoque_atual_skip_reason"], "function_not_installed")
+        self.assertEqual(
+            result["meta"]["fact_estoque_atual_message"],
+            "SKIP estoque_atual: function not installed",
+        )
+        mock_log_instant.assert_called_once()
+        self.assertEqual(mock_log_instant.call_args.args[2], "fact_estoque_atual")
+        self.assertEqual(mock_log_instant.call_args.kwargs["rows_processed"], 0)
+        self.assertTrue(mock_log_instant.call_args.kwargs["meta"]["skipped"])
 
     @patch("app.services.etl_orchestrator._hot_window_days", return_value=3)
     @patch("app.services.etl_orchestrator._log_stage_summary")
@@ -934,8 +998,10 @@ class EtlOrchestrationTest(unittest.TestCase):
             step_order,
             [
                 "customer_sales_daily_snapshot",
+                "customer_screen_summary",
                 "customer_rfm_snapshot",
                 "customer_churn_risk_snapshot",
+                "customer_delinquency_summary",
                 "payment_notifications",
                 "cash_notifications",
             ],
@@ -1145,9 +1211,8 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_refresh,
         mock_post_refresh,
     ) -> None:
-        # 2026-04-29: política antiga adiava o refresh global na track operacional, deixando
-        # mart.agg_vendas_diaria & cia. defasadas. Política nova: OPERATIONAL também publica
-        # as marts globais via etl.refresh_marts em cada ciclo.
+        # Multi-VM production publishes BI through ClickHouse. Legacy PostgreSQL mart refresh
+        # is explicit opt-in, while operational post-refresh still runs as the fast path.
         mock_refresh.return_value = {"ref_date": "2026-03-23", "refreshed_any": True, "sales_marts_refreshed": True}
         mock_post_refresh.return_value = etl_orchestrator._empty_post_meta()
         summary = etl_orchestrator.run_incremental_cycle(
@@ -1162,18 +1227,20 @@ class EtlOrchestrationTest(unittest.TestCase):
         )
 
         self.assertTrue(summary["ok"], summary)
-        mock_refresh.assert_called_once()
+        mock_refresh.assert_not_called()
         self.assertEqual(mock_post_refresh.call_count, 1)
         self.assertEqual(mock_post_refresh.call_args.kwargs["publication_mode"], etl_orchestrator.PUBLICATION_MODE_FAST_PATH)
-        self.assertTrue(summary["global_refresh"]["requested"])
+        self.assertFalse(summary["global_refresh"]["requested"])
         self.assertFalse(summary["global_refresh"]["deferred"])
-        self.assertTrue(summary["global_refresh"]["refreshed_any"])
-        self.assertTrue(summary["items"][0]["result"]["meta"]["mart_refreshed"])
+        self.assertFalse(summary["global_refresh"]["refreshed_any"])
+        self.assertFalse(summary["items"][0]["result"]["meta"]["mart_refreshed"])
+        self.assertTrue(summary["items"][0]["result"]["meta"]["refresh_requested"])
         self.assertFalse(summary["items"][0]["result"]["meta"]["publication_deferred"])
         self.assertEqual(
             summary["items"][0]["result"]["meta"]["publication_mode"],
             etl_orchestrator.PUBLICATION_MODE_FAST_PATH,
         )
+        self.assertTrue(summary["items"][0]["result"]["meta"]["post_refresh_executed"])
         self.assertTrue(summary["items"][0]["result"]["meta"]["publication_executed"])
 
 

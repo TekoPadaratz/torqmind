@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 
 import PlatformShell from '../../../components/PlatformShell';
+import BrandingEditor from '../../../components/BrandingEditor';
 import { api, apiGet } from '../../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../../lib/format';
 import { loadSession } from '../../../lib/session';
@@ -258,6 +259,8 @@ export default function PlatformCompanyDetailPage() {
             </div>
           </div>
         </div>
+
+        <BrandingEditor tenantId={tenantId} />
 
         <div className="card">
           <div className="platformSectionHead">
