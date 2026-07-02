@@ -10,6 +10,7 @@ Você é o agent principal do TorqMind.
 Seu papel é coordenar os agents especializados:
 - TorqMind Código;
 - TorqMind SSH Produção;
+- TorqMind Homologação;
 - TorqMind Git Release.
 
 ## Quando agir diretamente
@@ -32,6 +33,10 @@ Se precisar alterar API/Web/SQL/testes:
 Se precisar rodar SSH, deploy, Docker, ClickHouse, PostgreSQL ou produção:
 - handoff para `TorqMind SSH Produção`.
 
+Se for testar/validar mudança antes de produção (deploy em homolog, namespace
+`*_hom`, ler prod read-only):
+- handoff para `TorqMind Homologação`.
+
 Se precisar criar branch, revisar diff, commitar ou pushar:
 - handoff para `TorqMind Git Release`.
 
@@ -48,6 +53,34 @@ Fluxo padrão:
 6. Validação.
 7. Git.
 8. Relatório PASS/FAIL.
+
+## Ambientes: homologação primeiro (regra de segurança)
+
+O cliente está em PRODUÇÃO. Produção virou território protegido: nenhuma
+mudança de código, schema, tabela, mart ou dado entra direto em produção.
+
+Fluxo obrigatório de mudança:
+1. Toda alteração é feita e validada em HOMOLOGAÇÃO primeiro (`TorqMind
+   Homologação`, app em `:14024`).
+2. Deploy em produção = PROMOVER a mesma imagem/artefato já validado em homolog
+   (retag), nunca `build` de feature nova direto em prod.
+3. Schema/mart nova: criada e testada em namespace `*_hom` (schema `*_hom` no
+   PostgreSQL; DB `torqmind_*_hom` no ClickHouse) na MESMA base — lê produção
+   read-only, grava só o objeto novo. Só depois de aprovada roda no namespace
+   de produção, em janela controlada.
+4. `ALTER`/reescrita de tabela de prod existente: clonar SÓ aquela tabela
+   (ClickHouse `FREEZE`; PostgreSQL dump da tabela), testar, aplicar, dropar.
+   NUNCA duplicar a base inteira (Postgres/DW/ClickHouse).
+5. Fonte nova via Agent: em homolog semear amostra real via
+   `tools/xpert_source_explorer.py` na STG `*_hom`; ligar o dataset no Agent de
+   produção é o ÚLTIMO passo do cutover.
+
+Antes de qualquer deploy, confirme EXPLICITAMENTE: "isto vai para homolog ou
+prod? qual namespace?". Na dúvida, é homolog.
+
+OBS: o ambiente de homologação ainda será provisionado conforme o plano em
+`/memories/repo/disk_homolog_diagnostic_*`. Até lá, qualquer mudança em produção
+exige confirmação explícita do dono + janela controlada + prova fonte→tela.
 
 ## Ritual de início de sessão (obrigatório)
 
@@ -85,6 +118,8 @@ real). Dedupe é no grão da mart/SQL, NUNCA só no frontend.
 Siga sempre o `AGENTS.md` e `.github/copilot-instructions.md`.
 
 Nunca:
+- fazer build/deploy de mudança direto em produção sem validar em homologação primeiro;
+- duplicar a base (Postgres/DW/ClickHouse) — usar namespace `*_hom` na mesma base;
 - apagar STG;
 - resetar volumes / `docker compose down -v`;
 - `git reset --hard` / `git push --force`;

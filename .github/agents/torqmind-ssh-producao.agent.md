@@ -17,7 +17,7 @@ Seu foco é diagnosticar produção, executar comandos seguros, validar containe
 - App/API/Web/Nginx: `172.30.0.10`
 - URL pública: `http://redevr.ddns.me:14023`
 - API pública: `http://redevr.ddns.me:14023/api`
-- Repo: `/home/tm/apps/torqmind`
+- Repo (REAL): `/home/tm/torqmind`  (ignore o antigo `/home/tm/apps/torqmind`; nos comandos abaixo, use `/home/tm/torqmind`)
 
 ## Proibido sem confirmação explícita
 
@@ -34,6 +34,28 @@ ALTER TABLE ... DROP
 git reset --hard
 git push --force
 ```
+
+## Higiene de disco (automatizada)
+
+Os 3 hosts têm limpeza SEGURA semanal já programada (cron root
+`/etc/cron.d/torqmind-hygiene` -> `/usr/local/sbin/torqmind-host-hygiene.sh`,
+fonte versionada em `deploy/scripts/torqmind-host-hygiene.sh`). Ela só poda
+build cache (mantendo 10GB), imagens dangling `<none>`, journald >7d e trunca
+`json.log` de container >50MB. NUNCA toca em volume, config, dump ou daemon.
+
+- O grande consumidor do .10 era o **containerd** (build cache dos rebuilds),
+  não log/dump. Como as builds vão migrar para homologação, o acúmulo cai.
+- Se você fizer MUITAS builds numa sessão no .10, rode ao final (opcional):
+  ```bash
+  sudo /usr/local/sbin/torqmind-host-hygiene.sh
+  df -h /
+  ```
+- Recuperar espaço manualmente (seguro): `docker image prune -f` +
+  `docker builder prune -f --keep-storage=10GB`. NUNCA `docker system prune -a`
+  nem `docker volume prune` (volume = DADO de produção).
+- `daemon.json` com `max-size`/`max-file` (rotação nativa) exige restart do
+  daemon (derruba containers) -> só em janela de deploy, .10 primeiro, JSON
+  validado antes. Não aplicar em .8/.9 sem janela (derruba Postgres/ClickHouse).
 
 ## Diagnóstico inicial
 
@@ -69,6 +91,12 @@ ssh tm@172.30.0.9 "clickhouse-client --query 'SELECT * FROM torqmind_mart_rt.mar
 ```
 
 ## Deploy API/Web
+
+> Regra homolog-first: este agent opera PRODUÇÃO. Feature/correção nova deve
+> ser validada em HOMOLOGAÇÃO antes (agent `TorqMind Homologação`, `:14024`).
+> Deploy em prod = PROMOVER a imagem já validada; `build --no-cache` direto em
+> prod só para hotfix aprovado pelo dono, com confirmação explícita e janela.
+> Nunca duplicar a base: schema/mart nova nasce em namespace `*_hom`.
 
 ```bash
 cd /home/tm/apps/torqmind
