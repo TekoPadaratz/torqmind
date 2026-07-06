@@ -20,6 +20,7 @@ import {
   buildPriorityCards,
 } from "../lib/dashboard-home.mjs";
 import AppNav from "../components/AppNav";
+import DashboardBudgetAlert from "./DashboardBudgetAlert";
 import EmptyState from "../components/ui/EmptyState";
 import HeroMoneyCard from "../components/ui/HeroMoneyCard";
 import RiskBadge from "../components/ui/RiskBadge";
@@ -167,6 +168,7 @@ export default function Dashboard() {
           </section>
         ) : (
           <>
+            <DashboardBudgetAlert />
             {scopeOutdatedForRisk ? (
               <div
                 className="card homeBlock"

@@ -1277,6 +1277,32 @@ def _reconcile_payment_mix(
     return mix, total_pagamentos, diferenca
 
 
+def _split_avista_recebido(payments: List[Dict[str, Any]]) -> tuple[float, float, float]:
+    """Separa o mix de pagamentos em (à vista, a prazo, cheque).
+
+    À vista = dinheiro, cartão, pix e afins efetivamente recebidos no caixa.
+    Exclui PRAZO (fiado), qualquer forma de CHEQUE e o resíduo não conciliado
+    (fiado/ajustes não registrados). É o "faturado à vista = faturado - a prazo -
+    cheque" pedido para a tela de Caixa (recebimento de venda do dia).
+    """
+    avista = 0.0
+    a_prazo = 0.0
+    cheque = 0.0
+    for p in payments:
+        valor = float(p.get("total_valor") or 0)
+        category = str(p.get("category") or "").strip().upper()
+        if category == "PRAZO":
+            a_prazo += valor
+        elif "CHEQUE" in category:
+            cheque += valor
+        elif category == "RECONCILIATION":
+            # resíduo não conciliado (fiado/ajustes): não é recebimento à vista
+            continue
+        else:
+            avista += valor
+    return round(avista, 2), round(a_prazo, 2), round(cheque, 2)
+
+
 def cash_overview(
     role: str,
     id_empresa: int,
@@ -1614,6 +1640,7 @@ def cash_overview(
     # (unrecorded fiado/prazo, leftover troca-de-forma ghosts, rounding) become an
     # explicit non-hidden line so payment_mix totals match total_vendas.
     payments, total_pagamentos, diferenca_conciliacao = _reconcile_payment_mix(payments, total_vendas)
+    recebimentos_avista, total_a_prazo, total_cheque = _split_avista_recebido(payments)
 
     commercial_kpis = {
         "total_vendas": total_vendas,
@@ -1622,7 +1649,10 @@ def cash_overview(
         "total_pagamentos": total_pagamentos,
         "total_pagamentos_conciliado": total_pagamentos,
         "diferenca_conciliacao": diferenca_conciliacao,
-        "recebimentos_periodo": total_pagamentos,
+        "recebimentos_periodo": recebimentos_avista,
+        "recebimentos_avista": recebimentos_avista,
+        "total_a_prazo": total_a_prazo,
+        "total_cheque": total_cheque,
         "saldo_comercial": saldo_comercial,
         "qtd_vendas": int(sales_kpi.get("qtd_vendas") or 0),
         "qtd_cancelamentos": int(sales_kpi.get("qtd_cancelamentos") or 0),
@@ -1677,7 +1707,7 @@ def cash_overview(
             "cards": [
                 {"key": "receita", "label": "Receita bruta", "amount": total_vendas, "detail": "Total faturado no período"},
                 {"key": "cancelamentos", "label": "Cancelamentos", "amount": total_cancelamentos, "detail": "Devoluções e cancelamentos"},
-                {"key": "recebimentos", "label": "Recebimentos", "amount": total_pagamentos, "detail": "Pagamentos recebidos"},
+                {"key": "recebimentos", "label": "Recebimentos à vista", "amount": recebimentos_avista, "detail": "Dinheiro, cartão e pix recebidos no caixa (exclui prazo e cheque)"},
             ],
             "pending": [],
         },
@@ -1873,7 +1903,12 @@ def fraud_last_events(
         """, parameters={"id_empresa": id_empresa})
         if rows:
             # Single shared contract with risk_last_events: operational turno,
-            # comprovante-based documento, resolved operator/filial/date.
+            # NF-based documento (fallback comprovante), resolved operator/filial/date.
+            nfe_map = _load_nfe_numbers(id_empresa, rows)
+            for r in rows:
+                r["numero_nfe"] = nfe_map.get(
+                    (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
+                )
             return [_build_antifraude_event(r) for r in rows]
     except Exception:
         pass
@@ -2071,6 +2106,63 @@ def finance_kpis(
     """, parameters={"id_empresa": id_empresa})
 
     return {"aging": rows, "source": "realtime", "realtime_source": _realtime_source()}
+
+
+def finance_receipts_by_day(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Recebimentos de CONTAS A RECEBER por dia (baixas totais e parciais).
+
+    Diferente do mix de formas de pagamento das VENDAS: aqui é o dinheiro que
+    efetivamente entrou de títulos a receber (baixas do Xpert), pela DATA DA
+    BAIXA (DATABAIXA). É o "recebimentos" da tela Financeiro.
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            toYYYYMMDD(dt_baixa) AS data_key,
+            round(sum(valor_baixa), 2) AS valor,
+            toUInt32(count()) AS qtd
+        FROM (
+            SELECT
+                toDateOrNull(substring(JSONExtractString(payload, 'DATABAIXA'), 1, 10)) AS dt_baixa,
+                JSONExtractFloat(payload, 'VALORBAIXA') AS valor_baixa
+            FROM {CURRENT_DB}.stg_contasreceberbaixa FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND is_deleted = 0
+        )
+        WHERE dt_baixa IS NOT NULL
+          AND toYYYYMMDD(dt_baixa) BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+        GROUP BY data_key
+        HAVING valor > 0
+        ORDER BY data_key
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+    by_day = [
+        {
+            "data_key": int(r.get("data_key") or 0),
+            "valor": round(float(r.get("valor") or 0), 2),
+            "qtd": int(r.get("qtd") or 0),
+        }
+        for r in rows
+        if int(r.get("data_key") or 0) > 0
+    ]
+    total = round(sum(d["valor"] for d in by_day), 2)
+    return {
+        "by_day": by_day,
+        "total_recebido": total,
+        "qtd_baixas": sum(d["qtd"] for d in by_day),
+        "source": "realtime",
+        "realtime_source": _realtime_source(),
+    }
 
 
 # ================================================================
@@ -2938,18 +3030,64 @@ def _antifraude_turno_label(turno_numero: int, id_turno: int) -> tuple[str, bool
     return "Turno não resolvido", False
 
 
-def _antifraude_documento(nro_comprovante: int, id_comprovante: int) -> tuple[Optional[int], str, str]:
-    """Operational sale-document label for the fraud screen.
+def _load_nfe_numbers(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple[int, int], str]:
+    """Busca em lote o número da Nota Fiscal (NF/NFC-e) por comprovante.
 
-    Preference: NROCOMPROVANTE (number printed on the sale receipt, the operator
-    can locate it in the caixa/ERP). Fallback: id_comprovante (technical PK, also
-    traceable). NEVER ``Turno + Filial``. Returns (documento_venda, label, source).
+    Retorna {(id_filial, id_comprovante): numero_nfe}. Vendas que nunca emitiram
+    documento fiscal (comum em cancelamentos) simplesmente não aparecem no mapa,
+    e o chamador cai honestamente no número do comprovante.
     """
+    pairs = sorted({
+        (int(r["id_filial"]), int(r["id_comprovante"]))
+        for r in rows
+        if r.get("id_filial") is not None and r.get("id_comprovante") not in (None, 0)
+    })
+    if not pairs:
+        return {}
+    values = ", ".join(f"({f}, {c})" for f, c in pairs)
+    result = query_dict(
+        f"""
+        SELECT id_filial,
+               id_comprovante,
+               argMax(numero_nfe, source_ts_ms) AS numero_nfe
+        FROM {CURRENT_DB}.stg_nfe_slim
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND (id_filial, id_comprovante) IN ({values})
+          AND numero_nfe != ''
+          AND numero_nfe != '0'
+        GROUP BY id_filial, id_comprovante
+        """,
+        parameters={"id_empresa": id_empresa},
+    )
+    return {
+        (int(r["id_filial"]), int(r["id_comprovante"])): str(r.get("numero_nfe") or "").strip()
+        for r in result
+        if r.get("id_filial") is not None
+        and r.get("id_comprovante") is not None
+        and str(r.get("numero_nfe") or "").strip()
+    }
+
+
+def _antifraude_documento(
+    numero_nfe: Any, nro_comprovante: int, id_comprovante: int
+) -> tuple[Any, str, str, Optional[str]]:
+    """Documento operacional da venda para a tela de fraude.
+
+    Preferência: NÚMERO DA NOTA FISCAL (NF/NFC-e) — o número que o cliente usa no
+    Xpert. Fallback honesto: NROCOMPROVANTE (impresso no comprovante) e, por
+    último, id_comprovante técnico. Cancelamentos normalmente não têm nota fiscal
+    emitida, então caem no comprovante — nunca inventamos uma NF.
+    Retorna (documento_venda, label, source, documento_fiscal).
+    """
+    nfe = str(numero_nfe or "").strip()
+    if nfe and nfe != "0":
+        return nfe, f"Nota fiscal {nfe}", "nota_fiscal", nfe
     if nro_comprovante and nro_comprovante > 0:
-        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda"
+        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda", None
     if id_comprovante and id_comprovante > 0:
-        return None, f"Comprovante #{id_comprovante}", "id_comprovante"
-    return None, "Sem comprovante", "fallback"
+        return None, f"Comprovante #{id_comprovante}", "id_comprovante", None
+    return None, "Sem comprovante", "fallback", None
 
 
 def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
@@ -3004,7 +3142,10 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
     event_id = r.get("event_id") if r.get("event_id") is not None else r.get("id")
     id_comprovante = _to_int(r.get("id_comprovante"))
     nro_comprovante = _to_int(r.get("nro_comprovante"))
-    documento_venda, documento_label, documento_source = _antifraude_documento(nro_comprovante, id_comprovante)
+    numero_nfe = str(r.get("numero_nfe") or "").strip()
+    documento_venda, documento_label, documento_source, documento_fiscal = _antifraude_documento(
+        numero_nfe, nro_comprovante, id_comprovante
+    )
 
     return {
         "id_evento": str(event_id) if event_id is not None else None,
@@ -3014,7 +3155,7 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
         "documento_venda": documento_venda,
         "documento_label": documento_label,
         "documento_source": documento_source,
-        "documento_fiscal": None,
+        "documento_fiscal": documento_fiscal,
         "referencia": documento_label,
         "id_filial": id_filial,
         "filial_nome": filial_nome,
@@ -3085,6 +3226,11 @@ def risk_last_events(
         "fim": _date_key(dt_fim),
         "limit": int(limit),
     })
+    nfe_map = _load_nfe_numbers(id_empresa, rows)
+    for r in rows:
+        r["numero_nfe"] = nfe_map.get(
+            (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
+        )
     return [_build_antifraude_event(r) for r in rows]
 
 
@@ -3674,6 +3820,7 @@ REALTIME_FUNCTIONS = {
     "fraud_troca_forma_pgto_kpis",
     "risk_top_employees",
     "finance_kpis",
+    "finance_receipts_by_day",
     "streaming_health",
     "goals_today",
     "monthly_goal_projection",

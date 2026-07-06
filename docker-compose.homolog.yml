@@ -15,7 +15,7 @@
 
 services:
   api:
-    image: torqmind-api:latest
+    image: torqmind-api:homolog
     container_name: torqmind-api-homolog
     restart: unless-stopped
     env_file:

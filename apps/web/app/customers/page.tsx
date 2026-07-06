@@ -94,6 +94,8 @@ export default function CustomersPage() {
   const anonKpis = anon?.kpis || {};
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
+  const delinquencyByFilial = delinquency?.by_filial || [];
+  const showFilialColumn = delinquencyByFilial.length > 1;
   const delinquencyCustomers = useMemo(() => {
     let customers = [...(delinquency?.customers || [])];
     const term = delinquencySearch.trim().toUpperCase();
@@ -413,11 +415,39 @@ export default function CustomersPage() {
                     detail={`Não há cliente com "${delinquencySearch}" no nome dentro das prioridades de cobrança.`}
                   />
                 ) : null}
+                {showFilialColumn ? (
+                  <div style={{ marginBottom: 12 }}>
+                    <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                      Dívida vencida por filial (o mesmo cliente pode dever em mais de um posto):
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {delinquencyByFilial.map((f: any) => (
+                        <div
+                          key={f.id_filial}
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            padding: "8px 12px",
+                            background: "rgba(255,255,255,0.02)",
+                            minWidth: 168,
+                          }}
+                        >
+                          <div className="muted" style={{ fontSize: 11 }}>{f.filial_label}</div>
+                          <div style={{ fontWeight: 700 }}>{formatCurrency(f.valor_vencido)}</div>
+                          <div className="muted" style={{ fontSize: 11 }}>
+                            {f.clientes} cliente(s) · aberto {formatCurrency(f.valor_aberto)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="tableScroll">
                   <table className="table compact">
                     <thead>
                       <tr>
                         <th>Cliente</th>
+                        {showFilialColumn ? <th>Filial</th> : null}
                         <th>Até 30d</th>
                         <th>R$ até 30d</th>
                         <th>30+ dias</th>
@@ -435,8 +465,9 @@ export default function CustomersPage() {
                         const totalVencido = item.valor_total_vencido || ((item.valor_ate_30d || 0) + (item.valor_acima_30d || 0));
                         const totalAberto = item.valor_total_aberto || (totalVencido + (item.valor_a_vencer || 0));
                         return (
-                        <tr key={item.id_cliente}>
+                        <tr key={`${item.id_filial ?? 0}-${item.id_cliente}`}>
                           <td>{item.cliente_nome}</td>
+                          {showFilialColumn ? <td>{item.filial_label || "—"}</td> : null}
                           <td>{item.titulos_ate_30d ?? 0}</td>
                           <td>{formatCurrency(item.valor_ate_30d ?? 0)}</td>
                           <td style={{ fontWeight: (item.titulos_acima_30d || 0) > 0 ? 700 : 400, color: (item.titulos_acima_30d || 0) > 0 ? 'var(--color-negative)' : undefined }}>{item.titulos_acima_30d ?? 0}</td>

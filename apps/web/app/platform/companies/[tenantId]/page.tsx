@@ -19,6 +19,7 @@ function buildBranchForm(branch: any) {
   return {
     id_filial: branch.id_filial,
     nome: branch.nome || '',
+    apelido: branch.apelido || '',
     cnpj: branch.cnpj || '',
     is_enabled: Boolean(branch.is_active),
     valid_from: toDateInput(branch.valid_from),
@@ -140,6 +141,7 @@ export default function PlatformCompanyDetailPage() {
     try {
       await api.patch(`/platform/companies/${tenantId}/branches/${branchForm.id_filial}`, {
         nome: branchForm.nome,
+        apelido: branchForm.apelido?.trim() || null,
         cnpj: branchForm.cnpj || null,
         is_enabled: branchForm.is_enabled,
         valid_from: branchForm.valid_from || null,
@@ -273,6 +275,8 @@ export default function PlatformCompanyDetailPage() {
             O cadastro-base continua vindo da Xpert pelo par oficial `id_empresa` + `id_filial`.
             {' '}
             A criação manual segue bloqueada, mas nome administrativo, CNPJ, vigência e estado da filial existente podem ser ajustados aqui sem o ETL reverter essas alterações.
+            {' '}
+            O <strong>apelido</strong> é o nome curto do posto (ex.: “VR 01”) que aparece em todas as telas, rankings e alertas no lugar do nome completo do cadastro. Deixe em branco para usar o nome completo.
           </div>
 
           {branchError ? <div className="card errorCard" style={{ marginTop: 16 }}>{branchError}</div> : null}
@@ -282,6 +286,7 @@ export default function PlatformCompanyDetailPage() {
               <tr>
                 <th>ID</th>
                 <th>Nome</th>
+                <th>Apelido</th>
                 <th>Habilitada</th>
                 <th>Vigência</th>
                 <th>Bloqueio</th>
@@ -293,6 +298,7 @@ export default function PlatformCompanyDetailPage() {
                 <tr key={branch.id_filial}>
                   <td>{branch.id_filial}</td>
                   <td>{branch.nome}</td>
+                  <td>{branch.apelido || '—'}</td>
                   <td>{branch.is_active ? 'Sim' : 'Não'}</td>
                   <td>{formatDateOnly(branch.valid_until || branch.valid_from)}</td>
                   <td>{branch.blocked_reason || '-'}</td>
@@ -305,7 +311,7 @@ export default function PlatformCompanyDetailPage() {
               ))}
               {!(data?.branches || []).length ? (
                 <tr>
-                  <td colSpan={6}>Nenhuma filial sincronizada ainda para esta empresa.</td>
+                  <td colSpan={7}>Nenhuma filial sincronizada ainda para esta empresa.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -322,6 +328,13 @@ export default function PlatformCompanyDetailPage() {
               </div>
               <form className="platformFormGrid" onSubmit={saveBranch}>
                 <input className="input" value={branchForm.nome} onChange={(e) => setBranchForm({ ...branchForm, nome: e.target.value })} />
+                <input
+                  className="input"
+                  value={branchForm.apelido}
+                  onChange={(e) => setBranchForm({ ...branchForm, apelido: e.target.value })}
+                  placeholder="Apelido (ex.: VR 01)"
+                  maxLength={40}
+                />
                 <input className="input" value={branchForm.cnpj} onChange={(e) => setBranchForm({ ...branchForm, cnpj: e.target.value })} placeholder="CNPJ" />
                 <input className="input" type="date" value={branchForm.valid_from} onChange={(e) => setBranchForm({ ...branchForm, valid_from: e.target.value })} />
                 <input className="input" type="date" value={branchForm.valid_until} onChange={(e) => setBranchForm({ ...branchForm, valid_until: e.target.value })} />

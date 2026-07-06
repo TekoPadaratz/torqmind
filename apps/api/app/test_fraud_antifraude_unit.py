@@ -104,22 +104,32 @@ def test_turno_label_unresolved_when_no_shift():
 # --------------------------------------------------------------------------- #
 # _antifraude_documento  (FASE 3 — comprovante, never turno+filial)
 # --------------------------------------------------------------------------- #
+def test_documento_prefers_nota_fiscal():
+    venda, label, source, fiscal = _antifraude_documento("987654", 503752, 3587794)
+    assert venda == "987654"
+    assert label == "Nota fiscal 987654"
+    assert source == "nota_fiscal"
+    assert fiscal == "987654"
+
+
 def test_documento_prefers_nro_comprovante():
-    venda, label, source = _antifraude_documento(503752, 3587794)
+    venda, label, source, fiscal = _antifraude_documento("", 503752, 3587794)
     assert venda == 503752
     assert label == "Comprovante 503752"
     assert source == "documento_venda"
+    assert fiscal is None
 
 
 def test_documento_falls_back_to_id_comprovante():
-    venda, label, source = _antifraude_documento(0, 3587794)
+    venda, label, source, fiscal = _antifraude_documento("", 0, 3587794)
     assert venda is None
     assert label == "Comprovante #3587794"
     assert source == "id_comprovante"
+    assert fiscal is None
 
 
 def test_documento_never_turno_or_filial():
-    _, label, _ = _antifraude_documento(503752, 3587794)
+    _, label, _, _ = _antifraude_documento("", 503752, 3587794)
     assert "Turno" not in label
     assert "·" not in label
 
@@ -277,7 +287,7 @@ def test_risk_last_events_reads_enriched_mart_and_is_resolved():
             "platform_master", 1, None, date(2026, 6, 1), date(2026, 6, 4), limit=30
         )
 
-    sql = qd.call_args[0][0]
+    sql = qd.call_args_list[0].args[0]
     assert "mart_antifraude_eventos" in sql
     assert "risk_recent_events_rt" not in sql
     assert "turno_numero" in sql

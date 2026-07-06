@@ -7,6 +7,7 @@ from typing import Any
 
 from app.authz import is_sovereign_email, normalize_role
 from app.db import get_conn
+from app.filial_apelido import invalidate_apelido_cache
 from app.repos_auth import AuthError
 from app.security import hash_password
 from app.usernames import normalize_email, validate_username
@@ -210,6 +211,7 @@ def _load_company_branches(tenant_id: int) -> list[dict[str, Any]]:
               id_empresa,
               id_filial,
               nome,
+              apelido,
               cnpj,
               is_active,
               valid_from,
@@ -233,6 +235,7 @@ def _load_branch_row_tx(conn, tenant_id: int, branch_id: int):
           id_empresa,
           id_filial,
           nome,
+          apelido,
           cnpj,
           is_active,
           valid_from,
@@ -696,6 +699,7 @@ def upsert_branch(
             UPDATE auth.filiais
             SET
               nome = %s,
+              apelido = %s,
               cnpj = %s,
               is_active = %s,
               valid_from = %s,
@@ -707,6 +711,7 @@ def upsert_branch(
             """,
             (
                 payload["nome"],
+                (str(payload.get("apelido")).strip() or None) if payload.get("apelido") is not None else None,
                 payload.get("cnpj"),
                 bool(payload.get("is_enabled", True)),
                 payload.get("valid_from"),
@@ -721,6 +726,7 @@ def upsert_branch(
         entity = dict(current)
         _audit(conn, claims, "branch.update", "branch", f"{tenant_id}:{branch_id}", previous, entity, ip)
         conn.commit()
+    invalidate_apelido_cache(tenant_id)
     return entity
 
 

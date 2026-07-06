@@ -32,6 +32,42 @@
   --font-body: 13px;
   --font-footnote: 11px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Seleção legível — cobre TorqMind (corrige "branco no branco")
+   Cobre: texto selecionado, opções de <select>, checkbox/radio e
+   itens/linhas marcados. Nunca deixa branco-sobre-branco.
+   ═══════════════════════════════════════════════════════════════ */
+::selection { background: var(--accent-copper); color: #fff; }
+::-moz-selection { background: var(--accent-copper); color: #fff; }
+
+/* Dropdowns nativos: fundo escuro + opção destacada em cobre */
+select option { background: #12191f; color: var(--text); }
+select option:checked,
+select option:hover,
+select option:focus {
+  background: var(--accent-copper);
+  color: #fff;
+  /* força o realce no Firefox, que ignora background em option:checked */
+  box-shadow: 0 0 10px 100px var(--accent-copper) inset;
+}
+
+/* Checkbox, radio, range e barras usam o cobre da marca */
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+progress,
+select { accent-color: var(--accent-copper); }
+
+/* Itens/linhas marcados (padrão ARIA e classes utilitárias):
+   realce cobre suave — legível em qualquer combinação */
+[aria-selected="true"],
+[data-selected="true"],
+option[selected] {
+  background: var(--accent-copper-soft);
+  color: var(--text);
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {

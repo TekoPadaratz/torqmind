@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from app.business_time import business_clock_payload, business_timezone, business_today
 from app.db_clickhouse import query_dict
 from app.db import get_conn
+from app.filial_apelido import apelido_for
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +232,18 @@ def _branch_clause(column: str, id_filial: Any) -> str:
 
 
 def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
+    # Apelido curto (definido na Plataforma) tem prioridade sobre o nome completo.
+    single_branch: Any = None
+    if isinstance(id_filial, (list, tuple, set)):
+        ids = [b for b in id_filial if b is not None]
+        if len(ids) == 1:
+            single_branch = ids[0]
+    elif id_filial is not None:
+        single_branch = id_filial
+    if single_branch is not None:
+        apelido = apelido_for(single_branch)
+        if apelido:
+            return apelido
     nome = str(filial_nome or "").strip()
     if nome:
         return nome

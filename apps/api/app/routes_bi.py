@@ -1131,6 +1131,7 @@ def sales_abc_curve(
     sort_by: str = Query("faturamento", pattern="^(faturamento|quantidade|lucro)$"),
     threshold_a: Optional[int] = Query(None, ge=1, le=98),
     threshold_b: Optional[int] = Query(None, ge=2, le=99),
+    id_grupos: Optional[List[int]] = Query(None, description="Restringe a curva a grupos específicos (multi-seleção)"),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
@@ -1152,6 +1153,7 @@ def sales_abc_curve(
         threshold_a=effective_a,
         threshold_b=effective_b,
         exclude_fuel=params["abc_exclude_fuel"],
+        id_grupos=id_grupos,
     )
     return redact_sensitive(result, claims)
 
@@ -1557,6 +1559,7 @@ def finance_overview(
             response["by_day"] = repos_mart.finance_series(role, tenant, filial, dt_ini, dt_fim)
         if include_payments:
             response["payments"] = repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=10)
+            response["receipts_by_day"] = repos_mart.finance_receipts_by_day(role, tenant, filial, dt_ini, dt_fim)
         if include_operational:
             response["open_cash"] = repos_mart.open_cash_monitor(role, tenant, filial)
         return response
@@ -1593,6 +1596,106 @@ def payments_overview(
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return redact_sensitive(repos_mart.payments_overview(role, tenant, filial, dt_ini, dt_fim, anomaly_limit=30), claims)
+
+
+@router.get("/finance/cheques")
+def finance_cheques(
+    status: str = Query("vencidos", pattern="^(todos|vencidos|nao_vencidos)$"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
+):
+    """Cheques recebidos não compensados (card de vencidos + grade com filtro)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    return redact_sensitive(
+        repos_mart.cheques_pendentes_overview(role, tenant, filial, status=status),
+        claims,
+    )
+
+
+# ------------------------
+# Gestão Orçamentária (orçamento de despesas por conta gerencial)
+# ------------------------
+
+class BudgetConfigItem(BaseModel):
+    id_plano_conta: int
+    valor_max: float = 0
+    alerta_pct: int = Field(default=90, ge=1, le=100)
+
+
+class BudgetConfigRequest(BaseModel):
+    items: List[BudgetConfigItem] = Field(default_factory=list)
+
+
+@router.get("/budget/config")
+def budget_config_get(
+    id_filial: int = Query(..., description="Branch ID (single)"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Contas gerenciais + orçamento configurado (Metas & Equipe, 1 filial)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    single = filial if isinstance(filial, int) else id_filial
+    return repos_mart.budget_config_overview(role, tenant, single)
+
+
+@router.put("/budget/config")
+def budget_config_put(
+    body: BudgetConfigRequest,
+    id_filial: int = Query(..., description="Branch ID (single)"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team")),
+):
+    """Salva o orçamento (teto + % de alerta) por conta de uma filial."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    single = filial if isinstance(filial, int) else id_filial
+    items = [it.model_dump() for it in body.items]
+    return repos_mart.budget_config_upsert(role, tenant, single, items)
+
+
+@router.get("/budget/overview")
+def budget_overview_endpoint(
+    ano: Optional[int] = Query(None),
+    mes: Optional[int] = Query(None, ge=1, le=12),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
+):
+    """Realizado x orçado por conta no mês (Financeiro)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    today = resolve_business_date(None, tenant)
+    a = int(ano) if ano else today.year
+    m = int(mes) if mes else today.month
+    return redact_sensitive(repos_mart.budget_overview(role, tenant, filial, a, m), claims)
+
+
+@router.get("/budget/alerts")
+def budget_alerts_endpoint(
+    ano: Optional[int] = Query(None),
+    mes: Optional[int] = Query(None, ge=1, le=12),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("dashboard_home")),
+):
+    """Contas de despesa chegando/passando do teto no mês (alerta do Dashboard)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
+    today = resolve_business_date(None, tenant)
+    a = int(ano) if ano else today.year
+    m = int(mes) if mes else today.month
+    return redact_sensitive(repos_mart.budget_alerts(role, tenant, filial, a, m), claims)
 
 
 # ------------------------
