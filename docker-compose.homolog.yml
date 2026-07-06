@@ -1,0 +1,88 @@
+# TorqMind — HOMOLOGAÇÃO (staging) stack.
+# Isolado da produção: containers *-homolog, projeto `torqmind-homolog`, porta
+# 127.0.0.1:81 (acesso só via túnel SSH), banco PostgreSQL `torqmind_homolog`,
+# ClickHouse lido em READ-ONLY (usuário torqmind_hom_ro). Não sobe Debezium/
+# Redpanda/CDC (homolog lê os marts já prontos de produção).
+#
+# Uso:
+#   docker compose -f docker-compose.homolog.yml --env-file /etc/torqmind/homolog.app.env \
+#     -p torqmind-homolog build web
+#   docker compose -f docker-compose.homolog.yml --env-file /etc/torqmind/homolog.app.env \
+#     -p torqmind-homolog up -d
+#
+# NUNCA aponta para a porta 80, containers de prod, ou o volume torqmind_branding
+# de produção.
+
+services:
+  api:
+    image: torqmind-api:latest
+    container_name: torqmind-api-homolog
+    restart: unless-stopped
+    env_file:
+      - /etc/torqmind/homolog.app.env
+    expose:
+      - "8000"
+    volumes:
+      - ./sql/migrations:/app/sql/migrations:ro
+      - torqmind_branding_homolog:/app/var/branding
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.prod
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+        API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
+        NEXT_PUBLIC_APP_ENV: ${NEXT_PUBLIC_APP_ENV:-homolog}
+    image: torqmind-web:homolog
+    container_name: torqmind-web-homolog
+    restart: unless-stopped
+    env_file:
+      - /etc/torqmind/homolog.app.env
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/ >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: torqmind-nginx-homolog
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    ports:
+      - "${NGINX_HTTP_BIND_IP:-127.0.0.1}:${NGINX_HTTP_PORT:-81}:80"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/health >/dev/null 2>&1"]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  torqmind_branding_homolog:
+    name: torqmind_branding_homolog
