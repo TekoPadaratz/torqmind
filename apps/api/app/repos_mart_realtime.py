@@ -868,6 +868,14 @@ def sales_abc_curve(
         fuel_filter = """
                 AND NOT (lower(nome_grupo) LIKE '%combusti%' OR lower(nome_grupo) LIKE '%gasolina%' OR lower(nome_grupo) LIKE '%diesel%' OR lower(nome_grupo) LIKE '%etanol%' OR lower(nome_grupo) LIKE '%gnv%' OR lower(nome_grupo) LIKE '%gas natural%' OR lower(nome_grupo) LIKE '%alcool%')"""
 
+    # Group multi-select filter (id_grupos): restringe a curva a grupos escolhidos.
+    id_grupos = kwargs.get("id_grupos") or None
+    group_filter = ""
+    if id_grupos:
+        _gvals = ", ".join(str(int(g)) for g in id_grupos if str(g).strip() not in ("", "None"))
+        if _gvals:
+            group_filter = f" AND id_grupo_produto IN ({_gvals})"
+
     # Sort column for ORDER BY
     sort_col_map = {"faturamento": "fat", "quantidade": "qty", "lucro": "mrg"}
     sort_col = sort_col_map.get(sort_by, "fat")
@@ -911,7 +919,7 @@ def sales_abc_curve(
                     toFloat64(sum(faturamento)) - toFloat64(sum(custo_total)) AS mrg,
                     if(sum(qtd) > 0, toFloat64(sum(faturamento)) / toFloat64(sum(qtd)), 0) AS avg_price
                 FROM {MART_RT_DB}.sales_products_rt FINAL
-                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}
+                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}{group_filter}
                 GROUP BY id_produto, nome_produto, nome_grupo
                 HAVING sum(faturamento) > 0
             )
@@ -921,8 +929,30 @@ def sales_abc_curve(
         ORDER BY ranked.posicao ASC
     """, parameters={"id_empresa": id_empresa})
 
+    # Grupos disponiveis no periodo/escopo (respeita exclude_fuel) para o seletor.
+    group_rows = query_dict(f"""
+        SELECT id_grupo_produto,
+               any(nome_grupo) AS grupo_nome,
+               sum(faturamento) AS fat_total
+        FROM {MART_RT_DB}.sales_products_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}
+        GROUP BY id_grupo_produto
+        HAVING fat_total > 0
+        ORDER BY fat_total DESC
+    """, parameters={"id_empresa": id_empresa})
+    available_groups = [
+        {
+            "id_grupo_produto": int(g.get("id_grupo_produto") or 0),
+            "grupo_nome": g.get("grupo_nome") or "(Sem grupo)",
+            "faturamento": round(float(g.get("fat_total") or 0), 2),
+        }
+        for g in group_rows
+        if g.get("id_grupo_produto") is not None
+    ]
+    selected_groups = [int(g) for g in id_grupos] if id_grupos else []
+
     if not rows:
-        return _abc_empty_response()
+        return _abc_empty_response(available_groups, selected_groups)
 
     # Determine the metric field for sort_by
     metric_field_map = {"faturamento": "faturamento", "quantidade": "qtd", "lucro": "margem"}
@@ -1036,11 +1066,16 @@ def sales_abc_curve(
         "insights": insights,
         "thresholds": {"a": threshold_a, "b": threshold_b, "c": 100},
         "sort_by": sort_by,
+        "groups": available_groups,
+        "selected_groups": selected_groups,
         "source": "realtime",
     }
 
 
-def _abc_empty_response() -> Dict[str, Any]:
+def _abc_empty_response(
+    groups: Optional[List[Dict[str, Any]]] = None,
+    selected_groups: Optional[List[int]] = None,
+) -> Dict[str, Any]:
     return {
         "summary": {
             "total_produtos": 0,
@@ -1061,6 +1096,8 @@ def _abc_empty_response() -> Dict[str, Any]:
         "ranking": [],
         "insights": [],
         "thresholds": {"a": 80, "b": 95, "c": 100},
+        "groups": groups or [],
+        "selected_groups": selected_groups or [],
         "source": "realtime",
         "empty": True,
     }
