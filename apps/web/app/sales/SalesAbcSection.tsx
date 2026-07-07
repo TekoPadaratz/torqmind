@@ -13,6 +13,7 @@ import {
 } from "recharts";
 
 import EmptyState from "../components/ui/EmptyState";
+import PortalDropdown from "../components/ui/PortalDropdown";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { readCachedSession } from "../lib/session";
@@ -100,6 +101,7 @@ export default function SalesAbcSection() {
   // Grupos escolhidos para compor a curva (vazio = todos os grupos).
   const [selectedGroups, setSelectedGroups] = useState<number[]>([]);
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const groupBtnRef = useRef<HTMLButtonElement>(null);
   // Local edit state for threshold inputs (avoids constraints fighting during typing)
   const [editA, setEditA] = useState("80");
   const [editB, setEditB] = useState("95");
@@ -190,8 +192,9 @@ export default function SalesAbcSection() {
   const toggleGroup = (id: number) =>
     setSelectedGroups((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const groupSelector = availableGroups.length ? (
-    <div style={{ marginTop: 12, position: "relative" }}>
+    <div style={{ marginTop: 12 }}>
       <button
+        ref={groupBtnRef}
         type="button"
         onClick={() => setGroupMenuOpen((o) => !o)}
         style={{
@@ -212,15 +215,14 @@ export default function SalesAbcSection() {
           : `Grupos: ${selectedGroups.length} selecionado(s)`}
         <span style={{ opacity: 0.7 }}>▾</span>
       </button>
-      {groupMenuOpen ? (
+      <PortalDropdown
+        open={groupMenuOpen}
+        onClose={() => setGroupMenuOpen(false)}
+        anchorRef={groupBtnRef}
+        minWidth={300}
+      >
         <div
           style={{
-            position: "absolute",
-            zIndex: 30,
-            marginTop: 6,
-            minWidth: 300,
-            maxHeight: 340,
-            overflowY: "auto",
             background: "#12191f",
             border: "1px solid var(--border)",
             borderRadius: 10,
@@ -261,7 +263,7 @@ export default function SalesAbcSection() {
             </label>
           ))}
         </div>
-      ) : null}
+      </PortalDropdown>
       <div className="muted" style={{ marginTop: 6, fontSize: 11 }}>
         Escolha quais grupos entram na curva. Vazio = todos os grupos (combustíveis seguem a configuração da filial).
       </div>
