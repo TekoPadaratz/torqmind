@@ -1941,7 +1941,11 @@ def fraud_last_events(
         if rows:
             # Single shared contract with risk_last_events: operational turno,
             # NF-based documento (fallback comprovante), resolved operator/filial/date.
-            nfe_map = _load_nfe_numbers(id_empresa, rows)
+            # NFE enrichment is best-effort: it must never discard the rich mart rows.
+            try:
+                nfe_map = _load_nfe_numbers(id_empresa, rows)
+            except Exception:
+                nfe_map = {}
             for r in rows:
                 r["numero_nfe"] = nfe_map.get(
                     (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
@@ -3082,11 +3086,14 @@ def _load_nfe_numbers(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple
     if not pairs:
         return {}
     values = ", ".join(f"({f}, {c})" for f, c in pairs)
+    # ALIAS != coluna base: usar ``numero_nfe`` como alias do argMax colide com a
+    # coluna ``numero_nfe`` referenciada no WHERE e o ClickHouse levanta
+    # ILLEGAL_AGGREGATION (code 184). Alias distinto resolve o WHERE para a coluna.
     result = query_dict(
         f"""
         SELECT id_filial,
                id_comprovante,
-               argMax(numero_nfe, source_ts_ms) AS numero_nfe
+               argMax(numero_nfe, source_ts_ms) AS numero_nfe_res
         FROM {CURRENT_DB}.stg_nfe_slim
         WHERE id_empresa = {{id_empresa:Int32}}
           AND is_deleted = 0
@@ -3098,11 +3105,11 @@ def _load_nfe_numbers(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple
         parameters={"id_empresa": id_empresa},
     )
     return {
-        (int(r["id_filial"]), int(r["id_comprovante"])): str(r.get("numero_nfe") or "").strip()
+        (int(r["id_filial"]), int(r["id_comprovante"])): str(r.get("numero_nfe_res") or "").strip()
         for r in result
         if r.get("id_filial") is not None
         and r.get("id_comprovante") is not None
-        and str(r.get("numero_nfe") or "").strip()
+        and str(r.get("numero_nfe_res") or "").strip()
     }
 
 
@@ -3137,7 +3144,9 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
 
     id_filial = _to_int(r.get("id_filial"))
     filial_nome = (r.get("filial_nome") or "").strip()
-    filial_label = filial_nome or f"Filial {id_filial}" if id_filial else "Filial sem cadastro"
+    # Apelido (nome reduzido) tem prioridade em todo o sistema; cai no nome
+    # completo do mart e, por ultimo, num rotulo honesto por id.
+    filial_label = _filial_label(id_filial, filial_nome) if id_filial else "Filial sem cadastro"
 
     dt_val = r.get("dt")
     hora_val = _to_int(r.get("hora"))
@@ -3263,7 +3272,12 @@ def risk_last_events(
         "fim": _date_key(dt_fim),
         "limit": int(limit),
     })
-    nfe_map = _load_nfe_numbers(id_empresa, rows)
+    # NFE enrichment is best-effort: a failure here must never drop the screen to
+    # the poor legacy fallback (which depends on a non-populated PostgreSQL MV).
+    try:
+        nfe_map = _load_nfe_numbers(id_empresa, rows)
+    except Exception:
+        nfe_map = {}
     for r in rows:
         r["numero_nfe"] = nfe_map.get(
             (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
@@ -3323,7 +3337,7 @@ def risk_by_turn_local(
         result.append({
             "id_filial": id_filial_r,
             "filial_nome": filial_nome,
-            "filial_label": filial_nome or (f"Filial {id_filial_r}" if id_filial_r else "Filial sem cadastro"),
+            "filial_label": _filial_label(id_filial_r, filial_nome),
             "turno_numero": turno_numero,
             "turno_label": f"Turno {turno_numero}" if turno_numero >= 1 else "Caixa geral",
             "operador_label": operador_top or "Operador sem cadastro",
