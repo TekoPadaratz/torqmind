@@ -17,7 +17,7 @@ from app import repos_mart
 from app.business_time import resolve_business_date
 from app.db_clickhouse import query_dict, query_scalar
 from app.deps import get_current_claims
-from app.permissions import require_screen, redact_sensitive
+from app.permissions import require_screen, redact_sensitive, can_view_sensitive_financials
 from app.scope import resolve_scope_filters
 
 router = APIRouter(prefix="/bi/profit-management", tags=["profit-management"])
@@ -708,6 +708,16 @@ def profit_solvencia(
     que vencem no mês-alvo.
     """
     role = claims["role"]
+    # Solvencia expoe estoque A CUSTO e a saude financeira (ativos x passivos):
+    # dado gerencial sensivel. Alem de exigir a tela (require_screen), so quem pode
+    # ver financeiros sensiveis (owner/master/admin) acessa; gerente/canal/vendedor
+    # ficam de fora mesmo tendo a tela concedida.
+    if not can_view_sensitive_financials(claims):
+        return {
+            "data": None,
+            "message": "Sem permissão para ver a análise de solvência (dados financeiros gerenciais).",
+        }
+
     tenant, filial, _ = resolve_scope_filters(
         claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
     )

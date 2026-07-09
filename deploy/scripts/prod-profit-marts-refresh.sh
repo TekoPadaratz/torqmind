@@ -411,9 +411,22 @@ GROUP BY id_empresa, id_filial, ano_mes
 RESUMO_COUNT=$(ch_http "SELECT count() FROM torqmind_mart_rt.profit_resumo_filial WHERE id_empresa = $ID_EMPRESA")
 echo "profit_resumo_filial rows: $RESUMO_COUNT"
 
+# ─── Step 6: Refresh mart de Solvencia (PG-only: passivo + estoque) ────
+# Aba "Solvencia" do DRE. Passivo = contas a pagar em aberto (descontando
+# baixas parciais). Estoque = sensor de tanque (combustivel) + loja curada.
+echo ""
+echo "--- Step 6: Refreshing mart.liquidez_solvencia (passivo + estoque) ---"
+PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" -v ON_ERROR_STOP=1 -c "
+  SELECT etl.refresh_liquidez_solvencia(${ID_EMPRESA});
+  SELECT etl.refresh_liquidez_estoque(${ID_EMPRESA});
+" >/dev/null
+LIQ_COUNT=$(PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" --no-align -t -c "SELECT count(*) FROM mart.liquidez_solvencia WHERE id_empresa = ${ID_EMPRESA}")
+echo "liquidez_solvencia rows: $LIQ_COUNT"
+
 echo ""
 echo "=== Profit Marts Refresh COMPLETE ==="
 echo "  DRE:       $DRE_COUNT rows"
 echo "  Despesas:  $DESP_COUNT rows"
 echo "  Produtos:  $PROD_COUNT rows"
 echo "  Resumo:    $RESUMO_COUNT rows"
+echo "  Solvencia: $LIQ_COUNT rows"

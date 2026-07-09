@@ -21,6 +21,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
+import { canViewSensitiveFinancials } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
@@ -271,7 +272,9 @@ export default function ProfitManagementPage() {
 
         {/* Tabs */}
         <div className="profitTabs">
-          {(["overview", "products", "repricing", "solvencia"] as const).map((tab) => (
+          {((canViewSensitiveFinancials(claims)
+            ? ["overview", "products", "repricing", "solvencia"]
+            : ["overview", "products", "repricing"]) as Array<"overview" | "products" | "repricing" | "solvencia">).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
