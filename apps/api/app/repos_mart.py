@@ -4698,6 +4698,178 @@ def budget_alerts(role: str, id_empresa: int, id_filial: Optional[int], ano: int
     }
 
 
+_MESES_PTBR = [
+    "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+]
+
+
+def _month_label_ptbr(ano_mes: int) -> str:
+    ano = ano_mes // 100
+    mes = ano_mes % 100
+    return f"{_MESES_PTBR[mes]}/{ano}" if 1 <= mes <= 12 else str(ano_mes)
+
+
+def solvencia_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    ano_mes: int,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Solvencia de curto prazo (aba Solvencia do DRE Gerencial).
+
+    Cruza o ativo circulante (caixa + banco + cartoes + cheques + estoque a
+    custo) com o passivo circulante (contas a pagar em aberto vencendo no
+    mes-alvo), a partir de mart.liquidez_solvencia (grao filial x mes). Agrega no
+    escopo, recalcula os indices consolidados e devolve a lista por filial mais
+    os meses disponiveis para o filtro de mes.
+
+    Enquanto a coleta dos ativos nao esta habilitada, os componentes de ativo
+    ficam zerados e tem_ativo_dados=false: a tela mostra so o passivo do mes e
+    sinaliza "aguardando dados de ativo" em vez de um "nao cobre" enganoso.
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    target = int(ano_mes)
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        meses_rows = conn.execute(
+            f"""
+            SELECT DISTINCT ano_mes
+            FROM mart.liquidez_solvencia
+            WHERE id_empresa = %s
+              {where_filial}
+            ORDER BY ano_mes
+            """,
+            [id_empresa] + branch_params,
+        ).fetchall()
+        meses_disponiveis = [int(r["ano_mes"]) for r in meses_rows]
+
+        rows = conn.execute(
+            f"""
+            SELECT
+              id_filial,
+              passivo_contas_pagar, passivo_qtd_titulos, passivo_vencido,
+              ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques, ativo_estoque,
+              tem_ativo_dados, updated_at
+            FROM mart.liquidez_solvencia
+            WHERE id_empresa = %s
+              {where_filial}
+              AND ano_mes = %s
+            ORDER BY id_filial
+            """,
+            [id_empresa] + branch_params + [target],
+        ).fetchall()
+
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+
+    tot_caixa = tot_banco = tot_cartoes = tot_cheques = tot_estoque = 0.0
+    tot_passivo = tot_vencido = 0.0
+    tot_titulos = 0
+    tem_ativo_dados = False
+    updated_at = None
+    por_filial: List[Dict[str, Any]] = []
+
+    for r in rows:
+        fid = int(r["id_filial"])
+        caixa = round(float(r.get("ativo_caixa") or 0), 2)
+        banco = round(float(r.get("ativo_banco") or 0), 2)
+        cartoes = round(float(r.get("ativo_cartoes") or 0), 2)
+        cheques = round(float(r.get("ativo_cheques") or 0), 2)
+        estoque = round(float(r.get("ativo_estoque") or 0), 2)
+        passivo = round(float(r.get("passivo_contas_pagar") or 0), 2)
+        vencido = round(float(r.get("passivo_vencido") or 0), 2)
+        titulos = int(r.get("passivo_qtd_titulos") or 0)
+        f_tem_ativo = bool(r.get("tem_ativo_dados"))
+
+        circulante = round(caixa + banco + cartoes + cheques + estoque, 2)
+        disponivel = round(caixa + banco, 2)
+        liquidez = round(circulante / passivo, 4) if passivo > 0 else 0.0
+        capital_giro = round(circulante - passivo, 2)
+
+        tot_caixa += caixa
+        tot_banco += banco
+        tot_cartoes += cartoes
+        tot_cheques += cheques
+        tot_estoque += estoque
+        tot_passivo += passivo
+        tot_vencido += vencido
+        tot_titulos += titulos
+        tem_ativo_dados = tem_ativo_dados or f_tem_ativo
+        if r.get("updated_at") and (updated_at is None or r["updated_at"] > updated_at):
+            updated_at = r["updated_at"]
+
+        por_filial.append({
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, filial_nome_map.get(fid)),
+            "ativo_caixa": caixa,
+            "ativo_banco": banco,
+            "ativo_cartoes": cartoes,
+            "ativo_cheques": cheques,
+            "ativo_estoque": estoque,
+            "ativo_disponivel": disponivel,
+            "ativo_circulante": circulante,
+            "passivo_contas_pagar": passivo,
+            "passivo_vencido": vencido,
+            "passivo_qtd_titulos": titulos,
+            "liquidez_corrente": liquidez,
+            "capital_giro_liquido": capital_giro,
+            "cobre_passivo": (f_tem_ativo and circulante >= passivo),
+            "tem_ativo_dados": f_tem_ativo,
+        })
+
+    ativo_circulante = round(tot_caixa + tot_banco + tot_cartoes + tot_cheques + tot_estoque, 2)
+    ativo_disponivel = round(tot_caixa + tot_banco, 2)
+    tot_passivo = round(tot_passivo, 2)
+    liquidez_corrente = round(ativo_circulante / tot_passivo, 4) if tot_passivo > 0 else 0.0
+    capital_giro_liquido = round(ativo_circulante - tot_passivo, 2)
+
+    return {
+        "ano_mes": target,
+        "mes_label": _month_label_ptbr(target),
+        "consolidado": len(por_filial) > 1,
+        "filiais_count": len(por_filial),
+        "meses_disponiveis": [
+            {"ano_mes": m, "label": _month_label_ptbr(m)} for m in meses_disponiveis
+        ],
+        "ativo": {
+            "caixa": round(tot_caixa, 2),
+            "banco": round(tot_banco, 2),
+            "cartoes": round(tot_cartoes, 2),
+            "cheques": round(tot_cheques, 2),
+            "estoque": round(tot_estoque, 2),
+            "disponivel": ativo_disponivel,
+            "circulante": ativo_circulante,
+        },
+        "passivo": {
+            "contas_pagar": tot_passivo,
+            "qtd_titulos": tot_titulos,
+            "vencido": round(tot_vencido, 2),
+        },
+        "indices": {
+            "liquidez_corrente": liquidez_corrente,
+            "capital_giro_liquido": capital_giro_liquido,
+            "cobre_passivo": bool(tem_ativo_dados and ativo_circulante >= tot_passivo),
+        },
+        "tem_ativo_dados": tem_ativo_dados,
+        "por_filial": por_filial,
+        "freshness": str(updated_at) if updated_at else "",
+        "disclaimer": (
+            "Solvência gerencial de curto prazo: ativo circulante (disponível, "
+            "recebíveis de curto prazo e estoque a custo) x contas a pagar do mês. "
+            "Indicador gerencial, não é balanço contábil oficial."
+        ),
+        "source": "postgres",
+    }
+
+
 def _finance_aging_operational_as_of(
     role: str,
     id_empresa: int,
