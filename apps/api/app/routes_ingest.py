@@ -674,6 +674,22 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_movlctoscancelados", ["ID_MOVLCTOSCANCELADOS", "id_movlctoscancelados"]),
         ],
     ),
+    "tanques": DatasetSpec(
+        table="stg.tanques",
+        pk_cols=["id_empresa", "id_filial", "id_tanque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_tanque", ["ID_TANQUES", "id_tanque"]),
+        ],
+    ),
+    "movtanques": DatasetSpec(
+        table="stg.movtanques",
+        pk_cols=["id_empresa", "id_filial", "id_movtanque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_movtanque", ["ID_MOVTANQUES", "id_movtanque"]),
+        ],
+    ),
 }
 
 

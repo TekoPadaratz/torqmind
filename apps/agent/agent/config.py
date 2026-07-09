@@ -102,7 +102,9 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "COALESCE(CAST(p.ULTALTERACAO AS datetime2), CAST(p.DATACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
             "FROM dbo.PRODUTOS p"
         ),
-        "enabled": False,
+        # Necessario para o custo (CUSTOMEDIO) e grupo (ID_GRUPOPRODUTOS) usados no
+        # estoque valorizado da aba Solvencia.
+        "enabled": True,
     },
     "turnos": {
         "table": "dbo.TURNOS",
@@ -505,6 +507,37 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "   ) AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.MOVLCTOSCANCELADOS m"
         ),
+        "enabled": True,
+    },
+    # --- Estoque para a aba Solvencia (DRE) ---
+    # Combustivel: o estoque real vem do SENSOR DE NIVEL DO TANQUE (dbo.MOVTANQUES.LEITURA),
+    # nao das tabelas de estoque (que ficam negativas/absurdas). Loja: dbo.ESTOQUE.
+    "tanques": {
+        "table": "dbo.TANQUES",
+        "watermark_column": "ID_TANQUES",
+        "watermark_order_by": "ID_TANQUES, ID_FILIAL",
+        "full_refresh": True,
+        "enabled": True,
+    },
+    "movtanques": {
+        "table": "dbo.MOVTANQUES",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVTANQUES m"
+        ),
+        "enabled": True,
+    },
+    "estoque": {
+        "table": "dbo.ESTOQUE",
+        "watermark_column": "ID_ESTOQUE",
+        "watermark_order_by": "ID_ESTOQUE, ID_FILIAL",
+        "full_refresh": True,
         "enabled": True,
     },
 }
