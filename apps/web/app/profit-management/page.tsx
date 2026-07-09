@@ -574,9 +574,18 @@ export default function ProfitManagementPage() {
                         <tr><td>Banco</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.banco || 0) : "—"}</td></tr>
                         <tr><td>Cartões a compensar</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.cartoes || 0) : "—"}</td></tr>
                         <tr><td>Cheques a receber</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.cheques || 0) : "—"}</td></tr>
-                        <tr><td>Estoque (a custo)</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque || 0) : "—"}</td></tr>
+                        <tr><td>Estoque de combustível</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque_combustivel || 0) : "—"}</td></tr>
+                        <tr><td>Estoque de loja</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque_loja || 0) : "—"}</td></tr>
                       </tbody>
                     </table>
+                    {solvencia.cobertura_estoque && solvencia.cobertura_estoque.postos_total > 0 && (
+                      <div className="calcFootnote" style={{ marginTop: 8 }}>
+                        Estoque de combustível medido por sensor de tanque em {solvencia.cobertura_estoque.postos_com_combustivel} de {solvencia.cobertura_estoque.postos_total} postos
+                        {solvencia.cobertura_estoque.postos_com_combustivel < solvencia.cobertura_estoque.postos_total
+                          ? " — nos demais o sensor não está sincronizando, então o combustível não é contabilizado."
+                          : "."}
+                      </div>
+                    )}
                   </div>
 
                   <div className="card" style={{ padding: 20 }}>

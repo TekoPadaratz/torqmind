@@ -4751,6 +4751,8 @@ def solvencia_overview(
               id_filial,
               passivo_contas_pagar, passivo_qtd_titulos, passivo_vencido,
               ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques, ativo_estoque,
+              ativo_estoque_combustivel, ativo_estoque_loja,
+              estoque_combustivel_medido, estoque_data_leitura,
               tem_ativo_dados, updated_at
             FROM mart.liquidez_solvencia
             WHERE id_empresa = %s
@@ -4771,8 +4773,11 @@ def solvencia_overview(
         }
 
     tot_caixa = tot_banco = tot_cartoes = tot_cheques = tot_estoque = 0.0
+    tot_estoque_comb = tot_estoque_loja = 0.0
     tot_passivo = tot_vencido = 0.0
     tot_titulos = 0
+    postos_comb_medido = 0
+    ult_leitura = None
     tem_ativo_dados = False
     updated_at = None
     por_filial: List[Dict[str, Any]] = []
@@ -4784,6 +4789,10 @@ def solvencia_overview(
         cartoes = round(float(r.get("ativo_cartoes") or 0), 2)
         cheques = round(float(r.get("ativo_cheques") or 0), 2)
         estoque = round(float(r.get("ativo_estoque") or 0), 2)
+        estoque_comb = round(float(r.get("ativo_estoque_combustivel") or 0), 2)
+        estoque_loja = round(float(r.get("ativo_estoque_loja") or 0), 2)
+        comb_medido = bool(r.get("estoque_combustivel_medido"))
+        data_leitura = r.get("estoque_data_leitura")
         passivo = round(float(r.get("passivo_contas_pagar") or 0), 2)
         vencido = round(float(r.get("passivo_vencido") or 0), 2)
         titulos = int(r.get("passivo_qtd_titulos") or 0)
@@ -4799,6 +4808,12 @@ def solvencia_overview(
         tot_cartoes += cartoes
         tot_cheques += cheques
         tot_estoque += estoque
+        tot_estoque_comb += estoque_comb
+        tot_estoque_loja += estoque_loja
+        if comb_medido:
+            postos_comb_medido += 1
+            if data_leitura and (ult_leitura is None or data_leitura > ult_leitura):
+                ult_leitura = data_leitura
         tot_passivo += passivo
         tot_vencido += vencido
         tot_titulos += titulos
@@ -4814,6 +4829,9 @@ def solvencia_overview(
             "ativo_cartoes": cartoes,
             "ativo_cheques": cheques,
             "ativo_estoque": estoque,
+            "ativo_estoque_combustivel": estoque_comb,
+            "ativo_estoque_loja": estoque_loja,
+            "estoque_combustivel_medido": comb_medido,
             "ativo_disponivel": disponivel,
             "ativo_circulante": circulante,
             "passivo_contas_pagar": passivo,
@@ -4845,8 +4863,15 @@ def solvencia_overview(
             "cartoes": round(tot_cartoes, 2),
             "cheques": round(tot_cheques, 2),
             "estoque": round(tot_estoque, 2),
+            "estoque_combustivel": round(tot_estoque_comb, 2),
+            "estoque_loja": round(tot_estoque_loja, 2),
             "disponivel": ativo_disponivel,
             "circulante": ativo_circulante,
+        },
+        "cobertura_estoque": {
+            "postos_com_combustivel": postos_comb_medido,
+            "postos_total": len(por_filial),
+            "ultima_leitura": str(ult_leitura) if ult_leitura else "",
         },
         "passivo": {
             "contas_pagar": tot_passivo,
