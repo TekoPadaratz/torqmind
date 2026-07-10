@@ -13,11 +13,26 @@ CH_HOST="${CLICKHOUSE_HOST:-localhost}"
 CH_PORT="${CLICKHOUSE_PORT:-8123}"
 CH_USER="${CLICKHOUSE_USER:-default}"
 CH_PASS="${CLICKHOUSE_PASSWORD:-}"
-PG_H="${CLICKHOUSE_PG_HOST:-172.30.0.8}"
-PG_P="${CLICKHOUSE_PG_PORT:-5432}"
-PG_DB="${PG_DATABASE:-torqmind}"
-PG_U="${PG_USER:-torqmind}"
-PG_W="${PG_PASSWORD:-}"
+PG_H="${CLICKHOUSE_PG_HOST:-${PG_HOST:-172.30.0.8}}"
+PG_P="${CLICKHOUSE_PG_PORT:-${PG_PORT:-5432}}"
+PG_DB="${PG_DATABASE:-${POSTGRES_DB:-torqmind}}"
+PG_U="${PG_USER:-${POSTGRES_USER:-torqmind}}"
+PG_W="${PG_PASSWORD:-${POSTGRES_PASSWORD:-}}"
+
+# Fail fast with a clear message instead of letting psql/clickhouse block on a
+# tty password prompt (root cause of past "hangs" when credentials were empty).
+# This script needs BOTH Postgres creds (reads dw on 172.30.0.8) and ClickHouse
+# creds (writes marts on 172.30.0.9). Run it where both are available (analytics
+# VM with CLICKHOUSE_PASSWORD, providing POSTGRES_PASSWORD) — not with a single
+# env that only has one of them.
+if [[ -z "$PG_W" ]]; then
+  echo "ERRO: senha do Postgres ausente. Defina POSTGRES_PASSWORD (ou PG_PASSWORD) no ENV_FILE=$ENV_FILE." >&2
+  exit 1
+fi
+if [[ -z "$CH_PASS" ]]; then
+  echo "ERRO: senha do ClickHouse ausente. Defina CLICKHOUSE_PASSWORD no ENV_FILE=$ENV_FILE (fica em prod.analytics.env)." >&2
+  exit 1
+fi
 
 MODE="${1:-incremental}"
 ID_EMPRESA="${ID_EMPRESA:-1}"
