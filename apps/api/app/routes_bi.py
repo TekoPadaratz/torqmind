@@ -1229,6 +1229,7 @@ def fraud_overview(
         risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
         payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
         open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
+        lancamentos_creditos = repos_mart.fraud_lancamentos_creditos(role, tenant, filial, dt_ini, dt_fim, limit=150)
         # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
         if role in ("MASTER", "OWNER"):
             troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
@@ -1287,6 +1288,7 @@ def fraud_overview(
             "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=15),
             "payments_risk": payments_risk,
             "open_cash": open_cash,
+            "lancamentos_creditos": lancamentos_creditos,
             "troca_forma_pgto": troca_forma_pgto,
             "troca_forma_pgto_totais": troca_forma_pgto_totais,
             "troca_only_suspeita": troca_only_suspeita,
@@ -1600,14 +1602,14 @@ def payments_overview(
 
 @router.get("/finance/cheques")
 def finance_cheques(
-    status: str = Query("vencidos", pattern="^(todos|vencidos|nao_vencidos)$"),
+    status: str = Query("", pattern="^[a-z_,]*$", description="Lista de status separada por virgula: a_compensar,depositado,devolvido,compensado. Vazio/'todos' = tudo menos compensado."),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("finance")),
 ):
-    """Cheques recebidos não compensados (card de vencidos + grade com filtro)."""
+    """Cheques recebidos por status (cards de resumo + grade com filtro multi-status)."""
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     return redact_sensitive(

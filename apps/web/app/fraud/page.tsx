@@ -172,6 +172,9 @@ export default function FraudPage() {
   const businessClock = data?.business_clock || {};
 
   const openCash = data?.open_cash || {};
+  const creditos = data?.lancamentos_creditos || {};
+  const creditosSummary = creditos?.summary || {};
+  const creditosRows = creditos?.lancamentos || [];
   const topOperationalUser = (data?.top_users || [])[0];
   const latestOperationalEvent = (data?.last_events || [])[0];
   const topEmployee = (data?.risk_top_employees || [])[0];
@@ -375,6 +378,67 @@ export default function FraudPage() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+
+              <div className="card col-12">
+                <div className="sectionEyebrow">Risco financeiro</div>
+                <h2 style={{ marginTop: 4 }}>Lançamentos de créditos</h2>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  Créditos lançados no cadastro do cliente. A injeção manual de crédito
+                  (&ldquo;Crédito adicionado manualmente&rdquo;), sem troco, cheque ou fatura por
+                  trás, é o padrão clássico de golpe: o operador cria saldo e depois usa para dar
+                  baixa em vendas. As linhas em vermelho são injeções manuais.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 12 }}>
+                  <div className="card" style={{ padding: 12 }}>
+                    <div className="label">Crédito injetado</div>
+                    <div style={{ fontSize: 20, fontWeight: 800 }}>{formatCurrency(creditosSummary.injetado)}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>{Number(creditosSummary.injecoes_qtd || 0)} lançamento(s)</div>
+                  </div>
+                  <div className="card" style={{ padding: 12, borderColor: "var(--color-negative)" }}>
+                    <div className="label">Injeção manual (suspeita)</div>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: "var(--color-negative)" }}>{formatCurrency(creditosSummary.injetado_manual)}</div>
+                    <div className="muted" style={{ fontSize: 11 }}>{Number(creditosSummary.manuais_qtd || 0)} manual(is)</div>
+                  </div>
+                  <div className="card" style={{ padding: 12 }}>
+                    <div className="label">Crédito aplicado</div>
+                    <div style={{ fontSize: 20, fontWeight: 800 }}>{formatCurrency(creditosSummary.aplicado)}</div>
+                  </div>
+                </div>
+                {!loading && !creditosRows.length ? (
+                  <EmptyState title="Sem injeções de crédito no período." detail="Nenhum crédito foi lançado no cadastro de clientes na janela analisada." />
+                ) : (
+                  <div className="tableScroll" style={{ marginTop: 12 }}>
+                    <table className="table compact">
+                      <thead>
+                        <tr>
+                          <th>Data</th>
+                          <th>Filial</th>
+                          <th>Cliente</th>
+                          <th>Operador</th>
+                          <th style={{ textAlign: "right" }}>Injetado</th>
+                          <th style={{ textAlign: "right" }}>Saldo atual</th>
+                          <th>Histórico</th>
+                          <th>Risco</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {creditosRows.map((c: any, idx: number) => (
+                          <tr key={`${c.id_filial}-${idx}`} style={c.suspeita ? { background: "rgba(239,68,68,0.07)" } : undefined}>
+                            <td style={{ whiteSpace: "nowrap" }}>{c.data || "—"}</td>
+                            <td>{c.filial_label}</td>
+                            <td>{c.cliente}</td>
+                            <td>{c.operador}</td>
+                            <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
+                            <td style={{ textAlign: "right" }}>{formatCurrency(c.saldo_cliente)}</td>
+                            <td style={{ minWidth: 220 }}>{c.historico}</td>
+                            <td>{c.suspeita ? <span style={{ color: "var(--color-negative)", fontWeight: 700 }}>Suspeita</span> : <span className="muted">Normal</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
               {trocaAllowed ? (

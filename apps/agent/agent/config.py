@@ -405,6 +405,65 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
     },
     "financeiro": {"table": "dbo.FINANCEIRO", "enabled": False},
+    # Financeiro: controle de cheques recebidos (a compensar / depositado /
+    # compensado / devolvido com motivo) + catalogo de situacoes (motivos).
+    "cheques": {
+        "table": "dbo.CHEQUESRECEBIDOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # O cheque muda depois de recebido (compensacao seta DTACOMPENSADO;
+        # devolucao seta ID_SITUACOES) e o ERP nem sempre mexe em DATAREPL. Rede
+        # de seguranca: reler os NAO compensados recentes + os recem-compensados.
+        "revisit_open_clause": (
+            "(DTACOMPENSADO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)) "
+            "OR (DTACOMPENSADO IS NOT NULL AND CAST(DTACOMPENSADO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
+        ),
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DTACONTA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            "(CAST(c.DTACOMPENSADO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.CHEQUESRECEBIDOS c"
+        ),
+        "enabled": True,
+    },
+    "situacoes": {
+        "table": "dbo.SITUACOES",
+        "watermark_column": "ID_SITUACOES",
+        "watermark_order_by": "ID_SITUACOES, ID_FILIAL",
+        "full_refresh": True,
+        "enabled": True,
+    },
+    # Antifraude: lancamentos de credito de clientes (injecao/aplicacao) + saldo.
+    "movcreditoentidades": {
+        "table": "dbo.MOVCREDITOENTIDADES",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(m.DATA AS datetime2)), "
+            f"(NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVCREDITOENTIDADES m"
+        ),
+        "enabled": True,
+    },
+    "credito": {
+        "table": "dbo.CREDITO",
+        "watermark_column": "ID_CREDITO",
+        "watermark_order_by": "ID_CREDITO, ID_FILIAL",
+        "full_refresh": True,
+        "enabled": True,
+    },
     "nfe": {
         "table": "dbo.NFE",
         "watermark_column": WATERMARK_ALIAS,

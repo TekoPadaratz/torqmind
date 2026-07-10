@@ -2999,6 +2999,129 @@ def fraud_troca_forma_pgto_kpis(
     }
 
 
+def fraud_lancamentos_creditos(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 150,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Lancamentos de credito de clientes (antifraude).
+
+    Golpe: o operador INJETA um credito no cliente (ENTRADAS) e depois aplica
+    esse credito em vendas/pagamentos (SAIDAS). A injecao MANUAL ("Credito
+    adicionado manualmente"), sem contrapartida de troco/cheque/fatura, e o
+    sinal de risco. O grid foca nas injecoes do periodo, marca as manuais como
+    suspeitas, mostra o operador responsavel e o saldo atual do cliente.
+    Fonte: stg.movcreditoentidades + stg.credito (Xpert).
+    """
+    where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
+    ini = dt_ini.isoformat()
+    fim = dt_fim.isoformat()
+
+    summary_sql = f"""
+      SELECT
+        COUNT(*) FILTER (WHERE ent > 0)::int AS injecoes_qtd,
+        COALESCE(SUM(ent) FILTER (WHERE ent > 0), 0)::numeric(18,2) AS injetado,
+        COUNT(*) FILTER (WHERE ent > 0 AND manual)::int AS manuais_qtd,
+        COALESCE(SUM(ent) FILTER (WHERE ent > 0 AND manual), 0)::numeric(18,2) AS injetado_manual,
+        COALESCE(SUM(sai), 0)::numeric(18,2) AS aplicado
+      FROM (
+        SELECT
+          COALESCE((m.payload->>'ENTRADAS')::numeric, 0) AS ent,
+          COALESCE((m.payload->>'SAIDAS')::numeric, 0) AS sai,
+          (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') AS manual
+        FROM stg.movcreditoentidades m
+        WHERE m.id_empresa = %s
+          AND LEFT(m.payload->>'DATA', 10) BETWEEN %s AND %s
+          {where_filial}
+      ) t
+    """
+    summary_params = [id_empresa, ini, fim] + branch_params
+
+    list_sql = f"""
+      WITH saldo AS (
+        SELECT id_filial, (payload->>'ID_ENTIDADE')::int AS id_entidade,
+               SUM(COALESCE((payload->>'SALDO')::numeric, 0)) AS saldo
+        FROM stg.credito
+        WHERE id_empresa = %s
+        GROUP BY 1, 2
+      )
+      SELECT
+        LEFT(m.payload->>'DATA', 10) AS data,
+        m.id_filial,
+        NULLIF(m.payload->>'ID_ENTIDADE', '')::int AS id_entidade,
+        COALESCE(u.nome, '') AS operador,
+        NULLIF(m.payload->>'ID_USUARIOS', '')::int AS id_usuario,
+        COALESCE((m.payload->>'ENTRADAS')::numeric, 0)::numeric(18,2) AS injetado,
+        COALESCE(s.saldo, 0)::numeric(18,2) AS saldo_cliente,
+        COALESCE(NULLIF(TRIM(m.payload->>'HISTORICO'), ''), '') AS historico,
+        (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') AS suspeita
+      FROM stg.movcreditoentidades m
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(NULLIF(TRIM(u2.payload->>'NOMEUSUARIOS'), ''), NULLIF(TRIM(u2.payload->>'NOME'), '')) AS nome
+        FROM stg.usuarios u2
+        WHERE u2.id_empresa = m.id_empresa
+          AND u2.id_usuario = NULLIF(m.payload->>'ID_USUARIOS', '')::int
+          AND COALESCE(NULLIF(TRIM(u2.payload->>'NOMEUSUARIOS'), ''), NULLIF(TRIM(u2.payload->>'NOME'), '')) IS NOT NULL
+        LIMIT 1
+      ) u ON true
+      LEFT JOIN saldo s
+        ON s.id_filial = m.id_filial AND s.id_entidade = NULLIF(m.payload->>'ID_ENTIDADE', '')::int
+      WHERE m.id_empresa = %s
+        AND LEFT(m.payload->>'DATA', 10) BETWEEN %s AND %s
+        AND COALESCE((m.payload->>'ENTRADAS')::numeric, 0) > 0
+        {where_filial}
+      ORDER BY (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') DESC,
+               (m.payload->>'ENTRADAS')::numeric DESC,
+               m.payload->>'DATA' DESC
+      LIMIT %s
+    """
+    list_params = [id_empresa, id_empresa, ini, fim] + branch_params + [int(limit)]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        srow = conn.execute(summary_sql, summary_params).fetchone() or {}
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+        rows = list(conn.execute(list_sql, list_params).fetchall())
+
+    def _fmt(r: Dict[str, Any]) -> Dict[str, Any]:
+        fid = int(r.get("id_filial") or 0)
+        ident = r.get("id_entidade")
+        operador = r.get("operador") or (f"Operador #{r.get('id_usuario')}" if r.get("id_usuario") else "Operador sem cadastro")
+        return {
+            "data": str(r.get("data")) if r.get("data") else None,
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, filial_nome_map.get(fid)),
+            "cliente": f"Cliente #{ident}" if ident else "Cliente sem cadastro",
+            "operador": operador,
+            "injetado": round(float(r.get("injetado") or 0), 2),
+            "saldo_cliente": round(float(r.get("saldo_cliente") or 0), 2),
+            "historico": r.get("historico") or "",
+            "suspeita": bool(r.get("suspeita")),
+        }
+
+    return {
+        "summary": {
+            "injecoes_qtd": int(srow.get("injecoes_qtd") or 0),
+            "injetado": round(float(srow.get("injetado") or 0), 2),
+            "manuais_qtd": int(srow.get("manuais_qtd") or 0),
+            "injetado_manual": round(float(srow.get("injetado_manual") or 0), 2),
+            "aplicado": round(float(srow.get("aplicado") or 0), 2),
+        },
+        "lancamentos": [_fmt(r) for r in rows],
+        "source": "postgres",
+    }
+
+
 # ========================
 # Risk Scoring / Insights
 # ========================
@@ -4416,56 +4539,62 @@ def cheques_pendentes_overview(
     role: str,
     id_empresa: int,
     id_filial: Optional[int],
-    status: str = "vencidos",
-    limit: int = 1000,
+    status: str = "",
+    limit: int = 3000,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Cheques recebidos NÃO compensados (tela Financeiro).
+    """Cheques recebidos por status (tela Financeiro / Controle de Cheques).
 
-    Card = total VENCIDO (dt_vencimento < hoje). Grid = cheques não compensados
-    com filtro ``status``: ``todos`` | ``vencidos`` | ``nao_vencidos`` (padrão
-    ``vencidos``). Fonte: mart.cheques_pendentes (Xpert dbo.CHEQUESRECEBIDOS).
+    Traz cheques a VISTA e a PRAZO com todos os status: ``a_compensar`` |
+    ``depositado`` | ``devolvido`` (com motivo) | ``compensado``. O parametro
+    ``status`` e uma lista separada por virgula; vazio ou ``todos`` mostra a
+    visao padrao (tudo MENOS compensado). Os cards de resumo sempre refletem o
+    quadro completo. Fonte: mart.cheques_pendentes (Xpert dbo.CHEQUESRECEBIDOS
+    + dbo.SITUACOES).
     """
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     today = business_today(id_empresa)
 
+    _valid = {"a_compensar", "depositado", "devolvido", "compensado"}
+    raw = str(status or "").strip().lower()
+    if not raw or raw == "todos":
+        req = {"a_compensar", "depositado", "devolvido"}
+    else:
+        req = {s.strip() for s in raw.split(",") if s.strip() in _valid}
+        if not req:
+            req = {"a_compensar", "depositado", "devolvido"}
+
     summary_sql = f"""
       SELECT
-        COUNT(*)::int AS total_qtd,
-        COALESCE(SUM(valor), 0)::numeric(18,2) AS total_valor,
-        COUNT(*) FILTER (WHERE dt_vencimento < %s)::int AS vencidos_qtd,
-        COALESCE(SUM(valor) FILTER (WHERE dt_vencimento < %s), 0)::numeric(18,2) AS vencidos_valor,
-        COUNT(*) FILTER (WHERE dt_vencimento >= %s)::int AS a_vencer_qtd,
-        COALESCE(SUM(valor) FILTER (WHERE dt_vencimento >= %s), 0)::numeric(18,2) AS a_vencer_valor
+        status_cheque,
+        COUNT(*)::int AS qtd,
+        COALESCE(SUM(valor), 0)::numeric(18,2) AS valor,
+        COUNT(*) FILTER (WHERE status_cheque <> 'compensado' AND dt_vencimento < %s)::int AS venc_qtd,
+        COALESCE(SUM(valor) FILTER (WHERE status_cheque <> 'compensado' AND dt_vencimento < %s), 0)::numeric(18,2) AS venc_valor,
+        COUNT(*) FILTER (WHERE avista)::int AS avista_qtd,
+        COUNT(*) FILTER (WHERE NOT avista)::int AS aprazo_qtd
       FROM mart.cheques_pendentes
       WHERE id_empresa = %s
         {where_filial}
+      GROUP BY status_cheque
     """
-    summary_params = [today, today, today, today, id_empresa] + branch_params
-
-    status_clause = ""
-    status_extra: List[Any] = []
-    if status == "vencidos":
-        status_clause = " AND dt_vencimento < %s"
-        status_extra = [today]
-    elif status == "nao_vencidos":
-        status_clause = " AND (dt_vencimento >= %s OR dt_vencimento IS NULL)"
-        status_extra = [today]
+    summary_params = [today, today, id_empresa] + branch_params
 
     list_sql = f"""
       SELECT id_filial, id_db, id_cheque, id_entidade, cliente_nome, cpf, valor,
-             dt_recebido, dt_vencimento, situacao_cheque, banco, agencia, nroconta, numero
+             dt_recebido, dt_vencimento, dt_compensado, situacao_cheque, avista,
+             motivo_devolucao, status_cheque, banco, agencia, nroconta, numero
       FROM mart.cheques_pendentes
       WHERE id_empresa = %s
         {where_filial}
-        {status_clause}
-      ORDER BY dt_vencimento NULLS LAST, valor DESC
+        AND status_cheque = ANY(%s)
+      ORDER BY (status_cheque = 'devolvido') DESC, dt_vencimento NULLS LAST, valor DESC
       LIMIT %s
     """
-    list_params = [id_empresa] + branch_params + status_extra + [int(limit)]
+    list_params = [id_empresa] + branch_params + [list(req), int(limit)]
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        srow = conn.execute(summary_sql, summary_params).fetchone() or {}
+        srows = list(conn.execute(summary_sql, summary_params).fetchall())
         filial_nome_map = {
             int(r["id_filial"]): r.get("nome")
             for r in conn.execute(
@@ -4475,6 +4604,25 @@ def cheques_pendentes_overview(
             if r.get("id_filial") is not None
         }
         rows = list(conn.execute(list_sql, list_params).fetchall())
+
+    por_status: Dict[str, Dict[str, Any]] = {
+        k: {"qtd": 0, "valor": 0.0} for k in _valid
+    }
+    venc_qtd = venc_valor = avista_qtd = aprazo_qtd = 0
+    pend_qtd = 0
+    pend_valor = 0.0
+    for s in srows:
+        st = s.get("status_cheque") or "a_compensar"
+        por_status.setdefault(st, {"qtd": 0, "valor": 0.0})
+        por_status[st]["qtd"] = int(s.get("qtd") or 0)
+        por_status[st]["valor"] = round(float(s.get("valor") or 0), 2)
+        venc_qtd += int(s.get("venc_qtd") or 0)
+        venc_valor += float(s.get("venc_valor") or 0)
+        avista_qtd += int(s.get("avista_qtd") or 0)
+        aprazo_qtd += int(s.get("aprazo_qtd") or 0)
+        if st != "compensado":
+            pend_qtd += int(s.get("qtd") or 0)
+            pend_valor += float(s.get("valor") or 0)
 
     def _fmt(c: Dict[str, Any]) -> Dict[str, Any]:
         fid = int(c.get("id_filial") or 0)
@@ -4488,7 +4636,11 @@ def cheques_pendentes_overview(
             "valor": round(float(c.get("valor") or 0), 2),
             "dt_recebido": str(c.get("dt_recebido")) if c.get("dt_recebido") else None,
             "dt_vencimento": str(dt_venc) if dt_venc else None,
-            "vencido": bool(dt_venc and dt_venc < today),
+            "dt_compensado": str(c.get("dt_compensado")) if c.get("dt_compensado") else None,
+            "vencido": bool(dt_venc and dt_venc < today and (c.get("status_cheque") != "compensado")),
+            "avista": bool(c.get("avista")),
+            "status": c.get("status_cheque") or "a_compensar",
+            "motivo_devolucao": c.get("motivo_devolucao") or "",
             "banco": c.get("banco") or "",
             "agencia": c.get("agencia") or "",
             "nroconta": c.get("nroconta") or "",
@@ -4497,14 +4649,17 @@ def cheques_pendentes_overview(
 
     return {
         "summary": {
-            "total_qtd": int(srow.get("total_qtd") or 0),
-            "total_valor": round(float(srow.get("total_valor") or 0), 2),
-            "vencidos_qtd": int(srow.get("vencidos_qtd") or 0),
-            "vencidos_valor": round(float(srow.get("vencidos_valor") or 0), 2),
-            "a_vencer_qtd": int(srow.get("a_vencer_qtd") or 0),
-            "a_vencer_valor": round(float(srow.get("a_vencer_valor") or 0), 2),
+            "por_status": por_status,
+            "total_qtd": pend_qtd,
+            "total_valor": round(pend_valor, 2),
+            "vencidos_qtd": venc_qtd,
+            "vencidos_valor": round(venc_valor, 2),
+            "devolvidos_qtd": por_status.get("devolvido", {}).get("qtd", 0),
+            "devolvidos_valor": por_status.get("devolvido", {}).get("valor", 0.0),
+            "avista_qtd": avista_qtd,
+            "aprazo_qtd": aprazo_qtd,
         },
-        "status": status,
+        "status": sorted(req),
         "cheques": [_fmt(c) for c in rows],
         "dt_ref": today.isoformat(),
         "source": "postgres",
