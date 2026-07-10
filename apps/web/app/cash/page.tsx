@@ -271,103 +271,77 @@ export default function CashPage() {
               </div>
 
               {hasInutilizacoes ? (
-                <>
-                  <div className="card col-12">
-                    <div className="sectionEyebrow">Classificação fiscal</div>
-                    <h2 style={{ marginTop: 4 }}>Notas Fiscais Inutilizadas (NFE status 5)</h2>
-                    <div className="muted" style={{ marginTop: 8 }}>
-                      Comprovantes cujo documento fiscal foi inutilizado. Não são cancelamentos reais nem indicadores de fraude.
+                <div className="card col-12">
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                    <h2 style={{ margin: 0, color: "var(--accent-copper)" }}>Notas Fiscais Inutilizadas</h2>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <div className="card" style={{ padding: "8px 14px" }}>
+                        <div className="label">Qtd. inutilizadas</div>
+                        <div style={{ fontSize: 20, fontWeight: 800 }}>{inutilizacoes.qtd || 0}</div>
+                      </div>
+                      <div className="card" style={{ padding: "8px 14px" }}>
+                        <div className="label">Valor total</div>
+                        <div style={{ fontSize: 20, fontWeight: 800 }}>{formatCurrency(inutilizacoes.valor_total)}</div>
+                      </div>
                     </div>
                   </div>
-
-                  <div className="card kpi col-3">
-                    <div className="label">Qtd. inutilizadas</div>
-                    <div className="value">{inutilizacoes.qtd || 0}</div>
-                  </div>
-                  <div className="card kpi col-3">
-                    <div className="label">Valor total inutilizado</div>
-                    <div className="value">{formatCurrency(inutilizacoes.valor_total)}</div>
-                  </div>
-
-                  <div className="card col-12">
-                    {!loading && !inutItems.length ? (
-                      <EmptyState
-                        title="Lista detalhada em preparação"
-                        detail="Existem notas inutilizadas no período, mas a lista detalhada ainda está sendo preparada."
-                      />
-                    ) : null}
-                    {inutItems.length ? (
-                      <div className="tableScroll">
-                        <table className="table compact">
-                          <thead>
-                            <tr>
-                              <th>Data/hora</th>
-                              <th>Filial</th>
-                              <th>Turno/caixa</th>
-                              <th>Período do turno</th>
-                              <th>Operador</th>
-                              <th>Nº NFE</th>
-                              <th>Comprovante</th>
-                              <th>Valor</th>
-                              <th>Chave / protocolo</th>
+                  {!loading && !inutItems.length ? (
+                    <EmptyState
+                      title="Lista detalhada em preparação"
+                      detail="Existem notas inutilizadas no período, mas a lista detalhada ainda está sendo preparada."
+                    />
+                  ) : null}
+                  {inutItems.length ? (
+                    <div className="tableScroll">
+                      <table className="table compact">
+                        <thead>
+                          <tr>
+                            <th>Data/hora</th>
+                            <th>Filial</th>
+                            <th>Turno/caixa</th>
+                            <th>Operador</th>
+                            <th>Nº NFE</th>
+                            <th>Valor</th>
+                            <th>Chave / protocolo</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {inutItems.map((item: any, idx: number) => (
+                            <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
+                              <td>{formatNfeDateTime(item)}</td>
+                              <td>{item.filial_label}</td>
+                              <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
+                              <td>{item.usuario_label}</td>
+                              <td>{item.numero_nfe || "-"}</td>
+                              <td>{formatCurrency(item.valor_comprovante)}</td>
+                              <td>{item.protocolo || item.chave_nfe || "-"}</td>
                             </tr>
-                          </thead>
-                          <tbody>
-                            {inutItems.map((item: any, idx: number) => (
-                              <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
-                                <td>{formatNfeDateTime(item)}</td>
-                                <td>{item.filial_label}</td>
-                                <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
-                                <td>{formatTurnoPeriod(item.turno_abertura_ts, item.turno_fechamento_ts)}</td>
-                                <td>{item.usuario_label}</td>
-                                <td>{item.numero_nfe || "-"}</td>
-                                <td>{item.id_comprovante || "-"}</td>
-                                <td>{formatCurrency(item.valor_comprovante)}</td>
-                                <td>{item.protocolo || item.chave_nfe || "-"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-                  </div>
-                </>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
 
               <div className="card col-12">
-                <div className="sectionEyebrow">Caixa agora</div>
-                <h2 style={{ marginTop: 4 }}>Turnos em aberto agora</h2>
-              </div>
-
-              <div className="card kpi col-3">
-                <div className="label">Caixas abertos</div>
-                <div className="value">
-                  {loading ? "..." : Number(liveKpis.caixas_abertos || 0)}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <h2 style={{ margin: 0, color: "var(--accent-copper)" }}>Caixa Agora</h2>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <div className="card" style={{ padding: "8px 14px" }}>
+                      <div className="label">Caixas abertos</div>
+                      <div style={{ fontSize: 20, fontWeight: 800 }}>{loading ? "..." : Number(liveKpis.caixas_abertos || 0)}</div>
+                    </div>
+                    <div className="card" style={{ padding: "8px 14px" }}>
+                      <div className="label">Vendas abertas</div>
+                      <div style={{ fontSize: 20, fontWeight: 800 }}>{loading ? "..." : formatCurrency(liveKpis.total_vendas_abertas)}</div>
+                    </div>
+                    <div className="card" style={{ padding: "8px 14px" }}>
+                      <div className="label">Cancelamentos abertos</div>
+                      <div style={{ fontSize: 20, fontWeight: 800 }}>{loading ? "..." : formatCurrency(liveKpis.total_cancelamentos_abertos)}</div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="card kpi col-3">
-                <div className="label">Caixas a revisar</div>
-                <div className="value">
-                  {loading ? "..." : Number(liveKpis.caixas_stale || 0)}
-                </div>
-              </div>
-              <div className="card kpi col-3">
-                <div className="label">Vendas abertas</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(liveKpis.total_vendas_abertas)}
-                </div>
-              </div>
-              <div className="card kpi col-3">
-                <div className="label">Cancelamentos abertos</div>
-                <div className="value">
-                  {loading
-                    ? "..."
-                    : formatCurrency(liveKpis.total_cancelamentos_abertos)}
-                </div>
-              </div>
-
-              <div className="card col-8">
-                <h2>Turnos abertos agora</h2>
                 {!loading && !openBoxes.length ? (
                   <EmptyState
                     title="Nenhum turno aberto na janela operacional."
@@ -406,59 +380,6 @@ export default function CashPage() {
                     </table>
                   </div>
                 ) : null}
-              </div>
-
-              <div className="card col-4">
-                <h2>Alertas do agora</h2>
-                {!loading && !alerts.length && !staleBoxes.length ? (
-                  <EmptyState
-                    title="Nenhum alerta operacional agora."
-                    detail="Críticos, atrasos e turnos stale aparecem assim que houver sinal real."
-                  />
-                ) : null}
-                <div style={{ display: "grid", gap: 12 }}>
-                  {alerts.map((item: any, index: number) => {
-                    const tone = severityTone(item?.severity || "OK");
-                    return (
-                      <div
-                        key={`${item?.id_filial}-${item?.id_turno}-${index}`}
-                        className="card"
-                        style={{
-                          background: tone.bg,
-                          borderColor: tone.border,
-                        }}
-                      >
-                        <div style={{ fontWeight: 700 }}>{item?.title || "Alerta operacional"}</div>
-                        <div className="muted" style={{ marginTop: 8 }}>
-                          {item?.body}
-                        </div>
-                        <div className="muted" style={{ marginTop: 8 }}>
-                          {formatDateTime(item?.last_activity_ts || item?.abertura_ts)}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {staleBoxes.slice(0, 3).map((item: any) => (
-                    <div
-                      key={`${item.id_filial}-${item.id_turno}-stale`}
-                      className="card"
-                      style={{
-                        background: "rgba(56, 189, 248, 0.12)",
-                        borderColor: "rgba(96, 165, 250, 0.24)",
-                      }}
-                    >
-                      <div style={{ fontWeight: 700 }}>
-                        {item.filial_label} · turno {formatTurnoLabel(item.id_turno, item.turno_label)}
-                      </div>
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        Sem movimento há {formatHoursLabel(item.horas_sem_movimento)}.
-                      </div>
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        Última atividade: {formatDateTime(item.last_activity_ts)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
               </div>
             </div>
           </>
