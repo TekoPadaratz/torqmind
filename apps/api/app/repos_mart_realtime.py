@@ -2010,19 +2010,23 @@ def fraud_top_users(
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     rows = query_dict(f"""
-        SELECT nome_operador AS usuario_nome,
+        SELECT id_filial,
+               any(filial_nome) AS filial_nome,
+               nome_operador AS usuario_nome,
                count() AS cancelamentos,
                sum(valor_total) AS valor_cancelado
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
           AND event_type = 'cancelamento'
-        GROUP BY nome_operador
+        GROUP BY id_filial, nome_operador
         ORDER BY valor_cancelado DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
     for row in rows:
         nome = (row.get("usuario_nome") or "").strip()
         row["usuario_label"] = nome if nome else "Operador não resolvido"
+        fid = _to_int(row.get("id_filial"))
+        row["filial_label"] = _filial_label(fid, (row.get("filial_nome") or "").strip()) if fid else "Filial sem cadastro"
     return rows
 
 

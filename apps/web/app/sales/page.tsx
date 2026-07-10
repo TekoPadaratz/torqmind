@@ -150,29 +150,20 @@ export default function SalesPage() {
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-12">
                 <div className="sectionEyebrow">Resumo comercial</div>
-                <h2 style={{ marginTop: 4 }}>Vendas, entradas e cancelamentos por comprovante</h2>
+                <h2 style={{ marginTop: 4 }}>Vendas e cancelamentos por comprovante</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  A tela usa comprovantes comerciais e separa movimentos válidos, entradas e cancelamentos.
+                  A tela usa comprovantes comerciais e separa movimentos válidos e cancelamentos.
                   Margem e ticket seguem abaixo pela leitura por item.
                 </div>
               </div>
 
               <div className="card kpi col-4">
-                <div className="label">Vendas normais</div>
+                <div className="label">Vendas</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(commercial?.saidas)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
                   {Number(commercial?.qtd_saidas || 0)} comprovante(s)
-                </div>
-              </div>
-              <div className="card kpi col-4">
-                <div className="label">Entradas registradas</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercial?.entradas)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {Number(commercial?.qtd_entradas || 0)} comprovante(s)
                 </div>
               </div>
               <div className="card kpi col-4">
@@ -227,34 +218,6 @@ export default function SalesPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-              </div>
-
-              <div className="card col-4">
-                <h2>Classificação por CFOP</h2>
-                {!loading && !cfopBreakdown.length ? (
-                  <EmptyState
-                    title="Sem classificação comercial no período."
-                    detail="A classificação aparece quando há comprovantes válidos com CFOP comercial no período."
-                  />
-                ) : null}
-                <table className="table compact">
-                  <thead>
-                    <tr>
-                      <th>Classe</th>
-                      <th>Ativo</th>
-                      <th>Cancelado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cfopBreakdown.map((row: any) => (
-                      <tr key={row.label}>
-                        <td>{row.label}</td>
-                        <td>{formatCurrency(row.ativo)}</td>
-                        <td>{formatCurrency(row.cancelado)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
 
               <div className="card kpi col-4">

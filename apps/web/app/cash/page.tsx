@@ -176,56 +176,10 @@ export default function CashPage() {
                 </div>
               </div>
 
-              <div className="card col-5">
-                <h2>Fluxo de Caixa / DRE resumido</h2>
+              <div className="card col-12 chartCard">
+                <h2>Formas de Pagamento Vendas</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Consolida o que entrou, o que saiu e o que ainda depende de composição financeira.
-                </div>
-                <div className="bi-grid" style={{ marginTop: 12 }}>
-                  {(dreSummary?.cards || []).map((card: any) => (
-                    <div
-                      key={card.key}
-                      className="card kpi col-12"
-                      style={
-                        String(card?.status || "").toLowerCase() === "unavailable"
-                          ? {
-                              background: "rgba(148,163,184,0.08)",
-                              borderColor: "rgba(148,163,184,0.18)",
-                            }
-                          : undefined
-                      }
-                    >
-                      <div className="label">{card.label}</div>
-                      <div className="value">
-                        {card.amount === null || card.amount === undefined
-                          ? "Aguardando base"
-                          : formatCurrency(card.amount)}
-                      </div>
-                      {card.quantity !== null && card.quantity !== undefined ? (
-                        <div className="muted" style={{ marginTop: 8 }}>
-                          Posição: {formatStockQuantity(card.quantity)}
-                        </div>
-                      ) : null}
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        {card.detail}
-                      </div>
-                    </div>
-                  ))}
-                  {(dreSummary?.pending || []).map((item: any) => (
-                    <div key={item.key} className="card col-12" style={{ opacity: 0.78 }}>
-                      <div className="label">{item.label}</div>
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        {item.detail}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="card col-7 chartCard">
-                <h2>Formas de pagamento do período</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Distribuição conciliada dos recebimentos que sustentam o resumo financeiro ao lado.
+                  Distribuição conciliada dos recebimentos de vendas do período por forma de pagamento.
                 </div>
                 {!loading && !paymentMix.length ? (
                   <EmptyState
@@ -270,57 +224,8 @@ export default function CashPage() {
                 </div>
               </div>
 
-              <div className="card col-12 chartCard">
-                <h2>Série diária comercial</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Evolução diária de vendas e cancelamentos para explicar a formação do período.
-                </div>
-                {!loading && !commercialByDay.length ? (
-                  <EmptyState
-                    title="Sem série diária para o período."
-                    detail="A leitura comercial do caixa aparece quando existem comprovantes válidos no período."
-                  />
-                ) : null}
-                <div className="chartWrap">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={commercialByDay}>
-                      <CartesianGrid
-                        stroke="rgba(255,255,255,0.08)"
-                        strokeDasharray="3 3"
-                      />
-                      <XAxis
-                        dataKey="data_key"
-                        stroke="#9fb0d0"
-                        tickFormatter={formatDateKey}
-                      />
-                      <YAxis
-                        stroke="#9fb0d0"
-                        tickFormatter={formatCurrency}
-                        width={112}
-                      />
-                      <Tooltip
-                        labelFormatter={(value: any) => formatDateKey(value)}
-                        formatter={(value: any) => formatCurrency(value)}
-                      />
-                      <Bar
-                        dataKey="total_vendas"
-                        name="Vendas"
-                        fill="#22d3ee"
-                        radius={[6, 6, 0, 0]}
-                      />
-                      <Bar
-                        dataKey="total_cancelamentos"
-                        name="Cancelamentos"
-                        fill="rgba(248,113,113,0.9)"
-                        radius={[6, 6, 0, 0]}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
               <div className="card col-12">
-                <h2>Turnos com maior fluxo no período selecionado</h2>
+                <h2>Fluxo do período selecionado</h2>
                 {!loading && !topTurnos.length ? (
                   <EmptyState
                     title="Sem turnos comerciais no período."

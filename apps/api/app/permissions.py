@@ -253,12 +253,90 @@ def resolve_default_route(claims: dict[str, Any]) -> str:
 def redact_sensitive(data: Any, claims: dict[str, Any]) -> Any:
     """Recursively remove / zero-out sensitive financial fields.
 
-    Only applied when ``can_view_sensitive_financials(claims)`` is False.
+    The sensitive-field redaction is only applied when
+    ``can_view_sensitive_financials(claims)`` is False. Text hygiene
+    (mojibake repair for corrupted source strings) runs for **all** roles.
     Returns the (possibly modified) data — mutates in place for dicts/lists.
     """
+    _sanitize_text(data)
     if can_view_sensitive_financials(claims):
         return data
     return _redact(data)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Text hygiene — repair mojibake coming from corrupted source rows
+# ──────────────────────────────────────────────────────────────────────
+# Some rows in the client's ERP (Xpert, CP1252 varchar columns) were written
+# with UTF-8 bytes stuffed into a Latin-1 column, producing double-encoded
+# text (e.g. "13º Salário" -> "13Âº Salário", "Serviços" -> "ServiÃ§os").
+# The repair is CONSERVATIVE: it only touches strings containing a mojibake
+# marker and only accepts a fix that strictly reduces the mojibake score, so
+# clean text (whose round-trip fails or does not improve) is never altered.
+
+_MOJIBAKE_MARKERS: tuple[str, ...] = ("Ã", "Â", "â€", "Ë", "Ð", "Ñ")
+
+
+def _mojibake_score(text: str) -> int:
+    """Rough count of mojibake marker occurrences in *text*."""
+    return sum(text.count(m) for m in _MOJIBAKE_MARKERS)
+
+
+def _try_fix_once(text: str) -> str:
+    """Attempt a single mojibake round-trip; return best improving candidate."""
+    best = text
+    best_score = _mojibake_score(text)
+    for codec in ("cp1252", "latin-1"):
+        try:
+            candidate = text.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError, LookupError):
+            continue
+        if candidate != text:
+            cand_score = _mojibake_score(candidate)
+            if cand_score < best_score:
+                best, best_score = candidate, cand_score
+    return best
+
+
+def fix_mojibake(text: str) -> str:
+    """Repair double-encoded (mojibake) text. Safe on clean strings.
+
+    Only strings containing a mojibake marker are processed; the repair is
+    accepted only when it strictly reduces the mojibake marker count, so clean
+    accented text (e.g. "CARTÃO", "São") is preserved untouched.
+    """
+    if not text or not any(m in text for m in _MOJIBAKE_MARKERS):
+        return text
+    fixed = text
+    for _ in range(3):  # handle up to triple-encoded strings
+        candidate = _try_fix_once(fixed)
+        if candidate == fixed:
+            break
+        fixed = candidate
+        if not any(m in fixed for m in _MOJIBAKE_MARKERS):
+            break
+    return fixed
+
+
+def _sanitize_text(obj: Any) -> Any:
+    """Recursively repair mojibake in every string value (mutates in place)."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, str):
+                fixed = fix_mojibake(value)
+                if fixed is not value:
+                    obj[key] = fixed
+            else:
+                _sanitize_text(value)
+    elif isinstance(obj, list):
+        for idx, item in enumerate(obj):
+            if isinstance(item, str):
+                fixed = fix_mojibake(item)
+                if fixed is not item:
+                    obj[idx] = fixed
+            else:
+                _sanitize_text(item)
+    return obj
 
 
 def _is_sensitive_key(key: str) -> bool:

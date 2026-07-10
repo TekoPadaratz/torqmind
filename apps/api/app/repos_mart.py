@@ -2923,8 +2923,9 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
 
     sql = f"""
       SELECT
-        id_usuario,
+        id_filial,
         MAX(usuario_nome) AS usuario_nome,
+        id_usuario,
         COUNT(*)::int AS cancelamentos,
         COALESCE(SUM(valor_total),0)::numeric(18,2) AS valor_cancelado,
         COUNT(*) FILTER (WHERE usuario_source = 'turno')::int AS resolvidos_por_turno,
@@ -2933,14 +2934,24 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
       WHERE id_empresa = %s
         AND data_key BETWEEN %s AND %s
         {where_filial}
-      GROUP BY id_usuario
+      GROUP BY id_filial, id_usuario
       ORDER BY cancelamentos DESC, valor_cancelado DESC, id_usuario
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
+        fid = int(row.get("id_filial") or 0)
+        row["filial_label"] = _filial_label(fid, filial_nome_map.get(fid))
     return rows
 
 

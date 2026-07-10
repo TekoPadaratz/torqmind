@@ -43,10 +43,8 @@ export default function FinanceBudgetSection() {
 
   const contas = useMemo(() => data?.contas || [], [data]);
   const summary = data?.summary || {};
-  const showFilial = useMemo(
-    () => new Set(contas.map((c: any) => c.id_filial)).size > 1,
-    [contas],
-  );
+  // Sempre exibe o posto (apelido) no grid, mesmo com 1 filial no escopo.
+  const showFilial = true;
   const currentYear = ano || new Date().getFullYear();
   const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
 
