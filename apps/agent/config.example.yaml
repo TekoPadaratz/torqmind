@@ -15,9 +15,17 @@
 # 4) Para atualizar so a versao: substitua o .exe e reinicie o servico. O
 #    config.enc permanece intacto (conexao preservada) e as tabelas novas
 #    coletam automaticamente.
-# 5) Migrar um cliente antigo (config.yaml em texto) para o modo seguro:
-#      torqmind-agent.exe config migrate-from-yaml --source config.yaml
-#    depois APAGUE o config.yaml em texto do servidor do cliente.
+# 5) Migrar um cliente antigo (config.yaml em texto) para o modo seguro.
+#    SEMPRE passe --config config.enc (mesmo nome que o servico WinSW espera em
+#    torqmind-agent-service.xml). Sem --config, o alvo vira config.local.enc e o
+#    servico nao acha. O comando JA APAGA o config.yaml de origem, entao faca uma
+#    copia de seguranca ANTES:
+#      copy config.yaml config.yaml.bak
+#      torqmind-agent.exe config migrate-from-yaml --source config.yaml --config config.enc
+#      torqmind-agent.exe config show-safe --config config.enc   (confirma que gravou)
+#    Se o servico antigo ainda aponta para --config config.yaml, ajuste o
+#    torqmind-agent-service.xml para --config config.enc (ou apenas suba o .exe
+#    novo, que ja acha config.enc/config.local.enc sozinho) e reinicie o servico.
 #
 # A secao `datasets:` abaixo e apenas REFERENCIA/documentacao do que o agent
 # coleta — a fonte da verdade e agent/config.py (embutido no .exe).

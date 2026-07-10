@@ -945,10 +945,44 @@ def _validate_required_fields(
         raise AgentConfigError(f"Missing required field(s) in {source_label}: " + ", ".join(sorted(missing)))
 
 
+def _fallback_config_path(path: Path) -> Path | None:
+    """Locate an alternative config when the requested file is missing.
+
+    After ``config migrate-from-yaml`` the plaintext ``.yaml`` is deleted and
+    replaced by an encrypted ``.enc``. A service (or command) still pointing at
+    the old ``.yaml`` — or at a differently named ``.enc`` — must keep running
+    instead of failing with "Configuration file not found". We look for the
+    same-stem sibling in the other format first, then for the canonical config
+    names in the same directory, preferring the encrypted store.
+    """
+    parent = path.parent
+    suffix = path.suffix.lower()
+    candidates: list[Path] = []
+    if suffix == ".enc":
+        candidates += [path.with_suffix(".yaml"), path.with_suffix(".yml")]
+    elif suffix in {".yaml", ".yml"}:
+        candidates.append(path.with_suffix(".enc"))
+    # Canonical encrypted configs take priority over plaintext.
+    candidates += [
+        parent / "config.enc",
+        parent / "config.local.enc",
+        parent / "config.yaml",
+        parent / "config.local.yaml",
+        parent / "config.yml",
+    ]
+    for candidate in candidates:
+        if candidate != path and candidate.exists():
+            return candidate
+    return None
+
+
 def load_raw_config(config_path: str | Path = "config.local.yaml") -> tuple[Dict[str, Any], Dict[str, Any]]:
     path = Path(config_path)
     if not path.exists():
-        raise AgentConfigError(f"Configuration file not found: {path}")
+        fallback = _fallback_config_path(path)
+        if fallback is None:
+            raise AgentConfigError(f"Configuration file not found: {path}")
+        path = fallback
 
     if path.suffix.lower() == ".enc":
         try:
