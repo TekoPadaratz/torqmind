@@ -423,6 +423,17 @@ PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" -v ON_ERROR
 LIQ_COUNT=$(PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" --no-align -t -c "SELECT count(*) FROM mart.liquidez_solvencia WHERE id_empresa = ${ID_EMPRESA}")
 echo "liquidez_solvencia rows: $LIQ_COUNT"
 
+# ─── Step 7: Refresh marts de Gestao Orcamentaria (PG-only) ────
+# Tela "Gestao Orcamentaria": despesa realizada por conta/mes + catalogo de
+# contas gerenciais, a partir de dw.fact_despesa_operacional (competencia).
+echo ""
+echo "--- Step 7: Refreshing mart.despesa_conta_mensal + plano_contas_gerencial ---"
+PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" -v ON_ERROR_STOP=1 -c "
+  SELECT etl.refresh_gestao_orcamentaria(${ID_EMPRESA});
+" >/dev/null
+ORC_COUNT=$(PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" --no-align -t -c "SELECT count(*) FROM mart.despesa_conta_mensal WHERE id_empresa = ${ID_EMPRESA}")
+echo "despesa_conta_mensal rows: $ORC_COUNT"
+
 echo ""
 echo "=== Profit Marts Refresh COMPLETE ==="
 echo "  DRE:       $DRE_COUNT rows"
@@ -430,3 +441,4 @@ echo "  Despesas:  $DESP_COUNT rows"
 echo "  Produtos:  $PROD_COUNT rows"
 echo "  Resumo:    $RESUMO_COUNT rows"
 echo "  Solvencia: $LIQ_COUNT rows"
+echo "  Orcamento: $ORC_COUNT rows"
