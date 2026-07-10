@@ -246,12 +246,24 @@ export default function SalesPage() {
                 </div>
               </div>
               <div className="card kpi col-4">
-                <div className="label">Ticket médio analítico</div>
+                <div className="label">Ticket Médio Produtos</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(data?.kpis?.ticket_medio)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Receita média por documento válido no período analisado.
+                  Receita média por documento de venda (leitura por comprovante) no período.
+                </div>
+              </div>
+              <div className="card kpi col-4">
+                <div className="label">Ticket Médio Combustível</div>
+                <div className="value">
+                  {loading ? "..." : formatCurrency(data?.ticket_combustivel?.ticket_medio)}
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Valor médio por abastecimento no console da bomba.
+                  {Number(data?.ticket_combustivel?.qtd_abastecimentos || 0) > 0
+                    ? ` ${Number(data?.ticket_combustivel?.qtd_abastecimentos || 0).toLocaleString("pt-BR")} abastecimento(s).`
+                    : ""}
                 </div>
               </div>
               <div className="card kpi col-4">

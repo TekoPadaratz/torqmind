@@ -1108,7 +1108,12 @@ def sales_overview(
     as_of = resolve_business_date(dt_ref, tenant)
 
     def build_response() -> Dict[str, Any]:
-        return redact_sensitive(repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of), claims)
+        bundle = repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of)
+        try:
+            bundle["ticket_combustivel"] = repos_mart.sales_ticket_combustivel(role, tenant, filial, dt_ini, dt_fim)
+        except Exception:
+            bundle["ticket_combustivel"] = {"ticket_medio": 0.0, "valor_total": 0.0, "qtd_abastecimentos": 0}
+        return redact_sensitive(bundle, claims)
 
     return redact_sensitive(_with_cached_response(
         scope_key="sales_overview",

@@ -2443,6 +2443,11 @@ def _run_tenant_post_refresh(
                 post_meta["cheques_ms"] = step_ms
             except Exception as exc:  # defensive: cheques must never break the cycle
                 post_meta["cheques_error"] = str(exc)[:200]
+            try:
+                _run_sql_count(conn, "SELECT etl.refresh_ticket_combustivel(%s) AS rows", (tenant_id,))
+                post_meta["ticket_combustivel_refreshed"] = True
+            except Exception as exc:  # defensive: ticket must never break the cycle
+                post_meta["ticket_combustivel_error"] = str(exc)[:200]
         else:
             post_meta["cheques_skipped"] = True
 

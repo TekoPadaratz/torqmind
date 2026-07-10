@@ -464,6 +464,24 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "full_refresh": True,
         "enabled": True,
     },
+    # Vendas: abastecimentos do console da bomba (ticket medio de combustivel).
+    "consolearquivo": {
+        "table": "dbo.CONSOLEARQUIVO",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "query": (
+            "SELECT c.*, "
+            "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DATA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.CONSOLEARQUIVO c"
+        ),
+        "enabled": True,
+    },
     "nfe": {
         "table": "dbo.NFE",
         "watermark_column": WATERMARK_ALIAS,

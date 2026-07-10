@@ -668,6 +668,14 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_credito", ["ID_CREDITO", "id_credito"]),
         ],
     ),
+    "consolearquivo": DatasetSpec(
+        table="stg.consolearquivo",
+        pk_cols=["id_empresa", "id_filial", "id_consolearquivo"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_consolearquivo", ["ID_CONSOLEARQUIVO", "id_consolearquivo"]),
+        ],
+    ),
 
     # Plano de Contas (chart of accounts)
     "planodecontas": DatasetSpec(

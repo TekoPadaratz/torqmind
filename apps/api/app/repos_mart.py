@@ -2258,6 +2258,38 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs: Any) -> Dict[str, Any]:
+    """Ticket medio de COMBUSTIVEL no periodo (tela Vendas).
+
+    Vem do console da bomba (cada abastecimento fisico), nao do comprovante.
+    ticket_medio = SUM(VALOR) / COUNT(abastecimentos). Fonte:
+    mart.ticket_combustivel_diaria (Xpert CONSOLEARQUIVO).
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    sql = f"""
+      SELECT
+        COALESCE(SUM(valor_total), 0)::numeric(18,2) AS valor_total,
+        COALESCE(SUM(qtd_abastecimentos), 0)::int AS qtd_abastecimentos,
+        COALESCE(SUM(litros_total), 0)::numeric(18,3) AS litros_total
+      FROM mart.ticket_combustivel_diaria
+      WHERE id_empresa = %s AND data_ref BETWEEN %s AND %s
+        {where_filial}
+    """
+    params = [id_empresa, dt_ini, dt_fim] + branch_params
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        row = conn.execute(sql, params).fetchone() or {}
+    valor = float(row.get("valor_total") or 0)
+    qtd = int(row.get("qtd_abastecimentos") or 0)
+    litros = float(row.get("litros_total") or 0)
+    return {
+        "ticket_medio": round(valor / qtd, 2) if qtd else 0.0,
+        "valor_total": round(valor, 2),
+        "qtd_abastecimentos": qtd,
+        "litros_total": round(litros, 3),
+        "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
+    }
+
+
 def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
