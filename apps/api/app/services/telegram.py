@@ -321,9 +321,14 @@ def _insert_alert_if_new(
 
 
 def _resolve_filial_nome(id_empresa: int, id_filial: int) -> str:
-    """Resolve branch name from auth.filiais. Returns short name or id_filial."""
+    """Resolve branch label from auth.filiais.
+
+    Prefere o apelido curto (ex.: "VR 01") quando definido na Plataforma;
+    senão usa o nome completo; por último cai no id_filial.
+    """
     sql = """
-      SELECT nome FROM auth.filiais
+      SELECT COALESCE(NULLIF(btrim(apelido), ''), nome) AS nome
+      FROM auth.filiais
       WHERE id_empresa = %s AND id_filial = %s
       LIMIT 1
     """
@@ -335,6 +340,34 @@ def _resolve_filial_nome(id_empresa: int, id_filial: int) -> str:
     except Exception:
         pass
     return str(id_filial)
+
+
+def _resolve_numero_nfe(
+    id_empresa: int, id_filial: int, id_db: int, id_comprovante: int
+) -> Optional[str]:
+    """Número da Nota Fiscal (NF/NFC-e) do comprovante, se emitida.
+
+    Cancelamentos normalmente não têm nota emitida -> retorna None e o alerta cai
+    honestamente no número do comprovante (nunca inventamos uma NF).
+    """
+    sql = """
+      SELECT numero_nfe_shadow
+      FROM stg.nfe
+      WHERE id_empresa = %s AND id_filial = %s AND id_db = %s AND id_comprovante = %s
+        AND numero_nfe_shadow IS NOT NULL
+        AND btrim(numero_nfe_shadow) <> ''
+        AND numero_nfe_shadow <> '0'
+      ORDER BY status_shadow DESC, id_nfe DESC
+      LIMIT 1
+    """
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(sql, (id_empresa, id_filial, id_db, id_comprovante)).fetchone()
+            if row and row.get("numero_nfe_shadow"):
+                return str(row["numero_nfe_shadow"]).strip()
+    except Exception:
+        pass
+    return None
 
 
 def _format_datetime(raw: Any) -> str:
@@ -431,10 +464,16 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
         except (ValueError, TypeError):
             valor_fmt = f"R$ {valor_total}"
 
+        numero_nfe = _resolve_numero_nfe(id_empresa, id_filial, id_db, id_comprovante)
+        if numero_nfe:
+            documento_line = f"📄 Nota fiscal: {numero_nfe}"
+        else:
+            documento_line = f"📄 Comprovante: {id_comprovante}"
+
         text = (
             f"🚨 VENDA CANCELADA na filial {filial_nome}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📄 Comprovante: {id_comprovante}"
+            + documento_line
             + (f" (Ref: {referencia})" if referencia else "")
             + f"\n"
             f"💰 Valor: {valor_fmt}\n"

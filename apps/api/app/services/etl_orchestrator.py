@@ -2420,6 +2420,37 @@ def _run_tenant_post_refresh(
         else:
             post_meta["customer_delinquency_skipped"] = True
 
+        # Refresh cheques mart (controle de cheques recebidos). Fast DELETE+INSERT
+        # from stg.cheques + stg.situacoes; runs every operational cycle.
+        if runs_operational:
+            try:
+                rows, step_ms = _run_logged_count_step(
+                    conn,
+                    tenant_id,
+                    "cheques_refresh",
+                    stage="post_refresh",
+                    ref_date=ref_date,
+                    operation=lambda: _run_sql_count(
+                        conn,
+                        "SELECT etl.refresh_cheques(%s) AS rows",
+                        (tenant_id,),
+                    ),
+                    meta={},
+                    progress_callback=progress_callback,
+                )
+                post_meta["cheques_refreshed"] = True
+                post_meta["cheques_rows"] = rows
+                post_meta["cheques_ms"] = step_ms
+            except Exception as exc:  # defensive: cheques must never break the cycle
+                post_meta["cheques_error"] = str(exc)[:200]
+            try:
+                _run_sql_count(conn, "SELECT etl.refresh_ticket_combustivel(%s) AS rows", (tenant_id,))
+                post_meta["ticket_combustivel_refreshed"] = True
+            except Exception as exc:  # defensive: ticket must never break the cycle
+                post_meta["ticket_combustivel_error"] = str(exc)[:200]
+        else:
+            post_meta["cheques_skipped"] = True
+
         if runs_risk and health_start is not None and health_end is not None and health_start <= health_end:
             clock_driven = not (sales_changed or finance_changed or risk_changed)
             rows, step_ms = _run_logged_count_step(

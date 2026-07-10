@@ -18,7 +18,12 @@ from fastapi.testclient import TestClient
 
 from app.deps import get_current_claims, get_current_claims_allow_password_change
 from app.main import app
-from app.permissions import _redact, _is_sensitive_key, redact_sensitive
+from app.permissions import (
+    _redact,
+    _is_sensitive_key,
+    redact_sensitive,
+    fix_mojibake,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +260,48 @@ class TestRedactionStems(unittest.TestCase):
         self.assertIsNone(result["margem"])
         self.assertIsNone(result["margin_10d"])
         self.assertIsNone(result["margem_score"])
+
+
+class TestMojibakeRepair(unittest.TestCase):
+    """Central text hygiene: repair double-encoded source strings."""
+
+    def test_fixes_ordinal_indicator(self):
+        self.assertEqual(fix_mojibake("13Âº Salario"), "13º Salario")
+
+    def test_fixes_cedilla(self):
+        self.assertEqual(fix_mojibake("ServiÃ§os de Motoboy"), "Serviços de Motoboy")
+
+    def test_preserves_clean_uppercase_accent(self):
+        # "CARTÃO" is clean CP1252 text — must not be altered.
+        self.assertEqual(fix_mojibake("CARTÃO FIDELIDADE"), "CARTÃO FIDELIDADE")
+
+    def test_preserves_clean_a_grave(self):
+        self.assertEqual(fix_mojibake("CHEQUES À PAGAR CONTA"), "CHEQUES À PAGAR CONTA")
+
+    def test_preserves_clean_accents(self):
+        self.assertEqual(fix_mojibake("Adiantamento/Vale Salário a Pagar"),
+                         "Adiantamento/Vale Salário a Pagar")
+
+    def test_noop_on_ascii(self):
+        self.assertEqual(fix_mojibake("Vendas a Prazo"), "Vendas a Prazo")
+
+    def test_empty_and_none_safe(self):
+        self.assertEqual(fix_mojibake(""), "")
+
+    def test_repair_runs_for_all_roles(self):
+        # Even financial roles get text hygiene (before the redaction gate).
+        claims = _owner_claims()
+        data = {"conta": "13Âº Salario", "custo_total": 10}
+        result = redact_sensitive(data, claims)
+        self.assertEqual(result["conta"], "13º Salario")
+        self.assertEqual(result["custo_total"], 10)  # owner still sees cost
+
+    def test_repair_nested_lists(self):
+        claims = _manager_claims()
+        data = {"items": [{"nome": "ServiÃ§os"}, {"nome": "Limpo"}]}
+        redact_sensitive(data, claims)
+        self.assertEqual(data["items"][0]["nome"], "Serviços")
+        self.assertEqual(data["items"][1]["nome"], "Limpo")
 
 
 # ---------------------------------------------------------------------------

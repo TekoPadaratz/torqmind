@@ -2336,13 +2336,25 @@ class MartBuilder:
         if not successful:
             return
 
-        # Derive real window from data_keys
+        # Derive real window from data_keys. ClickHouse Date range is
+        # [1970-01-01, 2149-06-06]; data_keys extremos/malformados (ex.: nota com
+        # data 1900 no fallback) estouram a serializacao ushort do log de
+        # publicacoes, entao clampa/protege (o log e best-effort, nao os marts).
+        _CH_DATE_MIN = _date(1970, 1, 1)
+        _CH_DATE_MAX = _date(2149, 6, 6)
+
+        def _window_date(dk: int) -> _date:
+            s = str(dk)
+            try:
+                d = _date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+            except (ValueError, IndexError):
+                return _date.today()
+            return min(max(d, _CH_DATE_MIN), _CH_DATE_MAX)
+
         valid_keys = sorted(k for k in (data_keys or []) if k > 0)
         if valid_keys:
-            ws = str(valid_keys[0])
-            we = str(valid_keys[-1])
-            window_start = _date(int(ws[:4]), int(ws[4:6]), int(ws[6:8]))
-            window_end = _date(int(we[:4]), int(we[4:6]), int(we[6:8]))
+            window_start = _window_date(valid_keys[0])
+            window_end = _window_date(valid_keys[-1])
         else:
             window_start = _date.today()
             window_end = _date.today()

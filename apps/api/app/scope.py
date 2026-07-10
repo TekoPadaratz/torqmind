@@ -8,9 +8,25 @@ from fastapi import HTTPException
 
 from app.authz import claims_access_flag, normalize_role
 from app.db import get_conn
+from app.filial_apelido import set_apelido_scope
 
 
 def resolve_scope(
+    claims: dict[str, Any],
+    id_empresa_q: Optional[int] = None,
+    id_filial_q: Optional[int] = None,
+) -> Tuple[int, Optional[int]]:
+    """Resolve (id_empresa, id_filial) e fixa o escopo do apelido de filial.
+
+    Ponto único por onde toda requisição BI passa: aqui semeamos o mapa de
+    apelidos curtos da empresa (usado por ``_filial_label`` em todas as telas).
+    """
+    id_empresa, id_filial = _resolve_scope_impl(claims, id_empresa_q, id_filial_q)
+    set_apelido_scope(id_empresa)
+    return id_empresa, id_filial
+
+
+def _resolve_scope_impl(
     claims: dict[str, Any],
     id_empresa_q: Optional[int] = None,
     id_filial_q: Optional[int] = None,

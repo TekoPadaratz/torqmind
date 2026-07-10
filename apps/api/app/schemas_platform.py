@@ -41,6 +41,7 @@ class TenantUpsertRequest(BaseModel):
 
 class BranchUpsertRequest(BaseModel):
     nome: str = Field(min_length=2)
+    apelido: Optional[str] = Field(default=None, max_length=40)
     cnpj: Optional[str] = None
     is_enabled: bool = True
     valid_from: Optional[date] = None

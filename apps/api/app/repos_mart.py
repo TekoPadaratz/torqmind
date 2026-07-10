@@ -25,6 +25,7 @@ from app.cash_operational_truth import (
 )
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.db import get_conn
+from app.filial_apelido import apelido_for
 from app.sales_semantics import (
     CANCELLATION_STATUS,
     COMMERCIAL_STATUSES,
@@ -184,6 +185,9 @@ def _filial_label(id_filial: Any, filial_nome: Any = None) -> str:
         if len(branch_ids) == 1:
             return _filial_label(branch_ids[0], filial_nome)
         return f"{len(branch_ids)} filiais selecionadas"
+    apelido = apelido_for(id_filial)
+    if apelido:
+        return apelido
     nome = str(filial_nome or "").strip()
     if nome:
         return nome
@@ -1069,7 +1073,10 @@ def _snapshot_meta(
 
 def list_filiais(role: str, id_empresa: int) -> List[Dict[str, Any]]:
     sql = """
-      SELECT id_filial, nome
+      SELECT id_filial,
+             COALESCE(NULLIF(btrim(apelido), ''), nome) AS nome,
+             nome AS nome_completo,
+             apelido
       FROM auth.filiais
       WHERE id_empresa = %s AND is_active = true
       ORDER BY id_filial
@@ -2251,6 +2258,38 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs: Any) -> Dict[str, Any]:
+    """Ticket medio de COMBUSTIVEL no periodo (tela Vendas).
+
+    Vem do console da bomba (cada abastecimento fisico), nao do comprovante.
+    ticket_medio = SUM(VALOR) / COUNT(abastecimentos). Fonte:
+    mart.ticket_combustivel_diaria (Xpert CONSOLEARQUIVO).
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    sql = f"""
+      SELECT
+        COALESCE(SUM(valor_total), 0)::numeric(18,2) AS valor_total,
+        COALESCE(SUM(qtd_abastecimentos), 0)::int AS qtd_abastecimentos,
+        COALESCE(SUM(litros_total), 0)::numeric(18,3) AS litros_total
+      FROM mart.ticket_combustivel_diaria
+      WHERE id_empresa = %s AND data_ref BETWEEN %s AND %s
+        {where_filial}
+    """
+    params = [id_empresa, dt_ini, dt_fim] + branch_params
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        row = conn.execute(sql, params).fetchone() or {}
+    valor = float(row.get("valor_total") or 0)
+    qtd = int(row.get("qtd_abastecimentos") or 0)
+    litros = float(row.get("litros_total") or 0)
+    return {
+        "ticket_medio": round(valor / qtd, 2) if qtd else 0.0,
+        "valor_total": round(valor, 2),
+        "qtd_abastecimentos": qtd,
+        "litros_total": round(litros, 3),
+        "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
+    }
+
+
 def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
@@ -2275,11 +2314,28 @@ def sales_top_groups(role: str, id_empresa: int, id_filial: Optional[int], dt_in
 
 
 def sales_abc_curve(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs) -> Dict[str, Any]:
-    """ABC curve from PostgreSQL mart (fallback)."""
+    """ABC curve from PostgreSQL mart (fallback).
+
+    ``id_grupos`` (opcional): lista de id_grupo_produto para restringir a curva
+    a grupos específicos escolhidos pelo usuário (multi-seleção na tela). Quando
+    vazio/None, considera todos os grupos que já compõem a curva. A resposta
+    inclui ``groups`` (grupos disponíveis no período) para montar o seletor.
+    """
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
+    id_grupos = kwargs.get("id_grupos") or None
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
-    params = [id_empresa, ini, fim] + branch_params
+
+    group_filter = ""
+    if id_grupos:
+        group_filter = (
+            " AND id_produto IN ("
+            " SELECT DISTINCT id_produto FROM dw.dim_produto"
+            " WHERE id_empresa = %s AND id_grupo_produto = ANY(%s))"
+        )
+        params = [id_empresa, ini, fim] + branch_params + [id_empresa, list(id_grupos)]
+    else:
+        params = [id_empresa, ini, fim] + branch_params
     sql = f"""
       WITH base AS (
         SELECT
@@ -2294,6 +2350,7 @@ def sales_abc_curve(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
         FROM mart.agg_produtos_diaria
         WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
         {where_filial}
+        {group_filter}
         AND faturamento > 0
         GROUP BY id_produto
         HAVING SUM(faturamento) > 0
@@ -2313,11 +2370,33 @@ def sales_abc_curve(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        groups_params = [id_empresa, ini, fim] + branch_params
+        groups_sql = f"""
+          SELECT id_grupo_produto, MAX(grupo_nome) AS grupo_nome, SUM(faturamento)::numeric(18,2) AS faturamento
+          FROM mart.agg_grupos_diaria
+          WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
+          {where_filial}
+          AND id_grupo_produto <> -1
+          GROUP BY id_grupo_produto
+          HAVING SUM(faturamento) > 0
+          ORDER BY faturamento DESC
+        """
+        try:
+            available_groups = [
+                {
+                    "id_grupo_produto": int(g["id_grupo_produto"]),
+                    "grupo_nome": g.get("grupo_nome") or "(Sem grupo)",
+                    "faturamento": float(g.get("faturamento") or 0),
+                }
+                for g in conn.execute(groups_sql, groups_params).fetchall()
+            ]
+        except Exception:
+            available_groups = []
 
     if not rows:
         return {
             "summary": {"total_produtos": 0, "total_faturamento": 0, "classe_a_count": 0, "classe_a_pct": 0, "classe_b_count": 0, "classe_b_pct": 0, "classe_c_count": 0, "classe_c_pct": 0, "produto_lider": "", "produto_lider_pct": 0, "produto_lider_faturamento": 0, "concentration": "empty", "concentration_text": ""},
-            "chart_data": [], "ranking": [], "insights": [], "thresholds": {"a": 80, "b": 95, "c": 100}, "source": "postgres", "empty": True,
+            "chart_data": [], "ranking": [], "insights": [], "thresholds": {"a": 80, "b": 95, "c": 100}, "groups": available_groups, "selected_groups": list(id_grupos) if id_grupos else [], "source": "postgres", "empty": True,
         }
 
     total_fat = sum(float(r.get("faturamento") or 0) for r in rows)
@@ -2350,6 +2429,8 @@ def sales_abc_curve(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
         "ranking": [_row_to_ranking(r) for r in rows],
         "insights": [],
         "thresholds": {"a": 80, "b": 95, "c": 100},
+        "groups": available_groups,
+        "selected_groups": list(id_grupos) if id_grupos else [],
         "source": "postgres",
     }
 
@@ -2874,8 +2955,9 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
 
     sql = f"""
       SELECT
-        id_usuario,
+        id_filial,
         MAX(usuario_nome) AS usuario_nome,
+        id_usuario,
         COUNT(*)::int AS cancelamentos,
         COALESCE(SUM(valor_total),0)::numeric(18,2) AS valor_cancelado,
         COUNT(*) FILTER (WHERE usuario_source = 'turno')::int AS resolvidos_por_turno,
@@ -2884,14 +2966,24 @@ def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini
       WHERE id_empresa = %s
         AND data_key BETWEEN %s AND %s
         {where_filial}
-      GROUP BY id_usuario
+      GROUP BY id_filial, id_usuario
       ORDER BY cancelamentos DESC, valor_cancelado DESC, id_usuario
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     for row in rows:
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
+        fid = int(row.get("id_filial") or 0)
+        row["filial_label"] = _filial_label(fid, filial_nome_map.get(fid))
     return rows
 
 
@@ -2936,6 +3028,129 @@ def fraud_troca_forma_pgto_kpis(
         "suspeitas_valor": 0.0,
         "todas_qtd": 0,
         "todas_valor": 0.0,
+    }
+
+
+def fraud_lancamentos_creditos(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 150,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Lancamentos de credito de clientes (antifraude).
+
+    Golpe: o operador INJETA um credito no cliente (ENTRADAS) e depois aplica
+    esse credito em vendas/pagamentos (SAIDAS). A injecao MANUAL ("Credito
+    adicionado manualmente"), sem contrapartida de troco/cheque/fatura, e o
+    sinal de risco. O grid foca nas injecoes do periodo, marca as manuais como
+    suspeitas, mostra o operador responsavel e o saldo atual do cliente.
+    Fonte: stg.movcreditoentidades + stg.credito (Xpert).
+    """
+    where_filial, branch_params = _branch_scope_clause("m.id_filial", id_filial)
+    ini = dt_ini.isoformat()
+    fim = dt_fim.isoformat()
+
+    summary_sql = f"""
+      SELECT
+        COUNT(*) FILTER (WHERE ent > 0)::int AS injecoes_qtd,
+        COALESCE(SUM(ent) FILTER (WHERE ent > 0), 0)::numeric(18,2) AS injetado,
+        COUNT(*) FILTER (WHERE ent > 0 AND manual)::int AS manuais_qtd,
+        COALESCE(SUM(ent) FILTER (WHERE ent > 0 AND manual), 0)::numeric(18,2) AS injetado_manual,
+        COALESCE(SUM(sai), 0)::numeric(18,2) AS aplicado
+      FROM (
+        SELECT
+          COALESCE((m.payload->>'ENTRADAS')::numeric, 0) AS ent,
+          COALESCE((m.payload->>'SAIDAS')::numeric, 0) AS sai,
+          (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') AS manual
+        FROM stg.movcreditoentidades m
+        WHERE m.id_empresa = %s
+          AND LEFT(m.payload->>'DATA', 10) BETWEEN %s AND %s
+          {where_filial}
+      ) t
+    """
+    summary_params = [id_empresa, ini, fim] + branch_params
+
+    list_sql = f"""
+      WITH saldo AS (
+        SELECT id_filial, (payload->>'ID_ENTIDADE')::int AS id_entidade,
+               SUM(COALESCE((payload->>'SALDO')::numeric, 0)) AS saldo
+        FROM stg.credito
+        WHERE id_empresa = %s
+        GROUP BY 1, 2
+      )
+      SELECT
+        LEFT(m.payload->>'DATA', 10) AS data,
+        m.id_filial,
+        NULLIF(m.payload->>'ID_ENTIDADE', '')::int AS id_entidade,
+        COALESCE(u.nome, '') AS operador,
+        NULLIF(m.payload->>'ID_USUARIOS', '')::int AS id_usuario,
+        COALESCE((m.payload->>'ENTRADAS')::numeric, 0)::numeric(18,2) AS injetado,
+        COALESCE(s.saldo, 0)::numeric(18,2) AS saldo_cliente,
+        COALESCE(NULLIF(TRIM(m.payload->>'HISTORICO'), ''), '') AS historico,
+        (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') AS suspeita
+      FROM stg.movcreditoentidades m
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(NULLIF(TRIM(u2.payload->>'NOMEUSUARIOS'), ''), NULLIF(TRIM(u2.payload->>'NOME'), '')) AS nome
+        FROM stg.usuarios u2
+        WHERE u2.id_empresa = m.id_empresa
+          AND u2.id_usuario = NULLIF(m.payload->>'ID_USUARIOS', '')::int
+          AND COALESCE(NULLIF(TRIM(u2.payload->>'NOMEUSUARIOS'), ''), NULLIF(TRIM(u2.payload->>'NOME'), '')) IS NOT NULL
+        LIMIT 1
+      ) u ON true
+      LEFT JOIN saldo s
+        ON s.id_filial = m.id_filial AND s.id_entidade = NULLIF(m.payload->>'ID_ENTIDADE', '')::int
+      WHERE m.id_empresa = %s
+        AND LEFT(m.payload->>'DATA', 10) BETWEEN %s AND %s
+        AND COALESCE((m.payload->>'ENTRADAS')::numeric, 0) > 0
+        {where_filial}
+      ORDER BY (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') DESC,
+               (m.payload->>'ENTRADAS')::numeric DESC,
+               m.payload->>'DATA' DESC
+      LIMIT %s
+    """
+    list_params = [id_empresa, id_empresa, ini, fim] + branch_params + [int(limit)]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        srow = conn.execute(summary_sql, summary_params).fetchone() or {}
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+        rows = list(conn.execute(list_sql, list_params).fetchall())
+
+    def _fmt(r: Dict[str, Any]) -> Dict[str, Any]:
+        fid = int(r.get("id_filial") or 0)
+        ident = r.get("id_entidade")
+        operador = r.get("operador") or (f"Operador #{r.get('id_usuario')}" if r.get("id_usuario") else "Operador sem cadastro")
+        return {
+            "data": str(r.get("data")) if r.get("data") else None,
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, filial_nome_map.get(fid)),
+            "cliente": f"Cliente #{ident}" if ident else "Cliente sem cadastro",
+            "operador": operador,
+            "injetado": round(float(r.get("injetado") or 0), 2),
+            "saldo_cliente": round(float(r.get("saldo_cliente") or 0), 2),
+            "historico": r.get("historico") or "",
+            "suspeita": bool(r.get("suspeita")),
+        }
+
+    return {
+        "summary": {
+            "injecoes_qtd": int(srow.get("injecoes_qtd") or 0),
+            "injetado": round(float(srow.get("injetado") or 0), 2),
+            "manuais_qtd": int(srow.get("manuais_qtd") or 0),
+            "injetado_manual": round(float(srow.get("injetado_manual") or 0), 2),
+            "aplicado": round(float(srow.get("aplicado") or 0), 2),
+        },
+        "lancamentos": [_fmt(r) for r in rows],
+        "source": "postgres",
     }
 
 
@@ -3863,6 +4078,7 @@ def customers_delinquency_overview(
     customers_sql = f"""
       SELECT
         m.id_cliente,
+        m.id_filial,
         m.cliente_nome,
         m.titulos_ate_30d,
         m.valor_ate_30d,
@@ -3882,9 +4098,44 @@ def customers_delinquency_overview(
     """
     customers_params = [id_empresa] + branch_params
 
+    # Total da dívida POR FILIAL (o mesmo cliente pode dever em vários postos).
+    by_filial_sql = f"""
+      SELECT
+        m.id_filial,
+        COUNT(*)::int AS clientes,
+        COALESCE(SUM(m.valor_total_vencido), 0)::numeric(18,2) AS valor_vencido,
+        COALESCE(SUM(m.valor_total_aberto), 0)::numeric(18,2) AS valor_aberto
+      FROM mart.customer_delinquency_summary m
+      WHERE m.id_empresa = %s
+        {where_filial}
+      GROUP BY m.id_filial
+      ORDER BY valor_vencido DESC
+    """
+
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         summary_row = conn.execute(summary_sql, summary_params).fetchone() or {}
         customers = list(conn.execute(customers_sql, customers_params).fetchall())
+        by_filial_rows = list(conn.execute(by_filial_sql, summary_params).fetchall())
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+
+    by_filial = [
+        {
+            "id_filial": int(r.get("id_filial") or 0),
+            "filial_label": _filial_label(int(r.get("id_filial") or 0), filial_nome_map.get(int(r.get("id_filial") or 0))),
+            "clientes": int(r.get("clientes") or 0),
+            "valor_vencido": round(float(r.get("valor_vencido") or 0), 2),
+            "valor_aberto": round(float(r.get("valor_aberto") or 0), 2),
+        }
+        for r in by_filial_rows
+        if r.get("id_filial") is not None
+    ]
 
     if not customers:
         # Mart may not be populated yet — return empty structure
@@ -3906,6 +4157,7 @@ def customers_delinquency_overview(
                 {"bucket": "31_plus", "label": "30+ dias", "valor": 0, "titulos": 0},
             ],
             "customers": [],
+            "by_filial": [],
             "dt_ref": as_of.isoformat(),
         }
 
@@ -3940,6 +4192,8 @@ def customers_delinquency_overview(
         "customers": [
             {
                 "id_cliente": int(c.get("id_cliente") or 0),
+                "id_filial": int(c.get("id_filial") or 0),
+                "filial_label": _filial_label(int(c.get("id_filial") or 0), filial_nome_map.get(int(c.get("id_filial") or 0))),
                 "cliente_nome": c.get("cliente_nome"),
                 "titulos_ate_30d": int(c.get("titulos_ate_30d") or 0),
                 "valor_ate_30d": round(float(c.get("valor_ate_30d") or 0), 2),
@@ -3955,6 +4209,7 @@ def customers_delinquency_overview(
             }
             for c in customers
         ],
+        "by_filial": by_filial,
         "sort_by": sort_by,
         "dt_ref": as_of.isoformat(),
     }
@@ -4259,6 +4514,583 @@ def finance_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini:
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         return list(conn.execute(sql, params).fetchall())
+
+
+def finance_receipts_by_day(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Recebimentos de CONTAS A RECEBER por dia (baixas totais e parciais).
+
+    Legacy PostgreSQL. Lê as baixas de títulos a receber (stg.contasreceberbaixa)
+    pela DATA DA BAIXA (DATABAIXA). É o "recebimentos" da tela Financeiro: o
+    dinheiro que entrou de títulos a receber — distinto do mix de formas de
+    pagamento das vendas.
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa] + branch_params + [dt_ini, dt_fim]
+    sql = f"""
+      SELECT
+        to_char(left(payload->>'DATABAIXA', 10)::date, 'YYYYMMDD')::int AS data_key,
+        round(SUM((payload->>'VALORBAIXA')::numeric), 2) AS valor,
+        COUNT(*) AS qtd
+      FROM stg.contasreceberbaixa
+      WHERE id_empresa = %s
+        {where_filial}
+        AND payload->>'DATABAIXA' IS NOT NULL
+        AND left(payload->>'DATABAIXA', 10) <> ''
+        AND left(payload->>'DATABAIXA', 10)::date BETWEEN %s AND %s
+      GROUP BY 1
+      HAVING SUM((payload->>'VALORBAIXA')::numeric) > 0
+      ORDER BY 1
+    """
+    try:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+            rows = list(conn.execute(sql, params).fetchall())
+    except Exception:
+        rows = []
+    by_day = [
+        {"data_key": int(r["data_key"]), "valor": round(float(r["valor"] or 0), 2), "qtd": int(r["qtd"] or 0)}
+        for r in rows
+        if r.get("data_key")
+    ]
+    total = round(sum(d["valor"] for d in by_day), 2)
+    return {
+        "by_day": by_day,
+        "total_recebido": total,
+        "qtd_baixas": sum(d["qtd"] for d in by_day),
+        "source": "postgres",
+    }
+
+
+def cheques_pendentes_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    status: str = "",
+    limit: int = 3000,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Cheques recebidos por status (tela Financeiro / Controle de Cheques).
+
+    Traz cheques a VISTA e a PRAZO com todos os status: ``a_compensar`` |
+    ``depositado`` | ``devolvido`` (com motivo) | ``compensado``. O parametro
+    ``status`` e uma lista separada por virgula; vazio ou ``todos`` mostra a
+    visao padrao (tudo MENOS compensado). Os cards de resumo sempre refletem o
+    quadro completo. Fonte: mart.cheques_pendentes (Xpert dbo.CHEQUESRECEBIDOS
+    + dbo.SITUACOES).
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    today = business_today(id_empresa)
+
+    _valid = {"a_compensar", "depositado", "devolvido", "compensado"}
+    raw = str(status or "").strip().lower()
+    if not raw or raw == "todos":
+        req = {"a_compensar", "depositado", "devolvido"}
+    else:
+        req = {s.strip() for s in raw.split(",") if s.strip() in _valid}
+        if not req:
+            req = {"a_compensar", "depositado", "devolvido"}
+
+    summary_sql = f"""
+      SELECT
+        status_cheque,
+        COUNT(*)::int AS qtd,
+        COALESCE(SUM(valor), 0)::numeric(18,2) AS valor,
+        COUNT(*) FILTER (WHERE status_cheque <> 'compensado' AND dt_vencimento < %s)::int AS venc_qtd,
+        COALESCE(SUM(valor) FILTER (WHERE status_cheque <> 'compensado' AND dt_vencimento < %s), 0)::numeric(18,2) AS venc_valor,
+        COUNT(*) FILTER (WHERE avista)::int AS avista_qtd,
+        COUNT(*) FILTER (WHERE NOT avista)::int AS aprazo_qtd
+      FROM mart.cheques_pendentes
+      WHERE id_empresa = %s
+        {where_filial}
+      GROUP BY status_cheque
+    """
+    summary_params = [today, today, id_empresa] + branch_params
+
+    list_sql = f"""
+      SELECT id_filial, id_db, id_cheque, id_entidade, cliente_nome, cpf, valor,
+             dt_recebido, dt_vencimento, dt_compensado, situacao_cheque, avista,
+             motivo_devolucao, status_cheque, banco, agencia, nroconta, numero
+      FROM mart.cheques_pendentes
+      WHERE id_empresa = %s
+        {where_filial}
+        AND status_cheque = ANY(%s)
+      ORDER BY (status_cheque = 'devolvido') DESC, dt_vencimento NULLS LAST, valor DESC
+      LIMIT %s
+    """
+    list_params = [id_empresa] + branch_params + [list(req), int(limit)]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        srows = list(conn.execute(summary_sql, summary_params).fetchall())
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+        rows = list(conn.execute(list_sql, list_params).fetchall())
+
+    por_status: Dict[str, Dict[str, Any]] = {
+        k: {"qtd": 0, "valor": 0.0} for k in _valid
+    }
+    venc_qtd = venc_valor = avista_qtd = aprazo_qtd = 0
+    pend_qtd = 0
+    pend_valor = 0.0
+    for s in srows:
+        st = s.get("status_cheque") or "a_compensar"
+        por_status.setdefault(st, {"qtd": 0, "valor": 0.0})
+        por_status[st]["qtd"] = int(s.get("qtd") or 0)
+        por_status[st]["valor"] = round(float(s.get("valor") or 0), 2)
+        venc_qtd += int(s.get("venc_qtd") or 0)
+        venc_valor += float(s.get("venc_valor") or 0)
+        avista_qtd += int(s.get("avista_qtd") or 0)
+        aprazo_qtd += int(s.get("aprazo_qtd") or 0)
+        if st != "compensado":
+            pend_qtd += int(s.get("qtd") or 0)
+            pend_valor += float(s.get("valor") or 0)
+
+    def _fmt(c: Dict[str, Any]) -> Dict[str, Any]:
+        fid = int(c.get("id_filial") or 0)
+        dt_venc = c.get("dt_vencimento")
+        return {
+            "id_cheque": int(c.get("id_cheque") or 0),
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, filial_nome_map.get(fid)),
+            "cliente_nome": c.get("cliente_nome") or "",
+            "cpf": c.get("cpf") or "",
+            "valor": round(float(c.get("valor") or 0), 2),
+            "dt_recebido": str(c.get("dt_recebido")) if c.get("dt_recebido") else None,
+            "dt_vencimento": str(dt_venc) if dt_venc else None,
+            "dt_compensado": str(c.get("dt_compensado")) if c.get("dt_compensado") else None,
+            "vencido": bool(dt_venc and dt_venc < today and (c.get("status_cheque") != "compensado")),
+            "avista": bool(c.get("avista")),
+            "status": c.get("status_cheque") or "a_compensar",
+            "motivo_devolucao": c.get("motivo_devolucao") or "",
+            "banco": c.get("banco") or "",
+            "agencia": c.get("agencia") or "",
+            "nroconta": c.get("nroconta") or "",
+            "numero": c.get("numero") or "",
+        }
+
+    return {
+        "summary": {
+            "por_status": por_status,
+            "total_qtd": pend_qtd,
+            "total_valor": round(pend_valor, 2),
+            "vencidos_qtd": venc_qtd,
+            "vencidos_valor": round(venc_valor, 2),
+            "devolvidos_qtd": por_status.get("devolvido", {}).get("qtd", 0),
+            "devolvidos_valor": por_status.get("devolvido", {}).get("valor", 0.0),
+            "avista_qtd": avista_qtd,
+            "aprazo_qtd": aprazo_qtd,
+        },
+        "status": sorted(req),
+        "cheques": [_fmt(c) for c in rows],
+        "dt_ref": today.isoformat(),
+        "source": "postgres",
+    }
+
+
+# ================================================================
+# GESTAO ORCAMENTARIA (orcamento de despesas por conta gerencial)
+# ================================================================
+
+def _budget_status(realizado: float, orcado: float, alerta_pct: int) -> tuple[float, str]:
+    pct = (realizado / orcado * 100.0) if orcado > 0 else 0.0
+    if pct >= 100.0:
+        status = "estourado"
+    elif pct >= float(alerta_pct or 90):
+        status = "alerta"
+    else:
+        status = "ok"
+    return round(pct, 1), status
+
+
+def budget_config_overview(role: str, id_empresa: int, id_filial: Optional[int], **kwargs: Any) -> Dict[str, Any]:
+    """Contas gerenciais + orcamento configurado (tela Metas & Equipe, 1 filial).
+
+    Sincroniza com o Xpert: lista TODAS as contas gerenciais da filial (catalogo
+    mart.plano_contas_gerencial) com o teto/alerta ja definido (app.budget_conta).
+    Exige 1 filial, como as telas de comissao.
+    """
+    fid = id_filial if isinstance(id_filial, int) else None
+    if fid is None:
+        return {"requires_single_filial": True, "id_filial": None, "accounts": []}
+    sql = """
+      SELECT
+        g.id_plano_conta,
+        g.codigo,
+        g.nome_conta,
+        COALESCE(b.valor_max, 0)::numeric(18,2) AS valor_max,
+        COALESCE(b.alerta_pct, 90)::int AS alerta_pct,
+        (b.id_plano_conta IS NOT NULL) AS configurado
+      FROM mart.plano_contas_gerencial g
+      LEFT JOIN app.budget_conta b
+        ON b.id_empresa = g.id_empresa AND b.id_filial = g.id_filial AND b.id_plano_conta = g.id_plano_conta
+      WHERE g.id_empresa = %s AND g.id_filial = %s
+      ORDER BY g.nome_conta
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(fid)) as conn:
+        rows = [dict(r) for r in conn.execute(sql, [id_empresa, fid]).fetchall()]
+    accounts = [
+        {
+            "id_plano_conta": int(r.get("id_plano_conta") or 0),
+            "codigo": r.get("codigo") or "",
+            "nome_conta": r.get("nome_conta") or "",
+            "valor_max": round(float(r.get("valor_max") or 0), 2),
+            "alerta_pct": int(r.get("alerta_pct") or 90),
+            "configurado": bool(r.get("configurado")),
+        }
+        for r in rows
+    ]
+    return {"requires_single_filial": False, "id_filial": fid, "accounts": accounts}
+
+
+def budget_config_upsert(role: str, id_empresa: int, id_filial: Optional[int], items: List[Dict[str, Any]], **kwargs: Any) -> Dict[str, Any]:
+    """Salva o orcamento (teto + % alerta) por conta. Exige 1 filial.
+
+    Conta com teto <= 0 e removida da configuracao (deixa de ser orcada).
+    """
+    fid = id_filial if isinstance(id_filial, int) else None
+    if fid is None:
+        raise ValueError("budget_config_upsert requires a single filial")
+    saved = 0
+    removed = 0
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(fid)) as conn:
+        for it in items or []:
+            try:
+                idpc = int(it.get("id_plano_conta"))
+            except (TypeError, ValueError):
+                continue
+            vmax = float(it.get("valor_max") or 0)
+            apct = int(it.get("alerta_pct") or 90)
+            apct = max(1, min(100, apct))
+            if vmax <= 0:
+                conn.execute(
+                    "DELETE FROM app.budget_conta WHERE id_empresa=%s AND id_filial=%s AND id_plano_conta=%s",
+                    [id_empresa, fid, idpc],
+                )
+                removed += 1
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO app.budget_conta (id_empresa, id_filial, id_plano_conta, valor_max, alerta_pct, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, now())
+                    ON CONFLICT (id_empresa, id_filial, id_plano_conta) DO UPDATE SET
+                      valor_max = EXCLUDED.valor_max, alerta_pct = EXCLUDED.alerta_pct, updated_at = now()
+                    """,
+                    [id_empresa, fid, idpc, round(vmax, 2), apct],
+                )
+                saved += 1
+        conn.commit()
+    return {"saved": saved, "removed": removed}
+
+
+def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: int, mes: int, **kwargs: Any) -> Dict[str, Any]:
+    """Realizado x orcado por conta no mes (tela Financeiro).
+
+    So mostra contas COM orcamento (valor_max > 0). Com mais de 1 filial no
+    escopo, cada linha traz o apelido da filial. Alerta quando realizado atinge
+    a % configurada do teto.
+    """
+    where_filial, branch_params = _branch_scope_clause("g.id_filial", id_filial)
+    sql = f"""
+      SELECT
+        g.id_filial,
+        g.id_plano_conta,
+        g.codigo,
+        g.nome_conta,
+        b.valor_max::numeric(18,2) AS valor_max,
+        b.alerta_pct::int AS alerta_pct,
+        COALESCE(d.valor_realizado, 0)::numeric(18,2) AS realizado
+      FROM app.budget_conta b
+      JOIN mart.plano_contas_gerencial g
+        ON g.id_empresa = b.id_empresa AND g.id_filial = b.id_filial AND g.id_plano_conta = b.id_plano_conta
+      LEFT JOIN mart.despesa_conta_mensal d
+        ON d.id_empresa = b.id_empresa AND d.id_filial = b.id_filial AND d.id_plano_conta = b.id_plano_conta
+       AND d.ano = %s AND d.mes = %s
+      WHERE b.id_empresa = %s
+        {where_filial}
+        AND b.valor_max > 0
+      ORDER BY g.id_filial, g.nome_conta
+    """
+    params = [int(ano), int(mes), id_empresa] + branch_params
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute("SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s", [id_empresa]).fetchall()
+            if r.get("id_filial") is not None
+        }
+
+    contas = []
+    total_orcado = 0.0
+    total_realizado = 0.0
+    for r in rows:
+        fidr = int(r.get("id_filial") or 0)
+        orcado = round(float(r.get("valor_max") or 0), 2)
+        realizado = round(float(r.get("realizado") or 0), 2)
+        alerta_pct = int(r.get("alerta_pct") or 90)
+        pct, status = _budget_status(realizado, orcado, alerta_pct)
+        total_orcado += orcado
+        total_realizado += realizado
+        contas.append({
+            "id_filial": fidr,
+            "filial_label": _filial_label(fidr, filial_nome_map.get(fidr)),
+            "id_plano_conta": int(r.get("id_plano_conta") or 0),
+            "codigo": r.get("codigo") or "",
+            "nome_conta": r.get("nome_conta") or "",
+            "orcado": orcado,
+            "realizado": realizado,
+            "saldo": round(orcado - realizado, 2),
+            "consumo_pct": pct,
+            "alerta_pct": alerta_pct,
+            "status": status,
+        })
+
+    return {
+        "ano": int(ano),
+        "mes": int(mes),
+        "contas": contas,
+        "summary": {
+            "total_orcado": round(total_orcado, 2),
+            "total_realizado": round(total_realizado, 2),
+            "saldo": round(total_orcado - total_realizado, 2),
+            "contas_em_alerta": sum(1 for c in contas if c["status"] in ("alerta", "estourado")),
+            "contas_estouradas": sum(1 for c in contas if c["status"] == "estourado"),
+        },
+        "source": "postgres",
+    }
+
+
+def budget_alerts(role: str, id_empresa: int, id_filial: Optional[int], ano: int, mes: int, **kwargs: Any) -> Dict[str, Any]:
+    """Contas de despesa chegando/passando do teto no mes (alerta do Dashboard)."""
+    overview = budget_overview(role, id_empresa, id_filial, ano, mes)
+    alerts = [
+        {
+            "id_filial": c["id_filial"],
+            "filial_label": c["filial_label"],
+            "nome_conta": c["nome_conta"],
+            "orcado": c["orcado"],
+            "realizado": c["realizado"],
+            "consumo_pct": c["consumo_pct"],
+            "status": c["status"],
+        }
+        for c in overview.get("contas", [])
+        if c["status"] in ("alerta", "estourado")
+    ]
+    alerts.sort(key=lambda a: a["consumo_pct"], reverse=True)
+    return {
+        "ano": int(ano),
+        "mes": int(mes),
+        "alerts": alerts,
+        "total_alertas": len(alerts),
+        "source": "postgres",
+    }
+
+
+_MESES_PTBR = [
+    "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+]
+
+
+def _month_label_ptbr(ano_mes: int) -> str:
+    ano = ano_mes // 100
+    mes = ano_mes % 100
+    return f"{_MESES_PTBR[mes]}/{ano}" if 1 <= mes <= 12 else str(ano_mes)
+
+
+def solvencia_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    ano_mes: int,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Solvencia de curto prazo (aba Solvencia do DRE Gerencial).
+
+    Cruza o ativo circulante (caixa + banco + cartoes + cheques + estoque a
+    custo) com o passivo circulante (contas a pagar em aberto vencendo no
+    mes-alvo), a partir de mart.liquidez_solvencia (grao filial x mes). Agrega no
+    escopo, recalcula os indices consolidados e devolve a lista por filial mais
+    os meses disponiveis para o filtro de mes.
+
+    Enquanto a coleta dos ativos nao esta habilitada, os componentes de ativo
+    ficam zerados e tem_ativo_dados=false: a tela mostra so o passivo do mes e
+    sinaliza "aguardando dados de ativo" em vez de um "nao cobre" enganoso.
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    target = int(ano_mes)
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        meses_rows = conn.execute(
+            f"""
+            SELECT DISTINCT ano_mes
+            FROM mart.liquidez_solvencia
+            WHERE id_empresa = %s
+              {where_filial}
+            ORDER BY ano_mes
+            """,
+            [id_empresa] + branch_params,
+        ).fetchall()
+        meses_disponiveis = [int(r["ano_mes"]) for r in meses_rows]
+
+        rows = conn.execute(
+            f"""
+            SELECT
+              id_filial,
+              passivo_contas_pagar, passivo_qtd_titulos, passivo_vencido,
+              ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques, ativo_estoque,
+              ativo_estoque_combustivel, ativo_estoque_loja,
+              estoque_combustivel_medido, estoque_data_leitura,
+              tem_ativo_dados, updated_at
+            FROM mart.liquidez_solvencia
+            WHERE id_empresa = %s
+              {where_filial}
+              AND ano_mes = %s
+            ORDER BY id_filial
+            """,
+            [id_empresa] + branch_params + [target],
+        ).fetchall()
+
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+
+    tot_caixa = tot_banco = tot_cartoes = tot_cheques = tot_estoque = 0.0
+    tot_estoque_comb = tot_estoque_loja = 0.0
+    tot_passivo = tot_vencido = 0.0
+    tot_titulos = 0
+    postos_comb_medido = 0
+    ult_leitura = None
+    tem_ativo_dados = False
+    updated_at = None
+    por_filial: List[Dict[str, Any]] = []
+
+    for r in rows:
+        fid = int(r["id_filial"])
+        caixa = round(float(r.get("ativo_caixa") or 0), 2)
+        banco = round(float(r.get("ativo_banco") or 0), 2)
+        cartoes = round(float(r.get("ativo_cartoes") or 0), 2)
+        cheques = round(float(r.get("ativo_cheques") or 0), 2)
+        estoque = round(float(r.get("ativo_estoque") or 0), 2)
+        estoque_comb = round(float(r.get("ativo_estoque_combustivel") or 0), 2)
+        estoque_loja = round(float(r.get("ativo_estoque_loja") or 0), 2)
+        comb_medido = bool(r.get("estoque_combustivel_medido"))
+        data_leitura = r.get("estoque_data_leitura")
+        passivo = round(float(r.get("passivo_contas_pagar") or 0), 2)
+        vencido = round(float(r.get("passivo_vencido") or 0), 2)
+        titulos = int(r.get("passivo_qtd_titulos") or 0)
+        f_tem_ativo = bool(r.get("tem_ativo_dados"))
+
+        circulante = round(caixa + banco + cartoes + cheques + estoque, 2)
+        disponivel = round(caixa + banco, 2)
+        liquidez = round(circulante / passivo, 4) if passivo > 0 else 0.0
+        capital_giro = round(circulante - passivo, 2)
+
+        tot_caixa += caixa
+        tot_banco += banco
+        tot_cartoes += cartoes
+        tot_cheques += cheques
+        tot_estoque += estoque
+        tot_estoque_comb += estoque_comb
+        tot_estoque_loja += estoque_loja
+        if comb_medido:
+            postos_comb_medido += 1
+            if data_leitura and (ult_leitura is None or data_leitura > ult_leitura):
+                ult_leitura = data_leitura
+        tot_passivo += passivo
+        tot_vencido += vencido
+        tot_titulos += titulos
+        tem_ativo_dados = tem_ativo_dados or f_tem_ativo
+        if r.get("updated_at") and (updated_at is None or r["updated_at"] > updated_at):
+            updated_at = r["updated_at"]
+
+        por_filial.append({
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, filial_nome_map.get(fid)),
+            "ativo_caixa": caixa,
+            "ativo_banco": banco,
+            "ativo_cartoes": cartoes,
+            "ativo_cheques": cheques,
+            "ativo_estoque": estoque,
+            "ativo_estoque_combustivel": estoque_comb,
+            "ativo_estoque_loja": estoque_loja,
+            "estoque_combustivel_medido": comb_medido,
+            "ativo_disponivel": disponivel,
+            "ativo_circulante": circulante,
+            "passivo_contas_pagar": passivo,
+            "passivo_vencido": vencido,
+            "passivo_qtd_titulos": titulos,
+            "liquidez_corrente": liquidez,
+            "capital_giro_liquido": capital_giro,
+            "cobre_passivo": (f_tem_ativo and circulante >= passivo),
+            "tem_ativo_dados": f_tem_ativo,
+        })
+
+    ativo_circulante = round(tot_caixa + tot_banco + tot_cartoes + tot_cheques + tot_estoque, 2)
+    ativo_disponivel = round(tot_caixa + tot_banco, 2)
+    tot_passivo = round(tot_passivo, 2)
+    liquidez_corrente = round(ativo_circulante / tot_passivo, 4) if tot_passivo > 0 else 0.0
+    capital_giro_liquido = round(ativo_circulante - tot_passivo, 2)
+
+    return {
+        "ano_mes": target,
+        "mes_label": _month_label_ptbr(target),
+        "consolidado": len(por_filial) > 1,
+        "filiais_count": len(por_filial),
+        "meses_disponiveis": [
+            {"ano_mes": m, "label": _month_label_ptbr(m)} for m in meses_disponiveis
+        ],
+        "ativo": {
+            "caixa": round(tot_caixa, 2),
+            "banco": round(tot_banco, 2),
+            "cartoes": round(tot_cartoes, 2),
+            "cheques": round(tot_cheques, 2),
+            "estoque": round(tot_estoque, 2),
+            "estoque_combustivel": round(tot_estoque_comb, 2),
+            "estoque_loja": round(tot_estoque_loja, 2),
+            "disponivel": ativo_disponivel,
+            "circulante": ativo_circulante,
+        },
+        "cobertura_estoque": {
+            "postos_com_combustivel": postos_comb_medido,
+            "postos_total": len(por_filial),
+            "ultima_leitura": str(ult_leitura) if ult_leitura else "",
+        },
+        "passivo": {
+            "contas_pagar": tot_passivo,
+            "qtd_titulos": tot_titulos,
+            "vencido": round(tot_vencido, 2),
+        },
+        "indices": {
+            "liquidez_corrente": liquidez_corrente,
+            "capital_giro_liquido": capital_giro_liquido,
+            "cobre_passivo": bool(tem_ativo_dados and ativo_circulante >= tot_passivo),
+        },
+        "tem_ativo_dados": tem_ativo_dados,
+        "por_filial": por_filial,
+        "freshness": str(updated_at) if updated_at else "",
+        "disclaimer": (
+            "Solvência gerencial de curto prazo: ativo circulante (disponível, "
+            "recebíveis de curto prazo e estoque a custo) x contas a pagar do mês. "
+            "Indicador gerencial, não é balanço contábil oficial."
+        ),
+        "source": "postgres",
+    }
 
 
 def _finance_aging_operational_as_of(

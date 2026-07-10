@@ -268,6 +268,23 @@ _register(TableMapping(
     ),
 ))
 
+# NFe/NFC-e por comprovante -> alimenta stg_nfe_slim (documento fiscal da tela
+# AntiFraude). Só shadows tipadas seguras (smallint/varchar); data e valor sao
+# resolvidos do payload em _populate_slim_nfe (o payload traz STATUS/NRONF como
+# numero, entao dependem da coluna shadow tipada, nao de JSONExtractString).
+_register(TableMapping(
+    source_schema="stg", source_table="nfe",
+    ch_database="torqmind_current", ch_table="stg_nfe",
+    primary_key=("id_empresa", "id_filial", "id_db", "id_comprovante", "id_nfe"),
+    columns=_stg_columns(
+        "id_empresa", "id_filial", "id_db", "id_comprovante", "id_nfe",
+        extra=(
+            "status_shadow", "numero_nfe_shadow", "serie_shadow",
+            "chave_nfe_shadow", "protocolo_shadow", "modelo_shadow",
+        ),
+    ),
+))
+
 _register(TableMapping(
     source_schema="stg", source_table="contaspagar",
     ch_database="torqmind_current", ch_table="stg_contaspagar",

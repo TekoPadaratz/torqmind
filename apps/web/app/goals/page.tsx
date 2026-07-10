@@ -18,6 +18,7 @@ import { formatGoalTargetInputFromNumber, normalizeGoalTargetInput, parseGoalTar
 import { startScopeTransition } from '../lib/scope-runtime';
 import CommissionsTab from './CommissionsTab';
 import CommissionConfigTab from './CommissionConfigTab';
+import BudgetConfigTab from './BudgetConfigTab';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,7 +48,7 @@ export default function GoalsPage() {
   const [metaError, setMetaError] = useState('');
   const singleBranchId = scope.id_filial || (scope.id_filiais.length === 1 ? scope.id_filiais[0] : null);
   const metaEditable = Boolean(singleBranchId);
-  const [activeTab, setActiveTab] = useState<'metas' | 'comissoes' | 'config'>('metas');
+  const [activeTab, setActiveTab] = useState<'metas' | 'comissoes' | 'config' | 'orcamento'>('metas');
   const [commissionRefresh, setCommissionRefresh] = useState(0);
 
   const userLabel = useMemo(() => {
@@ -145,6 +146,7 @@ export default function GoalsPage() {
             { key: 'metas' as const, label: 'Metas & Equipe' },
             { key: 'comissoes' as const, label: 'Comissões' },
             { key: 'config' as const, label: 'Configuração' },
+            { key: 'orcamento' as const, label: 'Gestão Orçamentária' },
           ].map((tab) => (
             <button
               key={tab.key}
@@ -180,6 +182,13 @@ export default function GoalsPage() {
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
             onSaved={() => setCommissionRefresh((n) => n + 1)}
+          />
+        )}
+
+        {activeTab === 'orcamento' && (
+          <BudgetConfigTab
+            idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+            idFilial={singleBranchId ? Number(singleBranchId) : null}
           />
         )}
 

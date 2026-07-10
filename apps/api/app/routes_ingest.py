@@ -633,6 +633,50 @@ DATASETS: Dict[str, DatasetSpec] = {
         ],
     ),
 
+    # Financeiro - controle de cheques recebidos + situacoes (motivos)
+    "cheques": DatasetSpec(
+        table="stg.cheques",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_cheque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_cheque", ["ID_CHEQUESRECEBIDOS", "id_cheque"]),
+        ],
+    ),
+    "situacoes": DatasetSpec(
+        table="stg.situacoes",
+        pk_cols=["id_empresa", "id_filial", "id_situacao"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_situacao", ["ID_SITUACOES", "id_situacao"]),
+        ],
+    ),
+    "movcreditoentidades": DatasetSpec(
+        table="stg.movcreditoentidades",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_movcredito"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_movcredito", ["ID_MOVCREDITOENTIDADES", "id_movcredito"]),
+        ],
+    ),
+    "credito": DatasetSpec(
+        table="stg.credito",
+        pk_cols=["id_empresa", "id_filial", "id_credito"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_credito", ["ID_CREDITO", "id_credito"]),
+        ],
+    ),
+    "consolearquivo": DatasetSpec(
+        table="stg.consolearquivo",
+        pk_cols=["id_empresa", "id_filial", "id_consolearquivo"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_consolearquivo", ["ID_CONSOLEARQUIVO", "id_consolearquivo"]),
+        ],
+    ),
+
     # Plano de Contas (chart of accounts)
     "planodecontas": DatasetSpec(
         table="stg.planodecontas",
@@ -672,6 +716,22 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_filial", ["ID_FILIAL", "id_filial"]),
             ("id_db", ["ID_DB", "id_db"]),
             ("id_movlctoscancelados", ["ID_MOVLCTOSCANCELADOS", "id_movlctoscancelados"]),
+        ],
+    ),
+    "tanques": DatasetSpec(
+        table="stg.tanques",
+        pk_cols=["id_empresa", "id_filial", "id_tanque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_tanque", ["ID_TANQUES", "id_tanque"]),
+        ],
+    ),
+    "movtanques": DatasetSpec(
+        table="stg.movtanques",
+        pk_cols=["id_empresa", "id_filial", "id_movtanque"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_movtanque", ["ID_MOVTANQUES", "id_movtanque"]),
         ],
     ),
 }

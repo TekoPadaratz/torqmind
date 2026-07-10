@@ -13,9 +13,11 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
+from app import repos_mart
+from app.business_time import resolve_business_date
 from app.db_clickhouse import query_dict, query_scalar
 from app.deps import get_current_claims
-from app.permissions import require_screen, redact_sensitive
+from app.permissions import require_screen, redact_sensitive, can_view_sensitive_financials
 from app.scope import resolve_scope_filters
 
 router = APIRouter(prefix="/bi/profit-management", tags=["profit-management"])
@@ -686,3 +688,50 @@ def profit_repricing(
     }
 
     return redact_sensitive({"data": payload}, claims)
+
+
+@router.get("/solvencia")
+def profit_solvencia(
+    ano_mes: Optional[int] = Query(None, description="Mês-alvo no formato YYYYMM; default = mês corrente"),
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    branch_scope: Optional[str] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    """Solvência / Capital de Giro: ativo circulante x contas a pagar do mês.
+
+    Aba \"Solvência\" do DRE Gerencial, com filtro de mês. Responde \"meus ativos
+    cobrem o passivo do mês?\" cruzando o disponível (caixa/banco), os recebíveis
+    de curto prazo (cartões/cheques) e o estoque a custo com as contas a pagar
+    que vencem no mês-alvo.
+    """
+    role = claims["role"]
+    # Solvencia expoe estoque A CUSTO e a saude financeira (ativos x passivos):
+    # dado gerencial sensivel. Alem de exigir a tela (require_screen), so quem pode
+    # ver financeiros sensiveis (owner/master/admin) acessa; gerente/canal/vendedor
+    # ficam de fora mesmo tendo a tela concedida.
+    if not can_view_sensitive_financials(claims):
+        return {
+            "data": None,
+            "message": "Sem permissão para ver a análise de solvência (dados financeiros gerenciais).",
+        }
+
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
+    )
+
+    target: Optional[int] = None
+    if ano_mes is not None:
+        mm = int(ano_mes) % 100
+        if int(ano_mes) >= 190001 and 1 <= mm <= 12:
+            target = int(ano_mes)
+    if target is None:
+        today = resolve_business_date(None, tenant)
+        target = today.year * 100 + today.month
+
+    return redact_sensitive(
+        {"data": repos_mart.solvencia_overview(role, tenant, filial, target)},
+        claims,
+    )

@@ -513,6 +513,36 @@ CREATE TABLE IF NOT EXISTS torqmind_current.stg_comprovantes (
 ORDER BY (id_empresa, id_filial, id_db, id_comprovante)
 SETTINGS index_granularity = 8192;
 
+-- NFe / NFC-e por comprovante. Alimenta stg_nfe_slim (documento fiscal na tela
+-- AntiFraude). status_shadow/numero_nfe_shadow sao tipados na origem (o payload
+-- traz STATUS/NRONF como numero, entao JSONExtractString viria vazio). As colunas
+-- de data e o valor ficam Nullable e sao resolvidas do payload em _populate_slim_nfe.
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_nfe (
+    id_empresa           Int32 NOT NULL,
+    id_filial            Int32 NOT NULL,
+    id_db                Int32 NOT NULL,
+    id_comprovante       Int32 NOT NULL,
+    id_nfe               Int32 NOT NULL,
+    payload              String NOT NULL DEFAULT '{}',
+    ingested_at          Nullable(DateTime64(6, 'UTC')),
+    dt_evento            Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow         Nullable(Int64),
+    id_chave_natural     Nullable(String),
+    received_at          Nullable(DateTime64(6, 'UTC')),
+    status_shadow        Nullable(Int16),
+    numero_nfe_shadow    Nullable(String),
+    serie_shadow         Nullable(String),
+    chave_nfe_shadow     Nullable(String),
+    protocolo_shadow     Nullable(String),
+    modelo_shadow        Nullable(String),
+    data_emissao_shadow  Nullable(DateTime64(6, 'UTC')),
+    valor_nfe_shadow     Nullable(Decimal(18,2)),
+    is_deleted           UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms         Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_db, id_comprovante, id_nfe)
+SETTINGS index_granularity = 8192;
+
 CREATE TABLE IF NOT EXISTS torqmind_current.stg_itenscomprovantes (
     id_empresa               Int32 NOT NULL,
     id_filial                Int32 NOT NULL,

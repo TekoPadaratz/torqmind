@@ -1,4 +1,27 @@
 # TorqMind Extractor Agent config (SAFE EXAMPLE - no secrets)
+#
+# ====================================================================
+# COMO ATUALIZAR O AGENT NO CLIENTE (fluxo recomendado, seguro)
+# --------------------------------------------------------------------
+# 1) O MAPEAMENTO DAS TABELAS JA VEM EMBUTIDO no binario (agent/config.py).
+#    Ao gerar um novo torqmind-agent.exe, as tabelas novas passam a coletar
+#    SOZINHAS. Voce NAO precisa copiar a secao `datasets:` para o cliente.
+# 2) No cliente, use um config CRIPTOGRAFADO (config.enc), nunca .yaml em texto:
+#      torqmind-agent.exe config init --interactive --config config.enc
+#    (ou `config edit`/update-config.bat). O config.enc e cifrado com o Windows
+#    DPAPI (amarrado a maquina) — nao abre no Notepad, nao expoe senha/ingest_key.
+# 3) O config.enc do cliente so precisa de: conexao SQL + api.ingest_key +
+#    id_empresa. Ele NAO tem senhas em texto e NAO precisa do mapeamento.
+# 4) Para atualizar so a versao: substitua o .exe e reinicie o servico. O
+#    config.enc permanece intacto (conexao preservada) e as tabelas novas
+#    coletam automaticamente.
+# 5) Migrar um cliente antigo (config.yaml em texto) para o modo seguro:
+#      torqmind-agent.exe config migrate-from-yaml --source config.yaml
+#    depois APAGUE o config.yaml em texto do servidor do cliente.
+#
+# A secao `datasets:` abaixo e apenas REFERENCIA/documentacao do que o agent
+# coleta — a fonte da verdade e agent/config.py (embutido no .exe).
+# ====================================================================
 
 sqlserver:
   driver: ODBC Driver 17 for SQL Server
@@ -404,3 +427,84 @@ datasets:
                     (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
                 ) AS v(dt)) AS TORQMIND_WATERMARK
       FROM dbo.MOVLCTOSCANCELADOS m
+
+  # ------------------------------------------------------------------
+  # Coletas novas (Solvencia/DRE + Financeiro + Antifraude + Vendas).
+  # IMPORTANTE: estes datasets JA VEM EMBUTIDOS no binario (agent/config.py
+  # DEFAULT_DATASETS). Ao gerar um novo .exe eles passam a coletar sozinhos —
+  # voce NAO precisa copiar este mapeamento para o config do cliente. Estao
+  # aqui apenas como referencia/documentacao.
+  # ------------------------------------------------------------------
+
+  # Estoque para Solvencia/DRE (sensor de tanque + loja).
+  tanques:
+    enabled: true
+    table: dbo.TANQUES
+    watermark_column: ID_TANQUES
+    watermark_order_by: ID_TANQUES, ID_FILIAL
+    full_refresh: true
+
+  movtanques:
+    enabled: true
+    table: dbo.MOVTANQUES
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: |
+      SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, CAST(m.DTACONTA AS datetime2) AS TORQMIND_WATERMARK FROM dbo.MOVTANQUES m
+
+  estoque:
+    enabled: true
+    table: dbo.ESTOQUE
+    watermark_column: ID_ESTOQUE
+    watermark_order_by: ID_ESTOQUE, ID_FILIAL
+    full_refresh: true
+
+  # Financeiro: controle de cheques recebidos + catalogo de situacoes (motivos).
+  cheques:
+    enabled: true
+    table: dbo.CHEQUESRECEBIDOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    revisit_open_clause: (DTACOMPENSADO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)) OR (DTACOMPENSADO IS NOT NULL AND CAST(DTACOMPENSADO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))
+    query: |
+      SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTACOMPENSADO AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CHEQUESRECEBIDOS c
+
+  situacoes:
+    enabled: true
+    table: dbo.SITUACOES
+    watermark_column: ID_SITUACOES
+    watermark_order_by: ID_SITUACOES, ID_FILIAL
+    full_refresh: true
+
+  # Antifraude: lancamentos de credito de clientes (injecao/aplicacao) + saldo.
+  movcreditoentidades:
+    enabled: true
+    table: dbo.MOVCREDITOENTIDADES
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: |
+      SELECT m.*, CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DATA AS datetime2)), (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.MOVCREDITOENTIDADES m
+
+  credito:
+    enabled: true
+    table: dbo.CREDITO
+    watermark_column: ID_CREDITO
+    watermark_order_by: ID_CREDITO, ID_FILIAL
+    full_refresh: true
+
+  # Vendas: abastecimentos do console da bomba (ticket medio de combustivel).
+  consolearquivo:
+    enabled: true
+    table: dbo.CONSOLEARQUIVO
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: |
+      SELECT c.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DATA AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONSOLEARQUIVO c

@@ -868,6 +868,14 @@ def sales_abc_curve(
         fuel_filter = """
                 AND NOT (lower(nome_grupo) LIKE '%combusti%' OR lower(nome_grupo) LIKE '%gasolina%' OR lower(nome_grupo) LIKE '%diesel%' OR lower(nome_grupo) LIKE '%etanol%' OR lower(nome_grupo) LIKE '%gnv%' OR lower(nome_grupo) LIKE '%gas natural%' OR lower(nome_grupo) LIKE '%alcool%')"""
 
+    # Group multi-select filter (id_grupos): restringe a curva a grupos escolhidos.
+    id_grupos = kwargs.get("id_grupos") or None
+    group_filter = ""
+    if id_grupos:
+        _gvals = ", ".join(str(int(g)) for g in id_grupos if str(g).strip() not in ("", "None"))
+        if _gvals:
+            group_filter = f" AND id_grupo_produto IN ({_gvals})"
+
     # Sort column for ORDER BY
     sort_col_map = {"faturamento": "fat", "quantidade": "qty", "lucro": "mrg"}
     sort_col = sort_col_map.get(sort_by, "fat")
@@ -911,7 +919,7 @@ def sales_abc_curve(
                     toFloat64(sum(faturamento)) - toFloat64(sum(custo_total)) AS mrg,
                     if(sum(qtd) > 0, toFloat64(sum(faturamento)) / toFloat64(sum(qtd)), 0) AS avg_price
                 FROM {MART_RT_DB}.sales_products_rt FINAL
-                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}
+                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}{group_filter}
                 GROUP BY id_produto, nome_produto, nome_grupo
                 HAVING sum(faturamento) > 0
             )
@@ -921,8 +929,30 @@ def sales_abc_curve(
         ORDER BY ranked.posicao ASC
     """, parameters={"id_empresa": id_empresa})
 
+    # Grupos disponiveis no periodo/escopo (respeita exclude_fuel) para o seletor.
+    group_rows = query_dict(f"""
+        SELECT id_grupo_produto,
+               any(nome_grupo) AS grupo_nome,
+               sum(faturamento) AS fat_total
+        FROM {MART_RT_DB}.sales_products_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}
+        GROUP BY id_grupo_produto
+        HAVING fat_total > 0
+        ORDER BY fat_total DESC
+    """, parameters={"id_empresa": id_empresa})
+    available_groups = [
+        {
+            "id_grupo_produto": int(g.get("id_grupo_produto") or 0),
+            "grupo_nome": g.get("grupo_nome") or "(Sem grupo)",
+            "faturamento": round(float(g.get("fat_total") or 0), 2),
+        }
+        for g in group_rows
+        if g.get("id_grupo_produto") is not None
+    ]
+    selected_groups = [int(g) for g in id_grupos] if id_grupos else []
+
     if not rows:
-        return _abc_empty_response()
+        return _abc_empty_response(available_groups, selected_groups)
 
     # Determine the metric field for sort_by
     metric_field_map = {"faturamento": "faturamento", "quantidade": "qtd", "lucro": "margem"}
@@ -1036,11 +1066,16 @@ def sales_abc_curve(
         "insights": insights,
         "thresholds": {"a": threshold_a, "b": threshold_b, "c": 100},
         "sort_by": sort_by,
+        "groups": available_groups,
+        "selected_groups": selected_groups,
         "source": "realtime",
     }
 
 
-def _abc_empty_response() -> Dict[str, Any]:
+def _abc_empty_response(
+    groups: Optional[List[Dict[str, Any]]] = None,
+    selected_groups: Optional[List[int]] = None,
+) -> Dict[str, Any]:
     return {
         "summary": {
             "total_produtos": 0,
@@ -1061,6 +1096,8 @@ def _abc_empty_response() -> Dict[str, Any]:
         "ranking": [],
         "insights": [],
         "thresholds": {"a": 80, "b": 95, "c": 100},
+        "groups": groups or [],
+        "selected_groups": selected_groups or [],
         "source": "realtime",
         "empty": True,
     }
@@ -1275,6 +1312,32 @@ def _reconcile_payment_mix(
             "is_reconciliation": True,
         })
     return mix, total_pagamentos, diferenca
+
+
+def _split_avista_recebido(payments: List[Dict[str, Any]]) -> tuple[float, float, float]:
+    """Separa o mix de pagamentos em (à vista, a prazo, cheque).
+
+    À vista = dinheiro, cartão, pix e afins efetivamente recebidos no caixa.
+    Exclui PRAZO (fiado), qualquer forma de CHEQUE e o resíduo não conciliado
+    (fiado/ajustes não registrados). É o "faturado à vista = faturado - a prazo -
+    cheque" pedido para a tela de Caixa (recebimento de venda do dia).
+    """
+    avista = 0.0
+    a_prazo = 0.0
+    cheque = 0.0
+    for p in payments:
+        valor = float(p.get("total_valor") or 0)
+        category = str(p.get("category") or "").strip().upper()
+        if category == "PRAZO":
+            a_prazo += valor
+        elif "CHEQUE" in category:
+            cheque += valor
+        elif category == "RECONCILIATION":
+            # resíduo não conciliado (fiado/ajustes): não é recebimento à vista
+            continue
+        else:
+            avista += valor
+    return round(avista, 2), round(a_prazo, 2), round(cheque, 2)
 
 
 def cash_overview(
@@ -1614,6 +1677,7 @@ def cash_overview(
     # (unrecorded fiado/prazo, leftover troca-de-forma ghosts, rounding) become an
     # explicit non-hidden line so payment_mix totals match total_vendas.
     payments, total_pagamentos, diferenca_conciliacao = _reconcile_payment_mix(payments, total_vendas)
+    recebimentos_avista, total_a_prazo, total_cheque = _split_avista_recebido(payments)
 
     commercial_kpis = {
         "total_vendas": total_vendas,
@@ -1622,7 +1686,10 @@ def cash_overview(
         "total_pagamentos": total_pagamentos,
         "total_pagamentos_conciliado": total_pagamentos,
         "diferenca_conciliacao": diferenca_conciliacao,
-        "recebimentos_periodo": total_pagamentos,
+        "recebimentos_periodo": recebimentos_avista,
+        "recebimentos_avista": recebimentos_avista,
+        "total_a_prazo": total_a_prazo,
+        "total_cheque": total_cheque,
         "saldo_comercial": saldo_comercial,
         "qtd_vendas": int(sales_kpi.get("qtd_vendas") or 0),
         "qtd_cancelamentos": int(sales_kpi.get("qtd_cancelamentos") or 0),
@@ -1677,7 +1744,7 @@ def cash_overview(
             "cards": [
                 {"key": "receita", "label": "Receita bruta", "amount": total_vendas, "detail": "Total faturado no período"},
                 {"key": "cancelamentos", "label": "Cancelamentos", "amount": total_cancelamentos, "detail": "Devoluções e cancelamentos"},
-                {"key": "recebimentos", "label": "Recebimentos", "amount": total_pagamentos, "detail": "Pagamentos recebidos"},
+                {"key": "recebimentos", "label": "Recebimentos à vista", "amount": recebimentos_avista, "detail": "Dinheiro, cartão e pix recebidos no caixa (exclui prazo e cheque)"},
             ],
             "pending": [],
         },
@@ -1873,7 +1940,16 @@ def fraud_last_events(
         """, parameters={"id_empresa": id_empresa})
         if rows:
             # Single shared contract with risk_last_events: operational turno,
-            # comprovante-based documento, resolved operator/filial/date.
+            # NF-based documento (fallback comprovante), resolved operator/filial/date.
+            # NFE enrichment is best-effort: it must never discard the rich mart rows.
+            try:
+                nfe_map = _load_nfe_numbers(id_empresa, rows)
+            except Exception:
+                nfe_map = {}
+            for r in rows:
+                r["numero_nfe"] = nfe_map.get(
+                    (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
+                )
             return [_build_antifraude_event(r) for r in rows]
     except Exception:
         pass
@@ -1934,19 +2010,23 @@ def fraud_top_users(
     date_range = _date_range_filter(dt_ini, dt_fim)
 
     rows = query_dict(f"""
-        SELECT nome_operador AS usuario_nome,
+        SELECT id_filial,
+               any(filial_nome) AS filial_nome,
+               nome_operador AS usuario_nome,
                count() AS cancelamentos,
                sum(valor_total) AS valor_cancelado
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
           AND event_type = 'cancelamento'
-        GROUP BY nome_operador
+        GROUP BY id_filial, nome_operador
         ORDER BY valor_cancelado DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
     for row in rows:
         nome = (row.get("usuario_nome") or "").strip()
         row["usuario_label"] = nome if nome else "Operador não resolvido"
+        fid = _to_int(row.get("id_filial"))
+        row["filial_label"] = _filial_label(fid, (row.get("filial_nome") or "").strip()) if fid else "Filial sem cadastro"
     return rows
 
 
@@ -2071,6 +2151,63 @@ def finance_kpis(
     """, parameters={"id_empresa": id_empresa})
 
     return {"aging": rows, "source": "realtime", "realtime_source": _realtime_source()}
+
+
+def finance_receipts_by_day(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Recebimentos de CONTAS A RECEBER por dia (baixas totais e parciais).
+
+    Diferente do mix de formas de pagamento das VENDAS: aqui é o dinheiro que
+    efetivamente entrou de títulos a receber (baixas do Xpert), pela DATA DA
+    BAIXA (DATABAIXA). É o "recebimentos" da tela Financeiro.
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    rows = query_dict(f"""
+        SELECT
+            toYYYYMMDD(dt_baixa) AS data_key,
+            round(sum(valor_baixa), 2) AS valor,
+            toUInt32(count()) AS qtd
+        FROM (
+            SELECT
+                toDateOrNull(substring(JSONExtractString(payload, 'DATABAIXA'), 1, 10)) AS dt_baixa,
+                JSONExtractFloat(payload, 'VALORBAIXA') AS valor_baixa
+            FROM {CURRENT_DB}.stg_contasreceberbaixa FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND is_deleted = 0
+        )
+        WHERE dt_baixa IS NOT NULL
+          AND toYYYYMMDD(dt_baixa) BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+        GROUP BY data_key
+        HAVING valor > 0
+        ORDER BY data_key
+    """, parameters={
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    })
+    by_day = [
+        {
+            "data_key": int(r.get("data_key") or 0),
+            "valor": round(float(r.get("valor") or 0), 2),
+            "qtd": int(r.get("qtd") or 0),
+        }
+        for r in rows
+        if int(r.get("data_key") or 0) > 0
+    ]
+    total = round(sum(d["valor"] for d in by_day), 2)
+    return {
+        "by_day": by_day,
+        "total_recebido": total,
+        "qtd_baixas": sum(d["qtd"] for d in by_day),
+        "source": "realtime",
+        "realtime_source": _realtime_source(),
+    }
 
 
 # ================================================================
@@ -2938,18 +3075,67 @@ def _antifraude_turno_label(turno_numero: int, id_turno: int) -> tuple[str, bool
     return "Turno não resolvido", False
 
 
-def _antifraude_documento(nro_comprovante: int, id_comprovante: int) -> tuple[Optional[int], str, str]:
-    """Operational sale-document label for the fraud screen.
+def _load_nfe_numbers(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple[int, int], str]:
+    """Busca em lote o número da Nota Fiscal (NF/NFC-e) por comprovante.
 
-    Preference: NROCOMPROVANTE (number printed on the sale receipt, the operator
-    can locate it in the caixa/ERP). Fallback: id_comprovante (technical PK, also
-    traceable). NEVER ``Turno + Filial``. Returns (documento_venda, label, source).
+    Retorna {(id_filial, id_comprovante): numero_nfe}. Vendas que nunca emitiram
+    documento fiscal (comum em cancelamentos) simplesmente não aparecem no mapa,
+    e o chamador cai honestamente no número do comprovante.
     """
+    pairs = sorted({
+        (int(r["id_filial"]), int(r["id_comprovante"]))
+        for r in rows
+        if r.get("id_filial") is not None and r.get("id_comprovante") not in (None, 0)
+    })
+    if not pairs:
+        return {}
+    values = ", ".join(f"({f}, {c})" for f, c in pairs)
+    # ALIAS != coluna base: usar ``numero_nfe`` como alias do argMax colide com a
+    # coluna ``numero_nfe`` referenciada no WHERE e o ClickHouse levanta
+    # ILLEGAL_AGGREGATION (code 184). Alias distinto resolve o WHERE para a coluna.
+    result = query_dict(
+        f"""
+        SELECT id_filial,
+               id_comprovante,
+               argMax(numero_nfe, source_ts_ms) AS numero_nfe_res
+        FROM {CURRENT_DB}.stg_nfe_slim
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND (id_filial, id_comprovante) IN ({values})
+          AND numero_nfe != ''
+          AND numero_nfe != '0'
+        GROUP BY id_filial, id_comprovante
+        """,
+        parameters={"id_empresa": id_empresa},
+    )
+    return {
+        (int(r["id_filial"]), int(r["id_comprovante"])): str(r.get("numero_nfe_res") or "").strip()
+        for r in result
+        if r.get("id_filial") is not None
+        and r.get("id_comprovante") is not None
+        and str(r.get("numero_nfe_res") or "").strip()
+    }
+
+
+def _antifraude_documento(
+    numero_nfe: Any, nro_comprovante: int, id_comprovante: int
+) -> tuple[Any, str, str, Optional[str]]:
+    """Documento operacional da venda para a tela de fraude.
+
+    Preferência: NÚMERO DA NOTA FISCAL (NF/NFC-e) — o número que o cliente usa no
+    Xpert. Fallback honesto: NROCOMPROVANTE (impresso no comprovante) e, por
+    último, id_comprovante técnico. Cancelamentos normalmente não têm nota fiscal
+    emitida, então caem no comprovante — nunca inventamos uma NF.
+    Retorna (documento_venda, label, source, documento_fiscal).
+    """
+    nfe = str(numero_nfe or "").strip()
+    if nfe and nfe != "0":
+        return nfe, f"Nota fiscal {nfe}", "nota_fiscal", nfe
     if nro_comprovante and nro_comprovante > 0:
-        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda"
+        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda", None
     if id_comprovante and id_comprovante > 0:
-        return None, f"Comprovante #{id_comprovante}", "id_comprovante"
-    return None, "Sem comprovante", "fallback"
+        return None, f"Comprovante #{id_comprovante}", "id_comprovante", None
+    return None, "Sem comprovante", "fallback", None
 
 
 def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
@@ -2962,7 +3148,9 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
 
     id_filial = _to_int(r.get("id_filial"))
     filial_nome = (r.get("filial_nome") or "").strip()
-    filial_label = filial_nome or f"Filial {id_filial}" if id_filial else "Filial sem cadastro"
+    # Apelido (nome reduzido) tem prioridade em todo o sistema; cai no nome
+    # completo do mart e, por ultimo, num rotulo honesto por id.
+    filial_label = _filial_label(id_filial, filial_nome) if id_filial else "Filial sem cadastro"
 
     dt_val = r.get("dt")
     hora_val = _to_int(r.get("hora"))
@@ -3004,7 +3192,10 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
     event_id = r.get("event_id") if r.get("event_id") is not None else r.get("id")
     id_comprovante = _to_int(r.get("id_comprovante"))
     nro_comprovante = _to_int(r.get("nro_comprovante"))
-    documento_venda, documento_label, documento_source = _antifraude_documento(nro_comprovante, id_comprovante)
+    numero_nfe = str(r.get("numero_nfe") or "").strip()
+    documento_venda, documento_label, documento_source, documento_fiscal = _antifraude_documento(
+        numero_nfe, nro_comprovante, id_comprovante
+    )
 
     return {
         "id_evento": str(event_id) if event_id is not None else None,
@@ -3014,7 +3205,7 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
         "documento_venda": documento_venda,
         "documento_label": documento_label,
         "documento_source": documento_source,
-        "documento_fiscal": None,
+        "documento_fiscal": documento_fiscal,
         "referencia": documento_label,
         "id_filial": id_filial,
         "filial_nome": filial_nome,
@@ -3085,6 +3276,16 @@ def risk_last_events(
         "fim": _date_key(dt_fim),
         "limit": int(limit),
     })
+    # NFE enrichment is best-effort: a failure here must never drop the screen to
+    # the poor legacy fallback (which depends on a non-populated PostgreSQL MV).
+    try:
+        nfe_map = _load_nfe_numbers(id_empresa, rows)
+    except Exception:
+        nfe_map = {}
+    for r in rows:
+        r["numero_nfe"] = nfe_map.get(
+            (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
+        )
     return [_build_antifraude_event(r) for r in rows]
 
 
@@ -3140,7 +3341,7 @@ def risk_by_turn_local(
         result.append({
             "id_filial": id_filial_r,
             "filial_nome": filial_nome,
-            "filial_label": filial_nome or (f"Filial {id_filial_r}" if id_filial_r else "Filial sem cadastro"),
+            "filial_label": _filial_label(id_filial_r, filial_nome),
             "turno_numero": turno_numero,
             "turno_label": f"Turno {turno_numero}" if turno_numero >= 1 else "Caixa geral",
             "operador_label": operador_top or "Operador sem cadastro",
@@ -3674,6 +3875,7 @@ REALTIME_FUNCTIONS = {
     "fraud_troca_forma_pgto_kpis",
     "risk_top_employees",
     "finance_kpis",
+    "finance_receipts_by_day",
     "streaming_health",
     "goals_today",
     "monthly_goal_projection",

@@ -13,6 +13,7 @@ import {
 } from "recharts";
 
 import EmptyState from "../components/ui/EmptyState";
+import PortalDropdown from "../components/ui/PortalDropdown";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { readCachedSession } from "../lib/session";
@@ -86,6 +87,8 @@ interface AbcData {
   ranking: AbcRankingItem[];
   insights: Array<{ type: string; text: string } | string>;
   thresholds: { a: number; b: number; c: number };
+  groups?: Array<{ id_grupo_produto: number; grupo_nome: string; faturamento: number }>;
+  selected_groups?: number[];
   sort_by?: string;
   source: string;
   empty?: boolean;
@@ -95,6 +98,10 @@ export default function SalesAbcSection() {
   const scope = useScopeQuery();
   const [sortBy, setSortBy] = useState<SortMode>("faturamento");
   const [params, setParams] = useState({ abc_threshold_a: 80, abc_threshold_b: 95, abc_exclude_fuel: true });
+  // Grupos escolhidos para compor a curva (vazio = todos os grupos).
+  const [selectedGroups, setSelectedGroups] = useState<number[]>([]);
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const groupBtnRef = useRef<HTMLButtonElement>(null);
   // Local edit state for threshold inputs (avoids constraints fighting during typing)
   const [editA, setEditA] = useState("80");
   const [editB, setEditB] = useState("95");
@@ -121,6 +128,9 @@ export default function SalesAbcSection() {
       } catch { /* ignore */ }
     };
     fetchParams();
+    // Ao trocar de escopo, volta a considerar todos os grupos.
+    setSelectedGroups([]);
+    setGroupMenuOpen(false);
   }, [scope]);
 
   const applyParams = useCallback(async () => {
@@ -149,11 +159,14 @@ export default function SalesAbcSection() {
   }, [editA, editB, params, scope]);
 
   const { data, loading } = useBiScopeData<AbcData>({
-    moduleKey: `sales_abc_curve_${sortBy}_${params.abc_threshold_a}_${params.abc_threshold_b}_${refreshKey}`,
+    moduleKey: `sales_abc_curve_${sortBy}_${params.abc_threshold_a}_${params.abc_threshold_b}_g${selectedGroups.slice().sort((a, b) => a - b).join("-")}_${refreshKey}`,
     scope,
     errorMessage: "Falha ao carregar Curva ABC",
-    buildRequestUrl: (currentScope) =>
-      `/bi/sales/abc-curve?sort_by=${sortBy}&threshold_a=${params.abc_threshold_a}&threshold_b=${params.abc_threshold_b}&${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope) => {
+      const base = `/bi/sales/abc-curve?sort_by=${sortBy}&threshold_a=${params.abc_threshold_a}&threshold_b=${params.abc_threshold_b}&${buildScopeParams(currentScope).toString()}`;
+      const grupos = selectedGroups.map((id) => `&id_grupos=${id}`).join("");
+      return base + grupos;
+    },
   });
 
   const chartItems = useMemo(() => {
@@ -175,6 +188,88 @@ export default function SalesAbcSection() {
     [sortBy],
   );
 
+  const availableGroups = data?.groups || [];
+  const toggleGroup = (id: number) =>
+    setSelectedGroups((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const groupSelector = availableGroups.length ? (
+    <div style={{ marginTop: 12 }}>
+      <button
+        ref={groupBtnRef}
+        type="button"
+        onClick={() => setGroupMenuOpen((o) => !o)}
+        style={{
+          padding: "7px 14px",
+          borderRadius: 8,
+          border: "1px solid var(--accent-copper)",
+          background: "rgba(184,115,51,0.12)",
+          color: "var(--text)",
+          fontSize: 13,
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        {selectedGroups.length === 0
+          ? "Grupos: todos"
+          : `Grupos: ${selectedGroups.length} selecionado(s)`}
+        <span style={{ opacity: 0.7 }}>▾</span>
+      </button>
+      <PortalDropdown
+        open={groupMenuOpen}
+        onClose={() => setGroupMenuOpen(false)}
+        anchorRef={groupBtnRef}
+        minWidth={300}
+      >
+        <div
+          style={{
+            background: "#12191f",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 8,
+            boxShadow: "0 12px 34px rgba(0,0,0,0.45)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+            <button
+              type="button"
+              onClick={() => setSelectedGroups([])}
+              style={{ background: "transparent", border: "none", color: "var(--accent-copper)", fontSize: 12, cursor: "pointer", padding: 4 }}
+            >
+              Todos os grupos
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroupMenuOpen(false)}
+              style={{ background: "transparent", border: "none", color: "var(--muted)", fontSize: 12, cursor: "pointer", padding: 4 }}
+            >
+              Fechar
+            </button>
+          </div>
+          {availableGroups.map((g) => (
+            <label
+              key={g.id_grupo_produto}
+              style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", fontSize: 13, cursor: "pointer" }}
+            >
+              <input
+                type="checkbox"
+                checked={selectedGroups.includes(g.id_grupo_produto)}
+                onChange={() => toggleGroup(g.id_grupo_produto)}
+              />
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {g.grupo_nome}
+              </span>
+              <span className="muted" style={{ fontSize: 11 }}>{formatCurrency(g.faturamento)}</span>
+            </label>
+          ))}
+        </div>
+      </PortalDropdown>
+      <div className="muted" style={{ marginTop: 6, fontSize: 11 }}>
+        Escolha quais grupos entram na curva. Vazio = todos os grupos (combustíveis seguem a configuração da filial).
+      </div>
+    </div>
+  ) : null;
+
   if (loading && !data) {
     return (
       <div className="card col-12" style={{ marginTop: 24 }}>
@@ -188,9 +283,10 @@ export default function SalesAbcSection() {
     return (
       <div className="card col-12" style={{ marginTop: 24 }}>
         <div className="sectionEyebrow">Curva ABC de Produtos</div>
+        {groupSelector}
         <EmptyState
           title="Sem dados para Curva ABC."
-          detail="Não há vendas suficientes no período selecionado para montar a Curva ABC."
+          detail="Não há vendas suficientes no período (ou nos grupos selecionados) para montar a Curva ABC."
         />
       </div>
     );
@@ -207,6 +303,7 @@ export default function SalesAbcSection() {
         <div className="muted" style={{ marginTop: 8 }}>
           Classifica produtos por contribuição ao {metricLabel.toLowerCase()}. Classe A (até {params.abc_threshold_a}%), B ({params.abc_threshold_a}–{params.abc_threshold_b}%), C ({params.abc_threshold_b}–100%).
         </div>
+        {groupSelector}
       </div>
 
       {/* Executive Summary KPIs */}

@@ -18,6 +18,8 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import FinanceChequesSection from "./FinanceChequesSection";
+import FinanceBudgetSection from "./FinanceBudgetSection";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
   buildUserLabel,
@@ -68,18 +70,13 @@ export default function FinancePage() {
   const paymentsKpis = data?.payments?.kpis || {};
   const paymentMixTotal = Number(paymentsKpis.total_valor || 0);
   const paymentsByDay = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const row of data?.payments?.by_day || []) {
-      const total = Number(row?.total_valor || 0);
-      const key = String(row?.data_key || "");
-      if (!key || total <= 0) continue;
-      totals.set(key, (totals.get(key) || 0) + total);
-    }
-    return Array.from(totals.entries())
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([dataKey, valor]) => ({
-        data: formatDateKeyShort(dataKey),
-        valor,
+    // Recebimentos do Financeiro = baixas de CONTAS A RECEBER pela data do
+    // recebimento (distinto do mix de formas de pagamento das vendas).
+    return (data?.receipts_by_day?.by_day || [])
+      .filter((row: any) => Number(row?.valor || 0) > 0)
+      .map((row: any) => ({
+        data: formatDateKeyShort(String(row?.data_key || "")),
+        valor: Number(row?.valor || 0),
       }));
   }, [data]);
   const paymentsByTurno = useMemo(
@@ -340,28 +337,30 @@ export default function FinancePage() {
                 ) : null}
               </div>
 
+              <FinanceChequesSection />
+
+              <FinanceBudgetSection />
+
               <div className="card col-12">
-                <div className="sectionEyebrow">Meios e formas de pagamento</div>
-                <h2 style={{ marginTop: 4 }}>Leitura conciliada do período</h2>
+                <div className="sectionEyebrow">Recebimentos e formas de pagamento</div>
+                <h2 style={{ marginTop: 4 }}>Contas a receber recebidas × formas de pagamento das vendas</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Volume diário agregado, mix por forma e concentração por turno com rótulos executivos.
+                  À esquerda, o que entrou de títulos a receber por dia (recebimentos financeiros, do Xpert).
+                  À direita, como as vendas do período foram pagas (dinheiro, cartão, pix, prazo, cheque).
+                  São coisas diferentes: recebimento financeiro não é o mesmo que venda à vista do caixa.
                 </div>
               </div>
 
               <div className="card col-7 chartCard">
-                <h2>Volume recebido por dia</h2>
-                {!loading && paymentsStatus === "value_gap" ? (
+                <h2>Recebimentos de contas a receber por dia</h2>
+                <div className="muted" style={{ marginTop: 4, marginBottom: 8, fontSize: 12 }}>
+                  Baixas de títulos a receber (totais e parciais) pela data do recebimento — o dinheiro
+                  que entrou de clientes. Diferente das formas de pagamento das vendas do caixa.
+                </div>
+                {!loading && !paymentsByDay.length ? (
                   <EmptyState
-                    title="Valores de pagamentos ainda em validação da carga."
-                    detail="Os registros da operação chegaram, mas a leitura monetária ainda não está estável o bastante para decisão."
-                  />
-                ) : null}
-                {!loading &&
-                paymentsStatus !== "value_gap" &&
-                !paymentsByDay.length ? (
-                  <EmptyState
-                    title="Sem pagamentos recebidos no período."
-                    detail="A consolidação diária de pagamentos ainda não trouxe movimento para este período."
+                    title="Sem recebimentos de contas a receber no período."
+                    detail="Nenhuma baixa de título a receber foi registrada no período selecionado."
                   />
                 ) : null}
                 <div className="chartWrap">

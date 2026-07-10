@@ -66,6 +66,8 @@ export default function CustomersPage() {
   const [delinquencyPage, setDelinquencyPage] = useState(0);
   const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
   const [delinquencySearch, setDelinquencySearch] = useState("");
+  // Filtro-sobre-filtro: postos selecionados nos cards (vazio = todos os postos do escopo).
+  const [selectedFiliais, setSelectedFiliais] = useState<Set<number>>(new Set());
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -94,6 +96,8 @@ export default function CustomersPage() {
   const anonKpis = anon?.kpis || {};
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
+  const delinquencyByFilial = delinquency?.by_filial || [];
+  const showFilialColumn = delinquencyByFilial.length > 1;
   const delinquencyCustomers = useMemo(() => {
     let customers = [...(delinquency?.customers || [])];
     const term = delinquencySearch.trim().toUpperCase();
@@ -101,6 +105,9 @@ export default function CustomersPage() {
       customers = customers.filter((c: any) =>
         String(c.cliente_nome || "").toUpperCase().includes(term),
       );
+    }
+    if (selectedFiliais.size > 0) {
+      customers = customers.filter((c: any) => selectedFiliais.has(Number(c.id_filial)));
     }
     switch (delinquencySort) {
       case "valor":
@@ -121,7 +128,7 @@ export default function CustomersPage() {
         break;
     }
     return customers;
-  }, [delinquency?.customers, delinquencySort, delinquencySearch]);
+  }, [delinquency?.customers, delinquencySort, delinquencySearch, selectedFiliais]);
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
@@ -144,6 +151,10 @@ export default function CustomersPage() {
   useEffect(() => {
     setDelinquencyPage(0);
   }, [data?.commercial_coverage?.effective_dt_fim, delinquencyCustomers.length]);
+  // Limpa a selecao de postos quando o escopo/janela muda (respeita o filtro global).
+  useEffect(() => {
+    setSelectedFiliais(new Set());
+  }, [data?.commercial_coverage?.effective_dt_fim]);
 
   return (
     <div>
@@ -413,11 +424,79 @@ export default function CustomersPage() {
                     detail={`Não há cliente com "${delinquencySearch}" no nome dentro das prioridades de cobrança.`}
                   />
                 ) : null}
+                {showFilialColumn ? (
+                  <div style={{ marginBottom: 12 }}>
+                    <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                      Dívida vencida por posto (clique para filtrar o ranking; o mesmo cliente pode dever em mais de um posto):
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "nowrap", gap: 8, overflowX: "auto", paddingBottom: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFiliais(new Set())}
+                        aria-pressed={selectedFiliais.size === 0}
+                        style={{
+                          textAlign: "left",
+                          cursor: "pointer",
+                          flex: "0 0 auto",
+                          border: selectedFiliais.size === 0 ? "1px solid var(--accent-copper)" : "1px solid var(--border)",
+                          borderRadius: 10,
+                          padding: "8px 12px",
+                          background: selectedFiliais.size === 0 ? "var(--accent-copper-soft)" : "rgba(255,255,255,0.02)",
+                          color: "inherit",
+                          minWidth: 120,
+                        }}
+                      >
+                        <div className="muted" style={{ fontSize: 11 }}>Todos os postos</div>
+                        <div style={{ fontWeight: 700 }}>{formatCurrency(delinquency?.summary?.valor_total)}</div>
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          {Number(delinquency?.summary?.clientes_em_aberto || 0)} cliente(s)
+                        </div>
+                      </button>
+                      {delinquencyByFilial.map((f: any) => {
+                        const fid = Number(f.id_filial);
+                        const active = selectedFiliais.has(fid);
+                        return (
+                          <button
+                            type="button"
+                            key={f.id_filial}
+                            onClick={() =>
+                              setSelectedFiliais((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(fid)) next.delete(fid);
+                                else next.add(fid);
+                                return next;
+                              })
+                            }
+                            aria-pressed={active}
+                            style={{
+                              textAlign: "left",
+                              cursor: "pointer",
+                              flex: "0 0 auto",
+                              border: active ? "1px solid var(--accent-copper)" : "1px solid var(--border)",
+                              borderRadius: 10,
+                              padding: "8px 12px",
+                              background: active ? "var(--accent-copper-soft)" : "rgba(255,255,255,0.02)",
+                              color: "inherit",
+                              minWidth: 168,
+                            }}
+                          >
+                            <div className="muted" style={{ fontSize: 11 }}>{f.filial_label}</div>
+                            <div style={{ fontWeight: 700 }}>{formatCurrency(f.valor_vencido)}</div>
+                            <div className="muted" style={{ fontSize: 11 }}>
+                              {f.clientes} cliente(s) · aberto {formatCurrency(f.valor_aberto)}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="tableScroll">
                   <table className="table compact">
                     <thead>
                       <tr>
                         <th>Cliente</th>
+                        {showFilialColumn ? <th>Filial</th> : null}
                         <th>Até 30d</th>
                         <th>R$ até 30d</th>
                         <th>30+ dias</th>
@@ -435,8 +514,9 @@ export default function CustomersPage() {
                         const totalVencido = item.valor_total_vencido || ((item.valor_ate_30d || 0) + (item.valor_acima_30d || 0));
                         const totalAberto = item.valor_total_aberto || (totalVencido + (item.valor_a_vencer || 0));
                         return (
-                        <tr key={item.id_cliente}>
+                        <tr key={`${item.id_filial ?? 0}-${item.id_cliente}`}>
                           <td>{item.cliente_nome}</td>
+                          {showFilialColumn ? <td>{item.filial_label || "—"}</td> : null}
                           <td>{item.titulos_ate_30d ?? 0}</td>
                           <td>{formatCurrency(item.valor_ate_30d ?? 0)}</td>
                           <td style={{ fontWeight: (item.titulos_acima_30d || 0) > 0 ? 700 : 400, color: (item.titulos_acima_30d || 0) > 0 ? 'var(--color-negative)' : undefined }}>{item.titulos_acima_30d ?? 0}</td>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -126,6 +126,22 @@ export default function SalesPage() {
     (row) => Number(row.atual || 0) > 0 || Number(row.anterior || 0) > 0,
   );
 
+  // Top grupos como filtro do top produtos (multi-selecao por nome do grupo).
+  const [selectedGrupos, setSelectedGrupos] = useState<Set<string>>(new Set());
+  const grupoNome = (x: any) => String(x?.grupo_nome ?? x?.nome_grupo ?? "");
+  const topProductsFiltered = useMemo(() => {
+    const all = data?.top_products || [];
+    if (!selectedGrupos.size) return all;
+    return all.filter((p: any) => selectedGrupos.has(grupoNome(p)));
+  }, [data, selectedGrupos]);
+  const toggleGrupo = (nome: string) =>
+    setSelectedGrupos((prev) => {
+      const next = new Set(prev);
+      if (next.has(nome)) next.delete(nome);
+      else next.add(nome);
+      return next;
+    });
+
   return (
     <div>
       <AppNav title="Vendas" userLabel={userLabel} />
@@ -150,29 +166,20 @@ export default function SalesPage() {
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-12">
                 <div className="sectionEyebrow">Resumo comercial</div>
-                <h2 style={{ marginTop: 4 }}>Vendas, entradas e cancelamentos por comprovante</h2>
+                <h2 style={{ marginTop: 4 }}>Vendas e cancelamentos por comprovante</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  A tela usa comprovantes comerciais e separa movimentos válidos, entradas e cancelamentos.
+                  A tela usa comprovantes comerciais e separa movimentos válidos e cancelamentos.
                   Margem e ticket seguem abaixo pela leitura por item.
                 </div>
               </div>
 
               <div className="card kpi col-4">
-                <div className="label">Vendas normais</div>
+                <div className="label">Vendas</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(commercial?.saidas)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
                   {Number(commercial?.qtd_saidas || 0)} comprovante(s)
-                </div>
-              </div>
-              <div className="card kpi col-4">
-                <div className="label">Entradas registradas</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercial?.entradas)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {Number(commercial?.qtd_entradas || 0)} comprovante(s)
                 </div>
               </div>
               <div className="card kpi col-4">
@@ -229,34 +236,6 @@ export default function SalesPage() {
                 </div>
               </div>
 
-              <div className="card col-4">
-                <h2>Classificação por CFOP</h2>
-                {!loading && !cfopBreakdown.length ? (
-                  <EmptyState
-                    title="Sem classificação comercial no período."
-                    detail="A classificação aparece quando há comprovantes válidos com CFOP comercial no período."
-                  />
-                ) : null}
-                <table className="table compact">
-                  <thead>
-                    <tr>
-                      <th>Classe</th>
-                      <th>Ativo</th>
-                      <th>Cancelado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cfopBreakdown.map((row: any) => (
-                      <tr key={row.label}>
-                        <td>{row.label}</td>
-                        <td>{formatCurrency(row.ativo)}</td>
-                        <td>{formatCurrency(row.cancelado)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
               <div className="card kpi col-4">
                 <div className="label">Margem analítica</div>
                 <div className="value">
@@ -267,12 +246,24 @@ export default function SalesPage() {
                 </div>
               </div>
               <div className="card kpi col-4">
-                <div className="label">Ticket médio analítico</div>
+                <div className="label">Ticket Médio Produtos</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(data?.kpis?.ticket_medio)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Receita média por documento válido no período analisado.
+                  Receita média por documento de venda (leitura por comprovante) no período.
+                </div>
+              </div>
+              <div className="card kpi col-4">
+                <div className="label">Ticket Médio Combustível</div>
+                <div className="value">
+                  {loading ? "..." : formatCurrency(data?.ticket_combustivel?.ticket_medio)}
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Valor médio por abastecimento no console da bomba.
+                  {Number(data?.ticket_combustivel?.qtd_abastecimentos || 0) > 0
+                    ? ` ${Number(data?.ticket_combustivel?.qtd_abastecimentos || 0).toLocaleString("pt-BR")} abastecimento(s).`
+                    : ""}
                 </div>
               </div>
               <div className="card kpi col-4">
@@ -318,11 +309,70 @@ export default function SalesPage() {
               </div>
 
               <div className="card col-6">
-                <h2>Top produtos</h2>
-                {!loading && !(data?.top_products || []).length ? (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline", justifyContent: "space-between" }}>
+                  <h2>Top grupos</h2>
+                  <span className="muted" style={{ fontSize: 12 }}>clique para filtrar os produtos →</span>
+                </div>
+                {!loading && !(data?.top_groups || []).length ? (
                   <EmptyState
-                    title="Sem produtos ranqueados."
-                    detail="A leitura por item não trouxe produtos ativos para este período."
+                    title="Sem grupos ranqueados."
+                    detail="A agregação por grupo não trouxe produtos ativos suficientes para este período."
+                  />
+                ) : null}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedGrupos(new Set())}
+                    aria-pressed={selectedGrupos.size === 0}
+                    style={{
+                      padding: "4px 12px",
+                      borderRadius: 8,
+                      fontSize: 12,
+                      cursor: "pointer",
+                      border: `1px solid ${selectedGrupos.size === 0 ? "var(--accent-copper)" : "var(--border)"}`,
+                      background: selectedGrupos.size === 0 ? "var(--accent-copper-soft)" : "transparent",
+                      color: selectedGrupos.size === 0 ? "var(--text)" : "var(--muted)",
+                    }}
+                  >
+                    Todos os grupos
+                  </button>
+                </div>
+                <div className="tableScroll">
+                  <table className="table compact">
+                    <thead>
+                      <tr>
+                        <th>Grupo</th>
+                        <th>Fat.</th>
+                        <th>Margem</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data?.top_groups || []).slice(0, 10).map((g: any) => {
+                        const nome = grupoNome(g);
+                        const on = selectedGrupos.has(nome);
+                        return (
+                          <tr
+                            key={g.grupo_key || `${g.id_grupo_produto}-${g.grupo_nome}`}
+                            onClick={() => toggleGrupo(nome)}
+                            style={{ cursor: "pointer", background: on ? "var(--accent-copper-soft)" : undefined }}
+                          >
+                            <td style={on ? { color: "var(--accent-copper)", fontWeight: 700 } : undefined}>{g.grupo_nome}</td>
+                            <td>{formatCurrency(g.faturamento)}</td>
+                            <td>{formatCurrency(g.margem)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="card col-6">
+                <h2>Top produtos{selectedGrupos.size ? ` · ${selectedGrupos.size} grupo(s)` : ""}</h2>
+                {!loading && !topProductsFiltered.length ? (
+                  <EmptyState
+                    title={selectedGrupos.size ? "Sem produtos no(s) grupo(s) selecionado(s)." : "Sem produtos ranqueados."}
+                    detail={selectedGrupos.size ? "Nenhum produto do ranking pertence ao(s) grupo(s) escolhido(s). Ajuste a seleção." : "A leitura por item não trouxe produtos ativos para este período."}
                   />
                 ) : null}
                 <div className="tableScroll">
@@ -336,7 +386,7 @@ export default function SalesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(data?.top_products || []).slice(0, 10).map((p: any) => (
+                      {topProductsFiltered.slice(0, 15).map((p: any) => (
                         <tr key={p.id_produto}>
                           <td>
                             <div>{p.produto_nome}</div>
@@ -348,36 +398,6 @@ export default function SalesPage() {
                           <td>{formatCurrency(p.faturamento)}</td>
                           <td>{formatCurrency(p.custo_total)}</td>
                           <td>{formatCurrency(p.margem)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="card col-6">
-                <h2>Top grupos</h2>
-                {!loading && !(data?.top_groups || []).length ? (
-                  <EmptyState
-                    title="Sem grupos ranqueados."
-                    detail="A agregação por grupo não trouxe produtos ativos suficientes para este período."
-                  />
-                ) : null}
-                <div className="tableScroll">
-                  <table className="table compact">
-                    <thead>
-                      <tr>
-                        <th>Grupo</th>
-                        <th>Fat.</th>
-                        <th>Margem</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(data?.top_groups || []).slice(0, 10).map((g: any) => (
-                        <tr key={g.grupo_key || `${g.id_grupo_produto}-${g.grupo_nome}`}>
-                          <td>{g.grupo_nome}</td>
-                          <td>{formatCurrency(g.faturamento)}</td>
-                          <td>{formatCurrency(g.margem)}</td>
                         </tr>
                       ))}
                     </tbody>

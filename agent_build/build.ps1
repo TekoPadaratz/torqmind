@@ -19,6 +19,10 @@ Write-Host "Validando compilacao..." -ForegroundColor Yellow
 python -m compileall apps/agent/agent -q
 if ($LASTEXITCODE -ne 0) { Write-Host "FALHA: compileall" -ForegroundColor Red; exit 1 }
 
+# --- Step 2b: Datasets embutidos neste build (referencia) ---
+Write-Host "Datasets embutidos neste build (coletam sozinhos, sem copiar mapeamento):" -ForegroundColor Yellow
+python -c "import sys; sys.path.insert(0,'apps/agent'); from agent import config as c; on=[n for n,s in c.DEFAULT_DATASETS.items() if s.get('enabled')]; print('  ENABLED (' + str(len(on)) + '): ' + ', '.join(on))"
+
 # --- Step 3: PyInstaller build ---
 Write-Host "Compilando agent com PyInstaller..." -ForegroundColor Yellow
 
@@ -88,4 +92,7 @@ Write-Host "Size:   $([math]::Round($size / 1MB, 2)) MB"
 Write-Host "SHA256: $hash"
 Write-Host "Commit: $(git log -1 --format='%H')"
 Write-Host ""
-Write-Host "Proximo passo: copiar pasta release/ para o servidor cliente." -ForegroundColor Cyan
+Write-Host "Proximo passo: copiar SOMENTE o torqmind-agent.exe para o servidor do cliente" -ForegroundColor Cyan
+Write-Host "  (o mapeamento das tabelas ja vem embutido no .exe)." -ForegroundColor Cyan
+Write-Host "  sc stop TorqMindAgent; copy /Y torqmind-agent.exe <destino>; sc start TorqMindAgent" -ForegroundColor Cyan
+Write-Host "  O config.enc do cliente NAO muda. Config seguro: torqmind-agent.exe config init --interactive --config config.enc" -ForegroundColor Cyan
