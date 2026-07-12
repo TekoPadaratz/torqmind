@@ -39,6 +39,7 @@ SET statement_timeout='${STATEMENT_TIMEOUT}';
 SELECT etl.refresh_liquidez_solvencia(${ID_EMPRESA});
 SELECT etl.refresh_liquidez_estoque(${ID_EMPRESA});
 SELECT etl.refresh_gestao_orcamentaria(${ID_EMPRESA});
+SELECT etl.refresh_solvencia_itens(${ID_EMPRESA});
 SQL
 
 echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] OK: liquidez_solvencia + gestao_orcamentaria atualizados."
