@@ -23,6 +23,7 @@ import {
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { canViewSensitiveFinancials } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { SolvenciaDetalhada } from "./SolvenciaDetalhada";
 
 export const dynamic = "force-dynamic";
 
@@ -77,6 +78,7 @@ export default function ProfitManagementPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [solvenciaMonth, setSolvenciaMonth] = useState<number | null>(null);
+  const [solvenciaReload, setSolvenciaReload] = useState(0);
 
   const { claims, data: overviewData, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
@@ -120,11 +122,11 @@ export default function ProfitManagementPage() {
   });
 
   const { data: solvenciaData } = useBiScopeData<any>({
-    moduleKey: `profit_solvencia:${solvenciaMonth ?? "atual"}`,
+    moduleKey: `profit_solvencia_det:${solvenciaMonth ?? "atual"}:${solvenciaReload}`,
     scope,
     errorMessage: "",
     buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/solvencia?${buildScopeParams(currentScope).toString()}${
+      `/bi/profit-management/solvencia/detalhada?${buildScopeParams(currentScope).toString()}${
         solvenciaMonth ? `&ano_mes=${solvenciaMonth}` : ""
       }`,
   });
@@ -510,164 +512,22 @@ export default function ProfitManagementPage() {
           </div>
         )}
 
-        {/* TAB: Solvência / Capital de Giro */}
+        {/* TAB: Solvência (Fechamento de Caixa Geral) */}
         {activeTab === "solvencia" && (
-          <div style={{ marginTop: 16 }}>
-            {solvencia ? (
-              <>
-                {/* Cabeçalho + filtro de mês */}
-                <div
-                  className="card"
-                  style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}
-                >
-                  <div>
-                    <div className="sectionEyebrow">Solvência de Curto Prazo</div>
-                    <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-                      Meus ativos cobrem as contas a pagar do mês?
-                    </div>
-                  </div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 500 }}>
-                    <span>Mês de referência:</span>
-                    <select
-                      value={solvenciaMonth ?? solvencia.ano_mes}
-                      onChange={(e) => setSolvenciaMonth(Number(e.target.value))}
-                      style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--color-border)", background: "var(--color-surface)", color: "inherit", fontSize: 13 }}
-                    >
-                      {(solvencia.meses_disponiveis || []).map((m: any) => (
-                        <option key={m.ano_mes} value={m.ano_mes}>{m.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                {/* Veredito */}
-                {(() => {
-                  const idx = solvencia.indices || {};
-                  const temAtivo = !!solvencia.tem_ativo_dados;
-                  const cobre = !!idx.cobre_passivo;
-                  const cor = !temAtivo ? "var(--color-info)" : cobre ? "var(--color-positive)" : "var(--color-negative)";
-                  const titulo = !temAtivo
-                    ? "Preparando a leitura dos seus ativos"
-                    : cobre
-                    ? "Seus ativos cobrem o passivo deste mês"
-                    : "Atenção: os ativos não cobrem o passivo deste mês";
-                  const detalhe = !temAtivo
-                    ? "Estamos habilitando a coleta de caixa, banco, cheques e estoque. Por enquanto, veja abaixo o total de contas a pagar do mês selecionado."
-                    : cobre
-                    ? "O ativo circulante é suficiente para quitar as contas a pagar que vencem no mês, sem depender de novas vendas."
-                    : "O ativo circulante disponível é menor que as contas a pagar do mês. Reforce o caixa ou renegocie vencimentos.";
-                  return (
-                    <div className="card" style={{ marginTop: 16, padding: 20, borderLeft: `4px solid ${cor}` }}>
-                      <div style={{ fontSize: 16, fontWeight: 600, color: cor }}>{titulo}</div>
-                      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 6 }}>{detalhe}</div>
-                    </div>
-                  );
-                })()}
-
-                {/* Ativo Circulante x Passivo */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 16 }}>
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Ativo Circulante</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8, color: "var(--color-positive)" }}>
-                      {solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.circulante || 0) : "—"}
-                    </div>
-                    <table className="dreTable" style={{ marginTop: 12, fontSize: 12 }}>
-                      <tbody>
-                        <tr><td>Caixa (dinheiro)</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.caixa || 0) : "—"}</td></tr>
-                        <tr><td>Banco</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.banco || 0) : "—"}</td></tr>
-                        <tr><td>Cartões a compensar</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.cartoes || 0) : "—"}</td></tr>
-                        <tr><td>Cheques a receber</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.cheques || 0) : "—"}</td></tr>
-                        <tr><td>Estoque de combustível</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque_combustivel || 0) : "—"}</td></tr>
-                        <tr><td>Estoque de loja</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque_loja || 0) : "—"}</td></tr>
-                      </tbody>
-                    </table>
-                    {solvencia.cobertura_estoque && solvencia.cobertura_estoque.postos_total > 0 && (
-                      <div className="calcFootnote" style={{ marginTop: 8 }}>
-                        Estoque de combustível medido por sensor de tanque em {solvencia.cobertura_estoque.postos_com_combustivel} de {solvencia.cobertura_estoque.postos_total} postos
-                        {solvencia.cobertura_estoque.postos_com_combustivel < solvencia.cobertura_estoque.postos_total
-                          ? " — nos demais o sensor não está sincronizando, então o combustível não é contabilizado."
-                          : "."}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Passivo do Mês (Contas a Pagar)</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8, color: "var(--color-negative)" }}>
-                      {formatCurrency(solvencia.passivo?.contas_pagar || 0)}
-                    </div>
-                    <table className="dreTable" style={{ marginTop: 12, fontSize: 12 }}>
-                      <tbody>
-                        <tr><td>Títulos em aberto</td><td>{solvencia.passivo?.qtd_titulos || 0}</td></tr>
-                        <tr><td>Já vencido</td><td style={{ color: (solvencia.passivo?.vencido || 0) > 0 ? "var(--color-warning)" : "inherit" }}>{formatCurrency(solvencia.passivo?.vencido || 0)}</td></tr>
-                        <tr><td>A vencer</td><td>{formatCurrency((solvencia.passivo?.contas_pagar || 0) - (solvencia.passivo?.vencido || 0))}</td></tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Índices */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 16 }}>
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Índice de Liquidez Corrente</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8 }}>
-                      {solvencia.tem_ativo_dados ? (solvencia.indices?.liquidez_corrente || 0).toFixed(2).replace(".", ",") : "—"}
-                    </div>
-                    <div className="calcFootnote">Ativo circulante ÷ passivo do mês. Igual ou acima de 1,00 significa que os ativos cobrem o passivo.</div>
-                  </div>
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Capital de Giro Líquido</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8, color: solvencia.tem_ativo_dados ? ((solvencia.indices?.capital_giro_liquido || 0) >= 0 ? "var(--color-positive)" : "var(--color-negative)") : "inherit" }}>
-                      {solvencia.tem_ativo_dados ? formatCurrency(solvencia.indices?.capital_giro_liquido || 0) : "—"}
-                    </div>
-                    <div className="calcFootnote">Ativo circulante − passivo do mês. Positivo indica folga de caixa; negativo, aperto.</div>
-                  </div>
-                </div>
-
-                {/* Detalhe por filial (consolidado) */}
-                {solvencia.consolidado && (solvencia.por_filial?.length || 0) > 0 && (
-                  <div className="card" style={{ marginTop: 16 }}>
-                    <div className="sectionEyebrow">Por posto</div>
-                    <div style={{ overflowX: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
-                        <thead>
-                          <tr style={{ borderBottom: "1px solid var(--color-border)", textAlign: "right" }}>
-                            <th style={{ padding: "6px 4px", textAlign: "left" }}>Posto</th>
-                            <th style={{ padding: "6px 4px" }}>Ativo circulante</th>
-                            <th style={{ padding: "6px 4px" }}>Contas a pagar</th>
-                            <th style={{ padding: "6px 4px" }}>Já vencido</th>
-                            <th style={{ padding: "6px 4px" }}>Liquidez</th>
-                            <th style={{ padding: "6px 4px" }}>Capital de giro</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {solvencia.por_filial.map((f: any) => (
-                            <tr key={f.id_filial} style={{ borderBottom: "1px solid var(--color-border-subtle)", textAlign: "right" }}>
-                              <td style={{ padding: "6px 4px", textAlign: "left" }}>{f.filial_label}</td>
-                              <td style={{ padding: "6px 4px" }}>{f.tem_ativo_dados ? formatCurrency(f.ativo_circulante) : "—"}</td>
-                              <td style={{ padding: "6px 4px" }}>{formatCurrency(f.passivo_contas_pagar)}</td>
-                              <td style={{ padding: "6px 4px", color: f.passivo_vencido > 0 ? "var(--color-warning)" : "inherit" }}>{formatCurrency(f.passivo_vencido)}</td>
-                              <td style={{ padding: "6px 4px" }}>{f.tem_ativo_dados ? f.liquidez_corrente.toFixed(2).replace(".", ",") : "—"}</td>
-                              <td style={{ padding: "6px 4px", color: f.tem_ativo_dados ? (f.capital_giro_liquido >= 0 ? "var(--color-positive)" : "var(--color-negative)") : "inherit" }}>{f.tem_ativo_dados ? formatCurrency(f.capital_giro_liquido) : "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                <div className="calcFootnote" style={{ marginTop: 12 }}>
-                  {solvencia.disclaimer}
-                </div>
-              </>
-            ) : (
-              <EmptyState
-                title="Preparando a análise de solvência"
-                detail="Estamos consolidando as contas a pagar e os ativos do mês. Volte em instantes."
-              />
-            )}
-          </div>
+          solvencia ? (
+            <SolvenciaDetalhada
+              data={solvencia}
+              monthValue={solvenciaMonth}
+              onMonthChange={setSolvenciaMonth}
+              idEmpresa={scope?.id_empresa != null ? Number(scope.id_empresa) : undefined}
+              onSaved={() => setSolvenciaReload((x) => x + 1)}
+            />
+          ) : (
+            <EmptyState
+              title="Preparando a análise de solvência"
+              detail="Estamos consolidando os ativos e as obrigações do mês. Volte em instantes."
+            />
+          )
         )}
 
         {/* Explanations */}
