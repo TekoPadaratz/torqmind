@@ -135,7 +135,7 @@ BEGIN
     SELECT t.id_filial, (t.payload->>'ID_PRODUTOS') AS id_produto, SUM(mt.qtde)::numeric AS litros
     FROM stg.tanques t
     JOIN LATERAL (
-      SELECT etl.safe_numeric(m.payload->>'QTDESISTEMA') AS qtde
+      SELECT GREATEST(etl.safe_numeric(m.payload->>'LEITURA'), 0) AS qtde
       FROM stg.movtanques m
       WHERE m.id_empresa = t.id_empresa AND m.id_filial = t.id_filial
         AND m.payload->>'ID_TANQUES' = t.payload->>'ID_TANQUES'
