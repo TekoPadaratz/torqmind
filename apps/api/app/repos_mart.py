@@ -4908,6 +4908,243 @@ def _month_label_ptbr(ano_mes: int) -> str:
     return f"{_MESES_PTBR[mes]}/{ano}" if 1 <= mes <= 12 else str(ano_mes)
 
 
+_SOLVENCIA_SECAO_LABEL = {
+    "combustivel": "Combustível",
+    "estoque": "Estoque Loja",
+    "aprazo": "A Prazo",
+    "cartoes": "Cartões",
+    "cheques": "Cheques",
+    "dinheiro": "Dinheiro em Espécie",
+    "banco": "Bancos",
+    "investimento": "Investimentos",
+    "boleto": "Contas a Pagar",
+    "outro": "Outros",
+}
+_SOLVENCIA_GRUPO_LABEL = {
+    "ativo_circulante": "Ativo Circulante",
+    "ativo_nao_circulante": "Ativo Não Circulante",
+    "passivo_circulante": "Passivo Circulante",
+}
+
+
+def solvencia_detalhada(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    ano_mes: int,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Aba Solvência detalhada (formato "Fechamento de Caixa Geral").
+
+    Monta, por filial, os grupos Ativo Circulante / Ativo Não Circulante /
+    Passivo Circulante com seções (combustível por tipo, estoque, a prazo,
+    cartões, cheques por banco, dinheiro, bancos, investimentos, boletos), cada
+    uma com seus itens e total. Itens AUTO vêm de mart.solvencia_item; itens
+    MANUAIS (bancos/investimentos) vêm de app.solvencia_entrada_manual do mês
+    selecionado. Seções manuais ficam com editavel=true + id_tipo.
+    """
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    target = int(ano_mes)
+    ano, mes = target // 100, target % 100
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        auto_rows = conn.execute(
+            f"""
+            SELECT id_filial, grupo, secao, item_label, valor, qtd, ordem
+            FROM mart.solvencia_item
+            WHERE id_empresa = %s {where_filial}
+            ORDER BY id_filial, grupo, ordem, valor DESC
+            """,
+            [id_empresa] + branch_params,
+        ).fetchall()
+
+        tipos = {
+            int(t["id_tipo"]): dict(t)
+            for t in conn.execute(
+                "SELECT id_tipo, chave, nome, grupo, secao, ordem FROM app.solvencia_tipo_manual"
+            ).fetchall()
+        }
+
+        manual_rows = conn.execute(
+            f"""
+            SELECT id_filial, id_tipo, descricao, valor, ordem, id
+            FROM app.solvencia_entrada_manual
+            WHERE id_empresa = %s AND ano = %s AND mes = %s AND ativo {where_filial}
+            ORDER BY id_filial, id_tipo, ordem, id
+            """,
+            [id_empresa, ano, mes] + branch_params,
+        ).fetchall()
+
+        filial_nome_map = {
+            int(r["id_filial"]): r.get("nome")
+            for r in conn.execute(
+                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                [id_empresa],
+            ).fetchall()
+            if r.get("id_filial") is not None
+        }
+
+        meses_rows = conn.execute(
+            f"""
+            SELECT DISTINCT (ano * 100 + mes) AS ano_mes
+            FROM app.solvencia_entrada_manual
+            WHERE id_empresa = %s {where_filial}
+            ORDER BY 1
+            """,
+            [id_empresa] + branch_params,
+        ).fetchall()
+
+    # secao -> (grupo, editavel, id_tipo) para os painéis manuais
+    manual_secao = {}
+    for tid, t in tipos.items():
+        manual_secao[t["secao"]] = {"grupo": t["grupo"], "id_tipo": tid, "nome": t["nome"], "ordem": int(t.get("ordem") or 0)}
+
+    # Estrutura por filial: {id_filial: {grupo: {secao: {label, total, itens, editavel, id_tipo, ordem}}}}
+    filiais: Dict[int, Dict[str, Any]] = {}
+
+    def _secao(fid: int, grupo: str, secao: str) -> Dict[str, Any]:
+        f = filiais.setdefault(fid, {})
+        g = f.setdefault(grupo, {})
+        if secao not in g:
+            ms = manual_secao.get(secao)
+            g[secao] = {
+                "secao": secao,
+                "label": _SOLVENCIA_SECAO_LABEL.get(secao, secao.title()),
+                "total": 0.0,
+                "itens": [],
+                "editavel": bool(ms) and secao != "combustivel",
+                "id_tipo": (ms or {}).get("id_tipo"),
+                "ordem": 0,
+            }
+        return g[secao]
+
+    for r in auto_rows:
+        fid = int(r["id_filial"])
+        s = _secao(fid, r["grupo"], r["secao"])
+        s["ordem"] = int(r["ordem"] or 0)
+        val = float(r["valor"] or 0)
+        s["itens"].append({
+            "label": r["item_label"],
+            "valor": round(val, 2),
+            "qtd": float(r["qtd"]) if r.get("qtd") is not None else None,
+            "origem": "auto",
+            "editavel": False,
+        })
+        s["total"] = round(s["total"] + val, 2)
+
+    for r in manual_rows:
+        fid = int(r["id_filial"])
+        ms = tipos.get(int(r["id_tipo"]))
+        if not ms:
+            continue
+        s = _secao(fid, ms["grupo"], ms["secao"])
+        s["ordem"] = manual_secao.get(ms["secao"], {}).get("ordem", 0)
+        val = float(r["valor"] or 0)
+        s["itens"].append({
+            "id": int(r["id"]),
+            "label": r["descricao"],
+            "valor": round(val, 2),
+            "qtd": None,
+            "origem": "manual",
+            "editavel": True,
+        })
+        s["total"] = round(s["total"] + val, 2)
+
+    # garante os painéis manuais mesmo vazios (para a tela mostrar "clique para preencher")
+    all_fids = set(filiais.keys()) | {int(r["id_filial"]) for r in auto_rows}
+    for fid in all_fids:
+        for secao, ms in manual_secao.items():
+            _secao(fid, ms["grupo"], secao)
+
+    out_filiais = []
+    for fid in sorted(all_fids):
+        grupos_raw = filiais.get(fid, {})
+        grupos_out = {}
+        totais = {"ativo_circulante": 0.0, "ativo_nao_circulante": 0.0, "passivo_circulante": 0.0}
+        for grupo in ("ativo_circulante", "ativo_nao_circulante", "passivo_circulante"):
+            secoes = sorted(grupos_raw.get(grupo, {}).values(), key=lambda s: (s["ordem"], -s["total"]))
+            g_total = round(sum(s["total"] for s in secoes), 2)
+            totais[grupo] = g_total
+            grupos_out[grupo] = {
+                "label": _SOLVENCIA_GRUPO_LABEL[grupo],
+                "total": g_total,
+                "secoes": secoes,
+            }
+        ativo_total = round(totais["ativo_circulante"] + totais["ativo_nao_circulante"], 2)
+        passivo = totais["passivo_circulante"]
+        out_filiais.append({
+            "id_filial": fid,
+            "nome": filial_nome_map.get(fid) or f"Filial {fid}",
+            "grupos": grupos_out,
+            "totais": {
+                "ativo_circulante": totais["ativo_circulante"],
+                "ativo_nao_circulante": totais["ativo_nao_circulante"],
+                "ativo_total": ativo_total,
+                "passivo": passivo,
+                "capital_giro": round(ativo_total - passivo, 2),
+                "liquidez_corrente": round(ativo_total / passivo, 4) if passivo > 0 else None,
+                "cobre_passivo": ativo_total >= passivo,
+            },
+        })
+
+    meses = sorted({int(r["ano_mes"]) for r in meses_rows} | {target})
+    return {
+        "ano_mes": target,
+        "meses_disponiveis": meses,
+        "filiais": out_filiais,
+    }
+
+
+def solvencia_manual_upsert(
+    role: str,
+    id_empresa: int,
+    id_filial: int,
+    ano_mes: int,
+    id_tipo: int,
+    itens: List[Dict[str, Any]],
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Substitui os itens manuais de (filial, mês, tipo) pela lista informada.
+
+    Recebe a lista completa do painel (ex.: todos os bancos daquele mês) e faz
+    replace atômico: remove os antigos do escopo e regrava os enviados.
+    """
+    if id_filial is None:
+        raise ValueError("solvencia_manual_upsert requer id_filial")
+    ano, mes = int(ano_mes) // 100, int(ano_mes) % 100
+    if not (1 <= mes <= 12):
+        raise ValueError("ano_mes inválido")
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        tipo_ok = conn.execute(
+            "SELECT 1 FROM app.solvencia_tipo_manual WHERE id_tipo = %s", [int(id_tipo)]
+        ).fetchone()
+        if not tipo_ok:
+            raise ValueError(f"id_tipo desconhecido: {id_tipo}")
+        conn.execute(
+            """DELETE FROM app.solvencia_entrada_manual
+               WHERE id_empresa=%s AND id_filial=%s AND ano=%s AND mes=%s AND id_tipo=%s""",
+            [id_empresa, int(id_filial), ano, mes, int(id_tipo)],
+        )
+        n = 0
+        for ordem, it in enumerate(itens or []):
+            desc = str(it.get("descricao") or it.get("label") or "").strip()
+            try:
+                val = round(float(it.get("valor") or 0), 2)
+            except (TypeError, ValueError):
+                val = 0.0
+            if not desc:
+                continue
+            conn.execute(
+                """INSERT INTO app.solvencia_entrada_manual
+                     (id_empresa, id_filial, ano, mes, id_tipo, descricao, valor, ordem)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [id_empresa, int(id_filial), ano, mes, int(id_tipo), desc[:120], val, ordem],
+            )
+            n += 1
+        conn.commit()
+    return {"ok": True, "itens_gravados": n}
+
+
 def solvencia_overview(
     role: str,
     id_empresa: int,

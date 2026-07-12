@@ -735,3 +735,79 @@ def profit_solvencia(
         {"data": repos_mart.solvencia_overview(role, tenant, filial, target)},
         claims,
     )
+
+
+def _solvencia_target_month(ano_mes: Optional[int], tenant: int) -> int:
+    if ano_mes is not None:
+        mm = int(ano_mes) % 100
+        if int(ano_mes) >= 190001 and 1 <= mm <= 12:
+            return int(ano_mes)
+    today = resolve_business_date(None, tenant)
+    return today.year * 100 + today.month
+
+
+@router.get("/solvencia/detalhada")
+def profit_solvencia_detalhada(
+    ano_mes: Optional[int] = Query(None, description="Mês-alvo YYYYMM; default = mês corrente"),
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    """Solvência detalhada (Fechamento de Caixa Geral): grupos/seções/itens.
+
+    Ativo Circulante (combustível por tipo, estoque, a prazo, cartões, cheques,
+    dinheiro, bancos), Ativo Não Circulante (investimentos) e Passivo Circulante
+    (boletos), com itens e totais. Bancos/investimentos são preenchidos
+    manualmente por mês (seções editaveis=true).
+    """
+    role = claims["role"]
+    if not can_view_sensitive_financials(claims):
+        return {"data": None, "message": "Sem permissão para ver a análise de solvência."}
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
+    )
+    target = _solvencia_target_month(ano_mes, tenant)
+    return redact_sensitive(
+        {"data": repos_mart.solvencia_detalhada(role, tenant, filial, target)},
+        claims,
+    )
+
+
+class SolvenciaManualItem(BaseModel):
+    descricao: str
+    valor: float = 0.0
+
+
+class SolvenciaManualUpsert(BaseModel):
+    id_filial: int
+    ano_mes: int
+    id_tipo: int
+    itens: List[SolvenciaManualItem] = []
+
+
+@router.post("/solvencia/manual")
+def profit_solvencia_manual_upsert(
+    body: SolvenciaManualUpsert,
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    """Grava (replace) os itens manuais de um painel (bancos/investimentos) para
+    a filial e o mês selecionados. Recebe a lista completa do painel."""
+    if not can_view_sensitive_financials(claims):
+        return {"ok": False, "message": "Sem permissão."}
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=body.id_filial, id_filiais_q=None,
+    )
+    fid = filial if filial is not None else body.id_filial
+    try:
+        result = repos_mart.solvencia_manual_upsert(
+            claims["role"], tenant, fid, body.ano_mes, body.id_tipo,
+            [it.model_dump() for it in body.itens],
+        )
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc)}
+    return result
+
