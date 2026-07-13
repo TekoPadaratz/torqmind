@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from app import repos_mart
 from app.business_time import resolve_business_date
