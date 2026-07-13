@@ -227,6 +227,17 @@ function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { g
   );
 }
 
+// Cartão-indicador com rótulo, valor e uma linha curta explicando a fórmula.
+function Kpi({ label, sub, value, color }: { label: string; sub: string; value: string; color: string }) {
+  return (
+    <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--color-surface-muted, rgba(127,127,127,0.05))", border: "1px solid var(--color-border-subtle, var(--color-border))" }}>
+      <div className="sectionEyebrow">{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2, color, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>{sub}</div>
+    </div>
+  );
+}
+
 export function SolvenciaDetalhada({
   data,
   monthValue,
@@ -242,7 +253,10 @@ export function SolvenciaDetalhada({
 }) {
   if (!data) return null;
   const anoMes: number = monthValue ?? data.ano_mes;
-  const filiais: Filial[] = data.filiais || [];
+  // Ordena por nome (natural: VR 2 antes de VR 10), não por código.
+  const filiais: Filial[] = [...(data.filiais || [])].sort((a, b) =>
+    (a.nome || "").localeCompare(b.nome || "", "pt-BR", { numeric: true, sensitivity: "base" }),
+  );
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -270,34 +284,52 @@ export function SolvenciaDetalhada({
       <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 10, display: "flex", alignItems: "center", gap: 6 }}>
         <span aria-hidden>✎</span> Passe o mouse ou clique nos painéis de Bancos e Investimentos para preencher os valores do mês.
       </div>
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, lineHeight: 1.5 }}>
+        <strong>Capital de giro</strong> = Ativo − Passivo (o que sobra depois de quitar as contas).{" "}
+        <strong>Liquidez</strong> = Ativo ÷ Passivo, em vezes: <strong>1,00×</strong> cobre exatamente as contas; acima de 1 sobra caixa, abaixo de 1 falta.
+      </div>
 
       {filiais.map((f) => {
         const t = f.totais;
         const liq = t.liquidez_corrente;
+        const cobre = t.cobre_passivo;
+        // Quadro geral da filial: agrupa totalizadores + os 3 painéis num só bloco.
+        // Não usa a classe .card (backdrop-filter) para não prender os popovers de edição.
         return (
-          <div key={f.id_filial} style={{ marginTop: 18 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>{f.nome}</div>
+          <div
+            key={f.id_filial}
+            style={{
+              marginTop: 18,
+              padding: 18,
+              borderRadius: 14,
+              border: "1px solid var(--color-border)",
+              borderLeft: `4px solid ${cobre ? "var(--color-positive)" : "var(--color-negative)"}`,
+              background: "var(--color-surface, transparent)",
+            }}
+          >
+            {/* Cabeçalho da filial + veredito */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>{f.nome}</div>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: "3px 10px",
+                  borderRadius: 999,
+                  color: cobre ? "var(--color-positive)" : "var(--color-negative)",
+                  background: cobre ? "rgba(34,197,94,0.10)" : "rgba(239,68,68,0.10)",
+                }}
+              >
+                {cobre ? "Ativos cobrem o passivo" : "Ativos não cobrem o passivo"}
+              </span>
+            </div>
 
             {/* Totalizadores */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
-              <div className="card" style={{ padding: 14 }}>
-                <div className="sectionEyebrow">Ativo Total</div>
-                <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: "var(--color-positive)" }}>{formatCurrency(t.ativo_total)}</div>
-              </div>
-              <div className="card" style={{ padding: 14 }}>
-                <div className="sectionEyebrow">Passivo</div>
-                <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: "var(--color-negative)" }}>{formatCurrency(t.passivo)}</div>
-              </div>
-              <div className="card" style={{ padding: 14 }}>
-                <div className="sectionEyebrow">Capital de Giro</div>
-                <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: t.capital_giro >= 0 ? "var(--color-positive)" : "var(--color-negative)" }}>{formatCurrency(t.capital_giro)}</div>
-              </div>
-              <div className="card" style={{ padding: 14 }}>
-                <div className="sectionEyebrow">Liquidez</div>
-                <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4, color: (liq ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)" }}>
-                  {liq != null ? liq.toFixed(2).replace(".", ",") : "—"}
-                </div>
-              </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+              <Kpi label="Ativo Total" sub="Circulante + investimentos" value={formatCurrency(t.ativo_total)} color="var(--color-positive)" />
+              <Kpi label="Passivo" sub="Contas a pagar em aberto" value={formatCurrency(t.passivo)} color="var(--color-negative)" />
+              <Kpi label="Capital de Giro" sub="Ativo − Passivo" value={formatCurrency(t.capital_giro)} color={t.capital_giro >= 0 ? "var(--color-positive)" : "var(--color-negative)"} />
+              <Kpi label="Liquidez" sub="Ativo ÷ Passivo" value={liq != null ? `${liq.toFixed(2).replace(".", ",")}×` : "—"} color={(liq ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)"} />
             </div>
 
             {/* Grupos */}
