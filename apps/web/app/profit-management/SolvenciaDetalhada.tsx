@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCurrency } from "../lib/format";
 import { apiPost } from "../lib/api";
+import PortalDropdown from "../components/ui/PortalDropdown";
 
 // Cores no padrão do sistema (Ativo Circulante = positivo/verde, Não-Circulante
 // = cobre/âmbar, Passivo = negativo/vermelho). Separadas, sem virar circo.
@@ -49,10 +50,9 @@ function EditableSecao({
   onSaved: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
   const [rows, setRows] = useState<{ descricao: string; valor: string }[]>([]);
   const [saving, setSaving] = useState(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -60,14 +60,6 @@ function EditableSecao({
       setRows(base.length ? base : [{ descricao: "", valor: "" }]);
     }
   }, [open, secao.itens]);
-
-  const scheduleClose = () => {
-    if (pinned) return;
-    closeTimer.current = setTimeout(() => setOpen(false), 220);
-  };
-  const cancelClose = () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-  };
 
   const save = async () => {
     if (!idEmpresa) return;
@@ -81,7 +73,6 @@ function EditableSecao({
           .filter((r) => r.descricao.trim())
           .map((r) => ({ descricao: r.descricao.trim(), valor: Number(String(r.valor).replace(/\./g, "").replace(",", ".")) || 0 })),
       });
-      setPinned(false);
       setOpen(false);
       onSaved();
     } finally {
@@ -90,22 +81,21 @@ function EditableSecao({
   };
 
   const vazio = secao.itens.length === 0;
+  const inputStyle = {
+    padding: "6px 8px",
+    borderRadius: 6,
+    border: "1px solid var(--border)",
+    background: "#0d1317",
+    color: "var(--text)",
+    fontSize: 12,
+  } as const;
 
   return (
-    <div
-      style={{ position: "relative" }}
-      onMouseEnter={() => {
-        cancelClose();
-        setOpen(true);
-      }}
-      onMouseLeave={scheduleClose}
-    >
+    <>
       <button
+        ref={anchorRef}
         type="button"
-        onClick={() => {
-          setPinned(true);
-          setOpen(true);
-        }}
+        onClick={() => setOpen((o) => !o)}
         title="Clique para preencher / editar"
         style={{
           display: "flex",
@@ -114,9 +104,9 @@ function EditableSecao({
           justifyContent: "space-between",
           gap: 8,
           padding: "8px 10px",
-          border: "1px dashed var(--color-border)",
+          border: "1px dashed var(--border)",
           borderRadius: 8,
-          background: "var(--color-surface)",
+          background: open ? "rgba(255,255,255,0.05)" : "transparent",
           color: "inherit",
           cursor: "pointer",
           textAlign: "left",
@@ -131,27 +121,20 @@ function EditableSecao({
         </span>
       </button>
 
-      {open && (
+      <PortalDropdown open={open} onClose={() => setOpen(false)} anchorRef={anchorRef} minWidth={320}>
         <div
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
           style={{
-            position: "absolute",
-            zIndex: 30,
-            top: "calc(100% + 4px)",
-            left: 0,
-            right: 0,
-            minWidth: 260,
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-border)",
-            borderRadius: 10,
-            boxShadow: "0 12px 32px rgba(0,0,0,0.18)",
+            background: "#131a20",
+            border: "1px solid var(--border)",
+            borderRadius: 12,
+            boxShadow: "0 18px 44px rgba(0,0,0,0.55)",
             padding: 12,
+            color: "var(--text)",
           }}
         >
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>{secao.label} — {fmtMonth(anoMes)}</span>
-            <button type="button" onClick={() => { setPinned(false); setOpen(false); }} style={{ border: "none", background: "transparent", cursor: "pointer", opacity: 0.6, fontSize: 14 }}>✕</button>
+            <button type="button" onClick={() => setOpen(false)} style={{ border: "none", background: "transparent", cursor: "pointer", opacity: 0.6, fontSize: 14, color: "var(--text)" }}>✕</button>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 240, overflowY: "auto" }}>
             {rows.map((r, i) => (
@@ -160,33 +143,33 @@ function EditableSecao({
                   placeholder="Nome"
                   value={r.descricao}
                   onChange={(e) => setRows((rs) => rs.map((x, j) => (j === i ? { ...x, descricao: e.target.value } : x)))}
-                  style={{ flex: 1, minWidth: 0, padding: "5px 8px", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-bg, transparent)", color: "inherit", fontSize: 12 }}
+                  style={{ ...inputStyle, flex: 1, minWidth: 0 }}
                 />
                 <input
                   placeholder="0,00"
                   inputMode="decimal"
                   value={r.valor}
                   onChange={(e) => setRows((rs) => rs.map((x, j) => (j === i ? { ...x, valor: e.target.value } : x)))}
-                  style={{ width: 96, padding: "5px 8px", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-bg, transparent)", color: "inherit", fontSize: 12, textAlign: "right" }}
+                  style={{ ...inputStyle, width: 104, textAlign: "right" }}
                 />
-                <button type="button" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} title="Remover" style={{ border: "none", background: "transparent", cursor: "pointer", opacity: 0.5, fontSize: 14 }}>✕</button>
+                <button type="button" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} title="Remover" style={{ border: "none", background: "transparent", cursor: "pointer", opacity: 0.6, fontSize: 14, color: "var(--text)" }}>✕</button>
               </div>
             ))}
           </div>
           <button
             type="button"
             onClick={() => setRows((rs) => [...rs, { descricao: "", valor: "" }])}
-            style={{ marginTop: 8, border: "1px dashed var(--color-border)", background: "transparent", color: "inherit", borderRadius: 6, padding: "5px 8px", cursor: "pointer", fontSize: 12, width: "100%" }}
+            style={{ marginTop: 8, border: "1px dashed var(--border)", background: "transparent", color: "var(--text)", borderRadius: 6, padding: "6px 8px", cursor: "pointer", fontSize: 12, width: "100%" }}
           >
             + adicionar linha
           </button>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
-            <button type="button" onClick={() => { setPinned(false); setOpen(false); }} style={{ border: "1px solid var(--color-border)", background: "transparent", color: "inherit", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancelar</button>
+            <button type="button" onClick={() => setOpen(false)} style={{ border: "1px solid var(--border)", background: "transparent", color: "var(--text)", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancelar</button>
             <button type="button" onClick={save} disabled={saving} style={{ border: "none", background: "var(--color-positive)", color: "#fff", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>{saving ? "Salvando…" : "Salvar"}</button>
           </div>
         </div>
-      )}
-    </div>
+      </PortalDropdown>
+    </>
   );
 }
 
@@ -204,15 +187,15 @@ function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { g
           secao.editavel ? (
             <EditableSecao key={secao.secao} filial={filial} secao={secao} anoMes={anoMes} idEmpresa={idEmpresa} onSaved={onSaved} />
           ) : (
-            <div key={secao.secao} style={{ border: "1px solid var(--color-border-subtle, var(--color-border))", borderRadius: 8, overflow: "hidden" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", fontSize: 13, fontWeight: 600, background: "var(--color-surface-muted, transparent)" }}>
+            <div key={secao.secao} style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", fontSize: 13, fontWeight: 600, background: "rgba(255,255,255,0.03)" }}>
                 <span>{secao.label}</span>
                 <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(secao.total)}</span>
               </div>
               {secao.itens.length > 1 && (
                 <div style={{ padding: "2px 10px 6px" }}>
                   {secao.itens.map((it, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "var(--color-text-secondary)" }}>
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "var(--muted)" }}>
                       <span>{it.label}{it.qtd ? ` · ${it.qtd.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} L` : ""}</span>
                       <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(it.valor)}</span>
                     </div>
@@ -230,10 +213,10 @@ function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { g
 // Cartão-indicador com rótulo, valor e uma linha curta explicando a fórmula.
 function Kpi({ label, sub, value, color }: { label: string; sub: string; value: string; color: string }) {
   return (
-    <div style={{ padding: "10px 12px", borderRadius: 10, background: "var(--color-surface-muted, rgba(127,127,127,0.05))", border: "1px solid var(--color-border-subtle, var(--color-border))" }}>
+    <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)" }}>
       <div className="sectionEyebrow">{label}</div>
       <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2, color, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>{sub}</div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{sub}</div>
     </div>
   );
 }
@@ -263,7 +246,7 @@ export function SolvenciaDetalhada({
       <div className="card" style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
           <div className="sectionEyebrow">Solvência — Posição Atual</div>
-          <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>
             Ativos disponíveis, recebíveis e estoque frente às obrigações do mês.
           </div>
         </div>
@@ -272,7 +255,7 @@ export function SolvenciaDetalhada({
           <select
             value={anoMes}
             onChange={(e) => onMonthChange(Number(e.target.value))}
-            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--color-border)", background: "var(--color-surface)", color: "inherit", fontSize: 13 }}
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg)", color: "inherit", fontSize: 13 }}
           >
             {(data.meses_disponiveis || [anoMes]).map((m: number) => (
               <option key={m} value={m}>{fmtMonth(m)}</option>
@@ -281,10 +264,10 @@ export function SolvenciaDetalhada({
         </label>
       </div>
 
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 10, display: "flex", alignItems: "center", gap: 6 }}>
-        <span aria-hidden>✎</span> Passe o mouse ou clique nos painéis de Bancos e Investimentos para preencher os valores do mês.
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, display: "flex", alignItems: "center", gap: 6 }}>
+        <span aria-hidden>✎</span> Clique nos painéis de Bancos e Investimentos para preencher os valores do mês.
       </div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
         <strong>Capital de giro</strong> = Ativo − Passivo (o que sobra depois de quitar as contas).{" "}
         <strong>Liquidez</strong> = Ativo ÷ Passivo, em vezes: <strong>1,00×</strong> cobre exatamente as contas; acima de 1 sobra caixa, abaixo de 1 falta.
       </div>
@@ -302,9 +285,9 @@ export function SolvenciaDetalhada({
               marginTop: 18,
               padding: 18,
               borderRadius: 14,
-              border: "1px solid var(--color-border)",
+              border: "1px solid var(--border)",
               borderLeft: `4px solid ${cobre ? "var(--color-positive)" : "var(--color-negative)"}`,
-              background: "var(--color-surface, transparent)",
+              background: "rgba(255,255,255,0.02)",
             }}
           >
             {/* Cabeçalho da filial + veredito */}
@@ -345,7 +328,7 @@ export function SolvenciaDetalhada({
       })}
 
       {filiais.length === 0 && (
-        <div className="card" style={{ marginTop: 16, padding: 20, textAlign: "center", color: "var(--color-text-secondary)" }}>
+        <div className="card" style={{ marginTop: 16, padding: 20, textAlign: "center", color: "var(--muted)" }}>
           Sem dados de solvência para o mês selecionado.
         </div>
       )}
