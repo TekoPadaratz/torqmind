@@ -5087,7 +5087,19 @@ def solvencia_detalhada(
             },
         })
 
-    meses = sorted({int(r["ano_mes"]) for r in meses_rows} | {target})
+    # Janela navegável de meses: mês corrente + 11 anteriores, mais os meses que
+    # já têm lançamento manual e o alvo. Permite escolher qualquer mês/ano no
+    # seletor, mesmo sem lançamento ainda.
+    hoje = business_today(id_empresa)
+    base = max(hoje.year * 100 + hoje.month, target)
+    b_ano, b_mes = base // 100, base % 100
+    janela = set()
+    for _ in range(12):
+        janela.add(b_ano * 100 + b_mes)
+        b_mes -= 1
+        if b_mes == 0:
+            b_mes, b_ano = 12, b_ano - 1
+    meses = sorted(janela | {int(r["ano_mes"]) for r in meses_rows} | {target}, reverse=True)
     return {
         "ano_mes": target,
         "meses_disponiveis": meses,

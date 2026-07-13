@@ -264,8 +264,8 @@ export function SolvenciaDetalhada({
         </label>
       </div>
 
-      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, display: "flex", alignItems: "center", gap: 6 }}>
-        <span aria-hidden>✎</span> Clique nos painéis de Bancos e Investimentos para preencher os valores do mês.
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, lineHeight: 1.5 }}>
+        <span aria-hidden>✎</span> Clique nos painéis de <strong>Bancos</strong> e <strong>Investimentos</strong> para lançar os valores do <strong>mês selecionado</strong>. Os demais saldos (combustível, cheques, estoque e contas) refletem a posição atual.
       </div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
         <strong>Capital de giro</strong> = Ativo − Passivo (o que sobra depois de quitar as contas).{" "}
