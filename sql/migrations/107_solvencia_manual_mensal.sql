@@ -6,7 +6,7 @@
 -- (banco, investimento...) e um "tipo" (id_tipo) com grupo/ordem. A tela mostra
 -- o total do painel e, no hover/clique, abre os itens (nome + valor) editaveis.
 --
--- Armazenamento no Postgres app (owner-maintained, editavel) — padrao TorqMind
+-- Armazenamento no Postgres app (owner-maintained, editavel) - padrao TorqMind
 -- para config do dono (app.budget_conta, app.company_branding). A camada rapida
 -- da tela (mart.solvencia_item) continua com os itens AUTO; o repo mescla os
 -- manuais do mes selecionado na leitura.

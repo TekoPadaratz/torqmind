@@ -2,7 +2,7 @@
 -- Branch vs001.002-DRE. Idempotente. Nao destrutivo.
 --
 -- Objetivo (dono): aba Solvencia do DRE Gerencial no formato do "Fechamento de
--- Caixa Geral" do Xpert — detalhada por item (combustivel por tipo, estoque,
+-- Caixa Geral" do Xpert - detalhada por item (combustivel por tipo, estoque,
 -- aprazo, cartoes por operadora, cheques por banco, dinheiro, boletos), com
 -- Ativo Circulante / Ativo Nao-Circulante / Passivo totalizados.
 --
