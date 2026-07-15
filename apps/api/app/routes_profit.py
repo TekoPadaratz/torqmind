@@ -9,6 +9,7 @@ Provides endpoints for the premium profit management module including:
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -811,4 +812,149 @@ def profit_solvencia_manual_upsert(
     except ValueError as exc:
         return {"ok": False, "message": str(exc)}
     return result
+
+
+# ---------------------------------------------------------------------------
+# Compliance ANP / CDC
+# ---------------------------------------------------------------------------
+
+class AnpConfigUpsert(BaseModel):
+    id_filial: int = 0  # 0 = default empresa
+    limite_alerta_amarelo_perc: float = 50.0
+    limite_abusivo_anp_perc: float = 70.0
+
+
+@router.get("/anp-compliance")
+def profit_anp_compliance(
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    """Grid + KPIs de variação de margem (lastro ANP/CDC)."""
+    if not can_view_sensitive_financials(claims):
+        return {"ok": False, "message": "Sem permissão para Compliance ANP."}
+    tenant_id, branch_ids = _extract_profit_scope(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
+    )
+    if not branch_ids:
+        return {"data": None, "message": "Selecione ao menos uma filial."}
+    from app.services import anp_compliance as anp
+
+    data = anp.overview_payload(
+        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=False,
+    )
+    return redact_sensitive({"data": data}, claims)
+
+
+@router.get("/anp-compliance/config")
+def profit_anp_config_get(
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    if not can_view_sensitive_financials(claims):
+        return {"ok": False, "message": "Sem permissão."}
+    tenant_id, _, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=None,
+    )
+    from app.services import anp_compliance as anp
+
+    fid = int(id_filial) if id_filial else 0
+    return {"data": anp.load_config(tenant_id, fid)}
+
+
+@router.put("/anp-compliance/config")
+def profit_anp_config_put(
+    body: AnpConfigUpsert,
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    if not can_view_sensitive_financials(claims):
+        return {"ok": False, "message": "Sem permissão."}
+    tenant_id, _, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=body.id_filial or None, id_filiais_q=None,
+    )
+    from app.services import anp_compliance as anp
+
+    try:
+        row = anp.upsert_config(
+            tenant_id,
+            body.id_filial,
+            body.limite_alerta_amarelo_perc,
+            body.limite_abusivo_anp_perc,
+            updated_by=str(claims.get("sub") or claims.get("email") or claims.get("role") or ""),
+        )
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc)}
+    return {"ok": True, "data": row}
+
+
+@router.get("/anp-compliance/export")
+def profit_anp_export(
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    if not can_view_sensitive_financials(claims):
+        return {"ok": False, "message": "Sem permissão."}
+    tenant_id, branch_ids = _extract_profit_scope(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
+    )
+    from app.services import anp_compliance as anp
+    from fastapi.responses import Response
+
+    data = anp.overview_payload(
+        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=False,
+    )
+    csv_body = anp.events_to_csv(data.get("eventos") or [])
+    return Response(
+        content=csv_body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="anp_compliance.csv"'},
+    )
+
+
+@router.post("/anp-compliance/refresh")
+def profit_anp_refresh(
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("profit_management")),
+):
+    """Publica proxy em mart_anp_compliance (exige CH WRITE). Sempre recalcula live."""
+    if not can_view_sensitive_financials(claims):
+        return {"ok": False, "message": "Sem permissão."}
+    role = str(claims.get("role") or "")
+    if role not in ("platform_master", "owner"):
+        return {"ok": False, "message": "Apenas owner/platform pode forçar refresh."}
+    tenant_id, branch_ids = _extract_profit_scope(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
+    )
+    from app.services import anp_compliance as anp
+
+    live = anp.overview_payload(
+        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=False,
+    )
+    published = None
+    try:
+        published = anp.publish_proxy_to_mart(
+            tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim,
+        )
+    except Exception as exc:
+        logger.warning("ANP mart publish failed (CH RO?): %s", exc)
+        published = {"inserted": 0, "error": str(exc)[:240]}
+    return {"ok": True, "data": {"live_total": live["total_eventos"], "publish": published}}
 

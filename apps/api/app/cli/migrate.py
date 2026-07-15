@@ -103,8 +103,19 @@ def _is_nontransactional_migration(sql_text: str) -> bool:
     return False
 
 
+def _read_sql_file(path: Path) -> str:
+    """Read migration SQL with UTF-8 first; fallback for legacy Windows-1252 files."""
+    raw = path.read_bytes()
+    for encoding in ("utf-8", "cp1252", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _load_migration_spec(path: Path) -> MigrationSpec:
-    sql_text = path.read_text(encoding="utf-8")
+    sql_text = _read_sql_file(path)
     return MigrationSpec(
         path=path,
         checksum=hashlib.sha256(sql_text.encode("utf-8")).hexdigest(),
@@ -314,7 +325,7 @@ def _record_migration(conn: psycopg.Connection, path: Path, checksum: str, execu
 
 
 def _apply_transactional_sql_file(conn: psycopg.Connection, path: Path) -> None:
-    sql = path.read_text(encoding="utf-8")
+    sql = _read_sql_file(path)
     try:
         conn.execute(sql)
         conn.commit()
@@ -324,7 +335,7 @@ def _apply_transactional_sql_file(conn: psycopg.Connection, path: Path) -> None:
 
 
 def _apply_nontransactional_sql_file(path: Path) -> None:
-    statements = _split_sql_statements(path.read_text(encoding="utf-8"))
+    statements = _split_sql_statements(_read_sql_file(path))
     if not statements:
         return
 

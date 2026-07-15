@@ -123,17 +123,18 @@ datasets:
        AND c.ID_DB = i.ID_DB
 
   movprodutos:
-    enabled: false
-    # Dataset legado descontinuado na arquitetura ativa.
-    # Preserve apenas para compatibilidade excepcional.
+    enabled: true
+    # Nao e fonte canonica de venda (use comprovantes). Ligado para Solvencia:
+    # reconstrucao de estoque loja as-of. Bootstrap desde ~Jan/2025 (560d).
+    # Throttle: runtime.batch_delay_seconds (default 0.5) — NAO remover.
     table: dbo.MOVPRODUTOS
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
     watermark_order_by: TORQMIND_WATERMARK, ID_MOVPRODUTOS, ID_FILIAL, ID_DB
     cursor_pk_columns: [ID_MOVPRODUTOS, ID_FILIAL, ID_DB]
-    retention_days: 365
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
+    retention_days: 560
+    bootstrap_days: 560
+    watermark_overlap_seconds: 240
     query: |
       SELECT m.*,
              CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
@@ -145,17 +146,16 @@ datasets:
       FROM dbo.MOVPRODUTOS m
 
   itensmovprodutos:
-    enabled: false
-    # Dataset legado descontinuado na arquitetura ativa.
-    # Preserve apenas para compatibilidade excepcional.
+    enabled: true
+    # Custo de reposicao Solvencia = VLRCUSTOCOMICMS (ultima NF CFOP 1.xxx/2.xxx).
     table: dbo.ITENSMOVPRODUTOS
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
     watermark_order_by: TORQMIND_WATERMARK, ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB
     cursor_pk_columns: [ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB]
-    retention_days: 365
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
+    retention_days: 560
+    bootstrap_days: 560
+    watermark_overlap_seconds: 240
     query: |
       SELECT i.*,
              CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
@@ -371,6 +371,17 @@ datasets:
 
   financeiro: { enabled: false, table: dbo.FINANCEIRO }
 
+  # Compliance ANP — fontes Xpert confirmadas (LMC/COMPENTRADAS)
+  nfe_entrada:
+    enabled: true
+    table: dbo.COMPROVANTES
+  itens_nfe_entrada:
+    enabled: true
+    table: dbo.ITENSCOMPROVANTE
+  preco_bomba_hist:
+    enabled: true
+    table: dbo.LMCBICOS
+
   # NFE - Notas Fiscais Eletronicas
   # Filtro por DATA (data de emissao comercial).
   # NAO usa DATAREPL, NAO usa DATAEMISSAO, NAO exige SERIE.
@@ -516,3 +527,36 @@ datasets:
     watermark_overlap_seconds: 240
     query: |
       SELECT c.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DATA AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONSOLEARQUIVO c
+
+  # Solvencia DRE: prazo de repasse de cartoes (ID_CARTAO -> ID_CONVENIOS)
+  convenios:
+    enabled: true
+    table: dbo.CONVENIOS
+    watermark_column: TORQMIND_WATERMARK
+    full_refresh: true
+    bootstrap_days: 560
+    watermark_overlap_seconds: 240
+    query: |
+      SELECT c.*, COALESCE(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)) AS TORQMIND_WATERMARK
+      FROM dbo.CONVENIOS c
+
+  movbancos:
+    enabled: true
+    table: dbo.MOVBANCOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    retention_days: 560
+    bootstrap_days: 560
+    watermark_overlap_seconds: 240
+    query: |
+      SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
+             (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DTACONTA AS datetime2)),
+               (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
+      FROM dbo.MOVBANCOS m WHERE ISNULL(m.DELETAR, 0) = 0
+
+  saldoclientes:
+    enabled: true
+    table: dbo.SALDOCLIENTES
+    watermark_column: ID_SALDOCLIENTES
+    watermark_order_by: ID_SALDOCLIENTES, ID_FILIAL, ID_DB
+    full_refresh: true

@@ -24,6 +24,7 @@ import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../l
 import { canViewSensitiveFinancials } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { SolvenciaDetalhada } from "./SolvenciaDetalhada";
+import { AnpCompliancePanel } from "./AnpCompliancePanel";
 
 export const dynamic = "force-dynamic";
 
@@ -73,12 +74,21 @@ export default function ProfitManagementPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
 
-  const [activeTab, setActiveTab] = useState<"overview" | "products" | "repricing" | "solvencia">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "products" | "repricing" | "solvencia" | "anp">("overview");
   const [sectorFilter, setSectorFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [solvenciaMonth, setSolvenciaMonth] = useState<number | null>(null);
   const [solvenciaReload, setSolvenciaReload] = useState(0);
+  const [anpReload, setAnpReload] = useState(0);
+  // Período próprio do Compliance ANP (independente do filtro global da URL)
+  const [anpDtIni, setAnpDtIni] = useState(() => {
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    return `${today.slice(0, 4)}-01-01`;
+  });
+  const [anpDtFim, setAnpDtFim] = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }),
+  );
 
   const { claims, data: overviewData, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
@@ -122,13 +132,26 @@ export default function ProfitManagementPage() {
   });
 
   const { data: solvenciaData } = useBiScopeData<any>({
-    moduleKey: `profit_solvencia_det:${solvenciaMonth ?? "atual"}:${solvenciaReload}`,
+    moduleKey: `profit_solvencia_det_v2:${solvenciaMonth ?? "atual"}:${solvenciaReload}`,
     scope,
     errorMessage: "",
     buildRequestUrl: (currentScope) =>
       `/bi/profit-management/solvencia/detalhada?${buildScopeParams(currentScope).toString()}${
         solvenciaMonth ? `&ano_mes=${solvenciaMonth}` : ""
       }`,
+  });
+
+  const { data: anpData, loading: anpLoading } = useBiScopeData<any>({
+    moduleKey: `profit_anp_compliance:${anpReload}:${anpDtIni}:${anpDtFim}`,
+    scope,
+    errorMessage: "",
+    buildRequestUrl: (currentScope) => {
+      const params = buildScopeParams(currentScope);
+      // Datas do panel ANP sobrescrevem o período global do escopo
+      params.set("dt_ini", anpDtIni);
+      params.set("dt_fim", anpDtFim);
+      return `/bi/profit-management/anp-compliance?${params.toString()}`;
+    },
   });
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
@@ -142,6 +165,7 @@ export default function ProfitManagementPage() {
   const products = productsData?.data;
   const repricing = repricingData?.data;
   const solvencia = solvenciaData?.data;
+  const anp = anpData?.data;
 
   const filteredProducts = useMemo(() => {
     if (!products?.produtos) return [];
@@ -275,14 +299,24 @@ export default function ProfitManagementPage() {
         {/* Tabs */}
         <div className="profitTabs">
           {((canViewSensitiveFinancials(claims)
-            ? ["overview", "products", "repricing", "solvencia"]
-            : ["overview", "products", "repricing"]) as Array<"overview" | "products" | "repricing" | "solvencia">).map((tab) => (
+            ? ["overview", "products", "repricing", "solvencia", "anp"]
+            : ["overview", "products", "repricing"]) as Array<
+            "overview" | "products" | "repricing" | "solvencia" | "anp"
+          >).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
               className={`profitTab${activeTab === tab ? " active" : ""}`}
             >
-              {tab === "overview" ? "Visão Geral" : tab === "products" ? "Produtos" : tab === "repricing" ? "Oportunidades" : "Solvência"}
+              {tab === "overview"
+                ? "Visão Geral"
+                : tab === "products"
+                  ? "Produtos"
+                  : tab === "repricing"
+                    ? "Oportunidades"
+                    : tab === "solvencia"
+                      ? "Solvência"
+                      : "Compliance ANP"}
             </button>
           ))}
         </div>
@@ -528,6 +562,21 @@ export default function ProfitManagementPage() {
               detail="Estamos consolidando os ativos e as obrigações do mês. Volte em instantes."
             />
           )
+        )}
+
+        {activeTab === "anp" && (
+          <AnpCompliancePanel
+            data={anp}
+            loading={anpLoading}
+            scope={scope}
+            dtIni={anpDtIni}
+            dtFim={anpDtFim}
+            onPeriodChange={(ini, fim) => {
+              setAnpDtIni(ini);
+              setAnpDtFim(fim);
+            }}
+            onConfigSaved={() => setAnpReload((x) => x + 1)}
+          />
         )}
 
         {/* Explanations */}

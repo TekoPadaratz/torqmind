@@ -12,6 +12,9 @@ from agent.secrets import SecretStoreError, load_encrypted_json_file, save_encry
 
 
 COMMERCIAL_WINDOW_DAYS = 365
+# Solvencia/DRE: historico desde Jan/2025 (~560d em Jul/2026). Mantem throttle
+# (batch_delay_seconds) para nao estourar CPU no SQL Server do cliente.
+SOLVENCIA_BOOTSTRAP_DAYS = 560
 DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 240
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
@@ -224,8 +227,10 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_order_by": f"{WATERMARK_ALIAS}, ID_MOVPRODUTOS, ID_FILIAL, ID_DB",
         "cursor_pk_columns": ["ID_MOVPRODUTOS", "ID_FILIAL", "ID_DB"],
-        "retention_days": COMMERCIAL_WINDOW_DAYS,
-        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # NAO e fonte canonica de venda (use comprovantes). Necessario para
+        # reconstruir estoque loja as-of na Solvencia (movimentacao + custo NF).
+        "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
+        "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT m.*, "
@@ -237,9 +242,12 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "   ) AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.MOVPRODUTOS m"
         ),
-        "enabled": False,
-        "deprecated": True,
-        "deprecation_notice": "Legacy sales architecture disabled by default; use comprovantes instead.",
+        "enabled": True,
+        "deprecated": False,
+        "deprecation_notice": (
+            "Not canonical for sales (use comprovantes). Enabled for Solvencia "
+            "stock reconstruction (movimentacao de estoque)."
+        ),
     },
     "itensmovprodutos": {
         "table": "dbo.ITENSMOVPRODUTOS",
@@ -247,8 +255,9 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_order_by": f"{WATERMARK_ALIAS}, ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB",
         "cursor_pk_columns": ["ID_ITENSMOVPRODUTOS", "ID_FILIAL", "ID_DB"],
-        "retention_days": COMMERCIAL_WINDOW_DAYS,
-        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # Custo de reposicao = VLRCUSTOCOMICMS da ultima NF de entrada (CFOP 1.xxx/2.xxx).
+        "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
+        "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT i.*, "
@@ -264,9 +273,12 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             " AND m.ID_FILIAL = i.ID_FILIAL "
             " AND m.ID_DB = i.ID_DB"
         ),
-        "enabled": False,
-        "deprecated": True,
-        "deprecation_notice": "Legacy sales architecture disabled by default; use itenscomprovantes instead.",
+        "enabled": True,
+        "deprecated": False,
+        "deprecation_notice": (
+            "Not canonical for sales items (use itenscomprovantes). Enabled for "
+            "Solvencia stock cost (VLRCUSTOCOMICMS)."
+        ),
     },
     "formas_pgto_comprovantes": {
         "table": "dbo.FORMAS_PGTO_COMPROVANTES",
@@ -512,6 +524,150 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         ),
         "enabled": True,
     },
+    # Compliance ANP — fontes confirmadas no Xpert (CENTRALVR/ATXDADOS):
+    # - preço bomba: LMC ⨝ LMCBICOS (PPL diário por bico/produto; sem ID_DB → 0)
+    # - entrada/compra: COMPROVANTES(SAIDAS_ENTRADAS=1) ⨝ COMPENTRADAS ⨝ ITENSCOMPROVANTE
+    "nfe_entrada": {
+        "table": "dbo.COMPROVANTES",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_DB, ID_COMPROVANTE",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE"],
+        "contract_name": "nfe_entrada_pk",
+        "required_fields": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB"],
+        "unique_key_fields": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE"],
+        "preflight_tables": {
+            "dbo.COMPROVANTES": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "DATA", "SAIDAS_ENTRADAS"],
+            "dbo.COMPENTRADAS": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "CHAVEACESSONFE"],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT c.ID_FILIAL, c.ID_DB, c.ID_COMPROVANTE AS ID_NOTA, "
+            "c.ID_COMPROVANTE, c.NROCOMPROVANTE AS NUMERO, "
+            "ce.CHAVEACESSONFE AS CHAVEACESSO, ce.CHAVEACESSONFE AS CHAVEACESSONFE, "
+            "ce.VLRFRETE, ce.VLRIPI, ce.IMPORTOU_XML, ce.CONFERIDA, "
+            "CAST(c.DATA AS datetime2) AS DATAENTRADA, "
+            "CAST(COALESCE(c.DTAEMISSAO, c.DATA) AS datetime2) AS DATA, "
+            "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (CAST(c.DATA AS datetime2)), "
+            f"  (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            f"  (NULLIF(CAST(ce.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.COMPROVANTES c WITH (NOLOCK) "
+            "INNER JOIN dbo.COMPENTRADAS ce WITH (NOLOCK) "
+            "  ON ce.ID_FILIAL = c.ID_FILIAL AND ce.ID_DB = c.ID_DB "
+            " AND ce.ID_COMPROVANTE = c.ID_COMPROVANTE "
+            "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1"
+        ),
+        "enabled": True,
+    },
+    "itens_nfe_entrada": {
+        "table": "dbo.ITENSCOMPROVANTE",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_DB, ID_COMPROVANTE, ID_ITENSCOMPROVANTE",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "ID_ITENSCOMPROVANTE"],
+        "contract_name": "itens_nfe_entrada_pk",
+        "required_fields": ["ID_ITENSCOMPROVANTE", "ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "ID_PRODUTOS"],
+        "unique_key_fields": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE", "ID_ITENSCOMPROVANTE"],
+        "preflight_tables": {
+            "dbo.ITENSCOMPROVANTE": [
+                "ID_ITENSCOMPROVANTE",
+                "ID_FILIAL",
+                "ID_DB",
+                "ID_COMPROVANTE",
+                "ID_PRODUTOS",
+                "QTDE",
+                "VLRCUSTO",
+                "VLRUNITARIO",
+            ],
+            "dbo.COMPENTRADAS": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB"],
+            "dbo.PRODUTOS": ["ID_PRODUTOS", "ID_FILIAL", "TIPOCOMBUSTIVEL", "NOMEPRODUTO"],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT i.ID_FILIAL, i.ID_DB, i.ID_COMPROVANTE AS ID_NOTA, "
+            "i.ID_COMPROVANTE, i.ID_ITENSCOMPROVANTE AS ID_ITEM, "
+            "i.ID_ITENSCOMPROVANTE, i.ID_PRODUTOS, i.QTDE AS QUANTIDADE, "
+            "i.VLRCUSTO, i.VLRUNITARIO, i.VLRTOTALITEM, i.VLRVENDAENTRADA, "
+            "COALESCE(NULLIF(i.VLRCUSTO, 0), i.VLRUNITARIO) AS CUSTO_UNITARIO, "
+            "p.NOMEPRODUTO, p.TIPOCOMBUSTIVEL, p.CODIGOANP, p.UNIDADE, "
+            "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (CAST(c.DATA AS datetime2)), "
+            f"  (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.ITENSCOMPROVANTE i WITH (NOLOCK) "
+            "INNER JOIN dbo.COMPROVANTES c WITH (NOLOCK) "
+            "  ON c.ID_FILIAL = i.ID_FILIAL AND c.ID_DB = i.ID_DB "
+            " AND c.ID_COMPROVANTE = i.ID_COMPROVANTE "
+            "INNER JOIN dbo.COMPENTRADAS ce WITH (NOLOCK) "
+            "  ON ce.ID_FILIAL = i.ID_FILIAL AND ce.ID_DB = i.ID_DB "
+            " AND ce.ID_COMPROVANTE = i.ID_COMPROVANTE "
+            "INNER JOIN dbo.PRODUTOS p WITH (NOLOCK) "
+            "  ON p.ID_FILIAL = i.ID_FILIAL AND p.ID_PRODUTOS = i.ID_PRODUTOS "
+            "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1 "
+            "  AND ("
+            "    ISNULL(p.TIPOCOMBUSTIVEL, 0) > 0 "
+            "    OR ("
+            "      NULLIF(LTRIM(RTRIM(CAST(p.CODIGOANP AS varchar(32)))), '') IS NOT NULL "
+            "      AND UPPER(LTRIM(RTRIM(CAST(p.UNIDADE AS varchar(16))))) = 'LT'"
+            "    ) "
+            "    OR p.NOMEPRODUTO LIKE 'GASOLINA%' "
+            "    OR p.NOMEPRODUTO LIKE 'ETANOL%' "
+            "    OR p.NOMEPRODUTO LIKE 'OLEO DIESEL%' "
+            "    OR p.NOMEPRODUTO LIKE 'DIESEL%'"
+            "  )"
+        ),
+        "enabled": True,
+    },
+    "preco_bomba_hist": {
+        "table": "dbo.LMCBICOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_LMCBICOS",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_LMCBICOS"],
+        "contract_name": "preco_bomba_hist_pk",
+        "required_fields": ["ID_LMCBICOS", "ID_FILIAL", "ID_PRODUTOS", "PPL"],
+        "unique_key_fields": ["ID_FILIAL", "ID_LMCBICOS"],
+        "preflight_tables": {
+            "dbo.LMC": ["ID_LMC", "ID_FILIAL", "ID_PRODUTOS", "DTACONTA"],
+            "dbo.LMCBICOS": ["ID_LMCBICOS", "ID_FILIAL", "ID_LMC", "ID_BICOS", "PPL"],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT "
+            "  lb.ID_FILIAL, "
+            "  CAST(0 AS int) AS ID_DB, "
+            "  l.ID_PRODUTOS AS ID_PRODUTOS, "
+            "  lb.ID_LMCBICOS AS ID_EVENTO, "
+            "  lb.ID_LMCBICOS, "
+            "  lb.ID_LMC, "
+            "  lb.ID_BICOS, "
+            "  lb.PPL AS PRECO, "
+            "  lb.PPL AS PPL, "
+            "  lb.VENDAS, "
+            "  p.NOMEPRODUTO, "
+            "  CAST(l.DTACONTA AS datetime2) AS DATAALTERACAO, "
+            "  CAST(l.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (CAST(l.DTACONTA AS datetime2)), "
+            f"  (NULLIF(CAST(l.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            f"  (NULLIF(CAST(lb.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.LMCBICOS lb WITH (NOLOCK) "
+            "INNER JOIN dbo.LMC l WITH (NOLOCK) "
+            "  ON l.ID_FILIAL = lb.ID_FILIAL AND l.ID_LMC = lb.ID_LMC "
+            "LEFT JOIN dbo.PRODUTOS p WITH (NOLOCK) "
+            "  ON p.ID_FILIAL = l.ID_FILIAL AND p.ID_PRODUTOS = l.ID_PRODUTOS "
+            "WHERE ISNULL(lb.PPL, 0) > 0"
+        ),
+        "enabled": True,
+    },
     # Antifraude: auditoria de troca de forma de pagamento.
     # CONTROLE_TROCA_PGTO = quem/quando trocou (DATA = data da troca);
     # aponta para o lancamento financeiro ANTIGO via ID_MOVLCTOSCANCELADOS.
@@ -614,6 +770,58 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "table": "dbo.ESTOQUE",
         "watermark_column": "ID_ESTOQUE",
         "watermark_order_by": "ID_ESTOQUE, ID_FILIAL",
+        "full_refresh": True,
+        "enabled": True,
+    },
+    # --- Solvencia DRE: cartoes a receber (prazo de repasse) + banco + Havel ---
+    # CONVENIOS: cadastro de operadora/bandeira com VENCIMENTO (dias de repasse),
+    # ANTECIPACAO, DIASUTEIS. Join com FORMAS_PGTO_COMPROVANTES.ID_CARTAO.
+    "convenios": {
+        "table": "dbo.CONVENIOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": WATERMARK_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_CONVENIOS, ID_FILIAL",
+        "cursor_pk_columns": ["ID_CONVENIOS", "ID_FILIAL"],
+        "full_refresh": True,
+        "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT c.*, "
+            "COALESCE(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)) "
+            "AS TORQMIND_WATERMARK "
+            "FROM dbo.CONVENIOS c"
+        ),
+        "enabled": True,
+    },
+    # MOVBANCOS: movimento bancario (TIPO/OPERACAO). Bootstrap desde Jan/2025.
+    "movbancos": {
+        "table": "dbo.MOVBANCOS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_MOVBANCOS, ID_FILIAL, ID_DB",
+        "cursor_pk_columns": ["ID_MOVBANCOS", "ID_FILIAL", "ID_DB"],
+        "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
+        "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) "
+            "   FROM (VALUES "
+            "       (CAST(m.DTACONTA AS datetime2)), "
+            f"       (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVBANCOS m "
+            "WHERE ISNULL(m.DELETAR, 0) = 0"
+        ),
+        "enabled": True,
+    },
+    # SALDOCLIENTES: snapshot de saldo por cliente (Havel = VALOR < 0 = posto credor).
+    # Sem historico temporal nativo — full_refresh periodico.
+    "saldoclientes": {
+        "table": "dbo.SALDOCLIENTES",
+        "watermark_column": "ID_SALDOCLIENTES",
+        "watermark_order_by": "ID_SALDOCLIENTES, ID_FILIAL, ID_DB",
         "full_refresh": True,
         "enabled": True,
     },

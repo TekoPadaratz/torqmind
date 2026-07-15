@@ -273,6 +273,74 @@ def _shadow_values_for_dataset(dataset_key: str, obj: Dict[str, Any]) -> Dict[st
             "ref_operacao_shadow": _to_int(_get_any(obj, ["REF_OPERACAO", "ref_operacao"])),
             "documento_shadow": _get_any(obj, ["DOCUMENTO", "documento"]),
         }
+    if dataset_key == "nfe_entrada":
+        return {
+            "chave_acesso_shadow": _get_any(
+                obj, ["CHAVEACESSONFE", "CHAVEACESSO", "CHAVE_ACESSO", "CHAVE", "chave_acesso"]
+            ),
+            "numero_nota_shadow": _get_any(
+                obj, ["NROCOMPROVANTE", "NUMERO", "NRONF", "NUMERONOTA", "numero_nota"]
+            ),
+            "serie_shadow": _get_any(obj, ["SERIE", "serie"]),
+            "cnpj_emitente_shadow": _get_any(obj, ["CNPJEMITENTE", "CNPJ_EMITENTE", "CNPJ", "cnpj_emitente"]),
+            "nome_emitente_shadow": _get_any(obj, ["NOMEEMITENTE", "NOME_EMITENTE", "EMITENTE", "nome_emitente"]),
+            "dt_entrada_shadow": _parse_ts(
+                _get_any(obj, ["DATAENTRADA", "DATA_ENTRADA", "TORQMIND_DT_EVENTO", "DATA", "dt_entrada"]),
+                tenant_id=None,
+            ),
+            "dt_emissao_shadow": _parse_ts(
+                _get_any(obj, ["DTAEMISSAO", "DATA", "DATAEMISSAO", "DATA_EMISSAO"]),
+                tenant_id=None,
+            ),
+            "valor_total_shadow": _to_numeric(_get_any(obj, ["VALORTOTAL", "VALOR", "VLRTOTAL", "valor_total"])),
+            "situacao_shadow": _to_int(_get_any(obj, ["SITUACAO", "STATUS", "situacao"])),
+        }
+    if dataset_key == "itens_nfe_entrada":
+        qtd = _to_numeric(_get_any(obj, ["QUANTIDADE", "QTDE", "QTD", "qtd"]))
+        # Custo de compra preferencial: VLRCUSTO / CUSTO_UNITARIO / VLRUNITARIO
+        custo_unit = _to_numeric(
+            _get_any(obj, ["CUSTO_UNITARIO", "VLRCUSTO", "custo_unitario", "VLRUNITARIO", "VALOR"])
+        )
+        custo_total = _to_numeric(_get_any(obj, ["VLRTOTALITEM", "VALORTOTAL", "VLRTOTAL", "custo_total"]))
+        if custo_total is None and custo_unit is not None and qtd is not None:
+            custo_total = float(custo_unit) * float(qtd)
+        tip_comb = _to_int(_get_any(obj, ["TIPOCOMBUSTIVEL", "tipo_combustivel"]))
+        nome = _get_any(obj, ["NOMEPRODUTO", "nome_produto"])
+        codigo_anp = _get_any(obj, ["CODIGOANP", "codigo_anp"])
+        unidade = str(_get_any(obj, ["UNIDADE", "unidade"]) or "").strip().upper()
+        eh_comb = bool(tip_comb and tip_comb > 0)
+        if not eh_comb and codigo_anp and str(codigo_anp).strip() and unidade == "LT":
+            eh_comb = True
+        if not eh_comb and nome:
+            upper = str(nome).upper().strip()
+            eh_comb = (
+                upper.startswith("GASOLINA")
+                or upper.startswith("ETANOL")
+                or upper.startswith("OLEO DIESEL")
+                or upper.startswith("DIESEL")
+            )
+        return {
+            "id_produto_shadow": _to_int(_get_any(obj, ["ID_PRODUTOS", "ID_PRODUTO", "id_produto"])),
+            "qtd_shadow": qtd,
+            "custo_unitario_shadow": custo_unit,
+            "custo_total_shadow": custo_total,
+            "eh_combustivel_shadow": eh_comb,
+        }
+    if dataset_key == "preco_bomba_hist":
+        return {
+            "dt_alteracao_shadow": _parse_ts(
+                _get_any(
+                    obj,
+                    ["DATAALTERACAO", "DTACONTA", "DATA_ALTERACAO", "DATA", "TORQMIND_DT_EVENTO", "dt_alteracao"],
+                ),
+                tenant_id=None,
+            ),
+            "preco_venda_shadow": _to_numeric(_get_any(obj, ["PRECO", "PRECOVENDA", "PPL", "preco_venda"])),
+            "preco_anterior_shadow": _to_numeric(
+                _get_any(obj, ["PRECOANTERIOR", "PRECO_ANTERIOR", "preco_anterior"])
+            ),
+            "id_bico_shadow": _to_int(_get_any(obj, ["ID_BICOS", "ID_BICO", "id_bico"])),
+        }
     return {}
 
 
@@ -386,6 +454,39 @@ def _batch_columns(dataset_key: str, spec: DatasetSpec) -> List[str]:
                 "id_turno_shadow",
                 "ref_operacao_shadow",
                 "documento_shadow",
+            ]
+        )
+    elif dataset_key == "nfe_entrada":
+        columns.extend(
+            [
+                "chave_acesso_shadow",
+                "numero_nota_shadow",
+                "serie_shadow",
+                "cnpj_emitente_shadow",
+                "nome_emitente_shadow",
+                "dt_entrada_shadow",
+                "dt_emissao_shadow",
+                "valor_total_shadow",
+                "situacao_shadow",
+            ]
+        )
+    elif dataset_key == "itens_nfe_entrada":
+        columns.extend(
+            [
+                "id_produto_shadow",
+                "qtd_shadow",
+                "custo_unitario_shadow",
+                "custo_total_shadow",
+                "eh_combustivel_shadow",
+            ]
+        )
+    elif dataset_key == "preco_bomba_hist":
+        columns.extend(
+            [
+                "dt_alteracao_shadow",
+                "preco_venda_shadow",
+                "preco_anterior_shadow",
+                "id_bico_shadow",
             ]
         )
     columns.append("payload")
@@ -699,6 +800,37 @@ DATASETS: Dict[str, DatasetSpec] = {
         ],
     ),
 
+    # Compliance ANP — NFe de ENTRADA (compra) + hist. preço bomba
+    "nfe_entrada": DatasetSpec(
+        table="stg.nfe_entrada",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_nota"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_nota", ["ID_COMPROVANTE", "ID_NOTA", "ID_NOTASFISCAIS", "ID_NFE", "id_nota"]),
+        ],
+    ),
+    "itens_nfe_entrada": DatasetSpec(
+        table="stg.itens_nfe_entrada",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_nota", "id_item"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_nota", ["ID_COMPROVANTE", "ID_NOTA", "ID_NOTASFISCAIS", "ID_NFE", "id_nota"]),
+            ("id_item", ["ID_ITENSCOMPROVANTE", "ID_ITENSNOTASFISCAIS", "ID_ITEM", "ID_ITENS", "id_item"]),
+        ],
+    ),
+    "preco_bomba_hist": DatasetSpec(
+        table="stg.preco_bomba_hist",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_produto", "id_evento"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_produto", ["ID_PRODUTOS", "ID_PRODUTO", "id_produto"]),
+            ("id_evento", ["ID_LMCBICOS", "ID_EVENTO", "ID_HISTORICO", "ID_HISTORICOPRECOS", "ID", "id_evento"]),
+        ],
+    ),
+
     # Antifraude - troca de forma de pagamento
     "controle_troca_pgto": DatasetSpec(
         table="stg.controle_troca_pgto",
@@ -732,6 +864,33 @@ DATASETS: Dict[str, DatasetSpec] = {
         pk_extractors=[
             ("id_filial", ["ID_FILIAL", "id_filial"]),
             ("id_movtanque", ["ID_MOVTANQUES", "id_movtanque"]),
+        ],
+    ),
+    # Solvencia DRE: prazo de repasse de cartoes (join ID_CARTAO -> ID_CONVENIOS)
+    "convenios": DatasetSpec(
+        table="stg.convenios",
+        pk_cols=["id_empresa", "id_filial", "id_convenios"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_convenios", ["ID_CONVENIOS", "id_convenios"]),
+        ],
+    ),
+    "movbancos": DatasetSpec(
+        table="stg.movbancos",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_movbancos"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_movbancos", ["ID_MOVBANCOS", "id_movbancos"]),
+        ],
+    ),
+    "saldoclientes": DatasetSpec(
+        table="stg.saldoclientes",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_saldoclientes"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_saldoclientes", ["ID_SALDOCLIENTES", "id_saldoclientes"]),
         ],
     ),
 }
