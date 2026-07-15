@@ -1213,6 +1213,14 @@ def fraud_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     troca_only_suspeita: bool = Query(True, description="Troca de forma de pgto: só suspeitas (default) ou todas"),
+    troca_forma_nova: Optional[str] = Query(
+        "todos",
+        description="Filtro da forma nova: todos | prazo | cheque_pre",
+    ),
+    credito_risco: Optional[str] = Query(
+        "suspeitas",
+        description="Lançamentos de crédito: suspeitas | normais | todas",
+    ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("fraud")),
 ):
@@ -1234,17 +1242,19 @@ def fraud_overview(
         risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
         payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
         open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
-        lancamentos_creditos = repos_mart.fraud_lancamentos_creditos(role, tenant, filial, dt_ini, dt_fim, limit=150)
+        lancamentos_creditos = repos_mart.fraud_lancamentos_creditos(
+            role, tenant, filial, dt_ini, dt_fim, limit=150, risco=credito_risco or "suspeitas",
+        )
         # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
         if role in ("MASTER", "OWNER"):
             troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
                 role, tenant, filial, dt_ini, dt_fim,
                 only_suspeita=troca_only_suspeita, limit=200,
+                forma_nova=troca_forma_nova or "todos",
             )
-            # Period-wide totals (independent of the 200-row listing limit and the
-            # suspeitas/todas toggle) so the KPIs reflect the real totals.
             troca_forma_pgto_totais = repos_mart.fraud_troca_forma_pgto_kpis(
                 role, tenant, filial, dt_ini, dt_fim,
+                forma_nova=troca_forma_nova or "todos",
             )
         else:
             troca_forma_pgto = []

@@ -1922,11 +1922,19 @@ def fraud_last_events(
     limit: int = 30,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
-    """Recent risk events with operator/employee names, shift and register."""
+    """Recent cancellation events with operator/employee names, shift and register.
+
+    Excludes caixa geral (turno 0), unresolved shifts and non-cancellation events.
+    """
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
+    try:
+        lim = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        lim = 30
+    # Over-fetch then filter unresolved/zero shifts so the visible grid still fills.
+    fetch_lim = min(lim * 4, 400)
 
-    # Try enriched mart first (has turno_numero, id_comprovante, nro_comprovante)
     try:
         rows = query_dict(f"""
             SELECT event_id, id_filial, filial_nome, data_key, dt, hora,
@@ -1935,26 +1943,34 @@ def fraud_last_events(
                    score_risco, score_level, reasons, id_comprovante, nro_comprovante
             FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+              AND lower(event_type) IN ('cancelamento', 'cancelamento_seguido_venda')
+              AND turno_numero >= 1
             ORDER BY data_key DESC, score_risco DESC, event_id DESC
-            LIMIT {limit}
+            LIMIT {fetch_lim}
         """, parameters={"id_empresa": id_empresa})
         if rows:
-            # Single shared contract with risk_last_events: operational turno,
-            # NF-based documento (fallback comprovante), resolved operator/filial/date.
-            # NFE enrichment is best-effort: it must never discard the rich mart rows.
             try:
                 nfe_map = _load_nfe_numbers(id_empresa, rows)
             except Exception:
                 nfe_map = {}
+            out: List[Dict[str, Any]] = []
             for r in rows:
                 r["numero_nfe"] = nfe_map.get(
                     (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
                 )
-            return [_build_antifraude_event(r) for r in rows]
+                ev = _build_antifraude_event(r)
+                # Defesa: só turnos operacionais 1..N
+                if _to_int(ev.get("turno_numero")) < 1:
+                    continue
+                if not bool(ev.get("turno_label")) or "não resolvido" in str(ev.get("turno_label") or "").lower():
+                    continue
+                out.append(ev)
+                if len(out) >= lim:
+                    break
+            return out
     except Exception:
         pass
 
-    # Fallback to legacy mart — enrich with filial name from dim_filial
     filial_r = _branch_clause("r.id_filial", id_filial)
     return query_dict(f"""
         SELECT r.id, r.id_filial,
@@ -1969,7 +1985,7 @@ def fraud_last_events(
         ) AS f ON r.id_filial = f.id_filial
         WHERE r.id_empresa = {{id_empresa:Int32}} {filial_r} {date_range}
         ORDER BY r.id DESC
-        LIMIT {limit}
+        LIMIT {lim}
     """, parameters={"id_empresa": id_empresa})
 
 
@@ -2030,6 +2046,24 @@ def fraud_top_users(
     return rows
 
 
+def _troca_documento_numero(documento: Any, referencia: Any = None, troca_id: Any = None) -> str:
+    """Extrai só o número de NF/NFC-e do texto de documento da troca."""
+    import re
+
+    text = str(documento or "").strip()
+    if text:
+        m = re.search(r"(?i)(?:NFC-?e|NF-?e)\s*[#:]?\s*(\d+)", text)
+        if m:
+            return m.group(1)
+        digits = re.findall(r"\d{4,}", text)
+        if digits:
+            return digits[-1]
+    ref = _to_int(referencia)
+    if ref > 0:
+        return str(ref)
+    return "—"
+
+
 def fraud_troca_forma_pgto(
     role: str,
     id_empresa: int,
@@ -2038,25 +2072,31 @@ def fraud_troca_forma_pgto(
     dt_fim: date,
     only_suspeita: bool = True,
     limit: int = 200,
+    forma_nova: Optional[str] = None,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Payment-form-change events (antifraud).
 
-    Reconstructs the "from" form (RECEBIDA -> A_RECEBER pattern) and the "to"
-    form. By default returns only suspicious changes (RECEBIDA -> A_RECEBER);
-    set ``only_suspeita=False`` to return all changes.
-
-    Sensitive antifraud data: callers MUST restrict to platform_master/owner.
+    Omits incomplete rows (mart lag without movlcto join) and sales already
+    cancelled (situacao=3). Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
     """
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
     suspeita = "AND is_suspeita = 1" if only_suspeita else ""
+    forma = str(forma_nova or "todos").strip().lower()
+    if forma in ("cheque_pre", "cheque-pre", "cheque"):
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'CHEQUE PRE') > 0"
+    elif forma == "prazo":
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'PRAZO') > 0"
+    else:
+        forma_filter = ""
     try:
         lim = max(1, min(int(limit), 1000))
     except (TypeError, ValueError):
         lim = 200
+    fetch_lim = min(lim * 3, 1500)
 
-    return query_dict(f"""
+    rows = query_dict(f"""
         SELECT
             troca_id,
             id_filial,
@@ -2076,12 +2116,38 @@ def fraud_troca_forma_pgto(
             hora,
             is_suspeita,
             score_risco,
-            reasons
+            reasons,
+            referencia
         FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita}
+        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita} {forma_filter}
+          AND valor > 0
+          AND forma_de != ''
+          AND forma_para != ''
+          AND (
+            referencia = 0
+            OR referencia NOT IN (
+              SELECT id_comprovante
+              FROM {CURRENT_DB}.stg_comprovantes_slim
+              WHERE id_empresa = {{id_empresa:Int32}}
+                AND is_deleted = 0
+                AND situacao = 3
+            )
+          )
         ORDER BY data_key DESC, troca_id DESC
-        LIMIT {lim}
+        LIMIT {fetch_lim}
     """, parameters={"id_empresa": id_empresa})
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        raw_doc = r.get("documento")
+        doc_num = _troca_documento_numero(raw_doc, r.get("referencia"), r.get("troca_id"))
+        r["documento_raw"] = raw_doc
+        r["documento"] = doc_num
+        r["documento_numero"] = doc_num
+        out.append(r)
+        if len(out) >= lim:
+            break
+    return out
 
 
 def fraud_troca_forma_pgto_kpis(
@@ -2090,19 +2156,36 @@ def fraud_troca_forma_pgto_kpis(
     id_filial: Any,
     dt_ini: date,
     dt_fim: date,
+    forma_nova: Optional[str] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Period-wide totals for payment-form-change events (antifraud).
-
-    Returns the TRUE aggregates (count and amount) over the whole window, for
-    both suspicious-only and all changes, independent of any row LIMIT applied
-    to the listing. The grid list is capped for display; KPIs must use these
-    totals so they don't change with the "todas/suspeitas" toggle.
-
-    Sensitive antifraud data: callers MUST restrict to platform_master/owner.
-    """
+    """Period-wide totals for payment-form-change events (antifraud)."""
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
+    forma = str(forma_nova or "todos").strip().lower()
+    if forma in ("cheque_pre", "cheque-pre", "cheque"):
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'CHEQUE PRE') > 0"
+    elif forma == "prazo":
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'PRAZO') > 0"
+    else:
+        forma_filter = ""
+
+    quality = f"""
+          AND valor > 0
+          AND forma_de != ''
+          AND forma_para != ''
+          AND (
+            referencia = 0
+            OR referencia NOT IN (
+              SELECT id_comprovante
+              FROM {CURRENT_DB}.stg_comprovantes_slim
+              WHERE id_empresa = {{id_empresa:Int32}}
+                AND is_deleted = 0
+                AND situacao = 3
+            )
+          )
+          {forma_filter}
+    """
 
     rows = query_dict(f"""
         SELECT
@@ -2112,6 +2195,7 @@ def fraud_troca_forma_pgto_kpis(
             sum(valor) AS todas_valor
         FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+        {quality}
     """, parameters={"id_empresa": id_empresa})
 
     row = rows[0] if rows else {}
@@ -3122,20 +3206,18 @@ def _antifraude_documento(
 ) -> tuple[Any, str, str, Optional[str]]:
     """Documento operacional da venda para a tela de fraude.
 
-    Preferência: NÚMERO DA NOTA FISCAL (NF/NFC-e) — o número que o cliente usa no
-    Xpert. Fallback honesto: NROCOMPROVANTE (impresso no comprovante) e, por
-    último, id_comprovante técnico. Cancelamentos normalmente não têm nota fiscal
-    emitida, então caem no comprovante — nunca inventamos uma NF.
+    Preferência: número da NF/NFC-e. Fallback: NROCOMPROVANTE, depois id técnico.
+    O label é SOMENTE o número (sem prefixo "Nota fiscal" / "Comprovante").
     Retorna (documento_venda, label, source, documento_fiscal).
     """
     nfe = str(numero_nfe or "").strip()
     if nfe and nfe != "0":
-        return nfe, f"Nota fiscal {nfe}", "nota_fiscal", nfe
+        return nfe, nfe, "nota_fiscal", nfe
     if nro_comprovante and nro_comprovante > 0:
-        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda", None
+        return nro_comprovante, str(nro_comprovante), "documento_venda", None
     if id_comprovante and id_comprovante > 0:
-        return None, f"Comprovante #{id_comprovante}", "id_comprovante", None
-    return None, "Sem comprovante", "fallback", None
+        return None, str(id_comprovante), "id_comprovante", None
+    return None, "—", "fallback", None
 
 
 def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:

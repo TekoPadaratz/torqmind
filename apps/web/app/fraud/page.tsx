@@ -24,6 +24,7 @@ import {
   formatCurrency,
   formatDateKey,
   formatDateKeyShort,
+  formatDateOnly,
   formatDateTime,
   formatFilialLabel,
   formatHoursLabel,
@@ -35,7 +36,6 @@ import {
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
-import { apiGet } from "../lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -76,13 +76,31 @@ function scoreLevelLabel(level: string) {
 export default function FraudPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
+  const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(true);
+  const [trocaFormaNova, setTrocaFormaNova] = useState<"todos" | "prazo" | "cheque_pre">("todos");
+  const [creditoRisco, setCreditoRisco] = useState<"suspeitas" | "normais" | "todas">("suspeitas");
+  const scopeKey = useMemo(
+    () => buildScopeParams(scope).toString(),
+    [scope],
+  );
+  useEffect(() => {
+    setTrocaSoSuspeitas(true);
+    setTrocaFormaNova("todos");
+    setCreditoRisco("suspeitas");
+  }, [scopeKey]);
+
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
-      moduleKey: "fraud_overview",
+      moduleKey: `fraud_overview:${creditoRisco}:${trocaFormaNova}:${trocaSoSuspeitas ? "susp" : "all"}`,
       scope,
       errorMessage: "Falha ao carregar fraude",
-      buildRequestUrl: (currentScope) =>
-        `/bi/fraud/overview?${buildScopeParams(currentScope).toString()}`,
+      buildRequestUrl: (currentScope) => {
+        const params = buildScopeParams(currentScope);
+        params.set("credito_risco", creditoRisco);
+        params.set("troca_forma_nova", trocaFormaNova);
+        params.set("troca_only_suspeita", trocaSoSuspeitas ? "true" : "false");
+        return `/bi/fraud/overview?${params.toString()}`;
+      },
     });
   const transitionCopy = pendingUnavailable
     ? buildModuleUnavailableCopy("antifraude")
@@ -98,44 +116,8 @@ export default function FraudPage() {
       ),
     [claims],
   );
-  const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(true);
-  const [trocaAll, setTrocaAll] = useState<any[] | null>(null);
-  const [trocaLoading, setTrocaLoading] = useState(false);
-  const scopeKey = useMemo(
-    () => buildScopeParams(scope).toString(),
-    [scope],
-  );
-  // Reset cache "Todas" quando o escopo/janela muda.
-  useEffect(() => {
-    setTrocaAll(null);
-    setTrocaSoSuspeitas(true);
-  }, [scopeKey]);
-  useEffect(() => {
-    if (trocaSoSuspeitas || trocaAll !== null || !trocaAllowed) return;
-    let cancelled = false;
-    setTrocaLoading(true);
-    const params = buildScopeParams(scope);
-    params.set("troca_only_suspeita", "false");
-    apiGet(`/bi/fraud/overview?${params.toString()}`)
-      .then((res: any) => {
-        if (!cancelled) setTrocaAll(res?.troca_forma_pgto || []);
-      })
-      .catch(() => {
-        if (!cancelled) setTrocaAll([]);
-      })
-      .finally(() => {
-        if (!cancelled) setTrocaLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [trocaSoSuspeitas, trocaAll, trocaAllowed, scope, scopeKey]);
-  const trocaRows: any[] = trocaSoSuspeitas
-    ? data?.troca_forma_pgto || []
-    : trocaAll || [];
-  // KPIs usam os totais reais do período (server-side, sem o LIMIT do grid e
-  // independentes do toggle "todas/suspeitas"). O grid abaixo é só a listagem
-  // das 200 trocas mais recentes do recorte selecionado.
+
+  const trocaRows: any[] = data?.troca_forma_pgto || [];
   const trocaTotais = data?.troca_forma_pgto_totais || {};
   const trocaTotalQtd = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_qtd || 0)
@@ -143,6 +125,7 @@ export default function FraudPage() {
   const trocaTotalValor = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_valor || 0)
     : Number(trocaTotais.todas_valor || 0);
+  const trocaLoading = loading;
 
   const byDay = useMemo(
     () =>
@@ -321,7 +304,7 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Posto</th>
+                        <th>Filial</th>
                         <th>Operador</th>
                         <th>Cancelamentos</th>
                         <th>Valor</th>
@@ -371,7 +354,7 @@ export default function FraudPage() {
                           </td>
                           <td>{formatTurnoLabel(e.id_turno, e.turno_label)}</td>
                           <td>{e.usuario_label}</td>
-                          <td>{e.documento_label || e.documento_venda || (e.id_comprovante ? `Comprovante #${e.id_comprovante}` : "—")}</td>
+                          <td>{e.documento_label || e.documento_venda || (e.id_comprovante ? String(e.id_comprovante) : "—")}</td>
                           <td>{formatCurrency(e.valor_total)}</td>
                         </tr>
                       ))}
@@ -381,13 +364,36 @@ export default function FraudPage() {
               </div>
 
               <div className="card col-12">
-                <div className="sectionEyebrow">Risco financeiro</div>
-                <h2 style={{ marginTop: 4 }}>Lançamentos de créditos</h2>
-                <div className="muted" style={{ marginTop: 4 }}>
-                  Créditos lançados no cadastro do cliente. A injeção manual de crédito
-                  (&ldquo;Crédito adicionado manualmente&rdquo;), sem troco, cheque ou fatura por
-                  trás, é o padrão clássico de golpe: o operador cria saldo e depois usa para dar
-                  baixa em vendas. As linhas em vermelho são injeções manuais.
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 12,
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div>
+                    <div className="sectionEyebrow">Risco financeiro</div>
+                    <h2 style={{ marginTop: 4 }}>Lançamentos de créditos</h2>
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      Créditos lançados no cadastro do cliente. A injeção manual de crédito
+                      (&ldquo;Crédito adicionado manualmente&rdquo;), sem troco, cheque ou fatura por
+                      trás, é o padrão clássico de golpe: o operador cria saldo e depois usa para dar
+                      baixa em vendas. As linhas em vermelho são injeções manuais.
+                    </div>
+                  </div>
+                  <div className="profitFilterBar" style={{ marginBottom: 0 }}>
+                    <select
+                      value={creditoRisco}
+                      onChange={(e) => setCreditoRisco(e.target.value as "suspeitas" | "normais" | "todas")}
+                      aria-label="Filtro de risco dos créditos"
+                    >
+                      <option value="suspeitas">Só suspeitas</option>
+                      <option value="normais">Só normais</option>
+                      <option value="todas">Todas</option>
+                    </select>
+                  </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 12 }}>
                   <div className="card" style={{ padding: 12 }}>
@@ -406,7 +412,7 @@ export default function FraudPage() {
                   </div>
                 </div>
                 {!loading && !creditosRows.length ? (
-                  <EmptyState title="Sem injeções de crédito no período." detail="Nenhum crédito foi lançado no cadastro de clientes na janela analisada." />
+                  <EmptyState title="Sem injeções de crédito no recorte." detail="Nenhum crédito corresponde ao filtro atual na janela analisada." />
                 ) : (
                   <div className="tableScroll" style={{ marginTop: 12 }}>
                     <table className="table compact">
@@ -416,6 +422,7 @@ export default function FraudPage() {
                           <th>Filial</th>
                           <th>Cliente</th>
                           <th>Operador</th>
+                          <th>Forma</th>
                           <th style={{ textAlign: "right" }}>Injetado</th>
                           <th style={{ textAlign: "right" }}>Saldo atual</th>
                           <th>Histórico</th>
@@ -424,11 +431,14 @@ export default function FraudPage() {
                       </thead>
                       <tbody>
                         {creditosRows.map((c: any, idx: number) => (
-                          <tr key={`${c.id_filial}-${idx}`} style={c.suspeita ? { background: "rgba(239,68,68,0.07)" } : undefined}>
-                            <td style={{ whiteSpace: "nowrap" }}>{c.data || "—"}</td>
+                          <tr key={`${c.id_filial}-${c.id_cliente || idx}-${idx}`} style={c.suspeita ? { background: "rgba(239,68,68,0.07)" } : undefined}>
+                            <td style={{ whiteSpace: "nowrap" }}>
+                              {c.data_ts ? formatDateTime(c.data_ts) : c.data ? formatDateOnly(c.data) : "—"}
+                            </td>
                             <td>{c.filial_label}</td>
                             <td>{c.cliente}</td>
                             <td>{c.operador}</td>
+                            <td>{c.forma_pagamento || "—"}</td>
                             <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
                             <td style={{ textAlign: "right" }}>{formatCurrency(c.saldo_cliente)}</td>
                             <td style={{ minWidth: 220 }}>{c.historico}</td>
@@ -462,27 +472,26 @@ export default function FraudPage() {
                         o padrão clássico de desvio de caixa.
                       </div>
                     </div>
-                    <div
-                      role="tablist"
-                      aria-label="Filtro de trocas"
-                      style={{ display: "inline-flex", gap: 6 }}
-                    >
-                      <button
-                        type="button"
-                        className={`btn ${trocaSoSuspeitas ? "btnPrimary" : ""}`}
-                        aria-pressed={trocaSoSuspeitas}
-                        onClick={() => setTrocaSoSuspeitas(true)}
+                    <div className="profitFilterBar" style={{ marginBottom: 0 }}>
+                      <select
+                        value={trocaSoSuspeitas ? "suspeitas" : "todas"}
+                        onChange={(e) => setTrocaSoSuspeitas(e.target.value === "suspeitas")}
+                        aria-label="Filtro de risco das trocas"
                       >
-                        Só suspeitas
-                      </button>
-                      <button
-                        type="button"
-                        className={`btn ${!trocaSoSuspeitas ? "btnPrimary" : ""}`}
-                        aria-pressed={!trocaSoSuspeitas}
-                        onClick={() => setTrocaSoSuspeitas(false)}
+                        <option value="suspeitas">Só suspeitas</option>
+                        <option value="todas">Todas</option>
+                      </select>
+                      <select
+                        value={trocaFormaNova}
+                        onChange={(e) =>
+                          setTrocaFormaNova(e.target.value as "todos" | "prazo" | "cheque_pre")
+                        }
+                        aria-label="Filtro da forma nova"
                       >
-                        Todas
-                      </button>
+                        <option value="todos">Forma nova: todas</option>
+                        <option value="prazo">Forma nova: prazo</option>
+                        <option value="cheque_pre">Forma nova: cheque pré</option>
+                      </select>
                     </div>
                   </div>
 
@@ -552,10 +561,10 @@ export default function FraudPage() {
                                     : undefined
                                 }
                               >
-                                <td>{row.documento || `#${row.troca_id}`}</td>
-                                <td>{row.forma_de || "Sem cadastro"}</td>
+                                <td>{row.documento || "—"}</td>
+                                <td>{row.forma_de || "—"}</td>
                                 <td>
-                                  <strong>{row.forma_para || "Sem cadastro"}</strong>
+                                  <strong>{row.forma_para || "—"}</strong>
                                 </td>
                                 <td>
                                   {row.nome_operador ||
