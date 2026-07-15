@@ -78,6 +78,146 @@ function eventDateIso(e: Evento): string {
   return String(e.data_alteracao || e.dt_alteracao_preco || "").slice(0, 10);
 }
 
+function escapeHtml(value: string | number | null | undefined): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildAnpReportHtml(opts: {
+  periodoLabel: string;
+  produtosFiltroLabel: string;
+  statusFiltroLabel: string;
+  alertaPerc: number;
+  abusivoPerc: number;
+  totalFiltrado: number;
+  totalPeriodo?: number;
+  eventos: Evento[];
+}): string {
+  const printedAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const rows = opts.eventos
+    .map((e) => {
+      const st = STATUS_STYLE[e.status] || STATUS_STYLE.OK;
+      const dataAlt = eventDateIso(e);
+      const chave = (e.chave_nfe_nova || "").trim() || "—";
+      return `<tr>
+        <td>${escapeHtml(e.nome_resumido || e.id_filial)}</td>
+        <td>${escapeHtml(fmtDateBr(dataAlt))}</td>
+        <td>${escapeHtml(e.nome_produto)}</td>
+        <td class="num">${escapeHtml(fmtMoney(e.preco_venda_anterior))}</td>
+        <td class="num">${escapeHtml(fmtMoney(e.preco_venda_novo))}</td>
+        <td class="num">${escapeHtml(fmtMoney(e.custo_nfe_anterior))}</td>
+        <td class="num">${escapeHtml(fmtMoney(e.custo_nfe_novo))}</td>
+        <td class="num">${escapeHtml(fmtMoney(e.margem_anterior))}</td>
+        <td class="num">${escapeHtml(fmtMoney(e.margem_nova))}</td>
+        <td class="num">${escapeHtml(fmtPct(e.variacao_margem_pct))}</td>
+        <td>${escapeHtml(st.label)}</td>
+        <td>${escapeHtml(e.numero_nota_nova || "—")}</td>
+        <td class="chave">${escapeHtml(chave)}</td>
+      </tr>`;
+    })
+    .join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Compliance ANP — TorqMind</title>
+  <style>
+    @page { size: landscape; margin: 8mm 10mm; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #fff;
+      color: #111;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    body { padding: 8px 10px 16px; }
+    .brand {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #444;
+      margin-bottom: 2px;
+    }
+    h1 { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+    .meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 3px 16px;
+      font-size: 10px;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #111;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8.5px;
+    }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; break-inside: avoid; }
+    th, td {
+      padding: 3px 4px;
+      border-bottom: 1px solid #bbb;
+      text-align: left;
+      vertical-align: top;
+    }
+    thead th {
+      border-bottom: 1.5px solid #111;
+      font-weight: 700;
+      background: #f3f3f3;
+    }
+    td.num, th.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    td.chave {
+      font-family: Consolas, "IBM Plex Mono", monospace;
+      font-size: 7.5px;
+      word-break: break-all;
+      white-space: normal;
+    }
+    .footer { margin-top: 10px; font-size: 9px; color: #444; }
+  </style>
+</head>
+<body>
+  <div class="brand">TorqMind</div>
+  <h1>Compliance ANP — variação de margem (combustíveis)</h1>
+  <div class="meta">
+    <div><strong>Período:</strong> ${escapeHtml(opts.periodoLabel || "—")}</div>
+    <div><strong>Produtos:</strong> ${escapeHtml(opts.produtosFiltroLabel)}</div>
+    <div><strong>Status:</strong> ${escapeHtml(opts.statusFiltroLabel)}</div>
+    <div><strong>Limites:</strong> alerta ${escapeHtml(opts.alertaPerc)}% · abusivo ${escapeHtml(opts.abusivoPerc)}%</div>
+    <div><strong>Eventos:</strong> ${escapeHtml(opts.totalFiltrado)}${
+      opts.totalPeriodo != null ? ` (de ${escapeHtml(opts.totalPeriodo)} no período)` : ""
+    }</div>
+    <div><strong>Gerado em:</strong> ${escapeHtml(printedAt)}</div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Filial</th><th>Data</th><th>Produto</th>
+        <th class="num">Preço ant.</th><th class="num">Preço novo</th>
+        <th class="num">Custo ant.</th><th class="num">Custo novo</th>
+        <th class="num">Margem ant.</th><th class="num">Margem nova</th>
+        <th class="num">Variação</th><th>Status</th><th>Doc. entrada</th><th>Chave NFe</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="footer">Relatório com ${escapeHtml(opts.totalFiltrado)} registro(s) · múltiplas páginas quando necessário</div>
+</body>
+</html>`;
+}
+
 export function AnpCompliancePanel({
   data,
   loading,
@@ -201,16 +341,6 @@ export function AnpCompliancePanel({
     }
   }
 
-  function printPdf() {
-    document.body.classList.add("anp-printing");
-    const cleanup = () => {
-      document.body.classList.remove("anp-printing");
-      window.removeEventListener("afterprint", cleanup);
-    };
-    window.addEventListener("afterprint", cleanup);
-    window.setTimeout(() => window.print(), 50);
-  }
-
   const periodoLabel =
     (data?.periodo?.dt_ini && data?.periodo?.dt_fim
       ? `${fmtDateBr(data.periodo.dt_ini)} a ${fmtDateBr(data.periodo.dt_fim)}`
@@ -231,7 +361,74 @@ export function AnpCompliancePanel({
     ? STATUS_STYLE[statusFilter]?.label || statusFilter
     : "Todos os status";
 
-  const printedAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  function printPdf() {
+    if (!eventos.length) return;
+    const html = buildAnpReportHtml({
+      periodoLabel,
+      produtosFiltroLabel,
+      statusFiltroLabel,
+      alertaPerc,
+      abusivoPerc,
+      totalFiltrado: eventos.length,
+      totalPeriodo: data?.total_eventos,
+      eventos,
+    });
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("title", "Relatório Compliance ANP");
+    iframe.setAttribute("aria-hidden", "true");
+    Object.assign(iframe.style, {
+      position: "fixed",
+      left: "-12000px",
+      top: "0",
+      width: "1100px",
+      height: "800px",
+      border: "0",
+      opacity: "0",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(iframe);
+
+    const win = iframe.contentWindow;
+    const doc = iframe.contentDocument || win?.document;
+    if (!win || !doc) {
+      iframe.remove();
+      setSaveMsg("Não foi possível preparar a impressão do relatório.");
+      return;
+    }
+
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    const cleanup = () => {
+      try {
+        iframe.remove();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const triggerPrint = () => {
+      const onAfter = () => {
+        win.removeEventListener("afterprint", onAfter);
+        cleanup();
+      };
+      win.addEventListener("afterprint", onAfter);
+      // Fallback se afterprint não disparar (alguns browsers)
+      window.setTimeout(cleanup, 120_000);
+      try {
+        win.focus();
+        win.print();
+      } catch {
+        setSaveMsg("Falha ao abrir o diálogo de impressão.");
+        cleanup();
+      }
+    };
+
+    // Documento completo já escrito; pequeno delay para layout/paint
+    window.setTimeout(triggerPrint, 300);
+  }
 
   return (
     <div className="anpPrintRoot" style={{ marginTop: 16 }}>
@@ -492,83 +689,6 @@ export function AnpCompliancePanel({
               </tbody>
             </table>
           </div>
-        )}
-      </div>
-
-      {/* Relatório de impressão (só no PDF) */}
-      <div className="anpPrintReport" aria-hidden>
-        <header className="anpReportHeader">
-          <div className="anpReportBrand">TorqMind</div>
-          <h1 className="anpReportTitle">Compliance ANP — variação de margem (combustíveis)</h1>
-          <div className="anpReportMeta">
-            <div>
-              <strong>Período:</strong> {periodoLabel || "—"}
-            </div>
-            <div>
-              <strong>Produtos:</strong> {produtosFiltroLabel}
-            </div>
-            <div>
-              <strong>Status:</strong> {statusFiltroLabel}
-            </div>
-            <div>
-              <strong>Limites:</strong> alerta {alertaPerc}% · abusivo {abusivoPerc}%
-            </div>
-            <div>
-              <strong>Eventos:</strong> {eventos.length}
-              {data?.total_eventos ? ` (de ${data.total_eventos} no período)` : ""}
-            </div>
-            <div>
-              <strong>Gerado em:</strong> {printedAt}
-            </div>
-          </div>
-        </header>
-
-        {eventos.length === 0 ? (
-          <p>Nenhum evento para o filtro atual.</p>
-        ) : (
-          <table className="anpReportTable">
-            <thead>
-              <tr>
-                <th>Filial</th>
-                <th>Data</th>
-                <th>Produto</th>
-                <th className="num">Preço ant.</th>
-                <th className="num">Preço novo</th>
-                <th className="num">Custo ant.</th>
-                <th className="num">Custo novo</th>
-                <th className="num">Margem ant.</th>
-                <th className="num">Margem nova</th>
-                <th className="num">Variação</th>
-                <th>Status</th>
-                <th>Doc. entrada</th>
-                <th>Chave NFe</th>
-              </tr>
-            </thead>
-            <tbody>
-              {eventos.map((e, i) => {
-                const st = STATUS_STYLE[e.status] || STATUS_STYLE.OK;
-                const dataAlt = eventDateIso(e);
-                const chave = (e.chave_nfe_nova || "").trim();
-                return (
-                  <tr key={`print-${e.id_filial}-${e.nome_produto}-${dataAlt}-${i}`}>
-                    <td>{e.nome_resumido || e.id_filial}</td>
-                    <td>{fmtDateBr(dataAlt)}</td>
-                    <td>{e.nome_produto}</td>
-                    <td className="num">{fmtMoney(e.preco_venda_anterior)}</td>
-                    <td className="num">{fmtMoney(e.preco_venda_novo)}</td>
-                    <td className="num">{fmtMoney(e.custo_nfe_anterior)}</td>
-                    <td className="num">{fmtMoney(e.custo_nfe_novo)}</td>
-                    <td className="num">{fmtMoney(e.margem_anterior)}</td>
-                    <td className="num">{fmtMoney(e.margem_nova)}</td>
-                    <td className="num">{fmtPct(e.variacao_margem_pct)}</td>
-                    <td>{st.label}</td>
-                    <td>{e.numero_nota_nova || "—"}</td>
-                    <td className="anpReportChave">{chave || "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
         )}
       </div>
     </div>
