@@ -3184,13 +3184,16 @@ def fraud_lancamentos_creditos(
             values = ", ".join(str(i) for i in ids)
             ch_rows = ch_query(
                 f"""
-                SELECT id_cliente, any(nome) AS nome
-                FROM torqmind_current.dim_cliente FINAL
-                WHERE id_empresa = {{id_empresa:Int32}}
-                  AND id_cliente IN ({values})
-                  AND is_deleted = 0
-                  AND nome != ''
-                GROUP BY id_cliente
+                SELECT id_cliente, nome
+                FROM (
+                  SELECT id_cliente, argMax(nome, updated_at) AS nome
+                  FROM torqmind_current.dim_cliente FINAL
+                  WHERE id_empresa = {{id_empresa:Int32}}
+                    AND id_cliente IN ({values})
+                    AND is_deleted = 0
+                  GROUP BY id_cliente
+                )
+                WHERE nome != ''
                 """,
                 parameters={"id_empresa": id_empresa},
             )
