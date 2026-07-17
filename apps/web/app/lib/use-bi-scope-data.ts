@@ -17,6 +17,12 @@ type UseBiScopeDataOptions<T> = {
   requestTimeoutMs?: number;
   unavailableRetryAttempts?: number;
   unavailableRetryDelayMs?: number;
+  /**
+   * Mantém o payload anterior enquanto o novo request carrega.
+   * Evita colapsar a página (skeleton) e perder a âncora de scroll em filtros locais.
+   * Em troca de escopo (empresa/filial/período) os dados ainda são limpos.
+   */
+  keepPreviousData?: boolean;
 };
 
 export function useBiScopeData<T>({
@@ -27,9 +33,11 @@ export function useBiScopeData<T>({
   requestTimeoutMs,
   unavailableRetryAttempts = 4,
   unavailableRetryDelayMs = 2_000,
+  keepPreviousData = false,
 }: UseBiScopeDataOptions<T>) {
   const router = useRouter();
   const activeRequestRef = useRef('');
+  const keptScopeKeyRef = useRef(scope.scope_key);
 
   const [claims, setClaims] = useState<any>(null);
   const [data, setData] = useState<T | null>(null);
@@ -43,6 +51,8 @@ export function useBiScopeData<T>({
 
     const controller = new AbortController();
     let disposed = false;
+    const scopeChanged = keptScopeKeyRef.current !== scope.scope_key;
+    keptScopeKeyRef.current = scope.scope_key;
 
     const waitBeforeRetry = (ms: number) =>
       new Promise<void>((resolve, reject) => {
@@ -65,7 +75,10 @@ export function useBiScopeData<T>({
       setLoading(true);
       setPendingUnavailable(false);
       setError('');
-      setData(null);
+      // Filtros locais (moduleKey) não devem desmontar a tela; só limpa em troca de escopo.
+      if (!keepPreviousData || scopeChanged) {
+        setData(null);
+      }
 
       try {
         const cached = readCachedSession();
@@ -129,7 +142,16 @@ export function useBiScopeData<T>({
       disposed = true;
       controller.abort();
     };
-  }, [errorMessage, moduleKey, requestTimeoutMs, router, scope, unavailableRetryAttempts, unavailableRetryDelayMs]);
+  }, [
+    errorMessage,
+    keepPreviousData,
+    moduleKey,
+    requestTimeoutMs,
+    router,
+    scope,
+    unavailableRetryAttempts,
+    unavailableRetryDelayMs,
+  ]);
 
   return {
     claims,

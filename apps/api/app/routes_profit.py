@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from app import repos_mart
 from app.business_time import resolve_business_date
+from app.db import get_conn
 from app.db_clickhouse import query_dict, query_scalar
 from app.deps import get_current_claims
 from app.permissions import require_screen, redact_sensitive, can_view_sensitive_financials
@@ -24,6 +25,100 @@ from app.scope import resolve_scope_filters
 
 router = APIRouter(prefix="/bi/profit-management", tags=["profit-management"])
 logger = logging.getLogger(__name__)
+
+
+def _despesas_pg_por_regime(
+    id_empresa: int,
+    branch_ids: List[int],
+    ano_mes: int,
+    *,
+    regime_caixa: bool,
+) -> Dict[str, Any]:
+    """Agrega dw.fact_despesa_operacional por competência (DTAVCTO) ou caixa (DTAPGTO).
+
+    Retorna buckets alinhados ao DRE (pessoal/comercial/…) + breakdown por
+    classificacao_gerencial para a aba Despesas. Fonte: Postgres (não CH).
+    """
+    if regime_caixa:
+        mes_filter = """
+          AND dt_pagamento IS NOT NULL
+          AND (EXTRACT(YEAR FROM dt_pagamento)::int * 100
+               + EXTRACT(MONTH FROM dt_pagamento)::int) = %s
+        """
+        valor_expr = "COALESCE(NULLIF(vlr_pago, 0), valor)"
+    else:
+        mes_filter = "AND ano_mes_competencia = %s"
+        valor_expr = "valor"
+
+    params: List[Any] = [id_empresa, int(ano_mes)]
+    if len(branch_ids) == 1:
+        branch_sql = "AND id_filial = %s"
+        params.append(int(branch_ids[0]))
+    else:
+        branch_sql = "AND id_filial = ANY(%s)"
+        params.append([int(b) for b in branch_ids])
+
+    sql_buckets = f"""
+        SELECT
+          COALESCE(SUM(CASE WHEN classificacao_gerencial = 'pessoal'
+                            THEN {valor_expr} ELSE 0 END), 0)::float AS desp_pessoal,
+          COALESCE(SUM(CASE WHEN classificacao_gerencial = 'comercial'
+                            THEN {valor_expr} ELSE 0 END), 0)::float AS desp_comercial,
+          COALESCE(SUM(CASE WHEN classificacao_gerencial = 'administrativo'
+                            THEN {valor_expr} ELSE 0 END), 0)::float AS desp_administrativa,
+          COALESCE(SUM(CASE WHEN classificacao_gerencial = 'financeiro'
+                            THEN {valor_expr} ELSE 0 END), 0)::float AS desp_financeira,
+          COALESCE(SUM(CASE WHEN COALESCE(is_tributo_operacional, false)
+                              OR classificacao_gerencial = 'tributos'
+                            THEN {valor_expr} ELSE 0 END), 0)::float AS desp_tributaria_operacional,
+          COALESCE(SUM(CASE WHEN COALESCE(is_excepcional, false)
+                            THEN {valor_expr} ELSE 0 END), 0)::float AS desp_excepcional,
+          COALESCE(SUM({valor_expr}), 0)::float AS desp_operacional_total,
+          COUNT(*)::int AS qtd_lancamentos
+        FROM dw.fact_despesa_operacional
+        WHERE id_empresa = %s
+          AND COALESCE(entra_dre, true)
+          {mes_filter}
+          {branch_sql}
+    """
+    sql_cat = f"""
+        SELECT
+          COALESCE(NULLIF(classificacao_gerencial, ''), 'nao_classificado') AS classificacao_gerencial,
+          SUM({valor_expr})::float AS valor_total,
+          COUNT(*)::int AS qtd_lancamentos,
+          SUM(CASE WHEN tipo_conta = 0 THEN {valor_expr} ELSE 0 END)::float AS valor_tipo_0,
+          SUM(CASE WHEN tipo_conta = 1 THEN {valor_expr} ELSE 0 END)::float AS valor_tipo_1,
+          SUM(CASE WHEN COALESCE(entra_rateio_produto, false) THEN {valor_expr} ELSE 0 END)::float AS valor_rateavel,
+          SUM(CASE WHEN NOT COALESCE(entra_rateio_produto, false) THEN {valor_expr} ELSE 0 END)::float AS valor_nao_rateavel
+        FROM dw.fact_despesa_operacional
+        WHERE id_empresa = %s
+          AND COALESCE(entra_dre, true)
+          {mes_filter}
+          {branch_sql}
+        GROUP BY 1
+        ORDER BY valor_total DESC
+    """
+    sql_top = f"""
+        SELECT
+          COALESCE(codigo_plano, '') AS codigo_plano,
+          COALESCE(nome_plano, '') AS nome_plano,
+          COALESCE(NULLIF(classificacao_gerencial, ''), 'nao_classificado') AS classificacao_gerencial,
+          SUM({valor_expr})::float AS valor_total,
+          COUNT(*)::int AS qtd_lancamentos
+        FROM dw.fact_despesa_operacional
+        WHERE id_empresa = %s
+          AND COALESCE(entra_dre, true)
+          {mes_filter}
+          {branch_sql}
+        GROUP BY 1, 2, 3
+        ORDER BY valor_total DESC
+        LIMIT 20
+    """
+    with get_conn(role="MASTER", tenant_id=id_empresa) as conn:
+        buckets = dict(conn.execute(sql_buckets, params).fetchone() or {})
+        categorias = [dict(r) for r in conn.execute(sql_cat, params).fetchall()]
+        top = [dict(r) for r in conn.execute(sql_top, params).fetchall()]
+    return {"buckets": buckets, "categorias": categorias, "top": top}
 
 # Default desired margins by sector
 DEFAULT_MARGINS = {
@@ -237,6 +332,10 @@ def profit_dre(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     branch_scope: Optional[str] = Query(None),
+    regime_caixa: bool = Query(
+        True,
+        description="Quando true, prioriza despesas pelo pagamento (regime de caixa Xpert)",
+    ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("profit_management")),
 ):
@@ -284,25 +383,66 @@ def profit_dre(
     dre = rows[0] if rows else {}
 
     def f(key):
-        return float(dre.get(key, 0))
+        return float(dre.get(key, 0) or 0)
+
+    # Despesas: Postgres por regime (caixa=DTAPGTO / competência=ano_mes_competencia).
+    # Receita/CMV continuam no CH. Se fact vazio, mantém buckets do CH.
+    desp = {
+        "desp_pessoal": f("desp_pessoal"),
+        "desp_comercial": f("desp_comercial"),
+        "desp_administrativa": f("desp_administrativa"),
+        "desp_financeira": f("desp_financeira"),
+        "desp_tributaria_operacional": f("desp_tributaria_operacional"),
+        "desp_excepcional": f("desp_excepcional"),
+        "desp_operacional_total": f("desp_operacional_total"),
+    }
+    desp_source = "clickhouse"
+    try:
+        pg = _despesas_pg_por_regime(
+            tenant_id, branch_ids, ref_month, regime_caixa=bool(regime_caixa),
+        )
+        b = pg["buckets"]
+        if int(b.get("qtd_lancamentos") or 0) > 0 or float(b.get("desp_operacional_total") or 0) > 0:
+            desp = {k: float(b.get(k) or 0) for k in desp}
+            desp_source = "postgres_caixa" if regime_caixa else "postgres_competencia"
+    except Exception as exc:
+        logger.warning("profit_dre: falha despesas PG (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
 
     receita = f("receita_bruta_total")
-    lucro = f("lucro_gerencial_estimado")
+    margem = f("margem_bruta")
+    lucro = round(margem - float(desp["desp_operacional_total"]), 2)
+
+    if regime_caixa:
+        disclaimer = (
+            "Regime de caixa: despesas pelo pagamento efetivo (DTAPGTO / vlr_pago). "
+            "Não é lucro contábil/fiscal oficial."
+        )
+    else:
+        disclaimer = (
+            "Competência por vencimento (DTAVCTO). Lucro gerencial estimado = margem bruta − despesas. "
+            "Não é lucro contábil/fiscal oficial."
+        )
 
     payload = {
         "periodo_base": _format_month_label(ref_month),
         "ano_mes": ref_month,
+        "regime_caixa": bool(regime_caixa),
+        "despesas_source": desp_source,
         "linhas": [
             {"label": "Receita Bruta", "valor": f("receita_bruta_total"), "tipo": "receita"},
             {"label": "(-) Impostos sobre Vendas", "valor": -f("impostos_sobre_vendas"), "tipo": "deducao"},
             {"label": "Receita Líquida Gerencial", "valor": f("receita_liquida_gerencial"), "tipo": "subtotal"},
             {"label": "(-) CMV (Custo da Mercadoria Vendida)", "valor": -f("cmv_total"), "tipo": "custo"},
-            {"label": "Margem Bruta", "valor": f("margem_bruta"), "tipo": "subtotal"},
-            {"label": "(-) Despesas com Pessoal", "valor": -f("desp_pessoal"), "tipo": "despesa"},
-            {"label": "(-) Despesas Comerciais", "valor": -f("desp_comercial"), "tipo": "despesa"},
-            {"label": "(-) Despesas Administrativas", "valor": -f("desp_administrativa"), "tipo": "despesa"},
-            {"label": "(-) Tributos Operacionais", "valor": -f("desp_tributaria_operacional"), "tipo": "despesa"},
-            {"label": "(-) Despesas Financeiras/Excepcionais", "valor": -(f("desp_financeira") + f("desp_excepcional")), "tipo": "despesa"},
+            {"label": "Margem Bruta", "valor": margem, "tipo": "subtotal"},
+            {"label": "(-) Despesas com Pessoal", "valor": -desp["desp_pessoal"], "tipo": "despesa"},
+            {"label": "(-) Despesas Comerciais", "valor": -desp["desp_comercial"], "tipo": "despesa"},
+            {"label": "(-) Despesas Administrativas", "valor": -desp["desp_administrativa"], "tipo": "despesa"},
+            {"label": "(-) Tributos Operacionais", "valor": -desp["desp_tributaria_operacional"], "tipo": "despesa"},
+            {
+                "label": "(-) Despesas Financeiras/Excepcionais",
+                "valor": -(desp["desp_financeira"] + desp["desp_excepcional"]),
+                "tipo": "despesa",
+            },
             {"label": "Lucro Gerencial Estimado", "valor": lucro, "tipo": "resultado"},
         ],
         "margem_gerencial_pct": lucro / receita if receita > 0 else 0,
@@ -313,7 +453,7 @@ def profit_dre(
             "cigarro": {"receita": f("receita_cigarro")},
             "servico": {"receita": f("receita_servico")},
         },
-        "disclaimer": "Lucro gerencial estimado = receita líquida - CMV - despesas operacionais. Não é lucro contábil/fiscal oficial.",
+        "disclaimer": disclaimer,
     }
 
     return redact_sensitive({"data": payload}, claims)
@@ -325,6 +465,10 @@ def profit_expenses(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     branch_scope: Optional[str] = Query(None),
+    regime_caixa: bool = Query(
+        True,
+        description="Quando true, agrega despesas pelo pagamento (DTAPGTO); senão por vencimento",
+    ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("profit_management")),
 ):
@@ -338,59 +482,78 @@ def profit_expenses(
     if not ref_month:
         return {"data": None, "message": "Sem dados de despesas."}
 
-    params: Dict[str, Any] = {"id_empresa": tenant_id, "ano_mes": ref_month}
-    branch_clause = _branch_filter_sql(branch_ids, params)
+    categories: List[Dict[str, Any]] = []
+    top_expenses: List[Dict[str, Any]] = []
+    desp_source = "clickhouse"
+    try:
+        pg = _despesas_pg_por_regime(
+            tenant_id, branch_ids, ref_month, regime_caixa=bool(regime_caixa),
+        )
+        if pg["categorias"] or float((pg["buckets"] or {}).get("desp_operacional_total") or 0) > 0:
+            categories = pg["categorias"]
+            top_expenses = pg["top"]
+            desp_source = "postgres_caixa" if regime_caixa else "postgres_competencia"
+    except Exception as exc:
+        logger.warning("profit_expenses: falha PG (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
 
-    sql = f"""
-        SELECT
-            classificacao_gerencial,
-            SUM(valor_total) AS valor_total,
-            SUM(qtd_lancamentos) AS qtd_lancamentos,
-            SUM(valor_tipo_0) AS valor_tipo_0,
-            SUM(valor_tipo_1) AS valor_tipo_1,
-            SUM(valor_rateavel) AS valor_rateavel,
-            SUM(valor_nao_rateavel) AS valor_nao_rateavel
-        FROM torqmind_mart_rt.profit_despesas_mensal FINAL
-        WHERE id_empresa = %(id_empresa)s
-          {branch_clause}
-          AND ano_mes = %(ano_mes)s
-        GROUP BY classificacao_gerencial
-        ORDER BY valor_total DESC
-    """
-    categories = query_dict(sql, params)
+    if not categories:
+        params: Dict[str, Any] = {"id_empresa": tenant_id, "ano_mes": ref_month}
+        branch_clause = _branch_filter_sql(branch_ids, params)
+        sql = f"""
+            SELECT
+                classificacao_gerencial,
+                SUM(valor_total) AS valor_total,
+                SUM(qtd_lancamentos) AS qtd_lancamentos,
+                SUM(valor_tipo_0) AS valor_tipo_0,
+                SUM(valor_tipo_1) AS valor_tipo_1,
+                SUM(valor_rateavel) AS valor_rateavel,
+                SUM(valor_nao_rateavel) AS valor_nao_rateavel
+            FROM torqmind_mart_rt.profit_despesas_mensal FINAL
+            WHERE id_empresa = %(id_empresa)s
+              {branch_clause}
+              AND ano_mes = %(ano_mes)s
+            GROUP BY classificacao_gerencial
+            ORDER BY valor_total DESC
+        """
+        categories = query_dict(sql, params)
+        top_sql = f"""
+            SELECT
+                codigo_plano, nome_plano, classificacao_gerencial,
+                SUM(valor_total) AS valor_total,
+                SUM(qtd_lancamentos) AS qtd_lancamentos
+            FROM torqmind_mart_rt.profit_despesas_mensal FINAL
+            WHERE id_empresa = %(id_empresa)s
+              {branch_clause}
+              AND ano_mes = %(ano_mes)s
+            GROUP BY codigo_plano, nome_plano, classificacao_gerencial
+            ORDER BY valor_total DESC
+            LIMIT 20
+        """
+        top_expenses = query_dict(top_sql, params)
 
-    # Top expenses by account — aggregate across branches
-    top_sql = f"""
-        SELECT
-            codigo_plano, nome_plano, classificacao_gerencial,
-            SUM(valor_total) AS valor_total,
-            SUM(qtd_lancamentos) AS qtd_lancamentos
-        FROM torqmind_mart_rt.profit_despesas_mensal FINAL
-        WHERE id_empresa = %(id_empresa)s
-          {branch_clause}
-          AND ano_mes = %(ano_mes)s
-        GROUP BY codigo_plano, nome_plano, classificacao_gerencial
-        ORDER BY valor_total DESC
-        LIMIT 20
-    """
-    top_expenses = query_dict(top_sql, params)
+    total = sum(float(c.get("valor_total", 0) or 0) for c in categories)
 
-    total = sum(float(c.get("valor_total", 0)) for c in categories)
+    if regime_caixa:
+        disclaimer = "Regime de caixa: despesas pelo pagamento efetivo (DTAPGTO)."
+    else:
+        disclaimer = "Competência por vencimento (DTAVCTO / ano_mes_competencia)."
 
     payload = {
         "periodo_base": _format_month_label(ref_month),
         "ano_mes": ref_month,
+        "regime_caixa": bool(regime_caixa),
+        "despesas_source": desp_source,
         "total_despesas": total,
         "categorias": [
             {
                 "classificacao": c.get("classificacao_gerencial", ""),
-                "valor": float(c.get("valor_total", 0)),
-                "qtd_lancamentos": int(c.get("qtd_lancamentos", 0)),
-                "percentual": float(c.get("valor_total", 0)) / total if total > 0 else 0,
-                "valor_rateavel": float(c.get("valor_rateavel", 0)),
-                "valor_nao_rateavel": float(c.get("valor_nao_rateavel", 0)),
-                "tipo_0": float(c.get("valor_tipo_0", 0)),
-                "tipo_1": float(c.get("valor_tipo_1", 0)),
+                "valor": float(c.get("valor_total", 0) or 0),
+                "qtd_lancamentos": int(c.get("qtd_lancamentos", 0) or 0),
+                "percentual": float(c.get("valor_total", 0) or 0) / total if total > 0 else 0,
+                "valor_rateavel": float(c.get("valor_rateavel", 0) or 0),
+                "valor_nao_rateavel": float(c.get("valor_nao_rateavel", 0) or 0),
+                "tipo_0": float(c.get("valor_tipo_0", 0) or 0),
+                "tipo_1": float(c.get("valor_tipo_1", 0) or 0),
             }
             for c in categories
         ],
@@ -399,12 +562,12 @@ def profit_expenses(
                 "codigo": t.get("codigo_plano", ""),
                 "nome": t.get("nome_plano", ""),
                 "classificacao": t.get("classificacao_gerencial", ""),
-                "valor": float(t.get("valor_total", 0)),
-                "qtd": int(t.get("qtd_lancamentos", 0)),
+                "valor": float(t.get("valor_total", 0) or 0),
+                "qtd": int(t.get("qtd_lancamentos", 0) or 0),
             }
             for t in top_expenses
         ],
-        "disclaimer": "Despesas usam vencimento como competência. Pagamento/baixa é informativo.",
+        "disclaimer": disclaimer,
     }
 
     return redact_sensitive({"data": payload}, claims)
@@ -751,6 +914,10 @@ def _solvencia_target_month(ano_mes: Optional[int], tenant: int) -> int:
 @router.get("/solvencia/detalhada")
 def profit_solvencia_detalhada(
     ano_mes: Optional[int] = Query(None, description="Mês-alvo YYYYMM; default = mês corrente"),
+    ativos_do_mes: bool = Query(
+        True,
+        description="Quando true, prioriza recebíveis com vencimento no mês e ainda em aberto",
+    ),
     id_empresa: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
@@ -771,10 +938,11 @@ def profit_solvencia_detalhada(
         claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais,
     )
     target = _solvencia_target_month(ano_mes, tenant)
-    return redact_sensitive(
-        {"data": repos_mart.solvencia_detalhada(role, tenant, filial, target)},
-        claims,
+    data = repos_mart.solvencia_detalhada(
+        role, tenant, filial, target, ativos_do_mes=ativos_do_mes,
     )
+    data["ativos_do_mes"] = bool(ativos_do_mes)
+    return redact_sensitive({"data": data}, claims)
 
 
 class SolvenciaManualItem(BaseModel):

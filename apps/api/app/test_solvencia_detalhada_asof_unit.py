@@ -81,11 +81,11 @@ class SolvenciaDetalhadaAsofUnitTest(unittest.TestCase):
                         "ativo_cartoes_debito": 70527.0,
                         "ativo_cheques": 0,
                         "ativo_estoque": 522118.32,
-                        "ativo_estoque_combustivel": 0,
                         "ativo_estoque_loja": 522118.32,
+                        "ativo_estoque_combustivel": 0,
                         "passivo_contas_pagar": 50000.0,
                         "tem_ativo_dados": True,
-                    }
+                    },
                 )
             elif "from app.solvencia_tipo_manual" in sql_l:
                 result.fetchall.return_value = _rows(
@@ -105,6 +105,14 @@ class SolvenciaDetalhadaAsofUnitTest(unittest.TestCase):
                         "secao": "investimento",
                         "ordem": 10,
                     },
+                    {
+                        "id_tipo": 5,
+                        "chave": "dinheiro",
+                        "nome": "Dinheiro",
+                        "grupo": "ativo_circulante",
+                        "secao": "dinheiro",
+                        "ordem": 55,
+                    },
                 )
             elif "from app.solvencia_entrada_manual" in sql_l and "distinct" in sql_l:
                 result.fetchall.return_value = []
@@ -114,6 +122,7 @@ class SolvenciaDetalhadaAsofUnitTest(unittest.TestCase):
                 result.fetchall.return_value = _rows({"id_filial": 14458, "nome": "VR01"})
             else:
                 result.fetchall.return_value = []
+                result.fetchone.return_value = None
             return result
 
         conn.execute.side_effect = execute
@@ -124,12 +133,16 @@ class SolvenciaDetalhadaAsofUnitTest(unittest.TestCase):
             patch("app.repos_mart.get_conn", return_value=conn),
             patch("app.repos_mart.business_today", return_value=date(2026, 7, 13)),
         ):
-            payload = repos_mart.solvencia_detalhada("MASTER", 1, 14458, 202606)
+            # Snapshot completo (não filtra vencimento do mês).
+            payload = repos_mart.solvencia_detalhada(
+                "MASTER", 1, 14458, 202606, ativos_do_mes=False,
+            )
 
         self.assertEqual(payload["ano_mes"], 202606)
         self.assertEqual(payload["posicao"], "as_of_abertura_mes")
         self.assertIn(202606, payload["meses_disponiveis"])
         self.assertIn(202607, payload["meses_disponiveis"])
+        self.assertFalse(payload["ativos_do_mes"])
 
         filial = payload["filiais"][0]
         self.assertEqual(filial["id_filial"], 14458)
@@ -149,7 +162,7 @@ class SolvenciaDetalhadaAsofUnitTest(unittest.TestCase):
         self.assertEqual(secoes["estoque"]["total"], 522118.32)
         self.assertTrue(secoes["estoque"]["itens"][0].get("as_of"))
 
-        # A Prazo permanece do snapshot (ainda sem as-of próprio).
+        # A Prazo permanece do snapshot quando ativos_do_mes=False.
         self.assertEqual(secoes["aprazo"]["total"], 100.0)
 
         passivo_sec = {s["secao"]: s for s in filial["grupos"]["passivo_circulante"]["secoes"]}

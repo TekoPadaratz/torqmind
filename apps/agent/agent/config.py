@@ -794,6 +794,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
     },
     # MOVBANCOS: movimento bancario (TIPO/OPERACAO). Bootstrap desde Jan/2025.
+    # Saldo as-of exige ID_DB = ID_FILIAL no ETL (ver docs/product/XPERT_BANCOS_MAP.md).
     "movbancos": {
         "table": "dbo.MOVBANCOS",
         "watermark_column": WATERMARK_ALIAS,
@@ -814,6 +815,24 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "FROM dbo.MOVBANCOS m "
             "WHERE ISNULL(m.DELETAR, 0) = 0"
         ),
+        "enabled": True,
+    },
+    # CONTASBANCARIA: cadastro de conta corrente (NK=ID_CONTASBANCARIAS+ID_FILIAL).
+    "contasbancaria": {
+        "table": "dbo.CONTASBANCARIA",
+        "watermark_column": "ID_CONTASBANCARIAS",
+        "watermark_order_by": "ID_CONTASBANCARIAS, ID_FILIAL",
+        "cursor_pk_columns": ["ID_CONTASBANCARIAS", "ID_FILIAL"],
+        "full_refresh": True,
+        "enabled": True,
+    },
+    # BANCOSPADRAO: dominio FEBRABAN (nome do banco).
+    "bancospadrao": {
+        "table": "dbo.BANCOSPADRAO",
+        "watermark_column": "ID_BANCOSPADRAO",
+        "watermark_order_by": "ID_BANCOSPADRAO, ID_FILIAL",
+        "cursor_pk_columns": ["ID_BANCOSPADRAO", "ID_FILIAL"],
+        "full_refresh": True,
         "enabled": True,
     },
     # SALDOCLIENTES: snapshot de saldo por cliente (Havel = VALOR < 0 = posto credor).

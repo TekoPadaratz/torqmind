@@ -38,6 +38,7 @@ psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" -v ON_ERROR_STOP=1 --no-align 
 SET statement_timeout='${STATEMENT_TIMEOUT}';
 SELECT etl.refresh_liquidez_solvencia(${ID_EMPRESA});
 SELECT etl.refresh_liquidez_estoque(${ID_EMPRESA});
+SELECT etl.refresh_liquidez_banco(${ID_EMPRESA});
 SELECT etl.refresh_gestao_orcamentaria(${ID_EMPRESA});
 SELECT etl.refresh_solvencia_itens(${ID_EMPRESA});
 SQL

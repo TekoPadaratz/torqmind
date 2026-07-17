@@ -230,7 +230,7 @@ def compute_lmc_events(
                  WHERE id_empresa = %s
                    AND id_filial = ANY(%s)
                    AND preco_venda_shadow > 0
-                   AND dt_alteracao_shadow::date BETWEEN %s AND %s
+                   AND (dt_alteracao_shadow AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN %s AND %s
                  GROUP BY 1, 2, 3, 4
                  ORDER BY 1, 2, 4
                 """,

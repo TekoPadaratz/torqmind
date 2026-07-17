@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -73,35 +73,170 @@ function scoreLevelLabel(level: string) {
   return { label: normalized || "—", color: "#94a3b8" };
 }
 
+function GridPager({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  pageSize: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  if (total <= pageSize) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 8,
+        alignItems: "center",
+        justifyContent: "flex-end",
+        marginTop: 10,
+      }}
+    >
+      <span className="muted" style={{ fontSize: 12 }}>
+        Página {page} de {totalPages}
+      </span>
+      <button
+        type="button"
+        disabled={page <= 1}
+        onClick={onPrev}
+        style={{
+          border: "1px solid var(--border)",
+          background: "transparent",
+          color: "var(--text)",
+          borderRadius: 6,
+          padding: "6px 12px",
+          cursor: page <= 1 ? "not-allowed" : "pointer",
+          fontSize: 12,
+          opacity: page <= 1 ? 0.5 : 1,
+        }}
+      >
+        Anterior
+      </button>
+      <button
+        type="button"
+        disabled={page >= totalPages}
+        onClick={onNext}
+        style={{
+          border: "1px solid var(--border)",
+          background: "transparent",
+          color: "var(--text)",
+          borderRadius: 6,
+          padding: "6px 12px",
+          cursor: page >= totalPages ? "not-allowed" : "pointer",
+          fontSize: 12,
+          opacity: page >= totalPages ? 0.5 : 1,
+        }}
+      >
+        Próxima
+      </button>
+    </div>
+  );
+}
+
 export default function FraudPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
   const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(true);
   const [trocaFormaNova, setTrocaFormaNova] = useState<"todos" | "prazo" | "cheque_pre">("todos");
   const [creditoRisco, setCreditoRisco] = useState<"suspeitas" | "normais" | "todas">("suspeitas");
+  const [creditoClienteQ, setCreditoClienteQ] = useState("");
+  const [creditoPage, setCreditoPage] = useState(1);
+  const [creditoExpandido, setCreditoExpandido] = useState<string | null>(null);
+  const [trocaPage, setTrocaPage] = useState(1);
+  const [cancelPage, setCancelPage] = useState(1);
+  const [operadorPage, setOperadorPage] = useState(1);
+  const pageSize = 20;
+  const riscoFinanceiroRef = useRef<HTMLDivElement | null>(null);
+  const scrollAnchorElRef = useRef<HTMLElement | null>(null);
+  const scrollAnchorTopRef = useRef<number | null>(null);
   const scopeKey = useMemo(
     () => buildScopeParams(scope).toString(),
     [scope],
   );
+
+  const pinFilterScroll = (from?: EventTarget | null) => {
+    const host =
+      (from instanceof HTMLElement ? from.closest(".card") : null) ||
+      riscoFinanceiroRef.current;
+    if (!host) return;
+    scrollAnchorElRef.current = host as HTMLElement;
+    scrollAnchorTopRef.current = host.getBoundingClientRect().top;
+  };
+
   useEffect(() => {
     setTrocaSoSuspeitas(true);
     setTrocaFormaNova("todos");
     setCreditoRisco("suspeitas");
+    setCreditoPage(1);
+    setTrocaPage(1);
+    setCancelPage(1);
+    setOperadorPage(1);
+    setCreditoExpandido(null);
   }, [scopeKey]);
+  useEffect(() => {
+    setCreditoPage(1);
+  }, [creditoRisco, creditoClienteQ]);
+  useEffect(() => {
+    setTrocaPage(1);
+  }, [trocaSoSuspeitas, trocaFormaNova]);
 
+  // Core operacional (operadores/cancelamentos/gráficos) — isolado dos filtros de risco.
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
-      moduleKey: `fraud_overview:${creditoRisco}:${trocaFormaNova}:${trocaSoSuspeitas ? "susp" : "all"}`,
+      moduleKey: "fraud_overview_core",
       scope,
       errorMessage: "Falha ao carregar fraude",
       buildRequestUrl: (currentScope) => {
         const params = buildScopeParams(currentScope);
-        params.set("credito_risco", creditoRisco);
-        params.set("troca_forma_nova", trocaFormaNova);
-        params.set("troca_only_suspeita", trocaSoSuspeitas ? "true" : "false");
+        params.set("sections", "core");
         return `/bi/fraud/overview?${params.toString()}`;
       },
     });
+
+  // Risco financeiro (créditos + troca) — único bloco afetado pelos filtros locais.
+  const {
+    data: riscoData,
+    loading: riscoLoading,
+    error: riscoError,
+  } = useBiScopeData<any>({
+    moduleKey: `fraud_risco:${creditoRisco}:${trocaFormaNova}:${trocaSoSuspeitas ? "susp" : "all"}`,
+    scope,
+    errorMessage: "Falha ao carregar risco financeiro",
+    keepPreviousData: true,
+    buildRequestUrl: (currentScope) => {
+      const params = buildScopeParams(currentScope);
+      params.set("sections", "risco_financeiro");
+      params.set("credito_risco", creditoRisco);
+      params.set("troca_forma_nova", trocaFormaNova);
+      params.set("troca_only_suspeita", trocaSoSuspeitas ? "true" : "false");
+      return `/bi/fraud/overview?${params.toString()}`;
+    },
+  });
+
+  // Mantém o card do filtro na mesma posição do viewport após o refresh do risco.
+  useLayoutEffect(() => {
+    const el = scrollAnchorElRef.current || riscoFinanceiroRef.current;
+    const expectedTop = scrollAnchorTopRef.current;
+    if (!el || expectedTop == null || typeof window === "undefined") return;
+    const delta = el.getBoundingClientRect().top - expectedTop;
+    if (Math.abs(delta) > 1) {
+      window.scrollBy(0, delta);
+    }
+    if (!riscoLoading) {
+      scrollAnchorTopRef.current = null;
+      scrollAnchorElRef.current = null;
+    } else {
+      scrollAnchorTopRef.current = el.getBoundingClientRect().top;
+    }
+  }, [riscoData, riscoLoading]);
   const transitionCopy = pendingUnavailable
     ? buildModuleUnavailableCopy("antifraude")
     : buildModuleLoadingCopy("antifraude");
@@ -117,15 +252,15 @@ export default function FraudPage() {
     [claims],
   );
 
-  const trocaRows: any[] = data?.troca_forma_pgto || [];
-  const trocaTotais = data?.troca_forma_pgto_totais || {};
+  const trocaRows: any[] = riscoData?.troca_forma_pgto || [];
+  const trocaTotais = riscoData?.troca_forma_pgto_totais || {};
   const trocaTotalQtd = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_qtd || 0)
     : Number(trocaTotais.todas_qtd || 0);
   const trocaTotalValor = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_valor || 0)
     : Number(trocaTotais.todas_valor || 0);
-  const trocaLoading = loading;
+  const trocaLoading = riscoLoading;
 
   const byDay = useMemo(
     () =>
@@ -155,11 +290,71 @@ export default function FraudPage() {
   const businessClock = data?.business_clock || {};
 
   const openCash = data?.open_cash || {};
-  const creditos = data?.lancamentos_creditos || {};
+  const creditos = riscoData?.lancamentos_creditos || {};
   const creditosSummary = creditos?.summary || {};
   const creditosRows = creditos?.lancamentos || [];
-  const topOperationalUser = (data?.top_users || [])[0];
-  const latestOperationalEvent = (data?.last_events || [])[0];
+  const creditosFiltered = useMemo(() => {
+    const term = creditoClienteQ.trim().toUpperCase();
+    if (!term) return creditosRows;
+    return creditosRows.filter((c: any) =>
+      String(c.cliente || "").toUpperCase().includes(term),
+    );
+  }, [creditosRows, creditoClienteQ]);
+  const creditoTotalPages = Math.max(1, Math.ceil(creditosFiltered.length / pageSize));
+  const creditoPageSafe = Math.min(Math.max(1, creditoPage), creditoTotalPages);
+  const creditosPageRows = creditosFiltered.slice(
+    (creditoPageSafe - 1) * pageSize,
+    creditoPageSafe * pageSize,
+  );
+
+  const lastEventsOperational = useMemo(() => {
+    const rows = Array.isArray(data?.last_events) ? data.last_events : [];
+    return rows.filter((e: any) => {
+      const tn = Number(e?.turno_numero);
+      const label = String(e?.turno_label || "").toLowerCase();
+      if (Number.isFinite(tn) && tn < 1) return false;
+      if (
+        label.includes("sem cadastro") ||
+        label.includes("não resolvido") ||
+        label.includes("nao resolvido") ||
+        label === "caixa geral"
+      ) {
+        return false;
+      }
+      if (!e?.data && !e?.data_key) return false;
+      const doc =
+        e?.documento_label || e?.documento_venda || e?.id_comprovante || e?.nro_comprovante;
+      if (!doc || String(doc).trim() === "—" || String(doc).trim() === "-") return false;
+      return true;
+    });
+  }, [data?.last_events]);
+
+  const cancelTotalPages = Math.max(1, Math.ceil(lastEventsOperational.length / pageSize));
+  const cancelPageSafe = Math.min(Math.max(1, cancelPage), cancelTotalPages);
+  const cancelPageRows = lastEventsOperational.slice(
+    (cancelPageSafe - 1) * pageSize,
+    cancelPageSafe * pageSize,
+  );
+
+  const topUsersRows = useMemo(
+    () => (Array.isArray(data?.top_users) ? data.top_users : []),
+    [data?.top_users],
+  );
+  const operadorTotalPages = Math.max(1, Math.ceil(topUsersRows.length / pageSize));
+  const operadorPageSafe = Math.min(Math.max(1, operadorPage), operadorTotalPages);
+  const operadorPageRows = topUsersRows.slice(
+    (operadorPageSafe - 1) * pageSize,
+    operadorPageSafe * pageSize,
+  );
+
+  const trocaTotalPages = Math.max(1, Math.ceil(trocaRows.length / pageSize));
+  const trocaPageSafe = Math.min(Math.max(1, trocaPage), trocaTotalPages);
+  const trocaPageRows = trocaRows.slice(
+    (trocaPageSafe - 1) * pageSize,
+    trocaPageSafe * pageSize,
+  );
+  const topOperationalUser = topUsersRows[0];
+  const latestOperationalEvent = lastEventsOperational[0];
   const topEmployee = (data?.risk_top_employees || [])[0];
   const modeledEvents = data?.risk_last_events || [];
   const paymentsRiskRows = data?.payments_risk || [];
@@ -253,6 +448,11 @@ export default function FraudPage() {
       <AppNav title="Antifraude" userLabel={userLabel} />
       <div className="container">
         {error ? <div className="card errorCard">{error}</div> : null}
+        {riscoError && data ? (
+          <div className="card errorCard" style={{ marginTop: 8 }}>
+            {riscoError}
+          </div>
+        ) : null}
         {!data ? (
           <div style={{ marginTop: 12 }}>
             <ScopeTransitionState
@@ -294,7 +494,7 @@ export default function FraudPage() {
 
               <div className="card col-6">
                 <h2>Operadores de caixa com mais cancelamentos</h2>
-                {!loading && !(data?.top_users || []).length ? (
+                {!loading && !topUsersRows.length ? (
                   <EmptyState
                     title="Sem operadores destacados."
                     detail="Não houve concentração operacional relevante por operador de caixa."
@@ -311,7 +511,7 @@ export default function FraudPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(data?.top_users || []).slice(0, 10).map((u: any) => (
+                      {operadorPageRows.map((u: any) => (
                         <tr key={`${u.id_filial}-${u.id_usuario}-${u.usuario_label}`}>
                           <td>{u.filial_label || formatFilialLabel(u.id_filial, u.filial_nome)}</td>
                           <td>{u.usuario_label}</td>
@@ -322,11 +522,21 @@ export default function FraudPage() {
                     </tbody>
                   </table>
                 </div>
+                <GridPager
+                  page={operadorPageSafe}
+                  totalPages={operadorTotalPages}
+                  total={topUsersRows.length}
+                  pageSize={pageSize}
+                  onPrev={() => setOperadorPage((p) => Math.max(1, p - 1))}
+                  onNext={() =>
+                    setOperadorPage((p) => Math.min(operadorTotalPages, p + 1))
+                  }
+                />
               </div>
 
               <div className="card col-12">
                 <h2>Últimos cancelamentos operacionais</h2>
-                {!loading && !(data?.last_events || []).length ? (
+                {!loading && !lastEventsOperational.length ? (
                   <EmptyState
                     title="Sem eventos operacionais recentes."
                     detail="Não houve cancelamentos reconciliados por turno no período analisado."
@@ -345,15 +555,18 @@ export default function FraudPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(data?.last_events || []).slice(0, 20).map((e: any) => (
-                        <tr key={`${e.id_filial}-${e.id_db}-${e.id_comprovante}`}>
-                          <td>{formatDateTime(e.data)}</td>
+                      {cancelPageRows.map((e: any) => (
+                        <tr key={`${e.id_filial}-${e.id_db}-${e.id_comprovante}-${e.event_id || e.id || ""}`}>
+                          <td>{e.data ? formatDateTime(e.data) : e.data_key ? formatDateKey(e.data_key) : "—"}</td>
                           <td>
                             {e.filial_label ||
                               formatFilialLabel(e.id_filial, e.filial_nome)}
                           </td>
-                          <td>{formatTurnoLabel(e.id_turno, e.turno_label)}</td>
-                          <td>{e.usuario_label}</td>
+                          <td>
+                            {e.turno_label ||
+                              formatTurnoLabel(e.turno_numero, e.turno_label)}
+                          </td>
+                          <td>{e.usuario_label || e.operador_label}</td>
                           <td>{e.documento_label || e.documento_venda || (e.id_comprovante ? String(e.id_comprovante) : "—")}</td>
                           <td>{formatCurrency(e.valor_total)}</td>
                         </tr>
@@ -361,38 +574,92 @@ export default function FraudPage() {
                     </tbody>
                   </table>
                 </div>
+                <GridPager
+                  page={cancelPageSafe}
+                  totalPages={cancelTotalPages}
+                  total={lastEventsOperational.length}
+                  pageSize={pageSize}
+                  onPrev={() => setCancelPage((p) => Math.max(1, p - 1))}
+                  onNext={() =>
+                    setCancelPage((p) => Math.min(cancelTotalPages, p + 1))
+                  }
+                />
               </div>
 
-              <div className="card col-12">
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 12,
-                    alignItems: "flex-start",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <div>
-                    <div className="sectionEyebrow">Risco financeiro</div>
-                    <h2 style={{ marginTop: 4 }}>Lançamentos de créditos</h2>
-                    <div className="muted" style={{ marginTop: 4 }}>
-                      Créditos lançados no cadastro do cliente. A injeção manual de crédito
-                      (&ldquo;Crédito adicionado manualmente&rdquo;), sem troco, cheque ou fatura por
-                      trás, é o padrão clássico de golpe: o operador cria saldo e depois usa para dar
-                      baixa em vendas. As linhas em vermelho são injeções manuais.
-                    </div>
+              <div
+                ref={riscoFinanceiroRef}
+                className="card col-12"
+                style={{
+                  opacity: riscoLoading && riscoData ? 0.92 : 1,
+                  transition: "opacity 0.15s",
+                }}
+              >
+                <div>
+                  <div className="sectionEyebrow" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    Risco financeiro
+                    {riscoLoading && riscoData ? (
+                      <span className="muted" style={{ fontSize: 11, fontWeight: 500 }}>
+                        Atualizando…
+                      </span>
+                    ) : null}
                   </div>
-                  <div className="profitFilterBar" style={{ marginBottom: 0 }}>
-                    <select
-                      value={creditoRisco}
-                      onChange={(e) => setCreditoRisco(e.target.value as "suspeitas" | "normais" | "todas")}
-                      aria-label="Filtro de risco dos créditos"
-                    >
-                      <option value="suspeitas">Só suspeitas</option>
-                      <option value="normais">Só normais</option>
-                      <option value="todas">Todas</option>
-                    </select>
+                  <h2 style={{ marginTop: 4 }}>Lançamentos de créditos</h2>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    Créditos lançados no cadastro do cliente. A injeção manual de crédito
+                    (&ldquo;Crédito adicionado manualmente&rdquo;), sem troco, cheque ou fatura por
+                    trás, é o padrão clássico de golpe: o operador cria saldo e depois usa para dar
+                    baixa em vendas. As linhas em vermelho são injeções manuais.
+                  </div>
+                  <div
+                    className="profitFilterBar"
+                    style={{ marginTop: 10, marginBottom: 0, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}
+                  >
+                    {(
+                      [
+                        { value: "suspeitas", label: "Só suspeitas" },
+                        { value: "normais", label: "Só normais" },
+                        { value: "todas", label: "Todas" },
+                      ] as const
+                    ).map((opt) => {
+                      const active = creditoRisco === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={(e) => {
+                            if (opt.value === creditoRisco) return;
+                            pinFilterScroll(e.currentTarget);
+                            setCreditoRisco(opt.value);
+                          }}
+                          style={{
+                            border: active
+                              ? "1px solid var(--color-accent, var(--accent-copper, #3b82f6))"
+                              : "1px solid var(--border)",
+                            background: active
+                              ? "var(--accent-copper-soft, rgba(59,130,246,0.12))"
+                              : "transparent",
+                            color: "var(--text)",
+                            borderRadius: 6,
+                            padding: "6px 12px",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: active ? 700 : 500,
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                    <input
+                      type="text"
+                      className="input"
+                      value={creditoClienteQ}
+                      onChange={(e) => setCreditoClienteQ(e.target.value.toUpperCase())}
+                      placeholder="BUSCAR CLIENTE PELO NOME"
+                      aria-label="Buscar cliente nos créditos"
+                      style={{ maxWidth: 320, textTransform: "uppercase", fontSize: 13, flex: "0 1 320px" }}
+                    />
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 12 }}>
@@ -411,8 +678,10 @@ export default function FraudPage() {
                     <div style={{ fontSize: 20, fontWeight: 800 }}>{formatCurrency(creditosSummary.aplicado)}</div>
                   </div>
                 </div>
-                {!loading && !creditosRows.length ? (
-                  <EmptyState title="Sem injeções de crédito no recorte." detail="Nenhum crédito corresponde ao filtro atual na janela analisada." />
+                {riscoLoading && !riscoData ? (
+                  <div className="muted" style={{ marginTop: 12 }}>Carregando créditos…</div>
+                ) : !riscoLoading && !creditosFiltered.length ? (
+                  <EmptyState title="Sem injeções de crédito no período selecionado." detail="Nenhum crédito corresponde ao filtro atual na janela analisada." />
                 ) : (
                   <div className="tableScroll" style={{ marginTop: 12 }}>
                     <table className="table compact">
@@ -424,35 +693,118 @@ export default function FraudPage() {
                           <th>Operador</th>
                           <th>Forma</th>
                           <th style={{ textAlign: "right" }}>Injetado</th>
+                          <th style={{ textAlign: "right" }}>Saldo na operação</th>
                           <th style={{ textAlign: "right" }}>Saldo atual</th>
                           <th>Histórico</th>
                           <th>Risco</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {creditosRows.map((c: any, idx: number) => (
-                          <tr key={`${c.id_filial}-${c.id_cliente || idx}-${idx}`} style={c.suspeita ? { background: "rgba(239,68,68,0.07)" } : undefined}>
-                            <td style={{ whiteSpace: "nowrap" }}>
-                              {c.data_ts ? formatDateTime(c.data_ts) : c.data ? formatDateOnly(c.data) : "—"}
-                            </td>
-                            <td>{c.filial_label}</td>
-                            <td>{c.cliente}</td>
-                            <td>{c.operador}</td>
-                            <td>{c.forma_pagamento || "—"}</td>
-                            <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
-                            <td style={{ textAlign: "right" }}>{formatCurrency(c.saldo_cliente)}</td>
-                            <td style={{ minWidth: 220 }}>{c.historico}</td>
-                            <td>{c.suspeita ? <span style={{ color: "var(--color-negative)", fontWeight: 700 }}>Suspeita</span> : <span className="muted">Normal</span>}</td>
-                          </tr>
-                        ))}
+                        {creditosPageRows.map((c: any, idx: number) => {
+                          const rowKey = `${c.id_filial}-${c.id_cliente || idx}-${c.id_mov || (creditoPageSafe - 1) * pageSize + idx}`;
+                          const expanded = creditoExpandido === rowKey;
+                          const consumos: any[] = Array.isArray(c.consumos) ? c.consumos : [];
+                          return (
+                            <Fragment key={rowKey}>
+                              <tr
+                                onClick={() =>
+                                  setCreditoExpandido(expanded ? null : rowKey)
+                                }
+                                style={{
+                                  cursor: "pointer",
+                                  ...(c.suspeita
+                                    ? { background: "rgba(239,68,68,0.07)" }
+                                    : {}),
+                                }}
+                              >
+                                <td style={{ whiteSpace: "nowrap" }}>
+                                  {c.data_ts && c.hora_conhecida
+                                    ? formatDateTime(c.data_ts)
+                                    : c.data
+                                      ? formatDateOnly(c.data)
+                                      : "—"}
+                                </td>
+                                <td>{c.filial_label}</td>
+                                <td>{c.cliente}</td>
+                                <td>{c.operador}</td>
+                                <td>{c.forma_pagamento || "—"}</td>
+                                <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
+                                <td style={{ textAlign: "right", fontWeight: 600 }}>
+                                  {c.saldo_operacao != null ? formatCurrency(c.saldo_operacao) : "—"}
+                                </td>
+                                <td style={{ textAlign: "right" }}>{formatCurrency(c.saldo_atual ?? c.saldo_cliente)}</td>
+                                <td style={{ minWidth: 220 }}>{c.historico}</td>
+                                <td>{c.suspeita ? <span style={{ color: "var(--color-negative)", fontWeight: 700 }}>Suspeita</span> : <span className="muted">Normal</span>}</td>
+                              </tr>
+                              {expanded ? (
+                                <tr>
+                                  <td colSpan={10} style={{ padding: "10px 12px", background: "rgba(255,255,255,0.02)" }}>
+                                    {consumos.length ? (
+                                      <table className="table compact" style={{ margin: 0 }}>
+                                        <thead>
+                                          <tr>
+                                            <th>Data</th>
+                                            <th>Tipo</th>
+                                            <th style={{ textAlign: "right" }}>Valor</th>
+                                            <th style={{ textAlign: "right" }}>Saldo na operação</th>
+                                            <th>Histórico</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {consumos.map((u: any, uIdx: number) => (
+                                            <tr key={`${rowKey}-consumo-${uIdx}`}>
+                                              <td style={{ whiteSpace: "nowrap" }}>
+                                                {u.data_ts && u.hora_conhecida
+                                                  ? formatDateTime(u.data_ts)
+                                                  : u.data
+                                                    ? formatDateOnly(u.data)
+                                                    : "—"}
+                                              </td>
+                                              <td>{u.tipo_label || "Uso do crédito"}</td>
+                                              <td style={{ textAlign: "right" }}>{formatCurrency(u.valor)}</td>
+                                              <td style={{ textAlign: "right" }}>
+                                                {u.saldo_operacao != null ? formatCurrency(u.saldo_operacao) : "—"}
+                                              </td>
+                                              <td>{u.historico || "—"}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    ) : (
+                                      <div className="muted" style={{ fontSize: 13 }}>
+                                        Nenhum uso deste crédito encontrado após a injeção.
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              ) : null}
+                            </Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
+                    <GridPager
+                      page={creditoPageSafe}
+                      totalPages={creditoTotalPages}
+                      total={creditosFiltered.length}
+                      pageSize={pageSize}
+                      onPrev={() => setCreditoPage((p) => Math.max(1, p - 1))}
+                      onNext={() =>
+                        setCreditoPage((p) => Math.min(creditoTotalPages, p + 1))
+                      }
+                    />
                   </div>
                 )}
               </div>
 
               {trocaAllowed ? (
-                <div className="card col-12">
+                <div
+                  className="card col-12"
+                  style={{
+                    opacity: riscoLoading && riscoData ? 0.92 : 1,
+                    transition: "opacity 0.15s",
+                  }}
+                >
                   <div
                     style={{
                       display: "flex",
@@ -475,7 +827,10 @@ export default function FraudPage() {
                     <div className="profitFilterBar" style={{ marginBottom: 0 }}>
                       <select
                         value={trocaSoSuspeitas ? "suspeitas" : "todas"}
-                        onChange={(e) => setTrocaSoSuspeitas(e.target.value === "suspeitas")}
+                        onChange={(e) => {
+                          pinFilterScroll(e.currentTarget);
+                          setTrocaSoSuspeitas(e.target.value === "suspeitas");
+                        }}
                         aria-label="Filtro de risco das trocas"
                       >
                         <option value="suspeitas">Só suspeitas</option>
@@ -483,9 +838,10 @@ export default function FraudPage() {
                       </select>
                       <select
                         value={trocaFormaNova}
-                        onChange={(e) =>
-                          setTrocaFormaNova(e.target.value as "todos" | "prazo" | "cheque_pre")
-                        }
+                        onChange={(e) => {
+                          pinFilterScroll(e.currentTarget);
+                          setTrocaFormaNova(e.target.value as "todos" | "prazo" | "cheque_pre");
+                        }}
                         aria-label="Filtro da forma nova"
                       >
                         <option value="todos">Forma nova: todas</option>
@@ -520,7 +876,7 @@ export default function FraudPage() {
                   </div>
 
                   <div style={{ marginTop: 12 }}>
-                    {trocaLoading ? (
+                    {trocaLoading && !riscoData ? (
                       <div className="muted">Carregando trocas…</div>
                     ) : !trocaRows.length ? (
                       <EmptyState
@@ -548,17 +904,20 @@ export default function FraudPage() {
                               <th>Usuário</th>
                               <th>Quando</th>
                               <th style={{ textAlign: "right" }}>Valor</th>
+                              <th>Venda</th>
                               <th>Risco</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {trocaRows.map((row: any) => (
+                            {trocaPageRows.map((row: any) => (
                               <tr
                                 key={`${row.troca_id}`}
                                 style={
-                                  row.is_suspeita
-                                    ? { background: "rgba(239,68,68,0.06)" }
-                                    : undefined
+                                  row.venda_cancelada
+                                    ? { background: "rgba(239,68,68,0.12)" }
+                                    : row.is_suspeita
+                                      ? { background: "rgba(239,68,68,0.06)" }
+                                      : undefined
                                 }
                               >
                                 <td>{row.documento || "—"}</td>
@@ -581,6 +940,21 @@ export default function FraudPage() {
                                   {formatCurrency(row.valor)}
                                 </td>
                                 <td>
+                                  {row.venda_cancelada ||
+                                  row.venda_status === "Cancelada" ? (
+                                    <span
+                                      style={{
+                                        color: "var(--color-negative)",
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      Cancelada
+                                    </span>
+                                  ) : (
+                                    row.venda_status || "Ativa"
+                                  )}
+                                </td>
+                                <td>
                                   {row.is_suspeita ? (
                                     <span
                                       style={{
@@ -598,6 +972,16 @@ export default function FraudPage() {
                             ))}
                           </tbody>
                         </table>
+                        <GridPager
+                          page={trocaPageSafe}
+                          totalPages={trocaTotalPages}
+                          total={trocaRows.length}
+                          pageSize={pageSize}
+                          onPrev={() => setTrocaPage((p) => Math.max(1, p - 1))}
+                          onNext={() =>
+                            setTrocaPage((p) => Math.min(trocaTotalPages, p + 1))
+                          }
+                        />
                       </div>
                     )}
                   </div>

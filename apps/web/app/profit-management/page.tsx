@@ -81,6 +81,8 @@ export default function ProfitManagementPage() {
   const [solvenciaMonth, setSolvenciaMonth] = useState<number | null>(null);
   const [solvenciaReload, setSolvenciaReload] = useState(0);
   const [anpReload, setAnpReload] = useState(0);
+  const [regimeCaixa, setRegimeCaixa] = useState(true);
+  const [ativosDoMes, setAtivosDoMes] = useState(true);
   // Período próprio do Compliance ANP (independente do filtro global da URL)
   const [anpDtIni, setAnpDtIni] = useState(() => {
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
@@ -100,19 +102,25 @@ export default function ProfitManagementPage() {
     });
 
   const { data: dreData } = useBiScopeData<any>({
-    moduleKey: "profit_dre",
+    moduleKey: `profit_dre:caixa=${regimeCaixa ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/dre?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope) => {
+      const p = buildScopeParams(currentScope);
+      p.set("regime_caixa", regimeCaixa ? "true" : "false");
+      return `/bi/profit-management/dre?${p.toString()}`;
+    },
   });
 
   const { data: expensesData } = useBiScopeData<any>({
-    moduleKey: "profit_expenses",
+    moduleKey: `profit_expenses:caixa=${regimeCaixa ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/expenses?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope) => {
+      const p = buildScopeParams(currentScope);
+      p.set("regime_caixa", regimeCaixa ? "true" : "false");
+      return `/bi/profit-management/expenses?${p.toString()}`;
+    },
   });
 
   const { data: productsData } = useBiScopeData<any>({
@@ -132,13 +140,15 @@ export default function ProfitManagementPage() {
   });
 
   const { data: solvenciaData } = useBiScopeData<any>({
-    moduleKey: `profit_solvencia_det_v2:${solvenciaMonth ?? "atual"}:${solvenciaReload}`,
+    moduleKey: `profit_solvencia_det_v2:${solvenciaMonth ?? "atual"}:${solvenciaReload}:ativos=${ativosDoMes ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/solvencia/detalhada?${buildScopeParams(currentScope).toString()}${
-        solvenciaMonth ? `&ano_mes=${solvenciaMonth}` : ""
-      }`,
+    buildRequestUrl: (currentScope) => {
+      const p = buildScopeParams(currentScope);
+      if (solvenciaMonth) p.set("ano_mes", String(solvenciaMonth));
+      p.set("ativos_do_mes", ativosDoMes ? "true" : "false");
+      return `/bi/profit-management/solvencia/detalhada?${p.toString()}`;
+    },
   });
 
   const { data: anpData, loading: anpLoading } = useBiScopeData<any>({
@@ -296,29 +306,55 @@ export default function ProfitManagementPage() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="profitTabs">
-          {((canViewSensitiveFinancials(claims)
-            ? ["overview", "products", "repricing", "solvencia", "anp"]
-            : ["overview", "products", "repricing"]) as Array<
-            "overview" | "products" | "repricing" | "solvencia" | "anp"
-          >).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`profitTab${activeTab === tab ? " active" : ""}`}
-            >
-              {tab === "overview"
-                ? "Visão Geral"
-                : tab === "products"
-                  ? "Produtos"
-                  : tab === "repricing"
-                    ? "Oportunidades"
-                    : tab === "solvencia"
-                      ? "Solvência"
-                      : "Compliance ANP"}
-            </button>
-          ))}
+        {/* Tabs + filtros transversais (DRE + Solvência) */}
+        <div className="profitTabsRow">
+          <div className="profitTabs">
+            {((canViewSensitiveFinancials(claims)
+              ? ["overview", "solvencia", "anp", "products", "repricing"]
+              : ["overview", "products", "repricing"]) as Array<
+              "overview" | "products" | "repricing" | "solvencia" | "anp"
+            >).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`profitTab${activeTab === tab ? " active" : ""}`}
+              >
+                {tab === "overview"
+                  ? "Visão Geral"
+                  : tab === "solvencia"
+                    ? "Solvência"
+                    : tab === "anp"
+                      ? "Compliance ANP"
+                      : tab === "products"
+                        ? "Produtos"
+                        : "Oportunidades"}
+              </button>
+            ))}
+          </div>
+          {canViewSensitiveFinancials(claims) ? (
+            <div className="profitScopeToggles" role="group" aria-label="Filtros da Gestão de Lucro">
+              <button
+                type="button"
+                className={`profitScopeToggle${regimeCaixa ? " on" : ""}`}
+                aria-pressed={regimeCaixa}
+                onClick={() => setRegimeCaixa((v) => !v)}
+                title="Despesas pelo pagamento efetivo (DTAPGTO)"
+              >
+                <span className="profitScopeToggleDot" aria-hidden />
+                Regime de caixa
+              </button>
+              <button
+                type="button"
+                className={`profitScopeToggle${ativosDoMes ? " on" : ""}`}
+                aria-pressed={ativosDoMes}
+                onClick={() => setAtivosDoMes((v) => !v)}
+                title="Cheques e a prazo só com vencimento no mês e em aberto"
+              >
+                <span className="profitScopeToggleDot" aria-hidden />
+                Ativos do mês
+              </button>
+            </div>
+          ) : null}
         </div>
 
         {/* TAB: Overview */}
@@ -350,6 +386,12 @@ export default function ProfitManagementPage() {
                 {dre.margem_gerencial_pct != null && (
                   <div className="calcFootnote">
                     Margem gerencial: {fmtPct(dre.margem_gerencial_pct)} · {dre.disclaimer || "Não é lucro contábil/fiscal oficial."}
+                    {regimeCaixa
+                      ? " · Regime de caixa ativo (despesas pelo pagamento)."
+                      : " · Competência por vencimento."}
+                    {ativosDoMes
+                      ? " · Ativos do mês ativos na Solvência."
+                      : ""}
                   </div>
                 )}
               </div>

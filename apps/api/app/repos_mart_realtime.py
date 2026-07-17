@@ -671,7 +671,7 @@ def sales_overview_bundle(
         ) ORDER BY faturamento DESC LIMIT 20
     """, parameters=params)
 
-    # --- Monthly evolution ---
+    # --- Monthly evolution (histórico completo desde Jan/2025) ---
     monthly_rows = query_dict(f"""
         SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas,
                s_val_cancel AS valor_cancelado
@@ -681,6 +681,7 @@ def sales_overview_bundle(
                    sum(valor_cancelado) AS s_val_cancel
             FROM {MART_RT_DB}.sales_daily_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND dt >= toDate('2025-01-01')
             GROUP BY ano, mes
         ) ORDER BY ano, mes
     """, parameters=params)
@@ -698,9 +699,13 @@ def sales_overview_bundle(
         for r in monthly_rows
     ]
 
-    # --- Annual comparison ---
-    current_year = date.today().year
+    # Comparativo anual: sempre Jan–Dez dos 2 anos (atual e anterior),
+    # preenchendo zeros para meses sem movimento (ex.: Jan–Abr/2025).
+    current_year = max(date.today().year, 2026)
     prev_year = current_year - 1
+    if prev_year < 2025:
+        prev_year = 2025
+        current_year = 2026
     annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
     annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
     annual_comparison = {
@@ -1959,11 +1964,23 @@ def fraud_last_events(
                     (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
                 )
                 ev = _build_antifraude_event(r)
-                # Defesa: só turnos operacionais 1..N
+                # Defesa: só turnos operacionais 1..N, com documento e data
                 if _to_int(ev.get("turno_numero")) < 1:
                     continue
-                if not bool(ev.get("turno_label")) or "não resolvido" in str(ev.get("turno_label") or "").lower():
+                label_l = str(ev.get("turno_label") or "").lower()
+                if (
+                    not ev.get("turno_label")
+                    or "não resolvido" in label_l
+                    or "nao resolvido" in label_l
+                    or "sem cadastro" in label_l
+                    or label_l == "caixa geral"
+                ):
                     continue
+                if not ev.get("data"):
+                    continue
+                if not ev.get("documento_label") or str(ev.get("documento_label") or "").strip() in ("", "—", "-"):
+                    if not ev.get("id_comprovante"):
+                        continue
                 out.append(ev)
                 if len(out) >= lim:
                     break
@@ -2025,6 +2042,9 @@ def fraud_top_users(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
+    # Mesmo universo de "Últimos cancelamentos": só turnos operacionais 1..N
+    # e tipos de cancelamento. Evita top_users contar caixa geral (turno 0)
+    # que o grid de últimos exclui — divergência VR01 15/07/2026.
     rows = query_dict(f"""
         SELECT id_filial,
                any(filial_nome) AS filial_nome,
@@ -2033,8 +2053,11 @@ def fraud_top_users(
                sum(valor_total) AS valor_cancelado
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-          AND event_type = 'cancelamento'
+          AND lower(event_type) IN ('cancelamento', 'cancelamento_seguido_venda')
+          AND turno_numero >= 1
+          AND (id_comprovante > 0 OR nro_comprovante > 0)
         GROUP BY id_filial, nome_operador
+        HAVING length(trim(nome_operador)) > 0
         ORDER BY valor_cancelado DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
@@ -2077,17 +2100,19 @@ def fraud_troca_forma_pgto(
 ) -> List[Dict[str, Any]]:
     """Payment-form-change events (antifraud).
 
-    Omits incomplete rows (mart lag without movlcto join) and sales already
-    cancelled (situacao=3). Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
+    Incomplete rows (mart lag without movlcto join) are omitted. Cancelled
+    sales (situacao=3) remain visible with ``venda_status`` = Cancelada —
+    troca seguida de cancelamento é sinal crítico (ex.: doc 89477).
+    Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
     """
-    filial = _branch_clause("id_filial", id_filial)
-    date_range = _date_range_filter(dt_ini, dt_fim)
-    suspeita = "AND is_suspeita = 1" if only_suspeita else ""
+    filial = _branch_clause("t.id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim, col="t.data_key")
+    suspeita = "AND t.is_suspeita = 1" if only_suspeita else ""
     forma = str(forma_nova or "todos").strip().lower()
     if forma in ("cheque_pre", "cheque-pre", "cheque"):
-        forma_filter = "AND positionCaseInsensitive(forma_para, 'CHEQUE PRE') > 0"
+        forma_filter = "AND positionCaseInsensitive(t.forma_para, 'CHEQUE PRE') > 0"
     elif forma == "prazo":
-        forma_filter = "AND positionCaseInsensitive(forma_para, 'PRAZO') > 0"
+        forma_filter = "AND positionCaseInsensitive(t.forma_para, 'PRAZO') > 0"
     else:
         forma_filter = ""
     try:
@@ -2098,42 +2123,39 @@ def fraud_troca_forma_pgto(
 
     rows = query_dict(f"""
         SELECT
-            troca_id,
-            id_filial,
-            filial_nome,
-            data_key,
-            dt,
-            documento,
-            id_turno,
-            id_usuario,
-            nome_operador,
-            forma_de,
-            categoria_de,
-            forma_para,
-            categoria_para,
-            valor,
-            data_troca_ts,
-            hora,
-            is_suspeita,
-            score_risco,
-            reasons,
-            referencia
-        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita} {forma_filter}
-          AND valor > 0
-          AND forma_de != ''
-          AND forma_para != ''
-          AND (
-            referencia = 0
-            OR referencia NOT IN (
-              SELECT id_comprovante
-              FROM {CURRENT_DB}.stg_comprovantes_slim
-              WHERE id_empresa = {{id_empresa:Int32}}
-                AND is_deleted = 0
-                AND situacao = 3
-            )
-          )
-        ORDER BY data_key DESC, troca_id DESC
+            t.troca_id,
+            t.id_filial,
+            t.filial_nome,
+            t.data_key,
+            t.dt,
+            t.documento,
+            t.id_turno,
+            t.id_usuario,
+            t.nome_operador,
+            t.forma_de,
+            t.categoria_de,
+            t.forma_para,
+            t.categoria_para,
+            t.valor,
+            t.data_troca_ts,
+            t.hora,
+            t.is_suspeita,
+            t.score_risco,
+            t.reasons,
+            t.referencia,
+            coalesce(c.situacao, 0) AS comprovante_situacao,
+            if(coalesce(c.situacao, 0) = 3, 'Cancelada', 'Ativa') AS venda_status
+        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt AS t FINAL
+        LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c
+          ON c.id_empresa = {{id_empresa:Int32}}
+         AND c.id_filial = t.id_filial
+         AND c.id_comprovante = t.referencia
+         AND c.is_deleted = 0
+        WHERE t.id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita} {forma_filter}
+          AND t.valor > 0
+          AND t.forma_de != ''
+          AND t.forma_para != ''
+        ORDER BY t.data_key DESC, t.troca_id DESC
         LIMIT {fetch_lim}
     """, parameters={"id_empresa": id_empresa})
 
@@ -2144,6 +2166,9 @@ def fraud_troca_forma_pgto(
         r["documento_raw"] = raw_doc
         r["documento"] = doc_num
         r["documento_numero"] = doc_num
+        status = str(r.get("venda_status") or "Ativa")
+        r["venda_status"] = status
+        r["venda_cancelada"] = status == "Cancelada"
         out.append(r)
         if len(out) >= lim:
             break
@@ -2174,16 +2199,6 @@ def fraud_troca_forma_pgto_kpis(
           AND valor > 0
           AND forma_de != ''
           AND forma_para != ''
-          AND (
-            referencia = 0
-            OR referencia NOT IN (
-              SELECT id_comprovante
-              FROM {CURRENT_DB}.stg_comprovantes_slim
-              WHERE id_empresa = {{id_empresa:Int32}}
-                AND is_deleted = 0
-                AND situacao = 3
-            )
-          )
           {forma_filter}
     """
 

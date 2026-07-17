@@ -257,11 +257,8 @@ export function AnpCompliancePanel({
     setAbusivo(Number(data.config.limite_abusivo_anp_perc ?? 70));
   }, [data?.config?.limite_alerta_amarelo_perc, data?.config?.limite_abusivo_anp_perc]);
 
-  // Ao trocar período/payload, limpa seleção de produtos inexistentes no novo conjunto.
-  useEffect(() => {
-    const names = new Set((data?.eventos || []).map((e) => e.nome_produto).filter(Boolean));
-    setSelectedProducts((prev) => prev.filter((p) => names.has(p)));
-  }, [data?.eventos]);
+  // Filtros de produto/status persistem na sessão da tela; não podar ao trocar período.
+  // (Antes: useEffect removia produtos ausentes no novo payload e “zerava” a seleção.)
 
   const availableProducts = useMemo(() => {
     const set = new Map<string, number>();

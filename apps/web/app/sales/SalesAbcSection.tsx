@@ -98,8 +98,9 @@ export default function SalesAbcSection() {
   const scope = useScopeQuery();
   const [sortBy, setSortBy] = useState<SortMode>("faturamento");
   const [params, setParams] = useState({ abc_threshold_a: 80, abc_threshold_b: 95, abc_exclude_fuel: true });
-  // Grupos escolhidos para compor a curva (vazio = todos os grupos).
-  const [selectedGroups, setSelectedGroups] = useState<number[]>([]);
+  // Grupos: draft (menu) vs applied (fetch). Evita refresh a cada checkbox.
+  const [draftGroups, setDraftGroups] = useState<number[]>([]);
+  const [appliedGroups, setAppliedGroups] = useState<number[]>([]);
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   const groupBtnRef = useRef<HTMLButtonElement>(null);
   // Local edit state for threshold inputs (avoids constraints fighting during typing)
@@ -128,8 +129,8 @@ export default function SalesAbcSection() {
       } catch { /* ignore */ }
     };
     fetchParams();
-    // Ao trocar de escopo, volta a considerar todos os grupos.
-    setSelectedGroups([]);
+    setDraftGroups([]);
+    setAppliedGroups([]);
     setGroupMenuOpen(false);
   }, [scope]);
 
@@ -159,12 +160,12 @@ export default function SalesAbcSection() {
   }, [editA, editB, params, scope]);
 
   const { data, loading } = useBiScopeData<AbcData>({
-    moduleKey: `sales_abc_curve_${sortBy}_${params.abc_threshold_a}_${params.abc_threshold_b}_g${selectedGroups.slice().sort((a, b) => a - b).join("-")}_${refreshKey}`,
+    moduleKey: `sales_abc_curve_${sortBy}_${params.abc_threshold_a}_${params.abc_threshold_b}_g${appliedGroups.slice().sort((a, b) => a - b).join("-")}_${refreshKey}`,
     scope,
     errorMessage: "Falha ao carregar Curva ABC",
     buildRequestUrl: (currentScope) => {
       const base = `/bi/sales/abc-curve?sort_by=${sortBy}&threshold_a=${params.abc_threshold_a}&threshold_b=${params.abc_threshold_b}&${buildScopeParams(currentScope).toString()}`;
-      const grupos = selectedGroups.map((id) => `&id_grupos=${id}`).join("");
+      const grupos = appliedGroups.map((id) => `&id_grupos=${id}`).join("");
       return base + grupos;
     },
   });
@@ -189,14 +190,29 @@ export default function SalesAbcSection() {
   );
 
   const availableGroups = data?.groups || [];
+  const groupsDirty =
+    draftGroups.length !== appliedGroups.length ||
+    draftGroups.some((id) => !appliedGroups.includes(id));
   const toggleGroup = (id: number) =>
-    setSelectedGroups((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setDraftGroups((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const applyGroups = () => {
+    setAppliedGroups(draftGroups.slice());
+    setGroupMenuOpen(false);
+  };
+  const closeGroupMenu = () => {
+    // Clique fora / Fechar: aplica a seleção atual (sem refetch a cada toggle).
+    if (groupsDirty) setAppliedGroups(draftGroups.slice());
+    setGroupMenuOpen(false);
+  };
   const groupSelector = availableGroups.length ? (
     <div style={{ marginTop: 12 }}>
       <button
         ref={groupBtnRef}
         type="button"
-        onClick={() => setGroupMenuOpen((o) => !o)}
+        onClick={() => {
+          if (!groupMenuOpen) setDraftGroups(appliedGroups.slice());
+          setGroupMenuOpen((o) => !o);
+        }}
         style={{
           padding: "7px 14px",
           borderRadius: 8,
@@ -210,14 +226,14 @@ export default function SalesAbcSection() {
           gap: 8,
         }}
       >
-        {selectedGroups.length === 0
+        {appliedGroups.length === 0
           ? "Grupos: todos"
-          : `Grupos: ${selectedGroups.length} selecionado(s)`}
+          : `Grupos: ${appliedGroups.length} selecionado(s)`}
         <span style={{ opacity: 0.7 }}>▾</span>
       </button>
       <PortalDropdown
         open={groupMenuOpen}
-        onClose={() => setGroupMenuOpen(false)}
+        onClose={closeGroupMenu}
         anchorRef={groupBtnRef}
         minWidth={300}
       >
@@ -233,17 +249,26 @@ export default function SalesAbcSection() {
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
             <button
               type="button"
-              onClick={() => setSelectedGroups([])}
+              onClick={() => setDraftGroups([])}
               style={{ background: "transparent", border: "none", color: "var(--accent-copper)", fontSize: 12, cursor: "pointer", padding: 4 }}
             >
               Todos os grupos
             </button>
             <button
               type="button"
-              onClick={() => setGroupMenuOpen(false)}
-              style={{ background: "transparent", border: "none", color: "var(--muted)", fontSize: 12, cursor: "pointer", padding: 4 }}
+              onClick={applyGroups}
+              style={{
+                background: groupsDirty ? "var(--accent-copper)" : "transparent",
+                border: "none",
+                color: groupsDirty ? "#0b1116" : "var(--muted)",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: "pointer",
+                padding: "4px 10px",
+                borderRadius: 6,
+              }}
             >
-              Fechar
+              Aplicar
             </button>
           </div>
           {availableGroups.map((g) => (
@@ -253,7 +278,7 @@ export default function SalesAbcSection() {
             >
               <input
                 type="checkbox"
-                checked={selectedGroups.includes(g.id_grupo_produto)}
+                checked={draftGroups.includes(g.id_grupo_produto)}
                 onChange={() => toggleGroup(g.id_grupo_produto)}
               />
               <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -265,7 +290,7 @@ export default function SalesAbcSection() {
         </div>
       </PortalDropdown>
       <div className="muted" style={{ marginTop: 6, fontSize: 11 }}>
-        Escolha quais grupos entram na curva. Vazio = todos os grupos (combustíveis seguem a configuração da filial).
+        Marque vários grupos e clique em Aplicar (ou fora do menu). Vazio = todos os grupos.
       </div>
     </div>
   ) : null;

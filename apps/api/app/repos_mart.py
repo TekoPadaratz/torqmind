@@ -11,7 +11,7 @@ Design:
 """
 
 from datetime import date, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import logging
 import unicodedata
 
@@ -2945,7 +2945,6 @@ def fraud_last_events(
     for row in rows:
         row["filial_label"] = _filial_label(row.get("id_filial"), row.get("filial_nome"))
         row["usuario_label"] = _cash_operator_label(row.get("usuario_nome"), row.get("id_usuario"))
-        row["turno_label"] = _turno_label(row.get("turno_value"), row.get("id_turno"))
         tv = str(row.get("turno_value") or "").strip()
         # Exclui caixa geral (0), nulo e turno sem resolução operacional
         if not tv or tv == "0":
@@ -2954,9 +2953,18 @@ def fraud_last_events(
             if int(tv) < 1:
                 continue
         except (TypeError, ValueError):
-            pass
+            continue
+        row["turno_label"] = _turno_label(tv, row.get("id_turno"))
+        row["turno_numero"] = int(tv) if str(tv).isdigit() else None
+        label_l = str(row.get("turno_label") or "").lower()
+        if "sem cadastro" in label_l or "não resolvido" in label_l or "nao resolvido" in label_l:
+            continue
+        if not row.get("data"):
+            continue
         doc = row.get("id_comprovante")
-        row["documento_label"] = str(doc) if doc else "—"
+        if not doc:
+            continue
+        row["documento_label"] = str(doc)
         row["documento_venda"] = doc
         out.append(row)
         if len(out) >= int(limit):
@@ -2965,26 +2973,40 @@ def fraud_last_events(
 
 
 def fraud_top_users(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
+    """Top operadores por cancelamento — mesmo universo de fraud_last_events (turno ≥ 1)."""
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
-    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    where_filial, branch_params = _branch_scope_clause("e.id_filial", id_filial)
     params = [id_empresa, ini, fim] + branch_params + [limit]
 
     sql = f"""
       SELECT
-        id_filial,
-        MAX(usuario_nome) AS usuario_nome,
-        id_usuario,
+        e.id_filial,
+        MAX(e.usuario_nome) AS usuario_nome,
+        e.id_usuario,
         COUNT(*)::int AS cancelamentos,
-        COALESCE(SUM(valor_total),0)::numeric(18,2) AS valor_cancelado,
-        COUNT(*) FILTER (WHERE usuario_source = 'turno')::int AS resolvidos_por_turno,
-        COUNT(*) FILTER (WHERE usuario_source = 'comprovante')::int AS fallback_comprovante
-      FROM mart.fraude_cancelamentos_eventos
-      WHERE id_empresa = %s
-        AND data_key BETWEEN %s AND %s
+        COALESCE(SUM(e.valor_total),0)::numeric(18,2) AS valor_cancelado,
+        COUNT(*) FILTER (WHERE e.usuario_source = 'turno')::int AS resolvidos_por_turno,
+        COUNT(*) FILTER (WHERE e.usuario_source = 'comprovante')::int AS fallback_comprovante
+      FROM mart.fraude_cancelamentos_eventos e
+      LEFT JOIN dw.fact_caixa_turno t
+        ON t.id_empresa = e.id_empresa
+       AND t.id_filial = e.id_filial
+       AND t.id_turno = e.id_turno
+      WHERE e.id_empresa = %s
+        AND e.data_key BETWEEN %s AND %s
         {where_filial}
-      GROUP BY id_filial, id_usuario
-      ORDER BY cancelamentos DESC, valor_cancelado DESC, id_usuario
+        AND NULLIF(TRIM({_turno_value_sql('t.payload', 'e.id_turno')}), '') IS NOT NULL
+        AND NULLIF(TRIM({_turno_value_sql('t.payload', 'e.id_turno')}), '') <> '0'
+        AND (
+          CASE
+            WHEN {_turno_value_sql('t.payload', 'e.id_turno')} ~ '^[0-9]+$'
+            THEN ({_turno_value_sql('t.payload', 'e.id_turno')})::int >= 1
+            ELSE true
+          END
+        )
+      GROUP BY e.id_filial, e.id_usuario
+      ORDER BY cancelamentos DESC, valor_cancelado DESC, e.id_usuario
       LIMIT %s
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
@@ -3054,8 +3076,9 @@ def fraud_lancamentos_creditos(
     id_filial: Optional[int],
     dt_ini: date,
     dt_fim: date,
-    limit: int = 150,
+    limit: int = 500,
     risco: str = "suspeitas",
+    cliente_q: Optional[str] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """Lancamentos de credito de clientes (antifraude).
@@ -3063,11 +3086,15 @@ def fraud_lancamentos_creditos(
     Golpe: o operador INJETA um credito no cliente (ENTRADAS) e depois aplica
     esse credito em vendas/pagamentos (SAIDAS). A injecao MANUAL ("Credito
     adicionado manualmente"), sem contrapartida de troco/cheque/fatura, e o
-    sinal de risco. O grid foca nas injecoes do periodo, marca as manuais como
-    suspeitas, mostra o operador responsavel e o saldo atual do cliente.
-    Fonte: stg.movcreditoentidades + stg.credito (Xpert); nome do cliente via
-    ClickHouse dim_cliente quando disponivel.
-    ``risco``: suspeitas | normais | todas (default suspeitas).
+    sinal de risco.
+
+    Hora: só quando ``DATA`` traz HH:MM ≠ 00:00 (injeções manuais no Xpert
+    quase sempre vêm sem hora). Sem DATAREPL/DTACONTA no payload.
+    ``saldo_operacao``: saldo do cliente imediatamente após aquele lançamento,
+    reconstruído de trás pra frente a partir do saldo atual + ledger ordenado
+    por DATA + ID_MOVCREDITOENTIDADES.
+    ``cliente_q``: filtro por trecho do nome (resolvido via dim_cliente).
+    Cada injecao traz ``consumos`` (SAIDAS posteriores do mesmo cliente/filial).
     """
     import re
 
@@ -3112,6 +3139,9 @@ def fraud_lancamentos_creditos(
       )
       SELECT
         LEFT(m.payload->>'DATA', 10) AS data,
+        m.payload->>'DATA' AS data_raw,
+        NULLIF(TRIM(m.payload->>'DATAREPL'), '') AS datarepl,
+        NULLIF(TRIM(m.payload->>'DTACONTA'), '') AS dtaconta,
         m.id_filial,
         NULLIF(m.payload->>'ID_ENTIDADE', '')::int AS id_entidade,
         COALESCE(u.nome, '') AS operador,
@@ -3120,6 +3150,7 @@ def fraud_lancamentos_creditos(
         COALESCE(s.saldo, 0)::numeric(18,2) AS saldo_cliente,
         COALESCE(NULLIF(TRIM(m.payload->>'HISTORICO'), ''), '') AS historico,
         NULLIF(TRIM(m.payload->>'REFERENCIA'), '') AS referencia,
+        NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint AS id_mov,
         (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') AS suspeita
       FROM stg.movcreditoentidades m
       LEFT JOIN LATERAL (
@@ -3137,9 +3168,9 @@ def fraud_lancamentos_creditos(
         AND COALESCE((m.payload->>'ENTRADAS')::numeric, 0) > 0
         {risco_sql}
         {where_filial}
-      ORDER BY (m.payload->>'HISTORICO' ILIKE '%%adicionado manualmente%%') DESC,
-               (m.payload->>'ENTRADAS')::numeric DESC,
-               m.payload->>'DATA' DESC
+      ORDER BY m.id_filial ASC,
+               LEFT(m.payload->>'DATA', 10) DESC,
+               COALESCE(NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint, 0) DESC
       LIMIT %s
     """
     list_params = [id_empresa, id_empresa, ini, fim] + branch_params + [int(limit)]
@@ -3148,11 +3179,7 @@ def fraud_lancamentos_creditos(
         text = str(hist or "").strip()
         if not text:
             return None
-        # Ex.: "Crédito adicionado manualmente CHEQUE 007377"
-        m = re.search(
-            r"(?i)adicionado manualmente\s+(.+)$",
-            text,
-        )
+        m = re.search(r"(?i)adicionado manualmente\s+(.+)$", text)
         if m:
             tail = m.group(1).strip()
             if tail:
@@ -3161,6 +3188,29 @@ def fraud_lancamentos_creditos(
             if re.search(rf"(?i)\b{re.escape(token)}\b", text):
                 return token.title() if token != "CHEQUE PRE" else "Cheque Pre"
         return None
+
+    def _parse_data_parts(raw: Any) -> Tuple[Optional[str], Optional[str], bool]:
+        """Retorna (data YYYY-MM-DD, data_ts ISO se hora real, hora_conhecida).
+
+        Injeções manuais no Xpert quase sempre vêm com DATA à meia-noite
+        (sem hora operacional). Usos (SAIDAS) costumam ter hora. Sem fonte
+        alternativa de horário (payload não tem DATAREPL/DTACONTA), só
+        exponemos hora quando DATA traz HH:MM ≠ 00:00.
+        """
+        s = str(raw or "").strip()
+        if not s:
+            return None, None, False
+        day = s[:10] if re.match(r"^\d{4}-\d{2}-\d{2}", s) else None
+        if not day:
+            return None, None, False
+        m = re.search(r"[T ](\d{2}):(\d{2})", s)
+        if not m:
+            return day, None, False
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if hh == 0 and mm == 0:
+            return day, None, False
+        ts = f"{day}T{hh:02d}:{mm:02d}:00-03:00"
+        return day, ts, True
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         srow = conn.execute(summary_sql, summary_params).fetchone() or {}
@@ -3174,7 +3224,107 @@ def fraud_lancamentos_creditos(
         }
         rows = list(conn.execute(list_sql, list_params).fetchall())
 
-    # Resolve nomes via ClickHouse dim_cliente (cadastro canonico do cliente).
+        # Consumos (SAIDAS) + ledger completo p/ reconstruir saldo na operação.
+        ids_cli = sorted({int(r["id_entidade"]) for r in rows if r.get("id_entidade")})
+        consumos_by_key: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+        saldo_apos_by_mov: Dict[Tuple[int, int, int], float] = {}
+        if ids_cli:
+            from datetime import timedelta as _td
+            cons_fim = (dt_fim + _td(days=120)).isoformat()
+            ledger_sql = f"""
+              SELECT
+                m.id_filial,
+                NULLIF(m.payload->>'ID_ENTIDADE', '')::int AS id_entidade,
+                LEFT(m.payload->>'DATA', 10) AS data,
+                m.payload->>'DATA' AS data_raw,
+                NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint AS id_mov,
+                COALESCE((m.payload->>'ENTRADAS')::numeric, 0)::numeric(18,2) AS entradas,
+                COALESCE((m.payload->>'SAIDAS')::numeric, 0)::numeric(18,2) AS saidas,
+                COALESCE(NULLIF(TRIM(m.payload->>'HISTORICO'), ''), '') AS historico,
+                NULLIF(TRIM(m.payload->>'REFERENCIA'), '') AS referencia
+              FROM stg.movcreditoentidades m
+              WHERE m.id_empresa = %s
+                AND NULLIF(m.payload->>'ID_ENTIDADE', '')::int = ANY(%s)
+                AND (
+                  COALESCE((m.payload->>'ENTRADAS')::numeric, 0) > 0
+                  OR COALESCE((m.payload->>'SAIDAS')::numeric, 0) > 0
+                )
+                {where_filial}
+              ORDER BY m.id_filial,
+                       NULLIF(m.payload->>'ID_ENTIDADE', '')::int,
+                       LEFT(m.payload->>'DATA', 10),
+                       COALESCE(NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint, 0)
+            """
+            ledger_params = [id_empresa, ids_cli] + branch_params
+            ledger_rows = [dict(x) for x in conn.execute(ledger_sql, ledger_params).fetchall()]
+
+            # Saldo atual por cliente (já na CTE saldo via list; reusa stg.credito).
+            saldo_atual_map: Dict[Tuple[int, int], float] = {}
+            for r in rows:
+                if r.get("id_entidade") is None:
+                    continue
+                key = (int(r["id_filial"]), int(r["id_entidade"]))
+                saldo_atual_map[key] = round(float(r.get("saldo_cliente") or 0), 2)
+
+            # Reconstrução: do mais recente ao mais antigo.
+            # saldo_apos[M] = saldo imediatamente APÓS o lançamento M.
+            by_cli: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+            for lr in ledger_rows:
+                if lr.get("id_entidade") is None:
+                    continue
+                by_cli.setdefault((int(lr["id_filial"]), int(lr["id_entidade"])), []).append(lr)
+
+            for key, movs in by_cli.items():
+                running = float(saldo_atual_map.get(key) or 0)
+                # movs já em ordem ASC; percorre DESC
+                for lr in reversed(movs):
+                    id_mov = int(lr.get("id_mov") or 0)
+                    running = round(running, 2)
+                    if id_mov:
+                        saldo_apos_by_mov[(key[0], key[1], id_mov)] = running
+                    ent = float(lr.get("entradas") or 0)
+                    sai = float(lr.get("saidas") or 0)
+                    # Desfaz o lançamento para obter o saldo anterior
+                    running = round(running - ent + sai, 2)
+
+            # Consumos para expand (só SAIDAS na janela útil)
+            for lr in ledger_rows:
+                sai = float(lr.get("saidas") or 0)
+                if sai <= 0:
+                    continue
+                day, data_ts, hora_ok = _parse_data_parts(lr.get("data_raw") or lr.get("data"))
+                if day and day > cons_fim:
+                    continue
+                if day and day < ini:
+                    continue
+                key = (int(lr["id_filial"]), int(lr["id_entidade"]))
+                hist = str(lr.get("historico") or "")
+                tipo = "baixa_manual"
+                low = hist.lower()
+                if "venda" in low or "cupom" in low or "nfc" in low or "comprovante" in low:
+                    tipo = "venda"
+                elif "fatura" in low or "titulo" in low or "receber" in low:
+                    tipo = "pagamento_fatura"
+                id_mov = int(lr.get("id_mov") or 0)
+                consumos_by_key.setdefault(key, []).append(
+                    {
+                        "data": day,
+                        "data_ts": data_ts if hora_ok else None,
+                        "hora_conhecida": hora_ok,
+                        "valor": round(sai, 2),
+                        "historico": hist,
+                        "referencia": lr.get("referencia"),
+                        "id_mov": id_mov or None,
+                        "saldo_operacao": saldo_apos_by_mov.get((key[0], key[1], id_mov)) if id_mov else None,
+                        "tipo": tipo,
+                        "tipo_label": {
+                            "venda": "Venda",
+                            "pagamento_fatura": "Pagamento de fatura",
+                            "baixa_manual": "Baixa / uso do crédito",
+                        }.get(tipo, "Uso do crédito"),
+                    }
+                )
+
     nome_map: Dict[int, str] = {}
     ids = sorted({int(r.get("id_entidade")) for r in rows if r.get("id_entidade")})
     if ids:
@@ -3205,33 +3355,62 @@ def fraud_lancamentos_creditos(
         except Exception:
             nome_map = {}
 
+    q = str(cliente_q or "").strip().lower()
+
     def _fmt(r: Dict[str, Any]) -> Dict[str, Any]:
         fid = int(r.get("id_filial") or 0)
         ident = r.get("id_entidade")
         ident_i = int(ident) if ident is not None else None
         nome_cli = nome_map.get(ident_i) if ident_i else None
         operador = r.get("operador") or (f"Operador #{r.get('id_usuario')}" if r.get("id_usuario") else "Operador sem cadastro")
-        data_raw = str(r.get("data") or "")[:10] or None
-        # DATA do Xpert chega como data calendário (sem hora útil). Ancoramos em
-        # America/Sao_Paulo meio-noite para o formatDateTime do frontend não
-        # deslocar o dia via UTC.
-        data_ts = f"{data_raw}T00:00:00-03:00" if data_raw else None
+        day, data_ts, hora_ok = _parse_data_parts(r.get("data_raw") or r.get("data"))
         hist = r.get("historico") or ""
+        id_mov = int(r.get("id_mov") or 0) or None
+        saldo_atual = round(float(r.get("saldo_cliente") or 0), 2)
+        saldo_op = None
+        if ident_i and fid and id_mov:
+            saldo_op = saldo_apos_by_mov.get((fid, ident_i, id_mov))
+        consumos = []
+        if ident_i and fid:
+            for c in consumos_by_key.get((fid, ident_i), []):
+                # Só consumos na data da injecao ou posteriores
+                if day and c.get("data") and str(c["data"]) < day:
+                    continue
+                # No mesmo dia: só usos com id_mov > id da injeção (ordem canônica)
+                if day and c.get("data") == day and id_mov and c.get("id_mov"):
+                    if int(c["id_mov"]) < int(id_mov):
+                        continue
+                consumos.append(c)
         return {
-            "data": data_raw,
-            "data_ts": data_ts,
+            "data": day,
+            "data_ts": data_ts if hora_ok else None,
+            "hora_conhecida": bool(hora_ok),
+            "id_mov": id_mov,
             "id_filial": fid,
             "filial_label": _filial_label(fid, filial_nome_map.get(fid)),
             "id_cliente": ident_i,
             "cliente": nome_cli or (f"Cliente #{ident_i}" if ident_i else "Cliente sem cadastro"),
             "operador": operador,
             "injetado": round(float(r.get("injetado") or 0), 2),
-            "saldo_cliente": round(float(r.get("saldo_cliente") or 0), 2),
+            "saldo_cliente": saldo_atual,
+            "saldo_atual": saldo_atual,
+            "saldo_operacao": round(float(saldo_op), 2) if saldo_op is not None else None,
             "historico": hist,
             "forma_pagamento": _forma_from_historico(hist),
             "referencia": r.get("referencia"),
             "suspeita": bool(r.get("suspeita")),
+            "consumos": consumos,
+            "consumos_qtd": len(consumos),
+            "consumos_valor": round(sum(float(c.get("valor") or 0) for c in consumos), 2),
         }
+
+    lancamentos = [_fmt(r) for r in rows]
+    if q:
+        lancamentos = [
+            x for x in lancamentos
+            if q in str(x.get("cliente") or "").lower()
+            or q in str(x.get("id_cliente") or "")
+        ]
 
     return {
         "summary": {
@@ -3241,8 +3420,9 @@ def fraud_lancamentos_creditos(
             "injetado_manual": round(float(srow.get("injetado_manual") or 0), 2),
             "aplicado": round(float(srow.get("aplicado") or 0), 2),
         },
-        "lancamentos": [_fmt(r) for r in rows],
+        "lancamentos": lancamentos,
         "risco_filtro": risco_key if risco_key in ("suspeitas", "normais", "todas") else "suspeitas",
+        "cliente_q": q or None,
         "source": "postgres",
     }
 
@@ -5031,6 +5211,7 @@ _SOLVENCIA_ASOF_ORDEM = {
     "havel": 42,
     "cheques": 50,
     "dinheiro": 55,
+    "banco": 60,
     "boleto": 90,
     "despesas": 92,
 }
@@ -5090,13 +5271,18 @@ def solvencia_detalhada(
     Monta, por filial, os grupos Ativo Circulante / Ativo Não Circulante /
     Passivo Circulante. Itens AUTO de snapshot (`mart.solvencia_item`) são
     sobrescritos, no mês selecionado, pela posição as-of de abertura
-    (`mart.liquidez_solvencia`: dinheiro D-1, cartões a receber, estoque loja /
-    combustível, passivo do mês). Manuais (bancos/investimentos) continuam
-    por mês em `app.solvencia_entrada_manual`.
+    (`mart.liquidez_solvencia`: dinheiro D-1, bancos as-of, cartões a receber, estoque loja /
+    combustível, passivo do mês). Manuais (investimentos/outros e override de bancos/dinheiro)
+    continuam por mês em `app.solvencia_entrada_manual`.
+
+    ``ativos_do_mes=True`` (default): cheques e a prazo só com vencimento no
+    mês e ainda abertos. ``False``: posição aberta completa (snapshot).
     """
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     target = int(ano_mes)
     ano, mes = target // 100, target % 100
+    ativos_do_mes = bool(kwargs.get("ativos_do_mes", True))
+    mes_ini = f"{ano:04d}-{mes:02d}-01"
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         auto_rows = conn.execute(
@@ -5123,6 +5309,20 @@ def solvencia_detalhada(
               AND ano_mes = %s
               {where_filial}
             ORDER BY id_filial
+            """,
+            [id_empresa, target] + branch_params,
+        ).fetchall()
+
+        banco_conta_rows = conn.execute(
+            f"""
+            SELECT
+              id_filial, id_contasbancarias, banco_nome, agencia, nro_conta,
+              descricao, ativo, saldo
+            FROM mart.solvencia_banco_conta
+            WHERE id_empresa = %s
+              AND ano_mes = %s
+              {where_filial}
+            ORDER BY id_filial, ABS(saldo) DESC, id_contasbancarias
             """,
             [id_empresa, target] + branch_params,
         ).fetchall()
@@ -5172,6 +5372,53 @@ def solvencia_detalhada(
             """,
             [id_empresa] + branch_params,
         ).fetchall()
+
+        cheques_mes_rows: list = []
+        aprazo_mes_rows: list = []
+        if ativos_do_mes:
+            # Cheques abertos com DTABOM (vencimento) no mês-alvo.
+            cheques_mes_rows = conn.execute(
+                f"""
+                SELECT id_filial, COALESCE(NULLIF(banco, ''), '?') AS banco,
+                       SUM(valor)::numeric(18,2) AS valor,
+                       COUNT(*)::numeric AS qtd
+                FROM mart.cheques_pendentes
+                WHERE id_empresa = %s
+                  {where_filial}
+                  AND status_cheque IN ('a_compensar', 'depositado')
+                  AND dt_vencimento IS NOT NULL
+                  AND dt_vencimento >= %s::date
+                  AND dt_vencimento < (%s::date + interval '1 month')
+                GROUP BY id_filial, COALESCE(NULLIF(banco, ''), '?')
+                ORDER BY id_filial, SUM(valor) DESC
+                """,
+                [id_empresa] + branch_params + [mes_ini, mes_ini],
+            ).fetchall()
+            # Títulos a prazo abertos com DTAVCTO no mês.
+            aprazo_mes_rows = conn.execute(
+                f"""
+                SELECT id_filial,
+                       SUM(GREATEST(
+                         etl.safe_numeric(payload->>'VALOR')
+                           - COALESCE(etl.safe_numeric(payload->>'VLRPAGO'), 0), 0
+                       ))::numeric(18,2) AS valor,
+                       COUNT(*)::numeric AS qtd
+                FROM stg.contasreceber
+                WHERE id_empresa = %s
+                  {where_filial}
+                  AND payload->>'DTAPGTO' IS NULL
+                  AND etl.safe_timestamp(payload->>'DTAVCTO') IS NOT NULL
+                  AND (etl.safe_timestamp(payload->>'DTAVCTO'))::date >= %s::date
+                  AND (etl.safe_timestamp(payload->>'DTAVCTO'))::date
+                        < (%s::date + interval '1 month')
+                GROUP BY id_filial
+                HAVING SUM(GREATEST(
+                  etl.safe_numeric(payload->>'VALOR')
+                    - COALESCE(etl.safe_numeric(payload->>'VLRPAGO'), 0), 0
+                )) > 0
+                """,
+                [id_empresa] + branch_params + [mes_ini, mes_ini],
+            ).fetchall()
 
     # secao -> (grupo, editavel, id_tipo) para os painéis manuais
     manual_secao = {}
@@ -5248,6 +5495,56 @@ def solvencia_detalhada(
         })
         s["total"] = round(s["total"] + val, 2)
 
+    # Ativos do mês: cheques/a prazo só com vencimento no mês e ainda abertos.
+    if ativos_do_mes:
+        fids_cheques = {
+            int(r["id_filial"]) for r in auto_rows if r.get("secao") == "cheques"
+        } | {int(r["id_filial"]) for r in cheques_mes_rows}
+        for fid in fids_cheques:
+            s = _secao(fid, "ativo_circulante", "cheques")
+            s["itens"] = []
+            s["total"] = 0.0
+            s["ordem"] = int(_SOLVENCIA_ASOF_ORDEM.get("cheques", 50))
+            s["editavel"] = False
+            s["id_tipo"] = None
+        for r in cheques_mes_rows:
+            fid = int(r["id_filial"])
+            s = _secao(fid, "ativo_circulante", "cheques")
+            val = float(r["valor"] or 0)
+            s["itens"].append({
+                "label": _nome_banco(str(r.get("banco") or "")),
+                "valor": round(val, 2),
+                "qtd": float(r["qtd"]) if r.get("qtd") is not None else None,
+                "origem": "auto",
+                "editavel": False,
+                "ativos_do_mes": True,
+            })
+            s["total"] = round(s["total"] + val, 2)
+
+        fids_aprazo = {
+            int(r["id_filial"]) for r in auto_rows if r.get("secao") == "aprazo"
+        } | {int(r["id_filial"]) for r in aprazo_mes_rows}
+        for fid in fids_aprazo:
+            s = _secao(fid, "ativo_circulante", "aprazo")
+            s["itens"] = []
+            s["total"] = 0.0
+            s["ordem"] = int(_SOLVENCIA_ASOF_ORDEM.get("aprazo", 30))
+            s["editavel"] = False
+            s["id_tipo"] = None
+        for r in aprazo_mes_rows:
+            fid = int(r["id_filial"])
+            val = float(r["valor"] or 0)
+            s = _secao(fid, "ativo_circulante", "aprazo")
+            s["itens"] = [{
+                "label": f"A Prazo (venc. {_month_label_ptbr(target)})",
+                "valor": round(val, 2),
+                "qtd": float(r["qtd"]) if r.get("qtd") is not None else None,
+                "origem": "auto",
+                "editavel": False,
+                "ativos_do_mes": True,
+            }]
+            s["total"] = round(val, 2)
+
     def _set_havel(fid: int) -> None:
         hv = havel_by_fid.get(fid)
         if not hv or abs(float(hv.get("valor") or 0)) < 0.005:
@@ -5267,11 +5564,28 @@ def solvencia_detalhada(
     # Overlay as-of (abertura dia 1 00:00 SP).
     asof_fids: set[int] = set()
     cartoes_hint: Dict[int, List[Dict[str, Any]]] = {}
-    _asof_secoes_overlay = {"dinheiro", "cartoes", "estoque", "boleto"}
+    bancos_hint: Dict[int, List[Dict[str, Any]]] = {}
+    for r in banco_conta_rows:
+        fid = int(r["id_filial"])
+        if r.get("ativo") is False:
+            continue
+        saldo = round(float(r.get("saldo") or 0), 2)
+        if abs(saldo) < 0.005:
+            continue
+        banco = str(r.get("banco_nome") or "Banco").strip()
+        desc = str(r.get("descricao") or "").strip()
+        nro = str(r.get("nro_conta") or "").strip()
+        label = desc or (f"{banco} · C/C {nro}" if nro else banco)
+        bancos_hint.setdefault(fid, []).append(
+            {"label": label, "valor": saldo, "qtd": None}
+        )
+
+    _asof_secoes_overlay = {"dinheiro", "banco", "cartoes", "estoque", "boleto"}
     for r in asof_rows:
         fid = int(r["id_filial"])
         asof_fids.add(fid)
         caixa = float(r.get("ativo_caixa") or 0)
+        banco = float(r.get("ativo_banco") or 0)
         cartoes = float(r.get("ativo_cartoes") or 0)
         cart_cr = float(r.get("ativo_cartoes_credito") or 0)
         cart_db = float(r.get("ativo_cartoes_debito") or 0)
@@ -5283,6 +5597,39 @@ def solvencia_detalhada(
             fid, "ativo_circulante", "dinheiro",
             "Dinheiro em espécie (fechamento D−1)", caixa,
         )
+        # Dinheiro: valor de sistema editável; override manual marca "editado".
+        s_din = _secao(fid, "ativo_circulante", "dinheiro")
+        s_din["valor_sistema"] = round(caixa, 2)
+        s_din["editado_humano"] = False
+        if "dinheiro" in manual_secao:
+            s_din["editavel"] = True
+            s_din["id_tipo"] = manual_secao["dinheiro"]["id_tipo"]
+
+        _set_asof_secao(
+            fid, "ativo_circulante", "banco",
+            "Saldos bancários (abertura do mês)", banco,
+        )
+        s_banco = _secao(fid, "ativo_circulante", "banco")
+        s_banco["valor_sistema"] = round(banco, 2)
+        s_banco["editado_humano"] = False
+        if bancos_hint.get(fid):
+            s_banco["hint_itens"] = list(bancos_hint[fid])
+            s_banco["itens"] = [
+                {
+                    "label": h["label"],
+                    "valor": h["valor"],
+                    "qtd": None,
+                    "origem": "auto",
+                    "editavel": False,
+                    "as_of": True,
+                }
+                for h in bancos_hint[fid]
+            ]
+            s_banco["colapsado"] = True
+        if "banco" in manual_secao:
+            s_banco["editavel"] = True
+            s_banco["id_tipo"] = manual_secao["banco"]["id_tipo"]
+
         _set_asof_secao(
             fid, "ativo_circulante", "cartoes",
             "Cartões a receber", cartoes,
@@ -5326,6 +5673,49 @@ def solvencia_detalhada(
         if not ms:
             continue
         s = _secao(fid, ms["grupo"], ms["secao"])
+        # Dinheiro: manual sobrescreve o as-of e marca edição humana.
+        if ms["secao"] == "dinheiro":
+            val = float(r["valor"] or 0)
+            sistema = float(s.get("valor_sistema") or s.get("total") or 0)
+            s["itens"] = [{
+                "id": int(r["id"]),
+                "label": r["descricao"] or "Dinheiro em espécie (editado)",
+                "valor": round(val, 2),
+                "qtd": None,
+                "origem": "manual",
+                "editavel": True,
+                "editado_humano": True,
+                "valor_sistema": sistema,
+            }]
+            s["total"] = round(val, 2)
+            s["editavel"] = True
+            s["id_tipo"] = int(r["id_tipo"])
+            s["editado_humano"] = True
+            s["valor_sistema"] = sistema
+            continue
+        # Bancos: lista manual substitui o as-of (mantém valor_sistema para auditoria).
+        if ms["secao"] == "banco":
+            if not s.get("editado_humano"):
+                s["valor_sistema"] = float(s.get("valor_sistema") or s.get("total") or 0)
+                s["itens"] = []
+                s["total"] = 0.0
+                s["hint_itens"] = None
+                s["colapsado"] = False
+                s["editado_humano"] = True
+            val = float(r["valor"] or 0)
+            s["itens"].append({
+                "id": int(r["id"]),
+                "label": r["descricao"] or "Conta bancária",
+                "valor": round(val, 2),
+                "qtd": None,
+                "origem": "manual",
+                "editavel": True,
+                "editado_humano": True,
+            })
+            s["total"] = round(float(s["total"]) + val, 2)
+            s["editavel"] = True
+            s["id_tipo"] = int(r["id_tipo"])
+            continue
         if fid in asof_fids and ms["secao"] in _asof_secoes_overlay:
             continue
         s["ordem"] = manual_secao.get(ms["secao"], {}).get("ordem", 0)
@@ -5500,6 +5890,15 @@ def solvencia_detalhada(
             }
         ativo_total = round(totais["ativo_circulante"] + totais["ativo_nao_circulante"], 2)
         passivo = totais["passivo_circulante"]
+        # Estoque = loja + combustível (seções as-of).
+        g_ac = grupos_raw.get("ativo_circulante") or {}
+        estoque_total = round(
+            float((g_ac.get("estoque") or {}).get("total") or 0)
+            + float((g_ac.get("combustivel") or {}).get("total") or 0),
+            2,
+        )
+        ativo_sem_estoque = round(ativo_total - estoque_total, 2)
+        ativo_com_estoque = ativo_total
         out_filiais.append({
             "id_filial": fid,
             "nome": filial_nome_map.get(fid) or f"Filial {fid}",
@@ -5508,9 +5907,15 @@ def solvencia_detalhada(
                 "ativo_circulante": totais["ativo_circulante"],
                 "ativo_nao_circulante": totais["ativo_nao_circulante"],
                 "ativo_total": ativo_total,
+                "ativo_com_estoque": ativo_com_estoque,
+                "ativo_sem_estoque": ativo_sem_estoque,
+                "estoque_total": estoque_total,
                 "passivo": passivo,
                 "capital_giro": round(ativo_total - passivo, 2),
+                "capital_giro_com_estoque": round(ativo_com_estoque - passivo, 2),
+                "capital_giro_sem_estoque": round(ativo_sem_estoque - passivo, 2),
                 "liquidez_corrente": round(ativo_total / passivo, 4) if passivo > 0 else None,
+                "liquidez_sem_estoque": round(ativo_sem_estoque / passivo, 4) if passivo > 0 else None,
                 "cobre_passivo": ativo_total >= passivo,
             },
         })
@@ -5537,6 +5942,7 @@ def solvencia_detalhada(
         "meses_disponiveis": meses,
         "posicao": "as_of_abertura_mes",
         "schema_version": "solvencia_despesas_v2",
+        "ativos_do_mes": bool(ativos_do_mes),
         "despesas_ano_mes": despesas_ano_mes,
         "filiais": out_filiais,
     }
@@ -5562,18 +5968,31 @@ def solvencia_manual_upsert(
     if not (1 <= mes <= 12):
         raise ValueError("ano_mes inválido")
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        tipo_ok = conn.execute(
-            "SELECT 1 FROM app.solvencia_tipo_manual WHERE id_tipo = %s", [int(id_tipo)]
+        tipo_row = conn.execute(
+            "SELECT id_tipo, chave, secao FROM app.solvencia_tipo_manual WHERE id_tipo = %s",
+            [int(id_tipo)],
         ).fetchone()
-        if not tipo_ok:
+        if not tipo_row:
             raise ValueError(f"id_tipo desconhecido: {id_tipo}")
+        # Dinheiro: apenas 1 valor editável (sem múltiplas linhas).
+        itens_in = list(itens or [])
+        if str(tipo_row.get("chave") or "") == "dinheiro" or str(tipo_row.get("secao") or "") == "dinheiro":
+            if itens_in:
+                first = itens_in[0]
+                itens_in = [{
+                    "descricao": str(first.get("descricao") or first.get("label") or "Dinheiro em espécie").strip()
+                    or "Dinheiro em espécie",
+                    "valor": first.get("valor") or 0,
+                }]
+            else:
+                itens_in = []
         conn.execute(
             """DELETE FROM app.solvencia_entrada_manual
                WHERE id_empresa=%s AND id_filial=%s AND ano=%s AND mes=%s AND id_tipo=%s""",
             [id_empresa, int(id_filial), ano, mes, int(id_tipo)],
         )
         n = 0
-        for ordem, it in enumerate(itens or []):
+        for ordem, it in enumerate(itens_in):
             desc = str(it.get("descricao") or it.get("label") or "").strip()
             try:
                 val = round(float(it.get("valor") or 0), 2)
