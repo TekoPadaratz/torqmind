@@ -105,6 +105,21 @@ BEGIN
   GROUP BY r.id_empresa, r.id_filial
   HAVING SUM(GREATEST(etl.safe_numeric(r.payload->>'VALOR') - COALESCE(etl.safe_numeric(r.payload->>'VLRPAGO'),0), 0)) > 0;
 
+  -- 3.2b HAVEL: crédito antecipado de pista (stg.credito.SALDO > 0 = saldo
+  -- disponível do cliente para abastecer). Fonte = dbo.CREDITO, NÃO saldoclientes.
+  -- Na planilha entra como linha negativa sob Cartões; valor gravado negativo.
+  INSERT INTO mart.solvencia_item
+    (id_empresa, id_filial, grupo, secao, item_label, valor, qtd, origem, ordem, updated_at)
+  SELECT
+    c.id_empresa, c.id_filial, 'ativo_circulante', 'havel', 'Havel clientes',
+    (-SUM(GREATEST(etl.safe_numeric(c.payload->>'SALDO'), 0)))::numeric(18,2),
+    COUNT(*) FILTER (WHERE etl.safe_numeric(c.payload->>'SALDO') > 0)::numeric,
+    'auto', 41, now()
+  FROM stg.credito c
+  WHERE c.id_empresa = p_id_empresa
+  GROUP BY c.id_empresa, c.id_filial
+  HAVING SUM(GREATEST(etl.safe_numeric(c.payload->>'SALDO'), 0)) > 0;
+
   -- 3.3 ESTOQUE por grupo: combustivel (tanque) / imobilizado (investimento) / loja
   WITH grp AS (
     SELECT DISTINCT ON (g.id_filial, (g.payload->>'ID_GRUPOPRODUTOS'))
@@ -126,29 +141,41 @@ BEGIN
   ),
   prodc AS (
     SELECT pr.id_filial, pr.id_produto, pr.nome, pr.custo,
-      CASE WHEN gr.nome_grupo LIKE '%COMBUST%' THEN 'combustivel'
-           WHEN gr.nome_grupo LIKE '%IMOBIL%' OR gr.nome_grupo LIKE '%INVEST%' THEN 'imobilizado'
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM stg.tanques t
+          WHERE t.id_filial = pr.id_filial
+            AND etl.safe_int(t.payload->>'ID_PRODUTOS')::text = pr.id_produto
+        ) OR COALESCE(gr.nome_grupo, '') LIKE '%COMBUST%' THEN 'combustivel'
+           WHEN COALESCE(gr.nome_grupo, '') LIKE '%IMOBIL%'
+             OR COALESCE(gr.nome_grupo, '') LIKE '%INVEST%' THEN 'imobilizado'
            ELSE 'loja' END AS classe
     FROM prod pr LEFT JOIN grp gr ON gr.id_filial = pr.id_filial AND gr.id_grupo = pr.id_grupo
   ),
   tanq AS (
-    SELECT t.id_filial, (t.payload->>'ID_PRODUTOS') AS id_produto, SUM(mt.qtde)::numeric AS litros
+    -- Join tipado: stg.tanques.id_tanque = movtanques.payload.ID_TANQUES
+    -- (payload do tanque NAO carrega ID_TANQUES).
+    SELECT t.id_filial, etl.safe_int(t.payload->>'ID_PRODUTOS')::text AS id_produto,
+           SUM(mt.qtde)::numeric AS litros
     FROM stg.tanques t
     JOIN LATERAL (
       SELECT GREATEST(etl.safe_numeric(m.payload->>'LEITURA'), 0) AS qtde
       FROM stg.movtanques m
       WHERE m.id_empresa = t.id_empresa AND m.id_filial = t.id_filial
-        AND m.payload->>'ID_TANQUES' = t.payload->>'ID_TANQUES'
-      ORDER BY etl.safe_timestamp(m.payload->>'DTACONTA') DESC NULLS LAST LIMIT 1
+        AND etl.safe_int(m.payload->>'ID_TANQUES') = t.id_tanque
+      ORDER BY COALESCE(m.dt_evento, etl.safe_timestamp(m.payload->>'DTACONTA')) DESC NULLS LAST
+      LIMIT 1
     ) mt ON true
     WHERE t.id_empresa = p_id_empresa
-    GROUP BY t.id_filial, (t.payload->>'ID_PRODUTOS')
+    GROUP BY t.id_filial, etl.safe_int(t.payload->>'ID_PRODUTOS')
   ),
   est AS (
-    SELECT e.id_filial, (e.payload->>'ID_PRODUTOS') AS id_produto,
-           SUM(etl.safe_numeric(e.payload->>'QTDEATUAL'))::numeric AS qtde
+    -- Colunas tipadas (quantidade/id_produto); fallback payload legado.
+    SELECT e.id_filial,
+           COALESCE(e.id_produto, etl.safe_int(e.payload->>'ID_PRODUTOS'))::text AS id_produto,
+           SUM(COALESCE(e.quantidade, etl.safe_numeric(e.payload->>'QTDEATUAL'), 0))::numeric AS qtde
     FROM stg.estoque e WHERE e.id_empresa = p_id_empresa
-    GROUP BY e.id_filial, (e.payload->>'ID_PRODUTOS')
+    GROUP BY e.id_filial, COALESCE(e.id_produto, etl.safe_int(e.payload->>'ID_PRODUTOS'))
   ),
   itens AS (
     SELECT tq.id_filial, 'ativo_circulante' AS grupo, 'combustivel' AS secao, pc.nome AS item_label,

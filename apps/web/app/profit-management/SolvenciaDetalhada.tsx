@@ -5,16 +5,24 @@ import { formatCurrency } from "../lib/format";
 import { apiPost } from "../lib/api";
 import PortalDropdown from "../components/ui/PortalDropdown";
 
-// Cores no padrão do sistema (Ativo Circulante = positivo/verde, Não-Circulante
-// = cobre/âmbar, Passivo = negativo/vermelho). Separadas, sem virar circo.
 const GRUPO = {
   ativo_circulante: { cor: "var(--color-positive)", bg: "rgba(34,197,94,0.06)" },
   ativo_nao_circulante: { cor: "var(--accent-copper, #b8722c)", bg: "rgba(184,114,44,0.07)" },
   passivo_circulante: { cor: "var(--color-negative)", bg: "rgba(239,68,68,0.06)" },
 } as const;
 
-type Item = { id?: number; label: string; valor: number; qtd?: number | null; origem: string; editavel: boolean };
-type Secao = { secao: string; label: string; total: number; itens: Item[]; editavel: boolean; id_tipo?: number | null; ordem: number };
+type Item = { id?: number; label: string; valor: number; qtd?: number | null; origem: string; editavel: boolean; as_of?: boolean };
+type Secao = {
+  secao: string;
+  label: string;
+  total: number;
+  itens: Item[];
+  hint_itens?: { label: string; valor: number; qtd?: number | null }[];
+  colapsado?: boolean;
+  editavel: boolean;
+  id_tipo?: number | null;
+  ordem: number;
+};
 type Grupo = { label: string; total: number; secoes: Secao[] };
 type Filial = {
   id_filial: number;
@@ -34,6 +42,66 @@ type Filial = {
 function fmtMonth(am: number): string {
   const s = String(am);
   return `${s.slice(4, 6)}/${s.slice(0, 4)}`;
+}
+
+function HintSecao({ secao }: { secao: Secao }) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const hint = secao.hint_itens?.length ? secao.hint_itens : secao.itens;
+  const showHint = (secao.colapsado || !!secao.hint_itens?.length) && hint.length > 0;
+
+  return (
+    <>
+      <div
+        ref={anchorRef}
+        onMouseEnter={() => showHint && setOpen(true)}
+        style={{
+          display: "flex",
+          width: "100%",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          padding: "8px 10px",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          background: open ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.03)",
+          cursor: showHint ? "help" : "default",
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{secao.label}</span>
+        <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatCurrency(secao.total)}</span>
+      </div>
+      {showHint && (
+        <PortalDropdown open={open} onClose={() => setOpen(false)} anchorRef={anchorRef} minWidth={280}>
+          <div
+            onMouseEnter={() => setOpen(true)}
+            onMouseLeave={() => setOpen(false)}
+            style={{
+              background: "#131a20",
+              border: "1px solid var(--border)",
+              borderRadius: 12,
+              boxShadow: "0 18px 44px rgba(0,0,0,0.55)",
+              padding: 12,
+              color: "var(--text)",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{secao.label}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 260, overflowY: "auto" }}>
+              {hint.map((it, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, padding: "3px 0" }}>
+                  <span style={{ color: "var(--muted)" }}>
+                    {it.label}
+                    {"qtd" in it && it.qtd ? ` · ${Number(it.qtd).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}` : ""}
+                  </span>
+                  <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{formatCurrency(it.valor)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </PortalDropdown>
+      )}
+    </>
+  );
 }
 
 function EditableSecao({
@@ -183,34 +251,38 @@ function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { g
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14 }}>
         {grupo.secoes.length === 0 && <div style={{ fontSize: 12, opacity: 0.6 }}>Sem itens.</div>}
-        {grupo.secoes.map((secao) =>
-          secao.editavel ? (
-            <EditableSecao key={secao.secao} filial={filial} secao={secao} anoMes={anoMes} idEmpresa={idEmpresa} onSaved={onSaved} />
-          ) : (
+        {grupo.secoes
+          .filter((secao) => secao.editavel || Math.abs(secao.total) > 0.005 || (secao.hint_itens?.length ?? 0) > 0 || secao.itens.length > 0)
+          .map((secao) => {
+          if (secao.editavel) {
+            return <EditableSecao key={secao.secao} filial={filial} secao={secao} anoMes={anoMes} idEmpresa={idEmpresa} onSaved={onSaved} />;
+          }
+          const collapsed = !!secao.colapsado || !!secao.hint_itens?.length || secao.itens.length <= 1;
+          if (collapsed) {
+            return <HintSecao key={secao.secao} secao={secao} />;
+          }
+          return (
             <div key={secao.secao} style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", fontSize: 13, fontWeight: 600, background: "rgba(255,255,255,0.03)" }}>
                 <span>{secao.label}</span>
                 <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(secao.total)}</span>
               </div>
-              {secao.itens.length > 1 && (
-                <div style={{ padding: "2px 10px 6px" }}>
-                  {secao.itens.map((it, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "var(--muted)" }}>
-                      <span>{it.label}{it.qtd ? ` · ${it.qtd.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} L` : ""}</span>
-                      <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(it.valor)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div style={{ padding: "2px 10px 6px" }}>
+                {secao.itens.map((it, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "var(--muted)" }}>
+                    <span>{it.label}{it.qtd ? ` · ${it.qtd.toLocaleString("pt-BR", { maximumFractionDigits: 0 })} L` : ""}</span>
+                    <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(it.valor)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-          )
-        )}
+          );
+        })}
       </div>
     </div>
   );
 }
 
-// Cartão-indicador com rótulo, valor e uma linha curta explicando a fórmula.
 function Kpi({ label, sub, value, color }: { label: string; sub: string; value: string; color: string }) {
   return (
     <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)" }}>
@@ -236,7 +308,6 @@ export function SolvenciaDetalhada({
 }) {
   if (!data) return null;
   const anoMes: number = monthValue ?? data.ano_mes;
-  // Ordena por nome (natural: VR 2 antes de VR 10), não por código.
   const filiais: Filial[] = [...(data.filiais || [])].sort((a, b) =>
     (a.nome || "").localeCompare(b.nome || "", "pt-BR", { numeric: true, sensitivity: "base" }),
   );
@@ -245,9 +316,9 @@ export function SolvenciaDetalhada({
     <div style={{ marginTop: 16 }}>
       <div className="card" style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
-          <div className="sectionEyebrow">Solvência — Posição Atual</div>
+          <div className="sectionEyebrow">Solvência — Abertura do mês</div>
           <div style={{ fontSize: 13, color: "var(--muted)" }}>
-            Ativos disponíveis, recebíveis e estoque frente às obrigações do mês.
+            Posição patrimonial (estoque) na virada do mês. Passe o mouse em Cartões, Cheques e Despesas para o detalhe. Não confundir com o Lucro do DRE (fluxo do período).
           </div>
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 500 }}>
@@ -264,20 +335,10 @@ export function SolvenciaDetalhada({
         </label>
       </div>
 
-      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 10, lineHeight: 1.5 }}>
-        <span aria-hidden>✎</span> Clique nos painéis de <strong>Bancos</strong> e <strong>Investimentos</strong> para lançar os valores do <strong>mês selecionado</strong>. Os demais saldos (combustível, cheques, estoque e contas) refletem a posição atual.
-      </div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
-        <strong>Capital de giro</strong> = Ativo − Passivo (o que sobra depois de quitar as contas).{" "}
-        <strong>Liquidez</strong> = Ativo ÷ Passivo, em vezes: <strong>1,00×</strong> cobre exatamente as contas; acima de 1 sobra caixa, abaixo de 1 falta.
-      </div>
-
       {filiais.map((f) => {
         const t = f.totais;
         const liq = t.liquidez_corrente;
         const cobre = t.cobre_passivo;
-        // Quadro geral da filial: agrupa totalizadores + os 3 painéis num só bloco.
-        // Não usa a classe .card (backdrop-filter) para não prender os popovers de edição.
         return (
           <div
             key={f.id_filial}
@@ -290,7 +351,6 @@ export function SolvenciaDetalhada({
               background: "rgba(255,255,255,0.02)",
             }}
           >
-            {/* Cabeçalho da filial + veredito */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 700 }}>{f.nome}</div>
               <span
@@ -307,15 +367,13 @@ export function SolvenciaDetalhada({
               </span>
             </div>
 
-            {/* Totalizadores */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
               <Kpi label="Ativo Total" sub="Circulante + investimentos" value={formatCurrency(t.ativo_total)} color="var(--color-positive)" />
-              <Kpi label="Passivo" sub="Contas a pagar em aberto" value={formatCurrency(t.passivo)} color="var(--color-negative)" />
+              <Kpi label="Passivo" sub="Contas a pagar + despesas do mês" value={formatCurrency(t.passivo)} color="var(--color-negative)" />
               <Kpi label="Capital de Giro" sub="Ativo − Passivo" value={formatCurrency(t.capital_giro)} color={t.capital_giro >= 0 ? "var(--color-positive)" : "var(--color-negative)"} />
               <Kpi label="Liquidez" sub="Ativo ÷ Passivo" value={liq != null ? `${liq.toFixed(2).replace(".", ",")}×` : "—"} color={(liq ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)"} />
             </div>
 
-            {/* Grupos */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginTop: 14, alignItems: "start" }}>
               {(["ativo_circulante", "ativo_nao_circulante", "passivo_circulante"] as const).map((gk) =>
                 f.grupos[gk] ? (
