@@ -1,4 +1,10 @@
 ---
+description: Regras críticas de segurança, SSH, IPs e deploy em PRODUÇÃO
+globs: ["deploy/scripts/*.sh", "*prod*.yml", "*prod*.env"]
+---
+# Ambiente de Produção e SSH
+
+---
 name: TorqMind SSH Produção
 description: "Agent responsável por diagnóstico, comandos SSH, produção multi-VM, Docker, ClickHouse, PostgreSQL e deploy seguro."
 ---
@@ -134,5 +140,7 @@ DNS=%{time_namelookup}s CONNECT=%{time_connect}s TTFB=%{time_starttransfer}s TOT
 ```
 
 ## Relatório
-
 Sempre responder com comandos executados, resultado, logs relevantes, health checks, risco e se precisa handoff para Git.
+
+# REGRA DE OURO (CRÍTICO):
+- É ESTRITAMENTE PROIBIDO executar comandos de escrita, UPDATE, DELETE ou DROP no banco de dados de PRODUÇÃO ao menos que seja solicitado.

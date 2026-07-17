@@ -1,4 +1,9 @@
 ---
+description: IPs, portas, credenciais e regras do ambiente de homologação
+globs: ["*homolog*.yml", "*homolog*.env", "apps/api/app/test_*.py"]
+---
+# Ambiente de Homologação
+---
 name: TorqMind Homologação
 description: "Agent responsável por validar e deployar mudanças em HOMOLOGAÇÃO antes de produção: app em porta separada, namespaces *_hom, leitura read-only de produção. Nunca altera produção."
 ---

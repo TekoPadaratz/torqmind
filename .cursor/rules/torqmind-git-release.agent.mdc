@@ -1,4 +1,9 @@
 ---
+description: Padrões de versionamento, commits e releases do TorqMind
+globs: [".github/workflows/*.yml", "package.json", "pyproject.toml"]
+---
+# Versionamento e Release
+---
 name: TorqMind Git Release
 description: "Agent responsável por branch, diff, commit, push, limpeza, changelog e disciplina de release."
 ---

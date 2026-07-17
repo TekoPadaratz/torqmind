@@ -1,0 +1,15 @@
+---
+description: Economia de tokens em respostas e ferramentas — sempre aplicar
+alwaysApply: true
+---
+
+# Economia de tokens
+
+- Resposta final: só o essencial (veredito + arquivos + riscos). Sem narrar passos.
+- Durante o trabalho: sem progress fluff ("Vou agora…", "Em seguida…").
+- Prefira grep/read cirúrgico a dumps longos; parallel quando possível.
+- Não repita código já conhecido; não cite blocos grandes sem necessidade.
+- Homolog primeiro; não expandir escopo além do pedido.
+- Relatório final máximo ~15–20 linhas, salvo pedido do usuário.
+- Confirmação de entendimento: 1 frase curta no início só se a tarefa for ambígua; senão vá direto.
+- Evite listar o óbvio; foque no resultado e no que o usuário precisa validar em tela.
