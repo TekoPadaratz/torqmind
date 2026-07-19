@@ -7,6 +7,14 @@ import PlatformShell from '../../components/PlatformShell';
 import { api, apiGet } from '../../lib/api';
 import { formatDateOnly } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import {
+  FALLBACK_SCREEN_TREE,
+  TV_SCREEN_OPTIONS,
+  allProductPermissionKeys,
+  toggleMenuPermission,
+  togglePanelPermission,
+  type ScreenMenu,
+} from '../../lib/screen-permissions';
 import { USERNAME_ERROR_MESSAGE, normalizeUsernameInput, validateUsernameInput } from '../../lib/username-policy.mjs';
 
 export const dynamic = 'force-dynamic';
@@ -44,44 +52,53 @@ function emptyContact() {
   };
 }
 
-function toDateInput(value: any) {
-  return value ? String(value).slice(0, 10) : '';
-}
-
-function toDatetimeInput(value: any) {
+function toDateInput(value?: string | null) {
   if (!value) return '';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '';
-  return parsed.toISOString().slice(0, 16);
+  return String(value).slice(0, 10);
 }
 
-function roleRequiresBranch(role: string) {
+function toDatetimeInput(value?: string | null) {
+  if (!value) return '';
+  return String(value).slice(0, 16);
+}
+
+const ROLE_OPTIONS = [
+  { value: 'platform_master', label: 'Platform Master' },
+  { value: 'platform_admin', label: 'Platform Admin' },
+  { value: 'product_global', label: 'Product Global' },
+  { value: 'channel_admin', label: 'Channel Admin' },
+  { value: 'tenant_admin', label: 'Owner / Admin da Empresa' },
+  { value: 'tenant_manager', label: 'Gerente' },
+  { value: 'tenant_viewer', label: 'Visualizador' },
+  { value: 'tenant_kiosk', label: 'TV / Kiosk' },
+];
+
+function roleUsesScreenPermissions(role: string) {
   return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
 }
 
-const PRODUCT_SCREEN_OPTIONS = [
-  { key: 'dashboard_home', label: 'Dashboard Geral' },
-  { key: 'sales', label: 'Vendas' },
-  { key: 'cash', label: 'Caixa' },
-  { key: 'fraud', label: 'Antifraude' },
-  { key: 'customers', label: 'Clientes' },
-  { key: 'finance', label: 'Financeiro' },
-  { key: 'competitor_pricing', label: 'Preço Concorrente' },
-  { key: 'goals_team', label: 'Metas & Equipe' },
-];
-
-const TV_SCREEN_OPTIONS = [
-  { key: 'tv_sales_hourly', label: 'TV — Vendas/Hora' },
-  { key: 'tv_sales_ranking', label: 'TV — Ranking' },
-];
-
-function screenOptionsForRole(role: string) {
-  if (role === 'tenant_kiosk') return TV_SCREEN_OPTIONS;
-  if (role === 'tenant_manager' || role === 'tenant_viewer') return PRODUCT_SCREEN_OPTIONS;
-  return [...PRODUCT_SCREEN_OPTIONS, ...TV_SCREEN_OPTIONS];
+function menusForRole(role: string, tree: ScreenMenu[]): ScreenMenu[] {
+  if (role === 'tenant_kiosk') return [];
+  return tree.filter((m) => !m.kiosk_only);
 }
 
-function roleUsesScreenPermissions(role: string) {
+function validPermissionKeysForRole(role: string, tree: ScreenMenu[]): Set<string> {
+  const keys = new Set<string>();
+  if (role === 'tenant_kiosk') {
+    TV_SCREEN_OPTIONS.forEach((s) => keys.add(s.key));
+    return keys;
+  }
+  for (const menu of menusForRole(role, tree)) {
+    keys.add(menu.key);
+    menu.panels.forEach((p) => keys.add(p.key));
+  }
+  if (role !== 'tenant_manager' && role !== 'tenant_viewer') {
+    TV_SCREEN_OPTIONS.forEach((s) => keys.add(s.key));
+  }
+  return keys;
+}
+
+function roleRequiresBranch(role: string) {
   return role === 'tenant_manager' || role === 'tenant_viewer' || role === 'tenant_kiosk';
 }
 
@@ -99,17 +116,25 @@ export default function PlatformUsersPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [screenTree, setScreenTree] = useState<ScreenMenu[]>(FALLBACK_SCREEN_TREE);
 
   async function load(session: any) {
     setLoading(true);
     try {
-      const tasks: Promise<any>[] = [apiGet('/platform/users?limit=200'), apiGet('/platform/companies?limit=200')];
+      const tasks: Promise<any>[] = [
+        apiGet('/platform/users?limit=200'),
+        apiGet('/platform/companies?limit=200'),
+        apiGet('/platform/screen-registry').catch(() => null),
+      ];
       if (session?.user_role === 'platform_master') {
         tasks.push(apiGet('/platform/channels?limit=200'));
       }
-      const [usersRes, companiesRes, channelsRes] = await Promise.all(tasks);
+      const [usersRes, companiesRes, registryRes, channelsRes] = await Promise.all(tasks);
       setItems(usersRes?.items || []);
       setCompanies(companiesRes?.items || []);
+      if (Array.isArray(registryRes?.menus) && registryRes.menus.length) {
+        setScreenTree(registryRes.menus);
+      }
       setChannels(channelsRes?.items || []);
       setError('');
     } catch (err: any) {
@@ -194,13 +219,22 @@ export default function PlatformUsersPage() {
 
   function setRole(role: string) {
     setForm((current: any) => {
-      // When role changes, clear screen_permissions not valid for new role
-      const validKeys = new Set(screenOptionsForRole(role).map(s => s.key));
-      const filteredPerms = (current.screen_permissions || []).filter((k: string) => validKeys.has(k));
+      const validKeys = validPermissionKeysForRole(role, screenTree);
+      let nextPerms = (current.screen_permissions || []).filter((k: string) => validKeys.has(k));
+      // Troca para gerente/visualizador sem nada marcado → libera produto completo.
+      if (
+        (role === 'tenant_manager' || role === 'tenant_viewer')
+        && nextPerms.length === 0
+      ) {
+        nextPerms = allProductPermissionKeys(screenTree);
+      }
+      if (role === 'tenant_kiosk' && nextPerms.length === 0) {
+        nextPerms = TV_SCREEN_OPTIONS.map((s) => s.key);
+      }
       return {
         ...current,
         role,
-        screen_permissions: filteredPerms,
+        screen_permissions: nextPerms,
         accesses:
           role === 'platform_admin' || role === 'platform_master' || role === 'product_global'
             ? [emptyAccess(role)]
@@ -520,24 +554,79 @@ export default function PlatformUsersPage() {
 
               {roleUsesScreenPermissions(form.role) ? (
                 <div style={{ width: '100%', marginBottom: 8 }}>
-                  <div className="platformFieldHint" style={{ marginBottom: 4 }}>Telas permitidas:</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {screenOptionsForRole(form.role).map((screen) => (
-                      <label key={screen.key} className="platformCheckbox" style={{ minWidth: 160 }}>
-                        <input
-                          type="checkbox"
-                          checked={form.screen_permissions.includes(screen.key)}
-                          onChange={(e) => {
-                            const perms = e.target.checked
-                              ? [...form.screen_permissions, screen.key]
-                              : form.screen_permissions.filter((k: string) => k !== screen.key);
-                            setForm({ ...form, screen_permissions: perms });
-                          }}
-                        />
-                        {screen.label}
-                      </label>
-                    ))}
+                  <div className="platformFieldHint" style={{ marginBottom: 4 }}>
+                    Menus e painéis permitidos (default = tudo liberado; desmarque o que não pode ver):
                   </div>
+                  {form.role === 'tenant_kiosk' ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {TV_SCREEN_OPTIONS.map((screen) => (
+                        <label key={screen.key} className="platformCheckbox" style={{ minWidth: 160 }}>
+                          <input
+                            type="checkbox"
+                            checked={form.screen_permissions.includes(screen.key)}
+                            onChange={(e) => {
+                              const perms = e.target.checked
+                                ? [...form.screen_permissions, screen.key]
+                                : form.screen_permissions.filter((k: string) => k !== screen.key);
+                              setForm({ ...form, screen_permissions: perms });
+                            }}
+                          />
+                          {screen.label}
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="platformScreenTree">
+                      {menusForRole(form.role, screenTree).map((menu) => {
+                        const menuOn = form.screen_permissions.includes(menu.key);
+                        return (
+                          <div key={menu.key} className="platformScreenMenu">
+                            <label className="platformCheckbox">
+                              <input
+                                type="checkbox"
+                                checked={menuOn}
+                                onChange={(e) =>
+                                  setForm({
+                                    ...form,
+                                    screen_permissions: toggleMenuPermission(
+                                      form.screen_permissions,
+                                      menu,
+                                      e.target.checked,
+                                    ),
+                                  })
+                                }
+                              />
+                              <strong>{menu.label}</strong>
+                            </label>
+                            {menuOn && menu.panels.length > 0 ? (
+                              <div className="platformScreenPanels">
+                                {menu.panels.map((panel) => (
+                                  <label key={panel.key} className="platformCheckbox">
+                                    <input
+                                      type="checkbox"
+                                      checked={form.screen_permissions.includes(panel.key)}
+                                      onChange={(e) =>
+                                        setForm({
+                                          ...form,
+                                          screen_permissions: togglePanelPermission(
+                                            form.screen_permissions,
+                                            menu,
+                                            panel.key,
+                                            e.target.checked,
+                                          ),
+                                        })
+                                      }
+                                    />
+                                    {panel.label}
+                                  </label>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               ) : null}
 

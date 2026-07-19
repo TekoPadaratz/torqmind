@@ -35,6 +35,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
+import { canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
@@ -194,7 +195,8 @@ export default function FraudPage() {
       moduleKey: "fraud_overview_core",
       scope,
       errorMessage: "Falha ao carregar fraude",
-      buildRequestUrl: (currentScope) => {
+      buildRequestUrl: (currentScope, session) => {
+        if (!canAccessScreenKey(session, "fraud.core")) return null;
         const params = buildScopeParams(currentScope);
         params.set("sections", "core");
         return `/bi/fraud/overview?${params.toString()}`;
@@ -211,7 +213,8 @@ export default function FraudPage() {
     scope,
     errorMessage: "Falha ao carregar risco financeiro",
     keepPreviousData: true,
-    buildRequestUrl: (currentScope) => {
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "fraud.risco_financeiro")) return null;
       const params = buildScopeParams(currentScope);
       params.set("sections", "risco_financeiro");
       params.set("credito_risco", creditoRisco);
@@ -220,6 +223,9 @@ export default function FraudPage() {
       return `/bi/fraud/overview?${params.toString()}`;
     },
   });
+
+  const canSeeFraudCore = canAccessScreenKey(claims, "fraud.core");
+  const canSeeFraudRisco = canAccessScreenKey(claims, "fraud.risco_financeiro");
 
   // Mantém o card do filtro na mesma posição do viewport após o refresh do risco.
   useLayoutEffect(() => {
@@ -453,7 +459,7 @@ export default function FraudPage() {
             {riscoError}
           </div>
         ) : null}
-        {!data ? (
+        {!data && canSeeFraudCore ? (
           <div style={{ marginTop: 12 }}>
             <ScopeTransitionState
               mode={pendingUnavailable ? "unavailable" : "loading"}
@@ -463,8 +469,16 @@ export default function FraudPage() {
               panels={4}
             />
           </div>
+        ) : !canSeeFraudCore && !canSeeFraudRisco ? (
+          <div style={{ marginTop: 12 }}>
+            <EmptyState
+              title="Sem painéis liberados"
+              detail="Seu usuário não tem painéis do Antifraude liberados."
+            />
+          </div>
         ) : (
           <>
+            {canSeeFraudCore && data ? (
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-6 chartCard">
                 <h2>Cancelamentos por dia</h2>
@@ -585,11 +599,16 @@ export default function FraudPage() {
                   }
                 />
               </div>
+            </div>
+            ) : null}
 
+            {canSeeFraudRisco ? (
+              <>
               <div
                 ref={riscoFinanceiroRef}
                 className="card col-12"
                 style={{
+                  marginTop: canSeeFraudCore ? undefined : 12,
                   opacity: riscoLoading && riscoData ? 0.92 : 1,
                   transition: "opacity 0.15s",
                 }}
@@ -691,7 +710,6 @@ export default function FraudPage() {
                           <th>Filial</th>
                           <th>Cliente</th>
                           <th>Operador</th>
-                          <th>Forma</th>
                           <th style={{ textAlign: "right" }}>Injetado</th>
                           <th style={{ textAlign: "right" }}>Saldo na operação</th>
                           <th style={{ textAlign: "right" }}>Saldo atual</th>
@@ -727,7 +745,6 @@ export default function FraudPage() {
                                 <td>{c.filial_label}</td>
                                 <td>{c.cliente}</td>
                                 <td>{c.operador}</td>
-                                <td>{c.forma_pagamento || "—"}</td>
                                 <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
                                 <td style={{ textAlign: "right", fontWeight: 600 }}>
                                   {c.saldo_operacao != null ? formatCurrency(c.saldo_operacao) : "—"}
@@ -987,7 +1004,8 @@ export default function FraudPage() {
                   </div>
                 </div>
               ) : null}
-            </div>
+              </>
+            ) : null}
           </>
         )}
       </div>

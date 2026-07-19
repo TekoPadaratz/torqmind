@@ -84,7 +84,7 @@ function HintSecao({ secao }: { secao: Secao }) {
             </span>
           ) : null}
         </span>
-        <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatCurrency(secao.total)}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em", whiteSpace: "nowrap" }}>{formatCurrency(secao.total)}</span>
       </div>
       {showHint && (
         <PortalDropdown open={open} onClose={() => setOpen(false)} anchorRef={anchorRef} minWidth={280}>
@@ -303,12 +303,12 @@ function EditableSecao({
 function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { grupoKey: string; grupo: Grupo; filial: number; anoMes: number; idEmpresa?: number; onSaved: () => void }) {
   const c = (GRUPO as any)[grupoKey] || GRUPO.ativo_circulante;
   return (
-    <div className="card" style={{ padding: 0, overflow: "hidden", borderTop: `3px solid ${c.cor}` }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "12px 16px", background: c.bg }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: c.cor, textTransform: "uppercase", letterSpacing: 0.3 }}>{grupo.label}</div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: c.cor, fontVariantNumeric: "tabular-nums" }}>{formatCurrency(grupo.total)}</div>
+    <div className="card" style={{ padding: 0, overflow: "hidden", borderTop: `3px solid ${c.cor}`, minWidth: 0 }}>
+      <div className="solvenciaGrupoHead" style={{ background: c.bg }}>
+        <div className="solvenciaGrupoHeadLabel" style={{ color: c.cor }}>{grupo.label}</div>
+        <div className="solvenciaGrupoHeadValue" style={{ color: c.cor }}>{formatCurrency(grupo.total)}</div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 14 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 12 }}>
         {grupo.secoes.length === 0 && <div style={{ fontSize: 12, opacity: 0.6 }}>Sem itens.</div>}
         {grupo.secoes
           .filter((secao) => secao.editavel || Math.abs(secao.total) > 0.005 || (secao.hint_itens?.length ?? 0) > 0 || secao.itens.length > 0)
@@ -344,54 +344,38 @@ function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { g
 
 function Kpi({ label, sub, value, color }: { label: string; sub: string; value: string; color: string }) {
   return (
-    <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)" }}>
+    <div className="solvenciaKpiCard">
       <div className="sectionEyebrow">{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2, color, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{sub}</div>
+      <div className="solvenciaKpiValue" style={{ color }}>{value}</div>
+      <div className="solvenciaKpiSub">{sub}</div>
     </div>
   );
 }
 
 export function SolvenciaDetalhada({
   data,
-  monthValue,
-  onMonthChange,
   idEmpresa,
   onSaved,
 }: {
   data: any;
-  monthValue: number | null;
-  onMonthChange: (m: number) => void;
   idEmpresa?: number;
   onSaved: () => void;
 }) {
   if (!data) return null;
-  const anoMes: number = monthValue ?? data.ano_mes;
+  const anoMes: number = Number(data.ano_mes);
   const filiais: Filial[] = [...(data.filiais || [])].sort((a, b) =>
     (a.nome || "").localeCompare(b.nome || "", "pt-BR", { numeric: true, sensitivity: "base" }),
   );
 
   return (
     <div style={{ marginTop: 16 }}>
-      <div className="card" style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <div className="sectionEyebrow">Solvência — Abertura do mês</div>
-          <div style={{ fontSize: 13, color: "var(--muted)" }}>
-            Posição patrimonial (estoque) na virada do mês. Passe o mouse em Cartões, Cheques e Despesas para o detalhe. Não confundir com o Lucro do DRE (fluxo do período).
-          </div>
+      <div className="card" style={{ padding: 16 }}>
+        <div className="sectionEyebrow">
+          Solvência — Abertura do mês{anoMes ? ` · ${fmtMonth(anoMes)}` : ""}
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 500 }}>
-          <span>Mês:</span>
-          <select
-            value={anoMes}
-            onChange={(e) => onMonthChange(Number(e.target.value))}
-            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg)", color: "inherit", fontSize: 13 }}
-          >
-            {(data.meses_disponiveis || [anoMes]).map((m: number) => (
-              <option key={m} value={m}>{fmtMonth(m)}</option>
-            ))}
-          </select>
-        </label>
+        <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
+          Posição patrimonial (estoque) na virada do mês. Passe o mouse em Cartões, Cheques e Despesas para o detalhe. Não confundir com o Lucro do DRE (fluxo do período). O mês é o filtro compartilhado no topo (junto de Regime de caixa).
+        </div>
       </div>
 
       {filiais.map((f) => {
@@ -401,20 +385,16 @@ export function SolvenciaDetalhada({
         return (
           <div
             key={f.id_filial}
+            className="solvenciaFilialCard"
             style={{
-              marginTop: 18,
-              padding: 18,
-              borderRadius: 14,
-              border: "1px solid var(--border)",
               borderLeft: `4px solid ${cobre ? "var(--color-positive)" : "var(--color-negative)"}`,
-              background: "rgba(255,255,255,0.02)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-              <div style={{ fontSize: 16, fontWeight: 700 }}>{f.nome}</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{f.nome}</div>
               <span
                 style={{
-                  fontSize: 12,
+                  fontSize: 11,
                   fontWeight: 600,
                   padding: "3px 10px",
                   borderRadius: 999,
@@ -426,37 +406,45 @@ export function SolvenciaDetalhada({
               </span>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
-              <Kpi label="Ativo COM estoque" sub="Circulante + ANC (inclui estoque)" value={formatCurrency(t.ativo_com_estoque ?? t.ativo_total)} color="var(--color-positive)" />
-              <Kpi label="Ativo SEM estoque" sub="Exclui loja + combustível" value={formatCurrency(t.ativo_sem_estoque ?? t.ativo_total)} color="var(--color-positive)" />
-              <Kpi label="Passivo" sub="Contas a pagar + despesas do mês" value={formatCurrency(t.passivo)} color="var(--color-negative)" />
-              <Kpi
-                label="Capital de Giro COM estoque"
-                sub="Ativo COM − Passivo"
-                value={formatCurrency(t.capital_giro_com_estoque ?? t.capital_giro)}
-                color={(t.capital_giro_com_estoque ?? t.capital_giro) >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
-              />
-              <Kpi
-                label="Capital de Giro SEM estoque"
-                sub="Ativo SEM − Passivo"
-                value={formatCurrency(t.capital_giro_sem_estoque ?? t.capital_giro)}
-                color={(t.capital_giro_sem_estoque ?? t.capital_giro) >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
-              />
-              <Kpi
-                label="Liquidez COM estoque"
-                sub="Ativo COM ÷ Passivo"
-                value={liq != null ? `${liq.toFixed(2).replace(".", ",")}×` : "—"}
-                color={(liq ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)"}
-              />
-              <Kpi
-                label="Liquidez SEM estoque"
-                sub="Ativo SEM ÷ Passivo"
-                value={t.liquidez_sem_estoque != null ? `${Number(t.liquidez_sem_estoque).toFixed(2).replace(".", ",")}×` : "—"}
-                color={(t.liquidez_sem_estoque ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)"}
-              />
+            <div className="solvenciaKpiBoard" aria-label="Indicadores de solvência">
+              <div className="solvenciaKpiCol">
+                <Kpi label="Ativo COM estoque" sub="Circulante + ANC (inclui estoque)" value={formatCurrency(t.ativo_com_estoque ?? t.ativo_total)} color="var(--color-positive)" />
+                <Kpi label="Ativo SEM estoque" sub="Exclui loja + combustível" value={formatCurrency(t.ativo_sem_estoque ?? t.ativo_total)} color="var(--color-positive)" />
+              </div>
+              <div className="solvenciaKpiCol solvenciaKpiColSolo">
+                <Kpi label="Passivo" sub="Contas a pagar + despesas do mês" value={formatCurrency(t.passivo)} color="var(--color-negative)" />
+              </div>
+              <div className="solvenciaKpiCol">
+                <Kpi
+                  label="Capital de Giro COM estoque"
+                  sub="Ativo COM − Passivo"
+                  value={formatCurrency(t.capital_giro_com_estoque ?? t.capital_giro)}
+                  color={(t.capital_giro_com_estoque ?? t.capital_giro) >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
+                />
+                <Kpi
+                  label="Capital de Giro SEM estoque"
+                  sub="Ativo SEM − Passivo"
+                  value={formatCurrency(t.capital_giro_sem_estoque ?? t.capital_giro)}
+                  color={(t.capital_giro_sem_estoque ?? t.capital_giro) >= 0 ? "var(--color-positive)" : "var(--color-negative)"}
+                />
+              </div>
+              <div className="solvenciaKpiCol">
+                <Kpi
+                  label="Liquidez COM estoque"
+                  sub="Ativo COM ÷ Passivo"
+                  value={liq != null ? `${liq.toFixed(2).replace(".", ",")}×` : "—"}
+                  color={(liq ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)"}
+                />
+                <Kpi
+                  label="Liquidez SEM estoque"
+                  sub="Ativo SEM ÷ Passivo"
+                  value={t.liquidez_sem_estoque != null ? `${Number(t.liquidez_sem_estoque).toFixed(2).replace(".", ",")}×` : "—"}
+                  color={(t.liquidez_sem_estoque ?? 0) >= 1 ? "var(--color-positive)" : "var(--color-negative)"}
+                />
+              </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginTop: 14, alignItems: "start" }}>
+            <div className="solvenciaGrupoGrid">
               {(["ativo_circulante", "ativo_nao_circulante", "passivo_circulante"] as const).map((gk) =>
                 f.grupos[gk] ? (
                   <GrupoPanel key={gk} grupoKey={gk} grupo={f.grupos[gk]} filial={f.id_filial} anoMes={anoMes} idEmpresa={idEmpresa} onSaved={onSaved} />

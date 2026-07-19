@@ -72,6 +72,7 @@ def _despesas_pg_por_regime(
                               OR classificacao_gerencial = 'tributos'
                             THEN {valor_expr} ELSE 0 END), 0)::float AS desp_tributaria_operacional,
           COALESCE(SUM(CASE WHEN COALESCE(is_excepcional, false)
+                              OR classificacao_gerencial IN ('excepcional', 'perdas')
                             THEN {valor_expr} ELSE 0 END), 0)::float AS desp_excepcional,
           COALESCE(SUM({valor_expr}), 0)::float AS desp_operacional_total,
           COUNT(*)::int AS qtd_lancamentos
@@ -237,7 +238,7 @@ def profit_overview(
     id_filiais: Optional[List[int]] = Query(None),
     branch_scope: Optional[str] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.overview")),
 ):
     """Executive overview with KPIs for the profit management module."""
     tenant_id, branch_ids = _extract_profit_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -332,12 +333,16 @@ def profit_dre(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     branch_scope: Optional[str] = Query(None),
+    ano_mes: Optional[int] = Query(
+        None,
+        description="Mês fechado YYYYMM. Default = mês corrente (America/Sao_Paulo).",
+    ),
     regime_caixa: bool = Query(
         True,
         description="Quando true, prioriza despesas pelo pagamento (regime de caixa Xpert)",
     ),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.overview")),
 ):
     """DRE Gerencial Resumida."""
     tenant_id, branch_ids = _extract_profit_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -345,9 +350,8 @@ def profit_dre(
     if not branch_ids:
         return {"data": None}
 
-    ref_month = _resolve_reference_month(tenant_id, branch_ids)
-    if not ref_month:
-        return {"data": None, "message": "Sem dados para DRE."}
+    # Mês do seletor (não o "último mês com receita" do CH).
+    ref_month = _solvencia_target_month(ano_mes, tenant_id)
 
     params: Dict[str, Any] = {"id_empresa": tenant_id, "ano_mes": ref_month}
     branch_clause = _branch_filter_sql(branch_ids, params)
@@ -414,13 +418,13 @@ def profit_dre(
 
     if regime_caixa:
         disclaimer = (
-            "Regime de caixa: despesas pelo pagamento efetivo (DTAPGTO / vlr_pago). "
-            "Não é lucro contábil/fiscal oficial."
+            "Despesas do Demonstrativo Xpert: MOVLCTOS por DTACONTA (nível 3 do plano). "
+            "Receita/CMV TorqMind. Não é lucro contábil/fiscal oficial."
         )
     else:
         disclaimer = (
-            "Competência por vencimento (DTAVCTO). Lucro gerencial estimado = margem bruta − despesas. "
-            "Não é lucro contábil/fiscal oficial."
+            "Despesas do Demonstrativo Xpert: MOVLCTOS por DTACONTA (nível 3 do plano). "
+            "Lucro gerencial estimado = margem bruta − despesas. Não é lucro contábil/fiscal oficial."
         )
 
     payload = {
@@ -434,7 +438,7 @@ def profit_dre(
             {"label": "Receita Líquida Gerencial", "valor": f("receita_liquida_gerencial"), "tipo": "subtotal"},
             {"label": "(-) CMV (Custo da Mercadoria Vendida)", "valor": -f("cmv_total"), "tipo": "custo"},
             {"label": "Margem Bruta", "valor": margem, "tipo": "subtotal"},
-            {"label": "(-) Despesas com Pessoal", "valor": -desp["desp_pessoal"], "tipo": "despesa"},
+            {"label": "(-) Despesas com Funcionários", "valor": -desp["desp_pessoal"], "tipo": "despesa"},
             {"label": "(-) Despesas Comerciais", "valor": -desp["desp_comercial"], "tipo": "despesa"},
             {"label": "(-) Despesas Administrativas", "valor": -desp["desp_administrativa"], "tipo": "despesa"},
             {"label": "(-) Tributos Operacionais", "valor": -desp["desp_tributaria_operacional"], "tipo": "despesa"},
@@ -465,12 +469,16 @@ def profit_expenses(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     branch_scope: Optional[str] = Query(None),
+    ano_mes: Optional[int] = Query(
+        None,
+        description="Mês fechado YYYYMM. Default = mês corrente (America/Sao_Paulo).",
+    ),
     regime_caixa: bool = Query(
         True,
         description="Quando true, agrega despesas pelo pagamento (DTAPGTO); senão por vencimento",
     ),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.overview")),
 ):
     """Expense breakdown by classification."""
     tenant_id, branch_ids = _extract_profit_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -478,9 +486,7 @@ def profit_expenses(
     if not branch_ids:
         return {"data": None}
 
-    ref_month = _resolve_reference_month(tenant_id, branch_ids)
-    if not ref_month:
-        return {"data": None, "message": "Sem dados de despesas."}
+    ref_month = _solvencia_target_month(ano_mes, tenant_id)
 
     categories: List[Dict[str, Any]] = []
     top_expenses: List[Dict[str, Any]] = []
@@ -585,7 +591,7 @@ def profit_products(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.products")),
 ):
     """Product margin grid with repricing simulation."""
     tenant_id, branch_ids = _extract_profit_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -754,7 +760,7 @@ def profit_repricing(
     branch_scope: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.repricing")),
 ):
     """Top repricing opportunities sorted by positive impact."""
     tenant_id, branch_ids = _extract_profit_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -863,7 +869,7 @@ def profit_solvencia(
     id_filiais: Optional[List[int]] = Query(None),
     branch_scope: Optional[str] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.solvencia")),
 ):
     """Solvência / Capital de Giro: ativo circulante x contas a pagar do mês.
 
@@ -922,7 +928,7 @@ def profit_solvencia_detalhada(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.solvencia")),
 ):
     """Solvência detalhada (Fechamento de Caixa Geral): grupos/seções/itens.
 
@@ -962,7 +968,7 @@ def profit_solvencia_manual_upsert(
     body: SolvenciaManualUpsert,
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.solvencia")),
 ):
     """Grava (replace) os itens manuais de um painel (bancos/investimentos) para
     a filial e o mês selecionados. Recebe a lista completa do painel."""
@@ -1000,7 +1006,7 @@ def profit_anp_compliance(
     dt_ini: Optional[date] = Query(None),
     dt_fim: Optional[date] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.anp")),
 ):
     """Grid + KPIs de variação de margem (lastro ANP/CDC)."""
     if not can_view_sensitive_financials(claims):
@@ -1023,7 +1029,7 @@ def profit_anp_config_get(
     id_empresa: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.anp")),
 ):
     if not can_view_sensitive_financials(claims):
         return {"ok": False, "message": "Sem permissão."}
@@ -1041,7 +1047,7 @@ def profit_anp_config_put(
     body: AnpConfigUpsert,
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.anp")),
 ):
     if not can_view_sensitive_financials(claims):
         return {"ok": False, "message": "Sem permissão."}
@@ -1071,7 +1077,7 @@ def profit_anp_export(
     dt_ini: Optional[date] = Query(None),
     dt_fim: Optional[date] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.anp")),
 ):
     if not can_view_sensitive_financials(claims):
         return {"ok": False, "message": "Sem permissão."}
@@ -1100,7 +1106,7 @@ def profit_anp_refresh(
     dt_ini: Optional[date] = Query(None),
     dt_fim: Optional[date] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("profit_management")),
+    _screen=Depends(require_screen("profit_management.anp")),
 ):
     """Publica proxy em mart_anp_compliance (exige CH WRITE). Sempre recalcula live."""
     if not can_view_sensitive_financials(claims):

@@ -743,13 +743,17 @@ def list_users(
 
     # Load screen permissions for all users
     from app.db import get_conn as _get_conn_perms
+    from app.permissions import expand_screen_permissions
     screen_perms_map: dict[str, list[str]] = {}
     if users:
         with _get_conn_perms() as pconn:
             rows = pconn.execute("SELECT user_id::text AS uid, screen_key FROM auth.user_screen_permissions").fetchall()
+            raw_map: dict[str, set[str]] = {}
             for row in rows:
                 uid = row["uid"]
-                screen_perms_map.setdefault(uid, []).append(row["screen_key"])
+                raw_map.setdefault(uid, set()).add(row["screen_key"])
+            for uid, keys in raw_map.items():
+                screen_perms_map[uid] = sorted(expand_screen_permissions(keys))
 
     filtered: list[dict[str, Any]] = []
     for user in users:
@@ -1058,11 +1062,30 @@ def upsert_user(
         _ensure_user_contacts_row(conn, user_id)
 
         # ── Save screen permissions ──
+        # Roles altas (master/admin/owner/…) usam ROLE_DEFAULT_SCREENS (tudo).
+        # Gerente/visualizador/kiosk gravam no DB; criação com lista vazia/null
+        # → default completo (produto ou TV).
+        from app.permissions import (
+            default_explicit_screen_permissions,
+            save_user_screen_permissions,
+            validate_screen_permissions_for_role,
+        )
+
         screen_permissions = payload.get("screen_permissions")
-        if screen_permissions is not None:
-            from app.permissions import save_user_screen_permissions, validate_screen_permissions_for_role
-            validate_screen_permissions_for_role(payload["role"], screen_permissions)
-            save_user_screen_permissions(conn, user_id, screen_permissions)
+        role_for_screens = payload["role"]
+        if role_for_screens in {"tenant_manager", "tenant_viewer", "tenant_kiosk"}:
+            raw = screen_permissions
+            if raw is None or (isinstance(raw, list) and len(raw) == 0 and previous is None):
+                raw = default_explicit_screen_permissions(role_for_screens)
+            if raw is not None:
+                screen_permissions = validate_screen_permissions_for_role(
+                    role_for_screens, list(raw),
+                )
+                save_user_screen_permissions(conn, user_id, screen_permissions)
+        elif screen_permissions is not None:
+            # Trocou para role alta: remove rows explícitas residuais
+            save_user_screen_permissions(conn, user_id, [])
+            screen_permissions = []
 
         current_user = conn.execute(
             """

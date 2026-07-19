@@ -2868,10 +2868,13 @@ def fraud_series(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: d
     params = [id_empresa, ini, fim] + branch_params
 
     sql = f"""
-      SELECT data_key, id_filial, cancelamentos, valor_cancelado
+      SELECT data_key,
+             SUM(cancelamentos)::int AS cancelamentos,
+             SUM(valor_cancelado)::numeric(18,2) AS valor_cancelado
       FROM mart.fraude_cancelamentos_diaria
       WHERE id_empresa = %s AND data_key BETWEEN %s AND %s
       {where_filial}
+      GROUP BY data_key
       ORDER BY data_key
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
@@ -5736,107 +5739,82 @@ def solvencia_detalhada(
         for secao, ms in manual_secao.items():
             _secao(fid, ms["grupo"], secao)
 
-    # Despesas: MESMA fonte da Visão Geral / DRE Gerencial (profit_dre_mensal),
-    # quebrada por filial. Estoque as-of da Solvência ≠ fluxo do DRE — se o mês
-    # selecionado na Solvência não tem DRE, usa o mês de referência da Visão Geral.
+    # Despesas: MESMA fonte do DRE Gerencial — dw.fact_despesa_operacional (PG),
+    # classificada pelo plano Xpert 3.2*/3.3*. CH é só fallback legado.
     despesas_by_fid: Dict[int, Dict[str, Any]] = {}
     despesas_ano_mes: Optional[int] = None
     _desp_hint_empty = [
-        {"label": "Despesas com Pessoal", "valor": 0.0},
+        {"label": "Despesas com Funcionários", "valor": 0.0},
         {"label": "Despesas Comerciais", "valor": 0.0},
         {"label": "Despesas Administrativas", "valor": 0.0},
         {"label": "Tributos Operacionais", "valor": 0.0},
         {"label": "Financeiras/Excepcionais", "valor": 0.0},
     ]
     try:
-        from app.db_clickhouse import query_dict as ch_query, query_scalar as ch_scalar
-
-        # id_filial pode ser int OU lista (escopo multi-filial do resolve_scope_filters).
         scoped = _branch_ids(id_filial)
         branch_ids = scoped if scoped else sorted(int(x) for x in (all_fids or set()))
 
-        def _dre_branch_clause(params: Dict[str, Any]) -> str:
+        def _pg_desp_branch(sql_params: List[Any]) -> str:
             if len(branch_ids) == 1:
-                params["id_filial"] = branch_ids[0]
-                return "AND id_filial = %(id_filial)s"
+                sql_params.append(int(branch_ids[0]))
+                return "AND id_filial = %s"
             if branch_ids:
-                params["branch_ids"] = branch_ids
-                return "AND id_filial IN %(branch_ids)s"
+                sql_params.append([int(b) for b in branch_ids])
+                return "AND id_filial = ANY(%s)"
             return ""
 
-        def _dre_month_com_receita(preferido: Optional[int] = None) -> Optional[int]:
-            params: Dict[str, Any] = {"id_empresa": id_empresa}
-            clause = _dre_branch_clause(params)
-            if preferido is not None:
-                params["ano_mes"] = int(preferido)
-                ok = ch_scalar(
-                    f"""
-                    SELECT ano_mes
-                    FROM torqmind_mart_rt.profit_dre_mensal FINAL
-                    WHERE id_empresa = %(id_empresa)s
-                      {clause}
-                      AND ano_mes = %(ano_mes)s
-                      AND receita_bruta_total > 0
-                    LIMIT 1
-                    """,
-                    params,
-                )
-                if ok is not None:
-                    return int(ok)
-            return ch_scalar(
+        # Sempre o mês do seletor (igual DRE) — sem fallback para outro mês.
+        despesas_ano_mes = int(target)
+        params = [id_empresa, despesas_ano_mes]
+        clause = _pg_desp_branch(params)
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as c:
+            rows = c.execute(
                 f"""
-                SELECT ano_mes
-                FROM torqmind_mart_rt.profit_dre_mensal FINAL
-                WHERE id_empresa = %(id_empresa)s
-                  {clause}
-                  AND receita_bruta_total > 0
-                ORDER BY ano_mes DESC
-                LIMIT 1
-                """,
-                params,
-            )
-
-        despesas_ano_mes = _dre_month_com_receita(target)
-        if despesas_ano_mes is not None:
-            despesas_ano_mes = int(despesas_ano_mes)
-            params: Dict[str, Any] = {"id_empresa": id_empresa, "ano_mes": despesas_ano_mes}
-            clause = _dre_branch_clause(params)
-            # Mesmas colunas agregadas do endpoint /dre, porém GROUP BY filial.
-            dre_sql = f"""
                 SELECT
                   id_filial,
-                  SUM(desp_pessoal) AS desp_pessoal,
-                  SUM(desp_comercial) AS desp_comercial,
-                  SUM(desp_administrativa) AS desp_administrativa,
-                  SUM(desp_tributaria_operacional) AS desp_tributaria_operacional,
-                  SUM(desp_financeira) AS desp_financeira,
-                  SUM(desp_excepcional) AS desp_excepcional,
-                  SUM(desp_operacional_total) AS desp_operacional_total
-                FROM torqmind_mart_rt.profit_dre_mensal FINAL
-                WHERE id_empresa = %(id_empresa)s
+                  COALESCE(SUM(CASE WHEN classificacao_gerencial = 'pessoal'
+                                    THEN valor ELSE 0 END), 0)::float AS desp_pessoal,
+                  COALESCE(SUM(CASE WHEN classificacao_gerencial = 'comercial'
+                                    THEN valor ELSE 0 END), 0)::float AS desp_comercial,
+                  COALESCE(SUM(CASE WHEN classificacao_gerencial = 'administrativo'
+                                    THEN valor ELSE 0 END), 0)::float AS desp_administrativa,
+                  COALESCE(SUM(CASE WHEN COALESCE(is_tributo_operacional, false)
+                                      OR classificacao_gerencial = 'tributos'
+                                    THEN valor ELSE 0 END), 0)::float AS desp_tributaria_operacional,
+                  COALESCE(SUM(CASE WHEN classificacao_gerencial = 'financeiro'
+                                    THEN valor ELSE 0 END), 0)::float AS desp_financeira,
+                  COALESCE(SUM(CASE WHEN COALESCE(is_excepcional, false)
+                                      OR classificacao_gerencial IN ('excepcional', 'perdas')
+                                    THEN valor ELSE 0 END), 0)::float AS desp_excepcional,
+                  COALESCE(SUM(valor), 0)::float AS desp_operacional_total
+                FROM dw.fact_despesa_operacional
+                WHERE id_empresa = %s
+                  AND ano_mes_competencia = %s
+                  AND COALESCE(entra_dre, true)
                   {clause}
-                  AND ano_mes = %(ano_mes)s
                 GROUP BY id_filial
-            """
-            for row in ch_query(dre_sql, params) or []:
-                fid = int(row["id_filial"])
-                total = round(float(row.get("desp_operacional_total") or 0), 2)
-                despesas_by_fid[fid] = {
-                    "total": total,
-                    "hint": [
-                        {"label": "Despesas com Pessoal", "valor": round(float(row.get("desp_pessoal") or 0), 2)},
-                        {"label": "Despesas Comerciais", "valor": round(float(row.get("desp_comercial") or 0), 2)},
-                        {"label": "Despesas Administrativas", "valor": round(float(row.get("desp_administrativa") or 0), 2)},
-                        {"label": "Tributos Operacionais", "valor": round(float(row.get("desp_tributaria_operacional") or 0), 2)},
-                        {"label": "Financeiras/Excepcionais", "valor": round(
-                            float(row.get("desp_financeira") or 0) + float(row.get("desp_excepcional") or 0), 2
-                        )},
-                    ],
-                }
+                """,
+                params,
+            ).fetchall()
+        for row in rows or []:
+            fid = int(row["id_filial"])
+            total = round(float(row.get("desp_operacional_total") or 0), 2)
+            despesas_by_fid[fid] = {
+                "total": total,
+                "hint": [
+                    {"label": "Despesas com Funcionários", "valor": round(float(row.get("desp_pessoal") or 0), 2)},
+                    {"label": "Despesas Comerciais", "valor": round(float(row.get("desp_comercial") or 0), 2)},
+                    {"label": "Despesas Administrativas", "valor": round(float(row.get("desp_administrativa") or 0), 2)},
+                    {"label": "Tributos Operacionais", "valor": round(float(row.get("desp_tributaria_operacional") or 0), 2)},
+                    {"label": "Financeiras/Excepcionais", "valor": round(
+                        float(row.get("desp_financeira") or 0) + float(row.get("desp_excepcional") or 0), 2
+                    )},
+                ],
+            }
     except Exception as exc:
         import logging as _logging
         _logging.getLogger(__name__).exception(
-            "solvencia_detalhada: falha ao buscar despesas DRE (empresa=%s mes=%s): %s",
+            "solvencia_detalhada: falha ao buscar despesas PG (empresa=%s mes=%s): %s",
             id_empresa, target, exc,
         )
         despesas_by_fid = {}
@@ -5930,12 +5908,12 @@ def solvencia_detalhada(
         b_mes -= 1
         if b_mes == 0:
             b_mes, b_ano = 12, b_ano - 1
+    # Mais antigo → mais novo (seletor da Gestão de Lucro).
     meses = sorted(
         janela
         | {int(r["ano_mes"]) for r in meses_rows}
         | {int(r["ano_mes"]) for r in meses_asof_rows}
         | {target},
-        reverse=True,
     )
     return {
         "ano_mes": target,

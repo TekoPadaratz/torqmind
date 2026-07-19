@@ -330,10 +330,22 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # DATAREPL do CP muitas vezes não acompanha baixa/vencimento (mesmo padrão
+        # de CONTASRECEBER). Sem revisit, DRE perde títulos do mês (VR01 jun/2026).
+        "revisit_open_clause": (
+            "(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) "
+            "OR (CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
+        ),
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DTACONTA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            "(CAST(c.DTAPGTO AS datetime2)), "
+            "(CAST(c.DTAVCTO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASPAGAR c"
         ),
         "enabled": True,
@@ -408,10 +420,18 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # DRE Xpert usa DTACONTA; DATAREPL/DATA sozinhos perdem competência do mês.
+        "revisit_open_clause": (
+            "CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)"
+        ),
         "query": (
             "SELECT m.*, "
-            "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "CAST(m.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(m.DTACONTA AS datetime2)), "
+            "(CAST(m.DATA AS datetime2)), "
+            f"(NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.MOVLCTOS m"
         ),
         "enabled": True,

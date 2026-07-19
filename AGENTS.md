@@ -61,8 +61,10 @@ Nunca:
 
 - `platform_master`: acesso total, todas empresas/filiais, vê Plataforma, vê margem/lucro/custo.
 - `owner`: empresa/filiais vinculadas, não vê Plataforma, vê margem/lucro/custo.
-- `manager`/gerente: empresa/filiais definidas, menus por checkbox, nunca vê margem/lucro/custo.
+- `manager`/gerente: empresa/filiais definidas, menus **e painéis/abas** por checkbox, nunca vê margem/lucro/custo.
 - `tenant_kiosk`/vendedor/TV: modo TV, sem menu normal, apenas dashboards permitidos, só logout, sem margem/lucro/custo.
+
+ACL: `apps/api/app/permissions.py` (`SCREEN_REGISTRY`). Menu = nav; painel = `menu.aba` (ex.: `profit_management.overview`). Nova aba ⇒ registry + `require_screen` + filtro FE. Cadastro: árvore em `/platform/users` (`GET /platform/screen-registry`).
 
 ## Identidade visual e UX de escopo
 

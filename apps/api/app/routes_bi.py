@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
-from app.permissions import require_screen, redact_sensitive, require_not_kiosk
+from app.permissions import require_screen, redact_sensitive, require_not_kiosk, can_access_screen
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
 from app import repos_analytics as repos_mart
 from app import repos_auth
@@ -1240,6 +1240,19 @@ def fraud_overview(
         section = "all"
     want_core = section in ("all", "core")
     want_risco = section in ("all", "risco_financeiro")
+    if want_core and not can_access_screen(claims, "fraud.core"):
+        want_core = False
+    if want_risco and not can_access_screen(claims, "fraud.risco_financeiro"):
+        want_risco = False
+    if not want_core and not want_risco:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "screen_access_denied",
+                "message": "Sem permissão para os painéis do Antifraude.",
+                "screen_key": "fraud",
+            },
+        )
     empty_troca_totais = {
         "suspeitas_qtd": 0,
         "suspeitas_valor": 0.0,
@@ -1384,7 +1397,7 @@ def risk_overview(
     status: Optional[str] = Query(None, description="NOVO/LIDO/RESOLVIDO"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("fraud")),
+    _screen=Depends(require_screen("fraud.risco_financeiro")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1703,7 +1716,7 @@ def budget_config_get(
     id_filial: int = Query(..., description="Branch ID (single)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.orcamento")),
 ):
     """Contas gerenciais + orçamento configurado (Metas & Equipe, 1 filial)."""
     role = claims["role"]
@@ -1718,7 +1731,7 @@ def budget_config_put(
     id_filial: int = Query(..., description="Branch ID (single)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.orcamento")),
 ):
     """Salva o orçamento (teto + % de alerta) por conta de uma filial."""
     role = claims["role"]
@@ -1823,7 +1836,7 @@ def goals_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.metas")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1873,7 +1886,7 @@ def goals_target(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.metas")),
 ):
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:
@@ -1917,7 +1930,7 @@ def team_commissions_config(
     id_filial: int = Query(..., description="Branch ID"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.config")),
 ):
     """Get commission configuration for a branch."""
     role = claims["role"]
@@ -1965,7 +1978,7 @@ def team_commissions_config_save(
     id_filial: int = Query(..., description="Branch ID"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.config")),
 ):
     """Save commission configuration. Restricted to OWNER/MASTER."""
     role = claims["role"]
@@ -2037,7 +2050,7 @@ def team_commissions_results(
     payment_mode: Optional[str] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.comissoes")),
 ):
     """Get commission calculation results for a specific month/year."""
     role = claims["role"]

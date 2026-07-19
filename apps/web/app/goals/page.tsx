@@ -10,6 +10,7 @@ import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from '../lib/scope';
+import { canAccessScreenKey } from '../lib/session';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
 import { apiPost } from '../lib/api';
 import { extractApiError } from '../lib/errors';
@@ -21,6 +22,15 @@ import CommissionConfigTab from './CommissionConfigTab';
 import BudgetConfigTab from './BudgetConfigTab';
 
 export const dynamic = 'force-dynamic';
+
+type GoalsTab = 'metas' | 'comissoes' | 'config' | 'orcamento';
+
+const GOALS_TAB_SCREENS: Record<GoalsTab, string> = {
+  metas: 'goals_team.metas',
+  comissoes: 'goals_team.comissoes',
+  config: 'goals_team.config',
+  orcamento: 'goals_team.orcamento',
+};
 
 function buildRiskStatus(score: number) {
   if (score >= 80) return { label: 'Atenção operacional', className: 'warn' };
@@ -35,7 +45,10 @@ export default function GoalsPage() {
     moduleKey: 'goals_overview',
     scope,
     errorMessage: 'Falha ao carregar metas',
-    buildRequestUrl: (currentScope) => `/bi/goals/overview?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, 'goals_team.metas')) return null;
+      return `/bi/goals/overview?${buildScopeParams(currentScope).toString()}`;
+    },
   });
   const transitionCopy = pendingUnavailable
     ? buildModuleUnavailableCopy('metas e equipe')
@@ -48,12 +61,20 @@ export default function GoalsPage() {
   const [metaError, setMetaError] = useState('');
   const singleBranchId = scope.id_filial || (scope.id_filiais.length === 1 ? scope.id_filiais[0] : null);
   const metaEditable = Boolean(singleBranchId);
-  const [activeTab, setActiveTab] = useState<'metas' | 'comissoes' | 'config' | 'orcamento'>('metas');
+  const [activeTab, setActiveTab] = useState<GoalsTab>('metas');
   const [commissionRefresh, setCommissionRefresh] = useState(0);
 
   const userLabel = useMemo(() => {
     return buildUserLabel(claims);
   }, [claims]);
+
+  const allowedTabs = useMemo(() => {
+    const all: GoalsTab[] = ['metas', 'comissoes', 'config', 'orcamento'];
+    return all.filter((tab) => canAccessScreenKey(claims, GOALS_TAB_SCREENS[tab]));
+  }, [claims]);
+  const effectiveTab: GoalsTab = allowedTabs.includes(activeTab)
+    ? activeTab
+    : (allowedTabs[0] || 'metas');
 
   const leaderboard = useMemo(
     () =>
@@ -142,23 +163,23 @@ export default function GoalsPage() {
       <div className="container">
         {/* Tab navigation */}
         <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0, marginTop: 8 }}>
-          {[
+          {([
             { key: 'metas' as const, label: 'Metas & Equipe' },
             { key: 'comissoes' as const, label: 'Comissões' },
             { key: 'config' as const, label: 'Configuração' },
             { key: 'orcamento' as const, label: 'Gestão Orçamentária' },
-          ].map((tab) => (
+          ] as const).filter((tab) => allowedTabs.includes(tab.key)).map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
               style={{
                 padding: '10px 20px',
                 fontSize: 13,
-                fontWeight: activeTab === tab.key ? 700 : 400,
+                fontWeight: effectiveTab === tab.key ? 700 : 400,
                 background: 'transparent',
                 border: 'none',
-                borderBottom: activeTab === tab.key ? '2px solid var(--color-accent, #3b82f6)' : '2px solid transparent',
-                color: activeTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-muted)',
+                borderBottom: effectiveTab === tab.key ? '2px solid var(--color-accent, #3b82f6)' : '2px solid transparent',
+                color: effectiveTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-muted)',
                 cursor: 'pointer',
                 transition: 'all 0.15s ease',
               }}
@@ -169,7 +190,7 @@ export default function GoalsPage() {
         </div>
 
         {/* Commission tabs */}
-        {activeTab === 'comissoes' && (
+        {effectiveTab === 'comissoes' && (
           <CommissionsTab
             key={commissionRefresh}
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
@@ -177,7 +198,7 @@ export default function GoalsPage() {
             referenceDate={scope.dt_ref || scope.dt_fim || null}
           />
         )}
-        {activeTab === 'config' && (
+        {effectiveTab === 'config' && (
           <CommissionConfigTab
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
@@ -185,7 +206,7 @@ export default function GoalsPage() {
           />
         )}
 
-        {activeTab === 'orcamento' && (
+        {effectiveTab === 'orcamento' && (
           <BudgetConfigTab
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
@@ -193,7 +214,7 @@ export default function GoalsPage() {
         )}
 
         {/* Original Metas & Equipe content */}
-        {activeTab === 'metas' && (
+        {effectiveTab === 'metas' && (
           <>
         {error ? <div className="card errorCard">{error}</div> : null}
         {!data ? (

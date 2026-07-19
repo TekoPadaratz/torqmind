@@ -21,12 +21,48 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
-import { canViewSensitiveFinancials } from "../lib/session";
+import { canViewSensitiveFinancials, canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { SolvenciaDetalhada } from "./SolvenciaDetalhada";
 import { AnpCompliancePanel } from "./AnpCompliancePanel";
 
 export const dynamic = "force-dynamic";
+
+type ProfitTab = "overview" | "products" | "repricing" | "solvencia" | "anp";
+
+const PROFIT_TAB_SCREENS: Record<ProfitTab, string> = {
+  overview: "profit_management.overview",
+  products: "profit_management.products",
+  repricing: "profit_management.repricing",
+  solvencia: "profit_management.solvencia",
+  anp: "profit_management.anp",
+};
+
+function currentAnoMesSP(): number {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  return Number(today.slice(0, 4)) * 100 + Number(today.slice(5, 7));
+}
+
+function fmtAnoMes(am: number): string {
+  const s = String(am);
+  return `${s.slice(4, 6)}/${s.slice(0, 4)}`;
+}
+
+/** Janela local + meses da API, ordem antigo → novo. */
+function buildMesesDisponiveis(extra: number[] = []): number[] {
+  const set = new Set<number>(extra.filter((n) => Number.isFinite(n) && n >= 190001));
+  let y = Math.floor(currentAnoMesSP() / 100);
+  let m = currentAnoMesSP() % 100;
+  for (let i = 0; i < 18; i++) {
+    set.add(y * 100 + m);
+    m -= 1;
+    if (m === 0) {
+      m = 12;
+      y -= 1;
+    }
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -74,11 +110,11 @@ export default function ProfitManagementPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
 
-  const [activeTab, setActiveTab] = useState<"overview" | "products" | "repricing" | "solvencia" | "anp">("overview");
+  const [activeTab, setActiveTab] = useState<ProfitTab>("overview");
   const [sectorFilter, setSectorFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [solvenciaMonth, setSolvenciaMonth] = useState<number | null>(null);
+  const [profitMonth, setProfitMonth] = useState<number>(() => currentAnoMesSP());
   const [solvenciaReload, setSolvenciaReload] = useState(0);
   const [anpReload, setAnpReload] = useState(0);
   const [regimeCaixa, setRegimeCaixa] = useState(true);
@@ -97,27 +133,36 @@ export default function ProfitManagementPage() {
       moduleKey: "profit_overview",
       scope,
       errorMessage: "Falha ao carregar Gestão de Lucro",
-      buildRequestUrl: (currentScope) =>
-        `/bi/profit-management/overview?${buildScopeParams(currentScope).toString()}`,
+      buildRequestUrl: (currentScope, session) => {
+        if (!canAccessScreenKey(session, "profit_management.overview")
+          && !canAccessScreenKey(session, "profit_management")) {
+          return null;
+        }
+        return `/bi/profit-management/overview?${buildScopeParams(currentScope).toString()}`;
+      },
     });
 
   const { data: dreData } = useBiScopeData<any>({
-    moduleKey: `profit_dre:caixa=${regimeCaixa ? 1 : 0}`,
+    moduleKey: `profit_dre:mes=${profitMonth}:caixa=${regimeCaixa ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) => {
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.overview")) return null;
       const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
       p.set("regime_caixa", regimeCaixa ? "true" : "false");
       return `/bi/profit-management/dre?${p.toString()}`;
     },
   });
 
   const { data: expensesData } = useBiScopeData<any>({
-    moduleKey: `profit_expenses:caixa=${regimeCaixa ? 1 : 0}`,
+    moduleKey: `profit_expenses:mes=${profitMonth}:caixa=${regimeCaixa ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) => {
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.overview")) return null;
       const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
       p.set("regime_caixa", regimeCaixa ? "true" : "false");
       return `/bi/profit-management/expenses?${p.toString()}`;
     },
@@ -127,25 +172,30 @@ export default function ProfitManagementPage() {
     moduleKey: "profit_products",
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}&limit=1000`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.products")) return null;
+      return `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}&limit=1000`;
+    },
   });
 
   const { data: repricingData } = useBiScopeData<any>({
     moduleKey: "profit_repricing",
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/repricing?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.repricing")) return null;
+      return `/bi/profit-management/repricing?${buildScopeParams(currentScope).toString()}`;
+    },
   });
 
   const { data: solvenciaData } = useBiScopeData<any>({
-    moduleKey: `profit_solvencia_det_v2:${solvenciaMonth ?? "atual"}:${solvenciaReload}:ativos=${ativosDoMes ? 1 : 0}`,
+    moduleKey: `profit_solvencia_det_v2:${profitMonth}:${solvenciaReload}:ativos=${ativosDoMes ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) => {
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.solvencia")) return null;
       const p = buildScopeParams(currentScope);
-      if (solvenciaMonth) p.set("ano_mes", String(solvenciaMonth));
+      p.set("ano_mes", String(profitMonth));
       p.set("ativos_do_mes", ativosDoMes ? "true" : "false");
       return `/bi/profit-management/solvencia/detalhada?${p.toString()}`;
     },
@@ -155,9 +205,9 @@ export default function ProfitManagementPage() {
     moduleKey: `profit_anp_compliance:${anpReload}:${anpDtIni}:${anpDtFim}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) => {
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.anp")) return null;
       const params = buildScopeParams(currentScope);
-      // Datas do panel ANP sobrescrevem o período global do escopo
       params.set("dt_ini", anpDtIni);
       params.set("dt_fim", anpDtFim);
       return `/bi/profit-management/anp-compliance?${params.toString()}`;
@@ -176,6 +226,26 @@ export default function ProfitManagementPage() {
   const repricing = repricingData?.data;
   const solvencia = solvenciaData?.data;
   const anp = anpData?.data;
+
+  const mesesDisponiveis = useMemo(
+    () =>
+      buildMesesDisponiveis([
+        profitMonth,
+        ...(Array.isArray(solvencia?.meses_disponiveis) ? solvencia.meses_disponiveis : []),
+        ...(dre?.ano_mes != null ? [Number(dre.ano_mes)] : []),
+      ]),
+    [profitMonth, solvencia?.meses_disponiveis, dre?.ano_mes],
+  );
+
+  const allowedTabs = useMemo(() => {
+    const candidates: ProfitTab[] = canViewSensitiveFinancials(claims)
+      ? ["overview", "solvencia", "anp", "products", "repricing"]
+      : ["overview", "products", "repricing"];
+    return candidates.filter((tab) => canAccessScreenKey(claims, PROFIT_TAB_SCREENS[tab]));
+  }, [claims]);
+
+  const effectiveTab: ProfitTab =
+    allowedTabs.includes(activeTab) ? activeTab : (allowedTabs[0] || "overview");
 
   const filteredProducts = useMemo(() => {
     if (!products?.produtos) return [];
@@ -231,7 +301,32 @@ export default function ProfitManagementPage() {
     );
   }
 
-  if (error || !overview) {
+  if (error) {
+    return (
+      <div>
+        <AppNav title="Gestão de Lucro" userLabel={userLabel} />
+        <div className="container" style={{ marginTop: 12 }}>
+          <EmptyState title="Gestão de Lucro" detail={error} />
+        </div>
+      </div>
+    );
+  }
+
+  if (!allowedTabs.length) {
+    return (
+      <div>
+        <AppNav title="Gestão de Lucro" userLabel={userLabel} />
+        <div className="container" style={{ marginTop: 12 }}>
+          <EmptyState
+            title="Sem painéis liberados"
+            detail="Seu usuário não tem nenhum painel da Gestão de Lucro liberado. Peça ao administrador para marcar as abas no cadastro."
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (!overview && canAccessScreenKey(claims, "profit_management.overview")) {
     return (
       <div>
         <AppNav title="Gestão de Lucro" userLabel={userLabel} />
@@ -248,7 +343,7 @@ export default function ProfitManagementPage() {
     );
   }
 
-  const kpis = overview.kpis || {};
+  const kpis = overview?.kpis || {};
 
   const lucroColor = kpis.lucro_gerencial_estimado >= 0 ? "var(--color-positive)" : "var(--color-negative)";
   const margemColor = kpis.margem_gerencial_pct >= 0.05 ? "var(--color-positive)" : "var(--color-warning)";
@@ -260,10 +355,11 @@ export default function ProfitManagementPage() {
       <div className="container">
         {/* Period indicator */}
         <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-          Base: {overview.periodo_base} · Estimativa gerencial calculada automaticamente
+          Base: {overview?.periodo_base || "—"} · Estimativa gerencial calculada automaticamente
         </div>
 
-        {/* KPI Cards — responsive strip */}
+        {/* KPI Cards — só quando Visão Geral está liberada */}
+        {canAccessScreenKey(claims, "profit_management.overview") ? (
         <div className="profitKpiStrip">
           <div className="profitKpiCard" style={{ "--kpi-accent": lucroColor } as React.CSSProperties}>
             <div className="profitKpiLabel">Lucro Gerencial Estimado</div>
@@ -305,19 +401,16 @@ export default function ProfitManagementPage() {
             </div>
           </div>
         </div>
+        ) : null}
 
         {/* Tabs + filtros transversais (DRE + Solvência) */}
         <div className="profitTabsRow">
           <div className="profitTabs">
-            {((canViewSensitiveFinancials(claims)
-              ? ["overview", "solvencia", "anp", "products", "repricing"]
-              : ["overview", "products", "repricing"]) as Array<
-              "overview" | "products" | "repricing" | "solvencia" | "anp"
-            >).map((tab) => (
+            {allowedTabs.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`profitTab${activeTab === tab ? " active" : ""}`}
+                className={`profitTab${effectiveTab === tab ? " active" : ""}`}
               >
                 {tab === "overview"
                   ? "Visão Geral"
@@ -333,6 +426,21 @@ export default function ProfitManagementPage() {
           </div>
           {canViewSensitiveFinancials(claims) ? (
             <div className="profitScopeToggles" role="group" aria-label="Filtros da Gestão de Lucro">
+              <label className="profitScopeMonth" title="Mês fechado da DRE, despesas e Solvência">
+                <span className="profitScopeMonthLabel">Mês</span>
+                <select
+                  className="profitScopeMonthSelect"
+                  value={profitMonth}
+                  onChange={(e) => setProfitMonth(Number(e.target.value))}
+                  aria-label="Mês fechado"
+                >
+                  {mesesDisponiveis.map((m) => (
+                    <option key={m} value={m}>
+                      {fmtAnoMes(m)}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 type="button"
                 className={`profitScopeToggle${regimeCaixa ? " on" : ""}`}
@@ -358,12 +466,17 @@ export default function ProfitManagementPage() {
         </div>
 
         {/* TAB: Overview */}
-        {activeTab === "overview" && (
+        {effectiveTab === "overview" && (
           <div style={{ marginTop: 16 }}>
             {/* DRE */}
             {dre?.linhas && (
               <div className="card" style={{ marginTop: 12 }}>
-                <div className="sectionEyebrow">DRE Gerencial Resumida</div>
+                <div className="sectionEyebrow">
+                  DRE Gerencial Resumida
+                  {dre.periodo_base || dre.ano_mes
+                    ? ` · ${dre.periodo_base || fmtAnoMes(Number(dre.ano_mes))}`
+                    : ` · ${fmtAnoMes(profitMonth)}`}
+                </div>
                 <table className="dreTable" style={{ marginTop: 8 }}>
                   <tbody>
                     {dre.linhas.map((l: any, i: number) => (
@@ -425,7 +538,7 @@ export default function ProfitManagementPage() {
         )}
 
         {/* TAB: Products */}
-        {activeTab === "products" && (
+        {effectiveTab === "products" && (
           <div style={{ marginTop: 16 }}>
             {/* Filters */}
             <div className="profitFilterBar">
@@ -526,7 +639,7 @@ export default function ProfitManagementPage() {
         )}
 
         {/* TAB: Repricing */}
-        {activeTab === "repricing" && (
+        {effectiveTab === "repricing" && (
           <div style={{ marginTop: 16 }}>
             {repricing?.oportunidades?.length > 0 ? (
               <>
@@ -589,12 +702,10 @@ export default function ProfitManagementPage() {
         )}
 
         {/* TAB: Solvência (Fechamento de Caixa Geral) */}
-        {activeTab === "solvencia" && (
+        {effectiveTab === "solvencia" && (
           solvencia ? (
             <SolvenciaDetalhada
               data={solvencia}
-              monthValue={solvenciaMonth}
-              onMonthChange={setSolvenciaMonth}
               idEmpresa={scope?.id_empresa != null ? Number(scope.id_empresa) : undefined}
               onSaved={() => setSolvenciaReload((x) => x + 1)}
             />
@@ -606,7 +717,7 @@ export default function ProfitManagementPage() {
           )
         )}
 
-        {activeTab === "anp" && (
+        {effectiveTab === "anp" && (
           <AnpCompliancePanel
             data={anp}
             loading={anpLoading}

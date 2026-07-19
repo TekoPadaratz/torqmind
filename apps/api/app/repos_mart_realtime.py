@@ -2018,14 +2018,16 @@ def fraud_series(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
+    # Série do gráfico "Cancelamentos por dia": 1 ponto/dia (empresa),
+    # independente de filial. Detalhe por filial fica nos painéis abaixo.
     return query_dict(f"""
-        SELECT data_key, id_filial,
+        SELECT data_key,
                sum(qtd_eventos) AS cancelamentos,
                sum(impacto_total) AS valor_cancelado
         FROM {MART_RT_DB}.fraud_daily_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-        GROUP BY data_key, id_filial
-        ORDER BY data_key, id_filial
+        GROUP BY data_key
+        ORDER BY data_key
     """, parameters={"id_empresa": id_empresa})
 
 
