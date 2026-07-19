@@ -141,6 +141,33 @@ export default function AppNav({
     return () => document.body.classList.remove('product-shell');
   }, []);
 
+  // Segurança de scroll: ao clicar na barra (sidebar ou documento), limpa seleção
+  // residual que faz o browser "selecionar texto" em vez de arrastar o thumb.
+  useEffect(() => {
+    const clearSelectionNearScrollbar = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      const x = event.clientX;
+      const y = event.clientY;
+      const nearDocScrollbar = x >= window.innerWidth - 18;
+      let nearSidebarScrollbar = false;
+      const sidebar = document.querySelector('.productSidebar') as HTMLElement | null;
+      if (sidebar) {
+        const rect = sidebar.getBoundingClientRect();
+        nearSidebarScrollbar =
+          x >= rect.right - 16
+          && x <= rect.right + 4
+          && y >= rect.top
+          && y <= rect.bottom;
+      }
+      if (nearDocScrollbar || nearSidebarScrollbar) {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) sel.removeAllRanges();
+      }
+    };
+    document.addEventListener('mousedown', clearSelectionNearScrollbar, true);
+    return () => document.removeEventListener('mousedown', clearSelectionNearScrollbar, true);
+  }, []);
+
   // Hide nav on scroll down (mobile), show only when near the top
   useEffect(() => {
     let ticking = false;

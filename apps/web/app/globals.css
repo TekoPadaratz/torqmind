@@ -26,9 +26,12 @@
   --card-radius: 16px;
   --card-padding: 16px 20px;
 
-  /* ── Typography tokens ── */
-  --font-kpi-value: clamp(18px, 1.6vw, 26px);
-  --font-kpi-label: clamp(10px, 0.8vw, 11px);
+  /* Floor 720p → notebook HD (1366) mais compacto → teto em monitores largos.
+     Em 1366: ~15–17px (cabe R$ 30.034.473,11 sem encavalar). */
+  --font-kpi-value: clamp(13px, 0.35rem + 0.85vw, 22px);
+  --font-kpi-label: clamp(9px, 0.3rem + 0.4vw, 11px);
+  --font-kpi-group: clamp(14px, 0.4rem + 0.75vw, 18px);
+  --font-hero-value: clamp(26px, 1rem + 2vw, 52px);
   --font-body: 13px;
   --font-footnote: 11px;
 }
@@ -194,9 +197,17 @@ body > * {
 .muted { color: var(--muted); font-size: 13px; }
 h1 { margin: 0 0 6px 0; font-size: clamp(22px, 2vw, 28px); letter-spacing: -0.02em; }
 h2 { margin: 0; font-size: 18px; }
-.kpi { display: flex; flex-direction: column; gap: 6px; }
-.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
-.kpi .value { font-size: clamp(18px, 1.8vw, 26px); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.kpi .label { color: var(--muted); font-size: var(--font-kpi-label); text-transform: uppercase; letter-spacing: 0.08em; }
+.kpi .value {
+  font-size: var(--font-kpi-value);
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 .errorCard {
   border-color: rgba(251, 113, 133, 0.6);
   background: rgba(127, 29, 29, 0.25);
@@ -757,10 +768,6 @@ body.product-shell .container {
   .bi-grid {
     gap: 14px;
   }
-
-  .kpi .value {
-    font-size: 24px;
-  }
 }
 
 @media (max-width: 1160px) {
@@ -1160,10 +1167,12 @@ body.product-shell .container {
 }
 
 .heroValue {
-  font-size: clamp(34px, 6vw, 56px);
+  font-size: var(--font-hero-value);
   font-weight: 800;
   letter-spacing: -0.03em;
   margin-top: 8px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
 }
 
 .heroSubtitle {
@@ -1173,11 +1182,91 @@ body.product-shell .container {
 
 .dashboardHome {
   display: grid;
+  /* 1 coluna explícita: evita que um filho com grid-column: span N
+     (ex.: .col-12) force 12 tracks e esmague o layout inteiro. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
 .homeBlock {
   margin-top: 0;
+  min-width: 0;
+}
+
+/* Alerta de orçamento no Dashboard Geral — compacto, sem .col-12 */
+.dashboardBudgetAlert {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(184, 115, 51, 0.06);
+  padding: 12px 14px;
+}
+
+.dashboardBudgetAlert.is-over {
+  border-color: rgba(251, 113, 133, 0.45);
+}
+
+.dashboardBudgetAlertHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+
+.dashboardBudgetAlertHead strong {
+  font-size: 14px;
+}
+
+.dashboardBudgetAlertHead .muted {
+  font-size: 12px;
+}
+
+.dashboardBudgetAlertLink {
+  margin-left: auto;
+  color: var(--accent-copper);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.dashboardBudgetAlertLink:hover {
+  text-decoration: underline;
+}
+
+.dashboardBudgetAlertList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.dashboardBudgetAlertItem {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  min-width: 180px;
+  max-width: 280px;
+  flex: 1 1 180px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.dashboardBudgetAlertName {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.dashboardBudgetAlertPct {
+  font-weight: 700;
+  color: var(--color-warning);
+  margin-top: 2px;
+}
+
+.dashboardBudgetAlertItem.is-over .dashboardBudgetAlertPct {
+  color: var(--color-negative);
+}
+
+.dashboardBudgetAlertMeta {
+  font-size: 11px;
+  margin-top: 2px;
 }
 
 .kpiStrip {
@@ -1741,8 +1830,14 @@ body.product-shell .container {
 
 .platformMetaValue,
 .platformStatValue {
-  font-size: 22px;
+  font-size: var(--font-kpi-value);
   font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .platformMetaHint,
@@ -1855,8 +1950,8 @@ body.product-shell .container {
 
 .profitKpiStrip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  gap: 10px;
   margin-top: 16px;
 }
 
@@ -1955,11 +2050,23 @@ body.product-shell .container {
 }
 
 /* Profit tabs */
+.profitTabsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-top: 24px;
+  border-bottom: 1px solid var(--border);
+}
+
 .profitTabs {
   display: flex;
   gap: 0;
-  margin-top: 24px;
-  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  margin-top: 0;
+  border-bottom: none;
+  min-width: 0;
 }
 
 .profitTab {
@@ -1971,6 +2078,7 @@ body.product-shell .container {
   font-weight: 400;
   color: var(--muted);
   border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
   transition: color 0.15s, border-color 0.15s;
 }
 
@@ -1982,6 +2090,84 @@ body.product-shell .container {
   font-weight: 600;
   color: var(--color-insight);
   border-bottom-color: var(--color-insight);
+}
+
+.profitScopeToggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-bottom: 8px;
+}
+
+.profitScopeMonth {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.profitScopeMonthLabel {
+  color: var(--muted);
+}
+
+.profitScopeMonthSelect {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 2px 2px 0;
+  cursor: pointer;
+  outline: none;
+}
+
+.profitScopeToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.profitScopeToggle:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.profitScopeToggle.on {
+  color: var(--text);
+  border-color: var(--accent-copper, #b8722c);
+  background: rgba(184, 114, 44, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(184, 114, 44, 0.15);
+  font-weight: 600;
+}
+
+.profitScopeToggleDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.profitScopeToggle.on .profitScopeToggleDot {
+  background: var(--accent-copper, #b8722c);
+  box-shadow: 0 0 0 3px rgba(184, 114, 44, 0.22);
 }
 
 /* DRE table */
@@ -2003,12 +2189,252 @@ body.product-shell .container {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-family: "IBM Plex Mono", "SF Mono", monospace;
+  font-size: clamp(12px, 0.4rem + 0.55vw, 14px);
+  white-space: nowrap;
 }
 
 .dreRow-subtotal td { font-weight: 600; }
 .dreRow-resultado td {
   font-weight: 700;
   background: var(--color-insight-bg);
+}
+
+/* ANP compliance grid — largura mínima + scroll horizontal no mobile */
+.anpFilterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.anpFilterLeft,
+.anpFilterRight {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.anpFilterRight {
+  margin-left: auto;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.anpConfigLabel {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.anpFilterLeft input,
+.anpFilterLeft select,
+.anpFilterRight input {
+  padding: 7px 10px;
+  font-size: var(--font-body);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  transition: border-color 0.15s;
+}
+
+.anpFilterLeft input:focus,
+.anpFilterLeft select:focus,
+.anpFilterRight input:focus {
+  border-color: var(--accent-copper);
+  outline: none;
+}
+
+.anpFilterLeft input[type="date"],
+.anpFilterRight input[type="date"] {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 148px;
+  max-width: 170px;
+  color-scheme: dark;
+}
+
+.anpFilterRight input[type="number"] {
+  flex: 0 0 auto;
+  width: 96px;
+  min-width: 88px;
+  max-width: 110px;
+}
+
+.anpFilterLeft select {
+  min-width: 150px;
+}
+
+.anpProductFilterBtn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-copper);
+  background: rgba(184, 115, 51, 0.12);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.anpProductMenu {
+  background: #12191f;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.anpProductMenuTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.anpProductMenuTop button {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+  color: var(--accent-copper);
+}
+
+.anpProductMenuTop button:last-child {
+  color: var(--muted);
+}
+
+.anpProductMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.anpProductMenuName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.anpTableScroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  margin-top: 8px;
+}
+
+.anpTable {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 12px;
+}
+
+.anpTable th,
+.anpTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.anpTable thead th {
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid var(--border);
+}
+
+.anpTable th.num,
+.anpTable td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: "IBM Plex Mono", "SF Mono", monospace;
+}
+
+.anpTable th:nth-child(3),
+.anpTable td:nth-child(3) {
+  min-width: 120px;
+  max-width: 180px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.anpTable .anpColStatus {
+  min-width: 88px;
+  max-width: 110px;
+  width: 1%;
+}
+
+.anpTable .anpColChave {
+  min-width: 460px;
+  font-family: "IBM Plex Mono", "SF Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  user-select: text;
+}
+
+@media (max-width: 900px) {
+  .anpFilterRight {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+    width: 100%;
+  }
+
+  .anpTableScroll {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding-bottom: 2px;
+  }
+
+  .anpTable {
+    min-width: 1280px;
+    width: 1280px;
+  }
+
+  .anpTable th,
+  .anpTable td {
+    padding: 8px 8px;
+    font-size: 12px;
+  }
+}
+
+/* Impressão ANP: o PDF é gerado em janela dedicada (documento completo),
+   não via @media print da página — evita captura de “screenshot” de 1 viewport. */
+
+.profitFilterBar input[type="number"] {
+  flex: 0 0 auto;
+  width: 110px;
+  max-width: 120px;
+  min-width: 96px;
+}
+
+.profitFilterBar input[type="date"] {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 148px;
+  max-width: 170px;
+  color-scheme: dark;
 }
 
 /* Status badge */
@@ -2043,38 +2469,188 @@ body.product-shell .container {
   color: var(--text);
 }
 
-/* ── Responsive: KPI strip ── */
+/* ── Solvência: KPIs em colunas (COM cima / SEM baixo; Passivo só) ── */
 
-/* HD monitors (1366x768) — tighter padding and font */
+.solvenciaKpiBoard {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.solvenciaKpiCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.solvenciaKpiColSolo {
+  justify-content: center;
+}
+
+.solvenciaKpiCard {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  flex: 1 1 auto;
+}
+
+.solvenciaKpiCard .sectionEyebrow {
+  font-size: var(--font-kpi-label);
+  letter-spacing: 0.06em;
+}
+
+.solvenciaKpiValue {
+  font-size: clamp(14px, 0.45rem + 0.7vw, 18px);
+  font-weight: 700;
+  margin-top: 4px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  /* Nunca cortar valor — a coluna de 4 já dá largura */
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.solvenciaKpiSub {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.3;
+}
+
+.solvenciaGrupoGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+  align-items: start;
+}
+
+.solvenciaGrupoHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.solvenciaGrupoHeadLabel {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.solvenciaGrupoHeadValue {
+  font-size: var(--font-kpi-group);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+
+.solvenciaFilialCard {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  min-width: 0;
+}
+
 @media (max-width: 1400px) {
-  .profitKpiCard {
-    padding: 12px 14px;
+  .solvenciaKpiBoard {
+    gap: 8px;
   }
-  .profitKpiValue {
-    font-size: clamp(16px, 1.4vw, 20px);
+  .solvenciaKpiCard {
+    padding: 9px 10px;
   }
-  .profitKpiLabel {
-    font-size: 10px;
+  .solvenciaGrupoGrid {
+    gap: 8px;
+  }
+  .solvenciaGrupoHead {
+    padding: 8px 10px;
+  }
+  .solvenciaFilialCard {
+    padding: 12px;
   }
 }
 
-/* Small desktop / large tablets */
 @media (max-width: 1100px) {
-  .profitKpiValue {
-    font-size: clamp(15px, 2vw, 19px);
+  .solvenciaKpiBoard {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .solvenciaKpiColSolo {
+    grid-column: 1 / -1;
+    max-width: 50%;
+    justify-self: center;
+    width: 100%;
+  }
+  .solvenciaGrupoGrid {
+    grid-template-columns: 1fr;
   }
 }
 
-/* Tablets portrait / small screens */
+@media (max-width: 720px) {
+  .solvenciaKpiBoard {
+    grid-template-columns: 1fr;
+  }
+  .solvenciaKpiColSolo {
+    max-width: none;
+  }
+}
+
+/* Sidebar: scroll confiável (evita seleção de texto ao arrastar a barra) */
+.productSidebar {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.productSidebar input,
+.productSidebar select,
+.productSidebar textarea,
+.productSidebar option,
+.productSidebar [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.productSidebar::-webkit-scrollbar {
+  width: 12px;
+}
+.productSidebar::-webkit-scrollbar-thumb {
+  min-height: 40px;
+}
+
+/* Shell produto: reduz drag-select acidental ao usar barras de scroll */
+body.product-shell {
+  -webkit-tap-highlight-color: transparent;
+}
+body.product-shell .container {
+  /* conteúdo principal continua selecionável para copiar valores */
+  user-select: text;
+}
+
+/* ── Responsive: KPI strip (tokens fluidos já cobrem 720p→HD; só layout) ── */
+
 @media (max-width: 720px) {
   .profitKpiStrip {
     gap: 8px;
   }
   .profitKpiCard {
     padding: 10px 12px;
-  }
-  .profitKpiValue {
-    font-size: clamp(15px, 4vw, 20px);
   }
   .profitFilterBar input {
     min-width: 120px;
@@ -2095,11 +2671,27 @@ body.product-shell .container {
   }
 }
 
-/* Mobile phones */
-@media (max-width: 390px) {
-  .profitKpiValue {
-    font-size: 16px;
-  }
+.platformScreenTree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+}
+
+.platformScreenMenu {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.platformScreenPanels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  padding-left: 22px;
 }
 
 /* =====================================================================

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
-from app.permissions import require_screen, redact_sensitive, require_not_kiosk
+from app.permissions import require_screen, redact_sensitive, require_not_kiosk, can_access_screen
 from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
 from app import repos_analytics as repos_mart
 from app import repos_auth
@@ -1212,48 +1212,106 @@ def fraud_overview(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    sections: Optional[str] = Query(
+        "all",
+        description="all | core | risco_financeiro — core isola cancelamentos/operadores dos filtros de risco",
+    ),
     troca_only_suspeita: bool = Query(True, description="Troca de forma de pgto: só suspeitas (default) ou todas"),
+    troca_forma_nova: Optional[str] = Query(
+        "todos",
+        description="Filtro da forma nova: todos | prazo | cheque_pre",
+    ),
+    credito_risco: Optional[str] = Query(
+        "suspeitas",
+        description="Lançamentos de crédito: suspeitas | normais | todas",
+    ),
+    credito_q: Optional[str] = Query(
+        None,
+        description="Filtro por nome/id do cliente nos créditos",
+    ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("fraud")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
+    section = str(sections or "all").strip().lower()
+    if section not in ("all", "core", "risco_financeiro"):
+        section = "all"
+    want_core = section in ("all", "core")
+    want_risco = section in ("all", "risco_financeiro")
+    if want_core and not can_access_screen(claims, "fraud.core"):
+        want_core = False
+    if want_risco and not can_access_screen(claims, "fraud.risco_financeiro"):
+        want_risco = False
+    if not want_core and not want_risco:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "screen_access_denied",
+                "message": "Sem permissão para os painéis do Antifraude.",
+                "screen_key": "fraud",
+            },
+        )
+    empty_troca_totais = {
+        "suspeitas_qtd": 0,
+        "suspeitas_valor": 0.0,
+        "todas_qtd": 0,
+        "todas_valor": 0.0,
+    }
 
     def build_response() -> Dict[str, Any]:
-        operational_kpis = repos_mart.fraud_kpis(role, tenant, filial, dt_ini, dt_fim)
-        operational_series = repos_mart.fraud_series(role, tenant, filial, dt_ini, dt_fim)
-        top_users = repos_mart.fraud_top_users(role, tenant, filial, dt_ini, dt_fim, limit=10)
-        last_events = repos_mart.fraud_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
-        risk_kpis = repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim)
-        risk_series = repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim)
-        risk_window = repos_mart.risk_data_window(role, tenant, filial)
-        model_coverage = repos_mart.risk_model_coverage(role, tenant, filial, dt_ini, dt_fim)
-        risk_top_employees = repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=10)
-        risk_by_turn_local = repos_mart.risk_by_turn_local(role, tenant, filial, dt_ini, dt_fim, limit=10)
-        risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
-        payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
-        open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
-        lancamentos_creditos = repos_mart.fraud_lancamentos_creditos(role, tenant, filial, dt_ini, dt_fim, limit=150)
-        # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
-        if role in ("MASTER", "OWNER"):
-            troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
+        operational_kpis: Dict[str, Any] = {}
+        operational_series: List[Dict[str, Any]] = []
+        top_users: List[Dict[str, Any]] = []
+        last_events: List[Dict[str, Any]] = []
+        risk_kpis: Dict[str, Any] = {}
+        risk_series: List[Dict[str, Any]] = []
+        risk_window: Dict[str, Any] = {}
+        model_coverage: Dict[str, Any] = {}
+        risk_top_employees: List[Dict[str, Any]] = []
+        risk_by_turn_local: List[Dict[str, Any]] = []
+        risk_last_events: List[Dict[str, Any]] = []
+        payments_risk: List[Dict[str, Any]] = []
+        open_cash: Dict[str, Any] = {}
+        insights: List[Dict[str, Any]] = []
+        lancamentos_creditos: Dict[str, Any] = {"summary": {}, "lancamentos": []}
+        troca_forma_pgto: List[Dict[str, Any]] = []
+        troca_forma_pgto_totais: Dict[str, Any] = dict(empty_troca_totais)
+
+        if want_core:
+            operational_kpis = repos_mart.fraud_kpis(role, tenant, filial, dt_ini, dt_fim)
+            operational_series = repos_mart.fraud_series(role, tenant, filial, dt_ini, dt_fim)
+            top_users = repos_mart.fraud_top_users(role, tenant, filial, dt_ini, dt_fim, limit=100)
+            last_events = repos_mart.fraud_last_events(role, tenant, filial, dt_ini, dt_fim, limit=200)
+            risk_kpis = repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim)
+            risk_series = repos_mart.risk_series(role, tenant, filial, dt_ini, dt_fim)
+            risk_window = repos_mart.risk_data_window(role, tenant, filial)
+            model_coverage = repos_mart.risk_model_coverage(role, tenant, filial, dt_ini, dt_fim)
+            risk_top_employees = repos_mart.risk_top_employees(role, tenant, filial, dt_ini, dt_fim, limit=10)
+            risk_by_turn_local = repos_mart.risk_by_turn_local(role, tenant, filial, dt_ini, dt_fim, limit=10)
+            risk_last_events = repos_mart.risk_last_events(role, tenant, filial, dt_ini, dt_fim, limit=30)
+            payments_risk = repos_mart.payments_anomalies(role, tenant, filial, dt_ini, dt_fim, limit=20)
+            open_cash = repos_mart.open_cash_monitor(role, tenant, filial)
+            insights = repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=15)
+
+        if want_risco:
+            lancamentos_creditos = repos_mart.fraud_lancamentos_creditos(
                 role, tenant, filial, dt_ini, dt_fim,
-                only_suspeita=troca_only_suspeita, limit=200,
+                limit=500, risco=credito_risco or "suspeitas", cliente_q=credito_q,
             )
-            # Period-wide totals (independent of the 200-row listing limit and the
-            # suspeitas/todas toggle) so the KPIs reflect the real totals.
-            troca_forma_pgto_totais = repos_mart.fraud_troca_forma_pgto_kpis(
-                role, tenant, filial, dt_ini, dt_fim,
-            )
-        else:
-            troca_forma_pgto = []
-            troca_forma_pgto_totais = {
-                "suspeitas_qtd": 0,
-                "suspeitas_valor": 0.0,
-                "todas_qtd": 0,
-                "todas_valor": 0.0,
-            }
+            # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
+            if role in ("MASTER", "OWNER"):
+                troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
+                    role, tenant, filial, dt_ini, dt_fim,
+                    only_suspeita=troca_only_suspeita, limit=200,
+                    forma_nova=troca_forma_nova or "todos",
+                )
+                troca_forma_pgto_totais = repos_mart.fraud_troca_forma_pgto_kpis(
+                    role, tenant, filial, dt_ini, dt_fim,
+                    forma_nova=troca_forma_nova or "todos",
+                )
+
         operational_summary = {
             "kind": "operational",
             "kpis": operational_kpis,
@@ -1280,7 +1338,7 @@ def fraud_overview(
             "by_day": operational_series,
             "top_users": top_users,
             "last_events": last_events,
-            "definitions": repos_mart.fraud_definitions(),
+            "definitions": repos_mart.fraud_definitions() if want_core else {},
             "operational": operational_summary,
             "risk_kpis": risk_kpis,
             "risk_by_day": risk_series,
@@ -1290,14 +1348,30 @@ def fraud_overview(
             "risk_top_employees": risk_top_employees,
             "risk_by_turn_local": risk_by_turn_local,
             "risk_last_events": risk_last_events,
-            "insights": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=15),
+            "insights": insights,
             "payments_risk": payments_risk,
             "open_cash": open_cash,
             "lancamentos_creditos": lancamentos_creditos,
             "troca_forma_pgto": troca_forma_pgto,
             "troca_forma_pgto_totais": troca_forma_pgto_totais,
             "troca_only_suspeita": troca_only_suspeita,
+            "sections": section,
         }
+
+    cache_extra: Dict[str, Any] = {
+        "module": "fraud",
+        "contract_version": 3,
+        "sections": section,
+    }
+    if want_risco:
+        cache_extra.update(
+            {
+                "credito_risco": credito_risco or "suspeitas",
+                "credito_q": (credito_q or "").strip().lower() or None,
+                "troca_only_suspeita": bool(troca_only_suspeita),
+                "troca_forma_nova": troca_forma_nova or "todos",
+            }
+        )
 
     return redact_sensitive(_with_cached_response(
         scope_key="fraud_overview",
@@ -1308,7 +1382,7 @@ def fraud_overview(
         dt_fim=dt_fim,
         dt_ref=as_of,
         compute=build_response,
-        extra_context={"module": "fraud", "contract_version": 2},
+        extra_context=cache_extra,
         safe_fallback=lambda: _safe_fraud_overview_payload(tenant, dt_ini, dt_fim, as_of),
     ), claims)
 
@@ -1323,7 +1397,7 @@ def risk_overview(
     status: Optional[str] = Query(None, description="NOVO/LIDO/RESOLVIDO"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("fraud")),
+    _screen=Depends(require_screen("fraud.risco_financeiro")),
 ):
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1642,7 +1716,7 @@ def budget_config_get(
     id_filial: int = Query(..., description="Branch ID (single)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.orcamento")),
 ):
     """Contas gerenciais + orçamento configurado (Metas & Equipe, 1 filial)."""
     role = claims["role"]
@@ -1657,7 +1731,7 @@ def budget_config_put(
     id_filial: int = Query(..., description="Branch ID (single)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.orcamento")),
 ):
     """Salva o orçamento (teto + % de alerta) por conta de uma filial."""
     role = claims["role"]
@@ -1762,7 +1836,7 @@ def goals_overview(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.metas")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
@@ -1812,7 +1886,7 @@ def goals_target(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.metas")),
 ):
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:
@@ -1856,7 +1930,7 @@ def team_commissions_config(
     id_filial: int = Query(..., description="Branch ID"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.config")),
 ):
     """Get commission configuration for a branch."""
     role = claims["role"]
@@ -1904,7 +1978,7 @@ def team_commissions_config_save(
     id_filial: int = Query(..., description="Branch ID"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.config")),
 ):
     """Save commission configuration. Restricted to OWNER/MASTER."""
     role = claims["role"]
@@ -1976,7 +2050,7 @@ def team_commissions_results(
     payment_mode: Optional[str] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team")),
+    _screen=Depends(require_screen("goals_team.comissoes")),
 ):
     """Get commission calculation results for a specific month/year."""
     role = claims["role"]

@@ -110,6 +110,12 @@ export function getAllowedScreens(me: any): string[] | null {
   return me?.allowed_screens ?? null;
 }
 
+export function canAccessScreenKey(me: any, screenKey: string): boolean {
+  const screens = getAllowedScreens(me);
+  if (!Array.isArray(screens)) return true;
+  return screens.includes(screenKey);
+}
+
 export function isKioskMode(me: any): boolean {
   return me?.layout_mode === 'kiosk';
 }

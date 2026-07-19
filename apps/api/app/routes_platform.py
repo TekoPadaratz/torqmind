@@ -35,6 +35,24 @@ def _raise(exc: repos_platform.AuthError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
 
 
+@router.get("/screen-registry")
+def screen_registry(
+    claims=Depends(get_current_claims),
+):
+    """Árvore de menus/painéis para o cadastro de permissões de usuário."""
+    from app.permissions import screen_permission_tree
+
+    role = claims.get("user_role") or ""
+    include_kiosk = role in {"platform_master", "platform_admin", "channel_admin", "tenant_admin"}
+    try:
+        repos_platform._require_platform_access(claims)
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+    return {
+        "menus": screen_permission_tree(include_kiosk=include_kiosk, include_platform=False),
+    }
+
+
 @router.get("/companies")
 def companies_list(
     search: str | None = Query(None),

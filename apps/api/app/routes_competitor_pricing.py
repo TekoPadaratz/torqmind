@@ -104,7 +104,7 @@ def get_fuel_products(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("competitor_pricing")),
+    _screen=Depends(require_screen("competitor_pricing.register")),
 ):
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     try:
@@ -125,7 +125,7 @@ def create_capture(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("competitor_pricing")),
+    _screen=Depends(require_screen("competitor_pricing.register")),
 ):
     _require_write_access(claims)
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
@@ -164,7 +164,7 @@ def get_history(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("competitor_pricing")),
+    _screen=Depends(require_screen("competitor_pricing.history")),
 ):
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     try:
@@ -186,7 +186,7 @@ def update_item_price(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("competitor_pricing")),
+    _screen=Depends(require_screen("competitor_pricing.history")),
 ):
     _require_write_access(claims)
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
@@ -222,7 +222,7 @@ def get_comparison(
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("competitor_pricing")),
+    _screen=Depends(require_screen("competitor_pricing.comparison")),
 ):
     role, tenant, filial = _extract_scope(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     try:

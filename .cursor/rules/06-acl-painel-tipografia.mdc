@@ -1,0 +1,29 @@
+---
+description: ACL por menu e painel (abas) — registry, require_screen, cadastro de usuário
+globs: ["**/permissions.py", "**/platform/users/**", "**/screen-permissions*", "**/routes_*.py", "**/profit-management/**", "**/goals/**", "**/pricing/**", "**/fraud/**"]
+---
+
+# ACL TorqMind — Menu + Painel
+
+## Modelo
+
+- Menu = item do AppNav (`dashboard_home`, `profit_management`, …).
+- Painel/aba = `menu.painel` (ex.: `profit_management.overview`).
+- Fonte canônica: `apps/api/app/permissions.py` → `SCREEN_REGISTRY`.
+- Persistência: `auth.user_screen_permissions` (texto; sem FK).
+
+## Obrigatório em feature nova com aba/painel
+
+1. Registrar no `SCREEN_REGISTRY` com `parent`.
+2. Endpoint: `Depends(require_screen("menu.painel"))`.
+3. FE: filtrar aba com `canAccessScreenKey(claims, "menu.painel")`.
+4. Cadastro de usuário: árvore via `GET /platform/screen-registry` (sem lista hard-coded incompleta).
+5. Desmarcar menu limpa todos os painéis; marcar menu marca todos.
+
+## Legado
+
+`expand_screen_permissions`: menu sem painéis explícitos ⇒ libera todos os filhos.
+
+## Tipografia de totalizadores
+
+Floor 720p; tokens `--font-kpi-value` / `--font-kpi-label` / `--font-hero-value` em `globals.css`. Não fixar fonte grande em KPI.

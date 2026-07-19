@@ -434,6 +434,7 @@ echo "--- Step 6: Refreshing mart.liquidez_solvencia (passivo + estoque) ---"
 PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" -v ON_ERROR_STOP=1 -c "
   SELECT etl.refresh_liquidez_solvencia(${ID_EMPRESA});
   SELECT etl.refresh_liquidez_estoque(${ID_EMPRESA});
+  SELECT etl.refresh_liquidez_banco(${ID_EMPRESA});
 " >/dev/null
 LIQ_COUNT=$(PGPASSWORD="$PG_W" psql -h "$PG_H" -p "$PG_P" -U "$PG_U" -d "$PG_DB" --no-align -t -c "SELECT count(*) FROM mart.liquidez_solvencia WHERE id_empresa = ${ID_EMPRESA}")
 echo "liquidez_solvencia rows: $LIQ_COUNT"

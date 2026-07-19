@@ -1290,19 +1290,25 @@ def fraud_series(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fi
     branch = _branch_clause("id_filial", id_filial)
     rows = _run(
         f"""
-        SELECT data_key, id_filial, sum(cancelamentos) AS cancelamentos, sum(valor_cancelado) AS valor_cancelado
+        SELECT data_key,
+               sum(cancelamentos) AS cancelamentos,
+               sum(valor_cancelado) AS valor_cancelado
         FROM torqmind_mart.fraude_cancelamentos_diaria
         WHERE id_empresa = {{id_empresa:Int32}}
           AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           {branch}
-        GROUP BY data_key, id_filial
-        ORDER BY data_key, id_filial
+        GROUP BY data_key
+        ORDER BY data_key
         """,
         {"id_empresa": int(id_empresa), "ini": _date_key(dt_ini), "fim": _date_key(dt_fim)},
         id_empresa,
     )
     return [
-        {"data_key": _to_int(row.get("data_key")), "id_filial": _to_int(row.get("id_filial")), "cancelamentos": _to_int(row.get("cancelamentos")), "valor_cancelado": _to_float(row.get("valor_cancelado"))}
+        {
+            "data_key": _to_int(row.get("data_key")),
+            "cancelamentos": _to_int(row.get("cancelamentos")),
+            "valor_cancelado": _to_float(row.get("valor_cancelado")),
+        }
         for row in rows
     ]
 

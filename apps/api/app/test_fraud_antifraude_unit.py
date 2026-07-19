@@ -107,7 +107,7 @@ def test_turno_label_unresolved_when_no_shift():
 def test_documento_prefers_nota_fiscal():
     venda, label, source, fiscal = _antifraude_documento("987654", 503752, 3587794)
     assert venda == "987654"
-    assert label == "Nota fiscal 987654"
+    assert label == "987654"
     assert source == "nota_fiscal"
     assert fiscal == "987654"
 
@@ -115,7 +115,7 @@ def test_documento_prefers_nota_fiscal():
 def test_documento_prefers_nro_comprovante():
     venda, label, source, fiscal = _antifraude_documento("", 503752, 3587794)
     assert venda == 503752
-    assert label == "Comprovante 503752"
+    assert label == "503752"
     assert source == "documento_venda"
     assert fiscal is None
 
@@ -123,7 +123,7 @@ def test_documento_prefers_nro_comprovante():
 def test_documento_falls_back_to_id_comprovante():
     venda, label, source, fiscal = _antifraude_documento("", 0, 3587794)
     assert venda is None
-    assert label == "Comprovante #3587794"
+    assert label == "3587794"
     assert source == "id_comprovante"
     assert fiscal is None
 
@@ -153,7 +153,7 @@ def test_build_event_rich_row_is_fully_resolved():
     # documento = sale comprovante (printed number), never turno+filial
     assert ev["id_comprovante"] == 3587794
     assert ev["documento_venda"] == 503752
-    assert ev["documento_label"] == "Comprovante 503752"
+    assert ev["documento_label"] == "503752"
     assert ev["documento_source"] == "documento_venda"
     assert "Turno" not in ev["documento_label"]
     assert "AUTO POSTO" not in ev["documento_label"]
@@ -184,7 +184,7 @@ def test_build_event_documento_fallback_to_id_comprovante():
     row = _rich_row()
     row["nro_comprovante"] = 0
     ev = _build_antifraude_event(row)
-    assert ev["documento_label"] == "Comprovante #3587794"
+    assert ev["documento_label"] == "3587794"
     assert ev["documento_source"] == "id_comprovante"
 
 
@@ -217,7 +217,7 @@ def test_build_event_poor_row_uses_house_style_fallbacks():
     assert ev["turno_label"] == "Turno não resolvido"
     assert ev["frentista_label"] == "Sem frentista associado"
     assert ev["filial_label"] == "Filial sem cadastro"
-    assert ev["documento_label"] == "Sem comprovante"
+    assert ev["documento_label"] == "—"
     # Never emit the lint-prohibited "não identificado" wording on any label.
     for key in ("operador_label", "turno_label", "frentista_label", "filial_label"):
         assert "não identificad" not in str(ev[key]).lower()
@@ -298,6 +298,6 @@ def test_risk_last_events_reads_enriched_mart_and_is_resolved():
     assert ev["data"] == "2026-06-03T09:00:00"
     assert ev["operador_label"] == "TAYNA"
     assert ev["turno_label"] == "Turno 3"
-    assert ev["documento_label"] == "Comprovante 503752"
+    assert ev["documento_label"] == "503752"
     assert ev["filial_label"] == "AUTO POSTO VR 01"
     assert ev["categoria"] == "Cancelamento da venda"

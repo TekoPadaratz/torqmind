@@ -671,7 +671,7 @@ def sales_overview_bundle(
         ) ORDER BY faturamento DESC LIMIT 20
     """, parameters=params)
 
-    # --- Monthly evolution ---
+    # --- Monthly evolution (histórico completo desde Jan/2025) ---
     monthly_rows = query_dict(f"""
         SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas,
                s_val_cancel AS valor_cancelado
@@ -681,6 +681,7 @@ def sales_overview_bundle(
                    sum(valor_cancelado) AS s_val_cancel
             FROM {MART_RT_DB}.sales_daily_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND dt >= toDate('2025-01-01')
             GROUP BY ano, mes
         ) ORDER BY ano, mes
     """, parameters=params)
@@ -698,9 +699,13 @@ def sales_overview_bundle(
         for r in monthly_rows
     ]
 
-    # --- Annual comparison ---
-    current_year = date.today().year
+    # Comparativo anual: sempre Jan–Dez dos 2 anos (atual e anterior),
+    # preenchendo zeros para meses sem movimento (ex.: Jan–Abr/2025).
+    current_year = max(date.today().year, 2026)
     prev_year = current_year - 1
+    if prev_year < 2025:
+        prev_year = 2025
+        current_year = 2026
     annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
     annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
     annual_comparison = {
@@ -1922,11 +1927,19 @@ def fraud_last_events(
     limit: int = 30,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
-    """Recent risk events with operator/employee names, shift and register."""
+    """Recent cancellation events with operator/employee names, shift and register.
+
+    Excludes caixa geral (turno 0), unresolved shifts and non-cancellation events.
+    """
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
+    try:
+        lim = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        lim = 30
+    # Over-fetch then filter unresolved/zero shifts so the visible grid still fills.
+    fetch_lim = min(lim * 4, 400)
 
-    # Try enriched mart first (has turno_numero, id_comprovante, nro_comprovante)
     try:
         rows = query_dict(f"""
             SELECT event_id, id_filial, filial_nome, data_key, dt, hora,
@@ -1935,26 +1948,46 @@ def fraud_last_events(
                    score_risco, score_level, reasons, id_comprovante, nro_comprovante
             FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+              AND lower(event_type) IN ('cancelamento', 'cancelamento_seguido_venda')
+              AND turno_numero >= 1
             ORDER BY data_key DESC, score_risco DESC, event_id DESC
-            LIMIT {limit}
+            LIMIT {fetch_lim}
         """, parameters={"id_empresa": id_empresa})
         if rows:
-            # Single shared contract with risk_last_events: operational turno,
-            # NF-based documento (fallback comprovante), resolved operator/filial/date.
-            # NFE enrichment is best-effort: it must never discard the rich mart rows.
             try:
                 nfe_map = _load_nfe_numbers(id_empresa, rows)
             except Exception:
                 nfe_map = {}
+            out: List[Dict[str, Any]] = []
             for r in rows:
                 r["numero_nfe"] = nfe_map.get(
                     (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
                 )
-            return [_build_antifraude_event(r) for r in rows]
+                ev = _build_antifraude_event(r)
+                # Defesa: só turnos operacionais 1..N, com documento e data
+                if _to_int(ev.get("turno_numero")) < 1:
+                    continue
+                label_l = str(ev.get("turno_label") or "").lower()
+                if (
+                    not ev.get("turno_label")
+                    or "não resolvido" in label_l
+                    or "nao resolvido" in label_l
+                    or "sem cadastro" in label_l
+                    or label_l == "caixa geral"
+                ):
+                    continue
+                if not ev.get("data"):
+                    continue
+                if not ev.get("documento_label") or str(ev.get("documento_label") or "").strip() in ("", "—", "-"):
+                    if not ev.get("id_comprovante"):
+                        continue
+                out.append(ev)
+                if len(out) >= lim:
+                    break
+            return out
     except Exception:
         pass
 
-    # Fallback to legacy mart — enrich with filial name from dim_filial
     filial_r = _branch_clause("r.id_filial", id_filial)
     return query_dict(f"""
         SELECT r.id, r.id_filial,
@@ -1969,7 +2002,7 @@ def fraud_last_events(
         ) AS f ON r.id_filial = f.id_filial
         WHERE r.id_empresa = {{id_empresa:Int32}} {filial_r} {date_range}
         ORDER BY r.id DESC
-        LIMIT {limit}
+        LIMIT {lim}
     """, parameters={"id_empresa": id_empresa})
 
 
@@ -1985,14 +2018,16 @@ def fraud_series(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
+    # Série do gráfico "Cancelamentos por dia": 1 ponto/dia (empresa),
+    # independente de filial. Detalhe por filial fica nos painéis abaixo.
     return query_dict(f"""
-        SELECT data_key, id_filial,
+        SELECT data_key,
                sum(qtd_eventos) AS cancelamentos,
                sum(impacto_total) AS valor_cancelado
         FROM {MART_RT_DB}.fraud_daily_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-        GROUP BY data_key, id_filial
-        ORDER BY data_key, id_filial
+        GROUP BY data_key
+        ORDER BY data_key
     """, parameters={"id_empresa": id_empresa})
 
 
@@ -2009,6 +2044,9 @@ def fraud_top_users(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
+    # Mesmo universo de "Últimos cancelamentos": só turnos operacionais 1..N
+    # e tipos de cancelamento. Evita top_users contar caixa geral (turno 0)
+    # que o grid de últimos exclui — divergência VR01 15/07/2026.
     rows = query_dict(f"""
         SELECT id_filial,
                any(filial_nome) AS filial_nome,
@@ -2017,8 +2055,11 @@ def fraud_top_users(
                sum(valor_total) AS valor_cancelado
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-          AND event_type = 'cancelamento'
+          AND lower(event_type) IN ('cancelamento', 'cancelamento_seguido_venda')
+          AND turno_numero >= 1
+          AND (id_comprovante > 0 OR nro_comprovante > 0)
         GROUP BY id_filial, nome_operador
+        HAVING length(trim(nome_operador)) > 0
         ORDER BY valor_cancelado DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
@@ -2030,6 +2071,24 @@ def fraud_top_users(
     return rows
 
 
+def _troca_documento_numero(documento: Any, referencia: Any = None, troca_id: Any = None) -> str:
+    """Extrai só o número de NF/NFC-e do texto de documento da troca."""
+    import re
+
+    text = str(documento or "").strip()
+    if text:
+        m = re.search(r"(?i)(?:NFC-?e|NF-?e)\s*[#:]?\s*(\d+)", text)
+        if m:
+            return m.group(1)
+        digits = re.findall(r"\d{4,}", text)
+        if digits:
+            return digits[-1]
+    ref = _to_int(referencia)
+    if ref > 0:
+        return str(ref)
+    return "—"
+
+
 def fraud_troca_forma_pgto(
     role: str,
     id_empresa: int,
@@ -2038,50 +2097,84 @@ def fraud_troca_forma_pgto(
     dt_fim: date,
     only_suspeita: bool = True,
     limit: int = 200,
+    forma_nova: Optional[str] = None,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
     """Payment-form-change events (antifraud).
 
-    Reconstructs the "from" form (RECEBIDA -> A_RECEBER pattern) and the "to"
-    form. By default returns only suspicious changes (RECEBIDA -> A_RECEBER);
-    set ``only_suspeita=False`` to return all changes.
-
-    Sensitive antifraud data: callers MUST restrict to platform_master/owner.
+    Incomplete rows (mart lag without movlcto join) are omitted. Cancelled
+    sales (situacao=3) remain visible with ``venda_status`` = Cancelada —
+    troca seguida de cancelamento é sinal crítico (ex.: doc 89477).
+    Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
     """
-    filial = _branch_clause("id_filial", id_filial)
-    date_range = _date_range_filter(dt_ini, dt_fim)
-    suspeita = "AND is_suspeita = 1" if only_suspeita else ""
+    filial = _branch_clause("t.id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim, col="t.data_key")
+    suspeita = "AND t.is_suspeita = 1" if only_suspeita else ""
+    forma = str(forma_nova or "todos").strip().lower()
+    if forma in ("cheque_pre", "cheque-pre", "cheque"):
+        forma_filter = "AND positionCaseInsensitive(t.forma_para, 'CHEQUE PRE') > 0"
+    elif forma == "prazo":
+        forma_filter = "AND positionCaseInsensitive(t.forma_para, 'PRAZO') > 0"
+    else:
+        forma_filter = ""
     try:
         lim = max(1, min(int(limit), 1000))
     except (TypeError, ValueError):
         lim = 200
+    fetch_lim = min(lim * 3, 1500)
 
-    return query_dict(f"""
+    rows = query_dict(f"""
         SELECT
-            troca_id,
-            id_filial,
-            filial_nome,
-            data_key,
-            dt,
-            documento,
-            id_turno,
-            id_usuario,
-            nome_operador,
-            forma_de,
-            categoria_de,
-            forma_para,
-            categoria_para,
-            valor,
-            data_troca_ts,
-            hora,
-            is_suspeita,
-            score_risco,
-            reasons
-        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita}
-        ORDER BY data_key DESC, troca_id DESC
-        LIMIT {lim}
+            t.troca_id,
+            t.id_filial,
+            t.filial_nome,
+            t.data_key,
+            t.dt,
+            t.documento,
+            t.id_turno,
+            t.id_usuario,
+            t.nome_operador,
+            t.forma_de,
+            t.categoria_de,
+            t.forma_para,
+            t.categoria_para,
+            t.valor,
+            t.data_troca_ts,
+            t.hora,
+            t.is_suspeita,
+            t.score_risco,
+            t.reasons,
+            t.referencia,
+            coalesce(c.situacao, 0) AS comprovante_situacao,
+            if(coalesce(c.situacao, 0) = 3, 'Cancelada', 'Ativa') AS venda_status
+        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt AS t FINAL
+        LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c
+          ON c.id_empresa = {{id_empresa:Int32}}
+         AND c.id_filial = t.id_filial
+         AND c.id_comprovante = t.referencia
+         AND c.is_deleted = 0
+        WHERE t.id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita} {forma_filter}
+          AND t.valor > 0
+          AND t.forma_de != ''
+          AND t.forma_para != ''
+        ORDER BY t.data_key DESC, t.troca_id DESC
+        LIMIT {fetch_lim}
     """, parameters={"id_empresa": id_empresa})
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        raw_doc = r.get("documento")
+        doc_num = _troca_documento_numero(raw_doc, r.get("referencia"), r.get("troca_id"))
+        r["documento_raw"] = raw_doc
+        r["documento"] = doc_num
+        r["documento_numero"] = doc_num
+        status = str(r.get("venda_status") or "Ativa")
+        r["venda_status"] = status
+        r["venda_cancelada"] = status == "Cancelada"
+        out.append(r)
+        if len(out) >= lim:
+            break
+    return out
 
 
 def fraud_troca_forma_pgto_kpis(
@@ -2090,19 +2183,26 @@ def fraud_troca_forma_pgto_kpis(
     id_filial: Any,
     dt_ini: date,
     dt_fim: date,
+    forma_nova: Optional[str] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Period-wide totals for payment-form-change events (antifraud).
-
-    Returns the TRUE aggregates (count and amount) over the whole window, for
-    both suspicious-only and all changes, independent of any row LIMIT applied
-    to the listing. The grid list is capped for display; KPIs must use these
-    totals so they don't change with the "todas/suspeitas" toggle.
-
-    Sensitive antifraud data: callers MUST restrict to platform_master/owner.
-    """
+    """Period-wide totals for payment-form-change events (antifraud)."""
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
+    forma = str(forma_nova or "todos").strip().lower()
+    if forma in ("cheque_pre", "cheque-pre", "cheque"):
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'CHEQUE PRE') > 0"
+    elif forma == "prazo":
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'PRAZO') > 0"
+    else:
+        forma_filter = ""
+
+    quality = f"""
+          AND valor > 0
+          AND forma_de != ''
+          AND forma_para != ''
+          {forma_filter}
+    """
 
     rows = query_dict(f"""
         SELECT
@@ -2112,6 +2212,7 @@ def fraud_troca_forma_pgto_kpis(
             sum(valor) AS todas_valor
         FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+        {quality}
     """, parameters={"id_empresa": id_empresa})
 
     row = rows[0] if rows else {}
@@ -3122,20 +3223,18 @@ def _antifraude_documento(
 ) -> tuple[Any, str, str, Optional[str]]:
     """Documento operacional da venda para a tela de fraude.
 
-    Preferência: NÚMERO DA NOTA FISCAL (NF/NFC-e) — o número que o cliente usa no
-    Xpert. Fallback honesto: NROCOMPROVANTE (impresso no comprovante) e, por
-    último, id_comprovante técnico. Cancelamentos normalmente não têm nota fiscal
-    emitida, então caem no comprovante — nunca inventamos uma NF.
+    Preferência: número da NF/NFC-e. Fallback: NROCOMPROVANTE, depois id técnico.
+    O label é SOMENTE o número (sem prefixo "Nota fiscal" / "Comprovante").
     Retorna (documento_venda, label, source, documento_fiscal).
     """
     nfe = str(numero_nfe or "").strip()
     if nfe and nfe != "0":
-        return nfe, f"Nota fiscal {nfe}", "nota_fiscal", nfe
+        return nfe, nfe, "nota_fiscal", nfe
     if nro_comprovante and nro_comprovante > 0:
-        return nro_comprovante, f"Comprovante {nro_comprovante}", "documento_venda", None
+        return nro_comprovante, str(nro_comprovante), "documento_venda", None
     if id_comprovante and id_comprovante > 0:
-        return None, f"Comprovante #{id_comprovante}", "id_comprovante", None
-    return None, "Sem comprovante", "fallback", None
+        return None, str(id_comprovante), "id_comprovante", None
+    return None, "—", "fallback", None
 
 
 def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:

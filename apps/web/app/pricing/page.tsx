@@ -10,7 +10,7 @@ import { extractApiError } from '../lib/errors';
 import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
-import { readCachedSession } from '../lib/session';
+import { canAccessScreenKey, readCachedSession } from '../lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -110,11 +110,15 @@ export default function PricingPage() {
   const uniqueFiliais = new Set(accesses.map((a: any) => a?.id_filial).filter(Boolean));
   const isSingleScope = uniqueEmpresas.size <= 1 && uniqueFiliais.size <= 1;
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'register', label: 'Registrar Preços' },
-    { key: 'history', label: 'Histórico' },
-    { key: 'comparison', label: 'Comparação' },
+  const tabs: { key: Tab; label: string; screen: string }[] = [
+    { key: 'register', label: 'Registrar Preços', screen: 'competitor_pricing.register' },
+    { key: 'history', label: 'Histórico', screen: 'competitor_pricing.history' },
+    { key: 'comparison', label: 'Comparação', screen: 'competitor_pricing.comparison' },
   ];
+  const allowedTabs = tabs.filter((t) => canAccessScreenKey(session, t.screen));
+  const effectiveTab: Tab = allowedTabs.some((t) => t.key === tab)
+    ? tab
+    : (allowedTabs[0]?.key || 'register');
 
   return (
     <>
@@ -124,11 +128,11 @@ export default function PricingPage() {
 
         {/* Tabs */}
         <div className="pricingTabs">
-          {tabs.map(t => (
+          {allowedTabs.map(t => (
             <button
               key={t.key}
               onClick={() => { setTab(t.key); clearMessages(); }}
-              className={`pricingTab ${tab === t.key ? 'pricingTabActive' : ''}`}
+              className={`pricingTab ${effectiveTab === t.key ? 'pricingTabActive' : ''}`}
             >
               {t.label}
             </button>
@@ -141,13 +145,13 @@ export default function PricingPage() {
 
         {/* Tab Content */}
         <div className="card">
-          {tab === 'register' && (
+          {effectiveTab === 'register' && (
             <RegisterTab scope={scope} setError={setError} setSuccess={setSuccess} />
           )}
-          {tab === 'history' && (
+          {effectiveTab === 'history' && (
             <HistoryTab scope={scope} setError={setError} setSuccess={setSuccess} />
           )}
-          {tab === 'comparison' && (
+          {effectiveTab === 'comparison' && (
             <ComparisonTab scope={scope} setError={setError} />
           )}
         </div>

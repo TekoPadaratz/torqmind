@@ -21,10 +21,48 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
-import { canViewSensitiveFinancials } from "../lib/session";
+import { canViewSensitiveFinancials, canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { SolvenciaDetalhada } from "./SolvenciaDetalhada";
+import { AnpCompliancePanel } from "./AnpCompliancePanel";
 
 export const dynamic = "force-dynamic";
+
+type ProfitTab = "overview" | "products" | "repricing" | "solvencia" | "anp";
+
+const PROFIT_TAB_SCREENS: Record<ProfitTab, string> = {
+  overview: "profit_management.overview",
+  products: "profit_management.products",
+  repricing: "profit_management.repricing",
+  solvencia: "profit_management.solvencia",
+  anp: "profit_management.anp",
+};
+
+function currentAnoMesSP(): number {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  return Number(today.slice(0, 4)) * 100 + Number(today.slice(5, 7));
+}
+
+function fmtAnoMes(am: number): string {
+  const s = String(am);
+  return `${s.slice(4, 6)}/${s.slice(0, 4)}`;
+}
+
+/** Janela local + meses da API, ordem antigo → novo. */
+function buildMesesDisponiveis(extra: number[] = []): number[] {
+  const set = new Set<number>(extra.filter((n) => Number.isFinite(n) && n >= 190001));
+  let y = Math.floor(currentAnoMesSP() / 100);
+  let m = currentAnoMesSP() % 100;
+  for (let i = 0; i < 18; i++) {
+    set.add(y * 100 + m);
+    m -= 1;
+    if (m === 0) {
+      m = 12;
+      y -= 1;
+    }
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -72,61 +110,108 @@ export default function ProfitManagementPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
 
-  const [activeTab, setActiveTab] = useState<"overview" | "products" | "repricing" | "solvencia">("overview");
+  const [activeTab, setActiveTab] = useState<ProfitTab>("overview");
   const [sectorFilter, setSectorFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [solvenciaMonth, setSolvenciaMonth] = useState<number | null>(null);
+  const [profitMonth, setProfitMonth] = useState<number>(() => currentAnoMesSP());
+  const [solvenciaReload, setSolvenciaReload] = useState(0);
+  const [anpReload, setAnpReload] = useState(0);
+  const [regimeCaixa, setRegimeCaixa] = useState(true);
+  const [ativosDoMes, setAtivosDoMes] = useState(true);
+  // Período próprio do Compliance ANP (independente do filtro global da URL)
+  const [anpDtIni, setAnpDtIni] = useState(() => {
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    return `${today.slice(0, 4)}-01-01`;
+  });
+  const [anpDtFim, setAnpDtFim] = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }),
+  );
 
   const { claims, data: overviewData, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "profit_overview",
       scope,
       errorMessage: "Falha ao carregar Gestão de Lucro",
-      buildRequestUrl: (currentScope) =>
-        `/bi/profit-management/overview?${buildScopeParams(currentScope).toString()}`,
+      buildRequestUrl: (currentScope, session) => {
+        if (!canAccessScreenKey(session, "profit_management.overview")
+          && !canAccessScreenKey(session, "profit_management")) {
+          return null;
+        }
+        return `/bi/profit-management/overview?${buildScopeParams(currentScope).toString()}`;
+      },
     });
 
   const { data: dreData } = useBiScopeData<any>({
-    moduleKey: "profit_dre",
+    moduleKey: `profit_dre:mes=${profitMonth}:caixa=${regimeCaixa ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/dre?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.overview")) return null;
+      const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
+      p.set("regime_caixa", regimeCaixa ? "true" : "false");
+      return `/bi/profit-management/dre?${p.toString()}`;
+    },
   });
 
   const { data: expensesData } = useBiScopeData<any>({
-    moduleKey: "profit_expenses",
+    moduleKey: `profit_expenses:mes=${profitMonth}:caixa=${regimeCaixa ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/expenses?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.overview")) return null;
+      const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
+      p.set("regime_caixa", regimeCaixa ? "true" : "false");
+      return `/bi/profit-management/expenses?${p.toString()}`;
+    },
   });
 
   const { data: productsData } = useBiScopeData<any>({
     moduleKey: "profit_products",
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}&limit=1000`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.products")) return null;
+      return `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}&limit=1000`;
+    },
   });
 
   const { data: repricingData } = useBiScopeData<any>({
     moduleKey: "profit_repricing",
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/repricing?${buildScopeParams(currentScope).toString()}`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.repricing")) return null;
+      return `/bi/profit-management/repricing?${buildScopeParams(currentScope).toString()}`;
+    },
   });
 
   const { data: solvenciaData } = useBiScopeData<any>({
-    moduleKey: `profit_solvencia:${solvenciaMonth ?? "atual"}`,
+    moduleKey: `profit_solvencia_det_v2:${profitMonth}:${solvenciaReload}:ativos=${ativosDoMes ? 1 : 0}`,
     scope,
     errorMessage: "",
-    buildRequestUrl: (currentScope) =>
-      `/bi/profit-management/solvencia?${buildScopeParams(currentScope).toString()}${
-        solvenciaMonth ? `&ano_mes=${solvenciaMonth}` : ""
-      }`,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.solvencia")) return null;
+      const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
+      p.set("ativos_do_mes", ativosDoMes ? "true" : "false");
+      return `/bi/profit-management/solvencia/detalhada?${p.toString()}`;
+    },
+  });
+
+  const { data: anpData, loading: anpLoading } = useBiScopeData<any>({
+    moduleKey: `profit_anp_compliance:${anpReload}:${anpDtIni}:${anpDtFim}`,
+    scope,
+    errorMessage: "",
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "profit_management.anp")) return null;
+      const params = buildScopeParams(currentScope);
+      params.set("dt_ini", anpDtIni);
+      params.set("dt_fim", anpDtFim);
+      return `/bi/profit-management/anp-compliance?${params.toString()}`;
+    },
   });
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
@@ -140,6 +225,27 @@ export default function ProfitManagementPage() {
   const products = productsData?.data;
   const repricing = repricingData?.data;
   const solvencia = solvenciaData?.data;
+  const anp = anpData?.data;
+
+  const mesesDisponiveis = useMemo(
+    () =>
+      buildMesesDisponiveis([
+        profitMonth,
+        ...(Array.isArray(solvencia?.meses_disponiveis) ? solvencia.meses_disponiveis : []),
+        ...(dre?.ano_mes != null ? [Number(dre.ano_mes)] : []),
+      ]),
+    [profitMonth, solvencia?.meses_disponiveis, dre?.ano_mes],
+  );
+
+  const allowedTabs = useMemo(() => {
+    const candidates: ProfitTab[] = canViewSensitiveFinancials(claims)
+      ? ["overview", "solvencia", "anp", "products", "repricing"]
+      : ["overview", "products", "repricing"];
+    return candidates.filter((tab) => canAccessScreenKey(claims, PROFIT_TAB_SCREENS[tab]));
+  }, [claims]);
+
+  const effectiveTab: ProfitTab =
+    allowedTabs.includes(activeTab) ? activeTab : (allowedTabs[0] || "overview");
 
   const filteredProducts = useMemo(() => {
     if (!products?.produtos) return [];
@@ -195,7 +301,32 @@ export default function ProfitManagementPage() {
     );
   }
 
-  if (error || !overview) {
+  if (error) {
+    return (
+      <div>
+        <AppNav title="Gestão de Lucro" userLabel={userLabel} />
+        <div className="container" style={{ marginTop: 12 }}>
+          <EmptyState title="Gestão de Lucro" detail={error} />
+        </div>
+      </div>
+    );
+  }
+
+  if (!allowedTabs.length) {
+    return (
+      <div>
+        <AppNav title="Gestão de Lucro" userLabel={userLabel} />
+        <div className="container" style={{ marginTop: 12 }}>
+          <EmptyState
+            title="Sem painéis liberados"
+            detail="Seu usuário não tem nenhum painel da Gestão de Lucro liberado. Peça ao administrador para marcar as abas no cadastro."
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (!overview && canAccessScreenKey(claims, "profit_management.overview")) {
     return (
       <div>
         <AppNav title="Gestão de Lucro" userLabel={userLabel} />
@@ -212,7 +343,7 @@ export default function ProfitManagementPage() {
     );
   }
 
-  const kpis = overview.kpis || {};
+  const kpis = overview?.kpis || {};
 
   const lucroColor = kpis.lucro_gerencial_estimado >= 0 ? "var(--color-positive)" : "var(--color-negative)";
   const margemColor = kpis.margem_gerencial_pct >= 0.05 ? "var(--color-positive)" : "var(--color-warning)";
@@ -224,10 +355,11 @@ export default function ProfitManagementPage() {
       <div className="container">
         {/* Period indicator */}
         <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-          Base: {overview.periodo_base} · Estimativa gerencial calculada automaticamente
+          Base: {overview?.periodo_base || "—"} · Estimativa gerencial calculada automaticamente
         </div>
 
-        {/* KPI Cards — responsive strip */}
+        {/* KPI Cards — só quando Visão Geral está liberada */}
+        {canAccessScreenKey(claims, "profit_management.overview") ? (
         <div className="profitKpiStrip">
           <div className="profitKpiCard" style={{ "--kpi-accent": lucroColor } as React.CSSProperties}>
             <div className="profitKpiLabel">Lucro Gerencial Estimado</div>
@@ -269,29 +401,82 @@ export default function ProfitManagementPage() {
             </div>
           </div>
         </div>
+        ) : null}
 
-        {/* Tabs */}
-        <div className="profitTabs">
-          {((canViewSensitiveFinancials(claims)
-            ? ["overview", "products", "repricing", "solvencia"]
-            : ["overview", "products", "repricing"]) as Array<"overview" | "products" | "repricing" | "solvencia">).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`profitTab${activeTab === tab ? " active" : ""}`}
-            >
-              {tab === "overview" ? "Visão Geral" : tab === "products" ? "Produtos" : tab === "repricing" ? "Oportunidades" : "Solvência"}
-            </button>
-          ))}
+        {/* Tabs + filtros transversais (DRE + Solvência) */}
+        <div className="profitTabsRow">
+          <div className="profitTabs">
+            {allowedTabs.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`profitTab${effectiveTab === tab ? " active" : ""}`}
+              >
+                {tab === "overview"
+                  ? "Visão Geral"
+                  : tab === "solvencia"
+                    ? "Solvência"
+                    : tab === "anp"
+                      ? "Compliance ANP"
+                      : tab === "products"
+                        ? "Produtos"
+                        : "Oportunidades"}
+              </button>
+            ))}
+          </div>
+          {canViewSensitiveFinancials(claims) ? (
+            <div className="profitScopeToggles" role="group" aria-label="Filtros da Gestão de Lucro">
+              <label className="profitScopeMonth" title="Mês fechado da DRE, despesas e Solvência">
+                <span className="profitScopeMonthLabel">Mês</span>
+                <select
+                  className="profitScopeMonthSelect"
+                  value={profitMonth}
+                  onChange={(e) => setProfitMonth(Number(e.target.value))}
+                  aria-label="Mês fechado"
+                >
+                  {mesesDisponiveis.map((m) => (
+                    <option key={m} value={m}>
+                      {fmtAnoMes(m)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className={`profitScopeToggle${regimeCaixa ? " on" : ""}`}
+                aria-pressed={regimeCaixa}
+                onClick={() => setRegimeCaixa((v) => !v)}
+                title="Despesas pelo pagamento efetivo (DTAPGTO)"
+              >
+                <span className="profitScopeToggleDot" aria-hidden />
+                Regime de caixa
+              </button>
+              <button
+                type="button"
+                className={`profitScopeToggle${ativosDoMes ? " on" : ""}`}
+                aria-pressed={ativosDoMes}
+                onClick={() => setAtivosDoMes((v) => !v)}
+                title="Cheques e a prazo só com vencimento no mês e em aberto"
+              >
+                <span className="profitScopeToggleDot" aria-hidden />
+                Ativos do mês
+              </button>
+            </div>
+          ) : null}
         </div>
 
         {/* TAB: Overview */}
-        {activeTab === "overview" && (
+        {effectiveTab === "overview" && (
           <div style={{ marginTop: 16 }}>
             {/* DRE */}
             {dre?.linhas && (
               <div className="card" style={{ marginTop: 12 }}>
-                <div className="sectionEyebrow">DRE Gerencial Resumida</div>
+                <div className="sectionEyebrow">
+                  DRE Gerencial Resumida
+                  {dre.periodo_base || dre.ano_mes
+                    ? ` · ${dre.periodo_base || fmtAnoMes(Number(dre.ano_mes))}`
+                    : ` · ${fmtAnoMes(profitMonth)}`}
+                </div>
                 <table className="dreTable" style={{ marginTop: 8 }}>
                   <tbody>
                     {dre.linhas.map((l: any, i: number) => (
@@ -314,6 +499,12 @@ export default function ProfitManagementPage() {
                 {dre.margem_gerencial_pct != null && (
                   <div className="calcFootnote">
                     Margem gerencial: {fmtPct(dre.margem_gerencial_pct)} · {dre.disclaimer || "Não é lucro contábil/fiscal oficial."}
+                    {regimeCaixa
+                      ? " · Regime de caixa ativo (despesas pelo pagamento)."
+                      : " · Competência por vencimento."}
+                    {ativosDoMes
+                      ? " · Ativos do mês ativos na Solvência."
+                      : ""}
                   </div>
                 )}
               </div>
@@ -347,7 +538,7 @@ export default function ProfitManagementPage() {
         )}
 
         {/* TAB: Products */}
-        {activeTab === "products" && (
+        {effectiveTab === "products" && (
           <div style={{ marginTop: 16 }}>
             {/* Filters */}
             <div className="profitFilterBar">
@@ -448,7 +639,7 @@ export default function ProfitManagementPage() {
         )}
 
         {/* TAB: Repricing */}
-        {activeTab === "repricing" && (
+        {effectiveTab === "repricing" && (
           <div style={{ marginTop: 16 }}>
             {repricing?.oportunidades?.length > 0 ? (
               <>
@@ -510,164 +701,35 @@ export default function ProfitManagementPage() {
           </div>
         )}
 
-        {/* TAB: Solvência / Capital de Giro */}
-        {activeTab === "solvencia" && (
-          <div style={{ marginTop: 16 }}>
-            {solvencia ? (
-              <>
-                {/* Cabeçalho + filtro de mês */}
-                <div
-                  className="card"
-                  style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}
-                >
-                  <div>
-                    <div className="sectionEyebrow">Solvência de Curto Prazo</div>
-                    <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-                      Meus ativos cobrem as contas a pagar do mês?
-                    </div>
-                  </div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 500 }}>
-                    <span>Mês de referência:</span>
-                    <select
-                      value={solvenciaMonth ?? solvencia.ano_mes}
-                      onChange={(e) => setSolvenciaMonth(Number(e.target.value))}
-                      style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--color-border)", background: "var(--color-surface)", color: "inherit", fontSize: 13 }}
-                    >
-                      {(solvencia.meses_disponiveis || []).map((m: any) => (
-                        <option key={m.ano_mes} value={m.ano_mes}>{m.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
+        {/* TAB: Solvência (Fechamento de Caixa Geral) */}
+        {effectiveTab === "solvencia" && (
+          solvencia ? (
+            <SolvenciaDetalhada
+              data={solvencia}
+              idEmpresa={scope?.id_empresa != null ? Number(scope.id_empresa) : undefined}
+              onSaved={() => setSolvenciaReload((x) => x + 1)}
+            />
+          ) : (
+            <EmptyState
+              title="Preparando a análise de solvência"
+              detail="Estamos consolidando os ativos e as obrigações do mês. Volte em instantes."
+            />
+          )
+        )}
 
-                {/* Veredito */}
-                {(() => {
-                  const idx = solvencia.indices || {};
-                  const temAtivo = !!solvencia.tem_ativo_dados;
-                  const cobre = !!idx.cobre_passivo;
-                  const cor = !temAtivo ? "var(--color-info)" : cobre ? "var(--color-positive)" : "var(--color-negative)";
-                  const titulo = !temAtivo
-                    ? "Preparando a leitura dos seus ativos"
-                    : cobre
-                    ? "Seus ativos cobrem o passivo deste mês"
-                    : "Atenção: os ativos não cobrem o passivo deste mês";
-                  const detalhe = !temAtivo
-                    ? "Estamos habilitando a coleta de caixa, banco, cheques e estoque. Por enquanto, veja abaixo o total de contas a pagar do mês selecionado."
-                    : cobre
-                    ? "O ativo circulante é suficiente para quitar as contas a pagar que vencem no mês, sem depender de novas vendas."
-                    : "O ativo circulante disponível é menor que as contas a pagar do mês. Reforce o caixa ou renegocie vencimentos.";
-                  return (
-                    <div className="card" style={{ marginTop: 16, padding: 20, borderLeft: `4px solid ${cor}` }}>
-                      <div style={{ fontSize: 16, fontWeight: 600, color: cor }}>{titulo}</div>
-                      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 6 }}>{detalhe}</div>
-                    </div>
-                  );
-                })()}
-
-                {/* Ativo Circulante x Passivo */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 16 }}>
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Ativo Circulante</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8, color: "var(--color-positive)" }}>
-                      {solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.circulante || 0) : "—"}
-                    </div>
-                    <table className="dreTable" style={{ marginTop: 12, fontSize: 12 }}>
-                      <tbody>
-                        <tr><td>Caixa (dinheiro)</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.caixa || 0) : "—"}</td></tr>
-                        <tr><td>Banco</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.banco || 0) : "—"}</td></tr>
-                        <tr><td>Cartões a compensar</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.cartoes || 0) : "—"}</td></tr>
-                        <tr><td>Cheques a receber</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.cheques || 0) : "—"}</td></tr>
-                        <tr><td>Estoque de combustível</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque_combustivel || 0) : "—"}</td></tr>
-                        <tr><td>Estoque de loja</td><td>{solvencia.tem_ativo_dados ? formatCurrency(solvencia.ativo?.estoque_loja || 0) : "—"}</td></tr>
-                      </tbody>
-                    </table>
-                    {solvencia.cobertura_estoque && solvencia.cobertura_estoque.postos_total > 0 && (
-                      <div className="calcFootnote" style={{ marginTop: 8 }}>
-                        Estoque de combustível medido por sensor de tanque em {solvencia.cobertura_estoque.postos_com_combustivel} de {solvencia.cobertura_estoque.postos_total} postos
-                        {solvencia.cobertura_estoque.postos_com_combustivel < solvencia.cobertura_estoque.postos_total
-                          ? " — nos demais o sensor não está sincronizando, então o combustível não é contabilizado."
-                          : "."}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Passivo do Mês (Contas a Pagar)</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8, color: "var(--color-negative)" }}>
-                      {formatCurrency(solvencia.passivo?.contas_pagar || 0)}
-                    </div>
-                    <table className="dreTable" style={{ marginTop: 12, fontSize: 12 }}>
-                      <tbody>
-                        <tr><td>Títulos em aberto</td><td>{solvencia.passivo?.qtd_titulos || 0}</td></tr>
-                        <tr><td>Já vencido</td><td style={{ color: (solvencia.passivo?.vencido || 0) > 0 ? "var(--color-warning)" : "inherit" }}>{formatCurrency(solvencia.passivo?.vencido || 0)}</td></tr>
-                        <tr><td>A vencer</td><td>{formatCurrency((solvencia.passivo?.contas_pagar || 0) - (solvencia.passivo?.vencido || 0))}</td></tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Índices */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginTop: 16 }}>
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Índice de Liquidez Corrente</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8 }}>
-                      {solvencia.tem_ativo_dados ? (solvencia.indices?.liquidez_corrente || 0).toFixed(2).replace(".", ",") : "—"}
-                    </div>
-                    <div className="calcFootnote">Ativo circulante ÷ passivo do mês. Igual ou acima de 1,00 significa que os ativos cobrem o passivo.</div>
-                  </div>
-                  <div className="card" style={{ padding: 20 }}>
-                    <div className="sectionEyebrow">Capital de Giro Líquido</div>
-                    <div style={{ fontSize: 26, fontWeight: 700, marginTop: 8, color: solvencia.tem_ativo_dados ? ((solvencia.indices?.capital_giro_liquido || 0) >= 0 ? "var(--color-positive)" : "var(--color-negative)") : "inherit" }}>
-                      {solvencia.tem_ativo_dados ? formatCurrency(solvencia.indices?.capital_giro_liquido || 0) : "—"}
-                    </div>
-                    <div className="calcFootnote">Ativo circulante − passivo do mês. Positivo indica folga de caixa; negativo, aperto.</div>
-                  </div>
-                </div>
-
-                {/* Detalhe por filial (consolidado) */}
-                {solvencia.consolidado && (solvencia.por_filial?.length || 0) > 0 && (
-                  <div className="card" style={{ marginTop: 16 }}>
-                    <div className="sectionEyebrow">Por posto</div>
-                    <div style={{ overflowX: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 8 }}>
-                        <thead>
-                          <tr style={{ borderBottom: "1px solid var(--color-border)", textAlign: "right" }}>
-                            <th style={{ padding: "6px 4px", textAlign: "left" }}>Posto</th>
-                            <th style={{ padding: "6px 4px" }}>Ativo circulante</th>
-                            <th style={{ padding: "6px 4px" }}>Contas a pagar</th>
-                            <th style={{ padding: "6px 4px" }}>Já vencido</th>
-                            <th style={{ padding: "6px 4px" }}>Liquidez</th>
-                            <th style={{ padding: "6px 4px" }}>Capital de giro</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {solvencia.por_filial.map((f: any) => (
-                            <tr key={f.id_filial} style={{ borderBottom: "1px solid var(--color-border-subtle)", textAlign: "right" }}>
-                              <td style={{ padding: "6px 4px", textAlign: "left" }}>{f.filial_label}</td>
-                              <td style={{ padding: "6px 4px" }}>{f.tem_ativo_dados ? formatCurrency(f.ativo_circulante) : "—"}</td>
-                              <td style={{ padding: "6px 4px" }}>{formatCurrency(f.passivo_contas_pagar)}</td>
-                              <td style={{ padding: "6px 4px", color: f.passivo_vencido > 0 ? "var(--color-warning)" : "inherit" }}>{formatCurrency(f.passivo_vencido)}</td>
-                              <td style={{ padding: "6px 4px" }}>{f.tem_ativo_dados ? f.liquidez_corrente.toFixed(2).replace(".", ",") : "—"}</td>
-                              <td style={{ padding: "6px 4px", color: f.tem_ativo_dados ? (f.capital_giro_liquido >= 0 ? "var(--color-positive)" : "var(--color-negative)") : "inherit" }}>{f.tem_ativo_dados ? formatCurrency(f.capital_giro_liquido) : "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                <div className="calcFootnote" style={{ marginTop: 12 }}>
-                  {solvencia.disclaimer}
-                </div>
-              </>
-            ) : (
-              <EmptyState
-                title="Preparando a análise de solvência"
-                detail="Estamos consolidando as contas a pagar e os ativos do mês. Volte em instantes."
-              />
-            )}
-          </div>
+        {effectiveTab === "anp" && (
+          <AnpCompliancePanel
+            data={anp}
+            loading={anpLoading}
+            scope={scope}
+            dtIni={anpDtIni}
+            dtFim={anpDtFim}
+            onPeriodChange={(ini, fim) => {
+              setAnpDtIni(ini);
+              setAnpDtFim(fim);
+            }}
+            onConfigSaved={() => setAnpReload((x) => x + 1)}
+          />
         )}
 
         {/* Explanations */}

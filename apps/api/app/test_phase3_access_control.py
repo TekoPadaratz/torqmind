@@ -23,6 +23,8 @@ from app.permissions import (
     _is_sensitive_key,
     redact_sensitive,
     fix_mojibake,
+    expand_screen_permissions,
+    normalize_screen_permissions_for_save,
 )
 
 
@@ -374,10 +376,11 @@ class TestForcePasswordChangeDB(unittest.TestCase):
             yield mock
 
         with patch("app.db.get_conn", _fake_conn), \
+             patch("app.repos_mfa.get_encrypted_secret", return_value=None), \
              patch("app.routes_auth.verify_password", return_value=False):
             resp = self.client.post("/auth/change-password", json={
                 "current_password": "old",
-                "new_password": "newpassword123",
+                "new_password": "Newpassword123!",
             })
         # Should NOT be 403 password_change_required; expect 400 wrong_password
         if resp.status_code == 403:
@@ -510,11 +513,12 @@ class TestChangePasswordSuccess(unittest.TestCase):
             yield mock
 
         with patch("app.db.get_conn", _fake_conn), \
+             patch("app.repos_mfa.get_encrypted_secret", return_value=None), \
              patch("app.routes_auth.verify_password", return_value=True), \
              patch("app.routes_auth.hash_password", return_value="newhash"):
             resp = self.client.post("/auth/change-password", json={
                 "current_password": "oldpass",
-                "new_password": "newpassword123",
+                "new_password": "Newpassword123!",
             })
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
@@ -560,7 +564,7 @@ class TestKioskScreenRestrictions(unittest.TestCase):
         """tenant_manager with product screens should pass."""
         from app.permissions import validate_screen_permissions_for_role
         result = validate_screen_permissions_for_role("tenant_manager", ["dashboard_home", "sales", "cash"])
-        self.assertEqual(result, ["dashboard_home", "sales", "cash"])
+        self.assertEqual(result, ["cash", "dashboard_home", "sales"])
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +702,38 @@ class TestRequireNotKiosk(unittest.TestCase):
         from app.permissions import require_not_kiosk
         checker = require_not_kiosk()
         checker(claims=_owner_claims())
+
+
+
+# ---------------------------------------------------------------------------
+# 15) expand / normalize screen permissions (profit_management panels)
+# ---------------------------------------------------------------------------
+
+class TestProfitManagementScreenPermissions(unittest.TestCase):
+    """Unit tests for parent↔panel expansion and orphan-panel drop on save."""
+
+    def test_expand_parent_includes_overview_and_products(self):
+        expanded = expand_screen_permissions({"profit_management"})
+        self.assertIn("profit_management", expanded)
+        self.assertIn("profit_management.overview", expanded)
+        self.assertIn("profit_management.products", expanded)
+
+    def test_expand_panel_includes_parent(self):
+        expanded = expand_screen_permissions({"profit_management.overview"})
+        self.assertIn("profit_management.overview", expanded)
+        self.assertIn("profit_management", expanded)
+
+    def test_normalize_orphan_panel_dropped(self):
+        saved = normalize_screen_permissions_for_save(["profit_management.overview"])
+        self.assertNotIn("profit_management.overview", saved)
+        self.assertEqual(saved, [])
+
+    def test_normalize_parent_and_panel_kept(self):
+        saved = normalize_screen_permissions_for_save(
+            ["profit_management", "profit_management.overview"]
+        )
+        self.assertIn("profit_management", saved)
+        self.assertIn("profit_management.overview", saved)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,19 @@
-"""Central screen-level authorization for TorqMind BI.
+"""Central screen/panel authorization for TorqMind BI.
 
-Every BI route maps to a ``screen_key``.  Access is granted based on:
+Every BI route maps to a ``screen_key`` (menu) or panel key
+(``menu.panel``). Access is granted based on:
 
 1. **Role defaults** — platform_master / tenant_admin get all screens.
 2. **Explicit permissions** — tenant_manager / tenant_viewer / tenant_kiosk
    require rows in ``auth.user_screen_permissions``.
 3. **Sensitive-field redaction** — margin/profit/cost fields are stripped
    from API responses for roles without financial visibility.
+
+Hierarchy:
+- Menu keys (no ``parent``) appear in the product nav.
+- Panel keys have ``parent`` = menu key (aba/painel dentro do menu).
+- Unchecking a menu clears all of its panels (admin UI).
+- Legacy rows with only the menu key expand to all of its panels at read time.
 
 Usage in routes::
 
@@ -20,6 +27,9 @@ Usage in routes::
     ):
         data = build_payload(...)
         return redact_sensitive(data, claims)
+
+    # Painel/aba:
+    _screen=Depends(require_screen("profit_management.overview"))
 """
 from __future__ import annotations
 
@@ -32,8 +42,13 @@ from fastapi import Depends, HTTPException
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────
-# Screen registry  (add new screens here — no migration needed)
+# Screen registry  (add new menus/panels here — no migration needed)
 # ──────────────────────────────────────────────────────────────────────
+# Contratos:
+# - Menu = item de navegação (PRODUCT_LINKS / AppNav).
+# - Panel = aba ou painel dentro do menu (chave ``parent.panel``).
+# - Toda nova aba/painel DEVE ser registrada aqui + require_screen no endpoint
+#   + checkbox no cadastro de usuário (árvore via screen_permission_tree()).
 SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
     "dashboard_home": {
         "label": "Dashboard",
@@ -55,6 +70,18 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "category": "Operação",
         "has_sensitive": False,
     },
+    "fraud.core": {
+        "label": "Cancelamentos e operadores",
+        "category": "Operação",
+        "parent": "fraud",
+        "has_sensitive": False,
+    },
+    "fraud.risco_financeiro": {
+        "label": "Risco financeiro / créditos",
+        "category": "Operação",
+        "parent": "fraud",
+        "has_sensitive": False,
+    },
     "finance": {
         "label": "Financeiro",
         "category": "Financeiro",
@@ -70,15 +97,89 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "category": "Comercial",
         "has_sensitive": False,
     },
+    "competitor_pricing.register": {
+        "label": "Registrar preços",
+        "category": "Comercial",
+        "parent": "competitor_pricing",
+        "has_sensitive": False,
+    },
+    "competitor_pricing.history": {
+        "label": "Histórico",
+        "category": "Comercial",
+        "parent": "competitor_pricing",
+        "has_sensitive": False,
+    },
+    "competitor_pricing.comparison": {
+        "label": "Comparativo",
+        "category": "Comercial",
+        "parent": "competitor_pricing",
+        "has_sensitive": False,
+    },
     "goals_team": {
         "label": "Metas & Equipe",
         "category": "Equipe",
+        "has_sensitive": True,
+    },
+    "goals_team.metas": {
+        "label": "Metas",
+        "category": "Equipe",
+        "parent": "goals_team",
+        "has_sensitive": True,
+    },
+    "goals_team.comissoes": {
+        "label": "Comissões",
+        "category": "Equipe",
+        "parent": "goals_team",
+        "has_sensitive": True,
+    },
+    "goals_team.config": {
+        "label": "Config. comissões",
+        "category": "Equipe",
+        "parent": "goals_team",
+        "has_sensitive": True,
+    },
+    "goals_team.orcamento": {
+        "label": "Orçamento",
+        "category": "Equipe",
+        "parent": "goals_team",
         "has_sensitive": True,
     },
     "profit_management": {
         "label": "Gestão de Lucro",
         "category": "Financeiro",
         "has_sensitive": True,
+    },
+    "profit_management.overview": {
+        "label": "Visão Geral (DRE)",
+        "category": "Financeiro",
+        "parent": "profit_management",
+        "has_sensitive": True,
+    },
+    "profit_management.products": {
+        "label": "Produtos",
+        "category": "Financeiro",
+        "parent": "profit_management",
+        "has_sensitive": True,
+    },
+    "profit_management.repricing": {
+        "label": "Oportunidades",
+        "category": "Financeiro",
+        "parent": "profit_management",
+        "has_sensitive": True,
+    },
+    "profit_management.solvencia": {
+        "label": "Solvência",
+        "category": "Financeiro",
+        "parent": "profit_management",
+        "has_sensitive": True,
+        "requires_sensitive_role": True,
+    },
+    "profit_management.anp": {
+        "label": "Compliance ANP",
+        "category": "Financeiro",
+        "parent": "profit_management",
+        "has_sensitive": True,
+        "requires_sensitive_role": True,
     },
     "platform": {
         "label": "Plataforma",
@@ -104,6 +205,79 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
 }
 
+
+def is_menu_screen(screen_key: str) -> bool:
+    meta = SCREEN_REGISTRY.get(screen_key) or {}
+    return bool(meta) and not meta.get("parent") and not meta.get("platform_only")
+
+
+def is_panel_screen(screen_key: str) -> bool:
+    return bool((SCREEN_REGISTRY.get(screen_key) or {}).get("parent"))
+
+
+def screen_children(parent_key: str) -> List[str]:
+    return sorted(
+        k for k, v in SCREEN_REGISTRY.items() if v.get("parent") == parent_key
+    )
+
+
+def expand_screen_permissions(raw: Set[str]) -> Set[str]:
+    """Normalize ACL set for runtime checks.
+
+    - Parent present without any of its panels → grant all panels (legado).
+    - Any panel present → ensure parent is present (nav + pré-requisito).
+    """
+    result = {k for k in raw if k in SCREEN_REGISTRY}
+    parents = {
+        k for k, v in SCREEN_REGISTRY.items()
+        if not v.get("parent") and not v.get("platform_only") and not v.get("kiosk_only")
+    }
+    for parent in parents:
+        children = screen_children(parent)
+        if not children:
+            continue
+        has_parent = parent in result
+        has_child = any(c in result for c in children)
+        if has_parent and not has_child:
+            result.update(children)
+        elif has_child and not has_parent:
+            result.add(parent)
+    return result
+
+
+def screen_permission_tree(*, include_kiosk: bool = False, include_platform: bool = False) -> List[Dict[str, Any]]:
+    """Árvore menu → painéis para o cadastro de usuário / contrato FE."""
+    menus: List[Dict[str, Any]] = []
+    for key, meta in SCREEN_REGISTRY.items():
+        if meta.get("parent"):
+            continue
+        if meta.get("platform_only") and not include_platform:
+            continue
+        if meta.get("kiosk_only") and not include_kiosk:
+            continue
+        children = []
+        for child_key in screen_children(key):
+            child = SCREEN_REGISTRY[child_key]
+            children.append(
+                {
+                    "key": child_key,
+                    "label": child.get("label") or child_key,
+                    "requires_sensitive_role": bool(child.get("requires_sensitive_role")),
+                }
+            )
+        menus.append(
+            {
+                "key": key,
+                "label": meta.get("label") or key,
+                "category": meta.get("category"),
+                "kiosk_only": bool(meta.get("kiosk_only")),
+                "panels": children,
+            }
+        )
+    menus.sort(key=lambda m: (m.get("category") or "", m.get("label") or ""))
+    return menus
+
+
 # Keys available to each role *by default* (without explicit DB rows).
 # tenant_manager / tenant_viewer / tenant_kiosk must have explicit rows.
 _ALL_PRODUCT_SCREENS = {
@@ -118,6 +292,10 @@ _TV_SCREENS = {
     if v.get("kiosk_only")
 }
 
+_MENU_PRODUCT_SCREENS = {
+    k for k in _ALL_PRODUCT_SCREENS if is_menu_screen(k)
+}
+
 ROLE_DEFAULT_SCREENS: Dict[str, Set[str]] = {
     "platform_master": _ALL_SCREENS,
     "platform_admin": _ALL_SCREENS - {"platform"},  # no finance but has ops
@@ -126,6 +304,21 @@ ROLE_DEFAULT_SCREENS: Dict[str, Set[str]] = {
     "tenant_admin": _ALL_PRODUCT_SCREENS,
 }
 # tenant_manager, tenant_viewer, tenant_kiosk → from DB only
+# (mas o default de criação/backfill é acesso completo ao produto — ver abaixo)
+
+
+def default_explicit_screen_permissions(role: str) -> List[str]:
+    """Permissões iniciais para roles que gravam no DB.
+
+    - tenant_manager / tenant_viewer → todos os menus + painéis do produto
+    - tenant_kiosk → telas TV
+    Roles altas (master/admin/owner) não usam esta lista: vêm de ROLE_DEFAULT_SCREENS.
+    """
+    if role == "tenant_kiosk":
+        return sorted(_TV_SCREENS)
+    if role in {"tenant_manager", "tenant_viewer"}:
+        return sorted(_ALL_PRODUCT_SCREENS)
+    return []
 
 # ──────────────────────────────────────────────────────────────────────
 # Sensitive field names (lowercase) to redact for non-financial roles
@@ -175,20 +368,20 @@ _FINANCIAL_ROLES: Set[str] = {
 # ──────────────────────────────────────────────────────────────────────
 
 def get_allowed_screens(claims: dict[str, Any]) -> Set[str]:
-    """Return the set of screen_keys this user can access.
+    """Return the set of screen_keys this user can access (menus + panels).
 
     For platform/admin/owner roles the default set is returned.
     For tenant_manager/viewer/kiosk the set is read from the JWT claims
-    which were populated during session building.
+    which were populated during session building (already expanded).
     """
     cached = claims.get("allowed_screens")
     if cached is not None:
-        return set(cached)
+        return expand_screen_permissions(set(cached))
 
     user_role: str = claims.get("user_role") or ""
     defaults = ROLE_DEFAULT_SCREENS.get(user_role)
     if defaults is not None:
-        return defaults
+        return set(defaults)
 
     # Fallback: should not happen if session builder ran correctly
     return set()
@@ -227,7 +420,8 @@ def resolve_default_route(claims: dict[str, Any]) -> str:
         # First product screen in product order
         ordered = [
             "dashboard_home", "sales", "cash", "fraud",
-            "customers", "finance", "competitor_pricing", "goals_team",
+            "customers", "finance", "profit_management",
+            "competitor_pricing", "goals_team",
         ]
         for key in ordered:
             if key in screens:
@@ -238,6 +432,7 @@ def resolve_default_route(claims: dict[str, Any]) -> str:
                     "fraud": "/fraud",
                     "customers": "/customers",
                     "finance": "/finance",
+                    "profit_management": "/profit-management",
                     "competitor_pricing": "/pricing",
                     "goals_team": "/goals",
                 }
@@ -420,13 +615,14 @@ def validate_screen_permissions_for_role(role: str, screen_keys: List[str]) -> L
     """Validate that screen_keys are allowed for the given role.
 
     Raises HTTPException(422) if any disallowed key is found.
-    Returns the validated list.
+    Returns the validated (normalized) list.
     """
+    normalized = normalize_screen_permissions_for_save(screen_keys)
     allowed = _ALLOWED_SCREENS_BY_ROLE.get(role)
     if allowed is None:
-        return screen_keys  # admin/owner roles — no restriction
+        return normalized  # admin/owner roles — no restriction
 
-    disallowed = [k for k in screen_keys if k not in allowed]
+    disallowed = [k for k in normalized if k not in allowed]
     if disallowed:
         raise HTTPException(
             status_code=422,
@@ -436,7 +632,7 @@ def validate_screen_permissions_for_role(role: str, screen_keys: List[str]) -> L
                 "disallowed": sorted(disallowed),
             },
         )
-    return screen_keys
+    return normalized
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -449,20 +645,32 @@ def load_user_screen_permissions(conn, user_id: str) -> Set[str]:
         "SELECT screen_key FROM auth.user_screen_permissions WHERE user_id = %s::uuid",
         (user_id,),
     )
-    return {row["screen_key"] for row in cur.fetchall()}
+    return expand_screen_permissions({row["screen_key"] for row in cur.fetchall()})
+
+
+def normalize_screen_permissions_for_save(screen_keys: List[str]) -> List[str]:
+    """Persist only known keys; drop orphan panels whose menu is unchecked."""
+    raw = {k for k in screen_keys if k in SCREEN_REGISTRY}
+    cleaned: Set[str] = set()
+    for key in raw:
+        parent = (SCREEN_REGISTRY.get(key) or {}).get("parent")
+        if parent and parent not in raw:
+            continue
+        cleaned.add(key)
+    return sorted(cleaned)
 
 
 def save_user_screen_permissions(conn, user_id: str, screen_keys: List[str]) -> None:
     """Replace all screen permissions for a user (within current transaction)."""
+    keys = normalize_screen_permissions_for_save(screen_keys)
     conn.execute(
         "DELETE FROM auth.user_screen_permissions WHERE user_id = %s::uuid",
         (user_id,),
     )
-    for key in screen_keys:
-        if key in SCREEN_REGISTRY:
-            conn.execute(
-                """INSERT INTO auth.user_screen_permissions (user_id, screen_key)
-                   VALUES (%s::uuid, %s)
-                   ON CONFLICT (user_id, screen_key) DO NOTHING""",
-                (user_id, key),
-            )
+    for key in keys:
+        conn.execute(
+            """INSERT INTO auth.user_screen_permissions (user_id, screen_key)
+               VALUES (%s::uuid, %s)
+               ON CONFLICT (user_id, screen_key) DO NOTHING""",
+            (user_id, key),
+        )

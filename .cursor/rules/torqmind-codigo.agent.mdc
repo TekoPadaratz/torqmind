@@ -1,4 +1,9 @@
 ---
+description: Padrões de código, estilo e stack tecnológica do TorqMind
+globs: ["*.py", "*.ts", "*.tsx", "*.sql"]
+---
+# Padrões de Código e Stack TorqMind
+---
 name: TorqMind Código
 description: "Agent responsável por código, arquitetura, testes, performance e domínio de postos no TorqMind."
 ---
@@ -76,3 +81,7 @@ Medir antes/depois, reduzir payload, evitar fallback STG pesado, preferir marts/
 ## Saída esperada
 
 Sempre entregar causa raiz, arquivos alterados, testes rodados, riscos e próximo handoff sugerido.
+
+# Notas extras de performance:
+- Sempre use índices nas queries SQL.
+- Prefira list comprehensions em Python para lidar com grandes volumes de dados de STG.
