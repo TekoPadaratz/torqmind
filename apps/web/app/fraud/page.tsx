@@ -285,6 +285,21 @@ export default function FraudPage() {
     ? credFuncPayload.funcionarios
     : [];
   const credFuncSummary = credFuncPayload?.summary || {};
+  const credFuncMeses = useMemo(() => {
+    const fromApi = Array.isArray(credFuncPayload?.meses_disponiveis)
+      ? credFuncPayload.meses_disponiveis.map((m: any) => Number(m)).filter((m: number) => Number.isFinite(m) && m > 0)
+      : [];
+    const set = new Set<number>([credFuncMonth, ...fromApi]);
+    // Garante janela recente (padrão DRE/Solvência) mesmo sem mash antigo.
+    let cursor = currentAnoMesSP();
+    for (let i = 0; i < 18; i += 1) {
+      set.add(cursor);
+      const y = Math.floor(cursor / 100);
+      const m = cursor % 100;
+      cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
+    }
+    return Array.from(set).sort((a, b) => b - a);
+  }, [credFuncMonth, credFuncPayload?.meses_disponiveis]);
   const credFuncTotalPages = Math.max(1, Math.ceil(credFuncRows.length / pageSize));
   const credFuncPageSafe = Math.min(Math.max(1, credFuncPage), credFuncTotalPages);
   const credFuncPageRows = credFuncRows.slice(
@@ -1094,42 +1109,33 @@ export default function FraudPage() {
                     className="profitFilterBar"
                     style={{ marginTop: 10, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}
                   >
-                    {(
-                      [
-                        { value: "todos", label: "Todos" },
-                        { value: "suspeitos", label: "Só suspeitos" },
-                        { value: "normais", label: "Só normais" },
-                      ] as const
-                    ).map((opt) => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        className={credFuncStatus === opt.value ? "active" : undefined}
-                        onClick={() => setCredFuncStatus(opt.value)}
+                    <label className="profitScopeMonth" title="Mês de referência do crédito funcionário">
+                      <span className="profitScopeMonthLabel">Mês</span>
+                      <select
+                        className="profitScopeMonthSelect"
+                        value={credFuncMonth}
+                        onChange={(e) => setCredFuncMonth(Number(e.target.value))}
+                        aria-label="Mês do crédito funcionário"
                       >
-                        {opt.label}
-                      </button>
-                    ))}
-                    <label className="muted" style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
-                      Mês
-                      <input
-                        type="month"
-                        value={`${Math.floor(credFuncMonth / 100)}-${String(credFuncMonth % 100).padStart(2, "0")}`}
-                        onChange={(e) => {
-                          const [yy, mm] = String(e.target.value || "").split("-");
-                          if (yy && mm) setCredFuncMonth(Number(yy) * 100 + Number(mm));
-                        }}
-                        style={{
-                          border: "1px solid var(--border)",
-                          background: "transparent",
-                          color: "var(--text)",
-                          borderRadius: 6,
-                          padding: "4px 8px",
-                        }}
-                      />
+                        {credFuncMeses.map((m) => (
+                          <option key={m} value={m}>
+                            {fmtAnoMes(m)}
+                          </option>
+                        ))}
+                      </select>
                     </label>
-                    <span className="muted" style={{ fontSize: 12 }}>
-                      {fmtAnoMes(Number(credFuncPayload?.ano_mes || credFuncMonth))} ·{" "}
+                    <select
+                      value={credFuncStatus}
+                      onChange={(e) =>
+                        setCredFuncStatus(e.target.value as "todos" | "suspeitos" | "normais")
+                      }
+                      aria-label="Filtro de status do crédito funcionário"
+                    >
+                      <option value="todos">Status: todos</option>
+                      <option value="suspeitos">Só suspeitos</option>
+                      <option value="normais">Só normais</option>
+                    </select>
+                    <span className="profitFilterCount">
                       {Number(credFuncSummary.suspeitos || 0)} suspeito(s) ·{" "}
                       {formatCurrency(Number(credFuncSummary.usado_total || 0))} usados
                     </span>
@@ -1225,9 +1231,7 @@ export default function FraudPage() {
                                                     : "—"}
                                                 </td>
                                                 <td>
-                                                  {u.nro_cupom
-                                                    ? `Cupom ${u.nro_cupom}`
-                                                    : u.historico || "—"}
+                                                  {u.documento_label || u.documento || "—"}
                                                   {u.atipico ? (
                                                     <span style={{ color: "var(--color-negative)", marginLeft: 6, fontWeight: 600 }}>
                                                       atípico

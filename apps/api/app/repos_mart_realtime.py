@@ -3218,6 +3218,23 @@ def _load_nfe_numbers(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple
     }
 
 
+def _extract_nfce_number(*texts: str) -> str:
+    """Extrai número de NF-e/NFC-e de textos (HISTORICO, nro_documento mash)."""
+    import re
+
+    for text in texts:
+        raw = str(text or "").strip()
+        if not raw:
+            continue
+        m = re.search(r"(?i)(?:NFC-?e|NF-?e)\s*[#:]?\s*(\d+)", raw)
+        if m:
+            return m.group(1)
+        # Mash já pode trazer só o número (ex.: nro_documento='325152').
+        if raw.isdigit() and len(raw) >= 4:
+            return raw
+    return ""
+
+
 def _antifraude_documento(
     numero_nfe: Any, nro_comprovante: int, id_comprovante: int
 ) -> tuple[Any, str, str, Optional[str]]:
@@ -4054,6 +4071,8 @@ def fraud_credito_funcionario(
             """,
             {"id_empresa": int(id_empresa), "ano_mes": ym},
         )
+        # NF/NFC-e canônico via stg_nfe_slim (mesmo contrato do antifraude core).
+        nfe_map = _load_nfe_numbers(int(id_empresa), uso_rows)
         for u in uso_rows:
             fid = int(u["id_funcionario"])
             dt = u.get("dt_evento")
@@ -4061,12 +4080,35 @@ def fraud_credito_funcionario(
                 dt_s = dt.isoformat()
             else:
                 dt_s = str(dt) if dt else None
+            id_filial = int(u.get("id_filial") or 0)
+            id_comp = int(u.get("id_comprovante") or 0)
+            nfe_join = nfe_map.get((id_filial, id_comp), "")
+            # HISTORICO / mash já traz NFC-e em nro_documento — nunca rotular como cupom.
+            nfe_hist = _extract_nfce_number(
+                str(u.get("nro_documento") or ""),
+                str(u.get("historico") or ""),
+            )
+            nro_comp = 0
+            raw_cupom = str(u.get("nro_cupom") or "").strip()
+            if raw_cupom.isdigit():
+                nro_comp = int(raw_cupom)
+            documento_venda, documento_label, documento_source, documento_fiscal = _antifraude_documento(
+                nfe_join or nfe_hist,
+                nro_comp,
+                id_comp,
+            )
             usos_by.setdefault(fid, []).append({
-                "id_filial": u.get("id_filial"),
+                "id_filial": id_filial or None,
                 "id_entidade": u.get("id_entidade"),
                 "id_contasreceber": u.get("id_contasreceber"),
-                "id_comprovante": u.get("id_comprovante") or None,
-                "nro_cupom": u.get("nro_cupom") or u.get("nro_documento") or "",
+                "id_comprovante": id_comp or None,
+                "nro_cupom": raw_cupom,
+                "nro_documento": str(u.get("nro_documento") or ""),
+                "documento": documento_label,
+                "documento_label": documento_label,
+                "documento_venda": documento_venda,
+                "documento_source": documento_source,
+                "documento_fiscal": documento_fiscal,
                 "dt_evento": dt_s,
                 "valor": float(u.get("valor") or 0),
                 "id_usuario_caixa": u.get("id_usuario_caixa") or None,
@@ -4091,6 +4133,20 @@ def fraud_credito_funcionario(
         {"id_empresa": int(id_empresa), "ano_mes": ym},
     )
     summary = summary_rows[0] if summary_rows else {}
+
+    meses_rows = query_dict(
+        f"""
+        SELECT DISTINCT ano_mes
+        FROM {MART_RT_DB}.mart_fraud_credito_funcionario_resumo FINAL
+        WHERE id_empresa = %(id_empresa)s
+          {filial_sql}
+        ORDER BY ano_mes DESC
+        """,
+        {"id_empresa": int(id_empresa)},
+    )
+    meses_disponiveis = [int(r["ano_mes"]) for r in meses_rows if r.get("ano_mes") is not None]
+    if ym not in meses_disponiveis:
+        meses_disponiveis = sorted(set(meses_disponiveis + [ym]), reverse=True)
 
     funcionarios = []
     for r in rows:
@@ -4122,6 +4178,7 @@ def fraud_credito_funcionario(
 
     return {
         "ano_mes": ym,
+        "meses_disponiveis": meses_disponiveis,
         "source": "clickhouse",
         "summary": {
             "total": int(summary.get("total") or 0),
@@ -4133,7 +4190,8 @@ def fraud_credito_funcionario(
         "funcionarios": funcionarios,
         "disclaimer": (
             "Fonte: ClickHouse mart_fraud_credito_funcionario_*. "
-            "Limite LIMITEVALE; uso CONTASRECEBER→cupom→operador. "
+            "Limite LIMITEVALE; uso CONTASRECEBER→comprovante→NF-e/NFC-e. "
+            "Documento exibido = número da nota (join stg_nfe_slim / HISTORICO). "
             "Suspeito = limite extrapolado OR ≥2 usos/dia OR valor atípico."
         ),
     }

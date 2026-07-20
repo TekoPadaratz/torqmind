@@ -10,8 +10,17 @@
 | Uso (título) | `dbo.CONTASRECEBER` | Vendas a prazo; `HISTORICO` traz Cupom/NFC-e |
 | Operador | `dbo.COMPROVANTES.ID_USUARIOS` → `USUARIOS.NOMEUSUARIOS` | Quem liberou no caixa |
 | Data/hora real | `COMPROVANTES.DATA` via cupom | Preferida a `DTACONTA` do título |
+| **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** exibir `id_comprovante` como documento |
 
 `VALECOMBUSTIVEL` / `INSVALECOMBUSTIVEL` estão zerados — controle operacional usa **LIMITEVALE + CONTASRECEBER**.
+
+## Contrato de documento (UI)
+
+1. Preferência: número NF-e/NFC-e (`documento_source=nota_fiscal`)
+2. Fallback: `NROCOMPROVANTE`
+3. Último recurso: `id_comprovante` (rastreio técnico)
+4. Label = só o número (sem prefixo "Cupom"/"Nota")
+5. Filtro de período: seletor **Mês/Ano** (`profitScopeMonthSelect`), igual DRE/Solvência
 
 ## Regras Suspeito (OR)
 

@@ -9997,12 +9997,29 @@ def fraud_credito_funcionario(
             for u in conn.execute(uso_sql, [id_empresa, ym, func_ids]).fetchall():
                 d = dict(u)
                 fid = int(d["id_funcionario"])
+                from app.repos_mart_realtime import _antifraude_documento, _extract_nfce_number
+
+                nfe_hist = _extract_nfce_number(
+                    str(d.get("nro_documento") or ""),
+                    str(d.get("historico") or ""),
+                )
+                raw_cupom = str(d.get("nro_cupom") or "").strip()
+                nro_comp = int(raw_cupom) if raw_cupom.isdigit() else 0
+                id_comp = int(d.get("id_comprovante") or 0)
+                _, documento_label, documento_source, documento_fiscal = _antifraude_documento(
+                    nfe_hist, nro_comp, id_comp,
+                )
                 usos_by.setdefault(fid, []).append({
                     "id_filial": d.get("id_filial"),
                     "id_entidade": d.get("id_entidade"),
                     "id_contasreceber": d.get("id_contasreceber"),
-                    "id_comprovante": d.get("id_comprovante"),
-                    "nro_cupom": d.get("nro_cupom") or d.get("nro_documento") or "",
+                    "id_comprovante": id_comp or None,
+                    "nro_cupom": raw_cupom,
+                    "nro_documento": str(d.get("nro_documento") or ""),
+                    "documento": documento_label,
+                    "documento_label": documento_label,
+                    "documento_source": documento_source,
+                    "documento_fiscal": documento_fiscal,
                     "dt_evento": d.get("dt_evento").isoformat() if d.get("dt_evento") else None,
                     "valor": float(d.get("valor") or 0),
                     "id_usuario_caixa": d.get("id_usuario_caixa"),
