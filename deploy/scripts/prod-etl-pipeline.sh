@@ -20,6 +20,9 @@ INCREMENTAL_SCRIPT="${INCREMENTAL_SCRIPT:-$ROOT_DIR/deploy/scripts/prod-etl-incr
 CLICKHOUSE_SYNC_SCRIPT="${CLICKHOUSE_SYNC_SCRIPT:-$ROOT_DIR/deploy/scripts/prod-clickhouse-sync-dw.sh}"
 CLICKHOUSE_REFRESH_MARTS_SCRIPT="${CLICKHOUSE_REFRESH_MARTS_SCRIPT:-$ROOT_DIR/deploy/scripts/prod-clickhouse-refresh-marts.sh}"
 CLICKHOUSE_INCREMENTAL_ENABLED="${CLICKHOUSE_INCREMENTAL_ENABLED:-true}"
+BI_HOTPATH_CH_PUBLISH="${BI_HOTPATH_CH_PUBLISH:-true}"
+BI_HOTPATH_CH_PUBLISH_SCRIPT="${BI_HOTPATH_CH_PUBLISH_SCRIPT:-$ROOT_DIR/deploy/scripts/prod-bi-hotpath-ch-publish.sh}"
+BI_HOTPATH_CH_PUBLISH_EMPRESA="${BI_HOTPATH_CH_PUBLISH_EMPRESA:-1}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Arquivo de ambiente não encontrado em $ENV_FILE" >&2
@@ -281,6 +284,14 @@ run_clickhouse_incremental_publication() {
     env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_SYNC_SCRIPT"
   run_with_timeout "ClickHouse mart incremental refresh (${stage_label})" \
     env ENV_FILE="$ENV_FILE" COMPOSE_FILE="$COMPOSE_FILE" ALLOW_INSECURE_ENV="$ALLOW_INSECURE_ENV" MODE=incremental "$CLICKHOUSE_REFRESH_MARTS_SCRIPT"
+  if [[ "$BI_HOTPATH_CH_PUBLISH" == "true" || "$BI_HOTPATH_CH_PUBLISH" == "1" ]]; then
+    if [[ -x "$BI_HOTPATH_CH_PUBLISH_SCRIPT" ]]; then
+      run_with_timeout "BI hotpath CH publish (${stage_label})" \
+        env ENV_FILE="$ENV_FILE" "$BI_HOTPATH_CH_PUBLISH_SCRIPT" "$BI_HOTPATH_CH_PUBLISH_EMPRESA" || true
+    else
+      echo "$(date -Iseconds) BI hotpath CH publish script missing: $BI_HOTPATH_CH_PUBLISH_SCRIPT" >&2
+    fi
+  fi
 }
 
 risk_is_due() {
