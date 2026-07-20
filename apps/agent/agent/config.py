@@ -41,7 +41,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": "ID_FUNCIONARIOS",
         "watermark_order_by": "ID_FUNCIONARIOS, ID_FILIAL",
         "full_refresh": True,
-        "enabled": False,
+        # Necessário para antifraude crédito funcionário (LIMITEVALE / VALES).
+        "enabled": True,
     },
     "usuarios": {
         "table": "dbo.USUARIOS",

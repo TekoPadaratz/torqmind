@@ -1387,6 +1387,34 @@ def fraud_overview(
     ), claims)
 
 
+@router.get("/fraud/credito-funcionario")
+def fraud_credito_funcionario(
+    ano_mes: Optional[int] = Query(None, description="YYYYMM; default = mês corrente SP"),
+    status: Optional[str] = Query("todos", description="todos | suspeitos | normais"),
+    refresh: bool = Query(False, description="Recalcula mart antes de ler (default: só se vazia)"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fraud.credito_funcionario")),
+):
+    """Antifraude — crédito/vale de funcionário (LIMITEVALE × usos a prazo)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.fraud_credito_funcionario(
+        role,
+        tenant,
+        filial,
+        ano_mes=ano_mes,
+        status=status or "todos",
+        refresh=bool(refresh),
+        limit=500,
+    )
+    return redact_sensitive({"data": payload}, claims)
+
+
 @router.get("/risk/overview")
 def risk_overview(
     dt_ini: date,

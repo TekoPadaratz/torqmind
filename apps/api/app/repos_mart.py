@@ -9124,3 +9124,182 @@ def upsert_filial_params(role: str, id_empresa: int, id_filial: int, *, abc_thre
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         conn.execute(sql, [id_empresa, id_filial, abc_threshold_a, abc_threshold_b, abc_exclude_fuel])
+
+
+def _ano_mes_from_date(d: date) -> int:
+    return int(d.year) * 100 + int(d.month)
+
+
+def refresh_fraud_credito_funcionario(
+    role: str,
+    id_empresa: int,
+    ano_mes: Optional[int] = None,
+) -> int:
+    """Materializa mart antifraude crédito funcionário para o mês."""
+    ym = int(ano_mes) if ano_mes else _ano_mes_from_date(business_today(id_empresa))
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        row = conn.execute(
+            "SELECT etl.refresh_fraud_credito_funcionario(%s, %s) AS n",
+            [id_empresa, ym],
+        ).fetchone() or {}
+        return int(row.get("n") or 0)
+
+
+def fraud_credito_funcionario(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    ano_mes: Optional[int] = None,
+    status: str = "todos",
+    refresh: bool = False,
+    limit: int = 500,
+) -> Dict[str, Any]:
+    """Grid principal + usos (drill-down) do crédito/vale de funcionário.
+
+    Regras Suspeito (OR): limite extrapolado, >=2 usos no mesmo dia, valor atípico.
+    Refresh só com refresh=true (ETL ~1min; não bloquear GET padrão).
+    """
+    ym = int(ano_mes) if ano_mes else _ano_mes_from_date(business_today(id_empresa))
+    status_key = str(status or "todos").strip().lower()
+    if refresh:
+        try:
+            refresh_fraud_credito_funcionario(role, id_empresa, ym)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "refresh_fraud_credito_funcionario failed empresa=%s mes=%s err=%s",
+                id_empresa, ym, str(exc)[:240],
+            )
+
+    where_filial, branch_params = _branch_scope_clause("r.id_filial_ref", id_filial)
+    status_sql = ""
+    if status_key in ("suspeito", "suspeitos", "suspeitas"):
+        status_sql = "AND r.status = 'Suspeito'"
+    elif status_key in ("normal", "normais"):
+        status_sql = "AND r.status = 'Normal'"
+
+    list_sql = f"""
+      SELECT
+        r.id_funcionario,
+        r.id_filial_ref,
+        r.id_entidade,
+        r.nome_funcionario,
+        r.cpf,
+        r.ativo,
+        r.limite_vale,
+        r.vales_cadastro,
+        r.usado_mes,
+        r.saldo_restante,
+        r.qtd_usos_mes,
+        r.max_usos_mesmo_dia,
+        r.status,
+        r.motivos,
+        r.refreshed_at
+      FROM mart.fraud_credito_funcionario_resumo r
+      WHERE r.id_empresa = %s
+        AND r.ano_mes = %s
+        {where_filial}
+        {status_sql}
+      ORDER BY
+        CASE WHEN r.status = 'Suspeito' THEN 0 ELSE 1 END,
+        r.usado_mes DESC,
+        r.nome_funcionario
+      LIMIT %s
+    """
+    params = [id_empresa, ym] + branch_params + [int(limit)]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        rows = [dict(r) for r in conn.execute(list_sql, params).fetchall()]
+        func_ids = [int(r["id_funcionario"]) for r in rows if r.get("id_funcionario") is not None]
+        usos_by: Dict[int, List[Dict[str, Any]]] = {fid: [] for fid in func_ids}
+        if func_ids:
+            uso_sql = """
+              SELECT
+                u.id_funcionario,
+                u.id_filial,
+                u.id_entidade,
+                u.id_contasreceber,
+                u.id_comprovante,
+                u.nro_cupom,
+                u.nro_documento,
+                u.dt_evento,
+                u.valor,
+                u.id_usuario_caixa,
+                u.operador_caixa,
+                u.historico,
+                u.atipico
+              FROM mart.fraud_credito_funcionario_uso u
+              WHERE u.id_empresa = %s
+                AND u.ano_mes = %s
+                AND u.id_funcionario = ANY(%s)
+              ORDER BY u.dt_evento DESC NULLS LAST, u.valor DESC
+            """
+            for u in conn.execute(uso_sql, [id_empresa, ym, func_ids]).fetchall():
+                d = dict(u)
+                fid = int(d["id_funcionario"])
+                usos_by.setdefault(fid, []).append({
+                    "id_filial": d.get("id_filial"),
+                    "id_entidade": d.get("id_entidade"),
+                    "id_contasreceber": d.get("id_contasreceber"),
+                    "id_comprovante": d.get("id_comprovante"),
+                    "nro_cupom": d.get("nro_cupom") or d.get("nro_documento") or "",
+                    "dt_evento": d.get("dt_evento").isoformat() if d.get("dt_evento") else None,
+                    "valor": float(d.get("valor") or 0),
+                    "id_usuario_caixa": d.get("id_usuario_caixa"),
+                    "operador_caixa": d.get("operador_caixa") or "—",
+                    "historico": d.get("historico") or "",
+                    "atipico": bool(d.get("atipico")),
+                })
+
+        summary = conn.execute(
+            f"""
+              SELECT
+                count(*)::int AS total,
+                count(*) FILTER (WHERE status = 'Suspeito')::int AS suspeitos,
+                count(*) FILTER (WHERE status = 'Normal')::int AS normais,
+                coalesce(sum(usado_mes),0)::numeric(18,2) AS usado_total,
+                coalesce(sum(limite_vale),0)::numeric(18,2) AS limite_total
+              FROM mart.fraud_credito_funcionario_resumo r
+              WHERE r.id_empresa = %s AND r.ano_mes = %s
+              {where_filial}
+            """,
+            [id_empresa, ym] + branch_params,
+        ).fetchone() or {}
+
+    funcionarios = []
+    for r in rows:
+        fid = int(r["id_funcionario"])
+        funcionarios.append({
+            "id_funcionario": fid,
+            "id_filial": r.get("id_filial_ref"),
+            "id_entidade": r.get("id_entidade"),
+            "nome": r.get("nome_funcionario") or "",
+            "cpf": r.get("cpf") or "",
+            "ativo": bool(r.get("ativo")),
+            "limite": float(r.get("limite_vale") or 0),
+            "vales_cadastro": float(r.get("vales_cadastro") or 0),
+            "usado_mes": float(r.get("usado_mes") or 0),
+            "saldo_restante": float(r.get("saldo_restante") or 0),
+            "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
+            "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
+            "status": r.get("status") or "Normal",
+            "motivos": list(r.get("motivos") or []),
+            "usos": usos_by.get(fid, []),
+            "refreshed_at": r.get("refreshed_at").isoformat() if r.get("refreshed_at") else None,
+        })
+
+    return {
+        "ano_mes": ym,
+        "summary": {
+            "total": int(summary.get("total") or 0),
+            "suspeitos": int(summary.get("suspeitos") or 0),
+            "normais": int(summary.get("normais") or 0),
+            "usado_total": float(summary.get("usado_total") or 0),
+            "limite_total": float(summary.get("limite_total") or 0),
+        },
+        "funcionarios": funcionarios,
+        "disclaimer": (
+            "Limite: FUNCIONARIOS.LIMITEVALE. Uso: CONTASRECEBER a prazo do cliente "
+            "vinculado por CPF, com data/operador resolvidos via cupom no comprovante. "
+            "Suspeito = limite extrapolado OR ≥2 usos no mesmo dia OR valor atípico vs histórico 90d."
+        ),
+    }
