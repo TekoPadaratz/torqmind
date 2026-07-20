@@ -169,22 +169,27 @@ export default function ProfitManagementPage() {
   });
 
   const { data: productsData } = useBiScopeData<any>({
-    moduleKey: "profit_products",
+    moduleKey: `profit_products:mes=${profitMonth}`,
     scope,
     errorMessage: "",
     buildRequestUrl: (currentScope, session) => {
       if (!canAccessScreenKey(session, "profit_management.products")) return null;
-      return `/bi/profit-management/products?${buildScopeParams(currentScope).toString()}&limit=1000`;
+      const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
+      p.set("limit", "1000");
+      return `/bi/profit-management/products?${p.toString()}`;
     },
   });
 
   const { data: repricingData } = useBiScopeData<any>({
-    moduleKey: "profit_repricing",
+    moduleKey: `profit_repricing:mes=${profitMonth}`,
     scope,
     errorMessage: "",
     buildRequestUrl: (currentScope, session) => {
       if (!canAccessScreenKey(session, "profit_management.repricing")) return null;
-      return `/bi/profit-management/repricing?${buildScopeParams(currentScope).toString()}`;
+      const p = buildScopeParams(currentScope);
+      p.set("ano_mes", String(profitMonth));
+      return `/bi/profit-management/repricing?${p.toString()}`;
     },
   });
 

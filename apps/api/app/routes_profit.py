@@ -180,6 +180,47 @@ def _resolve_reference_month(id_empresa: int, branch_ids: List[int]) -> Optional
     return int(result) if result else None
 
 
+def _parse_ano_mes_query(ano_mes: Optional[int]) -> Optional[int]:
+    if ano_mes is None:
+        return None
+    ym = int(ano_mes)
+    mm = ym % 100
+    if ym >= 190001 and 1 <= mm <= 12:
+        return ym
+    return None
+
+
+def _resolve_product_month(
+    id_empresa: int,
+    branch_ids: List[int],
+    ano_mes_q: Optional[int] = None,
+) -> Optional[int]:
+    """Mês para Produtos/Oportunidades: query explícita, senão último mês com linhas no mart de produto.
+
+    Não usar só o mês do DRE — refresh de produto pode atrasar e a aba fica vazia
+    enquanto DRE/despesas já avançaram.
+    """
+    explicit = _parse_ano_mes_query(ano_mes_q)
+    if explicit is not None:
+        return explicit
+
+    params: Dict[str, Any] = {"id_empresa": id_empresa}
+    branch_clause = _branch_filter_sql(branch_ids, params)
+    sql = f"""
+        SELECT ano_mes
+        FROM torqmind_mart_rt.profit_produto_mensal FINAL
+        WHERE id_empresa = %(id_empresa)s
+          {branch_clause}
+          AND receita > 0
+        ORDER BY ano_mes DESC
+        LIMIT 1
+    """
+    result = query_scalar(sql, params)
+    if result:
+        return int(result)
+    return _resolve_reference_month(id_empresa, branch_ids)
+
+
 def _previous_month(ano_mes: int) -> int:
     year = ano_mes // 100
     month = ano_mes % 100
@@ -581,6 +622,7 @@ def profit_expenses(
 
 @router.get("/products")
 def profit_products(
+    ano_mes: Optional[int] = Query(None, description="Mês YYYYMM; default = último mês com dados em profit_produto_mensal"),
     id_empresa: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
@@ -599,7 +641,7 @@ def profit_products(
     if not branch_ids:
         return {"data": None}
 
-    ref_month = _resolve_reference_month(tenant_id, branch_ids)
+    ref_month = _resolve_product_month(tenant_id, branch_ids, ano_mes_q=ano_mes)
     if not ref_month:
         return {"data": None, "message": "Sem dados de produtos."}
 
@@ -754,6 +796,7 @@ def profit_products(
 
 @router.get("/repricing")
 def profit_repricing(
+    ano_mes: Optional[int] = Query(None, description="Mês YYYYMM; default = último mês com dados em profit_produto_mensal"),
     id_empresa: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
@@ -768,7 +811,7 @@ def profit_repricing(
     if not branch_ids:
         return {"data": None}
 
-    ref_month = _resolve_reference_month(tenant_id, branch_ids)
+    ref_month = _resolve_product_month(tenant_id, branch_ids, ano_mes_q=ano_mes)
     if not ref_month:
         return {"data": None, "message": "Sem dados para simulação."}
 

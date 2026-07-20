@@ -214,11 +214,16 @@ echo "profit_despesas_mensal rows: $DESP_COUNT"
 echo ""
 echo "--- Step 4: Refreshing profit_produto_mensal ---"
 
+# Numeric(8,4) = |x| < 10000. Ratios extremos (custo ~0, outliers) quebravam o
+# refresh inteiro e deixavam o mart sem meses recentes — Produtos/Oportunidades
+# liam o mês do DRE e voltavam vazios. Clamp defensivo + NULLIF nas divisões.
+
 pg_to_ch "INSERT INTO torqmind_mart_rt.profit_produto_mensal FORMAT TabSeparated" "
 WITH desp_filial AS (
   SELECT id_empresa, id_filial, ano_mes_competencia AS ano_mes, SUM(valor)::numeric(18,2) AS desp_rateavel
   FROM dw.fact_despesa_operacional
-  WHERE id_empresa = ${ID_EMPRESA} AND entra_rateio_produto = true AND ano_mes_competencia >= 202401
+  WHERE id_empresa = ${ID_EMPRESA} AND entra_rateio_produto = true
+    AND ano_mes_competencia >= 202401 AND ano_mes_competencia < 203001
   GROUP BY id_empresa, id_filial, ano_mes_competencia
 ),
 base AS (
@@ -243,11 +248,11 @@ base AS (
     ) AS setor_gerencial,
     SUM(fvi.qtd)::numeric(18,3) AS qtd_vendida,
     SUM(fvi.total)::numeric(18,2) AS receita,
-    COALESCE((ARRAY_AGG((fvi.total / fvi.qtd)::numeric(18,4) ORDER BY fvi.data_key DESC, fvi.id_comprovante DESC))[1], 0) AS preco_medio,
-    COALESCE((ARRAY_AGG(CASE WHEN fvi.custo_total > 0 THEN (fvi.custo_total / fvi.qtd)::numeric(18,4) END ORDER BY fvi.data_key DESC, fvi.id_comprovante DESC))[1], 0) AS custo_medio,
+    COALESCE((ARRAY_AGG((fvi.total / NULLIF(fvi.qtd,0))::numeric(18,4) ORDER BY fvi.data_key DESC, fvi.id_comprovante DESC))[1], 0) AS preco_medio,
+    COALESCE((ARRAY_AGG(CASE WHEN fvi.custo_total > 0 THEN (fvi.custo_total / NULLIF(fvi.qtd,0))::numeric(18,4) END ORDER BY fvi.data_key DESC, fvi.id_comprovante DESC))[1], 0) AS custo_medio,
     SUM(fvi.custo_total)::numeric(18,2) AS cmv,
     (SUM(fvi.total) - SUM(fvi.custo_total))::numeric(18,2) AS margem_bruta,
-    CASE WHEN SUM(fvi.total) > 0 THEN ((SUM(fvi.total) - SUM(fvi.custo_total)) / SUM(fvi.total))::numeric(8,4) ELSE 0 END AS margem_bruta_pct,
+    CASE WHEN SUM(fvi.total) > 0 THEN LEAST(9999.9999, GREATEST(-9999.9999, (SUM(fvi.total) - SUM(fvi.custo_total)) / SUM(fvi.total)))::numeric(8,4) ELSE 0 END AS margem_bruta_pct,
     SUM(SUM(fvi.total)) OVER (PARTITION BY fvi.id_empresa, fvi.id_filial, (fvi.data_key / 100),
       CASE
         WHEN dp.id_grupo_produto = 1 THEN 'combustivel'
@@ -297,7 +302,7 @@ SELECT
     p.cmv,
     p.margem_bruta,
     p.margem_bruta_pct,
-    CASE WHEN p.receita_setor > 0 THEN (p.receita / p.receita_setor)::numeric(8,4) ELSE 0 END AS participacao_receita_setor,
+    CASE WHEN p.receita_setor > 0 THEN LEAST(9999.9999, GREATEST(-9999.9999, p.receita / p.receita_setor))::numeric(8,4) ELSE 0 END AS participacao_receita_setor,
     CASE WHEN p.receita_total_filial > 0
          THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial))::numeric(18,2)
          ELSE 0 END AS desp_operacional_rateada,
@@ -306,10 +311,10 @@ SELECT
          ELSE 0 END AS desp_operacional_unitaria,
     (p.receita - p.cmv - (CASE WHEN p.receita_total_filial > 0 THEN p.desp_rateavel_filial * (p.receita / p.receita_total_filial) ELSE 0 END))::numeric(18,2) AS lucro_gerencial_estimado,
     CASE WHEN p.receita > 0
-         THEN ((p.receita - p.cmv - (CASE WHEN p.receita_total_filial > 0 THEN p.desp_rateavel_filial * (p.receita / p.receita_total_filial) ELSE 0 END)) / p.receita)::numeric(8,4)
+         THEN LEAST(9999.9999, GREATEST(-9999.9999, (p.receita - p.cmv - (CASE WHEN p.receita_total_filial > 0 THEN p.desp_rateavel_filial * (p.receita / p.receita_total_filial) ELSE 0 END)) / p.receita))::numeric(8,4)
          ELSE 0 END AS margem_gerencial_pct,
     CASE WHEN (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END)) > 0
-         THEN (p.preco_medio / (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END)))::numeric(8,4)
+         THEN LEAST(9999.9999, GREATEST(-9999.9999, p.preco_medio / (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))))::numeric(8,4)
          ELSE 0 END AS markup_real,
     (p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))::numeric(18,4) AS preco_minimo_saudavel,
     ((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
@@ -327,7 +332,7 @@ SELECT
                      ELSE 0.25 END))
         - p.preco_medio
     )::numeric(18,4) AS reajuste_sugerido_valor,
-    CASE WHEN p.preco_medio > 0 THEN greatest(0,
+    CASE WHEN p.preco_medio > 0 THEN LEAST(9999.9999, greatest(0,
         (((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
         / (1 - CASE WHEN p.setor_gerencial = 'conveniencia' THEN 0.30
                      WHEN p.setor_gerencial = 'automotivo' THEN 0.30
@@ -335,7 +340,7 @@ SELECT
                      WHEN p.setor_gerencial = 'combustivel' THEN 0.08
                      ELSE 0.25 END))
         - p.preco_medio) / p.preco_medio
-    )::numeric(8,4) ELSE 0 END AS reajuste_sugerido_pct,
+    ))::numeric(8,4) ELSE 0 END AS reajuste_sugerido_pct,
     p.qtd_vendida AS qtd_mes_anterior,
     (greatest(0,
         ((p.custo_medio + (CASE WHEN p.qtd_vendida > 0 AND p.receita_total_filial > 0 THEN (p.desp_rateavel_filial * (p.receita / p.receita_total_filial)) / p.qtd_vendida ELSE 0 END))
