@@ -1109,6 +1109,42 @@ export default function FraudPage() {
                     className="profitFilterBar"
                     style={{ marginTop: 10, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}
                   >
+                    {(
+                      [
+                        { value: "todos", label: "Todos" },
+                        { value: "suspeitos", label: "Só suspeitos" },
+                        { value: "normais", label: "Só normais" },
+                      ] as const
+                    ).map((opt) => {
+                      const active = credFuncStatus === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => {
+                            if (opt.value === credFuncStatus) return;
+                            setCredFuncStatus(opt.value);
+                          }}
+                          style={{
+                            border: active
+                              ? "1px solid var(--color-accent, var(--accent-copper, #3b82f6))"
+                              : "1px solid var(--border)",
+                            background: active
+                              ? "var(--accent-copper-soft, rgba(59,130,246,0.12))"
+                              : "transparent",
+                            color: "var(--text)",
+                            borderRadius: 6,
+                            padding: "6px 12px",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: active ? 700 : 500,
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
                     <label className="profitScopeMonth" title="Mês de referência do crédito funcionário">
                       <span className="profitScopeMonthLabel">Mês</span>
                       <select
@@ -1124,17 +1160,6 @@ export default function FraudPage() {
                         ))}
                       </select>
                     </label>
-                    <select
-                      value={credFuncStatus}
-                      onChange={(e) =>
-                        setCredFuncStatus(e.target.value as "todos" | "suspeitos" | "normais")
-                      }
-                      aria-label="Filtro de status do crédito funcionário"
-                    >
-                      <option value="todos">Status: todos</option>
-                      <option value="suspeitos">Só suspeitos</option>
-                      <option value="normais">Só normais</option>
-                    </select>
                     <span className="profitFilterCount">
                       {Number(credFuncSummary.suspeitos || 0)} suspeito(s) ·{" "}
                       {formatCurrency(Number(credFuncSummary.usado_total || 0))} usados
