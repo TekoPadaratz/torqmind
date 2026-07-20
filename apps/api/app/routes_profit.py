@@ -430,8 +430,7 @@ def profit_dre(
     def f(key):
         return float(dre.get(key, 0) or 0)
 
-    # Despesas: Postgres por regime (caixa=DTAPGTO / competência=ano_mes_competencia).
-    # Receita/CMV continuam no CH. Se fact vazio, mantém buckets do CH.
+    # Despesas: CH-first (profit_despesas_mensal). PG só se CH vazio (legado/regime).
     desp = {
         "desp_pessoal": f("desp_pessoal"),
         "desp_comercial": f("desp_comercial"),
@@ -442,16 +441,18 @@ def profit_dre(
         "desp_operacional_total": f("desp_operacional_total"),
     }
     desp_source = "clickhouse"
-    try:
-        pg = _despesas_pg_por_regime(
-            tenant_id, branch_ids, ref_month, regime_caixa=bool(regime_caixa),
-        )
-        b = pg["buckets"]
-        if int(b.get("qtd_lancamentos") or 0) > 0 or float(b.get("desp_operacional_total") or 0) > 0:
-            desp = {k: float(b.get(k) or 0) for k in desp}
-            desp_source = "postgres_caixa" if regime_caixa else "postgres_competencia"
-    except Exception as exc:
-        logger.warning("profit_dre: falha despesas PG (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
+    ch_desp_total = float(desp["desp_operacional_total"] or 0)
+    if ch_desp_total <= 0:
+        try:
+            pg = _despesas_pg_por_regime(
+                tenant_id, branch_ids, ref_month, regime_caixa=bool(regime_caixa),
+            )
+            b = pg["buckets"]
+            if int(b.get("qtd_lancamentos") or 0) > 0 or float(b.get("desp_operacional_total") or 0) > 0:
+                desp = {k: float(b.get(k) or 0) for k in desp}
+                desp_source = "postgres_caixa" if regime_caixa else "postgres_competencia"
+        except Exception as exc:
+            logger.warning("profit_dre: falha despesas PG fallback (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
 
     receita = f("receita_bruta_total")
     margem = f("margem_bruta")
@@ -532,20 +533,9 @@ def profit_expenses(
     categories: List[Dict[str, Any]] = []
     top_expenses: List[Dict[str, Any]] = []
     desp_source = "clickhouse"
+    params: Dict[str, Any] = {"id_empresa": tenant_id, "ano_mes": ref_month}
+    branch_clause = _branch_filter_sql(branch_ids, params)
     try:
-        pg = _despesas_pg_por_regime(
-            tenant_id, branch_ids, ref_month, regime_caixa=bool(regime_caixa),
-        )
-        if pg["categorias"] or float((pg["buckets"] or {}).get("desp_operacional_total") or 0) > 0:
-            categories = pg["categorias"]
-            top_expenses = pg["top"]
-            desp_source = "postgres_caixa" if regime_caixa else "postgres_competencia"
-    except Exception as exc:
-        logger.warning("profit_expenses: falha PG (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
-
-    if not categories:
-        params: Dict[str, Any] = {"id_empresa": tenant_id, "ano_mes": ref_month}
-        branch_clause = _branch_filter_sql(branch_ids, params)
         sql = f"""
             SELECT
                 classificacao_gerencial,
@@ -577,6 +567,20 @@ def profit_expenses(
             LIMIT 20
         """
         top_expenses = query_dict(top_sql, params)
+    except Exception as exc:
+        logger.warning("profit_expenses: falha CH (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
+
+    if not categories:
+        try:
+            pg = _despesas_pg_por_regime(
+                tenant_id, branch_ids, ref_month, regime_caixa=bool(regime_caixa),
+            )
+            if pg["categorias"] or float((pg["buckets"] or {}).get("desp_operacional_total") or 0) > 0:
+                categories = pg["categorias"]
+                top_expenses = pg["top"]
+                desp_source = "postgres_caixa" if regime_caixa else "postgres_competencia"
+        except Exception as exc:
+            logger.warning("profit_expenses: falha PG fallback (empresa=%s mes=%s): %s", tenant_id, ref_month, exc)
 
     total = sum(float(c.get("valor_total", 0) or 0) for c in categories)
 
@@ -1062,7 +1066,7 @@ def profit_anp_compliance(
     from app.services import anp_compliance as anp
 
     data = anp.overview_payload(
-        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=False,
+        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=True,
     )
     return redact_sensitive({"data": data}, claims)
 
@@ -1131,7 +1135,7 @@ def profit_anp_export(
     from fastapi.responses import Response
 
     data = anp.overview_payload(
-        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=False,
+        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=True,
     )
     csv_body = anp.events_to_csv(data.get("eventos") or [])
     return Response(
@@ -1163,7 +1167,7 @@ def profit_anp_refresh(
     from app.services import anp_compliance as anp
 
     live = anp.overview_payload(
-        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=False,
+        tenant_id, branch_ids, dt_ini=dt_ini, dt_fim=dt_fim, prefer_mart=True,
     )
     published = None
     try:

@@ -11,7 +11,7 @@
 | Operador | `dbo.COMPROVANTES.ID_USUARIOS` → `USUARIOS.NOMEUSUARIOS` | Quem liberou no caixa |
 | Data/hora real | `COMPROVANTES.DATA` via cupom | Preferida a `DTACONTA` do título |
 
-`VALECOMBUSTIVEL` / `INSVALECOMBUSTIVEL` estão zerados no ambiente — o controle operacional usa **LIMITEVALE + CONTASRECEBER**.
+`VALECOMBUSTIVEL` / `INSVALECOMBUSTIVEL` estão zerados — controle operacional usa **LIMITEVALE + CONTASRECEBER**.
 
 ## Regras Suspeito (OR)
 
@@ -21,17 +21,17 @@
 
 ## Artefatos
 
-- Migration `118_fraud_credito_funcionario.sql` → `mart.fraud_credito_funcionario_*` + `etl.refresh_fraud_credito_funcionario`
-- API `GET /bi/fraud/credito-funcionario`
-- ACL `fraud.credito_funcionario`
-- UI seção na tela Antifraude
+- PG mash: `118_fraud_credito_funcionario.sql` → `mart.fraud_credito_funcionario_*` + ETL
+- **ClickHouse (leitura API):** `052_fraud_credito_funcionario.sql` → `torqmind_mart_rt.mart_fraud_credito_funcionario_*`
+- Publish: `repos_mart.publish_fraud_credito_funcionario_to_ch` (após refresh)
+- API: `GET /bi/fraud/credito-funcionario` via `repos_mart_realtime` (`source: clickhouse`)
+- ACL `fraud.credito_funcionario` · UI Antifraude · Agent `funcionarios` enabled
+
 ## Operação
 
 ```sql
-SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);  -- ~50s em prod
+SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);  -- mash PG ~50s
+-- API ?refresh=true também publica no CH
 ```
 
-API: `GET /bi/fraud/credito-funcionario?ano_mes=YYYYMM` (refresh=true só sob demanda; GET padrão lê a mart).
-
-Homolog: `stg.funcionarios` precisa estar populado (agent dataset `funcionarios` enabled).
-
+Homolog: precisa `stg.funcionarios` populado.

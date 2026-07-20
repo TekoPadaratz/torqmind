@@ -57,6 +57,17 @@ Nunca:
 - `ID_CONTASRECEBER` é único por `ID_DB`, NÃO global. Reconciliação não pode ser só UPSERT: títulos deletados/renumerados/pagos-antigos no Xpert precisam ser fechados (re-upsert do pago ou tombstone), senão viram fantasma aberto na mart de inadimplência.
 - `etl.refresh_customer_delinquency_summary` faz DELETE+INSERT e roda por 2 agendadores (orquestrador `*/2` + cron de reconciliação); precisa de `pg_advisory_xact_lock` por empresa, senão a corrida aborta o refresh e deixa a mart stale. Reconciliação que cura STG/DW deve garantir o DW (sync direto a prova de watermark), pois o watermark `financeiro` compartilhado é avançado pelo orquestrador e pode pular títulos recém-curados.
 
+## Arquitetura de dados (leitura BI)
+
+```
+PG STG/DW → Debezium/CDC/ETL → ClickHouse (torqmind_mart_rt / torqmind_mart)
+                                      ↓
+                               API / Front (única fonte de leitura analítica)
+```
+
+Nunca servir dashboard a partir de `stg.*` / `dw.fact_*` / `mart.*` PostgreSQL.
+PG `mart.*` é mash/staging para publish no CH. Ver `.cursor/rules/06-clickhouse-bi-reads.mdc`.
+
 ## Controle de acesso
 
 - `platform_master`: acesso total, todas empresas/filiais, vê Plataforma, vê margem/lucro/custo.

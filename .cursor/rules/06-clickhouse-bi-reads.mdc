@@ -1,0 +1,50 @@
+---
+description: BI front SEMPRE lê ClickHouse — nunca STG/DW/mart PG na tela
+alwaysApply: true
+---
+
+# ⚡ ClickHouse-first — contrato de leitura BI
+
+## Pipeline canônico (obrigatório)
+
+```
+PostgreSQL STG/DW  →  Debezium/CDC/ETL  →  ClickHouse (torqmind_current / torqmind_mart_rt / torqmind_mart)
+                                                                        ↓
+                                                              API / Front (velocidade)
+```
+
+## ⛔ Crime — ler fonte lenta no hot path da tela
+
+Endpoints e repos consumidos pelo **frontend** NUNCA leem:
+- `stg.*` PostgreSQL
+- `dw.fact_*` PostgreSQL (salvo refresh/publish offline)
+- `mart.*` PostgreSQL como fonte de resposta da API de BI
+
+Leitura EXCLUSIVA de marts ClickHouse:
+- `torqmind_mart_rt.*` (realtime / cutover)
+- `torqmind_mart.*` (snapshots batch, ex.: solvência)
+
+## Onde cada coisa vive
+
+| Camada | Papel |
+|--------|--------|
+| PG STG/DW | Ingestão, mash, constraints, OLTP (`app.*`, `auth.*`) |
+| PG `mart.*` / `etl.refresh_*` | **Staging de mash** — só para publicar no CH |
+| ClickHouse | **Única fonte de leitura** dos dashboards |
+
+## Checklist ao criar feature BI
+
+1. DDL em `sql/clickhouse/streaming/NNN_*.sql` (ou `torqmind_mart`)
+2. Publish/refresh grava no CH (script ou `insert_batch`)
+3. Função em `repos_mart_realtime.py` + entrada em `REALTIME_FUNCTIONS`
+4. Route via `repos_analytics` (não bypassar com `repos_mart` cru)
+5. Front só chama o endpoint — zero SQL no browser
+6. Prova: latência do GET quente; query CH com `id_empresa` (+ filial)
+
+## Exceções permitidas (não são BI analítico)
+
+- Auth, ACL, branding, configs OLTP (`app.*`)
+- Insights gerados / notificações (`_POSTGRES_OWNED_FUNCTIONS`)
+- Writes/upserts de configuração
+
+Se a mart CH ainda não existe: **criar a mart e o publish** — não entregar a tela lendo PG “temporariamente”.

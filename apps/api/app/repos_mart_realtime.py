@@ -3948,6 +3948,197 @@ def jarvis_briefing(
     }
 
 
+def fraud_credito_funcionario(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    ano_mes: Optional[int] = None,
+    status: str = "todos",
+    refresh: bool = False,
+    limit: int = 500,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Antifraude crédito funcionário — lê ClickHouse mart_rt (não PG/STG).
+
+    Mash/refresh continua no PG via ``repos_mart.refresh_fraud_credito_funcionario``
+    (que também publica no CH). GET padrão só consulta CH.
+    """
+    import json
+    from datetime import datetime
+
+    from app.repos_mart import (
+        _ano_mes_from_date,
+        refresh_fraud_credito_funcionario as _pg_refresh_publish,
+    )
+
+    ym = int(ano_mes) if ano_mes else _ano_mes_from_date(business_today(id_empresa))
+    if refresh:
+        try:
+            _pg_refresh_publish(role, id_empresa, ym)
+        except Exception as exc:
+            logger.warning(
+                "fraud_credito_funcionario refresh/publish failed empresa=%s mes=%s: %s",
+                id_empresa, ym, str(exc)[:240],
+            )
+
+    status_key = str(status or "todos").strip().lower()
+    status_sql = ""
+    if status_key in ("suspeito", "suspeitos", "suspeitas"):
+        status_sql = "AND status = 'Suspeito'"
+    elif status_key in ("normal", "normais"):
+        status_sql = "AND status = 'Normal'"
+
+    filial_sql = _branch_clause("id_filial_ref", id_filial)
+    try:
+        lim = max(1, min(int(limit), 2000))
+    except (TypeError, ValueError):
+        lim = 500
+
+    rows = query_dict(
+        f"""
+        SELECT
+            id_funcionario,
+            id_filial_ref,
+            id_entidade,
+            nome_funcionario,
+            cpf,
+            ativo,
+            limite_vale,
+            vales_cadastro,
+            usado_mes,
+            saldo_restante,
+            qtd_usos_mes,
+            max_usos_mesmo_dia,
+            status,
+            motivos,
+            published_at
+        FROM {MART_RT_DB}.mart_fraud_credito_funcionario_resumo FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND ano_mes = %(ano_mes)s
+          {filial_sql}
+          {status_sql}
+        ORDER BY
+            if(status = 'Suspeito', 0, 1) ASC,
+            usado_mes DESC,
+            nome_funcionario ASC
+        LIMIT %(lim)s
+        """,
+        {"id_empresa": int(id_empresa), "ano_mes": ym, "lim": lim},
+    )
+
+    func_ids = [int(r["id_funcionario"]) for r in rows if r.get("id_funcionario") is not None]
+    usos_by: Dict[int, List[Dict[str, Any]]] = {fid: [] for fid in func_ids}
+    if func_ids:
+        ids_csv = ", ".join(str(i) for i in func_ids)
+        uso_rows = query_dict(
+            f"""
+            SELECT
+                id_funcionario,
+                id_filial,
+                id_entidade,
+                id_contasreceber,
+                id_comprovante,
+                nro_cupom,
+                nro_documento,
+                dt_evento,
+                valor,
+                id_usuario_caixa,
+                operador_caixa,
+                historico,
+                atipico
+            FROM {MART_RT_DB}.mart_fraud_credito_funcionario_uso FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND ano_mes = %(ano_mes)s
+              AND id_funcionario IN ({ids_csv})
+            ORDER BY dt_evento DESC, valor DESC
+            """,
+            {"id_empresa": int(id_empresa), "ano_mes": ym},
+        )
+        for u in uso_rows:
+            fid = int(u["id_funcionario"])
+            dt = u.get("dt_evento")
+            if isinstance(dt, datetime):
+                dt_s = dt.isoformat()
+            else:
+                dt_s = str(dt) if dt else None
+            usos_by.setdefault(fid, []).append({
+                "id_filial": u.get("id_filial"),
+                "id_entidade": u.get("id_entidade"),
+                "id_contasreceber": u.get("id_contasreceber"),
+                "id_comprovante": u.get("id_comprovante") or None,
+                "nro_cupom": u.get("nro_cupom") or u.get("nro_documento") or "",
+                "dt_evento": dt_s,
+                "valor": float(u.get("valor") or 0),
+                "id_usuario_caixa": u.get("id_usuario_caixa") or None,
+                "operador_caixa": u.get("operador_caixa") or "—",
+                "historico": u.get("historico") or "",
+                "atipico": bool(int(u.get("atipico") or 0)),
+            })
+
+    summary_rows = query_dict(
+        f"""
+        SELECT
+            count() AS total,
+            countIf(status = 'Suspeito') AS suspeitos,
+            countIf(status = 'Normal') AS normais,
+            sum(usado_mes) AS usado_total,
+            sum(limite_vale) AS limite_total
+        FROM {MART_RT_DB}.mart_fraud_credito_funcionario_resumo FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND ano_mes = %(ano_mes)s
+          {filial_sql}
+        """,
+        {"id_empresa": int(id_empresa), "ano_mes": ym},
+    )
+    summary = summary_rows[0] if summary_rows else {}
+
+    funcionarios = []
+    for r in rows:
+        fid = int(r["id_funcionario"])
+        motivos_raw = r.get("motivos") or "[]"
+        try:
+            motivos = json.loads(motivos_raw) if isinstance(motivos_raw, str) else list(motivos_raw or [])
+        except Exception:
+            motivos = []
+        pub = r.get("published_at")
+        funcionarios.append({
+            "id_funcionario": fid,
+            "id_filial": r.get("id_filial_ref"),
+            "id_entidade": r.get("id_entidade") or None,
+            "nome": r.get("nome_funcionario") or "",
+            "cpf": r.get("cpf") or "",
+            "ativo": bool(int(r.get("ativo") or 0)),
+            "limite": float(r.get("limite_vale") or 0),
+            "vales_cadastro": float(r.get("vales_cadastro") or 0),
+            "usado_mes": float(r.get("usado_mes") or 0),
+            "saldo_restante": float(r.get("saldo_restante") or 0),
+            "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
+            "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
+            "status": r.get("status") or "Normal",
+            "motivos": motivos,
+            "usos": usos_by.get(fid, []),
+            "refreshed_at": pub.isoformat() if isinstance(pub, datetime) else (str(pub) if pub else None),
+        })
+
+    return {
+        "ano_mes": ym,
+        "source": "clickhouse",
+        "summary": {
+            "total": int(summary.get("total") or 0),
+            "suspeitos": int(summary.get("suspeitos") or 0),
+            "normais": int(summary.get("normais") or 0),
+            "usado_total": float(summary.get("usado_total") or 0),
+            "limite_total": float(summary.get("limite_total") or 0),
+        },
+        "funcionarios": funcionarios,
+        "disclaimer": (
+            "Fonte: ClickHouse mart_fraud_credito_funcionario_*. "
+            "Limite LIMITEVALE; uso CONTASRECEBER→cupom→operador. "
+            "Suspeito = limite extrapolado OR ≥2 usos/dia OR valor atípico."
+        ),
+    }
+
+
 # ================================================================
 # INVENTORY (for analytics facade routing)
 # ================================================================
@@ -4001,4 +4192,5 @@ REALTIME_FUNCTIONS = {
     "insights_base",
     "operational_score",
     "jarvis_briefing",
+    "fraud_credito_funcionario",
 }

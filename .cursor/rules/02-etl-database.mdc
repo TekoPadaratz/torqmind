@@ -21,17 +21,22 @@ mart.*  → Materialized Views para leitura real-time
 etl.*   → Controle, logs e funções PL/pgSQL
 ```
 
-## Fluxo de Dados
+## Fluxo de Dados (canônico produção)
 
 ```
 [Origem Operacional]
-      ↓ NDJSON
-  stg.* (raw)
+      ↓ NDJSON / Agent
+  stg.* (raw PG)
       ↓ ETL incremental
-  dw.* (fatos + dimensões)
-      ↓ REFRESH MATERIALIZED VIEW
-  mart.* (leitura dos dashboards)
+  dw.* / mash PG
+      ↓ Debezium CDC + publish scripts
+  ClickHouse torqmind_current / torqmind_mart_rt / torqmind_mart
+      ↓
+  API BI / Front  ←  ÚNICA fonte de leitura analítica
 ```
+
+`mart.*` PostgreSQL é staging de mash / legado — **não** é fonte do dashboard.
+Ver regra sempre-aplicada `06-clickhouse-bi-reads.mdc`.
 
 ## Regras do ETL
 
