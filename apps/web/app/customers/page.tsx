@@ -178,7 +178,7 @@ export default function CustomersPage() {
         const params = buildScopeParams(scope);
         params.set("page", String(precoFixoPage));
         params.set("page_size", "15");
-        if precoFixoSearch.trim()) params.set("search", precoFixoSearch.trim());
+        if (precoFixoSearch.trim()) params.set("search", precoFixoSearch.trim());
         const res = await apiGet(`/bi/customers/preco-fixo?${params.toString()}`);
         if (!cancelled) setPrecoFixoData(res);
       } catch {
