@@ -49,8 +49,9 @@ def _rich_row() -> dict:
         "score_risco": 80,
         "score_level": "HIGH",
         "reasons": '{"source":"stg.comprovantes","rule":"cancelled_receipt"}',
-        "id_comprovante": 3587794,  # technical PK
-        "nro_comprovante": 503752,  # NROCOMPROVANTE (printed on the receipt)
+        "id_comprovante": 3587794,  # technical PK (never shown as documento)
+        "nro_comprovante": 503752,  # NROCOMPROVANTE — never shown as documento
+        "numero_nfe": "325152",     # DOCUMENTO = NF-e/NFC-e
     }
 
 
@@ -102,7 +103,7 @@ def test_turno_label_unresolved_when_no_shift():
 
 
 # --------------------------------------------------------------------------- #
-# _antifraude_documento  (FASE 3 — comprovante, never turno+filial)
+# _antifraude_documento  (DOCUMENTO = NF-e/NFC-e only)
 # --------------------------------------------------------------------------- #
 def test_documento_prefers_nota_fiscal():
     venda, label, source, fiscal = _antifraude_documento("987654", 503752, 3587794)
@@ -112,26 +113,27 @@ def test_documento_prefers_nota_fiscal():
     assert fiscal == "987654"
 
 
-def test_documento_prefers_nro_comprovante():
+def test_documento_without_nfe_is_dash_never_comprovante():
     venda, label, source, fiscal = _antifraude_documento("", 503752, 3587794)
-    assert venda == 503752
-    assert label == "503752"
-    assert source == "documento_venda"
+    assert venda is None
+    assert label == "—"
+    assert source == "fallback"
     assert fiscal is None
 
 
-def test_documento_falls_back_to_id_comprovante():
+def test_documento_never_uses_id_comprovante():
     venda, label, source, fiscal = _antifraude_documento("", 0, 3587794)
     assert venda is None
-    assert label == "3587794"
-    assert source == "id_comprovante"
+    assert label == "—"
+    assert source == "fallback"
     assert fiscal is None
 
 
 def test_documento_never_turno_or_filial():
-    _, label, _, _ = _antifraude_documento("", 503752, 3587794)
+    _, label, _, _ = _antifraude_documento("987654", 503752, 3587794)
     assert "Turno" not in label
     assert "·" not in label
+    assert "Comprovante" not in label
 
 
 # --------------------------------------------------------------------------- #
@@ -150,13 +152,16 @@ def test_build_event_rich_row_is_fully_resolved():
     assert ev["id_turno"] == 34292            # technical kept for traceability
     assert "34292" not in ev["turno_label"]   # but never rendered as the shift
 
-    # documento = sale comprovante (printed number), never turno+filial
+    # documento = NF-e/NFC-e only (never comprovante / id técnico)
     assert ev["id_comprovante"] == 3587794
-    assert ev["documento_venda"] == 503752
-    assert ev["documento_label"] == "503752"
-    assert ev["documento_source"] == "documento_venda"
+    assert ev["documento_venda"] == "325152"
+    assert ev["documento_label"] == "325152"
+    assert ev["documento_source"] == "nota_fiscal"
+    assert ev["documento_fiscal"] == "325152"
     assert "Turno" not in ev["documento_label"]
     assert "AUTO POSTO" not in ev["documento_label"]
+    assert "503752" not in ev["documento_label"]
+    assert "3587794" not in ev["documento_label"]
 
     # operator resolved by name, mirrored across the label aliases the UI reads
     assert ev["operador_label"] == "TAYNA"
@@ -180,12 +185,14 @@ def test_build_event_rich_row_is_fully_resolved():
     assert ev["event_id"] == "123456789"
 
 
-def test_build_event_documento_fallback_to_id_comprovante():
+def test_build_event_without_nfe_shows_dash():
     row = _rich_row()
+    row["numero_nfe"] = ""
     row["nro_comprovante"] = 0
     ev = _build_antifraude_event(row)
-    assert ev["documento_label"] == "3587794"
-    assert ev["documento_source"] == "id_comprovante"
+    assert ev["documento_label"] == "—"
+    assert ev["documento_source"] == "fallback"
+    assert ev["documento_fiscal"] is None
 
 
 def test_build_event_poor_row_uses_house_style_fallbacks():
@@ -282,7 +289,11 @@ def test_risk_by_turn_groups_by_operational_shift_not_user_or_tech_id():
 # risk_last_events — enriched feed
 # --------------------------------------------------------------------------- #
 def test_risk_last_events_reads_enriched_mart_and_is_resolved():
-    with patch.object(repos_mart_realtime, "query_dict", return_value=[_rich_row()]) as qd:
+    with patch.object(repos_mart_realtime, "query_dict", return_value=[_rich_row()]) as qd, patch.object(
+        repos_mart_realtime,
+        "_load_nfe_numbers",
+        return_value={(14458, 3587794): "325152"},
+    ):
         out = repos_mart_realtime.risk_last_events(
             "platform_master", 1, None, date(2026, 6, 1), date(2026, 6, 4), limit=30
         )
@@ -298,6 +309,7 @@ def test_risk_last_events_reads_enriched_mart_and_is_resolved():
     assert ev["data"] == "2026-06-03T09:00:00"
     assert ev["operador_label"] == "TAYNA"
     assert ev["turno_label"] == "Turno 3"
-    assert ev["documento_label"] == "503752"
+    assert ev["documento_label"] == "325152"
+    assert ev["documento_source"] == "nota_fiscal"
     assert ev["filial_label"] == "AUTO POSTO VR 01"
     assert ev["categoria"] == "Cancelamento da venda"

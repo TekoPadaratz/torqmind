@@ -4,43 +4,45 @@
 
 | Papel | Tabela / campo | Uso |
 |-------|----------------|-----|
-| Limite | `dbo.FUNCIONARIOS.LIMITEVALE` | Teto de vale/crédito a prazo |
-| Snapshot consumo | `dbo.FUNCIONARIOS.VALES` | Cruzamento com o cadastro |
-| Cliente espelho | `dbo.ENTIDADES.CNPJCPF` | Vínculo funcionário↔cliente pelo CPF |
-| Uso (título) | `dbo.CONTASRECEBER` | Vendas a prazo; `HISTORICO` traz Cupom/NFC-e |
-| Operador | `dbo.COMPROVANTES.ID_USUARIOS` → `USUARIOS.NOMEUSUARIOS` | Quem liberou no caixa |
+| **Limite a prazo** | `dbo.ENTIDADES.LIMITE` | Teto a prazo do cliente-espelho |
+| **Limite vale** | `dbo.ENTIDADES.LIMITE_VALE` | Teto de vale do cliente-espelho |
+| Join | `FUNCIONARIOS.CPF` = `ENTIDADES.CNPJCPF` (11 dígitos) | Amarra colaborador ↔ entidade |
+| Snapshot consumo | `dbo.FUNCIONARIOS.VALES` | Cruzamento opcional com o cadastro |
+| Uso (título) | `dbo.CONTASRECEBER` | Títulos do cliente; `HISTORICO` ~ `%vale%` → tipo vale, senão a prazo |
+| Operador | `stg.nfe` → `stg.comprovantes.ID_USUARIOS` → `USUARIOS` | Quem liberou no caixa (via NFC-e quando HISTORICO não tem Cupom) |
 | Data/hora real | `COMPROVANTES.DATA` via cupom | Preferida a `DTACONTA` do título |
-| **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** exibir `id_comprovante` como documento |
+| **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** `NROCOMPROVANTE` / `id_comprovante` |
 
-`VALECOMBUSTIVEL` / `INSVALECOMBUSTIVEL` estão zerados — controle operacional usa **LIMITEVALE + CONTASRECEBER**.
+**Não usar** `FUNCIONARIOS.LIMITEVALE` como fonte de limite (cliente opera pelos campos da entidade).
+`VALECOMBUSTIVEL` / `INSVALECOMBUSTIVEL` estão zerados no levantamento.
 
-## Contrato de documento (UI)
+## Contrato de tela
 
-1. Preferência: número NF-e/NFC-e (`documento_source=nota_fiscal`)
-2. Fallback: `NROCOMPROVANTE`
-3. Último recurso: `id_comprovante` (rastreio técnico)
-4. Label = só o número (sem prefixo "Cupom"/"Nota")
-5. Filtro de período: seletor **Mês/Ano** (`profitScopeMonthSelect`), igual DRE/Solvência
+Grid: Limite a prazo | Limite vale | Limite total | Usado a prazo | Usado vale | Usado total | Saldo | Usos | Status.
+
+Drill-down: Data/Hora | NF-e/NFC-e | Tipo (A prazo / Vale) | Operador | Valor.
+
+**DOCUMENTO = NF-e/NFC-e.** Sem NF → `—`. Ver `.cursor/rules/07-documento-nota-fiscal.mdc`.
 
 ## Regras Suspeito (OR)
 
-1. **Limite Extrapolado** — `usado_mes > LIMITEVALE` (ou `VALES > LIMITEVALE`)
-2. **Frequência Anômala** — ≥ 2 usos no mesmo dia (America/Sao_Paulo)
-3. **Valor Atípico** — valor ≥ max(2.5×mediana, mediana+2σ) no histórico 90d
+1. Limite a prazo / vale / total extrapolado
+2. Frequência anômala — ≥ 2 usos no mesmo dia (America/Sao_Paulo)
+3. Valor atípico — ≥ max(2.5×mediana, mediana+2σ) no histórico 90d
 
 ## Artefatos
 
-- PG mash: `118_fraud_credito_funcionario.sql` → `mart.fraud_credito_funcionario_*` + ETL
-- **ClickHouse (leitura API):** `052_fraud_credito_funcionario.sql` → `torqmind_mart_rt.mart_fraud_credito_funcionario_*`
-- Publish: `repos_mart.publish_fraud_credito_funcionario_to_ch` (após refresh)
-- API: `GET /bi/fraud/credito-funcionario` via `repos_mart_realtime` (`source: clickhouse`)
-- ACL `fraud.credito_funcionario` · UI Antifraude · Agent `funcionarios` enabled
+- PG: `118` (base) + `120_fraud_credito_funcionario_limites_entidade.sql` (limites entidade)
+- CH: `052_fraud_credito_funcionario.sql` → `torqmind_mart_rt.mart_fraud_credito_funcionario_*`
+- Publish: `repos_mart.publish_fraud_credito_funcionario_to_ch`
+- API: `GET /bi/fraud/credito-funcionario` via `repos_mart_realtime`
+- ACL `fraud.credito_funcionario` · UI Antifraude
 
 ## Operação
 
 ```sql
-SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);  -- mash PG ~50s
+SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);
 -- API ?refresh=true também publica no CH
 ```
 
-Homolog: precisa `stg.funcionarios` populado.
+Homolog: precisa `stg.funcionarios` + `stg.entidades` com `LIMITE`/`LIMITE_VALE` no payload.

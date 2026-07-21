@@ -81,10 +81,9 @@ function riskCategoryLabel(eventType: string) {
 }
 
 function riskGridReference(event: any) {
-  if (event?.documento_label) return event.documento_label;
-  if (event?.documento_venda) return `Comprovante ${event.documento_venda}`;
-  if (event?.id_comprovante) return `Comprovante #${event.id_comprovante}`;
-  return "Sem comprovante";
+  const label = String(event?.documento_label || event?.documento_fiscal || "").trim();
+  if (label && label !== "—" && label !== "-") return label;
+  return "—";
 }
 
 function scoreLevelLabel(level: string) {
@@ -408,8 +407,7 @@ export default function FraudPage() {
         return false;
       }
       if (!e?.data && !e?.data_key) return false;
-      const doc =
-        e?.documento_label || e?.documento_venda || e?.id_comprovante || e?.nro_comprovante;
+      const doc = e?.documento_label || e?.documento_fiscal;
       if (!doc || String(doc).trim() === "—" || String(doc).trim() === "-") return false;
       return true;
     });
@@ -661,7 +659,7 @@ export default function FraudPage() {
                               formatTurnoLabel(e.turno_numero, e.turno_label)}
                           </td>
                           <td>{e.usuario_label || e.operador_label}</td>
-                          <td>{e.documento_label || e.documento_venda || (e.id_comprovante ? String(e.id_comprovante) : "—")}</td>
+                          <td>{e.documento_label || e.documento_fiscal || "—"}</td>
                           <td>{formatCurrency(e.valor_total)}</td>
                         </tr>
                       ))}
@@ -1100,10 +1098,11 @@ export default function FraudPage() {
                   </div>
                   <h2 style={{ marginTop: 4 }}>Vale / a prazo de colaboradores</h2>
                   <div className="muted" style={{ marginTop: 4 }}>
-                    Limite do cadastro (LIMITEVALE) versus usos a prazo no mês. Status{" "}
+                    Limites do cadastro de cliente (entidade): a prazo e vale, com totalizador.
+                    Uso no mês pelos títulos a prazo do colaborador. Status{" "}
                     <strong style={{ color: "var(--color-negative)" }}>Suspeito</strong> quando
-                    extrapola o teto, passa a prazo 2+ vezes no mesmo dia ou o valor foge do padrão
-                    histórico. Clique na linha para ver cada uso e o operador de caixa.
+                    extrapola teto (prazo, vale ou total), passa 2+ vezes no mesmo dia ou o valor
+                    foge do padrão. Clique na linha para ver cada uso (documento = NF-e/NFC-e).
                   </div>
                   <div
                     className="profitFilterBar"
@@ -1173,8 +1172,8 @@ export default function FraudPage() {
                     <div className="muted">Carregando crédito de funcionário…</div>
                   ) : credFuncPageRows.length === 0 ? (
                     <EmptyState
-                      title="Sem colaboradores com limite de vale no mês."
-                      detail="Só entram funcionários com LIMITEVALE > 0 no cadastro Xpert."
+                      title="Sem colaboradores com limite a prazo/vale no mês."
+                      detail="Entram funcionários com LIMITE ou LIMITE_VALE > 0 no cadastro de entidades (join por CPF)."
                     />
                   ) : (
                     <div className="tableScroll">
@@ -1183,9 +1182,13 @@ export default function FraudPage() {
                           <tr>
                             <th></th>
                             <th>Funcionário</th>
-                            <th style={{ textAlign: "right" }}>Limite</th>
-                            <th style={{ textAlign: "right" }}>Usado no mês</th>
-                            <th style={{ textAlign: "right" }}>Saldo restante</th>
+                            <th style={{ textAlign: "right" }}>Limite a prazo</th>
+                            <th style={{ textAlign: "right" }}>Limite vale</th>
+                            <th style={{ textAlign: "right" }}>Limite total</th>
+                            <th style={{ textAlign: "right" }}>Usado a prazo</th>
+                            <th style={{ textAlign: "right" }}>Usado vale</th>
+                            <th style={{ textAlign: "right" }}>Usado total</th>
+                            <th style={{ textAlign: "right" }}>Saldo</th>
                             <th style={{ textAlign: "right" }}>Usos</th>
                             <th>Status</th>
                           </tr>
@@ -1214,8 +1217,16 @@ export default function FraudPage() {
                                       </div>
                                     ) : null}
                                   </td>
-                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.limite)}</td>
-                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_mes)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.limite_prazo)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.limite_vale)}</td>
+                                  <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                    {formatCurrency(row.limite_total ?? row.limite)}
+                                  </td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_prazo)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_vale)}</td>
+                                  <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                    {formatCurrency(row.usado_mes)}
+                                  </td>
                                   <td style={{ textAlign: "right" }}>{formatCurrency(row.saldo_restante)}</td>
                                   <td style={{ textAlign: "right" }}>{Number(row.qtd_usos_mes || 0)}</td>
                                   <td>
@@ -1232,17 +1243,18 @@ export default function FraudPage() {
                                 </tr>
                                 {expanded ? (
                                   <tr>
-                                    <td colSpan={7} style={{ padding: "8px 12px 14px", background: "rgba(15,23,42,0.03)" }}>
+                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "rgba(15,23,42,0.03)" }}>
                                       {!row.usos?.length ? (
                                         <div className="muted" style={{ fontSize: 12 }}>
-                                          Sem usos a prazo resolvidos no mês (cadastro pode ter VALES sem título casado).
+                                          Sem usos resolvidos no mês para este colaborador.
                                         </div>
                                       ) : (
                                         <table className="table compact">
                                           <thead>
                                             <tr>
                                               <th>Data/Hora</th>
-                                              <th>Documento</th>
+                                              <th>NF-e / NFC-e</th>
+                                              <th>Tipo</th>
                                               <th>Operador de caixa</th>
                                               <th style={{ textAlign: "right" }}>Valor</th>
                                             </tr>
@@ -1256,13 +1268,14 @@ export default function FraudPage() {
                                                     : "—"}
                                                 </td>
                                                 <td>
-                                                  {u.documento_label || u.documento || "—"}
+                                                  {u.documento_label || u.documento_fiscal || "—"}
                                                   {u.atipico ? (
                                                     <span style={{ color: "var(--color-negative)", marginLeft: 6, fontWeight: 600 }}>
                                                       atípico
                                                     </span>
                                                   ) : null}
                                                 </td>
+                                                <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
                                                 <td>{u.operador_caixa || "—"}</td>
                                                 <td style={{ textAlign: "right" }}>
                                                   {formatCurrency(u.valor)}

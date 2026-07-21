@@ -9827,8 +9827,11 @@ def publish_fraud_credito_funcionario_to_ch(
             """
             SELECT
               id_empresa, id_funcionario, ano_mes, id_filial_ref, id_entidade,
-              nome_funcionario, cpf, ativo, limite_vale, vales_cadastro,
-              usado_mes, saldo_restante, qtd_usos_mes, max_usos_mesmo_dia,
+              nome_funcionario, cpf, ativo,
+              limite_prazo, limite_vale, limite_total, vales_cadastro,
+              usado_prazo, usado_vale, usado_mes,
+              saldo_prazo, saldo_vale, saldo_restante,
+              qtd_usos_mes, max_usos_mesmo_dia,
               status, motivos
             FROM mart.fraud_credito_funcionario_resumo
             WHERE id_empresa = %s AND ano_mes = %s
@@ -9840,6 +9843,7 @@ def publish_fraud_credito_funcionario_to_ch(
             SELECT
               id_empresa, id_funcionario, ano_mes, id_filial, id_entidade,
               id_contasreceber, id_comprovante, nro_cupom, nro_documento,
+              COALESCE(tipo_uso, 'prazo') AS tipo_uso,
               dt_evento, valor, id_usuario_caixa, operador_caixa, historico, atipico
             FROM mart.fraud_credito_funcionario_uso
             WHERE id_empresa = %s AND ano_mes = %s
@@ -9847,11 +9851,31 @@ def publish_fraud_credito_funcionario_to_ch(
             [id_empresa, ym],
         ).fetchall()
 
+    # Homolog/prod: PG mash pode não resolver operador se HISTORICO só tem NFC-e
+    # (sem Cupom:) e stg.nfe local está incompleto — completa via CH.
+    try:
+        from app.repos_mart_realtime import _enrich_credito_usos_operador_via_nfe
+
+        uso_list = [dict(u) for u in uso_rows]
+        _enrich_credito_usos_operador_via_nfe(int(id_empresa), uso_list)
+        uso_rows = uso_list
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "publish credito enrich operador skipped empresa=%s: %s",
+            id_empresa, str(exc)[:200],
+        )
+
     resumo_ch = []
     for r in resumo_rows:
         motivos = r.get("motivos") or []
         if not isinstance(motivos, list):
             motivos = list(motivos) if motivos else []
+        limite_prazo = float(r.get("limite_prazo") or 0)
+        limite_vale = float(r.get("limite_vale") or 0)
+        limite_total = float(r.get("limite_total") or (limite_prazo + limite_vale))
+        usado_prazo = float(r.get("usado_prazo") or 0)
+        usado_vale = float(r.get("usado_vale") or 0)
+        usado_mes = float(r.get("usado_mes") or (usado_prazo + usado_vale))
         resumo_ch.append({
             "id_empresa": int(r["id_empresa"]),
             "id_funcionario": int(r["id_funcionario"]),
@@ -9861,10 +9885,16 @@ def publish_fraud_credito_funcionario_to_ch(
             "nome_funcionario": str(r.get("nome_funcionario") or ""),
             "cpf": str(r.get("cpf") or ""),
             "ativo": 1 if r.get("ativo") else 0,
-            "limite_vale": float(r.get("limite_vale") or 0),
+            "limite_prazo": limite_prazo,
+            "limite_vale": limite_vale,
+            "limite_total": limite_total,
             "vales_cadastro": float(r.get("vales_cadastro") or 0),
-            "usado_mes": float(r.get("usado_mes") or 0),
-            "saldo_restante": float(r.get("saldo_restante") or 0),
+            "usado_prazo": usado_prazo,
+            "usado_vale": usado_vale,
+            "usado_mes": usado_mes,
+            "saldo_prazo": float(r.get("saldo_prazo") or max(limite_prazo - usado_prazo, 0)),
+            "saldo_vale": float(r.get("saldo_vale") or max(limite_vale - usado_vale, 0)),
+            "saldo_restante": float(r.get("saldo_restante") or max(limite_total - usado_mes, 0)),
             "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
             "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
             "status": str(r.get("status") or "Normal"),
@@ -9884,6 +9914,7 @@ def publish_fraud_credito_funcionario_to_ch(
             "id_comprovante": int(u.get("id_comprovante") or 0),
             "nro_cupom": str(u.get("nro_cupom") or ""),
             "nro_documento": str(u.get("nro_documento") or ""),
+            "tipo_uso": str(u.get("tipo_uso") or "prazo"),
             "dt_evento": u.get("dt_evento"),
             "valor": float(u.get("valor") or 0),
             "id_usuario_caixa": int(u.get("id_usuario_caixa") or 0),
@@ -9946,9 +9977,15 @@ def fraud_credito_funcionario(
         r.nome_funcionario,
         r.cpf,
         r.ativo,
+        r.limite_prazo,
         r.limite_vale,
+        r.limite_total,
         r.vales_cadastro,
+        r.usado_prazo,
+        r.usado_vale,
         r.usado_mes,
+        r.saldo_prazo,
+        r.saldo_vale,
         r.saldo_restante,
         r.qtd_usos_mes,
         r.max_usos_mesmo_dia,
@@ -9982,6 +10019,7 @@ def fraud_credito_funcionario(
                 u.id_comprovante,
                 u.nro_cupom,
                 u.nro_documento,
+                COALESCE(u.tipo_uso, 'prazo') AS tipo_uso,
                 u.dt_evento,
                 u.valor,
                 u.id_usuario_caixa,
@@ -10003,18 +10041,16 @@ def fraud_credito_funcionario(
                     str(d.get("nro_documento") or ""),
                     str(d.get("historico") or ""),
                 )
-                raw_cupom = str(d.get("nro_cupom") or "").strip()
-                nro_comp = int(raw_cupom) if raw_cupom.isdigit() else 0
-                id_comp = int(d.get("id_comprovante") or 0)
+                # Documento = só NF; nunca NROCOMPROVANTE / id_comprovante.
                 _, documento_label, documento_source, documento_fiscal = _antifraude_documento(
-                    nfe_hist, nro_comp, id_comp,
+                    nfe_hist, 0, 0,
                 )
                 usos_by.setdefault(fid, []).append({
                     "id_filial": d.get("id_filial"),
                     "id_entidade": d.get("id_entidade"),
                     "id_contasreceber": d.get("id_contasreceber"),
-                    "id_comprovante": id_comp or None,
-                    "nro_cupom": raw_cupom,
+                    "id_comprovante": int(d.get("id_comprovante") or 0) or None,
+                    "tipo_uso": str(d.get("tipo_uso") or "prazo"),
                     "nro_documento": str(d.get("nro_documento") or ""),
                     "documento": documento_label,
                     "documento_label": documento_label,
@@ -10035,7 +10071,11 @@ def fraud_credito_funcionario(
                 count(*) FILTER (WHERE status = 'Suspeito')::int AS suspeitos,
                 count(*) FILTER (WHERE status = 'Normal')::int AS normais,
                 coalesce(sum(usado_mes),0)::numeric(18,2) AS usado_total,
-                coalesce(sum(limite_vale),0)::numeric(18,2) AS limite_total
+                coalesce(sum(usado_prazo),0)::numeric(18,2) AS usado_prazo_total,
+                coalesce(sum(usado_vale),0)::numeric(18,2) AS usado_vale_total,
+                coalesce(sum(limite_total),0)::numeric(18,2) AS limite_total,
+                coalesce(sum(limite_prazo),0)::numeric(18,2) AS limite_prazo_total,
+                coalesce(sum(limite_vale),0)::numeric(18,2) AS limite_vale_total
               FROM mart.fraud_credito_funcionario_resumo r
               WHERE r.id_empresa = %s AND r.ano_mes = %s
               {where_filial}
@@ -10046,6 +10086,12 @@ def fraud_credito_funcionario(
     funcionarios = []
     for r in rows:
         fid = int(r["id_funcionario"])
+        limite_prazo = float(r.get("limite_prazo") or 0)
+        limite_vale = float(r.get("limite_vale") or 0)
+        limite_total = float(r.get("limite_total") or (limite_prazo + limite_vale))
+        usado_prazo = float(r.get("usado_prazo") or 0)
+        usado_vale = float(r.get("usado_vale") or 0)
+        usado_mes = float(r.get("usado_mes") or (usado_prazo + usado_vale))
         funcionarios.append({
             "id_funcionario": fid,
             "id_filial": r.get("id_filial_ref"),
@@ -10053,10 +10099,17 @@ def fraud_credito_funcionario(
             "nome": r.get("nome_funcionario") or "",
             "cpf": r.get("cpf") or "",
             "ativo": bool(r.get("ativo")),
-            "limite": float(r.get("limite_vale") or 0),
+            "limite_prazo": limite_prazo,
+            "limite_vale": limite_vale,
+            "limite_total": limite_total,
+            "limite": limite_total,
             "vales_cadastro": float(r.get("vales_cadastro") or 0),
-            "usado_mes": float(r.get("usado_mes") or 0),
-            "saldo_restante": float(r.get("saldo_restante") or 0),
+            "usado_prazo": usado_prazo,
+            "usado_vale": usado_vale,
+            "usado_mes": usado_mes,
+            "saldo_prazo": float(r.get("saldo_prazo") or max(limite_prazo - usado_prazo, 0)),
+            "saldo_vale": float(r.get("saldo_vale") or max(limite_vale - usado_vale, 0)),
+            "saldo_restante": float(r.get("saldo_restante") or max(limite_total - usado_mes, 0)),
             "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
             "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
             "status": r.get("status") or "Normal",
@@ -10072,12 +10125,15 @@ def fraud_credito_funcionario(
             "suspeitos": int(summary.get("suspeitos") or 0),
             "normais": int(summary.get("normais") or 0),
             "usado_total": float(summary.get("usado_total") or 0),
+            "usado_prazo_total": float(summary.get("usado_prazo_total") or 0),
+            "usado_vale_total": float(summary.get("usado_vale_total") or 0),
             "limite_total": float(summary.get("limite_total") or 0),
+            "limite_prazo_total": float(summary.get("limite_prazo_total") or 0),
+            "limite_vale_total": float(summary.get("limite_vale_total") or 0),
         },
         "funcionarios": funcionarios,
         "disclaimer": (
-            "Limite: FUNCIONARIOS.LIMITEVALE. Uso: CONTASRECEBER a prazo do cliente "
-            "vinculado por CPF, com data/operador resolvidos via cupom no comprovante. "
-            "Suspeito = limite extrapolado OR ≥2 usos no mesmo dia OR valor atípico vs histórico 90d."
+            "Limites: ENTIDADES.LIMITE (a prazo) + ENTIDADES.LIMITE_VALE (vale), "
+            "join CPF com FUNCIONARIOS. Uso: CONTASRECEBER. Documento = NF-e/NFC-e."
         ),
     }

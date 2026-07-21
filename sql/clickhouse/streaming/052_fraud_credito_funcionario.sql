@@ -1,5 +1,5 @@
 -- 052_fraud_credito_funcionario.sql
--- Antifraude: crédito/vale de funcionário (LIMITEVALE × usos a prazo).
+-- Antifraude: crédito/vale de funcionário (ENTIDADES.LIMITE + LIMITE_VALE).
 -- Mash pesado roda no PG (etl.refresh_fraud_credito_funcionario); API lê SÓ daqui.
 -- Idempotente.
 
@@ -14,9 +14,15 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_fraud_credito_funcionario_resum
     nome_funcionario     String DEFAULT '',
     cpf                  String DEFAULT '',
     ativo                UInt8 DEFAULT 1,
+    limite_prazo         Decimal(18, 2) DEFAULT 0,
     limite_vale          Decimal(18, 2) DEFAULT 0,
+    limite_total         Decimal(18, 2) DEFAULT 0,
     vales_cadastro       Decimal(18, 2) DEFAULT 0,
+    usado_prazo          Decimal(18, 2) DEFAULT 0,
+    usado_vale           Decimal(18, 2) DEFAULT 0,
     usado_mes            Decimal(18, 2) DEFAULT 0,
+    saldo_prazo          Decimal(18, 2) DEFAULT 0,
+    saldo_vale           Decimal(18, 2) DEFAULT 0,
     saldo_restante       Decimal(18, 2) DEFAULT 0,
     qtd_usos_mes         Int32 DEFAULT 0,
     max_usos_mesmo_dia   Int32 DEFAULT 0,
@@ -38,6 +44,7 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_fraud_credito_funcionario_uso (
     id_comprovante       Int64 DEFAULT 0,
     nro_cupom            String DEFAULT '',
     nro_documento        String DEFAULT '',
+    tipo_uso             LowCardinality(String) DEFAULT 'prazo',
     dt_evento            Nullable(DateTime64(3, 'America/Sao_Paulo')),
     valor                Decimal(18, 2) DEFAULT 0,
     id_usuario_caixa     Int32 DEFAULT 0,
