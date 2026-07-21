@@ -409,6 +409,22 @@ CREATE TABLE IF NOT EXISTS torqmind_current.stg_entidades (
 ORDER BY (id_empresa, id_filial, id_entidade)
 SETTINGS index_granularity = 8192;
 
+CREATE TABLE IF NOT EXISTS torqmind_current.stg_descontos_entidades_itens (
+    id_empresa                    Int32 NOT NULL,
+    id_filial                     Int32 NOT NULL,
+    id_descontoentidadesitens     Int32 NOT NULL,
+    payload                       String NOT NULL DEFAULT '{}',
+    ingested_at                   Nullable(DateTime64(6, 'UTC')),
+    dt_evento                     Nullable(DateTime64(6, 'UTC')),
+    id_db_shadow                  Nullable(Int64),
+    id_chave_natural              Nullable(String),
+    received_at                   Nullable(DateTime64(6, 'UTC')),
+    is_deleted                    UInt8 NOT NULL DEFAULT 0,
+    source_ts_ms                  Int64 NOT NULL
+) ENGINE = ReplacingMergeTree(source_ts_ms)
+ORDER BY (id_empresa, id_filial, id_descontoentidadesitens)
+SETTINGS index_granularity = 8192;
+
 CREATE TABLE IF NOT EXISTS torqmind_current.stg_clientes (
     id_empresa        Int32 NOT NULL,
     id_filial         Int32 NOT NULL,

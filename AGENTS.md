@@ -51,11 +51,22 @@ Nunca:
 - NFE usa `DATA`; nunca usar `DATAREPL` como watermark/filtro.
 - Caixa/turno `0` não entra em rankings operacionais.
 - Turno operacional exibido é `stg_turnos.payload.TURNO` (1..N; `0` = caixa geral). Nunca exibir `id_turno`/`ID_TURNOS` técnico (ex.: `34292`) como número de turno; ele serve só para join/rastreabilidade. Sem número operacional resolvido, usar fallback honesto (`Turno não resolvido`).
-- Documento operacional da venda é o comprovante: preferir `NROCOMPROVANTE`, fallback `id_comprovante`. Nunca montar documento como `Turno + Filial`, nunca usar nota fiscal como referência principal da venda, nunca voltar a `MOVPRODUTOS`.
+- Documento operacional da venda (**regra absoluta**): **DOCUMENTO = número da NF-e/NFC-e** via `stg.nfe` / `stg_nfe_slim` (e/ou parse honesto do HISTORICO com NFC-e/NF-e). Sem NF → `—`. **Proibido** usar `NROCOMPROVANTE`, `id_comprovante`, `Turno + Filial`, prefixo "Cupom"/"Comprovante", ou `MOVPRODUTOS` como documento. Ver `.cursor/rules/07-documento-nota-fiscal.mdc`.
 - Em telas de risco/fraude, dado sem responsável/turno/documento deve ser investigado na fonte/mart antes de criar fallback visual; grid vazio em área nobre vira empty state compacto.
 - Contas a receber: `DATAREPL` NÃO reflete pagamento/baixa direta de `CONTASRECEBER` (DTAPGTO/VLRPAGO mudam sem mexer em DATAREPL). A janela de revisita do agent deve reler títulos abertos E recém-pagos (últimos ~120d por DTAPGTO). Nunca declarar PASS em inadimplência/contas a receber sem validar o cliente/título no Xpert (fonte→tela). Bug de inadimplência não se corrige no frontend — corrige a sincronização STG→DW→mart.
 - `ID_CONTASRECEBER` é único por `ID_DB`, NÃO global. Reconciliação não pode ser só UPSERT: títulos deletados/renumerados/pagos-antigos no Xpert precisam ser fechados (re-upsert do pago ou tombstone), senão viram fantasma aberto na mart de inadimplência.
 - `etl.refresh_customer_delinquency_summary` faz DELETE+INSERT e roda por 2 agendadores (orquestrador `*/2` + cron de reconciliação); precisa de `pg_advisory_xact_lock` por empresa, senão a corrida aborta o refresh e deixa a mart stale. Reconciliação que cura STG/DW deve garantir o DW (sync direto a prova de watermark), pois o watermark `financeiro` compartilhado é avançado pelo orquestrador e pode pular títulos recém-curados.
+
+## Arquitetura de dados (leitura BI)
+
+```
+PG STG/DW → Debezium/CDC/ETL → ClickHouse (torqmind_mart_rt / torqmind_mart)
+                                      ↓
+                               API / Front (única fonte de leitura analítica)
+```
+
+Nunca servir dashboard a partir de `stg.*` / `dw.fact_*` / `mart.*` PostgreSQL.
+PG `mart.*` é mash/staging para publish no CH. Ver `.cursor/rules/06-clickhouse-bi-reads.mdc`.
 
 ## Controle de acesso
 

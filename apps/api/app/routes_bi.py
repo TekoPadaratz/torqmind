@@ -1387,6 +1387,34 @@ def fraud_overview(
     ), claims)
 
 
+@router.get("/fraud/credito-funcionario")
+def fraud_credito_funcionario(
+    ano_mes: Optional[int] = Query(None, description="YYYYMM; default = mês corrente SP"),
+    status: Optional[str] = Query("todos", description="todos | suspeitos | normais"),
+    refresh: bool = Query(False, description="Recalcula mart antes de ler (default: só se vazia)"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fraud.credito_funcionario")),
+):
+    """Antifraude — crédito/vale de funcionário (ENTIDADES.LIMITE + LIMITE_VALE)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.fraud_credito_funcionario(
+        role,
+        tenant,
+        filial,
+        ano_mes=ano_mes,
+        status=status or "todos",
+        refresh=bool(refresh),
+        limit=500,
+    )
+    return redact_sensitive({"data": payload}, claims)
+
+
 @router.get("/risk/overview")
 def risk_overview(
     dt_ini: date,
@@ -1533,6 +1561,122 @@ def customers_delinquency(
     if sort_by not in ("gravity", "valor", "atraso", "comprando"):
         sort_by = "gravity"
     return repos_mart.customers_delinquency_overview(role, tenant, filial, as_of=as_of, sort_by=sort_by)
+
+
+@router.get("/customers/preco-fixo")
+def customers_preco_fixo(
+    dt_ini: date,
+    dt_fim: date,
+    page: int = Query(0, ge=0),
+    page_size: int = Query(20, ge=1, le=100),
+    search: str = Query(""),
+    refresh: bool = Query(False, description="Rebuild mart do período antes de ler"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
+):
+    """Clientes com preço fixo: desconto econômico acumulado no período."""
+    from app.services import cliente_preco_fixo as preco_fixo
+
+    role = claims["role"]
+    tenant, filial, _branch_scope = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    scope_filial: Optional[int] = filial if isinstance(filial, int) else None
+    scope_filiais: Optional[List[int]] = filial if isinstance(filial, list) else None
+
+    if refresh:
+        try:
+            preco_fixo.publish_cadastro(role, tenant)
+            preco_fixo.publish_preco_bomba_dia(role, tenant, days=max((dt_fim - dt_ini).days + 60, 120))
+            preco_fixo.rebuild_itens(
+                tenant,
+                dt_ini,
+                dt_fim,
+                id_filial=scope_filial,
+                id_filiais=scope_filiais,
+            )
+        except Exception as exc:
+            logger.warning("customers_preco_fixo refresh failed: %s", exc)
+
+    try:
+        return redact_sensitive(
+            preco_fixo.overview(
+                tenant,
+                dt_ini,
+                dt_fim,
+                id_filial=scope_filial,
+                id_filiais=scope_filiais,
+                page=page,
+                page_size=page_size,
+                search=search or "",
+            ),
+            claims,
+        )
+    except Exception as exc:
+        logger.warning("customers_preco_fixo unavailable: %s", exc)
+        return {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": 0,
+            "summary": {"clientes": 0, "desconto_total": 0},
+            "dt_ini": dt_ini.isoformat(),
+            "dt_fim": dt_fim.isoformat(),
+            "source": "unavailable",
+        }
+
+
+@router.get("/customers/preco-fixo/detail")
+def customers_preco_fixo_detail(
+    id_filial: int = Query(...),
+    id_entidade: int = Query(...),
+    dt_ini: date = Query(...),
+    dt_fim: date = Query(...),
+    page: int = Query(0, ge=0),
+    page_size: int = Query(50, ge=1, le=200),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
+):
+    from app.services import cliente_preco_fixo as preco_fixo
+
+    tenant, _, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=None
+    )
+    try:
+        return redact_sensitive(
+            preco_fixo.detail(
+                tenant,
+                id_filial,
+                id_entidade,
+                dt_ini,
+                dt_fim,
+                page=page,
+                page_size=page_size,
+            ),
+            claims,
+        )
+    except Exception as exc:
+        logger.warning("customers_preco_fixo_detail unavailable: %s", exc)
+        return {
+            "id_filial": id_filial,
+            "filial_label": str(id_filial),
+            "id_entidade": id_entidade,
+            "cliente_nome": "",
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": 0,
+            "summary": {"desconto_total": 0},
+            "dt_ini": dt_ini.isoformat(),
+            "dt_fim": dt_fim.isoformat(),
+            "source": "unavailable",
+        }
 
 
 @router.get("/clients/churn")

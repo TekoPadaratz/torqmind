@@ -82,6 +82,12 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "parent": "fraud",
         "has_sensitive": False,
     },
+    "fraud.credito_funcionario": {
+        "label": "Crédito funcionário",
+        "category": "Operação",
+        "parent": "fraud",
+        "has_sensitive": False,
+    },
     "finance": {
         "label": "Financeiro",
         "category": "Financeiro",

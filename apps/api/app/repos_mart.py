@@ -2259,12 +2259,57 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
 
 
 def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs: Any) -> Dict[str, Any]:
-    """Ticket medio de COMBUSTIVEL no periodo (tela Vendas).
+    """Ticket medio de COMBUSTIVEL — lê ClickHouse ``mart_ticket_combustivel_diaria``."""
+    from app.db_clickhouse import query_dict
 
-    Vem do console da bomba (cada abastecimento fisico), nao do comprovante.
-    ticket_medio = SUM(VALOR) / COUNT(abastecimentos). Fonte:
-    mart.ticket_combustivel_diaria (Xpert CONSOLEARQUIVO).
-    """
+    branch_ids = None
+    if id_filial is not None and int(id_filial) != -1:
+        branch_ids = [int(id_filial)] if not isinstance(id_filial, (list, tuple, set)) else [
+            int(v) for v in id_filial if v is not None and int(v) != -1
+        ]
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
+    }
+    filial_sql = ""
+    if branch_ids:
+        if len(branch_ids) == 1:
+            filial_sql = "AND id_filial = %(id_filial)s"
+            params["id_filial"] = branch_ids[0]
+        else:
+            filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+    try:
+        rows = query_dict(
+            f"""
+            SELECT
+              sum(valor_total) AS valor_total,
+              sum(qtd_abastecimentos) AS qtd_abastecimentos,
+              sum(litros_total) AS litros_total
+            FROM torqmind_mart_rt.mart_ticket_combustivel_diaria FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND data_ref BETWEEN toDate(%(dt_ini)s) AND toDate(%(dt_fim)s)
+              {filial_sql}
+            """,
+            params,
+        )
+        row = rows[0] if rows else {}
+        if float(row.get("qtd_abastecimentos") or 0) > 0 or float(row.get("valor_total") or 0) > 0:
+            valor = float(row.get("valor_total") or 0)
+            qtd = int(row.get("qtd_abastecimentos") or 0)
+            litros = float(row.get("litros_total") or 0)
+            return {
+                "ticket_medio": round(valor / qtd, 2) if qtd else 0.0,
+                "valor_total": round(valor, 2),
+                "qtd_abastecimentos": qtd,
+                "litros_total": round(litros, 3),
+                "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
+                "source": "clickhouse",
+            }
+    except Exception as exc:
+        logging.getLogger(__name__).warning("sales_ticket_combustivel CH failed: %s", str(exc)[:200])
+
+    # Fallback legado PG (só se CH vazio)
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     sql = f"""
       SELECT
@@ -2275,9 +2320,9 @@ def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int
       WHERE id_empresa = %s AND data_ref BETWEEN %s AND %s
         {where_filial}
     """
-    params = [id_empresa, dt_ini, dt_fim] + branch_params
+    params_pg = [id_empresa, dt_ini, dt_fim] + branch_params
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        row = conn.execute(sql, params).fetchone() or {}
+        row = conn.execute(sql, params_pg).fetchone() or {}
     valor = float(row.get("valor_total") or 0)
     qtd = int(row.get("qtd_abastecimentos") or 0)
     litros = float(row.get("litros_total") or 0)
@@ -2287,6 +2332,7 @@ def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int
         "qtd_abastecimentos": qtd,
         "litros_total": round(litros, 3),
         "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
+        "source": "postgres",
     }
 
 
@@ -2565,6 +2611,19 @@ def sales_overview_bundle(
 # Pricing (competitor simulation)
 # ========================
 
+def _competitor_fuel_family(produto_nome: str, grupo_nome: str) -> Optional[str]:
+    text = f"{produto_nome or ''} {grupo_nome or ''}".upper()
+    if "GASOL" in text:
+        return "GASOLINA"
+    if "ETANOL" in text or "ALCOOL" in text or "ÁLCOOL" in text:
+        return "ETANOL"
+    if "DIESEL" in text or "S10" in text or "S500" in text:
+        return "DIESEL"
+    if "GNV" in text or "GAS NATURAL" in text:
+        return "GNV"
+    return None
+
+
 def competitor_pricing_overview(
     role: str,
     id_empresa: int,
@@ -2573,6 +2632,11 @@ def competitor_pricing_overview(
     dt_fim: date,
     days_simulation: int = 10,
 ) -> Dict[str, Any]:
+    """Simulação de preço vs concorrente.
+
+    Vendas/produto: ClickHouse ``sales_products_rt`` (+ custo em ``dim_produto``).
+    Preço concorrente: ``app.competitor_fuel_prices`` (OLTP — escrita do usuário).
+    """
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
     days_window = max((dt_fim - dt_ini).days + 1, 1)
@@ -2580,95 +2644,239 @@ def competitor_pricing_overview(
     fuel_filter = _fuel_filter_expression("g", "p")
     active_filter = _active_product_filter_expression("p")
 
-    sql = f"""
-      WITH sales AS (
-        SELECT
-          id_produto,
-          COALESCE(SUM(faturamento),0)::numeric(18,2) AS faturamento_periodo,
-          COALESCE(SUM(qtd),0)::numeric(18,3) AS qtd_periodo
-        FROM mart.agg_produtos_diaria
-        WHERE id_empresa = %s
-          AND id_filial = %s
-          AND data_key BETWEEN %s AND %s
-        GROUP BY id_produto
-      ),
-      fuel_products AS (
-        SELECT
-          p.id_produto,
-          COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
-          {_group_name_expression("g", "p")} AS grupo_nome,
-          {_fuel_family_case_expression("g", "p")} AS familia_combustivel,
-          COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio
-        FROM dw.dim_produto p
-        LEFT JOIN dw.dim_grupo_produto g
-          ON g.id_empresa = p.id_empresa
-         AND g.id_filial = p.id_filial
-         AND g.id_grupo_produto = p.id_grupo_produto
-        WHERE p.id_empresa = %s
-          AND p.id_filial = %s
-          AND {fuel_filter}
-          AND {active_filter}
-      ),
-      comp AS (
-        SELECT
-          id_produto,
-          competitor_price::numeric(18,4) AS competitor_price,
-          updated_at
-        FROM app.competitor_fuel_prices
-        WHERE id_empresa = %s
-          AND id_filial = %s
-      )
-      SELECT
-        fp.id_produto,
-        fp.produto_nome,
-        fp.grupo_nome,
-        fp.familia_combustivel,
-        fp.custo_medio,
-        COALESCE(s.qtd_periodo, 0)::numeric(18,3) AS qtd_periodo,
-        COALESCE(s.faturamento_periodo, 0)::numeric(18,2) AS faturamento_periodo,
-        CASE
-          WHEN COALESCE(s.qtd_periodo, 0) > 0 THEN (s.faturamento_periodo / NULLIF(s.qtd_periodo,0))::numeric(18,4)
-          ELSE 0::numeric(18,4)
-        END AS avg_price_current,
-        COALESCE(c.competitor_price, 0)::numeric(18,4) AS competitor_price,
-        c.updated_at AS competitor_updated_at
-      FROM fuel_products fp
-      LEFT JOIN sales s ON s.id_produto = fp.id_produto
-      LEFT JOIN comp c ON c.id_produto = fp.id_produto
-      ORDER BY fp.produto_nome
-    """
-    params = [id_empresa, id_filial, ini, fim, id_empresa, id_filial, id_empresa, id_filial]
+    rows: list = []
+    source = "postgres"
+
+    # Preços digitados pelo usuário (OLTP) — sempre PG.
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
-        rows = list(conn.execute(sql, params).fetchall())
-        if not rows:
-            fallback_sql = f"""
-              SELECT
-                p.id_produto,
-                COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
-                {_group_name_expression("g", "p")} AS grupo_nome,
-                {_fuel_family_case_expression("g", "p")} AS familia_combustivel,
-                COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio,
-                0::numeric(18,3) AS qtd_periodo,
-                0::numeric(18,2) AS faturamento_periodo,
-                0::numeric(18,4) AS avg_price_current,
-                COALESCE(c.competitor_price, 0)::numeric(18,4) AS competitor_price,
-                c.updated_at AS competitor_updated_at
-              FROM dw.dim_produto p
-              LEFT JOIN dw.dim_grupo_produto g
-                ON g.id_empresa = p.id_empresa
-               AND g.id_filial = p.id_filial
-               AND g.id_grupo_produto = p.id_grupo_produto
-              LEFT JOIN app.competitor_fuel_prices c
-                ON c.id_empresa = p.id_empresa
-               AND c.id_filial = p.id_filial
-               AND c.id_produto = p.id_produto
-              WHERE p.id_empresa = %s
-                AND p.id_filial = %s
-                AND {fuel_filter}
-                AND {active_filter}
-              ORDER BY p.nome
+        comp_rows = list(
+            conn.execute(
+                """
+                SELECT id_produto, competitor_price::numeric(18,4) AS competitor_price, updated_at
+                FROM app.competitor_fuel_prices
+                WHERE id_empresa = %s AND id_filial = %s
+                """,
+                [id_empresa, id_filial],
+            ).fetchall()
+        )
+    comp_by_prod = {
+        int(r["id_produto"]): r for r in comp_rows if r.get("id_produto") is not None
+    }
+
+    try:
+        from app.db_clickhouse import query_dict
+
+        sales_rows = query_dict(
             """
-            rows = list(conn.execute(fallback_sql, (id_empresa, id_filial)).fetchall())
+            SELECT
+              id_produto,
+              any(nome_produto) AS produto_nome,
+              any(nome_grupo) AS grupo_nome,
+              sum(qtd) AS qtd_periodo,
+              sum(faturamento) AS faturamento_periodo
+            FROM torqmind_mart_rt.sales_products_rt FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND id_filial = %(id_filial)s
+              AND data_key BETWEEN %(ini)s AND %(fim)s
+              AND (
+                lowerUTF8(nome_grupo) LIKE '%%combusti%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%gasolina%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%diesel%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%etanol%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%gnv%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%gas natural%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%alcool%%'
+              )
+              AND NOT (
+                lowerUTF8(nome_produto) LIKE '%%aditivo%%'
+                OR lowerUTF8(nome_produto) LIKE '%%injector%%'
+                OR lowerUTF8(nome_produto) LIKE '%%arla%%'
+                OR lowerUTF8(nome_produto) LIKE '%%lubrificante%%'
+                OR lowerUTF8(nome_produto) LIKE '%%filtro%%'
+                OR lowerUTF8(nome_grupo) LIKE '%%filtro%%'
+              )
+            GROUP BY id_produto
+            HAVING sum(qtd) > 0 OR sum(faturamento) > 0
+            ORDER BY produto_nome
+            """,
+            {
+                "id_empresa": int(id_empresa),
+                "id_filial": int(id_filial),
+                "ini": int(ini),
+                "fim": int(fim),
+            },
+        )
+        # Catálogo combustível no CH (mesmo sem venda no período) — evita fallback lento PG.
+        fuel_catalog = query_dict(
+            """
+            SELECT
+              p.id_produto,
+              if(p.nome = '', concat('#ID ', toString(p.id_produto)), p.nome) AS produto_nome,
+              ifNull(g.nome, '') AS grupo_nome,
+              toFloat64(ifNull(p.custo_medio, 0)) AS custo_medio
+            FROM torqmind_current.dim_produto AS p FINAL
+            LEFT JOIN torqmind_current.dim_grupo_produto AS g FINAL
+              ON g.id_empresa = p.id_empresa
+             AND g.id_filial = p.id_filial
+             AND g.id_grupo_produto = p.id_grupo_produto
+             AND g.is_deleted = 0
+            WHERE p.id_empresa = %(id_empresa)s
+              AND p.id_filial = %(id_filial)s
+              AND p.is_deleted = 0
+              AND (
+                lowerUTF8(ifNull(g.nome, '')) LIKE '%%combusti%%'
+                OR lowerUTF8(ifNull(g.nome, '')) LIKE '%%gasolina%%'
+                OR lowerUTF8(ifNull(g.nome, '')) LIKE '%%diesel%%'
+                OR lowerUTF8(ifNull(g.nome, '')) LIKE '%%etanol%%'
+                OR lowerUTF8(ifNull(g.nome, '')) LIKE '%%gnv%%'
+                OR lowerUTF8(p.nome) LIKE '%%gasolina%%'
+                OR lowerUTF8(p.nome) LIKE '%%etanol%%'
+                OR lowerUTF8(p.nome) LIKE '%%diesel%%'
+              )
+              AND NOT (
+                lowerUTF8(p.nome) LIKE '%%aditivo%%'
+                OR lowerUTF8(p.nome) LIKE '%%filtro%%'
+                OR lowerUTF8(ifNull(g.nome, '')) LIKE '%%filtro%%'
+              )
+            ORDER BY produto_nome
+            """,
+            {"id_empresa": int(id_empresa), "id_filial": int(id_filial)},
+        )
+        sales_by_prod = {
+            int(r["id_produto"]): r for r in (sales_rows or []) if r.get("id_produto") is not None
+        }
+        catalog = fuel_catalog or []
+        # Se o catálogo veio vazio mas há vendas, use as vendas como base.
+        if not catalog and sales_by_prod:
+            catalog = [
+                {
+                    "id_produto": pid,
+                    "produto_nome": s.get("produto_nome"),
+                    "grupo_nome": s.get("grupo_nome"),
+                    "custo_medio": 0.0,
+                }
+                for pid, s in sales_by_prod.items()
+            ]
+        if catalog or sales_by_prod:
+            for fr in catalog:
+                pid = int(fr["id_produto"])
+                sr = sales_by_prod.get(pid) or {}
+                qtd = float(sr.get("qtd_periodo") or 0)
+                fat = float(sr.get("faturamento_periodo") or 0)
+                comp = comp_by_prod.get(pid) or {}
+                nome = str(fr.get("produto_nome") or sr.get("produto_nome") or f"#ID {pid}")
+                grupo = str(fr.get("grupo_nome") or sr.get("grupo_nome") or "")
+                rows.append(
+                    {
+                        "id_produto": pid,
+                        "produto_nome": nome,
+                        "grupo_nome": grupo,
+                        "familia_combustivel": _competitor_fuel_family(nome, grupo),
+                        "custo_medio": float(fr.get("custo_medio") or 0),
+                        "qtd_periodo": qtd,
+                        "faturamento_periodo": fat,
+                        "avg_price_current": (fat / qtd) if qtd > 0 else 0.0,
+                        "competitor_price": float(comp.get("competitor_price") or 0),
+                        "competitor_updated_at": comp.get("updated_at"),
+                    }
+                )
+            if rows:
+                source = "clickhouse"
+    except Exception as exc:
+        logging.getLogger(__name__).warning("competitor_pricing CH failed: %s", str(exc)[:200])
+        rows = []
+
+    if source != "clickhouse":
+        sql = f"""
+          WITH sales AS (
+            SELECT
+              id_produto,
+              COALESCE(SUM(faturamento),0)::numeric(18,2) AS faturamento_periodo,
+              COALESCE(SUM(qtd),0)::numeric(18,3) AS qtd_periodo
+            FROM mart.agg_produtos_diaria
+            WHERE id_empresa = %s
+              AND id_filial = %s
+              AND data_key BETWEEN %s AND %s
+            GROUP BY id_produto
+          ),
+          fuel_products AS (
+            SELECT
+              p.id_produto,
+              COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
+              {_group_name_expression("g", "p")} AS grupo_nome,
+              {_fuel_family_case_expression("g", "p")} AS familia_combustivel,
+              COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio
+            FROM dw.dim_produto p
+            LEFT JOIN dw.dim_grupo_produto g
+              ON g.id_empresa = p.id_empresa
+             AND g.id_filial = p.id_filial
+             AND g.id_grupo_produto = p.id_grupo_produto
+            WHERE p.id_empresa = %s
+              AND p.id_filial = %s
+              AND {fuel_filter}
+              AND {active_filter}
+          ),
+          comp AS (
+            SELECT
+              id_produto,
+              competitor_price::numeric(18,4) AS competitor_price,
+              updated_at
+            FROM app.competitor_fuel_prices
+            WHERE id_empresa = %s
+              AND id_filial = %s
+          )
+          SELECT
+            fp.id_produto,
+            fp.produto_nome,
+            fp.grupo_nome,
+            fp.familia_combustivel,
+            fp.custo_medio,
+            COALESCE(s.qtd_periodo, 0)::numeric(18,3) AS qtd_periodo,
+            COALESCE(s.faturamento_periodo, 0)::numeric(18,2) AS faturamento_periodo,
+            CASE
+              WHEN COALESCE(s.qtd_periodo, 0) > 0 THEN (s.faturamento_periodo / NULLIF(s.qtd_periodo,0))::numeric(18,4)
+              ELSE 0::numeric(18,4)
+            END AS avg_price_current,
+            COALESCE(c.competitor_price, 0)::numeric(18,4) AS competitor_price,
+            c.updated_at AS competitor_updated_at
+          FROM fuel_products fp
+          LEFT JOIN sales s ON s.id_produto = fp.id_produto
+          LEFT JOIN comp c ON c.id_produto = fp.id_produto
+          ORDER BY fp.produto_nome
+        """
+        params = [id_empresa, id_filial, ini, fim, id_empresa, id_filial, id_empresa, id_filial]
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+            rows = list(conn.execute(sql, params).fetchall())
+            if not rows:
+                fallback_sql = f"""
+                  SELECT
+                    p.id_produto,
+                    COALESCE(NULLIF(p.nome, ''), '#ID ' || p.id_produto::text) AS produto_nome,
+                    {_group_name_expression("g", "p")} AS grupo_nome,
+                    {_fuel_family_case_expression("g", "p")} AS familia_combustivel,
+                    COALESCE(p.custo_medio, 0)::numeric(18,4) AS custo_medio,
+                    0::numeric(18,3) AS qtd_periodo,
+                    0::numeric(18,2) AS faturamento_periodo,
+                    0::numeric(18,4) AS avg_price_current,
+                    COALESCE(c.competitor_price, 0)::numeric(18,4) AS competitor_price,
+                    c.updated_at AS competitor_updated_at
+                  FROM dw.dim_produto p
+                  LEFT JOIN dw.dim_grupo_produto g
+                    ON g.id_empresa = p.id_empresa
+                   AND g.id_filial = p.id_filial
+                   AND g.id_grupo_produto = p.id_grupo_produto
+                  LEFT JOIN app.competitor_fuel_prices c
+                    ON c.id_empresa = p.id_empresa
+                   AND c.id_filial = p.id_filial
+                   AND c.id_produto = p.id_produto
+                  WHERE p.id_empresa = %s
+                    AND p.id_filial = %s
+                    AND {fuel_filter}
+                    AND {active_filter}
+                  ORDER BY p.nome
+                """
+                rows = list(conn.execute(fallback_sql, (id_empresa, id_filial)).fetchall())
+        source = "postgres"
 
     items: List[Dict[str, Any]] = []
     total_current_revenue_10d = 0.0
@@ -2773,6 +2981,7 @@ def competitor_pricing_overview(
             "total_match_vs_no_change_10d": round(total_match_vs_no_change_10d, 2),
         },
         "items": items_sorted,
+        "source": source,
     }
 
 
@@ -3193,13 +3402,6 @@ def fraud_lancamentos_creditos(
         return None
 
     def _parse_data_parts(raw: Any) -> Tuple[Optional[str], Optional[str], bool]:
-        """Retorna (data YYYY-MM-DD, data_ts ISO se hora real, hora_conhecida).
-
-        Injeções manuais no Xpert quase sempre vêm com DATA à meia-noite
-        (sem hora operacional). Usos (SAIDAS) costumam ter hora. Sem fonte
-        alternativa de horário (payload não tem DATAREPL/DTACONTA), só
-        exponemos hora quando DATA traz HH:MM ≠ 00:00.
-        """
         s = str(raw or "").strip()
         if not s:
             return None, None, False
@@ -3215,118 +3417,221 @@ def fraud_lancamentos_creditos(
         ts = f"{day}T{hh:02d}:{mm:02d}:00-03:00"
         return day, ts, True
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        srow = conn.execute(summary_sql, summary_params).fetchone() or {}
-        filial_nome_map = {
-            int(r["id_filial"]): r.get("nome")
-            for r in conn.execute(
-                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
-                [id_empresa],
-            ).fetchall()
-            if r.get("id_filial") is not None
-        }
-        rows = list(conn.execute(list_sql, list_params).fetchall())
+    source = "clickhouse"
+    srow: Dict[str, Any] = {}
+    rows: list = []
+    filial_nome_map: Dict[int, Any] = {}
+    consumos_by_key: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+    saldo_apos_by_mov: Dict[Tuple[int, int, int], float] = {}
 
-        # Consumos (SAIDAS) + ledger completo p/ reconstruir saldo na operação.
-        ids_cli = sorted({int(r["id_entidade"]) for r in rows if r.get("id_entidade")})
-        consumos_by_key: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
-        saldo_apos_by_mov: Dict[Tuple[int, int, int], float] = {}
-        if ids_cli:
-            from datetime import timedelta as _td
-            cons_fim = (dt_fim + _td(days=120)).isoformat()
-            ledger_sql = f"""
-              SELECT
-                m.id_filial,
-                NULLIF(m.payload->>'ID_ENTIDADE', '')::int AS id_entidade,
-                LEFT(m.payload->>'DATA', 10) AS data,
-                m.payload->>'DATA' AS data_raw,
-                NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint AS id_mov,
-                COALESCE((m.payload->>'ENTRADAS')::numeric, 0)::numeric(18,2) AS entradas,
-                COALESCE((m.payload->>'SAIDAS')::numeric, 0)::numeric(18,2) AS saidas,
-                COALESCE(NULLIF(TRIM(m.payload->>'HISTORICO'), ''), '') AS historico,
-                NULLIF(TRIM(m.payload->>'REFERENCIA'), '') AS referencia
-              FROM stg.movcreditoentidades m
-              WHERE m.id_empresa = %s
-                AND NULLIF(m.payload->>'ID_ENTIDADE', '')::int = ANY(%s)
-                AND (
-                  COALESCE((m.payload->>'ENTRADAS')::numeric, 0) > 0
-                  OR COALESCE((m.payload->>'SAIDAS')::numeric, 0) > 0
-                )
-                {where_filial}
-              ORDER BY m.id_filial,
-                       NULLIF(m.payload->>'ID_ENTIDADE', '')::int,
-                       LEFT(m.payload->>'DATA', 10),
-                       COALESCE(NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint, 0)
-            """
-            ledger_params = [id_empresa, ids_cli] + branch_params
-            ledger_rows = [dict(x) for x in conn.execute(ledger_sql, ledger_params).fetchall()]
-
-            # Saldo atual por cliente (já na CTE saldo via list; reusa stg.credito).
-            saldo_atual_map: Dict[Tuple[int, int], float] = {}
-            for r in rows:
-                if r.get("id_entidade") is None:
-                    continue
-                key = (int(r["id_filial"]), int(r["id_entidade"]))
-                saldo_atual_map[key] = round(float(r.get("saldo_cliente") or 0), 2)
-
-            # Reconstrução: do mais recente ao mais antigo.
-            # saldo_apos[M] = saldo imediatamente APÓS o lançamento M.
-            by_cli: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
-            for lr in ledger_rows:
-                if lr.get("id_entidade") is None:
-                    continue
-                by_cli.setdefault((int(lr["id_filial"]), int(lr["id_entidade"])), []).append(lr)
-
-            for key, movs in by_cli.items():
-                running = float(saldo_atual_map.get(key) or 0)
-                # movs já em ordem ASC; percorre DESC
-                for lr in reversed(movs):
-                    id_mov = int(lr.get("id_mov") or 0)
-                    running = round(running, 2)
-                    if id_mov:
-                        saldo_apos_by_mov[(key[0], key[1], id_mov)] = running
-                    ent = float(lr.get("entradas") or 0)
-                    sai = float(lr.get("saidas") or 0)
-                    # Desfaz o lançamento para obter o saldo anterior
-                    running = round(running - ent + sai, 2)
-
-            # Consumos para expand (só SAIDAS na janela útil)
-            for lr in ledger_rows:
-                sai = float(lr.get("saidas") or 0)
-                if sai <= 0:
-                    continue
-                day, data_ts, hora_ok = _parse_data_parts(lr.get("data_raw") or lr.get("data"))
-                if day and day > cons_fim:
-                    continue
-                if day and day < ini:
-                    continue
-                key = (int(lr["id_filial"]), int(lr["id_entidade"]))
-                hist = str(lr.get("historico") or "")
-                tipo = "baixa_manual"
-                low = hist.lower()
-                if "venda" in low or "cupom" in low or "nfc" in low or "comprovante" in low:
-                    tipo = "venda"
-                elif "fatura" in low or "titulo" in low or "receber" in low:
-                    tipo = "pagamento_fatura"
+    def _load_ledger_and_rebuild(ledger_rows: List[Dict[str, Any]], rows_in: list) -> None:
+        nonlocal consumos_by_key, saldo_apos_by_mov
+        from datetime import timedelta as _td
+        cons_fim = (dt_fim + _td(days=120)).isoformat()
+        ids_cli = sorted({int(r["id_entidade"]) for r in rows_in if r.get("id_entidade")})
+        if not ids_cli:
+            return
+        saldo_atual_map: Dict[Tuple[int, int], float] = {}
+        for r in rows_in:
+            if r.get("id_entidade") is None:
+                continue
+            key = (int(r["id_filial"]), int(r["id_entidade"]))
+            saldo_atual_map[key] = round(float(r.get("saldo_cliente") or 0), 2)
+        by_cli: Dict[Tuple[int, int], List[Dict[str, Any]]] = {}
+        for lr in ledger_rows:
+            if lr.get("id_entidade") is None:
+                continue
+            by_cli.setdefault((int(lr["id_filial"]), int(lr["id_entidade"])), []).append(lr)
+        for key, movs in by_cli.items():
+            running = float(saldo_atual_map.get(key) or 0)
+            for lr in reversed(movs):
                 id_mov = int(lr.get("id_mov") or 0)
-                consumos_by_key.setdefault(key, []).append(
-                    {
-                        "data": day,
-                        "data_ts": data_ts if hora_ok else None,
-                        "hora_conhecida": hora_ok,
-                        "valor": round(sai, 2),
-                        "historico": hist,
-                        "referencia": lr.get("referencia"),
-                        "id_mov": id_mov or None,
-                        "saldo_operacao": saldo_apos_by_mov.get((key[0], key[1], id_mov)) if id_mov else None,
-                        "tipo": tipo,
-                        "tipo_label": {
-                            "venda": "Venda",
-                            "pagamento_fatura": "Pagamento de fatura",
-                            "baixa_manual": "Baixa / uso do crédito",
-                        }.get(tipo, "Uso do crédito"),
-                    }
-                )
+                running = round(running, 2)
+                if id_mov:
+                    saldo_apos_by_mov[(key[0], key[1], id_mov)] = running
+                ent = float(lr.get("entradas") or 0)
+                sai = float(lr.get("saidas") or 0)
+                running = round(running - ent + sai, 2)
+        for lr in ledger_rows:
+            sai = float(lr.get("saidas") or 0)
+            if sai <= 0:
+                continue
+            day, data_ts, hora_ok = _parse_data_parts(lr.get("data_raw") or lr.get("data"))
+            if day and day > cons_fim:
+                continue
+            if day and day < ini:
+                continue
+            key = (int(lr["id_filial"]), int(lr["id_entidade"]))
+            hist = str(lr.get("historico") or "")
+            tipo = "baixa_manual"
+            low = hist.lower()
+            if "venda" in low or "cupom" in low or "nfc" in low or "comprovante" in low:
+                tipo = "venda"
+            elif "fatura" in low or "titulo" in low or "receber" in low:
+                tipo = "pagamento_fatura"
+            id_mov = int(lr.get("id_mov") or 0)
+            consumos_by_key.setdefault(key, []).append(
+                {
+                    "data": day,
+                    "data_ts": data_ts if hora_ok else None,
+                    "hora_conhecida": hora_ok,
+                    "valor": round(sai, 2),
+                    "historico": hist,
+                    "referencia": lr.get("referencia"),
+                    "id_mov": id_mov or None,
+                    "saldo_operacao": saldo_apos_by_mov.get((key[0], key[1], id_mov)) if id_mov else None,
+                    "tipo": tipo,
+                    "tipo_label": {
+                        "venda": "Venda",
+                        "pagamento_fatura": "Pagamento de fatura",
+                        "baixa_manual": "Baixa / uso do crédito",
+                    }.get(tipo, "Uso do crédito"),
+                }
+            )
+
+    try:
+        from app.db_clickhouse import query_dict
+
+        branch_ids = _branch_ids(id_filial)
+        params_ch: Dict[str, Any] = {
+            "id_empresa": int(id_empresa),
+            "ini": ini,
+            "fim": fim,
+            "lim": int(limit),
+        }
+        filial_sql = ""
+        if branch_ids:
+            if len(branch_ids) == 1:
+                filial_sql = "AND id_filial = %(id_filial)s"
+                params_ch["id_filial"] = branch_ids[0]
+            else:
+                filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+        risco_ch = ""
+        if risco_key in ("suspeita", "suspeitas", "manual", "manuais"):
+            risco_ch = "AND manual_suspeita = 1"
+        elif risco_key in ("normal", "normais"):
+            risco_ch = "AND manual_suspeita = 0"
+
+        sum_rows = query_dict(
+            f"""
+            SELECT
+              countIf(entradas > 0) AS injecoes_qtd,
+              sumIf(entradas, entradas > 0) AS injetado,
+              countIf(entradas > 0 AND manual_suspeita = 1) AS manuais_qtd,
+              sumIf(entradas, entradas > 0 AND manual_suspeita = 1) AS injetado_manual,
+              sum(saidas) AS aplicado
+            FROM torqmind_mart_rt.mart_fraud_credito_cliente_mov FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND data_dia BETWEEN toDate(%(ini)s) AND toDate(%(fim)s)
+              {filial_sql}
+            """,
+            params_ch,
+        )
+        srow = sum_rows[0] if sum_rows else {}
+        rows = query_dict(
+            f"""
+            SELECT
+              toString(m.data_dia) AS data,
+              m.data_raw,
+              m.id_filial,
+              m.id_entidade,
+              m.operador,
+              m.id_usuario,
+              m.entradas AS injetado,
+              coalesce(s.saldo, 0) AS saldo_cliente,
+              m.historico,
+              m.referencia,
+              m.id_mov,
+              m.manual_suspeita AS suspeita
+            FROM torqmind_mart_rt.mart_fraud_credito_cliente_mov AS m FINAL
+            LEFT JOIN (
+              SELECT id_empresa, id_filial, id_entidade, argMax(saldo, published_at) AS saldo
+              FROM torqmind_mart_rt.mart_fraud_credito_cliente_saldo
+              GROUP BY id_empresa, id_filial, id_entidade
+            ) AS s
+              ON s.id_empresa = m.id_empresa AND s.id_filial = m.id_filial AND s.id_entidade = m.id_entidade
+            WHERE m.id_empresa = %(id_empresa)s
+              AND m.data_dia BETWEEN toDate(%(ini)s) AND toDate(%(fim)s)
+              AND m.entradas > 0
+              {risco_ch}
+              {filial_sql}
+            ORDER BY m.id_filial ASC, m.data_dia DESC, m.id_mov DESC
+            LIMIT %(lim)s
+            """,
+            params_ch,
+        )
+        if not rows and float(srow.get("injecoes_qtd") or 0) == 0:
+            raise RuntimeError("CH empty — fallback PG")
+        for r in rows:
+            fid = int(r.get("id_filial") or 0)
+            filial_nome_map[fid] = apelido_for(fid)
+        ids_cli = sorted({int(r["id_entidade"]) for r in rows if r.get("id_entidade")})
+        ledger_rows: List[Dict[str, Any]] = []
+        if ids_cli:
+            ids_csv = ", ".join(str(i) for i in ids_cli)
+            ledger_rows = query_dict(
+                f"""
+                SELECT
+                  id_filial, id_entidade,
+                  toString(data_dia) AS data,
+                  data_raw, id_mov, entradas, saidas, historico, referencia
+                FROM torqmind_mart_rt.mart_fraud_credito_cliente_mov FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  AND id_entidade IN ({ids_csv})
+                  AND (entradas > 0 OR saidas > 0)
+                  {filial_sql}
+                ORDER BY id_filial, id_entidade, data_dia, id_mov
+                """,
+                params_ch,
+            )
+        _load_ledger_and_rebuild(ledger_rows, rows)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "fraud_lancamentos_creditos CH path failed (%s); using PG", str(exc)[:180]
+        )
+        source = "postgres"
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+            srow = conn.execute(summary_sql, summary_params).fetchone() or {}
+            filial_nome_map = {
+                int(r["id_filial"]): r.get("nome")
+                for r in conn.execute(
+                    "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                    [id_empresa],
+                ).fetchall()
+                if r.get("id_filial") is not None
+            }
+            rows = list(conn.execute(list_sql, list_params).fetchall())
+            ids_cli = sorted({int(r["id_entidade"]) for r in rows if r.get("id_entidade")})
+            ledger_rows = []
+            if ids_cli:
+                from datetime import timedelta as _td
+                ledger_sql = f"""
+                  SELECT
+                    m.id_filial,
+                    NULLIF(m.payload->>'ID_ENTIDADE', '')::int AS id_entidade,
+                    LEFT(m.payload->>'DATA', 10) AS data,
+                    m.payload->>'DATA' AS data_raw,
+                    NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint AS id_mov,
+                    COALESCE((m.payload->>'ENTRADAS')::numeric, 0)::numeric(18,2) AS entradas,
+                    COALESCE((m.payload->>'SAIDAS')::numeric, 0)::numeric(18,2) AS saidas,
+                    COALESCE(NULLIF(TRIM(m.payload->>'HISTORICO'), ''), '') AS historico,
+                    NULLIF(TRIM(m.payload->>'REFERENCIA'), '') AS referencia
+                  FROM stg.movcreditoentidades m
+                  WHERE m.id_empresa = %s
+                    AND NULLIF(m.payload->>'ID_ENTIDADE', '')::int = ANY(%s)
+                    AND (
+                      COALESCE((m.payload->>'ENTRADAS')::numeric, 0) > 0
+                      OR COALESCE((m.payload->>'SAIDAS')::numeric, 0) > 0
+                    )
+                    {where_filial}
+                  ORDER BY m.id_filial,
+                           NULLIF(m.payload->>'ID_ENTIDADE', '')::int,
+                           LEFT(m.payload->>'DATA', 10),
+                           COALESCE(NULLIF(m.payload->>'ID_MOVCREDITOENTIDADES', '')::bigint, 0)
+                """
+                ledger_rows = [dict(x) for x in conn.execute(ledger_sql, [id_empresa, ids_cli] + branch_params).fetchall()]
+            _load_ledger_and_rebuild(ledger_rows, rows)
+
 
     nome_map: Dict[int, str] = {}
     ids = sorted({int(r.get("id_entidade")) for r in rows if r.get("id_entidade")})
@@ -3426,7 +3731,7 @@ def fraud_lancamentos_creditos(
         "lancamentos": lancamentos,
         "risco_filtro": risco_key if risco_key in ("suspeitas", "normais", "todas") else "suspeitas",
         "cliente_q": q or None,
-        "source": "postgres",
+        "source": source,
     }
 
 
@@ -4901,17 +5206,89 @@ def cheques_pendentes_overview(
     """
     list_params = [id_empresa] + branch_params + [list(req), int(limit)]
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        srows = list(conn.execute(summary_sql, summary_params).fetchall())
-        filial_nome_map = {
-            int(r["id_filial"]): r.get("nome")
-            for r in conn.execute(
-                "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
-                [id_empresa],
-            ).fetchall()
-            if r.get("id_filial") is not None
+    srows: list = []
+    rows: list = []
+    filial_nome_map: Dict[int, Any] = {}
+    source = "postgres"
+    try:
+        from app.db_clickhouse import query_dict
+
+        branch_ids = _branch_ids(id_filial)
+        params_ch: Dict[str, Any] = {
+            "id_empresa": int(id_empresa),
+            "today": today.isoformat(),
+            "lim": int(limit),
         }
-        rows = list(conn.execute(list_sql, list_params).fetchall())
+        filial_sql = ""
+        if branch_ids:
+            if len(branch_ids) == 1:
+                filial_sql = "AND id_filial = %(id_filial)s"
+                params_ch["id_filial"] = branch_ids[0]
+            else:
+                filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+        status_list = ", ".join("'" + s.replace("'", "") + "'" for s in sorted(req))
+        srows = query_dict(
+            f"""
+            SELECT
+              status_cheque,
+              count() AS qtd,
+              sum(v) AS valor,
+              countIf(status_cheque != 'compensado' AND isNotNull(dt_venc) AND dt_venc < toDate(%(today)s)) AS venc_qtd,
+              sumIf(v, status_cheque != 'compensado' AND isNotNull(dt_venc) AND dt_venc < toDate(%(today)s)) AS venc_valor,
+              countIf(av = 1) AS avista_qtd,
+              countIf(av = 0) AS aprazo_qtd
+            FROM (
+              SELECT
+                status_cheque,
+                valor AS v,
+                dt_vencimento AS dt_venc,
+                avista AS av
+              FROM torqmind_mart_rt.mart_cheques_pendentes FINAL
+              WHERE id_empresa = %(id_empresa)s
+                {filial_sql}
+            )
+            GROUP BY status_cheque
+            """,
+            params_ch,
+        )
+        rows = query_dict(
+            f"""
+            SELECT id_filial, id_db, id_cheque, id_entidade, cliente_nome, cpf, valor,
+                   dt_recebido, dt_vencimento, dt_compensado, situacao_cheque, avista,
+                   motivo_devolucao, status_cheque, banco, agencia, nroconta, numero
+            FROM torqmind_mart_rt.mart_cheques_pendentes FINAL
+            WHERE id_empresa = %(id_empresa)s
+              {filial_sql}
+              AND status_cheque IN ({status_list})
+            ORDER BY (status_cheque = 'devolvido') DESC, dt_vencimento ASC, valor DESC
+            LIMIT %(lim)s
+            """,
+            params_ch,
+        )
+        if srows or rows:
+            source = "clickhouse"
+            # labels via apelido
+            for r in rows:
+                fid = int(r.get("id_filial") or 0)
+                filial_nome_map[fid] = apelido_for(fid) or filial_nome_map.get(fid)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("cheques CH failed: %s", str(exc)[:200])
+        srows = []
+        rows = []
+
+    if source != "clickhouse":
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+            srows = list(conn.execute(summary_sql, summary_params).fetchall())
+            filial_nome_map = {
+                int(r["id_filial"]): r.get("nome")
+                for r in conn.execute(
+                    "SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s",
+                    [id_empresa],
+                ).fetchall()
+                if r.get("id_filial") is not None
+            }
+            rows = list(conn.execute(list_sql, list_params).fetchall())
+        source = "postgres"
 
     por_status: Dict[str, Dict[str, Any]] = {
         k: {"qtd": 0, "valor": 0.0} for k in _valid
@@ -4946,7 +5323,7 @@ def cheques_pendentes_overview(
             "dt_vencimento": str(dt_venc) if dt_venc else None,
             "dt_compensado": str(c.get("dt_compensado")) if c.get("dt_compensado") else None,
             "vencido": bool(dt_venc and dt_venc < today and (c.get("status_cheque") != "compensado")),
-            "avista": bool(c.get("avista")),
+            "avista": bool(int(c.get("avista") or 0)) if not isinstance(c.get("avista"), bool) else bool(c.get("avista")),
             "status": c.get("status_cheque") or "a_compensar",
             "motivo_devolucao": c.get("motivo_devolucao") or "",
             "banco": c.get("banco") or "",
@@ -4970,7 +5347,7 @@ def cheques_pendentes_overview(
         "status": sorted(req),
         "cheques": [_fmt(c) for c in rows],
         "dt_ref": today.isoformat(),
-        "source": "postgres",
+        "source": source,
     }
 
 
@@ -5070,49 +5447,84 @@ def budget_config_upsert(role: str, id_empresa: int, id_filial: Optional[int], i
 
 
 def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: int, mes: int, **kwargs: Any) -> Dict[str, Any]:
-    """Realizado x orcado por conta no mes (tela Financeiro).
+    """Realizado x orcado — tetos em app.budget_conta (OLTP); realizado no ClickHouse."""
+    from app.db_clickhouse import query_dict
 
-    So mostra contas COM orcamento (valor_max > 0). Com mais de 1 filial no
-    escopo, cada linha traz o apelido da filial. Alerta quando realizado atinge
-    a % configurada do teto.
-    """
-    where_filial, branch_params = _branch_scope_clause("g.id_filial", id_filial)
-    sql = f"""
-      SELECT
-        g.id_filial,
-        g.id_plano_conta,
-        g.codigo,
-        g.nome_conta,
-        b.valor_max::numeric(18,2) AS valor_max,
-        b.alerta_pct::int AS alerta_pct,
-        COALESCE(d.valor_realizado, 0)::numeric(18,2) AS realizado
-      FROM app.budget_conta b
-      JOIN mart.plano_contas_gerencial g
-        ON g.id_empresa = b.id_empresa AND g.id_filial = b.id_filial AND g.id_plano_conta = b.id_plano_conta
-      LEFT JOIN mart.despesa_conta_mensal d
-        ON d.id_empresa = b.id_empresa AND d.id_filial = b.id_filial AND d.id_plano_conta = b.id_plano_conta
-       AND d.ano = %s AND d.mes = %s
-      WHERE b.id_empresa = %s
-        {where_filial}
-        AND b.valor_max > 0
-      ORDER BY g.id_filial, g.nome_conta
-    """
-    params = [int(ano), int(mes), id_empresa] + branch_params
+    where_filial, branch_params = _branch_scope_clause("b.id_filial", id_filial)
+    source = "clickhouse"
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        budget_rows = [dict(r) for r in conn.execute(
+            f"""
+            SELECT b.id_filial, b.id_plano_conta, b.valor_max::numeric(18,2) AS valor_max,
+                   b.alerta_pct::int AS alerta_pct,
+                   COALESCE(g.codigo, '') AS codigo,
+                   COALESCE(g.nome_conta, '') AS nome_conta
+            FROM app.budget_conta b
+            LEFT JOIN mart.plano_contas_gerencial g
+              ON g.id_empresa = b.id_empresa AND g.id_filial = b.id_filial
+             AND g.id_plano_conta = b.id_plano_conta
+            WHERE b.id_empresa = %s
+              {where_filial}
+              AND b.valor_max > 0
+            ORDER BY b.id_filial, g.nome_conta
+            """,
+            [id_empresa] + branch_params,
+        ).fetchall()]
         filial_nome_map = {
             int(r["id_filial"]): r.get("nome")
             for r in conn.execute("SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s", [id_empresa]).fetchall()
             if r.get("id_filial") is not None
         }
 
+    realizado_map: Dict[Tuple[int, int], float] = {}
+    try:
+        branch_ids = _branch_ids(id_filial)
+        params_ch: Dict[str, Any] = {"id_empresa": int(id_empresa), "ano": int(ano), "mes": int(mes)}
+        filial_sql = ""
+        if branch_ids:
+            if len(branch_ids) == 1:
+                filial_sql = "AND id_filial = %(id_filial)s"
+                params_ch["id_filial"] = branch_ids[0]
+            else:
+                filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+        ch_rows = query_dict(
+            f"""
+            SELECT id_filial, id_plano_conta, sum(valor_realizado) AS valor_realizado
+            FROM torqmind_mart_rt.mart_despesa_conta_mensal FINAL
+            WHERE id_empresa = %(id_empresa)s AND ano = %(ano)s AND mes = %(mes)s
+              {filial_sql}
+            GROUP BY id_filial, id_plano_conta
+            """,
+            params_ch,
+        )
+        for r in ch_rows:
+            realizado_map[(int(r["id_filial"]), int(r["id_plano_conta"]))] = float(r.get("valor_realizado") or 0)
+        if not ch_rows and budget_rows:
+            # CH vazio: fallback PG realizado
+            source = "postgres"
+            with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+                for r in conn.execute(
+                    f"""
+                    SELECT id_filial, id_plano_conta, COALESCE(valor_realizado,0) AS valor_realizado
+                    FROM mart.despesa_conta_mensal
+                    WHERE id_empresa = %s AND ano = %s AND mes = %s
+                      {_branch_scope_clause("id_filial", id_filial)[0]}
+                    """,
+                    [id_empresa, int(ano), int(mes)] + _branch_scope_clause("id_filial", id_filial)[1],
+                ).fetchall():
+                    realizado_map[(int(r["id_filial"]), int(r["id_plano_conta"]))] = float(r.get("valor_realizado") or 0)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("budget_overview CH failed: %s", str(exc)[:200])
+        source = "postgres"
+
     contas = []
     total_orcado = 0.0
     total_realizado = 0.0
-    for r in rows:
+    for r in budget_rows:
         fidr = int(r.get("id_filial") or 0)
+        idpc = int(r.get("id_plano_conta") or 0)
         orcado = round(float(r.get("valor_max") or 0), 2)
-        realizado = round(float(r.get("realizado") or 0), 2)
+        realizado = round(float(realizado_map.get((fidr, idpc), 0)), 2)
         alerta_pct = int(r.get("alerta_pct") or 90)
         pct, status = _budget_status(realizado, orcado, alerta_pct)
         total_orcado += orcado
@@ -5120,7 +5532,7 @@ def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: i
         contas.append({
             "id_filial": fidr,
             "filial_label": _filial_label(fidr, filial_nome_map.get(fidr)),
-            "id_plano_conta": int(r.get("id_plano_conta") or 0),
+            "id_plano_conta": idpc,
             "codigo": r.get("codigo") or "",
             "nome_conta": r.get("nome_conta") or "",
             "orcado": orcado,
@@ -5142,7 +5554,7 @@ def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: i
             "contas_em_alerta": sum(1 for c in contas if c["status"] in ("alerta", "estourado")),
             "contas_estouradas": sum(1 for c in contas if c["status"] == "estourado"),
         },
-        "source": "postgres",
+        "source": source,
     }
 
 
@@ -5168,7 +5580,7 @@ def budget_alerts(role: str, id_empresa: int, id_filial: Optional[int], ano: int
         "mes": int(mes),
         "alerts": alerts,
         "total_alertas": len(alerts),
-        "source": "postgres",
+        "source": overview.get("source") or "clickhouse",
     }
 
 
@@ -5286,59 +5698,181 @@ def solvencia_detalhada(
     ano, mes = target // 100, target % 100
     ativos_do_mes = bool(kwargs.get("ativos_do_mes", True))
     mes_ini = f"{ano:04d}-{mes:02d}-01"
+    source = "clickhouse"
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        auto_rows = conn.execute(
+    from app.db_clickhouse import query_dict
+
+    branch_ids = _branch_ids(id_filial)
+    params_ch: Dict[str, Any] = {"id_empresa": int(id_empresa), "ano_mes": target}
+    filial_sql = ""
+    if branch_ids:
+        if len(branch_ids) == 1:
+            filial_sql = "AND id_filial = %(id_filial)s"
+            params_ch["id_filial"] = branch_ids[0]
+        else:
+            filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+
+    auto_rows: list = []
+    asof_rows: list = []
+    banco_conta_rows: list = []
+    meses_asof_rows: list = []
+    cheques_mes_rows: list = []
+    aprazo_mes_rows: list = []
+    try:
+        auto_rows = query_dict(
             f"""
             SELECT id_filial, grupo, secao, item_label, valor, qtd, ordem
-            FROM mart.solvencia_item
-            WHERE id_empresa = %s {where_filial}
+            FROM torqmind_mart_rt.mart_solvencia_item FINAL
+            WHERE id_empresa = %(id_empresa)s {filial_sql}
             ORDER BY id_filial, grupo, ordem, valor DESC
             """,
-            [id_empresa] + branch_params,
-        ).fetchall()
-
-        asof_rows = conn.execute(
+            params_ch,
+        )
+        asof_rows = query_dict(
             f"""
             SELECT
-              id_filial,
-              ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques,
+              id_filial, ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques,
               ativo_estoque, ativo_estoque_combustivel, ativo_estoque_loja,
-              COALESCE(ativo_cartoes_credito, 0) AS ativo_cartoes_credito,
-              COALESCE(ativo_cartoes_debito, 0) AS ativo_cartoes_debito,
+              ativo_cartoes_credito, ativo_cartoes_debito,
               passivo_contas_pagar, tem_ativo_dados
-            FROM mart.liquidez_solvencia
-            WHERE id_empresa = %s
-              AND ano_mes = %s
-              {where_filial}
+            FROM torqmind_mart_rt.mart_liquidez_solvencia FINAL
+            WHERE id_empresa = %(id_empresa)s AND ano_mes = %(ano_mes)s {filial_sql}
             ORDER BY id_filial
             """,
-            [id_empresa, target] + branch_params,
-        ).fetchall()
-
-        banco_conta_rows = conn.execute(
+            params_ch,
+        )
+        banco_conta_rows = query_dict(
             f"""
-            SELECT
-              id_filial, id_contasbancarias, banco_nome, agencia, nro_conta,
-              descricao, ativo, saldo
-            FROM mart.solvencia_banco_conta
-            WHERE id_empresa = %s
-              AND ano_mes = %s
-              {where_filial}
-            ORDER BY id_filial, ABS(saldo) DESC, id_contasbancarias
+            SELECT id_filial, id_contasbancarias, banco_nome, agencia, nro_conta,
+                   descricao, ativo, saldo
+            FROM torqmind_mart_rt.mart_solvencia_banco_conta FINAL
+            WHERE id_empresa = %(id_empresa)s AND ano_mes = %(ano_mes)s {filial_sql}
+            ORDER BY id_filial, abs(saldo) DESC, id_contasbancarias
             """,
-            [id_empresa, target] + branch_params,
-        ).fetchall()
-
-        meses_asof_rows = conn.execute(
+            params_ch,
+        )
+        meses_asof_rows = query_dict(
             f"""
-            SELECT DISTINCT ano_mes
-            FROM mart.liquidez_solvencia
-            WHERE id_empresa = %s {where_filial}
-            ORDER BY 1
+            SELECT DISTINCT ano_mes FROM torqmind_mart_rt.mart_liquidez_solvencia FINAL
+            WHERE id_empresa = %(id_empresa)s {filial_sql} ORDER BY ano_mes
             """,
-            [id_empresa] + branch_params,
-        ).fetchall()
+            params_ch,
+        )
+        if ativos_do_mes:
+            params_ch["mes_ini"] = mes_ini
+            cheques_mes_rows = query_dict(
+                f"""
+                SELECT id_filial, if(banco = '', '?', banco) AS banco,
+                       sum(v) AS valor, count() AS qtd
+                FROM (
+                  SELECT id_filial, banco, valor AS v
+                  FROM torqmind_mart_rt.mart_cheques_pendentes FINAL
+                  WHERE id_empresa = %(id_empresa)s {filial_sql}
+                    AND status_cheque IN ('a_compensar', 'depositado')
+                    AND dt_vencimento IS NOT NULL
+                    AND dt_vencimento >= toDate(%(mes_ini)s)
+                    AND dt_vencimento < addMonths(toDate(%(mes_ini)s), 1)
+                )
+                GROUP BY id_filial, banco
+                ORDER BY id_filial, valor DESC
+                """,
+                params_ch,
+            )
+            aprazo_mes_rows = query_dict(
+                f"""
+                SELECT id_filial, valor, qtd
+                FROM torqmind_mart_rt.mart_solvencia_aprazo_mes FINAL
+                WHERE id_empresa = %(id_empresa)s {filial_sql}
+                  AND ano_mes = %(ano_mes)s
+                ORDER BY id_filial
+                """,
+                params_ch,
+            )
+        if not auto_rows and not asof_rows:
+            raise RuntimeError("CH solvencia empty")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("solvencia_detalhada CH failed: %s", str(exc)[:200])
+        source = "postgres"
+        auto_rows = asof_rows = banco_conta_rows = meses_asof_rows = []
+        cheques_mes_rows = aprazo_mes_rows = []
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        if source != "clickhouse":
+            auto_rows = conn.execute(
+                f"""
+                SELECT id_filial, grupo, secao, item_label, valor, qtd, ordem
+                FROM mart.solvencia_item
+                WHERE id_empresa = %s {where_filial}
+                ORDER BY id_filial, grupo, ordem, valor DESC
+                """,
+                [id_empresa] + branch_params,
+            ).fetchall()
+            asof_rows = conn.execute(
+                f"""
+                SELECT
+                  id_filial,
+                  ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques,
+                  ativo_estoque, ativo_estoque_combustivel, ativo_estoque_loja,
+                  COALESCE(ativo_cartoes_credito, 0) AS ativo_cartoes_credito,
+                  COALESCE(ativo_cartoes_debito, 0) AS ativo_cartoes_debito,
+                  passivo_contas_pagar, tem_ativo_dados
+                FROM mart.liquidez_solvencia
+                WHERE id_empresa = %s AND ano_mes = %s {where_filial}
+                ORDER BY id_filial
+                """,
+                [id_empresa, target] + branch_params,
+            ).fetchall()
+            banco_conta_rows = conn.execute(
+                f"""
+                SELECT id_filial, id_contasbancarias, banco_nome, agencia, nro_conta,
+                       descricao, ativo, saldo
+                FROM mart.solvencia_banco_conta
+                WHERE id_empresa = %s AND ano_mes = %s {where_filial}
+                ORDER BY id_filial, ABS(saldo) DESC, id_contasbancarias
+                """,
+                [id_empresa, target] + branch_params,
+            ).fetchall()
+            meses_asof_rows = conn.execute(
+                f"""
+                SELECT DISTINCT ano_mes FROM mart.liquidez_solvencia
+                WHERE id_empresa = %s {where_filial} ORDER BY 1
+                """,
+                [id_empresa] + branch_params,
+            ).fetchall()
+            if ativos_do_mes:
+                cheques_mes_rows = conn.execute(
+                    f"""
+                    SELECT id_filial, COALESCE(NULLIF(banco, ''), '?') AS banco,
+                           SUM(valor)::numeric(18,2) AS valor, COUNT(*)::numeric AS qtd
+                    FROM mart.cheques_pendentes
+                    WHERE id_empresa = %s {where_filial}
+                      AND status_cheque IN ('a_compensar', 'depositado')
+                      AND dt_vencimento IS NOT NULL
+                      AND dt_vencimento >= %s::date
+                      AND dt_vencimento < (%s::date + interval '1 month')
+                    GROUP BY id_filial, COALESCE(NULLIF(banco, ''), '?')
+                    ORDER BY id_filial, SUM(valor) DESC
+                    """,
+                    [id_empresa] + branch_params + [mes_ini, mes_ini],
+                ).fetchall()
+                aprazo_mes_rows = conn.execute(
+                    f"""
+                    SELECT id_filial,
+                           SUM(GREATEST(
+                             etl.safe_numeric(payload->>'VALOR')
+                               - COALESCE(etl.safe_numeric(payload->>'VLRPAGO'), 0), 0
+                           ))::numeric(18,2) AS valor,
+                           COUNT(*)::numeric AS qtd
+                    FROM stg.contasreceber
+                    WHERE id_empresa = %s {where_filial}
+                      AND payload->>'DTAPGTO' IS NULL
+                      AND etl.safe_timestamp(payload->>'DTAVCTO') IS NOT NULL
+                      AND (etl.safe_timestamp(payload->>'DTAVCTO'))::date >= %s::date
+                      AND (etl.safe_timestamp(payload->>'DTAVCTO'))::date < (%s::date + interval '1 month')
+                    GROUP BY id_filial
+                    """,
+                    [id_empresa] + branch_params + [mes_ini, mes_ini],
+                ).fetchall()
 
         tipos = {
             int(t["id_tipo"]): dict(t)
@@ -5375,53 +5909,6 @@ def solvencia_detalhada(
             """,
             [id_empresa] + branch_params,
         ).fetchall()
-
-        cheques_mes_rows: list = []
-        aprazo_mes_rows: list = []
-        if ativos_do_mes:
-            # Cheques abertos com DTABOM (vencimento) no mês-alvo.
-            cheques_mes_rows = conn.execute(
-                f"""
-                SELECT id_filial, COALESCE(NULLIF(banco, ''), '?') AS banco,
-                       SUM(valor)::numeric(18,2) AS valor,
-                       COUNT(*)::numeric AS qtd
-                FROM mart.cheques_pendentes
-                WHERE id_empresa = %s
-                  {where_filial}
-                  AND status_cheque IN ('a_compensar', 'depositado')
-                  AND dt_vencimento IS NOT NULL
-                  AND dt_vencimento >= %s::date
-                  AND dt_vencimento < (%s::date + interval '1 month')
-                GROUP BY id_filial, COALESCE(NULLIF(banco, ''), '?')
-                ORDER BY id_filial, SUM(valor) DESC
-                """,
-                [id_empresa] + branch_params + [mes_ini, mes_ini],
-            ).fetchall()
-            # Títulos a prazo abertos com DTAVCTO no mês.
-            aprazo_mes_rows = conn.execute(
-                f"""
-                SELECT id_filial,
-                       SUM(GREATEST(
-                         etl.safe_numeric(payload->>'VALOR')
-                           - COALESCE(etl.safe_numeric(payload->>'VLRPAGO'), 0), 0
-                       ))::numeric(18,2) AS valor,
-                       COUNT(*)::numeric AS qtd
-                FROM stg.contasreceber
-                WHERE id_empresa = %s
-                  {where_filial}
-                  AND payload->>'DTAPGTO' IS NULL
-                  AND etl.safe_timestamp(payload->>'DTAVCTO') IS NOT NULL
-                  AND (etl.safe_timestamp(payload->>'DTAVCTO'))::date >= %s::date
-                  AND (etl.safe_timestamp(payload->>'DTAVCTO'))::date
-                        < (%s::date + interval '1 month')
-                GROUP BY id_filial
-                HAVING SUM(GREATEST(
-                  etl.safe_numeric(payload->>'VALOR')
-                    - COALESCE(etl.safe_numeric(payload->>'VLRPAGO'), 0), 0
-                )) > 0
-                """,
-                [id_empresa] + branch_params + [mes_ini, mes_ini],
-            ).fetchall()
 
     # secao -> (grupo, editavel, id_tipo) para os painéis manuais
     manual_secao = {}
@@ -5923,6 +6410,7 @@ def solvencia_detalhada(
         "ativos_do_mes": bool(ativos_do_mes),
         "despesas_ano_mes": despesas_ano_mes,
         "filiais": out_filiais,
+        "source": source,
     }
 
 
@@ -5989,6 +6477,177 @@ def solvencia_manual_upsert(
     return {"ok": True, "itens_gravados": n}
 
 
+def _solvencia_overview_from_ch(
+    id_empresa: int,
+    id_filial: Optional[int],
+    ano_mes: int,
+) -> Optional[Dict[str, Any]]:
+    """Lê torqmind_mart.solvencia_snapshot_mensal; None se vazio/indisponível."""
+    from app.db_clickhouse import query_dict
+
+    branch_ids = None
+    if id_filial is not None and int(id_filial) != -1:
+        if isinstance(id_filial, (list, tuple, set)):
+            branch_ids = [int(v) for v in id_filial if v is not None and int(v) != -1]
+        else:
+            branch_ids = [int(id_filial)]
+
+    params: Dict[str, Any] = {"id_empresa": int(id_empresa), "ano_mes": int(ano_mes)}
+    filial_sql = ""
+    if branch_ids:
+        if len(branch_ids) == 1:
+            filial_sql = "AND id_filial = %(id_filial)s"
+            params["id_filial"] = branch_ids[0]
+        else:
+            filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+
+    try:
+        meses_params: Dict[str, Any] = {"id_empresa": int(id_empresa)}
+        meses_filial_sql = ""
+        if branch_ids and len(branch_ids) == 1:
+            meses_filial_sql = "AND id_filial = %(id_filial)s"
+            meses_params["id_filial"] = branch_ids[0]
+        elif branch_ids:
+            meses_filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+
+        meses_rows = query_dict(
+            f"""
+            SELECT DISTINCT ano_mes
+            FROM torqmind_mart.solvencia_snapshot_mensal FINAL
+            WHERE id_empresa = %(id_empresa)s
+              {meses_filial_sql}
+            ORDER BY ano_mes
+            """,
+            meses_params,
+        )
+        rows = query_dict(
+            f"""
+            SELECT
+              id_filial, ano_mes,
+              ativo_caixa, ativo_banco, ativo_cartoes, ativo_cheques,
+              ativo_estoque, ativo_estoque_combustivel, ativo_estoque_loja,
+              passivo_contas_pagar, published_at
+            FROM torqmind_mart.solvencia_snapshot_mensal FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND ano_mes = %(ano_mes)s
+              {filial_sql}
+            ORDER BY id_filial
+            """,
+            params,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "solvencia CH snapshot unavailable: %s", str(exc)[:200]
+        )
+        return None
+
+    if not rows:
+        return None
+
+    meses_disponiveis = sorted({int(r["ano_mes"]) for r in meses_rows}) if meses_rows else [int(ano_mes)]
+    tot_caixa = tot_banco = tot_cartoes = tot_cheques = tot_estoque = 0.0
+    tot_estoque_comb = tot_estoque_loja = 0.0
+    tot_passivo = 0.0
+    updated_at = None
+    por_filial: List[Dict[str, Any]] = []
+
+    for r in rows:
+        fid = int(r["id_filial"])
+        caixa = round(float(r.get("ativo_caixa") or 0), 2)
+        banco = round(float(r.get("ativo_banco") or 0), 2)
+        cartoes = round(float(r.get("ativo_cartoes") or 0), 2)
+        cheques = round(float(r.get("ativo_cheques") or 0), 2)
+        estoque = round(float(r.get("ativo_estoque") or 0), 2)
+        estoque_comb = round(float(r.get("ativo_estoque_combustivel") or 0), 2)
+        estoque_loja = round(float(r.get("ativo_estoque_loja") or 0), 2)
+        passivo = round(float(r.get("passivo_contas_pagar") or 0), 2)
+        circulante = round(caixa + banco + cartoes + cheques + estoque, 2)
+        disponivel = round(caixa + banco, 2)
+        liquidez = round(circulante / passivo, 4) if passivo > 0 else 0.0
+        capital_giro = round(circulante - passivo, 2)
+        f_tem_ativo = circulante > 0
+        tot_caixa += caixa
+        tot_banco += banco
+        tot_cartoes += cartoes
+        tot_cheques += cheques
+        tot_estoque += estoque
+        tot_estoque_comb += estoque_comb
+        tot_estoque_loja += estoque_loja
+        tot_passivo += passivo
+        pub = r.get("published_at")
+        if pub and (updated_at is None or str(pub) > str(updated_at)):
+            updated_at = pub
+        por_filial.append({
+            "id_filial": fid,
+            "filial_label": _filial_label(fid, None),
+            "ativo_caixa": caixa,
+            "ativo_banco": banco,
+            "ativo_cartoes": cartoes,
+            "ativo_cheques": cheques,
+            "ativo_estoque": estoque,
+            "ativo_estoque_combustivel": estoque_comb,
+            "ativo_estoque_loja": estoque_loja,
+            "estoque_combustivel_medido": estoque_comb > 0,
+            "ativo_disponivel": disponivel,
+            "ativo_circulante": circulante,
+            "passivo_contas_pagar": passivo,
+            "passivo_vencido": 0.0,
+            "passivo_qtd_titulos": 0,
+            "liquidez_corrente": liquidez,
+            "capital_giro_liquido": capital_giro,
+            "cobre_passivo": (f_tem_ativo and circulante >= passivo),
+            "tem_ativo_dados": f_tem_ativo,
+        })
+
+    ativo_circulante = round(tot_caixa + tot_banco + tot_cartoes + tot_cheques + tot_estoque, 2)
+    ativo_disponivel = round(tot_caixa + tot_banco, 2)
+    tot_passivo = round(tot_passivo, 2)
+    tem_ativo_dados = ativo_circulante > 0
+    return {
+        "ano_mes": int(ano_mes),
+        "mes_label": _month_label_ptbr(int(ano_mes)),
+        "consolidado": len(por_filial) > 1,
+        "filiais_count": len(por_filial),
+        "meses_disponiveis": [
+            {"ano_mes": m, "label": _month_label_ptbr(m)} for m in meses_disponiveis
+        ],
+        "ativo": {
+            "caixa": round(tot_caixa, 2),
+            "banco": round(tot_banco, 2),
+            "cartoes": round(tot_cartoes, 2),
+            "cheques": round(tot_cheques, 2),
+            "estoque": round(tot_estoque, 2),
+            "estoque_combustivel": round(tot_estoque_comb, 2),
+            "estoque_loja": round(tot_estoque_loja, 2),
+            "disponivel": ativo_disponivel,
+            "circulante": ativo_circulante,
+        },
+        "cobertura_estoque": {
+            "postos_com_combustivel": sum(1 for p in por_filial if p["estoque_combustivel_medido"]),
+            "postos_total": len(por_filial),
+            "ultima_leitura": "",
+        },
+        "passivo": {
+            "contas_pagar": tot_passivo,
+            "qtd_titulos": 0,
+            "vencido": 0.0,
+        },
+        "indices": {
+            "liquidez_corrente": round(ativo_circulante / tot_passivo, 4) if tot_passivo > 0 else 0.0,
+            "capital_giro_liquido": round(ativo_circulante - tot_passivo, 2),
+            "cobre_passivo": bool(tem_ativo_dados and ativo_circulante >= tot_passivo),
+        },
+        "tem_ativo_dados": tem_ativo_dados,
+        "por_filial": por_filial,
+        "freshness": str(updated_at) if updated_at else "",
+        "disclaimer": (
+            "Solvência gerencial (ClickHouse snapshot mensal). "
+            "Indicador gerencial, não é balanço contábil oficial."
+        ),
+        "source": "clickhouse",
+    }
+
+
 def solvencia_overview(
     role: str,
     id_empresa: int,
@@ -5998,18 +6657,15 @@ def solvencia_overview(
 ) -> Dict[str, Any]:
     """Solvencia de curto prazo (aba Solvencia do DRE Gerencial).
 
-    Cruza o ativo circulante (caixa + banco + cartoes + cheques + estoque a
-    custo) com o passivo circulante (contas a pagar em aberto vencendo no
-    mes-alvo), a partir de mart.liquidez_solvencia (grao filial x mes). Agrega no
-    escopo, recalcula os indices consolidados e devolve a lista por filial mais
-    os meses disponiveis para o filtro de mes.
-
-    Enquanto a coleta dos ativos nao esta habilitada, os componentes de ativo
-    ficam zerados e tem_ativo_dados=false: a tela mostra so o passivo do mes e
-    sinaliza "aguardando dados de ativo" em vez de um "nao cobre" enganoso.
+    Leitura canônica: ClickHouse ``torqmind_mart.solvencia_snapshot_mensal``.
+    Fallback: mart.liquidez_solvencia (PG) se snapshot CH vazio.
     """
-    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     target = int(ano_mes)
+    ch_payload = _solvencia_overview_from_ch(id_empresa, id_filial, target)
+    if ch_payload is not None:
+        return ch_payload
+
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         meses_rows = conn.execute(
@@ -9124,3 +9780,360 @@ def upsert_filial_params(role: str, id_empresa: int, id_filial: int, *, abc_thre
     """
     with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
         conn.execute(sql, [id_empresa, id_filial, abc_threshold_a, abc_threshold_b, abc_exclude_fuel])
+
+
+def _ano_mes_from_date(d: date) -> int:
+    return int(d.year) * 100 + int(d.month)
+
+
+def refresh_fraud_credito_funcionario(
+    role: str,
+    id_empresa: int,
+    ano_mes: Optional[int] = None,
+) -> int:
+    """Materializa mash PG e publica no ClickHouse (fonte de leitura da API)."""
+    ym = int(ano_mes) if ano_mes else _ano_mes_from_date(business_today(id_empresa))
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        row = conn.execute(
+            "SELECT etl.refresh_fraud_credito_funcionario(%s, %s) AS n",
+            [id_empresa, ym],
+        ).fetchone() or {}
+        n = int(row.get("n") or 0)
+    try:
+        publish_fraud_credito_funcionario_to_ch(role, id_empresa, ym)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "publish_fraud_credito_funcionario_to_ch failed empresa=%s mes=%s err=%s",
+            id_empresa, ym, str(exc)[:240],
+        )
+    return n
+
+
+def publish_fraud_credito_funcionario_to_ch(
+    role: str,
+    id_empresa: int,
+    ano_mes: int,
+) -> Dict[str, int]:
+    """Copia mart PG → torqmind_mart_rt (ReplacingMergeTree). Front lê só o CH."""
+    import json
+    from datetime import datetime, timezone
+
+    from app.db_clickhouse import insert_batch
+
+    ym = int(ano_mes)
+    published_at = datetime.now(timezone.utc)
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        resumo_rows = conn.execute(
+            """
+            SELECT
+              id_empresa, id_funcionario, ano_mes, id_filial_ref, id_entidade,
+              nome_funcionario, cpf, ativo,
+              limite_prazo, limite_vale, limite_total, vales_cadastro,
+              usado_prazo, usado_vale, usado_mes,
+              saldo_prazo, saldo_vale, saldo_restante,
+              qtd_usos_mes, max_usos_mesmo_dia,
+              status, motivos
+            FROM mart.fraud_credito_funcionario_resumo
+            WHERE id_empresa = %s AND ano_mes = %s
+            """,
+            [id_empresa, ym],
+        ).fetchall()
+        uso_rows = conn.execute(
+            """
+            SELECT
+              id_empresa, id_funcionario, ano_mes, id_filial, id_entidade,
+              id_contasreceber, id_comprovante, nro_cupom, nro_documento,
+              COALESCE(tipo_uso, 'prazo') AS tipo_uso,
+              dt_evento, valor, id_usuario_caixa, operador_caixa, historico, atipico
+            FROM mart.fraud_credito_funcionario_uso
+            WHERE id_empresa = %s AND ano_mes = %s
+            """,
+            [id_empresa, ym],
+        ).fetchall()
+
+    # Homolog/prod: PG mash pode não resolver operador se HISTORICO só tem NFC-e
+    # (sem Cupom:) e stg.nfe local está incompleto — completa via CH.
+    try:
+        from app.repos_mart_realtime import _enrich_credito_usos_operador_via_nfe
+
+        uso_list = [dict(u) for u in uso_rows]
+        _enrich_credito_usos_operador_via_nfe(int(id_empresa), uso_list)
+        uso_rows = uso_list
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "publish credito enrich operador skipped empresa=%s: %s",
+            id_empresa, str(exc)[:200],
+        )
+
+    resumo_ch = []
+    for r in resumo_rows:
+        motivos = r.get("motivos") or []
+        if not isinstance(motivos, list):
+            motivos = list(motivos) if motivos else []
+        limite_prazo = float(r.get("limite_prazo") or 0)
+        limite_vale = float(r.get("limite_vale") or 0)
+        limite_total = float(r.get("limite_total") or (limite_prazo + limite_vale))
+        usado_prazo = float(r.get("usado_prazo") or 0)
+        usado_vale = float(r.get("usado_vale") or 0)
+        usado_mes = float(r.get("usado_mes") or (usado_prazo + usado_vale))
+        resumo_ch.append({
+            "id_empresa": int(r["id_empresa"]),
+            "id_funcionario": int(r["id_funcionario"]),
+            "ano_mes": ym,
+            "id_filial_ref": int(r.get("id_filial_ref") or 0),
+            "id_entidade": int(r.get("id_entidade") or 0),
+            "nome_funcionario": str(r.get("nome_funcionario") or ""),
+            "cpf": str(r.get("cpf") or ""),
+            "ativo": 1 if r.get("ativo") else 0,
+            "limite_prazo": limite_prazo,
+            "limite_vale": limite_vale,
+            "limite_total": limite_total,
+            "vales_cadastro": float(r.get("vales_cadastro") or 0),
+            "usado_prazo": usado_prazo,
+            "usado_vale": usado_vale,
+            "usado_mes": usado_mes,
+            "saldo_prazo": float(r.get("saldo_prazo") or max(limite_prazo - usado_prazo, 0)),
+            "saldo_vale": float(r.get("saldo_vale") or max(limite_vale - usado_vale, 0)),
+            "saldo_restante": float(r.get("saldo_restante") or max(limite_total - usado_mes, 0)),
+            "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
+            "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
+            "status": str(r.get("status") or "Normal"),
+            "motivos": json.dumps(motivos, ensure_ascii=False),
+            "published_at": published_at,
+        })
+
+    uso_ch = []
+    for u in uso_rows:
+        uso_ch.append({
+            "id_empresa": int(u["id_empresa"]),
+            "id_funcionario": int(u["id_funcionario"]),
+            "ano_mes": ym,
+            "id_filial": int(u.get("id_filial") or 0),
+            "id_entidade": int(u.get("id_entidade") or 0),
+            "id_contasreceber": int(u["id_contasreceber"]),
+            "id_comprovante": int(u.get("id_comprovante") or 0),
+            "nro_cupom": str(u.get("nro_cupom") or ""),
+            "nro_documento": str(u.get("nro_documento") or ""),
+            "tipo_uso": str(u.get("tipo_uso") or "prazo"),
+            "dt_evento": u.get("dt_evento"),
+            "valor": float(u.get("valor") or 0),
+            "id_usuario_caixa": int(u.get("id_usuario_caixa") or 0),
+            "operador_caixa": str(u.get("operador_caixa") or ""),
+            "historico": str(u.get("historico") or ""),
+            "atipico": 1 if u.get("atipico") else 0,
+            "published_at": published_at,
+        })
+
+    n_r = insert_batch(
+        "torqmind_mart_rt.mart_fraud_credito_funcionario_resumo",
+        resumo_ch,
+        order_by=["id_empresa", "ano_mes", "id_funcionario"],
+    )
+    n_u = insert_batch(
+        "torqmind_mart_rt.mart_fraud_credito_funcionario_uso",
+        uso_ch,
+        order_by=["id_empresa", "ano_mes", "id_funcionario", "id_filial", "id_contasreceber"],
+    )
+    return {"resumo": n_r, "usos": n_u}
+
+
+def fraud_credito_funcionario(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    ano_mes: Optional[int] = None,
+    status: str = "todos",
+    refresh: bool = False,
+    limit: int = 500,
+) -> Dict[str, Any]:
+    """Grid principal + usos (drill-down) do crédito/vale de funcionário.
+
+    Regras Suspeito (OR): limite extrapolado, >=2 usos no mesmo dia, valor atípico.
+    Refresh só com refresh=true (ETL ~1min; não bloquear GET padrão).
+    """
+    ym = int(ano_mes) if ano_mes else _ano_mes_from_date(business_today(id_empresa))
+    status_key = str(status or "todos").strip().lower()
+    if refresh:
+        try:
+            refresh_fraud_credito_funcionario(role, id_empresa, ym)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "refresh_fraud_credito_funcionario failed empresa=%s mes=%s err=%s",
+                id_empresa, ym, str(exc)[:240],
+            )
+
+    where_filial, branch_params = _branch_scope_clause("r.id_filial_ref", id_filial)
+    status_sql = ""
+    if status_key in ("suspeito", "suspeitos", "suspeitas"):
+        status_sql = "AND r.status = 'Suspeito'"
+    elif status_key in ("normal", "normais"):
+        status_sql = "AND r.status = 'Normal'"
+
+    list_sql = f"""
+      SELECT
+        r.id_funcionario,
+        r.id_filial_ref,
+        r.id_entidade,
+        r.nome_funcionario,
+        r.cpf,
+        r.ativo,
+        r.limite_prazo,
+        r.limite_vale,
+        r.limite_total,
+        r.vales_cadastro,
+        r.usado_prazo,
+        r.usado_vale,
+        r.usado_mes,
+        r.saldo_prazo,
+        r.saldo_vale,
+        r.saldo_restante,
+        r.qtd_usos_mes,
+        r.max_usos_mesmo_dia,
+        r.status,
+        r.motivos,
+        r.refreshed_at
+      FROM mart.fraud_credito_funcionario_resumo r
+      WHERE r.id_empresa = %s
+        AND r.ano_mes = %s
+        {where_filial}
+        {status_sql}
+      ORDER BY
+        CASE WHEN r.status = 'Suspeito' THEN 0 ELSE 1 END,
+        r.usado_mes DESC,
+        r.nome_funcionario
+      LIMIT %s
+    """
+    params = [id_empresa, ym] + branch_params + [int(limit)]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        rows = [dict(r) for r in conn.execute(list_sql, params).fetchall()]
+        func_ids = [int(r["id_funcionario"]) for r in rows if r.get("id_funcionario") is not None]
+        usos_by: Dict[int, List[Dict[str, Any]]] = {fid: [] for fid in func_ids}
+        if func_ids:
+            uso_sql = """
+              SELECT
+                u.id_funcionario,
+                u.id_filial,
+                u.id_entidade,
+                u.id_contasreceber,
+                u.id_comprovante,
+                u.nro_cupom,
+                u.nro_documento,
+                COALESCE(u.tipo_uso, 'prazo') AS tipo_uso,
+                u.dt_evento,
+                u.valor,
+                u.id_usuario_caixa,
+                u.operador_caixa,
+                u.historico,
+                u.atipico
+              FROM mart.fraud_credito_funcionario_uso u
+              WHERE u.id_empresa = %s
+                AND u.ano_mes = %s
+                AND u.id_funcionario = ANY(%s)
+              ORDER BY u.dt_evento DESC NULLS LAST, u.valor DESC
+            """
+            for u in conn.execute(uso_sql, [id_empresa, ym, func_ids]).fetchall():
+                d = dict(u)
+                fid = int(d["id_funcionario"])
+                from app.repos_mart_realtime import _antifraude_documento, _extract_nfce_number
+
+                nfe_hist = _extract_nfce_number(
+                    str(d.get("nro_documento") or ""),
+                    str(d.get("historico") or ""),
+                )
+                # Documento = só NF; nunca NROCOMPROVANTE / id_comprovante.
+                _, documento_label, documento_source, documento_fiscal = _antifraude_documento(
+                    nfe_hist, 0, 0,
+                )
+                usos_by.setdefault(fid, []).append({
+                    "id_filial": d.get("id_filial"),
+                    "id_entidade": d.get("id_entidade"),
+                    "id_contasreceber": d.get("id_contasreceber"),
+                    "id_comprovante": int(d.get("id_comprovante") or 0) or None,
+                    "tipo_uso": str(d.get("tipo_uso") or "prazo"),
+                    "nro_documento": str(d.get("nro_documento") or ""),
+                    "documento": documento_label,
+                    "documento_label": documento_label,
+                    "documento_source": documento_source,
+                    "documento_fiscal": documento_fiscal,
+                    "dt_evento": d.get("dt_evento").isoformat() if d.get("dt_evento") else None,
+                    "valor": float(d.get("valor") or 0),
+                    "id_usuario_caixa": d.get("id_usuario_caixa"),
+                    "operador_caixa": d.get("operador_caixa") or "—",
+                    "historico": d.get("historico") or "",
+                    "atipico": bool(d.get("atipico")),
+                })
+
+        summary = conn.execute(
+            f"""
+              SELECT
+                count(*)::int AS total,
+                count(*) FILTER (WHERE status = 'Suspeito')::int AS suspeitos,
+                count(*) FILTER (WHERE status = 'Normal')::int AS normais,
+                coalesce(sum(usado_mes),0)::numeric(18,2) AS usado_total,
+                coalesce(sum(usado_prazo),0)::numeric(18,2) AS usado_prazo_total,
+                coalesce(sum(usado_vale),0)::numeric(18,2) AS usado_vale_total,
+                coalesce(sum(limite_total),0)::numeric(18,2) AS limite_total,
+                coalesce(sum(limite_prazo),0)::numeric(18,2) AS limite_prazo_total,
+                coalesce(sum(limite_vale),0)::numeric(18,2) AS limite_vale_total
+              FROM mart.fraud_credito_funcionario_resumo r
+              WHERE r.id_empresa = %s AND r.ano_mes = %s
+              {where_filial}
+            """,
+            [id_empresa, ym] + branch_params,
+        ).fetchone() or {}
+
+    funcionarios = []
+    for r in rows:
+        fid = int(r["id_funcionario"])
+        limite_prazo = float(r.get("limite_prazo") or 0)
+        limite_vale = float(r.get("limite_vale") or 0)
+        limite_total = float(r.get("limite_total") or (limite_prazo + limite_vale))
+        usado_prazo = float(r.get("usado_prazo") or 0)
+        usado_vale = float(r.get("usado_vale") or 0)
+        usado_mes = float(r.get("usado_mes") or (usado_prazo + usado_vale))
+        funcionarios.append({
+            "id_funcionario": fid,
+            "id_filial": r.get("id_filial_ref"),
+            "id_entidade": r.get("id_entidade"),
+            "nome": r.get("nome_funcionario") or "",
+            "cpf": r.get("cpf") or "",
+            "ativo": bool(r.get("ativo")),
+            "limite_prazo": limite_prazo,
+            "limite_vale": limite_vale,
+            "limite_total": limite_total,
+            "limite": limite_total,
+            "vales_cadastro": float(r.get("vales_cadastro") or 0),
+            "usado_prazo": usado_prazo,
+            "usado_vale": usado_vale,
+            "usado_mes": usado_mes,
+            "saldo_prazo": float(r.get("saldo_prazo") or max(limite_prazo - usado_prazo, 0)),
+            "saldo_vale": float(r.get("saldo_vale") or max(limite_vale - usado_vale, 0)),
+            "saldo_restante": float(r.get("saldo_restante") or max(limite_total - usado_mes, 0)),
+            "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
+            "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
+            "status": r.get("status") or "Normal",
+            "motivos": list(r.get("motivos") or []),
+            "usos": usos_by.get(fid, []),
+            "refreshed_at": r.get("refreshed_at").isoformat() if r.get("refreshed_at") else None,
+        })
+
+    return {
+        "ano_mes": ym,
+        "summary": {
+            "total": int(summary.get("total") or 0),
+            "suspeitos": int(summary.get("suspeitos") or 0),
+            "normais": int(summary.get("normais") or 0),
+            "usado_total": float(summary.get("usado_total") or 0),
+            "usado_prazo_total": float(summary.get("usado_prazo_total") or 0),
+            "usado_vale_total": float(summary.get("usado_vale_total") or 0),
+            "limite_total": float(summary.get("limite_total") or 0),
+            "limite_prazo_total": float(summary.get("limite_prazo_total") or 0),
+            "limite_vale_total": float(summary.get("limite_vale_total") or 0),
+        },
+        "funcionarios": funcionarios,
+        "disclaimer": (
+            "Limites: ENTIDADES.LIMITE (a prazo) + ENTIDADES.LIMITE_VALE (vale), "
+            "join CPF com FUNCIONARIOS. Uso: CONTASRECEBER. Documento = NF-e/NFC-e."
+        ),
+    }

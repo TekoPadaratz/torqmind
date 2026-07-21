@@ -830,6 +830,21 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_evento", ["ID_LMCBICOS", "ID_EVENTO", "ID_HISTORICO", "ID_HISTORICOPRECOS", "ID", "id_evento"]),
         ],
     ),
+    "descontos_entidades_itens": DatasetSpec(
+        table="stg.descontos_entidades_itens",
+        pk_cols=["id_empresa", "id_filial", "id_descontoentidadesitens"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            (
+                "id_descontoentidadesitens",
+                [
+                    "ID_DESCONTOENTIDADESITENS",
+                    "ID_DESCONTOSENTIDADESITENS",
+                    "id_descontoentidadesitens",
+                ],
+            ),
+        ],
+    ),
 
     # Antifraude - troca de forma de pagamento
     "controle_troca_pgto": DatasetSpec(

@@ -40,6 +40,28 @@ import { useBiScopeData } from "../lib/use-bi-scope-data";
 
 export const dynamic = "force-dynamic";
 
+function currentAnoMesSP(): number {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  });
+  const parts = fmt.formatToParts(new Date());
+  const y = Number(parts.find((p) => p.type === "year")?.value || 0);
+  const m = Number(parts.find((p) => p.type === "month")?.value || 0);
+  return y * 100 + m;
+}
+
+function fmtAnoMes(ym: number): string {
+  const y = Math.floor(ym / 100);
+  const m = ym % 100;
+  const nomes = [
+    "", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
+  ];
+  return `${nomes[m] || m}/${y}`;
+}
+
 function operationalSourceLabel(source: string) {
   const normalized = String(source || "").toLowerCase();
   if (normalized === "turno") return "Resolvido pelo turno";
@@ -59,10 +81,9 @@ function riskCategoryLabel(eventType: string) {
 }
 
 function riskGridReference(event: any) {
-  if (event?.documento_label) return event.documento_label;
-  if (event?.documento_venda) return `Comprovante ${event.documento_venda}`;
-  if (event?.id_comprovante) return `Comprovante #${event.id_comprovante}`;
-  return "Sem comprovante";
+  const label = String(event?.documento_label || event?.documento_fiscal || "").trim();
+  if (label && label !== "—" && label !== "-") return label;
+  return "—";
 }
 
 function scoreLevelLabel(level: string) {
@@ -151,6 +172,10 @@ export default function FraudPage() {
   const [creditoClienteQ, setCreditoClienteQ] = useState("");
   const [creditoPage, setCreditoPage] = useState(1);
   const [creditoExpandido, setCreditoExpandido] = useState<string | null>(null);
+  const [credFuncStatus, setCredFuncStatus] = useState<"todos" | "suspeitos" | "normais">("todos");
+  const [credFuncMonth, setCredFuncMonth] = useState<number>(() => currentAnoMesSP());
+  const [credFuncPage, setCredFuncPage] = useState(1);
+  const [credFuncExpandido, setCredFuncExpandido] = useState<number | null>(null);
   const [trocaPage, setTrocaPage] = useState(1);
   const [cancelPage, setCancelPage] = useState(1);
   const [operadorPage, setOperadorPage] = useState(1);
@@ -181,10 +206,17 @@ export default function FraudPage() {
     setCancelPage(1);
     setOperadorPage(1);
     setCreditoExpandido(null);
+    setCredFuncStatus("todos");
+    setCredFuncPage(1);
+    setCredFuncExpandido(null);
   }, [scopeKey]);
   useEffect(() => {
     setCreditoPage(1);
   }, [creditoRisco, creditoClienteQ]);
+  useEffect(() => {
+    setCredFuncPage(1);
+    setCredFuncExpandido(null);
+  }, [credFuncStatus, credFuncMonth]);
   useEffect(() => {
     setTrocaPage(1);
   }, [trocaSoSuspeitas, trocaFormaNova]);
@@ -224,8 +256,55 @@ export default function FraudPage() {
     },
   });
 
+  const {
+    data: credFuncData,
+    loading: credFuncLoading,
+    error: credFuncError,
+  } = useBiScopeData<any>({
+    moduleKey: `fraud_cred_func:${credFuncMonth}:${credFuncStatus}`,
+    scope,
+    errorMessage: "Falha ao carregar crédito de funcionário",
+    keepPreviousData: true,
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "fraud.credito_funcionario")) return null;
+      const params = buildScopeParams(currentScope);
+      params.set("ano_mes", String(credFuncMonth));
+      params.set("status", credFuncStatus);
+      // Mart refresh sob demanda no backend se vazia; evita timeout no GET.
+      return `/bi/fraud/credito-funcionario?${params.toString()}`;
+    },
+  });
+
   const canSeeFraudCore = canAccessScreenKey(claims, "fraud.core");
   const canSeeFraudRisco = canAccessScreenKey(claims, "fraud.risco_financeiro");
+  const canSeeCredFunc = canAccessScreenKey(claims, "fraud.credito_funcionario");
+
+  const credFuncPayload = credFuncData?.data || credFuncData || {};
+  const credFuncRows: any[] = Array.isArray(credFuncPayload?.funcionarios)
+    ? credFuncPayload.funcionarios
+    : [];
+  const credFuncSummary = credFuncPayload?.summary || {};
+  const credFuncMeses = useMemo(() => {
+    const fromApi = Array.isArray(credFuncPayload?.meses_disponiveis)
+      ? credFuncPayload.meses_disponiveis.map((m: any) => Number(m)).filter((m: number) => Number.isFinite(m) && m > 0)
+      : [];
+    const set = new Set<number>([credFuncMonth, ...fromApi]);
+    // Garante janela recente (padrão DRE/Solvência) mesmo sem mash antigo.
+    let cursor = currentAnoMesSP();
+    for (let i = 0; i < 18; i += 1) {
+      set.add(cursor);
+      const y = Math.floor(cursor / 100);
+      const m = cursor % 100;
+      cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
+    }
+    return Array.from(set).sort((a, b) => b - a);
+  }, [credFuncMonth, credFuncPayload?.meses_disponiveis]);
+  const credFuncTotalPages = Math.max(1, Math.ceil(credFuncRows.length / pageSize));
+  const credFuncPageSafe = Math.min(Math.max(1, credFuncPage), credFuncTotalPages);
+  const credFuncPageRows = credFuncRows.slice(
+    (credFuncPageSafe - 1) * pageSize,
+    credFuncPageSafe * pageSize,
+  );
 
   // Mantém o card do filtro na mesma posição do viewport após o refresh do risco.
   useLayoutEffect(() => {
@@ -328,8 +407,7 @@ export default function FraudPage() {
         return false;
       }
       if (!e?.data && !e?.data_key) return false;
-      const doc =
-        e?.documento_label || e?.documento_venda || e?.id_comprovante || e?.nro_comprovante;
+      const doc = e?.documento_label || e?.documento_fiscal;
       if (!doc || String(doc).trim() === "—" || String(doc).trim() === "-") return false;
       return true;
     });
@@ -469,7 +547,7 @@ export default function FraudPage() {
               panels={4}
             />
           </div>
-        ) : !canSeeFraudCore && !canSeeFraudRisco ? (
+        ) : !canSeeFraudCore && !canSeeFraudRisco && !canSeeCredFunc ? (
           <div style={{ marginTop: 12 }}>
             <EmptyState
               title="Sem painéis liberados"
@@ -581,7 +659,7 @@ export default function FraudPage() {
                               formatTurnoLabel(e.turno_numero, e.turno_label)}
                           </td>
                           <td>{e.usuario_label || e.operador_label}</td>
-                          <td>{e.documento_label || e.documento_venda || (e.id_comprovante ? String(e.id_comprovante) : "—")}</td>
+                          <td>{e.documento_label || e.documento_fiscal || "—"}</td>
                           <td>{formatCurrency(e.valor_total)}</td>
                         </tr>
                       ))}
@@ -1005,6 +1083,230 @@ export default function FraudPage() {
                 </div>
               ) : null}
               </>
+            ) : null}
+
+            {canSeeCredFunc ? (
+              <div className="card col-12" style={{ marginTop: 12 }}>
+                <div>
+                  <div className="sectionEyebrow" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    Crédito funcionário
+                    {credFuncLoading && credFuncData ? (
+                      <span className="muted" style={{ fontSize: 11, fontWeight: 500 }}>
+                        Atualizando…
+                      </span>
+                    ) : null}
+                  </div>
+                  <h2 style={{ marginTop: 4 }}>Vale / a prazo de colaboradores</h2>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    Limites do cadastro de cliente (entidade): a prazo e vale, com totalizador.
+                    Uso no mês pelos títulos a prazo do colaborador. Status{" "}
+                    <strong style={{ color: "var(--color-negative)" }}>Suspeito</strong> quando
+                    extrapola teto (prazo, vale ou total), passa 2+ vezes no mesmo dia ou o valor
+                    foge do padrão. Clique na linha para ver cada uso (documento = NF-e/NFC-e).
+                  </div>
+                  <div
+                    className="profitFilterBar"
+                    style={{ marginTop: 10, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}
+                  >
+                    {(
+                      [
+                        { value: "todos", label: "Todos" },
+                        { value: "suspeitos", label: "Só suspeitos" },
+                        { value: "normais", label: "Só normais" },
+                      ] as const
+                    ).map((opt) => {
+                      const active = credFuncStatus === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => {
+                            if (opt.value === credFuncStatus) return;
+                            setCredFuncStatus(opt.value);
+                          }}
+                          style={{
+                            border: active
+                              ? "1px solid var(--color-accent, var(--accent-copper, #3b82f6))"
+                              : "1px solid var(--border)",
+                            background: active
+                              ? "var(--accent-copper-soft, rgba(59,130,246,0.12))"
+                              : "transparent",
+                            color: "var(--text)",
+                            borderRadius: 6,
+                            padding: "6px 12px",
+                            cursor: "pointer",
+                            fontSize: 12,
+                            fontWeight: active ? 700 : 500,
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                    <label className="profitScopeMonth" title="Mês de referência do crédito funcionário">
+                      <span className="profitScopeMonthLabel">Mês</span>
+                      <select
+                        className="profitScopeMonthSelect"
+                        value={credFuncMonth}
+                        onChange={(e) => setCredFuncMonth(Number(e.target.value))}
+                        aria-label="Mês do crédito funcionário"
+                      >
+                        {credFuncMeses.map((m) => (
+                          <option key={m} value={m}>
+                            {fmtAnoMes(m)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className="profitFilterCount">
+                      {Number(credFuncSummary.suspeitos || 0)} suspeito(s) ·{" "}
+                      {formatCurrency(Number(credFuncSummary.usado_total || 0))} usados
+                    </span>
+                  </div>
+                  {credFuncError ? (
+                    <div className="muted" style={{ color: "var(--color-negative)" }}>
+                      {String(credFuncError)}
+                    </div>
+                  ) : credFuncLoading && !credFuncData ? (
+                    <div className="muted">Carregando crédito de funcionário…</div>
+                  ) : credFuncPageRows.length === 0 ? (
+                    <EmptyState
+                      title="Sem colaboradores com limite a prazo/vale no mês."
+                      detail="Entram funcionários com LIMITE ou LIMITE_VALE > 0 no cadastro de entidades (join por CPF)."
+                    />
+                  ) : (
+                    <div className="tableScroll">
+                      <table className="table compact">
+                        <thead>
+                          <tr>
+                            <th></th>
+                            <th>Funcionário</th>
+                            <th style={{ textAlign: "right" }}>Limite a prazo</th>
+                            <th style={{ textAlign: "right" }}>Limite vale</th>
+                            <th style={{ textAlign: "right" }}>Limite total</th>
+                            <th style={{ textAlign: "right" }}>Usado a prazo</th>
+                            <th style={{ textAlign: "right" }}>Usado vale</th>
+                            <th style={{ textAlign: "right" }}>Usado total</th>
+                            <th style={{ textAlign: "right" }}>Saldo</th>
+                            <th style={{ textAlign: "right" }}>Usos</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {credFuncPageRows.map((row: any) => {
+                            const expanded = credFuncExpandido === Number(row.id_funcionario);
+                            const suspeito = String(row.status || "") === "Suspeito";
+                            return (
+                              <Fragment key={row.id_funcionario}>
+                                <tr
+                                  onClick={() =>
+                                    setCredFuncExpandido(expanded ? null : Number(row.id_funcionario))
+                                  }
+                                  style={{
+                                    cursor: "pointer",
+                                    background: suspeito ? "rgba(239,68,68,0.06)" : undefined,
+                                  }}
+                                >
+                                  <td style={{ width: 28 }}>{expanded ? "▾" : "▸"}</td>
+                                  <td>
+                                    <strong>{row.nome || "—"}</strong>
+                                    {Array.isArray(row.motivos) && row.motivos.length ? (
+                                      <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
+                                        {row.motivos.join(" · ")}
+                                      </div>
+                                    ) : null}
+                                  </td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.limite_prazo)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.limite_vale)}</td>
+                                  <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                    {formatCurrency(row.limite_total ?? row.limite)}
+                                  </td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_prazo)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_vale)}</td>
+                                  <td style={{ textAlign: "right", fontWeight: 700 }}>
+                                    {formatCurrency(row.usado_mes)}
+                                  </td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.saldo_restante)}</td>
+                                  <td style={{ textAlign: "right" }}>{Number(row.qtd_usos_mes || 0)}</td>
+                                  <td>
+                                    {suspeito ? (
+                                      <span style={{ color: "var(--color-negative)", fontWeight: 700 }}>
+                                        Suspeito
+                                      </span>
+                                    ) : (
+                                      <span className="muted" style={{ color: "var(--color-positive, #16a34a)" }}>
+                                        Normal
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                                {expanded ? (
+                                  <tr>
+                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "rgba(15,23,42,0.03)" }}>
+                                      {!row.usos?.length ? (
+                                        <div className="muted" style={{ fontSize: 12 }}>
+                                          Sem usos resolvidos no mês para este colaborador.
+                                        </div>
+                                      ) : (
+                                        <table className="table compact">
+                                          <thead>
+                                            <tr>
+                                              <th>Data/Hora</th>
+                                              <th>NF-e / NFC-e</th>
+                                              <th>Tipo</th>
+                                              <th>Operador de caixa</th>
+                                              <th style={{ textAlign: "right" }}>Valor</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {row.usos.map((u: any, idx: number) => (
+                                              <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
+                                                <td>
+                                                  {u.dt_evento
+                                                    ? formatDateTime(u.dt_evento)
+                                                    : "—"}
+                                                </td>
+                                                <td>
+                                                  {u.documento_label || u.documento_fiscal || "—"}
+                                                  {u.atipico ? (
+                                                    <span style={{ color: "var(--color-negative)", marginLeft: 6, fontWeight: 600 }}>
+                                                      atípico
+                                                    </span>
+                                                  ) : null}
+                                                </td>
+                                                <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
+                                                <td>{u.operador_caixa || "—"}</td>
+                                                <td style={{ textAlign: "right" }}>
+                                                  {formatCurrency(u.valor)}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      <GridPager
+                        page={credFuncPageSafe}
+                        totalPages={credFuncTotalPages}
+                        total={credFuncRows.length}
+                        pageSize={pageSize}
+                        onPrev={() => setCredFuncPage((p) => Math.max(1, p - 1))}
+                        onNext={() =>
+                          setCredFuncPage((p) => Math.min(credFuncTotalPages, p + 1))
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : null}
           </>
         )}

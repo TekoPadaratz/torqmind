@@ -76,6 +76,7 @@ DECLARE
         'stg.localvendas',
         'stg.contaspagar',
         'stg.contasreceber',
+        'stg.descontos_entidades_itens',
         'app.payment_type_map'
     ];
     optional_tables text[] := ARRAY[

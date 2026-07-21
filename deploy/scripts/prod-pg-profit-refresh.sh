@@ -44,3 +44,14 @@ SELECT etl.refresh_solvencia_itens(${ID_EMPRESA});
 SQL
 
 echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] OK: liquidez_solvencia + gestao_orcamentaria atualizados."
+
+# Publica mash → ClickHouse (leitura canônica das telas BI).
+HOTPATH_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/prod-bi-hotpath-ch-publish.sh"
+if [[ -x "$HOTPATH_SCRIPT" ]]; then
+  echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] Publicando BI hotpath → ClickHouse…"
+  ENV_FILE="$ENV_FILE" "$HOTPATH_SCRIPT" "$ID_EMPRESA" || {
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] WARN: hotpath CH publish falhou (mash PG já ok)" >&2
+  }
+else
+  echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] WARN: script ausente $HOTPATH_SCRIPT" >&2
+fi

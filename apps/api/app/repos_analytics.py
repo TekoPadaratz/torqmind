@@ -49,6 +49,11 @@ _POSTGRES_OWNED_FUNCTIONS = {
     "notifications_list",
     "notifications_unread_count",
     "notification_mark_read",
+    "budget_config_overview",
+    "budget_config_upsert",
+    "solvencia_manual_upsert",
+    "get_filial_params",
+    "upsert_filial_params",
 }
 
 # Analytical functions that remain on the legacy path until a mart exists with

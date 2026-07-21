@@ -41,7 +41,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": "ID_FUNCIONARIOS",
         "watermark_order_by": "ID_FUNCIONARIOS, ID_FILIAL",
         "full_refresh": True,
-        "enabled": False,
+        # Necessário para antifraude crédito funcionário (LIMITEVALE / VALES).
+        "enabled": True,
     },
     "usuarios": {
         "table": "dbo.USUARIOS",
@@ -685,6 +686,49 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "LEFT JOIN dbo.PRODUTOS p WITH (NOLOCK) "
             "  ON p.ID_FILIAL = l.ID_FILIAL AND p.ID_PRODUTOS = l.ID_PRODUTOS "
             "WHERE ISNULL(lb.PPL, 0) > 0"
+        ),
+        "enabled": True,
+    },
+    # Preço fixo de cliente (combustível): VALORFIXO=1 em DESCONTOSENTIDADESITENS.
+    "descontos_entidades_itens": {
+        "table": "dbo.DESCONTOSENTIDADESITENS",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_FILIAL, ID_DESCONTOENTIDADESITENS",
+        "cursor_pk_columns": ["ID_FILIAL", "ID_DESCONTOENTIDADESITENS"],
+        "contract_name": "descontos_entidades_itens_pk",
+        "required_fields": [
+            "ID_DESCONTOENTIDADESITENS",
+            "ID_FILIAL",
+            "ID_ENTIDADE",
+            "ID_PRODUTOS",
+            "VALOR",
+            "VALORFIXO",
+        ],
+        "unique_key_fields": ["ID_FILIAL", "ID_DESCONTOENTIDADESITENS"],
+        "preflight_tables": {
+            "dbo.DESCONTOSENTIDADESITENS": [
+                "ID_DESCONTOENTIDADESITENS",
+                "ID_FILIAL",
+                "ID_ENTIDADE",
+                "ID_PRODUTOS",
+                "VALOR",
+                "VALORFIXO",
+                "ATIVO",
+                "DATAREPL",
+            ],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT d.*, "
+            "CAST(d.DATAREPL AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            f"  (NULLIF(CAST(d.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
+            f"  (CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.DESCONTOSENTIDADESITENS d WITH (NOLOCK) "
+            "WHERE ISNULL(d.VALORFIXO, 0) = 1"
         ),
         "enabled": True,
     },

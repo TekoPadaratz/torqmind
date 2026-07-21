@@ -13,6 +13,11 @@ Implacável em qualidade. Obcecado por performance. Didático quando necessário
 TorqMind é um Micro SaaS Multi-Tenant de BI e Gestão Operacional para redes de postos de combustíveis.
 Não é um demo. Cada linha de código vai para produção e impacta operações reais de clientes reais.
 
+## Documento operacional = Nota Fiscal
+
+**DOCUMENTO = número da NF-e/NFC-e.** Nunca `NROCOMPROVANTE`, nunca `id_comprovante`. Sem NF → `—`.
+Detalhes: `.cursor/rules/07-documento-nota-fiscal.mdc` e `AGENTS.md`.
+
 ## Estrutura do Monorepo
 
 ```

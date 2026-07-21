@@ -1,0 +1,24 @@
+# Documento operacional = Nota Fiscal
+
+## Regra absoluta (não negociar)
+
+Em **qualquer** tela TorqMind (Clientes, Antifraude, drill-downs, grids, exports):
+
+**DOCUMENTO = número da NF-e / NFC-e.**
+
+- Fonte: `stg.nfe` / `stg_nfe_slim` (`numero_nfe` / `NRONF` / `numero_nfe_shadow`).
+- Também válido: parse honesto de HISTORICO quando o texto traz explicitamente NFC-e/NF-e.
+- Label = **somente o número** (sem prefixo "Nota", "Cupom", "Comprovante").
+- Sem NF resolvida → exibir `—` (honesto). **Nunca** inventar documento.
+
+## Proibido como documento
+
+- `NROCOMPROVANTE` (número do cupom/comprovante de venda)
+- `id_comprovante` (id técnico)
+- `Turno + Filial`
+- Qualquer montagem a partir de `MOVPRODUTOS`
+- Rotular NFC-e como "Cupom"
+
+## Por quê
+
+Nos postos o dono localiza a venda pela **nota fiscal**. Comprovante técnico e id interno não são o documento operacional do negócio.

@@ -226,6 +226,12 @@ def validate_row_count(
         return False
 
 
+def execute_command(sql: str, parameters: Optional[Dict[str, Any]] = None) -> Any:
+    """Executa DDL/DML no ClickHouse (INSERT SELECT, OPTIMIZE, etc.)."""
+    with get_clickhouse_client() as client:
+        return client.command(sql, parameters=parameters or {})
+
+
 def validate_aggregate(
     table: str,
     column: str,

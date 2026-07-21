@@ -503,7 +503,7 @@ def overview_payload(
     dt_ini: Optional[date] = None,
     dt_fim: Optional[date] = None,
     *,
-    prefer_mart: bool = False,
+    prefer_mart: bool = True,
 ) -> Dict[str, Any]:
     set_apelido_scope(id_empresa)
     if dt_ini is None or dt_fim is None:
@@ -514,15 +514,21 @@ def overview_payload(
     events: List[Dict[str, Any]] = []
     source = ORIGEM_LMC
 
-    if _stg_has_lmc(id_empresa, branch_ids):
-        events = compute_lmc_events(id_empresa, branch_ids, dt_ini, dt_fim)
+    if prefer_mart:
+        events = _events_from_ch_mart(id_empresa, branch_ids, dt_ini, dt_fim)
         if events:
-            source = str(events[0].get("origem") or ORIGEM_LMC)
-        else:
-            source = ORIGEM_LMC
-    if not events and not _stg_has_lmc(id_empresa, branch_ids):
-        events = compute_daily_events(id_empresa, branch_ids, dt_ini, dt_fim)
-        source = ORIGEM_VENDAS_DIA if events else ORIGEM_LMC
+            source = str(events[0].get("origem") or "clickhouse_mart")
+
+    if not events:
+        if _stg_has_lmc(id_empresa, branch_ids):
+            events = compute_lmc_events(id_empresa, branch_ids, dt_ini, dt_fim)
+            if events:
+                source = str(events[0].get("origem") or ORIGEM_LMC)
+            else:
+                source = ORIGEM_LMC
+        if not events and not _stg_has_lmc(id_empresa, branch_ids):
+            events = compute_daily_events(id_empresa, branch_ids, dt_ini, dt_fim)
+            source = ORIGEM_VENDAS_DIA if events else ORIGEM_LMC
 
     for e in events:
         if not e.get("nome_resumido"):
@@ -551,6 +557,70 @@ def overview_payload(
         },
         "eventos": events,
     }
+
+
+def _events_from_ch_mart(
+    id_empresa: int,
+    branch_ids: Sequence[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> List[Dict[str, Any]]:
+    """Leitura canônica: torqmind_mart_rt.mart_anp_compliance."""
+    if not branch_ids:
+        return []
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": (dt_fim + timedelta(days=1)).isoformat(),
+    }
+    if len(branch_ids) == 1:
+        branch_sql = "AND id_filial = %(id_filial)s"
+        params["id_filial"] = int(branch_ids[0])
+    else:
+        ids = ", ".join(str(int(b)) for b in branch_ids)
+        branch_sql = f"AND id_filial IN ({ids})"
+    try:
+        rows = query_dict(
+            f"""
+            SELECT
+                id_empresa, id_filial, id_produto, nome_resumido, nome_produto,
+                dt_alteracao_preco, preco_venda_anterior, preco_venda_novo,
+                custo_nfe_anterior, custo_nfe_novo, margem_anterior, margem_nova,
+                variacao_margem_pct, limite_alerta_perc, limite_abusivo_perc,
+                status, chave_nfe_anterior, chave_nfe_nova, cnpj_emitente_nova,
+                numero_nota_nova, dt_entrada_nfe_nova, origem, published_at
+            FROM torqmind_mart_rt.mart_anp_compliance FINAL
+            WHERE id_empresa = %(id_empresa)s
+              {branch_sql}
+              AND dt_alteracao_preco >= toDateTime64(%(dt_ini)s, 3, 'America/Sao_Paulo')
+              AND dt_alteracao_preco < toDateTime64(%(dt_fim)s, 3, 'America/Sao_Paulo')
+            ORDER BY dt_alteracao_preco DESC, id_filial, id_produto
+            LIMIT 5000
+            """,
+            params,
+        )
+    except Exception as exc:
+        logger.warning("ANP CH mart read failed: %s", str(exc)[:200])
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for r in rows:
+        dt = r.get("dt_alteracao_preco")
+        events.append({
+            **{k: r.get(k) for k in (
+                "id_empresa", "id_filial", "id_produto", "nome_resumido", "nome_produto",
+                "preco_venda_anterior", "preco_venda_novo", "custo_nfe_anterior", "custo_nfe_novo",
+                "margem_anterior", "margem_nova", "variacao_margem_pct",
+                "chave_nfe_anterior", "chave_nfe_nova", "cnpj_emitente_nova",
+                "numero_nota_nova", "dt_entrada_nfe_nova", "origem",
+            )},
+            "dt_alteracao_preco": dt.isoformat() if hasattr(dt, "isoformat") else dt,
+            "limite_alerta_perc": r.get("limite_alerta_perc"),
+            "limite_abusivo_perc": r.get("limite_abusivo_perc"),
+            "status": r.get("status"),
+            "data_alteracao": dt.date().isoformat() if hasattr(dt, "date") else None,
+        })
+    return events
 
 
 def publish_proxy_to_mart(

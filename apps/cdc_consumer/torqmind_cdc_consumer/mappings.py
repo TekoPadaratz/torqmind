@@ -189,6 +189,13 @@ _register(TableMapping(
     columns=_stg_columns("id_empresa", "id_filial", "id_entidade"),
 ))
 
+_register(TableMapping(
+    source_schema="stg", source_table="descontos_entidades_itens",
+    ch_database="torqmind_current", ch_table="stg_descontos_entidades_itens",
+    primary_key=("id_empresa", "id_filial", "id_descontoentidadesitens"),
+    columns=_stg_columns("id_empresa", "id_filial", "id_descontoentidadesitens"),
+))
+
 # Future-proof mapping for deployments that add a physical stg.clientes table.
 # The current API ingest aliases clientes into stg.entidades.
 _register(TableMapping(
