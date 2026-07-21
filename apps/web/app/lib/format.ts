@@ -29,8 +29,10 @@ export function formatDateOnly(value: any) {
     return formatDateKey(value);
   }
   const raw = String(value).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    return `${raw.slice(8, 10)}/${raw.slice(5, 7)}/${raw.slice(0, 4)}`;
+  // Prefixo de calendário (YYYY-MM-DD…) — ignora hora/fuso (crédito funcionário etc.)
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    return `${m[3]}/${m[2]}/${m[1]}`;
   }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value);

@@ -261,7 +261,7 @@ export default function FraudPage() {
     loading: credFuncLoading,
     error: credFuncError,
   } = useBiScopeData<any>({
-    moduleKey: `fraud_cred_func:${credFuncMonth}:${credFuncStatus}`,
+    moduleKey: `fraud_cred_func:${credFuncMonth}:${credFuncStatus}:${scope?.id_filial || scope?.id_filiais?.join(",") || "all"}`,
     scope,
     errorMessage: "Falha ao carregar crédito de funcionário",
     keepPreviousData: true,
@@ -1098,11 +1098,12 @@ export default function FraudPage() {
                   </div>
                   <h2 style={{ marginTop: 4 }}>Vale / a prazo de colaboradores</h2>
                   <div className="muted" style={{ marginTop: 4 }}>
-                    Limites do cadastro de cliente (entidade): a prazo e vale, com totalizador.
-                    Uso no mês pelos títulos a prazo do colaborador. Status{" "}
+                    Limites do cadastro de entidade (grupo Funcionários): a prazo e vale, com
+                    totalizador. Lista filtrada pela filial selecionada (cadastro ativo no posto).
+                    Uso no mês em qualquer filial da empresa. Status{" "}
                     <strong style={{ color: "var(--color-negative)" }}>Suspeito</strong> quando
                     extrapola teto (prazo, vale ou total), passa 2+ vezes no mesmo dia ou o valor
-                    foge do padrão. Clique na linha para ver cada uso (documento = NF-e/NFC-e).
+                    foge do padrão. Clique na linha para ver cada uso (filial, NF-e/NFC-e, tipo).
                   </div>
                   <div
                     className="profitFilterBar"
@@ -1173,7 +1174,7 @@ export default function FraudPage() {
                   ) : credFuncPageRows.length === 0 ? (
                     <EmptyState
                       title="Sem colaboradores com limite a prazo/vale no mês."
-                      detail="Entram funcionários com LIMITE ou LIMITE_VALE > 0 no cadastro de entidades (join por CPF)."
+                      detail="Entram entidades do grupo Funcionários (ID_GRUPOENTIDADES=12) com LIMITE ou LIMITE_VALE > 0."
                     />
                   ) : (
                     <div className="tableScroll">
@@ -1252,7 +1253,8 @@ export default function FraudPage() {
                                         <table className="table compact">
                                           <thead>
                                             <tr>
-                                              <th>Data/Hora</th>
+                                              <th>Filial</th>
+                                              <th>Data</th>
                                               <th>NF-e / NFC-e</th>
                                               <th>Tipo</th>
                                               <th>Operador de caixa</th>
@@ -1263,8 +1265,12 @@ export default function FraudPage() {
                                             {row.usos.map((u: any, idx: number) => (
                                               <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
                                                 <td>
+                                                  {u.filial_label ||
+                                                    formatFilialLabel(u.id_filial, u.filial_nome)}
+                                                </td>
+                                                <td>
                                                   {u.dt_evento
-                                                    ? formatDateTime(u.dt_evento)
+                                                    ? formatDateOnly(u.dt_evento)
                                                     : "—"}
                                                 </td>
                                                 <td>

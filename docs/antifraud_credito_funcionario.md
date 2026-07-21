@@ -4,25 +4,26 @@
 
 | Papel | Tabela / campo | Uso |
 |-------|----------------|-----|
-| **Limite a prazo** | `dbo.ENTIDADES.LIMITE` | Teto a prazo do cliente-espelho |
-| **Limite vale** | `dbo.ENTIDADES.LIMITE_VALE` | Teto de vale do cliente-espelho |
-| Join | `FUNCIONARIOS.CPF` = `ENTIDADES.CNPJCPF` (11 dígitos) | Amarra colaborador ↔ entidade |
-| Snapshot consumo | `dbo.FUNCIONARIOS.VALES` | Cruzamento opcional com o cadastro |
-| Uso (título) | `dbo.CONTASRECEBER` | Títulos do cliente; `HISTORICO` ~ `%vale%` → tipo vale, senão a prazo |
-| Operador | `stg.nfe` → `stg.comprovantes.ID_USUARIOS` → `USUARIOS` | Quem liberou no caixa (via NFC-e quando HISTORICO não tem Cupom) |
-| Data/hora real | `COMPROVANTES.DATA` via cupom | Preferida a `DTACONTA` do título |
-| **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** `NROCOMPROVANTE` / `id_comprovante` |
+| **Universo** | `dbo.ENTIDADES` com `ID_GRUPOENTIDADES = 12` (Funcionários) | Base do relatório — **não** usar `FUNCIONARIOS` |
+| **Limite a prazo** | `ENTIDADES.LIMITE` | Teto a prazo |
+| **Limite vale** | `ENTIDADES.LIMITE_VALE` | Teto de vale |
+| Escopo | `id_empresa` (entidade compartilhada entre filiais) | Limite/uso empresa-wide |
+| Uso (título) | `dbo.CONTASRECEBER` por `ID_ENTIDADE` | Toda a empresa; `HISTORICO` ~ `%vale%` → vale, senão a prazo |
+| Filial do gasto | `CONTASRECEBER.id_filial` | Só no detalhe do uso (nome reduzido) |
+| Operador | `stg.nfe` → `stg.comprovantes.ID_USUARIOS` → `USUARIOS` | Quem liberou no caixa |
+| Data/hora real | `COMPROVANTES.DATA` via cupom/NF | Preferida a `DTACONTA` do título |
+| **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** comprovante |
 
-**Não usar** `FUNCIONARIOS.LIMITEVALE` como fonte de limite (cliente opera pelos campos da entidade).
-`VALECOMBUSTIVEL` / `INSVALECOMBUSTIVEL` estão zerados no levantamento.
+**Não** fazer INNER JOIN por CPF com `FUNCIONARIOS` (cadastro incompleto → faltam colaboradores).
+**Lista** filtra pela filial selecionada (cópia ATIVA da entidade naquele posto). **Usos** não filtrar — gasto em qualquer filial da rede.
 
 ## Contrato de tela
 
-Grid: Limite a prazo | Limite vale | Limite total | Usado a prazo | Usado vale | Usado total | Saldo | Usos | Status.
+Grid: funcionários ativos na **filial selecionada** (ENTIDADES grupo 12 + ATIVO). Limites e uso são da entidade; o **uso** soma gastos em **toda a empresa**.
 
-Drill-down: Data/Hora | NF-e/NFC-e | Tipo (A prazo / Vale) | Operador | Valor.
+Drill-down: **Filial** (onde gastou) | Data | NF-e/NFC-e | Tipo | Operador | Valor — ordenado por filial, data (mais recente), valor.
 
-**DOCUMENTO = NF-e/NFC-e.** Sem NF → `—`. Ver `.cursor/rules/07-documento-nota-fiscal.mdc`.
+Ordenação da lista: nome.
 
 ## Regras Suspeito (OR)
 
@@ -32,10 +33,10 @@ Drill-down: Data/Hora | NF-e/NFC-e | Tipo (A prazo / Vale) | Operador | Valor.
 
 ## Artefatos
 
-- PG: `118` (base) + `120_fraud_credito_funcionario_limites_entidade.sql` (limites entidade)
+- PG: `118`…`122` + `123_fraud_credito_funcionario_grupo_entidade.sql` (grupo 12, empresa-wide)
 - CH: `052_fraud_credito_funcionario.sql` → `torqmind_mart_rt.mart_fraud_credito_funcionario_*`
 - Publish: `repos_mart.publish_fraud_credito_funcionario_to_ch`
-- API: `GET /bi/fraud/credito-funcionario` via `repos_mart_realtime`
+- API: `GET /bi/fraud/credito-funcionario` via `repos_mart_realtime` (lista por filial ATIVA; usos empresa-wide)
 - ACL `fraud.credito_funcionario` · UI Antifraude
 
 ## Operação
@@ -45,4 +46,5 @@ SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);
 -- API ?refresh=true também publica no CH
 ```
 
-Homolog: precisa `stg.funcionarios` + `stg.entidades` com `LIMITE`/`LIMITE_VALE` no payload.
+Homolog/prod: `stg.entidades` com `ID_GRUPOENTIDADES=12` e `LIMITE`/`LIMITE_VALE` no payload.
+Mash preferencial: `mash_fraud_credito_funcionario_ch` (ClickHouse STG→mart_rt, ~2–3s).

@@ -6,6 +6,27 @@ O saldo **não** mora em uma tabela `BANCOS`. Mora em **conta corrente**
 (`CONTASBANCARIA`) + movimentos (`MOVBANCOS`). `SALDOSBANCARIOS` existe no schema
 mas está **vazia (0 linhas)** neste cliente — descartada.
 
+## Compensado (`CONCILIADO`) — prova 2026-07-21
+
+Filtro “Compensado” da tela Xpert mapeia para `MOVBANCOS.CONCILIADO=1`.
+
+| Conta VR01 (as-of < 2026-06-30) | Só `CONCILIADO=1` | Todos vivos |
+|---|---:|---:|
+| 11 Banrisul 06.012539.0-4 | **R$ 0,00** | R$ 152.833,35 |
+| 2 Itaú | R$ 2.593.453 | R$ 24.904.741 |
+
+A Banrisul da referência (PIX TEF, TIPOLCTO=4) tem **100% dos lançamentos com
+`CONCILIADO=0`**. Filtrar só compensados zera a conta — **não** reproduz o
+R$ 127.963,90 da tela.
+
+O valor R$ 127.963,90 **bate exatamente** com a soma dos movimentos desde
+`2025-04-01` (exclui 29–31/03 = R$ 24.869,45). Sem evidência de regra de
+negócio canônica para esse corte, o TorqMind mantém o saldo as-of cumulativo
+de todos os movimentos vivos (`DELETAR=0`, `ID_DB=ID_FILIAL`).
+
+Se a tela Xpert usar outro critério (saldo inicial manual, API bancária, OFX),
+é preciso print com a data/filtro visível para reabrir o mapeamento.
+
 ## Objetos Xpert (ATXDADOS)
 
 | Objeto | Tipo | Papel | Volume (cliente) |

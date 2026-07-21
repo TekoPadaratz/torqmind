@@ -119,6 +119,7 @@ export default function ProfitManagementPage() {
   const [anpReload, setAnpReload] = useState(0);
   const [regimeCaixa, setRegimeCaixa] = useState(true);
   const [ativosDoMes, setAtivosDoMes] = useState(true);
+  const [considerarNaoCirculantes, setConsiderarNaoCirculantes] = useState(false);
   // Período próprio do Compliance ANP (independente do filtro global da URL)
   const [anpDtIni, setAnpDtIni] = useState(() => {
     const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
@@ -194,7 +195,7 @@ export default function ProfitManagementPage() {
   });
 
   const { data: solvenciaData } = useBiScopeData<any>({
-    moduleKey: `profit_solvencia_det_v2:${profitMonth}:${solvenciaReload}:ativos=${ativosDoMes ? 1 : 0}`,
+    moduleKey: `profit_solvencia_det_v2:${profitMonth}:${solvenciaReload}:ativos=${ativosDoMes ? 1 : 0}:anc=${considerarNaoCirculantes ? 1 : 0}`,
     scope,
     errorMessage: "",
     buildRequestUrl: (currentScope, session) => {
@@ -202,6 +203,7 @@ export default function ProfitManagementPage() {
       const p = buildScopeParams(currentScope);
       p.set("ano_mes", String(profitMonth));
       p.set("ativos_do_mes", ativosDoMes ? "true" : "false");
+      p.set("considerar_nao_circulantes", considerarNaoCirculantes ? "true" : "false");
       return `/bi/profit-management/solvencia/detalhada?${p.toString()}`;
     },
   });
@@ -466,6 +468,16 @@ export default function ProfitManagementPage() {
                 <span className="profitScopeToggleDot" aria-hidden />
                 Ativos do mês
               </button>
+              <button
+                type="button"
+                className={`profitScopeToggle${considerarNaoCirculantes ? " on" : ""}`}
+                aria-pressed={considerarNaoCirculantes}
+                onClick={() => setConsiderarNaoCirculantes((v) => !v)}
+                title="Inclui Ativo Não Circulante nos totalizadores (ativo com/sem estoque, capital de giro, liquidez)"
+              >
+                <span className="profitScopeToggleDot" aria-hidden />
+                Considerar não circulantes
+              </button>
             </div>
           ) : null}
         </div>
@@ -510,6 +522,9 @@ export default function ProfitManagementPage() {
                     {ativosDoMes
                       ? " · Ativos do mês ativos na Solvência."
                       : ""}
+                    {considerarNaoCirculantes
+                      ? " · Não circulantes entram nos totalizadores."
+                      : " · Totalizadores só com circulante."}
                   </div>
                 )}
               </div>

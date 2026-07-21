@@ -5,6 +5,34 @@ import { formatCurrency } from "../lib/format";
 import { apiPost } from "../lib/api";
 import PortalDropdown from "../components/ui/PortalDropdown";
 
+/** Máscara pt-BR ao digitar: dígitos → "1.234,56" */
+function formatCurrencyMask(raw: string): string {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  const cents = Number.parseInt(digits, 10);
+  if (!Number.isFinite(cents)) return "";
+  return (cents / 100).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function parseCurrencyMask(text: string): number {
+  const normalized = String(text ?? "")
+    .trim()
+    .replace(/\./g, "")
+    .replace(",", ".");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function numberToMask(value: number | string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "";
+  const n = typeof value === "number" ? value : parseCurrencyMask(String(value));
+  if (!Number.isFinite(n)) return "";
+  return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 const GRUPO = {
   ativo_circulante: { cor: "var(--color-positive)", bg: "rgba(34,197,94,0.06)" },
   ativo_nao_circulante: { cor: "var(--accent-copper, #b8722c)", bg: "rgba(184,114,44,0.07)" },
@@ -144,10 +172,13 @@ function EditableSecao({
         const first = secao.itens[0];
         setRows([{
           descricao: first?.label || secao.label || "Dinheiro em espécie",
-          valor: String(first?.valor ?? secao.total ?? secao.valor_sistema ?? ""),
+          valor: numberToMask(first?.valor ?? secao.total ?? secao.valor_sistema ?? ""),
         }]);
       } else {
-        const base = secao.itens.map((i) => ({ descricao: i.label, valor: String(i.valor ?? "") }));
+        const base = secao.itens.map((i) => ({
+          descricao: i.label,
+          valor: numberToMask(i.valor ?? ""),
+        }));
         setRows(base.length ? base : [{ descricao: "", valor: "" }]);
       }
     }
@@ -160,13 +191,13 @@ function EditableSecao({
       const itens = singleValue
         ? [{
             descricao: (rows[0]?.descricao || secao.label || "Dinheiro em espécie").trim(),
-            valor: Number(String(rows[0]?.valor ?? "").replace(/\./g, "").replace(",", ".")) || 0,
+            valor: parseCurrencyMask(rows[0]?.valor ?? ""),
           }]
         : rows
             .filter((r) => r.descricao.trim())
             .map((r) => ({
               descricao: r.descricao.trim(),
-              valor: Number(String(r.valor).replace(/\./g, "").replace(",", ".")) || 0,
+              valor: parseCurrencyMask(r.valor),
             }));
       await apiPost(`/bi/profit-management/solvencia/manual${idEmpresa ? `?id_empresa=${idEmpresa}` : ""}`, {
         id_filial: filial,
@@ -249,7 +280,12 @@ function EditableSecao({
                 placeholder="0,00"
                 inputMode="decimal"
                 value={rows[0]?.valor ?? ""}
-                onChange={(e) => setRows([{ descricao: rows[0]?.descricao || secao.label, valor: e.target.value }])}
+                onChange={(e) =>
+                  setRows([{
+                    descricao: rows[0]?.descricao || secao.label,
+                    valor: formatCurrencyMask(e.target.value),
+                  }])
+                }
                 style={{ ...inputStyle, width: "100%", textAlign: "right", fontSize: 16, fontWeight: 600, padding: "10px 12px" }}
                 autoFocus
               />
@@ -274,8 +310,12 @@ function EditableSecao({
                       placeholder="0,00"
                       inputMode="decimal"
                       value={r.valor}
-                      onChange={(e) => setRows((rs) => rs.map((x, j) => (j === i ? { ...x, valor: e.target.value } : x)))}
-                      style={{ ...inputStyle, width: 104, textAlign: "right" }}
+                      onChange={(e) =>
+                        setRows((rs) =>
+                          rs.map((x, j) => (j === i ? { ...x, valor: formatCurrencyMask(e.target.value) } : x))
+                        )
+                      }
+                      style={{ ...inputStyle, width: 120, textAlign: "right" }}
                     />
                     <button type="button" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} title="Remover" style={{ border: "none", background: "transparent", cursor: "pointer", opacity: 0.6, fontSize: 14, color: "var(--text)" }}>✕</button>
                   </div>
@@ -363,6 +403,7 @@ export function SolvenciaDetalhada({
 }) {
   if (!data) return null;
   const anoMes: number = Number(data.ano_mes);
+  const consideraAnc = Boolean(data.considerar_nao_circulantes);
   const filiais: Filial[] = [...(data.filiais || [])].sort((a, b) =>
     (a.nome || "").localeCompare(b.nome || "", "pt-BR", { numeric: true, sensitivity: "base" }),
   );
@@ -408,8 +449,18 @@ export function SolvenciaDetalhada({
 
             <div className="solvenciaKpiBoard" aria-label="Indicadores de solvência">
               <div className="solvenciaKpiCol">
-                <Kpi label="Ativo COM estoque" sub="Circulante + ANC (inclui estoque)" value={formatCurrency(t.ativo_com_estoque ?? t.ativo_total)} color="var(--color-positive)" />
-                <Kpi label="Ativo SEM estoque" sub="Exclui loja + combustível" value={formatCurrency(t.ativo_sem_estoque ?? t.ativo_total)} color="var(--color-positive)" />
+                <Kpi
+                  label="Ativo COM estoque"
+                  sub={consideraAnc ? "Circulante + ANC (inclui estoque)" : "Só circulante (inclui estoque)"}
+                  value={formatCurrency(t.ativo_com_estoque ?? t.ativo_total)}
+                  color="var(--color-positive)"
+                />
+                <Kpi
+                  label="Ativo SEM estoque"
+                  sub={consideraAnc ? "Circulante + ANC − estoque" : "Circulante − estoque (loja + combustível)"}
+                  value={formatCurrency(t.ativo_sem_estoque ?? t.ativo_total)}
+                  color="var(--color-positive)"
+                />
               </div>
               <div className="solvenciaKpiCol solvenciaKpiColSolo">
                 <Kpi label="Passivo" sub="Contas a pagar + despesas do mês" value={formatCurrency(t.passivo)} color="var(--color-negative)" />

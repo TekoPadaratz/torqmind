@@ -2089,6 +2089,136 @@ def _troca_documento_numero(documento: Any, referencia: Any = None, troca_id: An
     return "—"
 
 
+def _enrich_troca_venda_status(id_empresa: int, rows: List[Dict[str, Any]]) -> None:
+    """Resolve Ativa/Cancelada via NFE (canônico) + comprovante.cancelado.
+
+    ``MOVLCTOSCANCELADOS.REFERENCIA`` frequentemente NÃO é ``id_comprovante``
+    vivo no slim (ex.: NFC-e 89477 → referencia 2754653 inexistente; comprovante
+    real 3549682 com NFE status=4). Por isso o join só por referencia marca
+    tudo como Ativa. Caminho correto: número NFC-e no documento + data da troca.
+    """
+    if not rows:
+        return
+    need: List[tuple[int, str, str]] = []  # filial, numero_nfe, dt ISO
+    for r in rows:
+        fil = int(r.get("id_filial") or 0)
+        nf = _extract_nfce_number(str(r.get("documento") or ""), str(r.get("documento_raw") or ""))
+        if not nf:
+            nf = _extract_nfce_number(str(r.get("documento_numero") or ""))
+        dt = str(r.get("dt") or "")[:10]
+        if fil > 0 and nf:
+            need.append((fil, nf, dt))
+            r["_nfce_lookup"] = nf
+        else:
+            r["_nfce_lookup"] = ""
+
+    status_by_key: Dict[tuple[int, str, str], Dict[str, Any]] = {}
+    status_by_nf: Dict[tuple[int, str], Dict[str, Any]] = {}
+    pairs = sorted({(f, n) for f, n, _ in need})
+    if pairs:
+        values = ", ".join(f"({f}, '{n}')" for f, n in pairs)
+        try:
+            found = query_dict(
+                f"""
+                SELECT
+                    n.id_filial AS id_filial,
+                    n.numero_nfe AS numero_nfe,
+                    toString(toDate(n.data_emissao)) AS dt_emissao,
+                    argMax(n.status, n.source_ts_ms) AS nfe_status,
+                    argMax(n.id_comprovante, n.source_ts_ms) AS id_comprovante,
+                    argMax(coalesce(c.cancelado, toUInt8(0)), n.source_ts_ms) AS cancelado,
+                    argMax(coalesce(c.situacao, 0), n.source_ts_ms) AS situacao
+                FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
+                LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+                  ON c.id_empresa = n.id_empresa
+                 AND c.id_filial = n.id_filial
+                 AND c.id_comprovante = n.id_comprovante
+                 AND c.is_deleted = 0
+                WHERE n.id_empresa = {{id_empresa:Int32}}
+                  AND n.is_deleted = 0
+                  AND n.numero_nfe != ''
+                  AND (n.id_filial, n.numero_nfe) IN ({values})
+                GROUP BY n.id_filial, n.numero_nfe, dt_emissao
+                """,
+                parameters={"id_empresa": id_empresa},
+            )
+        except Exception:
+            found = []
+        for row in found:
+            fil = int(row.get("id_filial") or 0)
+            nf = str(row.get("numero_nfe") or "").strip()
+            dt = str(row.get("dt_emissao") or "")[:10]
+            info = {
+                "nfe_status": int(row.get("nfe_status") or 0),
+                "cancelado": int(row.get("cancelado") or 0),
+                "situacao": int(row.get("situacao") or 0),
+                "id_comprovante": int(row.get("id_comprovante") or 0),
+            }
+            if fil and nf and dt:
+                status_by_key[(fil, nf, dt)] = info
+            if fil and nf:
+                # Prefer cancelada (status 4) when multiple emission dates exist.
+                prev = status_by_nf.get((fil, nf))
+                if prev is None or int(info["nfe_status"]) == 4 or (
+                    int(prev.get("nfe_status") or 0) != 4 and int(info["cancelado"]) > int(prev.get("cancelado") or 0)
+                ):
+                    status_by_nf[(fil, nf)] = info
+
+    # Fallback: comprovante direto por referencia (quando existir no slim).
+    refs = sorted({
+        (int(r.get("id_filial") or 0), int(r.get("referencia") or 0))
+        for r in rows
+        if int(r.get("id_filial") or 0) > 0 and int(r.get("referencia") or 0) > 0
+    })
+    comp_by_ref: Dict[tuple[int, int], Dict[str, Any]] = {}
+    if refs:
+        values = ", ".join(f"({f}, {c})" for f, c in refs)
+        try:
+            comps = query_dict(
+                f"""
+                SELECT id_filial, id_comprovante,
+                       argMax(cancelado, source_ts_ms) AS cancelado,
+                       argMax(situacao, source_ts_ms) AS situacao
+                FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+                WHERE id_empresa = {{id_empresa:Int32}}
+                  AND is_deleted = 0
+                  AND (id_filial, id_comprovante) IN ({values})
+                GROUP BY id_filial, id_comprovante
+                """,
+                parameters={"id_empresa": id_empresa},
+            )
+        except Exception:
+            comps = []
+        for row in comps:
+            comp_by_ref[(int(row["id_filial"]), int(row["id_comprovante"]))] = {
+                "cancelado": int(row.get("cancelado") or 0),
+                "situacao": int(row.get("situacao") or 0),
+            }
+
+    for r in rows:
+        fil = int(r.get("id_filial") or 0)
+        nf = str(r.get("_nfce_lookup") or "")
+        dt = str(r.get("dt") or "")[:10]
+        info = status_by_key.get((fil, nf, dt)) or status_by_nf.get((fil, nf))
+        if not info:
+            ref = int(r.get("referencia") or 0)
+            info = comp_by_ref.get((fil, ref)) or {}
+        nfe_status = int(info.get("nfe_status") or 0)
+        cancelado = int(info.get("cancelado") or 0)
+        situacao = int(info.get("situacao") or int(r.get("comprovante_situacao") or 0))
+        # NFE status=4 cancelamento real; status=5 inutilização ≠ cancelamento comercial.
+        # Comprovante: cancelado=1 (POS) ou situacao=3 (legado).
+        if nfe_status == 4 or (cancelado == 1 and nfe_status != 5) or situacao == 3:
+            status = "Cancelada"
+        else:
+            status = "Ativa"
+        r["venda_status"] = status
+        r["venda_cancelada"] = status == "Cancelada"
+        r["nfe_status"] = nfe_status or None
+        r["comprovante_cancelado"] = bool(cancelado)
+        r.pop("_nfce_lookup", None)
+
+
 def fraud_troca_forma_pgto(
     role: str,
     id_empresa: int,
@@ -2103,9 +2233,9 @@ def fraud_troca_forma_pgto(
     """Payment-form-change events (antifraud).
 
     Incomplete rows (mart lag without movlcto join) are omitted. Cancelled
-    sales (situacao=3) remain visible with ``venda_status`` = Cancelada —
-    troca seguida de cancelamento é sinal crítico (ex.: doc 89477).
-    Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
+    sales remain visible with ``venda_status`` = Cancelada (NFE status=4 ou
+    comprovante.cancelado) — troca seguida de cancelamento é sinal crítico
+    (ex.: NFC-e 89477 / VR05). Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
     """
     filial = _branch_clause("t.id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim, col="t.data_key")
@@ -2146,7 +2276,7 @@ def fraud_troca_forma_pgto(
             t.reasons,
             t.referencia,
             coalesce(c.situacao, 0) AS comprovante_situacao,
-            if(coalesce(c.situacao, 0) = 3, 'Cancelada', 'Ativa') AS venda_status
+            coalesce(c.cancelado, toUInt8(0)) AS comprovante_cancelado_slim
         FROM {MART_RT_DB}.mart_troca_forma_pgto_rt AS t FINAL
         LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c
           ON c.id_empresa = {{id_empresa:Int32}}
@@ -2168,12 +2298,10 @@ def fraud_troca_forma_pgto(
         r["documento_raw"] = raw_doc
         r["documento"] = doc_num
         r["documento_numero"] = doc_num
-        status = str(r.get("venda_status") or "Ativa")
-        r["venda_status"] = status
-        r["venda_cancelada"] = status == "Cancelada"
         out.append(r)
         if len(out) >= lim:
             break
+    _enrich_troca_venda_status(id_empresa, out)
     return out
 
 
@@ -4065,6 +4193,41 @@ def jarvis_briefing(
     }
 
 
+def _credito_func_entidades_ativas_na_filial(
+    id_empresa: int, branch_ids: List[int]
+) -> List[int]:
+    """IDs de entidade (grupo 12, com limite, ATIVO) presentes na(s) filial(is).
+
+    Cadastro é replicado entre postos; a filial “de casa” operacional é a cópia
+    ATIVA na filial selecionada. Gastos continuam empresa-wide no mash de usos.
+    """
+    if not branch_ids:
+        return []
+    fil_sql = (
+        f"id_filial = {int(branch_ids[0])}"
+        if len(branch_ids) == 1
+        else "id_filial IN (" + ", ".join(str(int(v)) for v in branch_ids) + ")"
+    )
+    rows = query_dict(
+        f"""
+        SELECT DISTINCT id_entidade
+        FROM {CURRENT_DB}.stg_entidades FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND {fil_sql}
+          AND is_deleted = 0
+          AND id_entidade > 0
+          AND JSONExtractString(payload, 'ID_GRUPOENTIDADES') = '12'
+          AND (
+            toFloat64OrZero(JSONExtractString(payload, 'LIMITE')) > 0
+            OR toFloat64OrZero(JSONExtractString(payload, 'LIMITE_VALE')) > 0
+          )
+          AND lowerUTF8(JSONExtractString(payload, 'ATIVO')) IN ('true', '1', 't')
+        """,
+        {"id_empresa": int(id_empresa)},
+    )
+    return sorted({int(r["id_entidade"]) for r in rows if r.get("id_entidade") is not None})
+
+
 def fraud_credito_funcionario(
     role: str,
     id_empresa: int,
@@ -4105,7 +4268,30 @@ def fraud_credito_funcionario(
     elif status_key in ("normal", "normais"):
         status_sql = "AND status = 'Normal'"
 
-    filial_sql = _branch_clause("id_filial_ref", id_filial)
+    # Lista: só funcionários com cadastro ATIVO na filial selecionada (grupo 12).
+    # Usos: empresa-wide (não filtrar pela filial do gasto).
+    branch_ids = _branch_ids(id_filial)
+    entidade_sql = ""
+    if branch_ids:
+        ents = _credito_func_entidades_ativas_na_filial(int(id_empresa), branch_ids)
+        if not ents:
+            return {
+                "ano_mes": ym,
+                "meses_disponiveis": [ym],
+                "source": "clickhouse",
+                "summary": {
+                    "total": 0, "suspeitos": 0, "normais": 0,
+                    "usado_total": 0.0, "usado_prazo_total": 0.0, "usado_vale_total": 0.0,
+                    "limite_total": 0.0, "limite_prazo_total": 0.0, "limite_vale_total": 0.0,
+                },
+                "funcionarios": [],
+                "disclaimer": (
+                    "Funcionários: ENTIDADES grupo 12 ativas na filial selecionada. "
+                    "Usos: CONTASRECEBER da entidade em toda a empresa."
+                ),
+            }
+        entidade_sql = "AND id_entidade IN (" + ", ".join(str(i) for i in ents) + ")"
+
     try:
         lim = max(1, min(int(limit), 2000))
     except (TypeError, ValueError):
@@ -4138,12 +4324,9 @@ def fraud_credito_funcionario(
         FROM {MART_RT_DB}.mart_fraud_credito_funcionario_resumo FINAL
         WHERE id_empresa = %(id_empresa)s
           AND ano_mes = %(ano_mes)s
-          {filial_sql}
+          {entidade_sql}
           {status_sql}
-        ORDER BY
-            if(status = 'Suspeito', 0, 1) ASC,
-            usado_mes DESC,
-            nome_funcionario ASC
+        ORDER BY nome_funcionario ASC, id_funcionario ASC
         LIMIT %(lim)s
         """,
         {"id_empresa": int(id_empresa), "ano_mes": ym, "lim": lim},
@@ -4174,7 +4357,7 @@ def fraud_credito_funcionario(
             WHERE id_empresa = %(id_empresa)s
               AND ano_mes = %(ano_mes)s
               AND id_funcionario IN ({ids_csv})
-            ORDER BY dt_evento DESC, valor DESC
+            ORDER BY id_filial ASC, dt_evento DESC, valor DESC
             """,
             {"id_empresa": int(id_empresa), "ano_mes": ym},
         )
@@ -4203,6 +4386,7 @@ def fraud_credito_funcionario(
             )
             usos_by.setdefault(fid, []).append({
                 "id_filial": id_filial or None,
+                "filial_label": _filial_label(id_filial, "") if id_filial else "—",
                 "id_entidade": u.get("id_entidade"),
                 "id_contasreceber": u.get("id_contasreceber"),
                 "id_comprovante": id_comp or None,
@@ -4219,6 +4403,19 @@ def fraud_credito_funcionario(
                 "historico": u.get("historico") or "",
                 "atipico": bool(int(u.get("atipico") or 0)),
             })
+        for fid in usos_by:
+            def _uso_sort_key(x: Dict[str, Any]) -> tuple:
+                dt = str(x.get("dt_evento") or "")
+                # YYYY-MM-DD… → chave numérica YYYYMMDD (data mais recente primeiro)
+                digits = "".join(c for c in dt if c.isdigit())
+                day_key = int(digits[:8]) if len(digits) >= 8 else 0
+                return (
+                    int(x.get("id_filial") or 0),
+                    -day_key,
+                    -float(x.get("valor") or 0),
+                )
+
+            usos_by[fid].sort(key=_uso_sort_key)
 
     summary_rows = query_dict(
         f"""
@@ -4235,7 +4432,7 @@ def fraud_credito_funcionario(
         FROM {MART_RT_DB}.mart_fraud_credito_funcionario_resumo FINAL
         WHERE id_empresa = %(id_empresa)s
           AND ano_mes = %(ano_mes)s
-          {filial_sql}
+          {entidade_sql}
         """,
         {"id_empresa": int(id_empresa), "ano_mes": ym},
     )
@@ -4246,7 +4443,6 @@ def fraud_credito_funcionario(
         SELECT DISTINCT ano_mes
         FROM {MART_RT_DB}.mart_fraud_credito_funcionario_resumo FINAL
         WHERE id_empresa = %(id_empresa)s
-          {filial_sql}
         ORDER BY ano_mes DESC
         """,
         {"id_empresa": int(id_empresa)},
@@ -4313,8 +4509,9 @@ def fraud_credito_funcionario(
         },
         "funcionarios": funcionarios,
         "disclaimer": (
-            "Limites: ENTIDADES.LIMITE (a prazo) + ENTIDADES.LIMITE_VALE (vale), "
-            "join CPF com FUNCIONARIOS. Uso: CONTASRECEBER. Documento = NF-e/NFC-e."
+            "Funcionários: ENTIDADES grupo 12 ativas na filial selecionada. "
+            "Limites LIMITE + LIMITE_VALE. Usos: CONTASRECEBER da entidade em toda a empresa "
+            "(pode gastar em qualquer posto). Documento = NF-e/NFC-e."
         ),
     }
 

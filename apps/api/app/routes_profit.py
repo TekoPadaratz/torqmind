@@ -971,6 +971,10 @@ def profit_solvencia_detalhada(
         True,
         description="Quando true, prioriza recebíveis com vencimento no mês e ainda em aberto",
     ),
+    considerar_nao_circulantes: bool = Query(
+        False,
+        description="Quando true, inclui Ativo Não Circulante nos totalizadores (ativo/capital/liquidez)",
+    ),
     id_empresa: Optional[int] = Query(None),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
@@ -992,9 +996,15 @@ def profit_solvencia_detalhada(
     )
     target = _solvencia_target_month(ano_mes, tenant)
     data = repos_mart.solvencia_detalhada(
-        role, tenant, filial, target, ativos_do_mes=ativos_do_mes,
+        role,
+        tenant,
+        filial,
+        target,
+        ativos_do_mes=ativos_do_mes,
+        considerar_nao_circulantes=considerar_nao_circulantes,
     )
     data["ativos_do_mes"] = bool(ativos_do_mes)
+    data["considerar_nao_circulantes"] = bool(considerar_nao_circulantes)
     return redact_sensitive({"data": data}, claims)
 
 

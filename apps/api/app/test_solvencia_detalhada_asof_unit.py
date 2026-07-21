@@ -132,6 +132,7 @@ class SolvenciaDetalhadaAsofUnitTest(unittest.TestCase):
         with (
             patch("app.repos_mart.get_conn", return_value=conn),
             patch("app.repos_mart.business_today", return_value=date(2026, 7, 13)),
+            patch("app.db_clickhouse.query_dict", side_effect=RuntimeError("force-pg")),
         ):
             # Snapshot completo (não filtra vencimento do mês).
             payload = repos_mart.solvencia_detalhada(

@@ -5692,11 +5692,16 @@ def solvencia_detalhada(
 
     ``ativos_do_mes=True`` (default): cheques e a prazo só com vencimento no
     mês e ainda abertos. ``False``: posição aberta completa (snapshot).
+
+    ``considerar_nao_circulantes=False`` (default): totalizadores de ativo /
+    capital de giro / liquidez usam só circulante. ``True``: soma ANC também.
+    A seção ANC continua visível na grade em ambos os modos.
     """
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
     target = int(ano_mes)
     ano, mes = target // 100, target % 100
     ativos_do_mes = bool(kwargs.get("ativos_do_mes", True))
+    considerar_nao_circulantes = bool(kwargs.get("considerar_nao_circulantes", False))
     mes_ini = f"{ano:04d}-{mes:02d}-01"
     source = "clickhouse"
 
@@ -6353,7 +6358,8 @@ def solvencia_detalhada(
                 "total": g_total,
                 "secoes": secoes,
             }
-        ativo_total = round(totais["ativo_circulante"] + totais["ativo_nao_circulante"], 2)
+        anc_nos_totais = totais["ativo_nao_circulante"] if considerar_nao_circulantes else 0.0
+        ativo_total = round(totais["ativo_circulante"] + anc_nos_totais, 2)
         passivo = totais["passivo_circulante"]
         # Estoque = loja + combustível (seções as-of).
         g_ac = grupos_raw.get("ativo_circulante") or {}
@@ -6408,6 +6414,7 @@ def solvencia_detalhada(
         "posicao": "as_of_abertura_mes",
         "schema_version": "solvencia_despesas_v2",
         "ativos_do_mes": bool(ativos_do_mes),
+        "considerar_nao_circulantes": bool(considerar_nao_circulantes),
         "despesas_ano_mes": despesas_ano_mes,
         "filiais": out_filiais,
         "source": source,
@@ -9791,8 +9798,20 @@ def refresh_fraud_credito_funcionario(
     id_empresa: int,
     ano_mes: Optional[int] = None,
 ) -> int:
-    """Materializa mash PG e publica no ClickHouse (fonte de leitura da API)."""
+    """Materializa crédito funcionário no ClickHouse (leitura da API).
+
+    Preferência: mash nativo CH (stg_entidades + stg_contasreceber) — rápido e
+    usa o STG de produção via CDC. Fallback: ETL PG + publish (lento).
+    """
     ym = int(ano_mes) if ano_mes else _ano_mes_from_date(business_today(id_empresa))
+    try:
+        out = mash_fraud_credito_funcionario_ch(int(id_empresa), ym)
+        return int(out.get("resumo") or 0)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "mash_fraud_credito_funcionario_ch failed empresa=%s mes=%s err=%s; fallback PG",
+            id_empresa, ym, str(exc)[:240],
+        )
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         row = conn.execute(
             "SELECT etl.refresh_fraud_credito_funcionario(%s, %s) AS n",
@@ -9809,6 +9828,239 @@ def refresh_fraud_credito_funcionario(
     return n
 
 
+def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str, int]:
+    """Mash crédito funcionário 100% ClickHouse → mart_rt (produção-ready).
+
+    Base: ENTIDADES grupo 12 com LIMITE/LIMITE_VALE.
+    Usos: CONTASRECEBER da entidade no mês (empresa-wide).
+    """
+    import json
+    import re
+    from collections import defaultdict
+    from datetime import datetime, timezone
+
+    from app.db_clickhouse import execute_command, insert_batch, query_dict
+
+    ym = int(ano_mes)
+    id_empresa = int(id_empresa)
+    published_at = datetime.now(timezone.utc)
+    y, m = divmod(ym, 100)
+    if m < 1 or m > 12:
+        raise ValueError(f"ano_mes inválido: {ym}")
+
+    # Limpa mês (evita órfãos de mash antigo / homolog)
+    execute_command(
+        """
+        ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo
+        DELETE WHERE id_empresa = {id_empresa:Int32} AND ano_mes = {ano_mes:Int32}
+        """,
+        {"id_empresa": id_empresa, "ano_mes": ym},
+    )
+    execute_command(
+        """
+        ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
+        DELETE WHERE id_empresa = {id_empresa:Int32} AND ano_mes = {ano_mes:Int32}
+        """,
+        {"id_empresa": id_empresa, "ano_mes": ym},
+    )
+
+    base_rows = query_dict(
+        """
+        SELECT
+            id_entidade,
+            any(nome) AS nome_funcionario,
+            any(cpf) AS cpf,
+            max(ativo) AS ativo,
+            max(limite_prazo) AS limite_prazo,
+            max(limite_vale) AS limite_vale
+        FROM (
+            SELECT
+                id_entidade,
+                if(
+                    nullIf(trimBoth(JSONExtractString(payload, 'NOMEENTIDADE')), '') IS NOT NULL,
+                    trimBoth(JSONExtractString(payload, 'NOMEENTIDADE')),
+                    ifNull(nullIf(trimBoth(JSONExtractString(payload, 'RAZAOSOCIALENTIDADE')), ''), 'Funcionário')
+                ) AS nome,
+                replaceRegexpAll(
+                    coalesce(
+                        nullIf(JSONExtractString(payload, 'CNPJCPF'), ''),
+                        nullIf(JSONExtractString(payload, 'CPF'), ''),
+                        ''
+                    ),
+                    '[^0-9]',
+                    ''
+                ) AS cpf,
+                if(lowerUTF8(JSONExtractString(payload, 'ATIVO')) IN ('true', '1', 't'), 1, 0) AS ativo,
+                toFloat64OrZero(JSONExtractString(payload, 'LIMITE')) AS limite_prazo,
+                toFloat64OrZero(JSONExtractString(payload, 'LIMITE_VALE')) AS limite_vale
+            FROM torqmind_current.stg_entidades FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND is_deleted = 0
+              AND id_entidade > 0
+              AND JSONExtractString(payload, 'ID_GRUPOENTIDADES') = '12'
+              AND (
+                toFloat64OrZero(JSONExtractString(payload, 'LIMITE')) > 0
+                OR toFloat64OrZero(JSONExtractString(payload, 'LIMITE_VALE')) > 0
+              )
+        )
+        GROUP BY id_entidade
+        """,
+        {"id_empresa": id_empresa},
+    )
+    if not base_rows:
+        return {"resumo": 0, "usos": 0}
+
+    ents_csv = ", ".join(str(int(r["id_entidade"])) for r in base_rows)
+
+    uso_raw = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            id_contasreceber,
+            toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) AS id_entidade,
+            toFloat64OrZero(JSONExtractString(payload, 'VALOR')) AS valor,
+            ifNull(JSONExtractString(payload, 'HISTORICO'), '') AS historico,
+            coalesce(
+                dt_evento,
+                parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTACONTA'), 3, 'America/Sao_Paulo'),
+                parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'), 3, 'America/Sao_Paulo'),
+                parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATAREPL'), 3, 'America/Sao_Paulo')
+            ) AS dt_evento
+        FROM torqmind_current.stg_contasreceber FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND is_deleted = 0
+          AND toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) IN ({ents_csv})
+          AND toYYYYMM(
+                toTimeZone(
+                    coalesce(
+                        dt_evento,
+                        parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTACONTA'), 3, 'America/Sao_Paulo'),
+                        parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATAREPL'), 3, 'America/Sao_Paulo')
+                    ),
+                    'America/Sao_Paulo'
+                )
+              ) = %(ano_mes)s
+          AND toFloat64OrZero(JSONExtractString(payload, 'VALOR')) > 0
+        """,
+        {"id_empresa": id_empresa, "ano_mes": ym},
+    )
+
+    nf_re = re.compile(r"NFC?-?[eE]\s*[#:]?\s*([0-9]+)", re.I)
+    usos_by: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for u in uso_raw:
+        eid = int(u.get("id_entidade") or 0)
+        if not eid:
+            continue
+        hist = str(u.get("historico") or "")
+        tipo = "vale" if "vale" in hist.lower() else "prazo"
+        m = nf_re.search(hist)
+        nro_doc = m.group(1) if m else ""
+        dt = u.get("dt_evento")
+        usos_by[eid].append({
+            "id_empresa": id_empresa,
+            "id_funcionario": eid,
+            "ano_mes": ym,
+            "id_filial": int(u.get("id_filial") or 0),
+            "id_entidade": eid,
+            "id_contasreceber": int(u.get("id_contasreceber") or 0),
+            "id_comprovante": 0,
+            "nro_cupom": "",
+            "nro_documento": nro_doc,
+            "tipo_uso": tipo,
+            "dt_evento": dt,
+            "valor": float(u.get("valor") or 0),
+            "id_usuario_caixa": 0,
+            "operador_caixa": "",
+            "historico": hist,
+            "atipico": 0,
+            "published_at": published_at,
+        })
+
+    # Atípico simples: valor >= 2.5× mediana do mês (por funcionário)
+    for eid, items in usos_by.items():
+        vals = sorted(float(i["valor"]) for i in items if float(i.get("valor") or 0) > 0)
+        if not vals:
+            continue
+        mid = vals[len(vals) // 2]
+        if mid <= 0:
+            continue
+        thr = mid * 2.5
+        for i in items:
+            if float(i["valor"]) >= thr:
+                i["atipico"] = 1
+
+    resumo_ch: List[Dict[str, Any]] = []
+    for r in base_rows:
+        eid = int(r["id_entidade"])
+        items = usos_by.get(eid, [])
+        limite_prazo = float(r.get("limite_prazo") or 0)
+        limite_vale = float(r.get("limite_vale") or 0)
+        limite_total = limite_prazo + limite_vale
+        usado_prazo = sum(float(i["valor"]) for i in items if i["tipo_uso"] == "prazo")
+        usado_vale = sum(float(i["valor"]) for i in items if i["tipo_uso"] == "vale")
+        usado_mes = usado_prazo + usado_vale
+        day_counts: Dict[str, int] = defaultdict(int)
+        for i in items:
+            dt = i.get("dt_evento")
+            if dt is None:
+                continue
+            if isinstance(dt, datetime):
+                day_counts[dt.strftime("%Y-%m-%d")] += 1
+            else:
+                day_counts[str(dt)[:10]] += 1
+        max_dia = max(day_counts.values()) if day_counts else 0
+        motivos = []
+        if limite_prazo > 0 and usado_prazo > limite_prazo:
+            motivos.append("Limite a prazo extrapolado")
+        if limite_vale > 0 and usado_vale > limite_vale:
+            motivos.append("Limite de vale extrapolado")
+        if limite_total > 0 and usado_mes > limite_total:
+            motivos.append("Limite total extrapolado")
+        if max_dia >= 2:
+            motivos.append("Frequência Anômala")
+        if any(int(i.get("atipico") or 0) for i in items):
+            motivos.append("Valor Atípico")
+        resumo_ch.append({
+            "id_empresa": id_empresa,
+            "id_funcionario": eid,
+            "ano_mes": ym,
+            "id_filial_ref": 0,
+            "id_entidade": eid,
+            "nome_funcionario": str(r.get("nome_funcionario") or ""),
+            "cpf": str(r.get("cpf") or ""),
+            "ativo": int(r.get("ativo") or 0),
+            "limite_prazo": limite_prazo,
+            "limite_vale": limite_vale,
+            "limite_total": limite_total,
+            "vales_cadastro": 0.0,
+            "usado_prazo": usado_prazo,
+            "usado_vale": usado_vale,
+            "usado_mes": usado_mes,
+            "saldo_prazo": max(limite_prazo - usado_prazo, 0),
+            "saldo_vale": max(limite_vale - usado_vale, 0),
+            "saldo_restante": max(limite_total - usado_mes, 0),
+            "qtd_usos_mes": len(items),
+            "max_usos_mesmo_dia": int(max_dia),
+            "status": "Suspeito" if motivos else "Normal",
+            "motivos": json.dumps(motivos, ensure_ascii=False),
+            "published_at": published_at,
+        })
+
+    uso_ch = [u for items in usos_by.values() for u in items if u.get("id_contasreceber")]
+
+    n_r = insert_batch(
+        "torqmind_mart_rt.mart_fraud_credito_funcionario_resumo",
+        resumo_ch,
+        order_by=["id_empresa", "ano_mes", "id_funcionario"],
+    )
+    n_u = insert_batch(
+        "torqmind_mart_rt.mart_fraud_credito_funcionario_uso",
+        uso_ch,
+        order_by=["id_empresa", "ano_mes", "id_funcionario", "id_filial", "id_contasreceber"],
+    )
+    return {"resumo": n_r, "usos": n_u}
+
+
 def publish_fraud_credito_funcionario_to_ch(
     role: str,
     id_empresa: int,
@@ -9818,10 +10070,28 @@ def publish_fraud_credito_funcionario_to_ch(
     import json
     from datetime import datetime, timezone
 
-    from app.db_clickhouse import insert_batch
+    from app.db_clickhouse import execute_command, insert_batch
 
     ym = int(ano_mes)
     published_at = datetime.now(timezone.utc)
+
+    # Limpa o mês antes de republicar: id_funcionario mudou (FUNCIONARIOS → ID_ENTIDADE);
+    # sem DELETE, ReplacingMergeTree acumula linhas órfãs com chaves antigas.
+    execute_command(
+        """
+        ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo
+        DELETE WHERE id_empresa = {id_empresa:Int32} AND ano_mes = {ano_mes:Int32}
+        """,
+        {"id_empresa": int(id_empresa), "ano_mes": ym},
+    )
+    execute_command(
+        """
+        ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
+        DELETE WHERE id_empresa = {id_empresa:Int32} AND ano_mes = {ano_mes:Int32}
+        """,
+        {"id_empresa": int(id_empresa), "ano_mes": ym},
+    )
+
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         resumo_rows = conn.execute(
             """
@@ -9962,7 +10232,31 @@ def fraud_credito_funcionario(
                 id_empresa, ym, str(exc)[:240],
             )
 
-    where_filial, branch_params = _branch_scope_clause("r.id_filial_ref", id_filial)
+    # Lista: funcionários ativos na filial selecionada. Usos: empresa-wide.
+    branch_ids = None
+    if id_filial is not None and int(id_filial) != -1:
+        if isinstance(id_filial, (list, tuple, set)):
+            branch_ids = sorted({int(v) for v in id_filial if v is not None and int(v) != -1})
+        else:
+            branch_ids = [int(id_filial)]
+    where_filial = ""
+    branch_params: List[Any] = []
+    if branch_ids:
+        where_filial = """
+          AND EXISTS (
+            SELECT 1 FROM stg.entidades e
+            WHERE e.id_empresa = r.id_empresa
+              AND e.id_filial = ANY(%s)
+              AND (e.payload->>'ID_ENTIDADE')::int = r.id_entidade
+              AND e.payload->>'ID_GRUPOENTIDADES' = '12'
+              AND COALESCE(e.payload->>'ATIVO', 'true') IN ('true', '1', 't', 'True')
+              AND (
+                COALESCE(NULLIF(e.payload->>'LIMITE', '')::numeric, 0) > 0
+                OR COALESCE(NULLIF(e.payload->>'LIMITE_VALE', '')::numeric, 0) > 0
+              )
+          )
+        """
+        branch_params = [branch_ids]
     status_sql = ""
     if status_key in ("suspeito", "suspeitos", "suspeitas"):
         status_sql = "AND r.status = 'Suspeito'"
@@ -9997,10 +10291,7 @@ def fraud_credito_funcionario(
         AND r.ano_mes = %s
         {where_filial}
         {status_sql}
-      ORDER BY
-        CASE WHEN r.status = 'Suspeito' THEN 0 ELSE 1 END,
-        r.usado_mes DESC,
-        r.nome_funcionario
+      ORDER BY r.nome_funcionario ASC, r.id_funcionario ASC
       LIMIT %s
     """
     params = [id_empresa, ym] + branch_params + [int(limit)]
@@ -10030,7 +10321,7 @@ def fraud_credito_funcionario(
               WHERE u.id_empresa = %s
                 AND u.ano_mes = %s
                 AND u.id_funcionario = ANY(%s)
-              ORDER BY u.dt_evento DESC NULLS LAST, u.valor DESC
+              ORDER BY u.id_filial ASC NULLS LAST, u.dt_evento DESC NULLS LAST, u.valor DESC
             """
             for u in conn.execute(uso_sql, [id_empresa, ym, func_ids]).fetchall():
                 d = dict(u)
@@ -10047,6 +10338,7 @@ def fraud_credito_funcionario(
                 )
                 usos_by.setdefault(fid, []).append({
                     "id_filial": d.get("id_filial"),
+                    "filial_label": _filial_label(d.get("id_filial"), "") if d.get("id_filial") else "—",
                     "id_entidade": d.get("id_entidade"),
                     "id_contasreceber": d.get("id_contasreceber"),
                     "id_comprovante": int(d.get("id_comprovante") or 0) or None,
@@ -10063,6 +10355,18 @@ def fraud_credito_funcionario(
                     "historico": d.get("historico") or "",
                     "atipico": bool(d.get("atipico")),
                 })
+            for fid in usos_by:
+                def _uso_sort_key(x: Dict[str, Any]) -> tuple:
+                    dt = str(x.get("dt_evento") or "")
+                    digits = "".join(c for c in dt if c.isdigit())
+                    day_key = int(digits[:8]) if len(digits) >= 8 else 0
+                    return (
+                        int(x.get("id_filial") or 0),
+                        -day_key,
+                        -float(x.get("valor") or 0),
+                    )
+
+                usos_by[fid].sort(key=_uso_sort_key)
 
         summary = conn.execute(
             f"""
@@ -10133,7 +10437,8 @@ def fraud_credito_funcionario(
         },
         "funcionarios": funcionarios,
         "disclaimer": (
-            "Limites: ENTIDADES.LIMITE (a prazo) + ENTIDADES.LIMITE_VALE (vale), "
-            "join CPF com FUNCIONARIOS. Uso: CONTASRECEBER. Documento = NF-e/NFC-e."
+            "Funcionários: ENTIDADES grupo 12 ativas na filial selecionada. "
+            "Limites LIMITE + LIMITE_VALE. Usos: CONTASRECEBER da entidade em toda a empresa "
+            "(pode gastar em qualquer posto). Documento = NF-e/NFC-e."
         ),
     }
