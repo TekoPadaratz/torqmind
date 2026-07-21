@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Fragment } from "react";
 import {
   Bar,
   BarChart,
@@ -14,6 +14,7 @@ import {
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import { apiGet } from "../lib/api";
 import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
 import {
   buildModuleLoadingCopy,
@@ -68,6 +69,13 @@ export default function CustomersPage() {
   const [delinquencySearch, setDelinquencySearch] = useState("");
   // Filtro-sobre-filtro: postos selecionados nos cards (vazio = todos os postos do escopo).
   const [selectedFiliais, setSelectedFiliais] = useState<Set<number>>(new Set());
+  const [precoFixoPage, setPrecoFixoPage] = useState(0);
+  const [precoFixoSearch, setPrecoFixoSearch] = useState("");
+  const [precoFixoLoading, setPrecoFixoLoading] = useState(false);
+  const [precoFixoData, setPrecoFixoData] = useState<any>(null);
+  const [precoFixoExpanded, setPrecoFixoExpanded] = useState<string | null>(null);
+  const [precoFixoDetail, setPrecoFixoDetail] = useState<any>(null);
+  const [precoFixoDetailLoading, setPrecoFixoDetailLoading] = useState(false);
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -156,6 +164,72 @@ export default function CustomersPage() {
     setSelectedFiliais(new Set());
   }, [data?.commercial_coverage?.effective_dt_fim]);
 
+  useEffect(() => {
+    setPrecoFixoPage(0);
+    setPrecoFixoExpanded(null);
+    setPrecoFixoDetail(null);
+  }, [scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial, scope.id_filiais]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setPrecoFixoLoading(true);
+      try {
+        const params = buildScopeParams(scope);
+        params.set("page", String(precoFixoPage));
+        params.set("page_size", "15");
+        if precoFixoSearch.trim()) params.set("search", precoFixoSearch.trim());
+        const res = await apiGet(`/bi/customers/preco-fixo?${params.toString()}`);
+        if (!cancelled) setPrecoFixoData(res);
+      } catch {
+        if (!cancelled) {
+          setPrecoFixoData({
+            items: [],
+            total: 0,
+            page: 0,
+            page_size: 15,
+            total_pages: 0,
+            summary: { clientes: 0, desconto_total: 0 },
+          });
+        }
+      } finally {
+        if (!cancelled) setPrecoFixoLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, precoFixoPage, precoFixoSearch]);
+
+  const openPrecoFixoDetail = async (row: any) => {
+    const key = `${row.id_filial}-${row.id_entidade}`;
+    if (precoFixoExpanded === key) {
+      setPrecoFixoExpanded(null);
+      setPrecoFixoDetail(null);
+      return;
+    }
+    setPrecoFixoExpanded(key);
+    setPrecoFixoDetailLoading(true);
+    setPrecoFixoDetail(null);
+    try {
+      const params = buildScopeParams(scope);
+      params.set("id_filial", String(row.id_filial));
+      params.set("id_entidade", String(row.id_entidade));
+      params.set("page", "0");
+      params.set("page_size", "50");
+      const res = await apiGet(`/bi/customers/preco-fixo/detail?${params.toString()}`);
+      setPrecoFixoDetail(res);
+    } catch {
+      setPrecoFixoDetail({ items: [], total: 0, summary: { desconto_total: 0 } });
+    } finally {
+      setPrecoFixoDetailLoading(false);
+    }
+  };
+
+  const precoFixoItems = precoFixoData?.items || [];
+  const precoFixoPageCount = Math.max(1, Number(precoFixoData?.total_pages || 1));
+
   return (
     <div>
       <AppNav title="Análise de Clientes" userLabel={userLabel} />
@@ -221,6 +295,147 @@ export default function CustomersPage() {
                     ? "..."
                     : `${Number(anonKpis?.repeat_proxy_idx || 0).toFixed(1)}%`}
                 </div>
+              </div>
+
+              <div className="card col-12">
+                <div className="panelHead">
+                  <div>
+                    <h2>Clientes com preço fixo</h2>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      Desconto econômico implícito em combustível no período do filtro
+                      (preço da bomba do dia menos o preço pago pelo cliente).
+                    </div>
+                  </div>
+                </div>
+                <div style={{ marginTop: 12, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    {precoFixoLoading
+                      ? "Carregando…"
+                      : `${Number(precoFixoData?.summary?.clientes || 0)} cliente(s) · total ${formatCurrency(precoFixoData?.summary?.desconto_total || 0)}`}
+                  </div>
+                  <input
+                    type="text"
+                    value={precoFixoSearch}
+                    onChange={(e) => {
+                      setPrecoFixoSearch(e.target.value.toUpperCase());
+                      setPrecoFixoPage(0);
+                    }}
+                    placeholder="Buscar cliente…"
+                    style={{
+                      minWidth: 220,
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "rgba(255,255,255,0.03)",
+                      color: "inherit",
+                    }}
+                  />
+                </div>
+                {!precoFixoLoading && precoFixoItems.length === 0 ? (
+                  <EmptyState
+                    title="Nenhum cliente com preço fixo no período."
+                    detail="Quando houver vendas de combustível abaixo do preço da bomba para clientes cadastrados com valor fixo, o acumulado aparece aqui."
+                  />
+                ) : null}
+                {precoFixoItems.length > 0 ? (
+                  <>
+                    <div className="tableScroll" style={{ marginTop: 12 }}>
+                      <table className="table compact">
+                        <thead>
+                          <tr>
+                            <th>Filial</th>
+                            <th>Cliente</th>
+                            <th>Vendas</th>
+                            <th>Desconto acumulado</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {precoFixoItems.map((row: any) => {
+                            const key = `${row.id_filial}-${row.id_entidade}`;
+                            const open = precoFixoExpanded === key;
+                            return (
+                              <Fragment key={key}>
+                                <tr
+                                  onClick={() => void openPrecoFixoDetail(row)}
+                                  style={{ cursor: "pointer" }}
+                                  aria-expanded={open}
+                                >
+                                  <td>{row.filial_label || "—"}</td>
+                                  <td>{row.cliente_nome}</td>
+                                  <td>{row.qtd_vendas ?? 0}</td>
+                                  <td style={{ fontWeight: 700 }}>{formatCurrency(row.desconto_total)}</td>
+                                </tr>
+                                {open ? (
+                                  <tr>
+                                    <td colSpan={4} style={{ padding: 12, background: "rgba(255,255,255,0.02)" }}>
+                                      {precoFixoDetailLoading ? (
+                                        <div className="muted">Carregando detalhe…</div>
+                                      ) : !(precoFixoDetail?.items || []).length ? (
+                                        <div className="muted">Sem itens no período.</div>
+                                      ) : (
+                                        <div className="tableScroll">
+                                          <table className="table compact">
+                                            <thead>
+                                              <tr>
+                                                <th>NF-e / NFC-e</th>
+                                                <th>Data</th>
+                                                <th>Produto</th>
+                                                <th>Preço bomba</th>
+                                                <th>Preço cliente</th>
+                                                <th>Qtd</th>
+                                                <th>Desconto</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {(precoFixoDetail?.items || []).map((item: any) => (
+                                                <tr key={`${item.id_comprovante}-${item.id_itemcomprovante}`}>
+                                                  <td>{item.documento_label || "—"}</td>
+                                                  <td>{formatDateOnly(item.dt_venda)}</td>
+                                                  <td>{item.produto_nome || `#${item.id_produto}`}</td>
+                                                  <td>{formatCurrency(item.preco_bomba)}</td>
+                                                  <td>{formatCurrency(item.preco_pago)}</td>
+                                                  <td>{Number(item.qtd || 0).toFixed(3)}</td>
+                                                  <td style={{ fontWeight: 700 }}>{formatCurrency(item.desconto_total)}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {Number(precoFixoData?.total || 0) > 15 ? (
+                      <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => setPrecoFixoPage((p) => Math.max(0, p - 1))}
+                          disabled={precoFixoPage <= 0 || precoFixoLoading}
+                        >
+                          Página anterior
+                        </button>
+                        <div className="muted">
+                          Página {Math.min(precoFixoPage + 1, precoFixoPageCount)} de {precoFixoPageCount}
+                        </div>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => setPrecoFixoPage((p) => Math.min(p + 1, precoFixoPageCount - 1))}
+                          disabled={precoFixoPage >= precoFixoPageCount - 1 || precoFixoLoading}
+                        >
+                          Próxima página
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
               </div>
 
               <div className="card col-12">

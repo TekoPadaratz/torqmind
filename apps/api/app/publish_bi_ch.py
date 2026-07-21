@@ -424,6 +424,13 @@ def publish_all_hotpath(role: str = "platform_master", id_empresa: int = 1) -> D
     except Exception as exc:
         logger.warning("fraud_credito_funcionario publish skipped: %s", str(exc)[:200])
         out["fraud_credito_funcionario"] = {"error": str(exc)[:200]}
+    try:
+        from app.services.cliente_preco_fixo import publish_and_rebuild
+
+        out["cliente_preco_fixo"] = publish_and_rebuild(role, id_empresa, days=120)
+    except Exception as exc:
+        logger.warning("cliente_preco_fixo publish skipped: %s", str(exc)[:200])
+        out["cliente_preco_fixo"] = {"error": str(exc)[:200]}
     logger.info("publish_all_hotpath empresa=%s %s", id_empresa, out)
     return out
 
