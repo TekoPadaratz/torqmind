@@ -22,6 +22,7 @@ export default function PlatformShell({ title, subtitle, me, children }: Platfor
     { href: '/platform/companies', label: 'Empresas', visible: true },
     { href: '/platform/users', label: 'Usuários', visible: true },
     { href: '/platform/notifications', label: 'Notificações', visible: true },
+    { href: '/platform/email', label: 'E-mail', visible: true },
     { href: '/platform/channels', label: 'Canais', visible: Boolean(me?.access?.platform_finance) },
     { href: '/platform/contracts', label: 'Contratos', visible: Boolean(me?.access?.platform_finance) },
     { href: '/platform/receivables', label: 'Contas a Receber', visible: Boolean(me?.access?.platform_finance) },

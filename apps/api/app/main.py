@@ -76,7 +76,14 @@ app.add_middleware(
 
 
 # ── Force password change middleware ─────────────────────────
-_PASSWORD_CHANGE_EXEMPT = {"/auth/login", "/auth/change-password", "/auth/me", "/health", "/readyz"}
+_PASSWORD_CHANGE_EXEMPT = {
+    "/auth/login",
+    "/auth/change-password",
+    "/auth/me",
+    "/auth/mfa/status",
+    "/health",
+    "/readyz",
+}
 
 
 class ForcePasswordChangeMiddleware(BaseHTTPMiddleware):
@@ -124,11 +131,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-# ── Login rate limiting (IP-based) ────────────────────────────
+# ── Auth rate limiting (IP-based) ─────────────────────────────
 _login_attempts: dict[str, list[float]] = defaultdict(list)
 _login_lock = Lock()
 _LOGIN_WINDOW_SECONDS = 60
 _LOGIN_MAX_PER_WINDOW = 10
+
+_auth_mail_attempts: dict[str, list[float]] = defaultdict(list)
+_auth_mail_lock = Lock()
+_AUTH_MAIL_WINDOW_SECONDS = 60
+_AUTH_MAIL_MAX_PER_WINDOW = 5
+_AUTH_MAIL_PATHS = {
+    "/auth/forgot-password",
+    "/auth/reset-password",
+}
 
 
 class LoginRateLimitMiddleware(BaseHTTPMiddleware):
@@ -139,7 +155,6 @@ class LoginRateLimitMiddleware(BaseHTTPMiddleware):
             now = time.time()
             with _login_lock:
                 attempts = _login_attempts[client_ip]
-                # Prune old entries
                 _login_attempts[client_ip] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
                 if len(_login_attempts[client_ip]) >= _LOGIN_MAX_PER_WINDOW:
                     return JSONResponse(
@@ -147,6 +162,23 @@ class LoginRateLimitMiddleware(BaseHTTPMiddleware):
                         content={"error": "rate_limited", "message": "Muitas tentativas de login. Aguarde 1 minuto."},
                     )
                 _login_attempts[client_ip].append(now)
+        elif request.method == "POST" and path in _AUTH_MAIL_PATHS:
+            client_ip = request.client.host if request.client else "unknown"
+            now = time.time()
+            with _auth_mail_lock:
+                attempts = _auth_mail_attempts[client_ip]
+                _auth_mail_attempts[client_ip] = [
+                    t for t in attempts if now - t < _AUTH_MAIL_WINDOW_SECONDS
+                ]
+                if len(_auth_mail_attempts[client_ip]) >= _AUTH_MAIL_MAX_PER_WINDOW:
+                    return JSONResponse(
+                        status_code=429,
+                        content={
+                            "error": "rate_limited",
+                            "message": "Muitas tentativas de recuperação de senha. Aguarde 1 minuto.",
+                        },
+                    )
+                _auth_mail_attempts[client_ip].append(now)
         return await call_next(request)
 
 

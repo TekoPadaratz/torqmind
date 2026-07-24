@@ -1201,6 +1201,268 @@ def list_channels(claims: dict[str, Any], limit: int = 50, offset: int = 0) -> d
     return {"items": [dict(row) for row in rows], "total": int(total["total"] or 0)}
 
 
+def get_platform_email_profile(claims: dict[str, Any]) -> dict[str, Any]:
+    """Perfil de apresentação + status SMTP mascarado (platform master)."""
+    from app.email_service import smtp_status_public
+
+    _require_platform_master(claims)
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+              id, channel_name, contact_name, from_email, updated_at,
+              smtp_enabled, smtp_host, smtp_port, smtp_user,
+              smtp_use_ssl, smtp_use_tls, smtp_from_name, smtp_timeout_seconds,
+              (smtp_password_encrypted IS NOT NULL AND length(trim(smtp_password_encrypted)) > 0)
+                AS password_configured
+            FROM app.platform_email_profile
+            WHERE id = 1
+            """
+        ).fetchone()
+        if not row:
+            conn.execute(
+                """
+                INSERT INTO app.platform_email_profile (id, channel_name, from_email)
+                VALUES (1, 'TorqMind', 'torqmind@hlsolucao.com.br')
+                ON CONFLICT (id) DO NOTHING
+                """
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT
+                  id, channel_name, contact_name, from_email, updated_at,
+                  smtp_enabled, smtp_host, smtp_port, smtp_user,
+                  smtp_use_ssl, smtp_use_tls, smtp_from_name, smtp_timeout_seconds,
+                  (smtp_password_encrypted IS NOT NULL AND length(trim(smtp_password_encrypted)) > 0)
+                    AS password_configured
+                FROM app.platform_email_profile WHERE id = 1
+                """
+            ).fetchone()
+    profile = dict(row) if row else {
+        "id": 1,
+        "channel_name": "TorqMind",
+        "contact_name": None,
+        "from_email": "torqmind@hlsolucao.com.br",
+        "updated_at": None,
+        "smtp_enabled": False,
+        "smtp_host": None,
+        "smtp_port": 587,
+        "smtp_user": None,
+        "smtp_use_ssl": False,
+        "smtp_use_tls": True,
+        "smtp_from_name": "TorqMind",
+        "smtp_timeout_seconds": 20,
+        "password_configured": False,
+    }
+    # smtp_status_public já mescla DB+env para o formulário editar o efetivo
+    smtp = smtp_status_public()
+    return {"profile": profile, "smtp": smtp}
+
+
+def update_platform_email_profile(
+    claims: dict[str, Any],
+    payload: dict[str, Any],
+    ip: str | None,
+) -> dict[str, Any]:
+    _require_platform_master(claims)
+    channel_name = str(payload.get("channel_name") or "TorqMind").strip() or "TorqMind"
+    contact_name = (str(payload.get("contact_name")).strip() if payload.get("contact_name") else None) or None
+    from_email_raw = payload.get("from_email")
+    from_email = normalize_email(from_email_raw) if from_email_raw else None
+
+    smtp_enabled = bool(payload.get("smtp_enabled"))
+    smtp_host = (str(payload.get("smtp_host") or "").strip() or None)
+    smtp_port = int(payload.get("smtp_port") or 587)
+    if smtp_port < 1 or smtp_port > 65535:
+        raise AuthError(422, "validation_error", "Porta SMTP inválida.")
+    smtp_user = (str(payload.get("smtp_user") or "").strip() or None)
+    smtp_use_ssl = bool(payload.get("smtp_use_ssl"))
+    smtp_use_tls = bool(payload.get("smtp_use_tls"))
+    smtp_from_name = (str(payload.get("smtp_from_name") or "").strip() or channel_name or "TorqMind")
+    smtp_timeout_seconds = int(payload.get("smtp_timeout_seconds") or 20)
+    if smtp_timeout_seconds < 5 or smtp_timeout_seconds > 120:
+        raise AuthError(422, "validation_error", "Timeout SMTP deve estar entre 5 e 120 segundos.")
+
+    # smtp_password: só atualiza se string não vazia for enviada (omitir = manter).
+    password_raw = payload.get("smtp_password")
+    password_provided = isinstance(password_raw, str) and password_raw.strip() != ""
+    encrypted_password: str | None = None
+    if password_provided:
+        try:
+            from app.totp import encrypt_secret, is_totp_configured
+
+            if not is_totp_configured():
+                raise AuthError(
+                    503,
+                    "encryption_unavailable",
+                    "TOTP_ENCRYPTION_KEY não configurada — não é possível gravar a senha SMTP com segurança.",
+                )
+            encrypted_password = encrypt_secret(str(password_raw).strip())
+        except AuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise AuthError(500, "encryption_failed", f"Falha ao criptografar senha SMTP: {exc}") from exc
+
+    with _connect() as conn:
+        previous = conn.execute(
+            "SELECT * FROM app.platform_email_profile WHERE id = 1"
+        ).fetchone()
+        previous_dict = dict(previous) if previous else {}
+        if "smtp_password_encrypted" in previous_dict:
+            previous_dict["smtp_password_encrypted"] = (
+                "[set]" if previous_dict.get("smtp_password_encrypted") else None
+            )
+
+        if password_provided:
+            conn.execute(
+                """
+                INSERT INTO app.platform_email_profile (
+                  id, channel_name, contact_name, from_email,
+                  smtp_enabled, smtp_host, smtp_port, smtp_user, smtp_password_encrypted,
+                  smtp_use_ssl, smtp_use_tls, smtp_from_name, smtp_timeout_seconds, updated_at
+                )
+                VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (id) DO UPDATE
+                  SET channel_name = EXCLUDED.channel_name,
+                      contact_name = EXCLUDED.contact_name,
+                      from_email = EXCLUDED.from_email,
+                      smtp_enabled = EXCLUDED.smtp_enabled,
+                      smtp_host = EXCLUDED.smtp_host,
+                      smtp_port = EXCLUDED.smtp_port,
+                      smtp_user = EXCLUDED.smtp_user,
+                      smtp_password_encrypted = EXCLUDED.smtp_password_encrypted,
+                      smtp_use_ssl = EXCLUDED.smtp_use_ssl,
+                      smtp_use_tls = EXCLUDED.smtp_use_tls,
+                      smtp_from_name = EXCLUDED.smtp_from_name,
+                      smtp_timeout_seconds = EXCLUDED.smtp_timeout_seconds,
+                      updated_at = now()
+                """,
+                (
+                    channel_name,
+                    contact_name,
+                    from_email,
+                    smtp_enabled,
+                    smtp_host,
+                    smtp_port,
+                    smtp_user,
+                    encrypted_password,
+                    smtp_use_ssl,
+                    smtp_use_tls,
+                    smtp_from_name,
+                    smtp_timeout_seconds,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO app.platform_email_profile (
+                  id, channel_name, contact_name, from_email,
+                  smtp_enabled, smtp_host, smtp_port, smtp_user,
+                  smtp_use_ssl, smtp_use_tls, smtp_from_name, smtp_timeout_seconds, updated_at
+                )
+                VALUES (1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (id) DO UPDATE
+                  SET channel_name = EXCLUDED.channel_name,
+                      contact_name = EXCLUDED.contact_name,
+                      from_email = EXCLUDED.from_email,
+                      smtp_enabled = EXCLUDED.smtp_enabled,
+                      smtp_host = EXCLUDED.smtp_host,
+                      smtp_port = EXCLUDED.smtp_port,
+                      smtp_user = EXCLUDED.smtp_user,
+                      smtp_use_ssl = EXCLUDED.smtp_use_ssl,
+                      smtp_use_tls = EXCLUDED.smtp_use_tls,
+                      smtp_from_name = EXCLUDED.smtp_from_name,
+                      smtp_timeout_seconds = EXCLUDED.smtp_timeout_seconds,
+                      updated_at = now()
+                """,
+                (
+                    channel_name,
+                    contact_name,
+                    from_email,
+                    smtp_enabled,
+                    smtp_host,
+                    smtp_port,
+                    smtp_user,
+                    smtp_use_ssl,
+                    smtp_use_tls,
+                    smtp_from_name,
+                    smtp_timeout_seconds,
+                ),
+            )
+        current = conn.execute(
+            """
+            SELECT
+              id, channel_name, contact_name, from_email, updated_at,
+              smtp_enabled, smtp_host, smtp_port, smtp_user,
+              smtp_use_ssl, smtp_use_tls, smtp_from_name, smtp_timeout_seconds,
+              (smtp_password_encrypted IS NOT NULL AND length(trim(smtp_password_encrypted)) > 0)
+                AS password_configured
+            FROM app.platform_email_profile WHERE id = 1
+            """
+        ).fetchone()
+        current_dict = dict(current)
+        _audit(
+            conn,
+            claims,
+            "platform_email.profile.update",
+            "platform_email_profile",
+            "1",
+            previous_dict,
+            current_dict,
+            ip,
+        )
+        conn.commit()
+    return get_platform_email_profile(claims)
+
+
+def send_platform_email_test(claims: dict[str, Any], ip: str | None) -> dict[str, Any]:
+    """Dispara e-mail de teste para o e-mail do usuário logado."""
+    from app.email_service import is_email_configured, send_test_email
+
+    _require_platform_master(claims)
+    to_email = normalize_email(claims.get("email"))
+    if not to_email:
+        raise AuthError(400, "missing_email", "Seu usuário não tem e-mail cadastrado para receber o teste.")
+
+    profile = get_platform_email_profile(claims)["profile"]
+    if not is_email_configured():
+        return {
+            "ok": False,
+            "message": (
+                "SMTP não configurado. Preencha host, remetente e habilite o envio nesta página "
+                "(ou defina SMTP_* no ambiente como fallback)."
+            ),
+            "to_email": to_email,
+        }
+
+    sent = send_test_email(to_email, channel_name=profile.get("channel_name"))
+    with _connect() as conn:
+        _audit(
+            conn,
+            claims,
+            "platform_email.test",
+            "platform_email_profile",
+            "1",
+            None,
+            {"to_email": to_email, "ok": sent},
+            ip,
+        )
+        conn.commit()
+
+    if sent:
+        return {
+            "ok": True,
+            "message": f"E-mail de teste enviado para {to_email}. Verifique a caixa de entrada.",
+            "to_email": to_email,
+        }
+    return {
+        "ok": False,
+        "message": "Falha ao enviar. Confira host/porta/SSL e credenciais SMTP nos logs da API.",
+        "to_email": to_email,
+    }
+
+
 def upsert_channel(claims: dict[str, Any], payload: dict[str, Any], ip: str | None, channel_id: int | None = None) -> dict[str, Any]:
     _require_platform_master(claims)
     with _connect() as conn:

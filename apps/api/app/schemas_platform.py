@@ -118,6 +118,21 @@ class ChannelUpsertRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class PlatformEmailProfileUpdateRequest(BaseModel):
+    channel_name: str = Field(min_length=1, max_length=120)
+    contact_name: Optional[str] = Field(default=None, max_length=120)
+    from_email: Optional[str] = Field(default=None, max_length=320)
+    smtp_enabled: bool = False
+    smtp_host: Optional[str] = Field(default=None, max_length=255)
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: Optional[str] = Field(default=None, max_length=320)
+    smtp_password: Optional[str] = Field(default=None, max_length=512)
+    smtp_use_ssl: bool = False
+    smtp_use_tls: bool = True
+    smtp_from_name: Optional[str] = Field(default=None, max_length=120)
+    smtp_timeout_seconds: int = Field(default=20, ge=5, le=120)
+
+
 class ContractUpsertRequest(BaseModel):
     tenant_id: int
     channel_id: Optional[int] = None

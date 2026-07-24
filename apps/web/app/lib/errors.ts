@@ -6,6 +6,11 @@ export function extractApiError(err: any, fallback = 'Falha na requisição'): s
     return detail.message;
   }
 
+  // Middleware responses: { error, message } (ex.: rate_limited)
+  if (typeof data?.message === 'string' && data.message) {
+    return data.message;
+  }
+
   if (typeof data?.error === 'string' && data.error) {
     if (typeof detail === 'string' && detail && detail !== data.error) {
       return `${data.error}: ${detail}`;

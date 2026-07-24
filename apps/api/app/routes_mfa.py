@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from app import repos_auth, repos_mfa
 from app.config import settings
-from app.deps import _resolve_session, get_current_claims
+from app.deps import _resolve_session, get_current_claims, get_current_claims_allow_password_change
 from app.security import create_access_token, decode_token
 from app.totp import (
     decrypt_secret,
@@ -287,8 +287,12 @@ def mfa_disable(body: MfaDisableRequest, claims=Depends(get_current_claims)):
 
 
 @router.get("/status")
-def mfa_status(claims=Depends(get_current_claims)):
-    """Return the caller's 2FA status (no secret)."""
+def mfa_status(claims=Depends(get_current_claims_allow_password_change)):
+    """Return the caller's 2FA status (no secret).
+
+    Usa allow_password_change: a tela de troca obrigatória de senha precisa
+    saber se MFA é exigido antes de liberar o usuário.
+    """
     state = repos_mfa.get_mfa_state(claims["sub"]) or {}
     return {
         "totp_enabled": bool(state.get("totp_enabled")),
