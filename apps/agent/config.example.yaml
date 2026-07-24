@@ -554,6 +554,32 @@ datasets:
                (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
       FROM dbo.MOVBANCOS m WHERE ISNULL(m.DELETAR, 0) = 0
 
+  # Ajustes de plano (sem espelho em MOVBANCOS): TRANSF AJUSTE / AJUSTE-SALDO / etc.
+  movbancos_ajuste_plano:
+    enabled: true
+    table: dbo.MOVLCTOS
+    watermark_column: ID_MOVLCTOS
+    watermark_order_by: ID_MOVLCTOS, ID_FILIAL, ID_DB
+    cursor_pk_columns: [ID_MOVLCTOS, ID_FILIAL, ID_DB]
+    full_refresh: true
+    query: |
+      SELECT m.*,
+             CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
+             (SELECT MAX(v.dt) FROM (VALUES
+               (CAST(m.DTACONTA AS datetime2)),
+               (CAST(m.DATA AS datetime2)),
+               (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
+             ) AS v(dt)) AS TORQMIND_WATERMARK
+      FROM dbo.MOVLCTOS m
+      WHERE ISNULL(m.ESTORNO, 0) = 0
+        AND (
+          UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'TRANSF AJUSTE%'
+          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE-SALDO%'
+          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE SALDO%'
+          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%'
+          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE EMPRESTIMO%'
+        )
+
   saldoclientes:
     enabled: true
     table: dbo.SALDOCLIENTES

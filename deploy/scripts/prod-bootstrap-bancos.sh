@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Bootstrap CONTASBANCARIA + BANCOSPADRAO + MOVBANCOS (Xpert → STG PG) e refresh liquidez.
-# Depois rode: ENV_FILE=/etc/torqmind/prod.app.env ./deploy/scripts/prod-bi-hotpath-ch-publish.sh
+# Bootstrap CONTASBANCARIA + BANCOSPADRAO + MOVBANCOS + TRANSF AJUSTE* (Xpert → STG PG)
+# e refresh liquidez. Depois:
+#   ENV_FILE=/etc/torqmind/prod.app.env ./deploy/scripts/prod-bi-hotpath-ch-publish.sh
+#
+# Requer migration 126 (stg.movbancos_ajuste_plano + etl.refresh_liquidez_banco).
+# FROM_DATE default 2019-01-01: saldo as-of é cumulativo (não truncar histórico).
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.app.env}"
 SOURCE_ENV="${SOURCE_ENV:-$ROOT_DIR/config/source-explorer.env}"
-FROM_DATE="${FROM_DATE:-2025-01-06}"
+FROM_DATE="${FROM_DATE:-2019-01-01}"
 ID_EMPRESA="${ID_EMPRESA:-1}"
 
 set -a
