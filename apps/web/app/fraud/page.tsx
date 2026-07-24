@@ -35,6 +35,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
+import { sortGridRows } from "../lib/grid-sort";
 import { canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -337,7 +338,18 @@ export default function FraudPage() {
     [claims],
   );
 
-  const trocaRows: any[] = riscoData?.troca_forma_pgto || [];
+  const trocaRows = useMemo(
+    () =>
+      sortGridRows(
+        Array.isArray(riscoData?.troca_forma_pgto) ? riscoData.troca_forma_pgto : [],
+        (r: any) => ({
+          filial: r.filial_label ?? r.filial_nome ?? r.id_filial,
+          data: r.data_troca_ts || r.data_key,
+          nome: r.nome_operador,
+        }),
+      ),
+    [riscoData?.troca_forma_pgto],
+  );
   const trocaTotais = riscoData?.troca_forma_pgto_totais || {};
   const trocaTotalQtd = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_qtd || 0)
@@ -380,10 +392,16 @@ export default function FraudPage() {
   const creditosRows = creditos?.lancamentos || [];
   const creditosFiltered = useMemo(() => {
     const term = creditoClienteQ.trim().toUpperCase();
-    if (!term) return creditosRows;
-    return creditosRows.filter((c: any) =>
-      String(c.cliente || "").toUpperCase().includes(term),
-    );
+    const filtered = !term
+      ? creditosRows
+      : creditosRows.filter((c: any) =>
+          String(c.cliente || "").toUpperCase().includes(term),
+        );
+    return sortGridRows(filtered, (c: any) => ({
+      filial: c.filial_label ?? c.id_filial,
+      data: c.data_ts || c.data || c.data_key,
+      nome: c.cliente,
+    }));
   }, [creditosRows, creditoClienteQ]);
   const creditoTotalPages = Math.max(1, Math.ceil(creditosFiltered.length / pageSize));
   const creditoPageSafe = Math.min(Math.max(1, creditoPage), creditoTotalPages);
@@ -394,7 +412,7 @@ export default function FraudPage() {
 
   const lastEventsOperational = useMemo(() => {
     const rows = Array.isArray(data?.last_events) ? data.last_events : [];
-    return rows.filter((e: any) => {
+    const filtered = rows.filter((e: any) => {
       const tn = Number(e?.turno_numero);
       const label = String(e?.turno_label || "").toLowerCase();
       if (Number.isFinite(tn) && tn < 1) return false;
@@ -411,6 +429,11 @@ export default function FraudPage() {
       if (!doc || String(doc).trim() === "—" || String(doc).trim() === "-") return false;
       return true;
     });
+    return sortGridRows(filtered, (e: any) => ({
+      filial: e.filial_label ?? e.filial_nome ?? e.id_filial,
+      data: e.data || e.data_key,
+      nome: e.usuario_label || e.operador_label,
+    }));
   }, [data?.last_events]);
 
   const cancelTotalPages = Math.max(1, Math.ceil(lastEventsOperational.length / pageSize));
@@ -571,8 +594,8 @@ export default function FraudPage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="data" stroke="#9fb0d0" />
-                      <YAxis stroke="#9fb0d0" />
+                      <XAxis dataKey="data" stroke="var(--muted)" />
+                      <YAxis stroke="var(--muted)" />
                       <Tooltip />
                       <Bar
                         dataKey="cancelamentos"
@@ -638,8 +661,8 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Data</th>
                         <th>Filial</th>
+                        <th>Data</th>
                         <th>Turno</th>
                         <th>Operador</th>
                         <th>Documento</th>
@@ -649,11 +672,11 @@ export default function FraudPage() {
                     <tbody>
                       {cancelPageRows.map((e: any) => (
                         <tr key={`${e.id_filial}-${e.id_db}-${e.id_comprovante}-${e.event_id || e.id || ""}`}>
-                          <td>{e.data ? formatDateTime(e.data) : e.data_key ? formatDateKey(e.data_key) : "—"}</td>
                           <td>
                             {e.filial_label ||
                               formatFilialLabel(e.id_filial, e.filial_nome)}
                           </td>
+                          <td>{e.data ? formatDateTime(e.data) : e.data_key ? formatDateKey(e.data_key) : "—"}</td>
                           <td>
                             {e.turno_label ||
                               formatTurnoLabel(e.turno_numero, e.turno_label)}
@@ -784,8 +807,8 @@ export default function FraudPage() {
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Data</th>
                           <th>Filial</th>
+                          <th>Data</th>
                           <th>Cliente</th>
                           <th>Operador</th>
                           <th style={{ textAlign: "right" }}>Injetado</th>
@@ -813,6 +836,7 @@ export default function FraudPage() {
                                     : {}),
                                 }}
                               >
+                                <td>{c.filial_label}</td>
                                 <td style={{ whiteSpace: "nowrap" }}>
                                   {c.data_ts && c.hora_conhecida
                                     ? formatDateTime(c.data_ts)
@@ -820,7 +844,6 @@ export default function FraudPage() {
                                       ? formatDateOnly(c.data)
                                       : "—"}
                                 </td>
-                                <td>{c.filial_label}</td>
                                 <td>{c.cliente}</td>
                                 <td>{c.operador}</td>
                                 <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
@@ -833,7 +856,7 @@ export default function FraudPage() {
                               </tr>
                               {expanded ? (
                                 <tr>
-                                  <td colSpan={10} style={{ padding: "10px 12px", background: "rgba(255,255,255,0.02)" }}>
+                                  <td colSpan={10} style={{ padding: "10px 12px", background: "var(--surface-faint)" }}>
                                     {consumos.length ? (
                                       <table className="table compact" style={{ margin: 0 }}>
                                         <thead>
@@ -993,11 +1016,12 @@ export default function FraudPage() {
                         <table className="table compact">
                           <thead>
                             <tr>
+                              <th>Filial</th>
+                              <th>Data</th>
                               <th>Documento</th>
                               <th>Forma anterior</th>
                               <th>Forma nova</th>
                               <th>Usuário</th>
-                              <th>Quando</th>
                               <th style={{ textAlign: "right" }}>Valor</th>
                               <th>Venda</th>
                               <th>Risco</th>
@@ -1015,6 +1039,15 @@ export default function FraudPage() {
                                       : undefined
                                 }
                               >
+                                <td>
+                                  {row.filial_label ||
+                                    formatFilialLabel(row.id_filial, row.filial_nome)}
+                                </td>
+                                <td>
+                                  {row.data_troca_ts
+                                    ? formatDateTime(row.data_troca_ts)
+                                    : formatDateKey(row.data_key)}
+                                </td>
                                 <td>{row.documento || "—"}</td>
                                 <td>{row.forma_de || "—"}</td>
                                 <td>
@@ -1025,11 +1058,6 @@ export default function FraudPage() {
                                     (row.id_usuario
                                       ? `Operador #${row.id_usuario}`
                                       : "Não resolvido")}
-                                </td>
-                                <td>
-                                  {row.data_troca_ts
-                                    ? formatDateTime(row.data_troca_ts)
-                                    : formatDateKey(row.data_key)}
                                 </td>
                                 <td style={{ textAlign: "right" }}>
                                   {formatCurrency(row.valor)}
@@ -1244,7 +1272,7 @@ export default function FraudPage() {
                                 </tr>
                                 {expanded ? (
                                   <tr>
-                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "rgba(15,23,42,0.03)" }}>
+                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "var(--surface-faint)" }}>
                                       {!row.usos?.length ? (
                                         <div className="muted" style={{ fontSize: 12 }}>
                                           Sem usos resolvidos no mês para este colaborador.
@@ -1262,7 +1290,11 @@ export default function FraudPage() {
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {row.usos.map((u: any, idx: number) => (
+                                            {sortGridRows(row.usos || [], (u: any) => ({
+                                              filial: u.filial_label ?? u.id_filial,
+                                              data: u.dt_evento,
+                                              nome: u.operador_caixa,
+                                            })).map((u: any, idx: number) => (
                                               <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
                                                 <td>
                                                   {u.filial_label ||

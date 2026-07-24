@@ -34,7 +34,7 @@ export default function TVIndexPage() {
   }, [session, router]);
 
   if (!session) {
-    return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Carregando...</div>;
+    return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Carregando...</div>;
   }
 
   const screens = new Set(session.allowed_screens || []);
@@ -53,8 +53,8 @@ export default function TVIndexPage() {
           onClick={handleLogout}
           style={{
             padding: "8px 20px",
-            background: "#ef4444",
-            color: "#fff",
+            background: "var(--color-negative)",
+            color: "var(--on-accent)",
             border: "none",
             borderRadius: 8,
             cursor: "pointer",
@@ -65,10 +65,10 @@ export default function TVIndexPage() {
         </button>
       </div>
       {visibleLinks.length === 0 ? (
-        <p style={{ color: "#94a3b8" }}>Nenhuma tela TV permitida para este usuário.</p>
+        <p style={{ color: "var(--muted)" }}>Nenhuma tela TV permitida para este usuário.</p>
       ) : (
         <>
-          <p style={{ color: "#94a3b8", marginBottom: 32 }}>
+          <p style={{ color: "var(--muted)", marginBottom: 32 }}>
             Selecione a tela para exibição no ponto de venda:
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -79,9 +79,9 @@ export default function TVIndexPage() {
                 style={{
                   display: "block",
                   padding: "20px 24px",
-                  background: "#1e293b",
+                  background: "var(--surface-soft)",
                   borderRadius: 12,
-                  color: "#f1f5f9",
+                  color: "var(--text)",
                   textDecoration: "none",
                   fontSize: 18,
                 }}

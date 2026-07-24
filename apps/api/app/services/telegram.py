@@ -23,6 +23,26 @@ from app.db import get_conn
 
 logger = logging.getLogger(__name__)
 
+# Catálogo tipado dos alertas Telegram (settings + dispatcher).
+EVENT_VENDA_CANCELADA = "VENDA_CANCELADA"
+EVENT_NFE_INUTILIZADA = "NFE_INUTILIZADA"
+EVENT_CASH_OPEN_OVER_24H = "CASH_OPEN_OVER_24H"
+EVENT_PRECO_FIXO_BOMBA = "PRECO_FIXO_BOMBA_DESATUALIZADO"
+TELEGRAM_ALERT_CATALOG: List[Dict[str, str]] = [
+    {"key": EVENT_VENDA_CANCELADA, "label": "Venda cancelada"},
+    {"key": EVENT_NFE_INUTILIZADA, "label": "NFe inutilizada"},
+    {"key": EVENT_CASH_OPEN_OVER_24H, "label": "Caixa aberto > 24h"},
+    {"key": EVENT_PRECO_FIXO_BOMBA, "label": "Preço bomba × preço fixo"},
+]
+TELEGRAM_ALERT_KEYS = frozenset(item["key"] for item in TELEGRAM_ALERT_CATALOG)
+DELTA_PRECO_FIXO = 0.005
+_COMPANY_ALERT_FLAG = {
+    EVENT_VENDA_CANCELADA: "alert_venda_cancelada",
+    EVENT_NFE_INUTILIZADA: "alert_nfe_inutilizada",
+    EVENT_CASH_OPEN_OVER_24H: "alert_cash_open_over_24h",
+    EVENT_PRECO_FIXO_BOMBA: "alert_preco_fixo_bomba",
+}
+
 
 def _to_int(x: Any) -> Optional[int]:
     if x is None:
@@ -113,37 +133,129 @@ def _send_telegram_sync(chat_id: str, text: str, retries: int = 3) -> bool:
     return False
 
 
-def _get_recipients(id_empresa: int) -> List[str]:
-    """Return telegram chat_ids for owners/master that opted in."""
+def _get_recipients(id_empresa: int, event_type: Optional[str] = None) -> List[str]:
+    """Return telegram chat_ids for owners/master that opted in.
 
+    Se existirem assinaturas tipadas (notification_subscriptions) para o catálogo,
+    filtra por event_type + is_enabled. Sem assinaturas tipadas → comportamento legado.
+    """
+    event_key = str(event_type or "").upper().strip() or None
     sql = """
-      SELECT DISTINCT s.telegram_chat_id
+      SELECT DISTINCT s.telegram_chat_id, s.user_id
       FROM auth.user_tenants ut
       JOIN app.user_notification_settings s
         ON s.user_id = ut.user_id
       WHERE s.telegram_enabled = true
         AND s.telegram_chat_id IS NOT NULL
+        AND btrim(s.telegram_chat_id) <> ''
         AND (
-          (ut.role IN ('OWNER', 'owner') AND ut.id_empresa = %s)
+          (ut.role IN ('OWNER', 'owner', 'tenant_admin') AND ut.id_empresa = %s)
           OR (ut.role IN ('MASTER', 'platform_master'))
         )
     """
-
     with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
-        rows = conn.execute(sql, (id_empresa,)).fetchall()
-        return [r["telegram_chat_id"] for r in rows if r.get("telegram_chat_id")]
+        rows = [dict(r) for r in conn.execute(sql, (id_empresa,)).fetchall()]
+        if not event_key or event_key not in TELEGRAM_ALERT_KEYS:
+            return [r["telegram_chat_id"] for r in rows if r.get("telegram_chat_id")]
+
+        typed = conn.execute(
+            """
+            SELECT 1
+            FROM app.notification_subscriptions ns
+            INNER JOIN auth.user_tenants ut ON ut.user_id = ns.user_id
+            WHERE ns.channel = 'telegram'
+              AND ns.event_type = ANY(%s)
+              AND (ns.tenant_id IS NULL OR ns.tenant_id = %s OR ut.id_empresa = %s)
+            LIMIT 1
+            """,
+            (list(TELEGRAM_ALERT_KEYS), id_empresa, id_empresa),
+        ).fetchone()
+        if not typed:
+            return [r["telegram_chat_id"] for r in rows if r.get("telegram_chat_id")]
+
+        out: List[str] = []
+        for r in rows:
+            uid = r.get("user_id")
+            chat = r.get("telegram_chat_id")
+            if not uid or not chat:
+                continue
+            sub = conn.execute(
+                """
+                SELECT is_enabled
+                FROM app.notification_subscriptions
+                WHERE user_id = %s::uuid
+                  AND channel = 'telegram'
+                  AND event_type = %s
+                  AND (tenant_id IS NULL OR tenant_id = %s)
+                ORDER BY CASE WHEN tenant_id = %s THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                (str(uid), event_key, id_empresa, id_empresa),
+            ).fetchone()
+            # Sem assinatura tipada para o user → default ON; is_enabled=false → fora
+            if sub is None or bool(sub.get("is_enabled")):
+                out.append(chat)
+        return out
 
 
 def _get_telegram_setting(id_empresa: int) -> Optional[Dict[str, Any]]:
     sql = """
-      SELECT id_empresa, chat_id, is_enabled
+      SELECT
+        id_empresa, chat_id, is_enabled,
+        COALESCE(preco_fixo_alerta_base, 'venda') AS preco_fixo_alerta_base,
+        COALESCE(alert_venda_cancelada, true) AS alert_venda_cancelada,
+        COALESCE(alert_nfe_inutilizada, true) AS alert_nfe_inutilizada,
+        COALESCE(alert_cash_open_over_24h, true) AS alert_cash_open_over_24h,
+        COALESCE(alert_preco_fixo_bomba, true) AS alert_preco_fixo_bomba
       FROM app.telegram_settings
       WHERE id_empresa = %s
       LIMIT 1
     """
-    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
-        row = conn.execute(sql, (id_empresa,)).fetchone()
-        return row
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(sql, (id_empresa,)).fetchone()
+            return dict(row) if row else None
+    except Exception:
+        # Migration ainda não aplicada: fallback mínimo
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            row = conn.execute(
+                "SELECT id_empresa, chat_id, is_enabled FROM app.telegram_settings WHERE id_empresa = %s LIMIT 1",
+                (id_empresa,),
+            ).fetchone()
+            return dict(row) if row else None
+
+
+def get_company_alert_prefs(id_empresa: int) -> Dict[str, Any]:
+    cfg = _get_telegram_setting(id_empresa) or {}
+    return {
+        "preco_fixo_alerta_base": str(cfg.get("preco_fixo_alerta_base") or "venda"),
+        "alert_venda_cancelada": bool(cfg.get("alert_venda_cancelada", True)),
+        "alert_nfe_inutilizada": bool(cfg.get("alert_nfe_inutilizada", True)),
+        "alert_cash_open_over_24h": bool(cfg.get("alert_cash_open_over_24h", True)),
+        "alert_preco_fixo_bomba": bool(cfg.get("alert_preco_fixo_bomba", True)),
+    }
+
+
+def company_event_enabled(id_empresa: int, event_type: str) -> bool:
+    key = str(event_type or "").upper()
+    flag = _COMPANY_ALERT_FLAG.get(key)
+    if not flag:
+        return True
+    prefs = get_company_alert_prefs(id_empresa)
+    return bool(prefs.get(flag, True))
+
+
+def resolve_telegram_recipients(id_empresa: int, event_type: str) -> List[str]:
+    """Destinatários finais: canal empresa (se ligado) ou usuários filtrados por assinatura."""
+    if not company_event_enabled(id_empresa, event_type):
+        return []
+    chat_ids: List[str] = []
+    cfg = _get_telegram_setting(id_empresa)
+    if cfg and _to_bool(cfg.get("is_enabled")) and str(cfg.get("chat_id") or "").strip():
+        chat_ids = [str(cfg["chat_id"]).strip()]
+    else:
+        chat_ids = _get_recipients(id_empresa, event_type)
+    return chat_ids
 
 
 def _register_dispatch_once(
@@ -211,16 +323,9 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
     url = str(payload.get("url") or "/dashboard")
 
     # Resolve chat_ids: prefer per-company telegram_settings, fall back to per-user recipients
-    chat_ids: List[str] = []
-    cfg = _get_telegram_setting(id_empresa)
-    if cfg and _to_bool(cfg.get("is_enabled")) and str(cfg.get("chat_id") or "").strip():
-        chat_ids = [str(cfg["chat_id"]).strip()]
-    else:
-        # Fall back to users who opted-in via user_notification_settings
-        chat_ids = _get_recipients(id_empresa)
-
+    chat_ids = resolve_telegram_recipients(id_empresa, event_type)
     if not chat_ids:
-        logger.info("telegram_suppressed reason=no_recipients id_empresa=%s", id_empresa)
+        logger.info("telegram_suppressed reason=no_recipients id_empresa=%s event_type=%s", id_empresa, event_type)
         return {"ok": True, "sent": False, "reason": "no_recipients"}
 
     dedupe_raw = f"{id_empresa}|{id_filial}|{insight_id or event_type}|{event_date}"
@@ -420,7 +525,7 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
     if not settings.telegram_bot_token:
         return
 
-    recipients = _get_recipients(id_empresa)
+    recipients = resolve_telegram_recipients(id_empresa, EVENT_VENDA_CANCELADA)
     if not recipients:
         return
 
@@ -494,7 +599,7 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
     if not settings.telegram_bot_token:
         return
 
-    recipients = _get_recipients(id_empresa)
+    recipients = resolve_telegram_recipients(id_empresa, EVENT_NFE_INUTILIZADA)
     if not recipients:
         return
 
@@ -609,8 +714,152 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
 # User-facing config helpers
 # ---------------------------------------------------------------------------
 
-def get_telegram_config(user_id: str) -> Dict[str, Any]:
-    """Return the current user's Telegram notification settings."""
+def _list_user_alert_subscriptions(user_id: str, id_empresa: Optional[int] = None) -> Dict[str, bool]:
+    defaults = {k: True for k in TELEGRAM_ALERT_KEYS}
+    sql = """
+      SELECT event_type, is_enabled, tenant_id
+      FROM app.notification_subscriptions
+      WHERE user_id = %s::uuid
+        AND channel = 'telegram'
+        AND event_type = ANY(%s)
+    """
+    params: list[Any] = [str(user_id), list(TELEGRAM_ALERT_KEYS)]
+    if id_empresa is not None:
+        sql += " AND (tenant_id IS NULL OR tenant_id = %s)"
+        params.append(int(id_empresa))
+    try:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+    except Exception:
+        return defaults
+    # Prefer tenant-scoped row over NULL tenant
+    ranked: Dict[str, tuple[int, bool]] = {}
+    for row in rows:
+        key = str(row.get("event_type") or "").upper()
+        if key not in TELEGRAM_ALERT_KEYS:
+            continue
+        rank = 0 if (id_empresa is not None and row.get("tenant_id") == id_empresa) else 1
+        prev = ranked.get(key)
+        if prev is None or rank < prev[0]:
+            ranked[key] = (rank, bool(row.get("is_enabled")))
+    for key, (_, enabled) in ranked.items():
+        defaults[key] = enabled
+    return defaults
+
+
+def _upsert_user_alert_subscriptions(
+    user_id: str,
+    subscriptions: Dict[str, bool],
+    *,
+    id_empresa: Optional[int] = None,
+) -> None:
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        for key, enabled in subscriptions.items():
+            event_key = str(key or "").upper()
+            if event_key not in TELEGRAM_ALERT_KEYS:
+                continue
+            existing = conn.execute(
+                """
+                SELECT id FROM app.notification_subscriptions
+                WHERE user_id = %s::uuid
+                  AND channel = 'telegram'
+                  AND event_type = %s
+                  AND COALESCE(tenant_id, -1) = COALESCE(%s::int, -1)
+                  AND branch_id IS NULL
+                LIMIT 1
+                """,
+                (str(user_id), event_key, id_empresa),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE app.notification_subscriptions
+                    SET is_enabled = %s, updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (bool(enabled), int(existing["id"])),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO app.notification_subscriptions (
+                      user_id, tenant_id, branch_id, event_type, channel, severity_min, is_enabled
+                    )
+                    VALUES (%s::uuid, %s, NULL, %s, 'telegram', 'CRITICAL', %s)
+                    """,
+                    (str(user_id), id_empresa, event_key, bool(enabled)),
+                )
+        conn.commit()
+
+
+def save_company_alert_prefs(
+    id_empresa: int,
+    *,
+    preco_fixo_alerta_base: Optional[str] = None,
+    alert_flags: Optional[Dict[str, bool]] = None,
+) -> Dict[str, Any]:
+    base = str(preco_fixo_alerta_base or "venda").strip().lower()
+    if base not in {"venda", "custo"}:
+        base = "venda"
+    flags = alert_flags or {}
+    sql = """
+      INSERT INTO app.telegram_settings (
+        id_empresa, chat_id, is_enabled,
+        preco_fixo_alerta_base,
+        alert_venda_cancelada, alert_nfe_inutilizada,
+        alert_cash_open_over_24h, alert_preco_fixo_bomba
+      )
+      VALUES (
+        %s, NULL, false, %s,
+        COALESCE(%s, true), COALESCE(%s, true),
+        COALESCE(%s, true), COALESCE(%s, true)
+      )
+      ON CONFLICT (id_empresa) DO UPDATE SET
+        preco_fixo_alerta_base = EXCLUDED.preco_fixo_alerta_base,
+        alert_venda_cancelada = COALESCE(%s, app.telegram_settings.alert_venda_cancelada),
+        alert_nfe_inutilizada = COALESCE(%s, app.telegram_settings.alert_nfe_inutilizada),
+        alert_cash_open_over_24h = COALESCE(%s, app.telegram_settings.alert_cash_open_over_24h),
+        alert_preco_fixo_bomba = COALESCE(%s, app.telegram_settings.alert_preco_fixo_bomba),
+        updated_at = now()
+    """
+    v_cancel = flags.get(EVENT_VENDA_CANCELADA)
+    v_nfe = flags.get(EVENT_NFE_INUTILIZADA)
+    v_cash = flags.get(EVENT_CASH_OPEN_OVER_24H)
+    v_preco = flags.get(EVENT_PRECO_FIXO_BOMBA)
+    # Also accept snake keys from UI
+    if "alert_venda_cancelada" in flags:
+        v_cancel = flags["alert_venda_cancelada"]
+    if "alert_nfe_inutilizada" in flags:
+        v_nfe = flags["alert_nfe_inutilizada"]
+    if "alert_cash_open_over_24h" in flags:
+        v_cash = flags["alert_cash_open_over_24h"]
+    if "alert_preco_fixo_bomba" in flags:
+        v_preco = flags["alert_preco_fixo_bomba"]
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            conn.execute(
+                sql,
+                (
+                    id_empresa,
+                    base,
+                    v_cancel,
+                    v_nfe,
+                    v_cash,
+                    v_preco,
+                    v_cancel,
+                    v_nfe,
+                    v_cash,
+                    v_preco,
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("save_company_alert_prefs failed: %s", exc)
+    return get_company_alert_prefs(id_empresa)
+
+
+def get_telegram_config(user_id: str, *, id_empresa: Optional[int] = None) -> Dict[str, Any]:
+    """Return the current user's Telegram notification settings + alert toggles."""
     sql = """
       SELECT telegram_chat_id, telegram_username, telegram_enabled
       FROM app.user_notification_settings
@@ -618,21 +867,18 @@ def get_telegram_config(user_id: str) -> Dict[str, Any]:
     """
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         row = conn.execute(sql, (str(user_id),)).fetchone()
-        if row:
-            return {
-                "telegram_chat_id": row["telegram_chat_id"],
-                "telegram_username": row["telegram_username"],
-                "telegram_enabled": bool(row["telegram_enabled"]),
-                "configured": bool(row["telegram_chat_id"] and row["telegram_enabled"]),
-                "bot_token_set": bool(settings.telegram_bot_token),
-            }
-        return {
-            "telegram_chat_id": None,
-            "telegram_username": None,
-            "telegram_enabled": False,
-            "configured": False,
+        base = {
+            "telegram_chat_id": row["telegram_chat_id"] if row else None,
+            "telegram_username": row["telegram_username"] if row else None,
+            "telegram_enabled": bool(row["telegram_enabled"]) if row else False,
+            "configured": bool(row and row["telegram_chat_id"] and row["telegram_enabled"]),
             "bot_token_set": bool(settings.telegram_bot_token),
+            "alert_catalog": TELEGRAM_ALERT_CATALOG,
+            "alert_subscriptions": _list_user_alert_subscriptions(user_id, id_empresa),
         }
+        if id_empresa is not None:
+            base["company_prefs"] = get_company_alert_prefs(int(id_empresa))
+        return base
 
 
 def save_telegram_config(
@@ -641,8 +887,11 @@ def save_telegram_config(
     telegram_chat_id: Optional[str],
     telegram_username: Optional[str],
     telegram_enabled: bool,
+    alert_subscriptions: Optional[Dict[str, bool]] = None,
+    id_empresa: Optional[int] = None,
+    preco_fixo_alerta_base: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Upsert user Telegram notification settings."""
+    """Upsert user Telegram notification settings + optional alert toggles."""
     chat_id = str(telegram_chat_id or "").strip() or None
     username = str(telegram_username or "").strip() or None
     sql = """
@@ -658,13 +907,15 @@ def save_telegram_config(
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         conn.execute(sql, (str(user_id), chat_id, username, telegram_enabled))
         conn.commit()
-    return {
-        "ok": True,
-        "telegram_chat_id": chat_id,
-        "telegram_username": username,
-        "telegram_enabled": telegram_enabled,
-        "configured": bool(chat_id and telegram_enabled),
-    }
+    if alert_subscriptions:
+        _upsert_user_alert_subscriptions(
+            user_id,
+            alert_subscriptions,
+            id_empresa=id_empresa,
+        )
+    if id_empresa is not None and preco_fixo_alerta_base is not None:
+        save_company_alert_prefs(int(id_empresa), preco_fixo_alerta_base=preco_fixo_alerta_base)
+    return get_telegram_config(user_id, id_empresa=id_empresa)
 
 
 # ---------------------------------------------------------------------------

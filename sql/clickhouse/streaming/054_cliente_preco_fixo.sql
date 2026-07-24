@@ -45,8 +45,19 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_cliente_preco_fixo_item (
     preco_pago           Decimal(18, 4) DEFAULT 0,
     desconto_unitario    Decimal(18, 4) DEFAULT 0,
     desconto_total       Decimal(18, 2) DEFAULT 0,
+    custo_unitario       Nullable(Decimal(18, 6)) DEFAULT NULL,
+    margem_unitaria_pct  Nullable(Decimal(18, 4)) DEFAULT NULL,
+    margem_bomba_pct     Nullable(Decimal(18, 4)) DEFAULT NULL,
     published_at         DateTime64(3, 'UTC') DEFAULT now64(3)
 ) ENGINE = ReplacingMergeTree(published_at)
 ORDER BY (id_empresa, id_filial, id_entidade, data_key, id_comprovante, id_itemcomprovante)
 PARTITION BY toYYYYMM(dt_venda)
 SETTINGS index_granularity = 8192;
+
+-- Evolução idempotente (tabelas já existentes em homolog/prod)
+ALTER TABLE torqmind_mart_rt.mart_cliente_preco_fixo_item
+  ADD COLUMN IF NOT EXISTS custo_unitario Nullable(Decimal(18, 6)) DEFAULT NULL;
+ALTER TABLE torqmind_mart_rt.mart_cliente_preco_fixo_item
+  ADD COLUMN IF NOT EXISTS margem_unitaria_pct Nullable(Decimal(18, 4)) DEFAULT NULL;
+ALTER TABLE torqmind_mart_rt.mart_cliente_preco_fixo_item
+  ADD COLUMN IF NOT EXISTS margem_bomba_pct Nullable(Decimal(18, 4)) DEFAULT NULL;

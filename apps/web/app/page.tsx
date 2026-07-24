@@ -151,7 +151,7 @@ export default function LoginPage() {
                 disabled={submitting}
               />
               {error && (
-                <div className="muted" style={{ color: "#fb7185" }}>
+                <div className="muted" style={{ color: "var(--color-negative)" }}>
                   {error}
                 </div>
               )}
@@ -209,7 +209,7 @@ export default function LoginPage() {
               </button>
             </div>
             {error && (
-              <div className="muted" style={{ color: "#fb7185" }}>
+              <div className="muted" style={{ color: "var(--color-negative)" }}>
                 {error}
               </div>
             )}

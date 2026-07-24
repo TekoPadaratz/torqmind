@@ -264,9 +264,9 @@ export default function FinancePage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="data" stroke="#9fb0d0" />
+                      <XAxis dataKey="data" stroke="var(--muted)" />
                       <YAxis
-                        stroke="#9fb0d0"
+                        stroke="var(--muted)"
                         tickFormatter={formatCurrency}
                         width={112}
                       />
@@ -370,9 +370,9 @@ export default function FinancePage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="data" stroke="#9fb0d0" />
+                      <XAxis dataKey="data" stroke="var(--muted)" />
                       <YAxis
-                        stroke="#9fb0d0"
+                        stroke="var(--muted)"
                         tickFormatter={formatCurrency}
                         width={112}
                       />
@@ -656,8 +656,8 @@ export default function FinancePage() {
                       style={{
                         padding: "12px 14px",
                         borderRadius: 16,
-                        border: "1px solid rgba(148,163,184,0.14)",
-                        background: "rgba(7,18,31,0.36)",
+                        border: "1px solid var(--border)",
+                        background: "var(--filter-bg)",
                       }}
                     >
                       <div style={{ fontWeight: 800 }}>{item.label}</div>

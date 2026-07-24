@@ -100,7 +100,7 @@ function HintSecao({ secao }: { secao: Secao }) {
           padding: "8px 10px",
           border: "1px solid var(--border)",
           borderRadius: 8,
-          background: open ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.03)",
+          background: open ? "var(--surface-soft)" : "var(--surface-faint)",
           cursor: showHint ? "help" : "default",
         }}
       >
@@ -120,7 +120,7 @@ function HintSecao({ secao }: { secao: Secao }) {
             onMouseEnter={() => setOpen(true)}
             onMouseLeave={() => setOpen(false)}
             style={{
-              background: "#131a20",
+              background: "var(--option-bg)",
               border: "1px solid var(--border)",
               borderRadius: 12,
               boxShadow: "0 18px 44px rgba(0,0,0,0.55)",
@@ -217,7 +217,7 @@ function EditableSecao({
     padding: "6px 8px",
     borderRadius: 6,
     border: "1px solid var(--border)",
-    background: "#0d1317",
+    background: "var(--input-bg)",
     color: "var(--text)",
     fontSize: 12,
   } as const;
@@ -238,7 +238,7 @@ function EditableSecao({
           padding: "8px 10px",
           border: "1px dashed var(--border)",
           borderRadius: 8,
-          background: open ? "rgba(255,255,255,0.05)" : "transparent",
+          background: open ? "var(--surface-soft)" : "transparent",
           color: "inherit",
           cursor: "pointer",
           textAlign: "left",
@@ -261,7 +261,7 @@ function EditableSecao({
       <PortalDropdown open={open} onClose={() => setOpen(false)} anchorRef={anchorRef} minWidth={singleValue ? 280 : 320}>
         <div
           style={{
-            background: "#131a20",
+            background: "var(--option-bg)",
             border: "1px solid var(--border)",
             borderRadius: 12,
             boxShadow: "0 18px 44px rgba(0,0,0,0.55)",
@@ -332,7 +332,7 @@ function EditableSecao({
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
             <button type="button" onClick={() => setOpen(false)} style={{ border: "1px solid var(--border)", background: "transparent", color: "var(--text)", borderRadius: 6, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Cancelar</button>
-            <button type="button" onClick={save} disabled={saving} style={{ border: "none", background: "var(--color-positive)", color: "#fff", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>{saving ? "Salvando…" : "Salvar"}</button>
+            <button type="button" onClick={save} disabled={saving} style={{ border: "none", background: "var(--color-positive)", color: "var(--on-accent)", borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>{saving ? "Salvando…" : "Salvar"}</button>
           </div>
         </div>
       </PortalDropdown>
@@ -362,7 +362,7 @@ function GrupoPanel({ grupoKey, grupo, filial, anoMes, idEmpresa, onSaved }: { g
           }
           return (
             <div key={secao.secao} style={{ border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", fontSize: 13, fontWeight: 600, background: "rgba(255,255,255,0.03)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", fontSize: 13, fontWeight: 600, background: "var(--surface-faint)" }}>
                 <span>{secao.label}</span>
                 <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(secao.total)}</span>
               </div>

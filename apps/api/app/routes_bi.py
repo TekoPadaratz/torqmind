@@ -2315,17 +2315,24 @@ class TelegramSettingsUpdate(BaseModel):
     telegram_chat_id: Optional[str] = None
     telegram_username: Optional[str] = None
     telegram_enabled: bool = False
+    alert_subscriptions: Optional[Dict[str, bool]] = None
+    preco_fixo_alerta_base: Optional[str] = None
+    id_empresa: Optional[int] = None
 
 
 @router.get("/me/telegram")
 def me_telegram_settings(
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _kiosk=Depends(require_not_kiosk()),
 ):
     user_id = str(claims.get("sub") or "")
     if not user_id:
         raise HTTPException(status_code=401, detail="unauthorized")
-    return get_telegram_config(user_id)
+    tenant, _, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=None, id_filiais_q=None
+    )
+    return get_telegram_config(user_id, id_empresa=tenant)
 
 
 @router.patch("/me/telegram")
@@ -2337,11 +2344,20 @@ def me_telegram_update(
     user_id = str(claims.get("sub") or "")
     if not user_id:
         raise HTTPException(status_code=401, detail="unauthorized")
+    tenant, _, _ = resolve_scope_filters(
+        claims,
+        id_empresa_q=body.id_empresa,
+        id_filial_q=None,
+        id_filiais_q=None,
+    )
     return save_telegram_config(
         user_id,
         telegram_chat_id=body.telegram_chat_id,
         telegram_username=body.telegram_username,
         telegram_enabled=body.telegram_enabled,
+        alert_subscriptions=body.alert_subscriptions,
+        id_empresa=tenant,
+        preco_fixo_alerta_base=body.preco_fixo_alerta_base,
     )
 
 

@@ -526,11 +526,13 @@ def run_incremental_cycle(
                         payment_details = _dispatch_payment_telegram_alerts(conn, item["tenant_id"], ref_date)
                     if int(post_meta.get("cash_notifications", 0) or 0) > 0:
                         cash_details = _dispatch_cash_telegram_alerts(conn, item["tenant_id"])
+                    preco_fixo_details = _dispatch_preco_fixo_eod_alerts(int(item["tenant_id"]))
                     post_meta = post_meta | {
                         "payment_telegram_sent": payment_details["telegram_sent"],
                         "payment_telegram_suppressed": payment_details["telegram_suppressed"],
                         "cash_telegram_sent": cash_details["telegram_sent"],
                         "cash_telegram_suppressed": cash_details["telegram_suppressed"],
+                        "preco_fixo_telegram": preco_fixo_details,
                     }
 
                 combined_meta = _combine_item_meta(
@@ -2793,6 +2795,24 @@ def _dispatch_cash_telegram_alerts(conn, tenant_id: int) -> dict[str, Any]:
         "telegram_suppressed": telegram_suppressed,
         "items": items,
     }
+
+
+def _dispatch_preco_fixo_eod_alerts(tenant_id: int) -> dict[str, Any]:
+    """Lote fim do dia: varre cadastros preço fixo ainda sem notificação do ciclo."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        now_sp = datetime.now(tz=ZoneInfo("America/Sao_Paulo"))
+    except Exception:
+        now_sp = datetime.now(tz=timezone.utc)
+    if int(now_sp.hour) < 20:
+        return {"skipped": True, "reason": "before_eod_window", "notified": 0}
+    try:
+        from app.services.alert_preco_fixo import scan_and_notify_preco_fixo
+
+        return scan_and_notify_preco_fixo(int(tenant_id), limit=200)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200], "notified": 0}
 
 
 def _safe_send_telegram_alert(tenant_id: int, payload: dict[str, Any]) -> dict[str, Any]:

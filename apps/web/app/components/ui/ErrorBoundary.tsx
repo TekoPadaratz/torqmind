@@ -34,7 +34,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
             Algo deu errado
           </h2>
-          <p style={{ color: '#666', marginBottom: 16 }}>
+          <p style={{ color: 'var(--muted)', marginBottom: 16 }}>
             {this.state.error?.message || 'Erro inesperado ao carregar esta seção.'}
           </p>
           <button
@@ -42,8 +42,9 @@ export class ErrorBoundary extends Component<Props, State> {
             style={{
               padding: '8px 20px',
               borderRadius: 6,
-              border: '1px solid #ccc',
-              background: '#fff',
+              border: '1px solid var(--border)',
+              background: 'var(--chrome-face)',
+              color: 'var(--text)',
               cursor: 'pointer',
             }}
           >

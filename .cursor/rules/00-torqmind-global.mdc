@@ -18,6 +18,11 @@ Não é um demo. Cada linha de código vai para produção e impacta operações
 **DOCUMENTO = número da NF-e/NFC-e.** Nunca `NROCOMPROVANTE`, nunca `id_comprovante`. Sem NF → `—`.
 Detalhes: `.cursor/rules/07-documento-nota-fiscal.mdc` e `AGENTS.md`.
 
+## Grids BI — colunas e ordenação
+
+Contrato mestre: `.cursor/rules/08-grids-colunas-ordenacao.mdc`.
+Colunas: Filial → Data → Documento. Linhas: Filial ASC → Data DESC → Nome ASC (campos ausentes ignorados; sem os três → 1º campo de negócio ASC). Rankings por métrica são exceção explícita.
+
 ## Estrutura do Monorepo
 
 ```

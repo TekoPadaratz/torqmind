@@ -27,6 +27,7 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
+import { sortGridRows } from "../lib/grid-sort";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -82,11 +83,32 @@ export default function CashPage() {
   const topTurnos = (commercial?.top_turnos || [])
     .filter((item: any) => Number(item?.id_turno || 0) > 0)
     .slice(0, 15);
-  const openBoxes = (liveNow?.open_boxes || data?.open_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
+  const openBoxes = useMemo(
+    () =>
+      sortGridRows(
+        (liveNow?.open_boxes || data?.open_boxes || []).filter(
+          (item: any) => Number(item?.id_turno || 0) > 0,
+        ),
+        (i: any) => ({
+          filial: i.filial_label ?? i.id_filial,
+          data: i.abertura_ts,
+          nome: i.usuario_label,
+        }),
+      ),
+    [liveNow?.open_boxes, data?.open_boxes],
+  );
   const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
   const alerts = liveNow?.alerts || data?.alerts || [];
   const inutilizacoes = data?.inutilizacoes || {};
-  const inutItems = inutilizacoes?.items || [];
+  const inutItems = useMemo(
+    () =>
+      sortGridRows(inutilizacoes?.items || [], (i: any) => ({
+        filial: i.filial_label ?? i.id_filial,
+        data: i.data_emissao_nfe || i.dt,
+        nome: i.usuario_label,
+      })),
+    [inutilizacoes?.items],
+  );
   const hasInutilizacoes = Number(inutilizacoes?.qtd || 0) > 0;
   const paymentMixChartHeight = Math.max(280, paymentMix.length * 44);
 
@@ -125,7 +147,7 @@ export default function CashPage() {
                 className="card col-12"
                 style={{
                   background:
-                    "linear-gradient(135deg, rgba(14,116,144,0.22), rgba(15,23,42,0.92) 45%, rgba(16,185,129,0.16))",
+                    "linear-gradient(135deg, rgba(14,116,144,0.22), var(--bg) 45%, rgba(16,185,129,0.16))",
                   borderColor: "rgba(56, 189, 248, 0.24)",
                 }}
               >
@@ -203,13 +225,13 @@ export default function CashPage() {
                         />
                         <XAxis
                           type="number"
-                          stroke="#9fb0d0"
+                          stroke="var(--muted)"
                           tickFormatter={formatCurrency}
                         />
                         <YAxis
                           dataKey="label"
                           type="category"
-                          stroke="#9fb0d0"
+                          stroke="var(--muted)"
                           width={140}
                         />
                         <Tooltip formatter={(value: any) => formatCurrency(value)} />
@@ -296,11 +318,11 @@ export default function CashPage() {
                       <table className="table compact">
                         <thead>
                           <tr>
-                            <th>Data/hora</th>
                             <th>Filial</th>
+                            <th>Data/hora</th>
                             <th>Turno/caixa</th>
                             <th>Operador</th>
-                            <th>Nº NFE</th>
+                            <th>Documento</th>
                             <th>Valor</th>
                             <th>Chave / protocolo</th>
                           </tr>
@@ -308,8 +330,8 @@ export default function CashPage() {
                         <tbody>
                           {inutItems.map((item: any, idx: number) => (
                             <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
-                              <td>{formatNfeDateTime(item)}</td>
                               <td>{item.filial_label}</td>
+                              <td>{formatNfeDateTime(item)}</td>
                               <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
                               <td>{item.usuario_label}</td>
                               <td>{item.numero_nfe || "-"}</td>

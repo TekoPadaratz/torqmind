@@ -294,7 +294,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                 gap: 8,
                 padding: "6px 12px",
                 cursor: "pointer",
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
+                borderBottom: "1px solid var(--table-row-border)",
               }}
             >
               <input
@@ -327,7 +327,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                   alignItems: "center",
                   padding: "10px 14px",
                   borderRadius: 10,
-                  background: tier.is_active ? style.bg : "rgba(100,100,100,0.04)",
+                  background: tier.is_active ? style.bg : "var(--surface-faint)",
                   border: `1px solid ${tier.is_active ? style.color + "30" : "var(--border)"}`,
                   opacity: tier.is_active ? 1 : 0.5,
                 }}

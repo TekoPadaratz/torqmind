@@ -52,6 +52,7 @@ Nunca:
 - Caixa/turno `0` não entra em rankings operacionais.
 - Turno operacional exibido é `stg_turnos.payload.TURNO` (1..N; `0` = caixa geral). Nunca exibir `id_turno`/`ID_TURNOS` técnico (ex.: `34292`) como número de turno; ele serve só para join/rastreabilidade. Sem número operacional resolvido, usar fallback honesto (`Turno não resolvido`).
 - Documento operacional da venda (**regra absoluta**): **DOCUMENTO = número da NF-e/NFC-e** via `stg.nfe` / `stg_nfe_slim` (e/ou parse honesto do HISTORICO com NFC-e/NF-e). Sem NF → `—`. **Proibido** usar `NROCOMPROVANTE`, `id_comprovante`, `Turno + Filial`, prefixo "Cupom"/"Comprovante", ou `MOVPRODUTOS` como documento. Ver `.cursor/rules/07-documento-nota-fiscal.mdc`.
+- Grids BI (contrato mestre): colunas **Filial → Data → Documento**; ordenação de linhas **Filial ASC → Data DESC → Nome ASC** (campos ausentes ignorados; sem os três → 1º campo de negócio ASC). Rankings por métrica são exceção. Ver `.cursor/rules/08-grids-colunas-ordenacao.mdc` e helper FE `apps/web/app/lib/grid-sort.ts`.
 - Em telas de risco/fraude, dado sem responsável/turno/documento deve ser investigado na fonte/mart antes de criar fallback visual; grid vazio em área nobre vira empty state compacto.
 - Contas a receber: `DATAREPL` NÃO reflete pagamento/baixa direta de `CONTASRECEBER` (DTAPGTO/VLRPAGO mudam sem mexer em DATAREPL). A janela de revisita do agent deve reler títulos abertos E recém-pagos (últimos ~120d por DTAPGTO). Nunca declarar PASS em inadimplência/contas a receber sem validar o cliente/título no Xpert (fonte→tela). Bug de inadimplência não se corrige no frontend — corrige a sincronização STG→DW→mart.
 - `ID_CONTASRECEBER` é único por `ID_DB`, NÃO global. Reconciliação não pode ser só UPSERT: títulos deletados/renumerados/pagos-antigos no Xpert precisam ser fechados (re-upsert do pago ou tombstone), senão viram fantasma aberto na mart de inadimplência.
@@ -79,6 +80,7 @@ ACL: `apps/api/app/permissions.py` (`SCREEN_REGISTRY`). Menu = nav; painel = `me
 
 ## Identidade visual e UX de escopo
 
+- Tema de superfície (claro/escuro/sistema): preferência do usuário em `localStorage` (`torqmind.theme`); padrão **escuro**. Superfícies/chrome (nav, sidebar, cards, banners, inputs) usam tokens (`--chrome-*`, `--surface-*`, `--hero-*`, etc.) e acompanham o tema; cobre/dourado/semânticos permanecem. Ver `apps/web/app/lib/theme.tsx` e `globals.css` (`html[data-theme]`).
 - Personalização visual é por empresa (`app.company_branding`, chave `id_empresa`), com fallback para o padrão TorqMind; trocar imagem não exige novo deploy.
 - Uploads ficam em storage persistente (volume `torqmind_branding` em `/app/var/branding`), nunca em pasta apagada no deploy.
 - Validar imagem por magic-number (não só extensão/MIME declarado); rejeitar SVG e executável renomeado; limitar tamanho; nome de arquivo gerado pelo servidor (sem path traversal).
