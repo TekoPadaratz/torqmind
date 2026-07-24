@@ -3,6 +3,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import AppNav from '../components/AppNav';
 import { apiGet, apiPatch, apiPost } from '../lib/api';
+import { useScopeQuery } from '../lib/scope';
+
+interface AlertCatalogItem {
+  key: string;
+  label: string;
+}
 
 interface TelegramConfig {
   telegram_chat_id: string | null;
@@ -10,13 +16,28 @@ interface TelegramConfig {
   telegram_enabled: boolean;
   configured: boolean;
   bot_token_set: boolean;
+  alert_catalog?: AlertCatalogItem[];
+  alert_subscriptions?: Record<string, boolean>;
+  company_prefs?: {
+    preco_fixo_alerta_base?: string;
+  };
 }
 
+const DEFAULT_CATALOG: AlertCatalogItem[] = [
+  { key: 'VENDA_CANCELADA', label: 'Venda cancelada' },
+  { key: 'NFE_INUTILIZADA', label: 'NFe inutilizada' },
+  { key: 'CASH_OPEN_OVER_24H', label: 'Caixa aberto > 24h' },
+  { key: 'PRECO_FIXO_BOMBA_DESATUALIZADO', label: 'Preço bomba × preço fixo' },
+];
+
 export default function SettingsPage() {
+  const scope = useScopeQuery();
   const [config, setConfig] = useState<TelegramConfig | null>(null);
   const [chatId, setChatId] = useState('');
   const [username, setUsername] = useState('');
   const [enabled, setEnabled] = useState(false);
+  const [subscriptions, setSubscriptions] = useState<Record<string, boolean>>({});
+  const [precoBase, setPrecoBase] = useState<'venda' | 'custo'>('venda');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
@@ -25,15 +46,26 @@ export default function SettingsPage() {
 
   const loadConfig = useCallback(async () => {
     try {
-      const data = await apiGet('/bi/me/telegram');
+      const params = new URLSearchParams();
+      if (scope.id_empresa) params.set('id_empresa', String(scope.id_empresa));
+      const qs = params.toString();
+      const data = await apiGet(`/bi/me/telegram${qs ? `?${qs}` : ''}`);
       setConfig(data);
       setChatId(data.telegram_chat_id || '');
       setUsername(data.telegram_username || '');
       setEnabled(data.telegram_enabled ?? false);
+      const catalog = data.alert_catalog?.length ? data.alert_catalog : DEFAULT_CATALOG;
+      const subs: Record<string, boolean> = {};
+      for (const item of catalog) {
+        subs[item.key] = data.alert_subscriptions?.[item.key] ?? true;
+      }
+      setSubscriptions(subs);
+      const base = String(data.company_prefs?.preco_fixo_alerta_base || 'venda');
+      setPrecoBase(base === 'custo' ? 'custo' : 'venda');
     } catch (err: any) {
       setError(err?.message || 'Erro ao carregar configurações');
     }
-  }, []);
+  }, [scope.id_empresa]);
 
   useEffect(() => {
     loadConfig();
@@ -49,6 +81,9 @@ export default function SettingsPage() {
         telegram_chat_id: chatId.trim() || null,
         telegram_username: username.trim() || null,
         telegram_enabled: enabled,
+        alert_subscriptions: subscriptions,
+        preco_fixo_alerta_base: precoBase,
+        id_empresa: scope.id_empresa || null,
       });
       setSaveMsg('Configurações salvas com sucesso.');
       await loadConfig();
@@ -78,6 +113,8 @@ export default function SettingsPage() {
     }
   }
 
+  const catalog = config?.alert_catalog?.length ? config.alert_catalog : DEFAULT_CATALOG;
+
   return (
     <div>
       <AppNav title="Configurações" />
@@ -88,7 +125,7 @@ export default function SettingsPage() {
             <h2 style={{ marginTop: 4 }}>Notificações via Telegram</h2>
             <div className="muted" style={{ marginTop: 8 }}>
               Receba alertas críticos operacionais diretamente no seu Telegram.
-              Cancelamentos e inutilizações são enviados em tempo real.
+              Escolha quais eventos deseja receber.
             </div>
           </div>
 
@@ -144,6 +181,45 @@ export default function SettingsPage() {
                 Ativar alertas no Telegram
               </label>
 
+              <div style={{ display: 'grid', gap: 8 }}>
+                <div className="label">Quais alertas receber</div>
+                {catalog.map((item) => (
+                  <label
+                    key={item.key}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={subscriptions[item.key] ?? true}
+                      disabled={!enabled}
+                      onChange={(e) =>
+                        setSubscriptions((prev) => ({ ...prev, [item.key]: e.target.checked }))
+                      }
+                      style={{ width: 18, height: 18, cursor: 'pointer' }}
+                    />
+                    {item.label}
+                  </label>
+                ))}
+              </div>
+
+              <div style={{ display: 'grid', gap: 6 }}>
+                <label htmlFor="precoBase" className="label">
+                  Base do alerta preço fixo × bomba
+                </label>
+                <select
+                  id="precoBase"
+                  className="input"
+                  value={precoBase}
+                  onChange={(e) => setPrecoBase(e.target.value === 'custo' ? 'custo' : 'venda')}
+                >
+                  <option value="venda">Preço de venda (bomba)</option>
+                  <option value="custo">Preço de custo (reposição)</option>
+                </select>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Compara o valor fixo do cliente com a referência escolhida. Preferência da empresa.
+                </span>
+              </div>
+
               {saveMsg && <div className="muted" style={{ color: 'var(--color-positive)' }}>{saveMsg}</div>}
               {error && <div className="muted" style={{ color: 'var(--color-negative)' }}>{error}</div>}
 
@@ -190,16 +266,22 @@ export default function SettingsPage() {
                     {config.bot_token_set ? 'Configurado' : 'Não configurado'}
                   </strong>
                 </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="muted">Base preço fixo</span>
+                  <strong>{precoBase === 'custo' ? 'Custo' : 'Venda (bomba)'}</strong>
+                </div>
               </div>
             ) : (
               <div className="muted" style={{ marginTop: 16 }}>Carregando...</div>
             )}
 
             <div className="muted" style={{ marginTop: 24, fontSize: 13, lineHeight: 1.5 }}>
-              <strong>O que você vai receber:</strong>
+              <strong>O que você pode receber:</strong>
               <ul style={{ marginTop: 8, paddingLeft: 16 }}>
-                <li>🚨 Venda cancelada — com filial, comprovante, valor e caixa</li>
-                <li>📋 Nota inutilizada — com filial, número da NFe, valor e usuário</li>
+                <li>🚨 Venda cancelada</li>
+                <li>📋 Nota inutilizada</li>
+                <li>⏰ Caixa aberto há mais de 24h</li>
+                <li>⛽ Preço da bomba/custo acima do preço fixo do cliente</li>
               </ul>
             </div>
           </div>

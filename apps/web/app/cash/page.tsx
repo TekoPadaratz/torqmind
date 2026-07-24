@@ -296,11 +296,11 @@ export default function CashPage() {
                       <table className="table compact">
                         <thead>
                           <tr>
-                            <th>Data/hora</th>
                             <th>Filial</th>
+                            <th>Data/hora</th>
                             <th>Turno/caixa</th>
                             <th>Operador</th>
-                            <th>Nº NFE</th>
+                            <th>Documento</th>
                             <th>Valor</th>
                             <th>Chave / protocolo</th>
                           </tr>
@@ -308,8 +308,8 @@ export default function CashPage() {
                         <tbody>
                           {inutItems.map((item: any, idx: number) => (
                             <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
-                              <td>{formatNfeDateTime(item)}</td>
                               <td>{item.filial_label}</td>
+                              <td>{formatNfeDateTime(item)}</td>
                               <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
                               <td>{item.usuario_label}</td>
                               <td>{item.numero_nfe || "-"}</td>

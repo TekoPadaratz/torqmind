@@ -638,8 +638,8 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Data</th>
                         <th>Filial</th>
+                        <th>Data</th>
                         <th>Turno</th>
                         <th>Operador</th>
                         <th>Documento</th>
@@ -649,11 +649,11 @@ export default function FraudPage() {
                     <tbody>
                       {cancelPageRows.map((e: any) => (
                         <tr key={`${e.id_filial}-${e.id_db}-${e.id_comprovante}-${e.event_id || e.id || ""}`}>
-                          <td>{e.data ? formatDateTime(e.data) : e.data_key ? formatDateKey(e.data_key) : "—"}</td>
                           <td>
                             {e.filial_label ||
                               formatFilialLabel(e.id_filial, e.filial_nome)}
                           </td>
+                          <td>{e.data ? formatDateTime(e.data) : e.data_key ? formatDateKey(e.data_key) : "—"}</td>
                           <td>
                             {e.turno_label ||
                               formatTurnoLabel(e.turno_numero, e.turno_label)}
@@ -784,8 +784,8 @@ export default function FraudPage() {
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Data</th>
                           <th>Filial</th>
+                          <th>Data</th>
                           <th>Cliente</th>
                           <th>Operador</th>
                           <th style={{ textAlign: "right" }}>Injetado</th>
@@ -813,6 +813,7 @@ export default function FraudPage() {
                                     : {}),
                                 }}
                               >
+                                <td>{c.filial_label}</td>
                                 <td style={{ whiteSpace: "nowrap" }}>
                                   {c.data_ts && c.hora_conhecida
                                     ? formatDateTime(c.data_ts)
@@ -820,7 +821,6 @@ export default function FraudPage() {
                                       ? formatDateOnly(c.data)
                                       : "—"}
                                 </td>
-                                <td>{c.filial_label}</td>
                                 <td>{c.cliente}</td>
                                 <td>{c.operador}</td>
                                 <td style={{ textAlign: "right", fontWeight: 700 }}>{formatCurrency(c.injetado)}</td>
@@ -993,11 +993,12 @@ export default function FraudPage() {
                         <table className="table compact">
                           <thead>
                             <tr>
+                              <th>Filial</th>
+                              <th>Data</th>
                               <th>Documento</th>
                               <th>Forma anterior</th>
                               <th>Forma nova</th>
                               <th>Usuário</th>
-                              <th>Quando</th>
                               <th style={{ textAlign: "right" }}>Valor</th>
                               <th>Venda</th>
                               <th>Risco</th>
@@ -1015,6 +1016,15 @@ export default function FraudPage() {
                                       : undefined
                                 }
                               >
+                                <td>
+                                  {row.filial_label ||
+                                    formatFilialLabel(row.id_filial, row.filial_nome)}
+                                </td>
+                                <td>
+                                  {row.data_troca_ts
+                                    ? formatDateTime(row.data_troca_ts)
+                                    : formatDateKey(row.data_key)}
+                                </td>
                                 <td>{row.documento || "—"}</td>
                                 <td>{row.forma_de || "—"}</td>
                                 <td>
@@ -1025,11 +1035,6 @@ export default function FraudPage() {
                                     (row.id_usuario
                                       ? `Operador #${row.id_usuario}`
                                       : "Não resolvido")}
-                                </td>
-                                <td>
-                                  {row.data_troca_ts
-                                    ? formatDateTime(row.data_troca_ts)
-                                    : formatDateKey(row.data_key)}
                                 </td>
                                 <td style={{ textAlign: "right" }}>
                                   {formatCurrency(row.valor)}

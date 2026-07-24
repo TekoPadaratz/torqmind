@@ -23,6 +23,7 @@ import {
 import { describeChurnCoverage } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { canViewSensitiveFinancials } from "../lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -624,7 +625,7 @@ export default function CustomersPage() {
                   <div className="muted" style={{ fontSize: 13 }}>
                     {precoFixoLoading
                       ? "Carregando…"
-                      : `${Number(precoFixoData?.summary?.clientes || 0)} cliente(s) · total ${formatCurrency(precoFixoData?.summary?.desconto_total || 0)}`}
+                      : `${Number(precoFixoData?.summary?.clientes || 0)} cliente(s) · ${Number(precoFixoData?.summary?.qtd_litros || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 })} L · total ${formatCurrency(precoFixoData?.summary?.desconto_total || 0)}`}
                   </div>
                   <input
                     type="text"
@@ -659,6 +660,7 @@ export default function CustomersPage() {
                             <th>Filial</th>
                             <th>Cliente</th>
                             <th>Vendas</th>
+                            <th>Litros</th>
                             <th>Desconto acumulado</th>
                           </tr>
                         </thead>
@@ -676,11 +678,12 @@ export default function CustomersPage() {
                                   <td>{row.filial_label || "—"}</td>
                                   <td>{row.cliente_nome}</td>
                                   <td>{row.qtd_vendas ?? 0}</td>
+                                  <td>{Number(row.qtd_litros || 0).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}</td>
                                   <td style={{ fontWeight: 700 }}>{formatCurrency(row.desconto_total)}</td>
                                 </tr>
                                 {open ? (
                                   <tr>
-                                    <td colSpan={4} style={{ padding: 12, background: "rgba(255,255,255,0.02)" }}>
+                                    <td colSpan={5} style={{ padding: 12, background: "rgba(255,255,255,0.02)" }}>
                                       {precoFixoDetailLoading ? (
                                         <div className="muted">Carregando detalhe…</div>
                                       ) : !(precoFixoDetail?.items || []).length ? (
@@ -690,27 +693,52 @@ export default function CustomersPage() {
                                           <table className="table compact">
                                             <thead>
                                               <tr>
-                                                <th>NF-e / NFC-e</th>
                                                 <th>Data</th>
+                                                <th>Documento</th>
                                                 <th>Produto</th>
                                                 <th>Preço bomba</th>
                                                 <th>Preço cliente</th>
                                                 <th>Qtd</th>
                                                 <th>Desconto</th>
+                                                {canViewSensitiveFinancials(claims) ? <th>Margem</th> : null}
                                               </tr>
                                             </thead>
                                             <tbody>
-                                              {(precoFixoDetail?.items || []).map((item: any) => (
-                                                <tr key={`${item.id_comprovante}-${item.id_itemcomprovante}`}>
-                                                  <td>{item.documento_label || "—"}</td>
-                                                  <td>{formatDateOnly(item.dt_venda)}</td>
-                                                  <td>{item.produto_nome || `#${item.id_produto}`}</td>
-                                                  <td>{formatCurrency(item.preco_bomba)}</td>
-                                                  <td>{formatCurrency(item.preco_pago)}</td>
-                                                  <td>{Number(item.qtd || 0).toFixed(3)}</td>
-                                                  <td style={{ fontWeight: 700 }}>{formatCurrency(item.desconto_total)}</td>
-                                                </tr>
-                                              ))}
+                                              {(precoFixoDetail?.items || []).map((item: any, idx: number) => {
+                                                if (item.row_kind === "subtotal") {
+                                                  return (
+                                                    <tr
+                                                      key={`sub-${item.id_produto}-${idx}`}
+                                                      style={{ background: "rgba(255,255,255,0.04)", fontWeight: 700 }}
+                                                    >
+                                                      <td colSpan={3}>Subtotal {item.produto_nome || `#${item.id_produto}`}</td>
+                                                      <td>—</td>
+                                                      <td>—</td>
+                                                      <td>{Number(item.qtd || 0).toFixed(3)}</td>
+                                                      <td>{formatCurrency(item.desconto_total)}</td>
+                                                      {canViewSensitiveFinancials(claims) ? <td>—</td> : null}
+                                                    </tr>
+                                                  );
+                                                }
+                                                return (
+                                                  <tr key={`${item.id_comprovante}-${item.id_itemcomprovante}-${idx}`}>
+                                                    <td>{formatDateOnly(item.dt_venda)}</td>
+                                                    <td>{item.documento_label || "—"}</td>
+                                                    <td>{item.produto_nome || `#${item.id_produto}`}</td>
+                                                    <td>{formatCurrency(item.preco_bomba)}</td>
+                                                    <td>{formatCurrency(item.preco_pago)}</td>
+                                                    <td>{Number(item.qtd || 0).toFixed(3)}</td>
+                                                    <td style={{ fontWeight: 700 }}>{formatCurrency(item.desconto_total)}</td>
+                                                    {canViewSensitiveFinancials(claims) ? (
+                                                      <td>
+                                                        {item.margem_unitaria_pct == null
+                                                          ? "—"
+                                                          : `${Number(item.margem_unitaria_pct).toFixed(1)}%`}
+                                                      </td>
+                                                    ) : null}
+                                                  </tr>
+                                                );
+                                              })}
                                             </tbody>
                                           </table>
                                         </div>

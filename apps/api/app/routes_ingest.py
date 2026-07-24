@@ -32,6 +32,7 @@ from app.config import settings
 from app.db import get_conn
 from app.services.etl_orchestrator import EtlCycleBusyError, TRACK_OPERATIONAL, run_incremental_cycle
 from app.services.telegram import notify_cancelled_comprovantes, notify_voided_nfes, raw_comprovante_is_cancelled, raw_nfe_is_voided
+from app.services.alert_preco_fixo import notify_preco_fixo_from_itens
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
@@ -1237,6 +1238,7 @@ async def ingest_dataset(
     rejected_samples: List[Dict[str, Any]] = []
     cancelled_rows: List[Dict[str, Any]] = []
     voided_nfe_rows: List[Dict[str, Any]] = []
+    preco_fixo_item_rows: List[Dict[str, Any]] = []
     inserted = 0
     updated = 0
     duplicates_in_batch = 0
@@ -1303,6 +1305,9 @@ async def ingest_dataset(
         if dataset_key == "nfe" and raw_nfe_is_voided(obj):
             voided_nfe_rows.append(obj)
 
+        if dataset_key == "itenscomprovantes" and len(preco_fixo_item_rows) < 200:
+            preco_fixo_item_rows.append(obj)
+
         id_db_shadow = _infer_id_db_shadow(obj)
         natural_key = _infer_natural_key(obj, pk)
         payload_json = json.dumps(obj, ensure_ascii=False)
@@ -1366,6 +1371,13 @@ async def ingest_dataset(
     if dataset_key == "nfe" and voided_nfe_rows:
         try:
             await notify_voided_nfes(id_empresa=id_empresa, raw_rows=voided_nfe_rows)
+        except Exception:
+            pass
+
+    # Preço fixo × bomba: checa na ingestão de itens (lote EOD cobre miss)
+    if dataset_key == "itenscomprovantes" and preco_fixo_item_rows:
+        try:
+            notify_preco_fixo_from_itens(id_empresa, preco_fixo_item_rows)
         except Exception:
             pass
 

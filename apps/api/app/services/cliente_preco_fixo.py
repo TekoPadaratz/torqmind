@@ -18,6 +18,7 @@ Fontes
 - Cadastro: stg.descontos_entidades_itens ← dbo.DESCONTOSENTIDADESITENS
 - Preço bomba: stg.preco_bomba_hist ← LMC/LMCBICOS (ASOF)
 - Vendas: ClickHouse torqmind_current.stg_comprovantes + stg_itenscomprovantes
+- Custo: i.custo_unitario_shadow (VLRCUSTO*) — null honesto se ausente
 - Documento: **somente** número da NF-e/NFC-e (`stg_nfe_slim`). Sem NF → `—`.
   Proibido `NROCOMPROVANTE` / `id_comprovante` (ver `.cursor/rules/07-documento-nota-fiscal.mdc`).
 """
@@ -26,6 +27,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
+from itertools import groupby
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.db import get_conn
@@ -43,7 +45,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _branch_clause(id_filial: Optional[int], id_filiais: Optional[Sequence[int]], col: str = "id_filial") -> tuple[str, Dict[str, Any]]:
+def _branch_clause(
+    id_filial: Optional[int],
+    id_filiais: Optional[Sequence[int]],
+    col: str = "id_filial",
+) -> tuple[str, Dict[str, Any]]:
     params: Dict[str, Any] = {}
     if id_filial is not None:
         params["id_filial"] = int(id_filial)
@@ -57,11 +63,16 @@ def _branch_clause(id_filial: Optional[int], id_filiais: Optional[Sequence[int]]
 
 
 def publish_cadastro(role: str, id_empresa: int) -> int:
-    """Publica cadastro VALORFIXO ativo → CH mart."""
+    """Publica cadastro VALORFIXO ativo → CH mart (1 linha por entidade+produto+filial)."""
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         rows = conn.execute(
             """
-            SELECT
+            SELECT DISTINCT ON (
+              d.id_empresa,
+              d.id_filial,
+              COALESCE(NULLIF(d.payload->>'ID_ENTIDADE','')::int, 0),
+              COALESCE(NULLIF(d.payload->>'ID_PRODUTOS','')::int, 0)
+            )
               d.id_empresa,
               d.id_filial,
               COALESCE(NULLIF(d.payload->>'ID_ENTIDADE','')::int, 0) AS id_entidade,
@@ -76,6 +87,17 @@ def publish_cadastro(role: str, id_empresa: int) -> int:
               AND COALESCE(d.payload->>'VALORFIXO','0') IN ('1','true','True','t')
               AND COALESCE(NULLIF(d.payload->>'ID_ENTIDADE','')::int, 0) > 0
               AND COALESCE(NULLIF(d.payload->>'ID_PRODUTOS','')::int, 0) > 0
+            ORDER BY
+              d.id_empresa,
+              d.id_filial,
+              COALESCE(NULLIF(d.payload->>'ID_ENTIDADE','')::int, 0),
+              COALESCE(NULLIF(d.payload->>'ID_PRODUTOS','')::int, 0),
+              CASE
+                WHEN COALESCE(d.payload->>'ATIVO','1') IN ('1','true','True','t') THEN 0
+                ELSE 1
+              END,
+              COALESCE((d.payload->>'VALOR')::numeric, 0) ASC,
+              COALESCE(NULLIF(d.payload->>'ID_DESCONTOENTIDADESITENS','')::int, 0) DESC
             """,
             [id_empresa],
         ).fetchall()
@@ -169,7 +191,6 @@ def publish_preco_bomba_dia(role: str, id_empresa: int, days: int = 400) -> int:
         for r in rows
         if r.get("dt") and float(r.get("preco_venda") or 0) > 0
     ]
-    # Insert por mês para respeitar max_partitions_per_insert_block
     by_ym: Dict[str, List[Dict[str, Any]]] = {}
     for row in payload:
         dt = row["dt"]
@@ -202,13 +223,13 @@ def rebuild_itens(
         "delta_min": DELTA_MIN,
         **branch_params,
     }
-    # ReplacingMergeTree: nova published_at sobrescreve o grão no período.
     sql = f"""
     INSERT INTO {MART_DB}.mart_cliente_preco_fixo_item
     (
       id_empresa, id_filial, id_db, id_entidade, id_comprovante, id_itemcomprovante,
       id_produto, data_key, dt_venda, dt_evento, cliente_nome, produto_nome,
       documento_label, qtd, preco_bomba, preco_pago, desconto_unitario, desconto_total,
+      custo_unitario, margem_unitaria_pct, margem_bomba_pct,
       published_at
     )
     SELECT
@@ -243,6 +264,30 @@ def rebuild_itens(
         (bomba.preco_venda - coalesce(i.valor_unitario_shadow, 0)) * coalesce(i.qtd_shadow, 0),
         2
       ) AS desconto_total,
+      if(
+        coalesce(i.custo_unitario_shadow, 0) > 0,
+        toDecimal64(i.custo_unitario_shadow, 6),
+        CAST(NULL, 'Nullable(Decimal(18,6))')
+      ) AS custo_unitario,
+      if(
+        coalesce(i.custo_unitario_shadow, 0) > 0
+        AND coalesce(i.valor_unitario_shadow, 0) > 0,
+        toDecimal64(
+          ((coalesce(i.valor_unitario_shadow, 0) - i.custo_unitario_shadow)
+            / coalesce(i.valor_unitario_shadow, 0)) * 100,
+          4
+        ),
+        CAST(NULL, 'Nullable(Decimal(18,4))')
+      ) AS margem_unitaria_pct,
+      if(
+        coalesce(i.custo_unitario_shadow, 0) > 0
+        AND bomba.preco_venda > 0,
+        toDecimal64(
+          ((bomba.preco_venda - i.custo_unitario_shadow) / bomba.preco_venda) * 100,
+          4
+        ),
+        CAST(NULL, 'Nullable(Decimal(18,4))')
+      ) AS margem_bomba_pct,
       now64(3) AS published_at
     FROM {CURRENT_DB}.stg_itenscomprovantes AS i FINAL
     INNER JOIN {CURRENT_DB}.stg_comprovantes AS c FINAL
@@ -311,7 +356,6 @@ def rebuild_itens(
       )
     """
     execute_command(sql, parameters=params)
-    # Contagem aproximada do período
     count_rows = query_dict(
         f"""
         SELECT count() AS n
@@ -371,7 +415,7 @@ def overview(
     page_size: int = 20,
     search: str = "",
 ) -> Dict[str, Any]:
-    """Grid resumido: filial, cliente, desconto total no período."""
+    """Grid resumido: filial, cliente, litros e desconto total no período."""
     page = max(0, int(page))
     page_size = max(1, min(100, int(page_size)))
     branch_sql, branch_params = _branch_clause(id_filial, id_filiais)
@@ -395,6 +439,7 @@ def overview(
           id_entidade,
           any(cliente_nome) AS cliente_nome,
           sum(desconto_total) AS desconto_total_agg,
+          sum(qtd) AS qtd_litros_agg,
           count() AS qtd_itens,
           uniqExact(id_comprovante) AS qtd_vendas
         FROM {MART_DB}.mart_cliente_preco_fixo_item FINAL
@@ -407,7 +452,10 @@ def overview(
     """
     total_row = query_dict(
         f"""
-        SELECT count() AS n, sum(desconto_total_agg) AS desconto_total_sum
+        SELECT
+          count() AS n,
+          sum(desconto_total_agg) AS desconto_total_sum,
+          sum(qtd_litros_agg) AS qtd_litros_sum
         FROM ({base_agg}) AS agg
         WHERE 1=1
           {search_sql}
@@ -417,6 +465,7 @@ def overview(
     )
     total = int(total_row[0]["n"]) if total_row else 0
     desconto_periodo = float(total_row[0]["desconto_total_sum"] or 0) if total_row else 0.0
+    litros_periodo = float(total_row[0]["qtd_litros_sum"] or 0) if total_row else 0.0
 
     rows = query_dict(
         f"""
@@ -425,6 +474,7 @@ def overview(
           id_entidade,
           cliente_nome,
           desconto_total_agg AS desconto_total,
+          qtd_litros_agg AS qtd_litros,
           qtd_itens,
           qtd_vendas
         FROM ({base_agg}) AS agg
@@ -447,6 +497,7 @@ def overview(
                 "id_entidade": int(r["id_entidade"]),
                 "cliente_nome": unescape(str(r.get("cliente_nome") or f"Cliente {r['id_entidade']}")),
                 "desconto_total": round(float(r.get("desconto_total") or 0), 2),
+                "qtd_litros": round(float(r.get("qtd_litros") or 0), 3),
                 "qtd_itens": int(r.get("qtd_itens") or 0),
                 "qtd_vendas": int(r.get("qtd_vendas") or 0),
             }
@@ -462,11 +513,81 @@ def overview(
         "summary": {
             "clientes": total,
             "desconto_total": round(desconto_periodo, 2),
+            "qtd_litros": round(litros_periodo, 3),
         },
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "source": "clickhouse_mart",
     }
+
+
+def _map_detail_item(r: Dict[str, Any]) -> Dict[str, Any]:
+    custo_raw = r.get("custo_unitario")
+    custo = float(custo_raw) if custo_raw is not None else None
+    if custo is not None and custo <= 0:
+        custo = None
+    margem = r.get("margem_unitaria_pct")
+    margem_bomba = r.get("margem_bomba_pct")
+    return {
+        "row_kind": "item",
+        "id_comprovante": int(r["id_comprovante"]),
+        "id_itemcomprovante": int(r["id_itemcomprovante"]),
+        "id_produto": int(r["id_produto"]),
+        "dt_venda": str(r.get("dt_venda") or ""),
+        "dt_evento": str(r.get("dt_evento") or ""),
+        "cliente_nome": unescape(str(r.get("cliente_nome") or "")),
+        "produto_nome": unescape(str(r.get("produto_nome") or "")),
+        "documento_label": str(r.get("documento_label") or "—"),
+        "qtd": float(r.get("qtd") or 0),
+        "preco_bomba": float(r.get("preco_bomba") or 0),
+        "preco_pago": float(r.get("preco_pago") or 0),
+        "desconto_unitario": float(r.get("desconto_unitario") or 0),
+        "desconto_total": float(r.get("desconto_total") or 0),
+        "custo_unitario": custo,
+        "margem_unitaria_pct": float(margem) if margem is not None else None,
+        "margem_bomba_pct": float(margem_bomba) if margem_bomba is not None else None,
+    }
+
+
+def _build_detail_rows_with_subtotals(raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ordena por produto → data → documento e injeta subtotal por produto."""
+    items = [_map_detail_item(r) for r in raw_items]
+    items.sort(
+        key=lambda x: (
+            str(x.get("produto_nome") or "").upper(),
+            int(x.get("id_produto") or 0),
+            str(x.get("dt_venda") or ""),
+            str(x.get("documento_label") or ""),
+            int(x.get("id_comprovante") or 0),
+            int(x.get("id_itemcomprovante") or 0),
+        )
+    )
+    out: List[Dict[str, Any]] = []
+    for (_pid, _nome), group_iter in groupby(
+        items, key=lambda x: (int(x["id_produto"]), str(x.get("produto_nome") or ""))
+    ):
+        group = list(group_iter)
+        out.extend(group)
+        qtd = sum(float(i.get("qtd") or 0) for i in group)
+        desconto = sum(float(i.get("desconto_total") or 0) for i in group)
+        out.append(
+            {
+                "row_kind": "subtotal",
+                "id_produto": int(group[0]["id_produto"]),
+                "produto_nome": group[0].get("produto_nome") or "",
+                "qtd": round(qtd, 3),
+                "desconto_total": round(desconto, 2),
+                "documento_label": "",
+                "dt_venda": "",
+                "preco_bomba": None,
+                "preco_pago": None,
+                "desconto_unitario": None,
+                "custo_unitario": None,
+                "margem_unitaria_pct": None,
+                "margem_bomba_pct": None,
+            }
+        )
+    return out
 
 
 def detail(
@@ -477,11 +598,11 @@ def detail(
     dt_fim: date,
     *,
     page: int = 0,
-    page_size: int = 50,
+    page_size: int = 200,
 ) -> Dict[str, Any]:
-    """Drill-down: vendas/itens do cliente no período."""
+    """Drill-down: itens agrupados por produto com subtotal (Data→Documento)."""
     page = max(0, int(page))
-    page_size = max(1, min(200, int(page_size)))
+    page_size = max(1, min(500, int(page_size)))
     params = {
         "id_empresa": int(id_empresa),
         "id_filial": int(id_filial),
@@ -493,7 +614,10 @@ def detail(
     }
     total_row = query_dict(
         f"""
-        SELECT count() AS n, sum(desconto_total) AS desconto_total_sum
+        SELECT
+          count() AS n,
+          sum(desconto_total) AS desconto_total_sum,
+          sum(qtd) AS qtd_litros_sum
         FROM {MART_DB}.mart_cliente_preco_fixo_item FINAL
         WHERE id_empresa = {{id_empresa:Int32}}
           AND id_filial = {{id_filial:Int32}}
@@ -507,6 +631,7 @@ def detail(
     )
     total = int(total_row[0]["n"]) if total_row else 0
     desconto_total = float(total_row[0]["desconto_total_sum"] or 0) if total_row else 0.0
+    qtd_litros = float(total_row[0]["qtd_litros_sum"] or 0) if total_row else 0.0
 
     rows = query_dict(
         f"""
@@ -523,7 +648,10 @@ def detail(
           preco_bomba,
           preco_pago,
           desconto_unitario,
-          desconto_total
+          desconto_total,
+          custo_unitario,
+          margem_unitaria_pct,
+          margem_bomba_pct
         FROM {MART_DB}.mart_cliente_preco_fixo_item FINAL
         WHERE id_empresa = {{id_empresa:Int32}}
           AND id_filial = {{id_filial:Int32}}
@@ -531,42 +659,39 @@ def detail(
           AND dt_venda >= toDate({{dt_ini:String}})
           AND dt_venda <= toDate({{dt_fim:String}})
           AND desconto_total > 0
-        ORDER BY dt_evento DESC, id_comprovante DESC, id_itemcomprovante
+        ORDER BY
+          produto_nome ASC,
+          id_produto ASC,
+          dt_venda ASC,
+          documento_label ASC,
+          id_comprovante ASC,
+          id_itemcomprovante ASC
         LIMIT {{limit:UInt32}} OFFSET {{offset:UInt32}}
         """,
         parameters=params,
         tenant_id=id_empresa,
     )
-    items = [
-        {
-            "id_comprovante": int(r["id_comprovante"]),
-            "id_itemcomprovante": int(r["id_itemcomprovante"]),
-            "id_produto": int(r["id_produto"]),
-            "dt_venda": str(r.get("dt_venda") or ""),
-            "dt_evento": str(r.get("dt_evento") or ""),
-            "cliente_nome": unescape(str(r.get("cliente_nome") or "")),
-            "produto_nome": unescape(str(r.get("produto_nome") or "")),
-            "documento_label": str(r.get("documento_label") or "—"),
-            "qtd": float(r.get("qtd") or 0),
-            "preco_bomba": float(r.get("preco_bomba") or 0),
-            "preco_pago": float(r.get("preco_pago") or 0),
-            "desconto_unitario": float(r.get("desconto_unitario") or 0),
-            "desconto_total": float(r.get("desconto_total") or 0),
-        }
-        for r in rows
-    ]
+    items = _build_detail_rows_with_subtotals(rows)
+    cliente_nome = ""
+    for it in items:
+        if it.get("row_kind") == "item" and it.get("cliente_nome"):
+            cliente_nome = it["cliente_nome"]
+            break
     total_pages = (total + page_size - 1) // page_size if page_size else 0
     return {
         "id_filial": int(id_filial),
         "filial_label": apelido_for(int(id_filial)) or str(id_filial),
         "id_entidade": int(id_entidade),
-        "cliente_nome": items[0]["cliente_nome"] if items else "",
+        "cliente_nome": cliente_nome,
         "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
-        "summary": {"desconto_total": round(desconto_total, 2)},
+        "summary": {
+            "desconto_total": round(desconto_total, 2),
+            "qtd_litros": round(qtd_litros, 3),
+        },
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "source": "clickhouse_mart",

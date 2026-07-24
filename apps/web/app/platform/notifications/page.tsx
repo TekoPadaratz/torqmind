@@ -29,7 +29,7 @@ export default function PlatformNotificationsPage() {
     user_id: '',
     tenant_id: '',
     branch_id: '',
-    event_type: 'payment_overdue',
+    event_type: 'VENDA_CANCELADA',
     channel: 'telegram',
     severity_min: 'WARN',
     is_enabled: true,
@@ -194,7 +194,7 @@ export default function PlatformNotificationsPage() {
                     user_id: users[0]?.id || '',
                     tenant_id: '',
                     branch_id: '',
-                    event_type: 'payment_overdue',
+                    event_type: 'VENDA_CANCELADA',
                     channel: 'telegram',
                     severity_min: 'WARN',
                     is_enabled: true,
@@ -222,7 +222,17 @@ export default function PlatformNotificationsPage() {
               ))}
             </select>
             <input className="input" placeholder="Filial opcional" value={subscriptionForm.branch_id} onChange={(e) => setSubscriptionForm({ ...subscriptionForm, branch_id: e.target.value })} />
-            <input className="input" placeholder="Evento" value={subscriptionForm.event_type} onChange={(e) => setSubscriptionForm({ ...subscriptionForm, event_type: e.target.value })} />
+            <select
+              className="input"
+              value={subscriptionForm.event_type}
+              onChange={(e) => setSubscriptionForm({ ...subscriptionForm, event_type: e.target.value })}
+            >
+              <option value="VENDA_CANCELADA">Venda cancelada</option>
+              <option value="NFE_INUTILIZADA">NFe inutilizada</option>
+              <option value="CASH_OPEN_OVER_24H">Caixa aberto &gt; 24h</option>
+              <option value="PRECO_FIXO_BOMBA_DESATUALIZADO">Preço bomba × preço fixo</option>
+              <option value="payment_overdue">payment_overdue (legado)</option>
+            </select>
             <select className="input" value={subscriptionForm.channel} onChange={(e) => setSubscriptionForm({ ...subscriptionForm, channel: e.target.value })}>
               <option value="telegram">telegram</option>
               <option value="email">email</option>
