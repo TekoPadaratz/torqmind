@@ -46,33 +46,33 @@ export default function TVSalesRankingPage() {
   }, [fetchData]);
 
   if (!session) {
-    return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Carregando...</div>;
+    return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Carregando...</div>;
   }
 
   const sellers = data?.sellers || data?.sellers_ranking || data?.top_sellers || [];
 
   return (
-    <div style={{ padding: "24px 32px", background: "#0f172a", minHeight: "100vh", color: "#f1f5f9" }}>
+    <div style={{ padding: "24px 32px", background: "var(--bg)", minHeight: "100vh", color: "var(--text)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h1 style={{ fontSize: 32, fontWeight: 700 }}>🏆 Ranking de Vendas — Hoje</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <span style={{ color: "#64748b", fontSize: 14 }}>
+          <span style={{ color: "var(--muted)", fontSize: 14 }}>
             {lastUpdated ? `Última atualização: ${lastUpdated}` : "Atualização automática a cada 5 min"}
           </span>
           <button
             onClick={() => { clearAuth(); router.push("/"); }}
-            style={{ padding: "6px 16px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+            style={{ padding: "6px 16px", background: "var(--color-negative)", color: "var(--on-accent)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
           >
             Sair
           </button>
         </div>
       </div>
 
-      {error && <div style={{ color: "#fb7185", marginBottom: 16 }}>{error}</div>}
+      {error && <div style={{ color: "var(--color-negative)", marginBottom: 16 }}>{error}</div>}
 
       <div style={{ display: "grid", gap: 8 }}>
         {sellers.length === 0 && (
-          <div style={{ color: "#64748b", textAlign: "center", padding: 40 }}>
+          <div style={{ color: "var(--muted)", textAlign: "center", padding: 40 }}>
             Nenhum dado disponível ainda.
           </div>
         )}
@@ -84,12 +84,12 @@ export default function TVSalesRankingPage() {
               alignItems: "center",
               gap: 16,
               padding: "16px 20px",
-              background: idx < 3 ? "#1e293b" : "#0f172a",
+              background: idx < 3 ? "var(--surface-soft)" : "var(--bg)",
               borderRadius: 8,
               borderLeft: idx === 0 ? "4px solid #fbbf24" : idx === 1 ? "4px solid #94a3b8" : idx === 2 ? "4px solid #b45309" : "4px solid transparent",
             }}
           >
-            <div style={{ fontSize: 28, fontWeight: 800, width: 48, textAlign: "center", color: idx === 0 ? "#fbbf24" : idx === 1 ? "#94a3b8" : idx === 2 ? "#b45309" : "#64748b" }}>
+            <div style={{ fontSize: 28, fontWeight: 800, width: 48, textAlign: "center", color: idx === 0 ? "#fbbf24" : idx === 1 ? "#94a3b8" : idx === 2 ? "#b45309" : "var(--muted)" }}>
               {idx + 1}º
             </div>
             <div style={{ flex: 1 }}>

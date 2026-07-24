@@ -594,8 +594,8 @@ export default function FraudPage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="data" stroke="#9fb0d0" />
-                      <YAxis stroke="#9fb0d0" />
+                      <XAxis dataKey="data" stroke="var(--muted)" />
+                      <YAxis stroke="var(--muted)" />
                       <Tooltip />
                       <Bar
                         dataKey="cancelamentos"
@@ -856,7 +856,7 @@ export default function FraudPage() {
                               </tr>
                               {expanded ? (
                                 <tr>
-                                  <td colSpan={10} style={{ padding: "10px 12px", background: "rgba(255,255,255,0.02)" }}>
+                                  <td colSpan={10} style={{ padding: "10px 12px", background: "var(--surface-faint)" }}>
                                     {consumos.length ? (
                                       <table className="table compact" style={{ margin: 0 }}>
                                         <thead>
@@ -1272,7 +1272,7 @@ export default function FraudPage() {
                                 </tr>
                                 {expanded ? (
                                   <tr>
-                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "rgba(15,23,42,0.03)" }}>
+                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "var(--surface-faint)" }}>
                                       {!row.usos?.length ? (
                                         <div className="muted" style={{ fontSize: 12 }}>
                                           Sem usos resolvidos no mês para este colaborador.

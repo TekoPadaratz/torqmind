@@ -63,7 +63,7 @@ export default function FinanceBudgetSection() {
         <select
           value={mes || 1}
           onChange={(e) => setMes(parseInt(e.target.value))}
-          style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.04)", color: "var(--text)" }}
+          style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--filter-bg)", color: "var(--text)" }}
         >
           {MONTHS.map((m, i) => (
             <option key={m} value={i + 1}>{m}</option>
@@ -72,7 +72,7 @@ export default function FinanceBudgetSection() {
         <select
           value={currentYear}
           onChange={(e) => setAno(parseInt(e.target.value))}
-          style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.04)", color: "var(--text)" }}
+          style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--filter-bg)", color: "var(--text)" }}
         >
           {years.map((y) => (
             <option key={y} value={y}>{y}</option>

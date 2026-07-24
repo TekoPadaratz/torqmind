@@ -239,7 +239,7 @@ export default function SalesAbcSection() {
       >
         <div
           style={{
-            background: "#12191f",
+            background: "var(--option-bg)",
             border: "1px solid var(--border)",
             borderRadius: 10,
             padding: 8,
@@ -349,7 +349,7 @@ export default function SalesAbcSection() {
                 type="number"
                 value={editA}
                 onChange={(e) => { setEditA(e.target.value); setParamsDirty(true); }}
-                style={{ width: 32, background: "transparent", border: "1px solid #555", borderRadius: 3, color: "#fff", textAlign: "center", fontSize: 10, padding: "1px 2px" }}
+                style={{ width: 32, background: "transparent", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)", textAlign: "center", fontSize: 10, padding: "1px 2px" }}
                 min={1} max={98}
               />
             ) : (
@@ -373,7 +373,7 @@ export default function SalesAbcSection() {
                 type="number"
                 value={editB}
                 onChange={(e) => { setEditB(e.target.value); setParamsDirty(true); }}
-                style={{ width: 32, background: "transparent", border: "1px solid #555", borderRadius: 3, color: "#fff", textAlign: "center", fontSize: 10, padding: "1px 2px" }}
+                style={{ width: 32, background: "transparent", border: "1px solid var(--border)", borderRadius: 3, color: "var(--text)", textAlign: "center", fontSize: 10, padding: "1px 2px" }}
                 min={1} max={99}
               />
             ) : (
@@ -410,8 +410,8 @@ export default function SalesAbcSection() {
               padding: "6px 18px",
               borderRadius: 6,
               border: "none",
-              background: "#22c55e",
-              color: "#fff",
+              background: "var(--color-positive)",
+              color: "var(--on-accent)",
               fontWeight: 600,
               fontSize: 12,
               cursor: "pointer",
@@ -449,9 +449,9 @@ export default function SalesAbcSection() {
               style={{
                 padding: "6px 14px",
                 borderRadius: 6,
-                border: "1px solid #444",
-                background: sortBy === opt ? "#3b82f6" : "transparent",
-                color: sortBy === opt ? "#fff" : "#bbb",
+                border: "1px solid var(--border)",
+                background: sortBy === opt ? "var(--color-info)" : "transparent",
+                color: sortBy === opt ? "var(--on-accent)" : "var(--muted)",
                 fontWeight: sortBy === opt ? 600 : 400,
                 fontSize: 12,
                 cursor: "pointer",
@@ -465,10 +465,10 @@ export default function SalesAbcSection() {
         <div style={{ height: 300, marginTop: 12 }}>
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={chartItems} margin={{ top: 5, right: 40, bottom: 60, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis
                 dataKey="nome_produto"
-                tick={{ fill: "#bbb", fontSize: 10 }}
+                tick={{ fill: "var(--muted)", fontSize: 10 }}
                 angle={-45}
                 textAnchor="end"
                 interval={0}
@@ -476,7 +476,7 @@ export default function SalesAbcSection() {
               />
               <YAxis
                 yAxisId="val"
-                tick={{ fill: "#bbb", fontSize: 10 }}
+                tick={{ fill: "var(--muted)", fontSize: 10 }}
                 tickFormatter={(v: number) => formatMetricValue(v)}
                 width={90}
               />
@@ -484,12 +484,12 @@ export default function SalesAbcSection() {
                 yAxisId="pct"
                 orientation="right"
                 domain={[0, 100]}
-                tick={{ fill: "#bbb", fontSize: 10 }}
+                tick={{ fill: "var(--muted)", fontSize: 10 }}
                 tickFormatter={(v: number) => `${v}%`}
                 width={50}
               />
               <Tooltip
-                contentStyle={{ background: "#1e1e2e", border: "1px solid #444" }}
+                contentStyle={{ background: "var(--option-bg)", border: "1px solid var(--border)", color: "var(--text)" }}
                 formatter={(value: any, name: string) => {
                   if (name === metricKey) return [formatMetricValue(value), metricLabel];
                   if (name === "acumulado_pct") return [formatPercent(value), "Acumulado"];

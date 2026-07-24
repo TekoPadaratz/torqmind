@@ -147,7 +147,7 @@ export default function CashPage() {
                 className="card col-12"
                 style={{
                   background:
-                    "linear-gradient(135deg, rgba(14,116,144,0.22), rgba(15,23,42,0.92) 45%, rgba(16,185,129,0.16))",
+                    "linear-gradient(135deg, rgba(14,116,144,0.22), var(--bg) 45%, rgba(16,185,129,0.16))",
                   borderColor: "rgba(56, 189, 248, 0.24)",
                 }}
               >
@@ -225,13 +225,13 @@ export default function CashPage() {
                         />
                         <XAxis
                           type="number"
-                          stroke="#9fb0d0"
+                          stroke="var(--muted)"
                           tickFormatter={formatCurrency}
                         />
                         <YAxis
                           dataKey="label"
                           type="category"
-                          stroke="#9fb0d0"
+                          stroke="var(--muted)"
                           width={140}
                         />
                         <Tooltip formatter={(value: any) => formatCurrency(value)} />

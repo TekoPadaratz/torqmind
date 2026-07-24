@@ -12,7 +12,7 @@ export default function GlobalError({
       <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>
         Ocorreu um erro inesperado
       </h2>
-      <p style={{ color: '#666', marginBottom: 24 }}>
+      <p style={{ color: 'var(--muted)', marginBottom: 24 }}>
         {error?.message || 'Não foi possível carregar esta página.'}
       </p>
       <button
@@ -20,8 +20,9 @@ export default function GlobalError({
         style={{
           padding: '10px 24px',
           borderRadius: 6,
-          border: '1px solid #ccc',
-          background: '#fff',
+          border: '1px solid var(--border)',
+          background: 'var(--chrome-face)',
+          color: 'var(--text)',
           cursor: 'pointer',
           fontSize: 14,
         }}

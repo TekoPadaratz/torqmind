@@ -46,33 +46,33 @@ export default function TVSalesHourlyPage() {
   }, [fetchData]);
 
   if (!session) {
-    return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Carregando...</div>;
+    return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Carregando...</div>;
   }
 
   const points = data?.points || [];
 
   return (
-    <div style={{ padding: "24px 32px", background: "#0f172a", minHeight: "100vh", color: "#f1f5f9" }}>
+    <div style={{ padding: "24px 32px", background: "var(--bg)", minHeight: "100vh", color: "var(--text)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
         <h1 style={{ fontSize: 32, fontWeight: 700 }}>⏱️ Vendas por Hora — Hoje</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <span style={{ color: "#64748b", fontSize: 14 }}>
+          <span style={{ color: "var(--muted)", fontSize: 14 }}>
             {lastUpdated ? `Última atualização: ${lastUpdated}` : "Atualização automática a cada 5 min"}
           </span>
           <button
             onClick={() => { clearAuth(); router.push("/"); }}
-            style={{ padding: "6px 16px", background: "#ef4444", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+            style={{ padding: "6px 16px", background: "var(--color-negative)", color: "var(--on-accent)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
           >
             Sair
           </button>
         </div>
       </div>
 
-      {error && <div style={{ color: "#fb7185", marginBottom: 16 }}>{error}</div>}
+      {error && <div style={{ color: "var(--color-negative)", marginBottom: 16 }}>{error}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 12 }}>
         {points.length === 0 && (
-          <div style={{ color: "#64748b", textAlign: "center", padding: 40, gridColumn: "1 / -1" }}>
+          <div style={{ color: "var(--muted)", textAlign: "center", padding: 40, gridColumn: "1 / -1" }}>
             Nenhum dado disponível ainda.
           </div>
         )}
@@ -81,12 +81,12 @@ export default function TVSalesHourlyPage() {
             key={point.hour || point.dt || idx}
             style={{
               padding: "16px",
-              background: "#1e293b",
+              background: "var(--surface-soft)",
               borderRadius: 8,
               textAlign: "center",
             }}
           >
-            <div style={{ fontSize: 14, color: "#64748b", marginBottom: 4 }}>
+            <div style={{ fontSize: 14, color: "var(--muted)", marginBottom: 4 }}>
               {point.hour || point.label || point.dt || `${idx}h`}
             </div>
             <div style={{ fontSize: 24, fontWeight: 700, color: "#22d3ee" }}>

@@ -211,9 +211,9 @@ export default function SalesPage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="mes" stroke="#9fb0d0" />
+                      <XAxis dataKey="mes" stroke="var(--muted)" />
                       <YAxis
-                        stroke="#9fb0d0"
+                        stroke="var(--muted)"
                         tickFormatter={formatCurrency}
                         width={112}
                       />
@@ -291,9 +291,9 @@ export default function SalesPage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="hora" stroke="#9fb0d0" />
+                      <XAxis dataKey="hora" stroke="var(--muted)" />
                       <YAxis
-                        stroke="#9fb0d0"
+                        stroke="var(--muted)"
                         tickFormatter={formatCurrency}
                         width={112}
                       />

@@ -179,7 +179,7 @@ export default function GoalsPage() {
                 background: 'transparent',
                 border: 'none',
                 borderBottom: effectiveTab === tab.key ? '2px solid var(--color-accent, #3b82f6)' : '2px solid transparent',
-                color: effectiveTab === tab.key ? 'var(--text-primary, #fff)' : 'var(--text-muted)',
+                color: effectiveTab === tab.key ? 'var(--text)' : 'var(--text-muted)',
                 cursor: 'pointer',
                 transition: 'all 0.15s ease',
               }}
@@ -266,8 +266,8 @@ export default function GoalsPage() {
                       style={{
                         borderRadius: 24,
                         padding: '22px 24px',
-                        background: 'linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04))',
-                        border: '1px solid rgba(255,255,255,0.10)',
+                        background: 'linear-gradient(180deg, var(--surface-soft), var(--filter-bg))',
+                        border: '1px solid var(--border)',
                       }}
                     >
                       <div style={{ fontSize: 28, fontWeight: 900, lineHeight: 1.05, maxWidth: 780 }}>{motivation.headline}</div>
@@ -289,8 +289,8 @@ export default function GoalsPage() {
                           style={{
                             borderRadius: 18,
                             padding: '14px 16px',
-                            background: 'rgba(7,18,31,0.42)',
-                            border: '1px solid rgba(255,255,255,0.08)',
+                            background: 'var(--filter-bg)',
+                            border: '1px solid var(--border)',
                           }}
                         >
                           <div className="muted" style={{ fontSize: 12 }}>{item.label}</div>
@@ -327,9 +327,9 @@ export default function GoalsPage() {
                             minHeight: heights[row.rank] || 140,
                             borderRadius: 24,
                             padding: '18px 18px 16px',
-                            background: `linear-gradient(180deg, ${accent[row.rank]}22, rgba(255,255,255,0.04))`,
+                            background: `linear-gradient(180deg, ${accent[row.rank]}22, var(--filter-bg))`,
                             border: `1px solid ${accent[row.rank]}55`,
-                            boxShadow: row.rank === 1 ? '0 18px 50px rgba(251,191,36,0.16)' : '0 12px 32px rgba(15,23,42,0.24)',
+                            boxShadow: row.rank === 1 ? '0 18px 50px rgba(251,191,36,0.16)' : 'var(--chrome-shadow)',
                             display: 'flex',
                             flexDirection: 'column',
                             justifyContent: 'space-between',

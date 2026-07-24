@@ -80,7 +80,7 @@ ACL: `apps/api/app/permissions.py` (`SCREEN_REGISTRY`). Menu = nav; painel = `me
 
 ## Identidade visual e UX de escopo
 
-- Tema de superfície (claro/escuro/sistema): preferência do usuário em `localStorage` (`torqmind.theme`); padrão **escuro**. Só troca preto/cinza de fundo; cobre/dourado e semânticos permanecem. Ver `apps/web/app/lib/theme.tsx` e tokens em `globals.css` (`html[data-theme]`).
+- Tema de superfície (claro/escuro/sistema): preferência do usuário em `localStorage` (`torqmind.theme`); padrão **escuro**. Superfícies/chrome (nav, sidebar, cards, banners, inputs) usam tokens (`--chrome-*`, `--surface-*`, `--hero-*`, etc.) e acompanham o tema; cobre/dourado/semânticos permanecem. Ver `apps/web/app/lib/theme.tsx` e `globals.css` (`html[data-theme]`).
 - Personalização visual é por empresa (`app.company_branding`, chave `id_empresa`), com fallback para o padrão TorqMind; trocar imagem não exige novo deploy.
 - Uploads ficam em storage persistente (volume `torqmind_branding` em `/app/var/branding`), nunca em pasta apagada no deploy.
 - Validar imagem por magic-number (não só extensão/MIME declarado); rejeitar SVG e executável renomeado; limitar tamanho; nome de arquivo gerado pelo servidor (sem path traversal).

@@ -400,9 +400,9 @@ export default function CustomersPage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="bucket" stroke="#9fb0d0" />
+                      <XAxis dataKey="bucket" stroke="var(--muted)" />
                       <YAxis
-                        stroke="#9fb0d0"
+                        stroke="var(--muted)"
                         tickFormatter={formatCurrency}
                         width={112}
                       />
@@ -439,7 +439,7 @@ export default function CustomersPage() {
                             fontSize: 12,
                             padding: "4px 10px",
                             background: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
-                            color: delinquencySort === opt.key ? "#fff" : undefined,
+                            color: delinquencySort === opt.key ? "var(--on-accent)" : undefined,
                             borderColor: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
                           }}
                           onClick={() => { setDelinquencySort(opt.key); setDelinquencyPage(0); }}
@@ -518,7 +518,7 @@ export default function CustomersPage() {
                           border: selectedFiliais.size === 0 ? "1px solid var(--accent-copper)" : "1px solid var(--border)",
                           borderRadius: 10,
                           padding: "8px 12px",
-                          background: selectedFiliais.size === 0 ? "var(--accent-copper-soft)" : "rgba(255,255,255,0.02)",
+                          background: selectedFiliais.size === 0 ? "var(--accent-copper-soft)" : "var(--surface-faint)",
                           color: "inherit",
                           minWidth: 120,
                         }}
@@ -552,7 +552,7 @@ export default function CustomersPage() {
                               border: active ? "1px solid var(--accent-copper)" : "1px solid var(--border)",
                               borderRadius: 10,
                               padding: "8px 12px",
-                              background: active ? "var(--accent-copper-soft)" : "rgba(255,255,255,0.02)",
+                              background: active ? "var(--accent-copper-soft)" : "var(--surface-faint)",
                               color: "inherit",
                               minWidth: 168,
                             }}
@@ -641,7 +641,7 @@ export default function CustomersPage() {
                       padding: "6px 10px",
                       borderRadius: 8,
                       border: "1px solid var(--border)",
-                      background: "rgba(255,255,255,0.03)",
+                      background: "var(--surface-faint)",
                       color: "inherit",
                     }}
                   />
@@ -684,7 +684,7 @@ export default function CustomersPage() {
                                 </tr>
                                 {open ? (
                                   <tr>
-                                    <td colSpan={5} style={{ padding: 12, background: "rgba(255,255,255,0.02)" }}>
+                                    <td colSpan={5} style={{ padding: 12, background: "var(--surface-faint)" }}>
                                       {precoFixoDetailLoading ? (
                                         <div className="muted">Carregando detalhe…</div>
                                       ) : !(precoFixoDetail?.items || []).length ? (
@@ -710,7 +710,7 @@ export default function CustomersPage() {
                                                   return (
                                                     <tr
                                                       key={`sub-${item.id_produto}-${idx}`}
-                                                      style={{ background: "rgba(255,255,255,0.04)", fontWeight: 700 }}
+                                                      style={{ background: "var(--filter-bg)", fontWeight: 700 }}
                                                     >
                                                       <td colSpan={3}>Subtotal {item.produto_nome || `#${item.id_produto}`}</td>
                                                       <td>—</td>
@@ -854,9 +854,9 @@ export default function CustomersPage() {
                         stroke="rgba(255,255,255,0.08)"
                         strokeDasharray="3 3"
                       />
-                      <XAxis dataKey="cliente" stroke="#9fb0d0" />
+                      <XAxis dataKey="cliente" stroke="var(--muted)" />
                       <YAxis
-                        stroke="#9fb0d0"
+                        stroke="var(--muted)"
                         tickFormatter={formatCurrency}
                         width={112}
                       />
