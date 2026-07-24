@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import AppNav from '../components/AppNav';
 import { apiGet, apiPatch, apiPost } from '../lib/api';
 import { useScopeQuery } from '../lib/scope';
+import { useTheme, type ThemePreference } from '../lib/theme';
 
 interface AlertCatalogItem {
   key: string;
@@ -32,6 +33,7 @@ const DEFAULT_CATALOG: AlertCatalogItem[] = [
 
 export default function SettingsPage() {
   const scope = useScopeQuery();
+  const { preference: themePreference, setPreference: setThemePreference, resolved: themeResolved } = useTheme();
   const [config, setConfig] = useState<TelegramConfig | null>(null);
   const [chatId, setChatId] = useState('');
   const [username, setUsername] = useState('');
@@ -120,6 +122,40 @@ export default function SettingsPage() {
       <AppNav title="Configurações" />
       <div className="container">
         <div className="bi-grid" style={{ marginTop: 12 }}>
+          <div className="card col-12">
+            <div className="sectionEyebrow">Preferências</div>
+            <h2 style={{ marginTop: 4 }}>Aparência</h2>
+            <div className="muted" style={{ marginTop: 8 }}>
+              Tema do sistema. Padrão: escuro. Cobre, dourado e cores semânticas permanecem nos dois modos.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 16 }}>
+              {(
+                [
+                  { value: 'dark', label: 'Escuro' },
+                  { value: 'light', label: 'Claro' },
+                  { value: 'system', label: 'Sistema (Windows)' },
+                ] as const
+              ).map((opt) => {
+                const active = themePreference === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`btn${active ? ' btnPrimary' : ''}`}
+                    aria-pressed={active}
+                    onClick={() => setThemePreference(opt.value as ThemePreference)}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>
+              Em uso agora: {themeResolved === 'light' ? 'claro' : 'escuro'}
+              {themePreference === 'system' ? ' (seguindo o computador)' : ''}.
+            </div>
+          </div>
+
           <div className="card col-12">
             <div className="sectionEyebrow">Preferências</div>
             <h2 style={{ marginTop: 4 }}>Notificações via Telegram</h2>

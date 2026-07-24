@@ -218,7 +218,8 @@ export default function CustomersPage() {
       params.set("id_filial", String(row.id_filial));
       params.set("id_entidade", String(row.id_entidade));
       params.set("page", "0");
-      params.set("page_size", "50");
+      // Janela larga para subtotal por produto sem cortar o grupo no meio da página.
+      params.set("page_size", "200");
       const res = await apiGet(`/bi/customers/preco-fixo/detail?${params.toString()}`);
       setPrecoFixoDetail(res);
     } catch {

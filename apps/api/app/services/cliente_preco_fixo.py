@@ -480,7 +480,7 @@ def overview(
         FROM ({base_agg}) AS agg
         WHERE 1=1
           {search_sql}
-        ORDER BY desconto_total_agg DESC
+        ORDER BY id_filial ASC, upperUTF8(cliente_nome) ASC, desconto_total_agg DESC
         LIMIT {{limit:UInt32}} OFFSET {{offset:UInt32}}
         """,
         parameters=params,
@@ -549,14 +549,21 @@ def _map_detail_item(r: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _date_sort_key(value: Any) -> int:
+    raw = str(value or "").strip()[:10].replace("-", "")
+    if raw.isdigit():
+        return int(raw)
+    return 0
+
+
 def _build_detail_rows_with_subtotals(raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ordena por produto → data → documento e injeta subtotal por produto."""
+    """Agrupa por produto (nome ASC); dentro: Data DESC → Documento ASC + subtotal."""
     items = [_map_detail_item(r) for r in raw_items]
     items.sort(
         key=lambda x: (
             str(x.get("produto_nome") or "").upper(),
             int(x.get("id_produto") or 0),
-            str(x.get("dt_venda") or ""),
+            -_date_sort_key(x.get("dt_venda")),
             str(x.get("documento_label") or ""),
             int(x.get("id_comprovante") or 0),
             int(x.get("id_itemcomprovante") or 0),
@@ -662,7 +669,7 @@ def detail(
         ORDER BY
           produto_nome ASC,
           id_produto ASC,
-          dt_venda ASC,
+          dt_venda DESC,
           documento_label ASC,
           id_comprovante ASC,
           id_itemcomprovante ASC

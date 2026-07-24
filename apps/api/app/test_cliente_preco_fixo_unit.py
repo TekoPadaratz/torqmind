@@ -82,7 +82,11 @@ class ClientePrecoFixoUnitTests(unittest.TestCase):
         self.assertEqual(out["filial_label"], "VR01")
         items = out["items"]
         self.assertEqual(items[0]["row_kind"], "item")
-        self.assertEqual(items[0]["documento_label"], "325152")
+        # Data DESC dentro do produto: 21/07 antes de 20/07
+        self.assertEqual(str(items[0]["dt_venda"])[:10], "2026-07-21")
+        self.assertEqual(items[0]["documento_label"], "325200")
+        self.assertEqual(str(items[1]["dt_venda"])[:10], "2026-07-20")
+        self.assertEqual(items[1]["documento_label"], "325152")
         self.assertAlmostEqual(items[0]["preco_bomba"], 6.52)
         self.assertAlmostEqual(items[0]["margem_unitaria_pct"], 19.3)
         self.assertEqual(items[-1]["row_kind"], "subtotal")

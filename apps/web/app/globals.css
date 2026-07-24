@@ -1,4 +1,5 @@
-:root {
+:root,
+html[data-theme="dark"] {
   --bg: #0d1317;
   --text: #f2f1ee;
   --muted: #b3afa8;
@@ -21,8 +22,18 @@
   --color-info-bg: rgba(59,130,246,0.10);
   --color-insight-bg: rgba(99,102,241,0.08);
 
-  /* ── Card tokens ── */
+  /* ── Card / surface tokens ── */
   --card-bg: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+  --card-face: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+  --surface-soft: rgba(255,255,255,0.06);
+  --surface-faint: rgba(255,255,255,0.02);
+  --input-bg: rgba(0,0,0,0.2);
+  --option-bg: #12191f;
+  --nav-bg: rgba(13, 19, 23, 0.88);
+  --watermark-opacity: 0.065;
+  --brand-scrim: #05070a;
+  --body-glow-a: rgba(184,115,51,0.14);
+  --body-glow-b: rgba(240,173,98,0.08);
   --card-radius: 16px;
   --card-padding: 16px 20px;
 
@@ -34,6 +45,42 @@
   --font-hero-value: clamp(26px, 1rem + 2vw, 52px);
   --font-body: 13px;
   --font-footnote: 11px;
+  color-scheme: dark;
+}
+
+/* Tema claro: só superfícies (preto/cinza). Cobre, dourado e semânticos permanecem. */
+html[data-theme="light"] {
+  --bg: #f2efe8;
+  --text: #1c1f24;
+  --muted: #5a6068;
+  --border: rgba(28, 31, 36, 0.12);
+  --accent-copper: #b87333;
+  --accent-copper-soft: rgba(184,115,51,0.18);
+  --accent-risk: #ea580c;
+  --accent-good: #15803d;
+  --color-positive: #059669;
+  --color-negative: #dc2626;
+  --color-warning: #d97706;
+  --color-info: #2563eb;
+  --color-insight: #4f46e5;
+  --color-neutral: #6b7280;
+  --color-positive-bg: rgba(5,150,105,0.10);
+  --color-negative-bg: rgba(220,38,38,0.08);
+  --color-warning-bg: rgba(217,119,6,0.10);
+  --color-info-bg: rgba(37,99,235,0.08);
+  --color-insight-bg: rgba(79,70,229,0.08);
+  --card-bg: linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(255,255,255,0.82) 100%);
+  --card-face: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.88));
+  --surface-soft: rgba(28, 31, 36, 0.05);
+  --surface-faint: rgba(28, 31, 36, 0.03);
+  --input-bg: rgba(255,255,255,0.92);
+  --option-bg: #ffffff;
+  --nav-bg: rgba(242, 239, 232, 0.92);
+  --watermark-opacity: 0.04;
+  --brand-scrim: #e6e1d7;
+  --body-glow-a: rgba(184,115,51,0.10);
+  --body-glow-b: rgba(184,115,51,0.05);
+  color-scheme: light;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -44,8 +91,8 @@
 ::selection { background: var(--accent-copper); color: #fff; }
 ::-moz-selection { background: var(--accent-copper); color: #fff; }
 
-/* Dropdowns nativos: fundo escuro + opção destacada em cobre */
-select option { background: #12191f; color: var(--text); }
+/* Dropdowns nativos: fundo do tema + opção destacada em cobre */
+select option { background: var(--option-bg); color: var(--text); }
 select option:checked,
 select option:hover,
 select option:focus {
@@ -75,8 +122,8 @@ option[selected] {
 html, body { height: 100%; }
 body {
   margin: 0;
-  background: radial-gradient(1200px 700px at 20% 0%, rgba(184,115,51,0.14), transparent 60%),
-              radial-gradient(1000px 600px at 80% 20%, rgba(240,173,98,0.08), transparent 55%),
+  background: radial-gradient(1200px 700px at 20% 0%, var(--body-glow-a), transparent 60%),
+              radial-gradient(1000px 600px at 80% 20%, var(--body-glow-b), transparent 55%),
               var(--bg);
   color: var(--text);
   font-family: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
@@ -91,7 +138,7 @@ body::before {
   background-repeat: no-repeat;
   background-position: center 52%;
   background-size: max(140vw, 1800px) auto;
-  opacity: 0.065;
+  opacity: var(--watermark-opacity);
   pointer-events: none;
   filter: grayscale(30%) contrast(0.92);
   z-index: 0;
@@ -108,10 +155,10 @@ body::after {
   content: "";
   position: fixed;
   inset: 0;
-  background-color: #05070a;
+  background-color: var(--brand-scrim);
   background-image:
-    radial-gradient(ellipse at center, rgba(5, 7, 10, 0) 62%, rgba(5, 7, 10, 0.85) 100%),
-    linear-gradient(to bottom, rgba(8, 10, 14, 0.45), rgba(8, 10, 14, 0.70)),
+    radial-gradient(ellipse at center, rgba(5, 7, 10, 0) 62%, color-mix(in srgb, var(--brand-scrim) 85%, transparent) 100%),
+    linear-gradient(to bottom, color-mix(in srgb, var(--brand-scrim) 45%, transparent), color-mix(in srgb, var(--brand-scrim) 70%, transparent)),
     var(--brand-company-bg, none);
   background-repeat: no-repeat;
   background-position: center center;
@@ -131,7 +178,7 @@ body > * {
 }
 .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 .card {
-  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+  background: var(--card-face);
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 16px;
@@ -365,16 +412,16 @@ h2 { margin: 0; font-size: 18px; }
 .nav {
   display:flex; align-items:center; justify-content:space-between;
   padding: 14px 16px; border-bottom: 1px solid var(--border);
-  background: rgba(10, 13, 16, 0.64); position: sticky; top: 0; backdrop-filter: blur(10px);
+  background: var(--nav-bg); position: sticky; top: 0; backdrop-filter: blur(10px);
   gap: 16px;
   z-index: 20;
 }
 .brand { display:flex; gap:10px; align-items:center; font-weight:700; }
 .brandWordmark { width: auto; height: 24px; object-fit: contain; }
-.pill { padding: 8px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--muted); font-size: 12px; }
-.btn { border: 1px solid var(--border); background: rgba(255,255,255,0.06); color: var(--text); padding: 10px 12px; border-radius: 12px; cursor: pointer; }
+.pill { padding: 8px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-faint); color: var(--muted); font-size: 12px; }
+.btn { border: 1px solid var(--border); background: var(--surface-soft); color: var(--text); padding: 10px 12px; border-radius: 12px; cursor: pointer; }
 .btn:hover { background: var(--accent-copper-soft); border-color: rgba(184,115,51,0.6); }
-.input { width:100%; padding: 12px 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0,0,0,0.2); color: var(--text); outline: none; }
+.input { width:100%; padding: 12px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); outline: none; }
 
 /* ---------- TorqMind nav links ---------- */
 .navRight {

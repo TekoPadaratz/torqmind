@@ -6,15 +6,18 @@
 #
 # Uso:
 #   docker compose -f docker-compose.homolog.yml --env-file /etc/torqmind/homolog.app.env \
-#     -p torqmind-homolog build web
+#     -p torqmind-homolog build api web
 #   docker compose -f docker-compose.homolog.yml --env-file /etc/torqmind/homolog.app.env \
-#     -p torqmind-homolog up -d
+#     -p torqmind-homolog up -d --force-recreate api web
 #
 # NUNCA aponta para a porta 80, containers de prod, ou o volume torqmind_branding
 # de produção.
 
 services:
   api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
     image: torqmind-api:homolog
     container_name: torqmind-api-homolog
     restart: unless-stopped

@@ -35,6 +35,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
+import { sortGridRows } from "../lib/grid-sort";
 import { canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 
@@ -337,7 +338,18 @@ export default function FraudPage() {
     [claims],
   );
 
-  const trocaRows: any[] = riscoData?.troca_forma_pgto || [];
+  const trocaRows = useMemo(
+    () =>
+      sortGridRows(
+        Array.isArray(riscoData?.troca_forma_pgto) ? riscoData.troca_forma_pgto : [],
+        (r: any) => ({
+          filial: r.filial_label ?? r.filial_nome ?? r.id_filial,
+          data: r.data_troca_ts || r.data_key,
+          nome: r.nome_operador,
+        }),
+      ),
+    [riscoData?.troca_forma_pgto],
+  );
   const trocaTotais = riscoData?.troca_forma_pgto_totais || {};
   const trocaTotalQtd = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_qtd || 0)
@@ -380,10 +392,16 @@ export default function FraudPage() {
   const creditosRows = creditos?.lancamentos || [];
   const creditosFiltered = useMemo(() => {
     const term = creditoClienteQ.trim().toUpperCase();
-    if (!term) return creditosRows;
-    return creditosRows.filter((c: any) =>
-      String(c.cliente || "").toUpperCase().includes(term),
-    );
+    const filtered = !term
+      ? creditosRows
+      : creditosRows.filter((c: any) =>
+          String(c.cliente || "").toUpperCase().includes(term),
+        );
+    return sortGridRows(filtered, (c: any) => ({
+      filial: c.filial_label ?? c.id_filial,
+      data: c.data_ts || c.data || c.data_key,
+      nome: c.cliente,
+    }));
   }, [creditosRows, creditoClienteQ]);
   const creditoTotalPages = Math.max(1, Math.ceil(creditosFiltered.length / pageSize));
   const creditoPageSafe = Math.min(Math.max(1, creditoPage), creditoTotalPages);
@@ -394,7 +412,7 @@ export default function FraudPage() {
 
   const lastEventsOperational = useMemo(() => {
     const rows = Array.isArray(data?.last_events) ? data.last_events : [];
-    return rows.filter((e: any) => {
+    const filtered = rows.filter((e: any) => {
       const tn = Number(e?.turno_numero);
       const label = String(e?.turno_label || "").toLowerCase();
       if (Number.isFinite(tn) && tn < 1) return false;
@@ -411,6 +429,11 @@ export default function FraudPage() {
       if (!doc || String(doc).trim() === "—" || String(doc).trim() === "-") return false;
       return true;
     });
+    return sortGridRows(filtered, (e: any) => ({
+      filial: e.filial_label ?? e.filial_nome ?? e.id_filial,
+      data: e.data || e.data_key,
+      nome: e.usuario_label || e.operador_label,
+    }));
   }, [data?.last_events]);
 
   const cancelTotalPages = Math.max(1, Math.ceil(lastEventsOperational.length / pageSize));
@@ -1267,7 +1290,11 @@ export default function FraudPage() {
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {row.usos.map((u: any, idx: number) => (
+                                            {sortGridRows(row.usos || [], (u: any) => ({
+                                              filial: u.filial_label ?? u.id_filial,
+                                              data: u.dt_evento,
+                                              nome: u.operador_caixa,
+                                            })).map((u: any, idx: number) => (
                                               <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
                                                 <td>
                                                   {u.filial_label ||

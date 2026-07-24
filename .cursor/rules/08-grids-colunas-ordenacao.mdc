@@ -1,0 +1,51 @@
+---
+description: Contrato mestre de grids BI — colunas e ordenação
+globs:
+  - "apps/web/**/*.tsx"
+  - "apps/web/**/*.ts"
+  - "apps/api/app/**/*.py"
+alwaysApply: true
+---
+
+# 📊 Grids BI — colunas e ordenação (contrato mestre)
+
+Aplica-se a **todos** os grids/tabelas de produto (Clientes, Antifraude, Caixa, Financeiro, etc.).
+Não reescrever layout — só ordem de colunas e ordem das linhas.
+
+## 1) Ordem das colunas (headers / células)
+
+Quando as colunas existirem no grid:
+
+1. **Filial** (se houver mais de uma no escopo ou a coluna for exibida)
+2. **Data** (data/hora do evento ou do dia de negócio)
+3. **Documento** (sempre = número NF-e/NFC-e; sem NF → `—` — ver `07-documento-nota-fiscal.mdc`)
+
+Depois vêm as demais colunas do domínio (produto, valor, operador, etc.).
+
+- Com filial: **Filial → Data → Documento → …**
+- Sem filial: **Data → Documento → …**
+- Nunca Documento antes de Data.
+
+## 2) Ordenação das linhas (regra geral)
+
+Ordem estável, nesta prioridade — use só os campos que o grid realmente tem:
+
+1. **Filial** — ASC pelo rótulo operacional (`filial_label` / apelido); se só houver id, ASC por `id_filial`
+2. **Data** — DESC (mais recente primeiro) em listas operacionais/eventos
+3. **Nome** — ASC (cliente, produto, operador, etc. — o nome principal da linha)
+
+Se o grid **não tiver nenhum** dos três (Filial / Data / Nome), ordenar pelo **primeiro campo de negócio** da linha (ex.: documento, turno), ASC.
+
+Desempate honesto: id técnico estável (`id_comprovante`, `id_entidade`, …).
+
+### Exceções permitidas (documentar no código se usar)
+
+- Rankings explícitos por métrica (“top por faturamento”, “maior desconto”, “score de churn”) podem ordenar pela métrica — desde que o título/UI deixe claro que é ranking, não lista operacional.
+- Paginação server-side: a `ORDER BY` da query **deve** refletir esta regra (não só o frontend da página atual).
+
+## 3) Checklist ao criar/alterar grid
+
+1. Headers na ordem Filial → Data → Documento (quando couber)
+2. `ORDER BY` / `.sort()` alinhado à seção 2
+3. Documento = NF; sem inventar
+4. Teste/smoke: primeira página já vem na ordem esperada
