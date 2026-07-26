@@ -48,4 +48,28 @@ Desempate honesto: id técnico estável (`id_comprovante`, `id_entidade`, …).
 1. Headers na ordem Filial → Data → Documento (quando couber)
 2. `ORDER BY` / `.sort()` alinhado à seção 2
 3. Documento = NF; sem inventar
-4. Teste/smoke: primeira página já vem na ordem esperada
+4. Busca geral (seção 4)
+5. Labels limpos (seção 5)
+6. Teste/smoke: primeira página já vem na ordem esperada
+
+## 4) Busca geral (obrigatória)
+
+Todo grid de produto/platform com linhas em tela deve expor **um** campo de pesquisa:
+
+- Componente: `apps/web/app/components/ui/GridSearchInput.tsx` + hook `useGridSearch`
+- Largura fixa: **280px** (classe `.gridSearchInput`) — não inventar outro tamanho
+- Placeholder: `Pesquisar…`
+- Comportamento: o termo filtra **qualquer** valor da linha (nome, data, valor, documento, operador, etc.), case-insensitive `pt-BR`
+- Excluir só chaves técnicas (`id_*`, tokens, hashes) via `excludeKeys` do hook
+- Substituir buscas antigas “só por nome”
+- Paginação server-side: filtrar a página carregada com o mesmo componente; não remover search da API se já existir
+
+## 5) Labels limpos (padrão ouro)
+
+Na UI do grid: **título + resultado**. Proibido:
+
+- Disclaimer / watermark / “fonte mart/CH/STG/SQL”
+- Explicações técnicas longas sob o título
+- Texto de debug ou jargão de pipeline
+
+Empty state curto e operacional. Regras de negócio ficam na documentação, não no card.

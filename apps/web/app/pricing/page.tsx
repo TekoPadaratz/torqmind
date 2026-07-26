@@ -11,6 +11,8 @@ import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
 import { canAccessScreenKey, readCachedSession } from '../lib/session';
+import GridSearchInput from '../components/ui/GridSearchInput';
+import { useGridSearch } from '../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -195,6 +197,7 @@ function RegisterTab({
   }, [scope.id_empresa, scope.id_filial, setError]);
 
   useEffect(() => { loadFuels(); }, [loadFuels]);
+  const { query, setQuery, filteredRows } = useGridSearch(fuels);
 
   const handlePriceChange = (productId: number, value: string) => {
     const cleaned = value.replace(/[^0-9.,]/g, '').replace(',', '.');
@@ -294,6 +297,7 @@ function RegisterTab({
         <p className="muted">Nenhum combustível encontrado para esta filial.</p>
       ) : (
         <>
+        <div style={{ marginBottom: 12 }}><GridSearchInput value={query} onChange={setQuery} /></div>
         <div className="tableScroll pricingDesktopOnly" style={{ marginBottom: 20 }}>
           <table className="table">
             <thead>
@@ -304,7 +308,7 @@ function RegisterTab({
               </tr>
             </thead>
             <tbody>
-              {fuels.map(fuel => (
+              {filteredRows.map(fuel => (
                 <tr key={fuel.product_id}>
                   <td>
                     <span style={{ fontWeight: 600 }}>{fuel.product_name}</span>
@@ -331,7 +335,7 @@ function RegisterTab({
         </div>
         {/* Mobile: vertical fuel cards */}
         <div className="pricingMobileOnly" style={{ marginBottom: 20 }}>
-          {fuels.map(fuel => (
+          {filteredRows.map(fuel => (
             <div key={fuel.product_id} className="fuelCardMobile">
               <div className="fuelCardName">{fuel.product_name}</div>
               <div className="fuelCardOwnPrice">
@@ -399,6 +403,7 @@ function HistoryTab({
   }, [scope.id_empresa, scope.id_filial, historyDate, setError]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
+  const { query, setQuery, filteredRows } = useGridSearch(captures);
 
   const handleEditSave = async (itemId: string) => {
     setError('');
@@ -445,7 +450,8 @@ function HistoryTab({
         <p className="muted">Nenhuma captura encontrada para esta data.</p>
       ) : (
         <div>
-          {captures.map(cap => (
+          <div style={{ marginBottom: 12 }}><GridSearchInput value={query} onChange={setQuery} /></div>
+          {filteredRows.map(cap => (
             <div key={cap.capture_id} className="historyCapture">
               <div className="captureHeader">
                 <span className="captureStation">{cap.station_name}</span>
@@ -624,6 +630,7 @@ function ComparisonTab({
   }, [scope.id_empresa, scope.id_filial, compDate, setError]);
 
   useEffect(() => { loadComparison(); }, [loadComparison]);
+  const { query, setQuery, filteredRows } = useGridSearch(rows);
 
   const statusInfo = (s: string) => {
     switch (s) {
@@ -659,6 +666,7 @@ function ComparisonTab({
         <p className="muted">Nenhum dado de comparação encontrado.</p>
       ) : (
         <>
+        <div style={{ marginBottom: 12 }}><GridSearchInput value={query} onChange={setQuery} /></div>
         <div className="tableScroll pricingDesktopOnly">
           <table className="table">
             <thead>
@@ -673,7 +681,7 @@ function ComparisonTab({
               </tr>
             </thead>
             <tbody>
-              {rows.map(row => {
+              {filteredRows.map(row => {
                 const st = statusInfo(row.status);
                 return (
                   <tr key={row.product_id}>

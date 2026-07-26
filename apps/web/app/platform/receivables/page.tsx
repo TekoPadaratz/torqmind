@@ -4,9 +4,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +31,7 @@ export default function PlatformReceivablesPage() {
   const [payForm, setPayForm] = useState({ paid_at: '', received_amount: '', payment_method: 'manual', notes: '' });
   const [noteForm, setNoteForm] = useState({ notes: '' });
   const [error, setError] = useState('');
+  const receivablesSearch = useGridSearch(items);
 
   async function load(session: any, currentFilters = filters) {
     const query = new URLSearchParams({ limit: '200' });
@@ -260,6 +263,7 @@ export default function PlatformReceivablesPage() {
       <div style={{ height: 16 }} />
 
       <div className="card">
+        <GridSearchInput value={receivablesSearch.query} onChange={receivablesSearch.setQuery} aria-label="Pesquisar contas a receber" />
         <table className="table">
           <thead>
             <tr>
@@ -275,7 +279,7 @@ export default function PlatformReceivablesPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {receivablesSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{formatDateOnly(item.competence_month)}</td>
                 <td>{item.tenant_name}</td>
@@ -292,7 +296,7 @@ export default function PlatformReceivablesPage() {
                 </td>
               </tr>
             ))}
-            {!items.length ? (
+            {!receivablesSearch.filteredRows.length ? (
               <tr>
                 <td colSpan={9}>Nenhuma conta a receber encontrada.</td>
               </tr>

@@ -1712,12 +1712,17 @@ class MartBuilder:
                 {ts_local} AS data_troca_ts,
                 toUInt8(toHour({ts_local})) AS hora
             FROM {self.current_db}.stg_controle_troca_pgto AS ct FINAL
+            -- Join por (id_empresa, id_db, id_movl): ID_MOVLCTOSCANCELADOS é
+            -- único por ID_DB no Xpert; id_filial da troca pode divergir do
+            -- lançamento cancelado (réplica multi-posto).
             LEFT JOIN {self.current_db}.stg_movlctoscancelados AS mc FINAL
-                ON mc.id_empresa = ct.id_empresa AND mc.id_filial = ct.id_filial
+                ON mc.id_empresa = ct.id_empresa
                 AND mc.id_db = ct.id_db
                 AND mc.id_movlctoscancelados = ct.id_movlctoscancelados_shadow
+                AND mc.is_deleted = 0
             LEFT JOIN {self.current_db}.stg_planodecontas AS pc FINAL
-                ON pc.id_empresa = ct.id_empresa AND pc.id_filial = ct.id_filial
+                ON pc.id_empresa = ct.id_empresa
+                AND pc.id_filial = mc.id_filial
                 AND pc.id_planodecontas = mc.id_planodecontas_shadow
             LEFT JOIN {self.current_db}.stg_formas_pgto_slim AS fp FINAL
                 ON fp.id_empresa = ct.id_empresa AND fp.id_filial = ct.id_filial

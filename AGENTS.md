@@ -131,6 +131,13 @@ TOTAL=%{time_total}s
 
 Para endpoints BI: evitar consulta pesada em STG quando Mart/snapshot existe; evitar fallback pesado silencioso; reduzir payload; cache por escopo quando seguro; preferir marts/materializações para telas críticas; alvo: endpoint quente abaixo de 2s sempre que possível.
 
+## Grids (contrato UI)
+
+Todo grid novo ou alterado deve seguir `.cursor/rules/08-grids-colunas-ordenacao.mdc`:
+colunas Filial→Data→Documento, ordenação canônica, **busca geral** via
+`GridSearchInput` + `useGridSearch` (largura fixa 280px; termo varre todos os
+campos da linha), e labels limpos (sem disclaimer/debug/mart/SQL na UI).
+
 ## Estilo de trabalho
 
 Sempre diagnosticar, explicar causa provável, alterar o mínimo necessário, testar, validar API/Web, limpar sujeira, commit/push quando solicitado e entregar relatório PASS/FAIL com prova.

@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
+import { useGridSearch } from "../lib/use-grid-search";
 
 interface BudgetConfigTabProps {
   idEmpresa: number | null;
@@ -30,7 +32,6 @@ export default function BudgetConfigTab({ idEmpresa, idFilial }: BudgetConfigTab
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [search, setSearch] = useState("");
 
   const fetchConfig = useCallback(async () => {
     if (!idFilial) return;
@@ -64,13 +65,9 @@ export default function BudgetConfigTab({ idEmpresa, idFilial }: BudgetConfigTab
     setAccounts((prev) => prev.map((a) => (a.id_plano_conta === id ? { ...a, [field]: value } : a)));
   };
 
-  const filtered = useMemo(() => {
-    const term = search.trim().toUpperCase();
-    if (!term) return accounts;
-    return accounts.filter(
-      (a) => a.nome_conta.toUpperCase().includes(term) || a.codigo.toUpperCase().includes(term),
-    );
-  }, [accounts, search]);
+  const { query, setQuery, filteredRows } = useGridSearch(
+    accounts as unknown as Record<string, unknown>[],
+  );
 
   const configuredCount = useMemo(() => accounts.filter((a) => a.valor_max > 0).length, [accounts]);
 
@@ -123,13 +120,7 @@ export default function BudgetConfigTab({ idEmpresa, idFilial }: BudgetConfigTab
       </div>
 
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
-        <input
-          className="input"
-          placeholder="Buscar conta..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 280 }}
-        />
+        <GridSearchInput value={query} onChange={setQuery} />
         <span className="muted" style={{ fontSize: 12 }}>
           {configuredCount} conta(s) com teto · {accounts.length} no total
         </span>
@@ -155,7 +146,7 @@ export default function BudgetConfigTab({ idEmpresa, idFilial }: BudgetConfigTab
               </tr>
             </thead>
             <tbody>
-              {filtered.map((a) => (
+              {filteredRows.map((a: any) => (
                 <tr key={a.id_plano_conta}>
                   <td className="muted" style={{ fontSize: 11 }}>{a.codigo}</td>
                   <td>{a.nome_conta}</td>

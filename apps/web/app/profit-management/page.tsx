@@ -14,6 +14,7 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { buildUserLabel, formatCurrency } from "../lib/format";
 import {
@@ -23,6 +24,7 @@ import {
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { canViewSensitiveFinancials, canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 import { SolvenciaDetalhada } from "./SolvenciaDetalhada";
 import { AnpCompliancePanel } from "./AnpCompliancePanel";
 
@@ -113,7 +115,6 @@ export default function ProfitManagementPage() {
   const [activeTab, setActiveTab] = useState<ProfitTab>("overview");
   const [sectorFilter, setSectorFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
   const [profitMonth, setProfitMonth] = useState<number>(() => currentAnoMesSP());
   const [solvenciaReload, setSolvenciaReload] = useState(0);
   const [anpReload, setAnpReload] = useState(0);
@@ -257,14 +258,6 @@ export default function ProfitManagementPage() {
   const filteredProducts = useMemo(() => {
     if (!products?.produtos) return [];
     let filtered = products.produtos;
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      filtered = filtered.filter(
-        (p: any) =>
-          p.nome_produto?.toLowerCase().includes(term) ||
-          p.grupo?.toLowerCase().includes(term),
-      );
-    }
     if (sectorFilter) {
       filtered = filtered.filter(
         (p: any) => p.setor === sectorFilter,
@@ -276,7 +269,10 @@ export default function ProfitManagementPage() {
       );
     }
     return filtered;
-  }, [products, searchTerm, sectorFilter, statusFilter]);
+  }, [products, sectorFilter, statusFilter]);
+  const { query: productsQ, setQuery: setProductsQ, filteredRows: searchedProducts } = useGridSearch(
+    filteredProducts as Record<string, unknown>[],
+  );
 
   const expenseChartData = useMemo(() => {
     if (!expenses?.categorias) return [];
@@ -562,12 +558,7 @@ export default function ProfitManagementPage() {
           <div style={{ marginTop: 16 }}>
             {/* Filters */}
             <div className="profitFilterBar">
-              <input
-                type="text"
-                placeholder="Buscar produto ou grupo..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
+              <GridSearchInput value={productsQ} onChange={setProductsQ} />
               <select
                 value={sectorFilter}
                 onChange={(e) => setSectorFilter(e.target.value)}
@@ -590,7 +581,7 @@ export default function ProfitManagementPage() {
                 <option value="acima_meta">Acima da Meta</option>
               </select>
               <span className="profitFilterCount">
-                {filteredProducts.length}{products?.total ? ` de ${products.total}` : ""} produtos
+                {searchedProducts.length}{products?.total ? ` de ${products.total}` : ""} produtos
               </span>
             </div>
 
@@ -613,7 +604,7 @@ export default function ProfitManagementPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredProducts.map((p: any, idx: number) => (
+                  {searchedProducts.map((p: any, idx: number) => (
                     <tr key={`${p.id_produto}-${p.setor}-${idx}`} style={{ borderBottom: "1px solid var(--border)" }}>
                       <td style={{ padding: "6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nome_produto}</td>
                       <td style={{ padding: "6px 4px", textTransform: "capitalize" }}>{p.setor}</td>
@@ -646,7 +637,7 @@ export default function ProfitManagementPage() {
                   ))}
                 </tbody>
               </table>
-              {filteredProducts.length === 0 && (
+              {searchedProducts.length === 0 && (
                 <div className="muted" style={{ padding: 16, textAlign: "center" }}>
                   Nenhum produto encontrado com os filtros selecionados.
                 </div>

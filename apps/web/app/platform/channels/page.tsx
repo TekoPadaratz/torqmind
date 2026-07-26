@@ -4,8 +4,10 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../lib/api';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +27,7 @@ export default function PlatformChannelsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<any>(emptyForm);
   const [error, setError] = useState('');
+  const channelsSearch = useGridSearch(items);
 
   async function load(session: any) {
     const res = await apiGet('/platform/channels?limit=200');
@@ -141,6 +144,7 @@ export default function PlatformChannelsPage() {
       <div style={{ height: 16 }} />
 
       <div className="card">
+        <GridSearchInput value={channelsSearch.query} onChange={channelsSearch.setQuery} aria-label="Pesquisar canais" />
         <table className="table">
           <thead>
             <tr>
@@ -154,7 +158,7 @@ export default function PlatformChannelsPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {channelsSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{item.id}</td>
                 <td>{item.name}</td>
@@ -169,7 +173,7 @@ export default function PlatformChannelsPage() {
                 </td>
               </tr>
             ))}
-            {!items.length ? (
+            {!channelsSearch.filteredRows.length ? (
               <tr>
                 <td colSpan={7}>Nenhum canal cadastrado.</td>
               </tr>

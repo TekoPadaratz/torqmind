@@ -794,14 +794,26 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         },
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        # DTACONTA de cheque/pré pode ser futura (2027+) e envenena o watermark
+        # MAX(DTACONTA, DATAREPL): o incremental avança para o futuro e deixa de
+        # capturar cancelamentos novos → mart de troca fica sem forma_de/valor.
+        # Watermark = DATAREPL (mudança real) + DTACONTA só se <= amanhã.
+        # Revisit: relê janela recente por DATAREPL e IDs altos (catch-up do gap).
+        "revisit_open_clause": (
+            "("
+            f"NULLIF(CAST(DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)) "
+            ">= DATEADD(day, -60, SYSUTCDATETIME())"
+            " OR ID_MOVLCTOSCANCELADOS >= 324000"
+            ")"
+        ),
         "query": (
             "SELECT m.*, "
             "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "(SELECT MAX(v.dt) "
-            "   FROM (VALUES "
-            "       (CAST(m.DTACONTA AS datetime2)), "
-            f"       (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
-            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "COALESCE("
+            f"NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)), "
+            "CASE WHEN CAST(m.DTACONTA AS datetime2) <= DATEADD(day, 1, SYSUTCDATETIME()) "
+            "     THEN CAST(m.DTACONTA AS datetime2) END"
+            ") AS TORQMIND_WATERMARK "
             "FROM dbo.MOVLCTOSCANCELADOS m"
         ),
         "enabled": True,

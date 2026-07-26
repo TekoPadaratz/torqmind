@@ -5,9 +5,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../components/PlatformShell';
+import GridSearchInput from '../components/ui/GridSearchInput';
 import { apiGet } from '../lib/api';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { loadSession } from '../lib/session';
+import { useGridSearch } from '../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +22,10 @@ export default function PlatformHomePage() {
   const [users, setUsers] = useState<any[]>([]);
   const [receivables, setReceivables] = useState<any[]>([]);
   const [payables, setPayables] = useState<any[]>([]);
+  const companiesSearch = useGridSearch(companies);
+  const usersSearch = useGridSearch(users);
+  const receivablesSearch = useGridSearch(receivables);
+  const payablesSearch = useGridSearch(payables);
 
   useEffect(() => {
     const load = async () => {
@@ -108,6 +114,7 @@ export default function PlatformHomePage() {
               Abrir gestão
             </Link>
           </div>
+          <GridSearchInput value={companiesSearch.query} onChange={companiesSearch.setQuery} aria-label="Pesquisar empresas recentes" />
           <table className="table compact">
             <thead>
               <tr>
@@ -119,7 +126,7 @@ export default function PlatformHomePage() {
               </tr>
             </thead>
             <tbody>
-              {companies.map((item) => (
+              {companiesSearch.filteredRows.map((item) => (
                 <tr key={item.id_empresa}>
                   <td>{item.id_empresa}</td>
                   <td>
@@ -144,6 +151,7 @@ export default function PlatformHomePage() {
               Abrir usuários
             </Link>
           </div>
+          <GridSearchInput value={usersSearch.query} onChange={usersSearch.setQuery} aria-label="Pesquisar usuários em foco" />
           <table className="table compact">
             <thead>
               <tr>
@@ -154,7 +162,7 @@ export default function PlatformHomePage() {
               </tr>
             </thead>
             <tbody>
-              {users.map((item) => (
+              {usersSearch.filteredRows.map((item) => (
                 <tr key={item.id}>
                   <td>{item.nome}</td>
                   <td>{item.role}</td>
@@ -181,6 +189,7 @@ export default function PlatformHomePage() {
                   Abrir financeiro
                 </Link>
               </div>
+              <GridSearchInput value={receivablesSearch.query} onChange={receivablesSearch.setQuery} aria-label="Pesquisar recebíveis recentes" />
               <table className="table compact">
                 <thead>
                   <tr>
@@ -191,7 +200,7 @@ export default function PlatformHomePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {receivables.map((item) => (
+                  {receivablesSearch.filteredRows.map((item) => (
                     <tr key={item.id}>
                       <td>{formatDateOnly(item.competence_month)}</td>
                       <td>{item.tenant_name}</td>
@@ -213,6 +222,7 @@ export default function PlatformHomePage() {
                   Abrir canal
                 </Link>
               </div>
+              <GridSearchInput value={payablesSearch.query} onChange={payablesSearch.setQuery} aria-label="Pesquisar contas a pagar de canal" />
               <table className="table compact">
                 <thead>
                   <tr>
@@ -223,7 +233,7 @@ export default function PlatformHomePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {payables.map((item) => (
+                  {payablesSearch.filteredRows.map((item) => (
                     <tr key={item.id}>
                       <td>{item.channel_name}</td>
                       <td>{item.tenant_name}</td>

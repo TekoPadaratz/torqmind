@@ -5,9 +5,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { apiGet, apiPost } from '../../lib/api';
 import { formatCurrency, formatDateOnly } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +33,7 @@ export default function PlatformCompaniesPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const companiesSearch = useGridSearch(items);
 
   const load = async (session: any, currentSearch = search, currentStatus = status) => {
     setLoading(true);
@@ -153,6 +156,7 @@ export default function PlatformCompaniesPage() {
             </button>
           </div>
         </div>
+        <GridSearchInput value={companiesSearch.query} onChange={companiesSearch.setQuery} aria-label="Pesquisar empresas carregadas" />
 
         <table className="table">
           <thead>
@@ -166,7 +170,7 @@ export default function PlatformCompaniesPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {companiesSearch.filteredRows.map((item) => (
               <tr key={item.id_empresa}>
                 <td>{item.id_empresa}</td>
                 <td>
@@ -178,7 +182,7 @@ export default function PlatformCompaniesPage() {
                 <td>{formatDateOnly(item.valid_until || item.valid_from)}</td>
               </tr>
             ))}
-            {!items.length && !loading ? (
+            {!companiesSearch.filteredRows.length && !loading ? (
               <tr>
                 <td colSpan={6}>Nenhuma empresa encontrada.</td>
               </tr>

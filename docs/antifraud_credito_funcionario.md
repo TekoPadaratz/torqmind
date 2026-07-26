@@ -11,6 +11,7 @@
 | Uso (título) | `dbo.CONTASRECEBER` por `ID_ENTIDADE` | Toda a empresa; `HISTORICO` ~ `%vale%` → vale, senão a prazo |
 | Filial do gasto | `CONTASRECEBER.id_filial` | Só no detalhe do uso (nome reduzido) |
 | Operador | `stg.nfe` → `stg.comprovantes.ID_USUARIOS` → `USUARIOS` | Quem liberou no caixa |
+| Cliente (venda) | `comprovante.ID_ENTIDADE` / `id_cliente` → `dim_cliente` / `ENTIDADES` | Só se distinto do titular do crédito; senão `—` |
 | Data/hora real | `COMPROVANTES.DATA` via cupom/NF | Preferida a `DTACONTA` do título |
 | **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** comprovante |
 
@@ -21,7 +22,7 @@
 
 Grid: funcionários ativos na **filial selecionada** (ENTIDADES grupo 12 + ATIVO). Limites e uso são da entidade; o **uso** soma gastos em **toda a empresa**.
 
-Drill-down: **Filial** (onde gastou) | Data | NF-e/NFC-e | Tipo | Operador | Valor — ordenado por filial, data (mais recente), valor.
+Drill-down: **Filial** | Data | NF-e/NFC-e | Cliente | Tipo | Operador | Valor — ordenado por filial, data (mais recente), valor.
 
 Ordenação da lista: nome.
 

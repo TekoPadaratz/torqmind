@@ -14,6 +14,7 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { buildUserLabel, formatCurrency } from "../lib/format";
 import { formatSalesQuantity } from "../lib/sales-quantity.mjs";
@@ -23,6 +24,7 @@ import {
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 import SalesAbcSection from "./SalesAbcSection";
 
 export const dynamic = "force-dynamic";
@@ -134,6 +136,12 @@ export default function SalesPage() {
     if (!selectedGrupos.size) return all;
     return all.filter((p: any) => selectedGrupos.has(grupoNome(p)));
   }, [data, selectedGrupos]);
+  const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
+    data?.top_groups as Record<string, unknown>[] | undefined,
+  );
+  const { query: productsQ, setQuery: setProductsQ, filteredRows: searchedProducts } = useGridSearch(
+    topProductsFiltered as Record<string, unknown>[],
+  );
   const toggleGrupo = (nome: string) =>
     setSelectedGrupos((prev) => {
       const next = new Set(prev);
@@ -336,6 +344,7 @@ export default function SalesPage() {
                   >
                     Todos os grupos
                   </button>
+                  <GridSearchInput value={groupsQ} onChange={setGroupsQ} />
                 </div>
                 <div className="tableScroll">
                   <table className="table compact">
@@ -347,7 +356,7 @@ export default function SalesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(data?.top_groups || []).slice(0, 10).map((g: any) => {
+                      {filteredGroups.slice(0, 10).map((g: any) => {
                         const nome = grupoNome(g);
                         const on = selectedGrupos.has(nome);
                         return (
@@ -369,7 +378,10 @@ export default function SalesPage() {
 
               <div className="card col-6">
                 <h2>Top produtos{selectedGrupos.size ? ` · ${selectedGrupos.size} grupo(s)` : ""}</h2>
-                {!loading && !topProductsFiltered.length ? (
+                <div style={{ margin: "8px 0" }}>
+                  <GridSearchInput value={productsQ} onChange={setProductsQ} />
+                </div>
+                {!loading && !searchedProducts.length ? (
                   <EmptyState
                     title={selectedGrupos.size ? "Sem produtos no(s) grupo(s) selecionado(s)." : "Sem produtos ranqueados."}
                     detail={selectedGrupos.size ? "Nenhum produto do ranking pertence ao(s) grupo(s) escolhido(s). Ajuste a seleção." : "A leitura por item não trouxe produtos ativos para este período."}
@@ -386,7 +398,7 @@ export default function SalesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {topProductsFiltered.slice(0, 15).map((p: any) => (
+                      {searchedProducts.slice(0, 15).map((p: any) => (
                         <tr key={p.id_produto}>
                           <td>
                             <div>{p.produto_nome}</div>

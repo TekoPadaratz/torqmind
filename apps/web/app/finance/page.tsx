@@ -18,6 +18,7 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import FinanceChequesSection from "./FinanceChequesSection";
 import FinanceBudgetSection from "./FinanceBudgetSection";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
@@ -34,6 +35,7 @@ import {
 import { describeFinanceCoverage } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +95,12 @@ export default function FinancePage() {
     [data, paymentMixTotal],
   );
   const paymentsAnomalies = data?.payments?.anomalies || [];
+  const { query: paymentsQ, setQuery: setPaymentsQ, filteredRows: filteredPayments } = useGridSearch(
+    paymentsByTurno as Record<string, unknown>[],
+  );
+  const { query: anomaliesQ, setQuery: setAnomaliesQ, filteredRows: filteredAnomalies } = useGridSearch(
+    paymentsAnomalies as Record<string, unknown>[],
+  );
   const aging = data?.aging || {};
   const financeDefinitions = data?.definitions || {};
   const businessClock = data?.business_clock || {};
@@ -526,6 +534,9 @@ export default function FinancePage() {
                 <div className="muted" style={{ marginTop: 8 }}>
                   Ranking consolidado do período, sem repetir uma linha por dia.
                 </div>
+                <div style={{ marginTop: 12 }}>
+                  <GridSearchInput value={paymentsQ} onChange={setPaymentsQ} />
+                </div>
                 {!loading && paymentsStatus === "value_gap" ? (
                   <EmptyState
                     title="A leitura por turno ainda não está confiável."
@@ -554,7 +565,7 @@ export default function FinancePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {paymentsByTurno.slice(0, 15).map((r: any, idx: number) => (
+                      {filteredPayments.slice(0, 15).map((r: any, idx: number) => (
                         <tr
                           key={`${r.id_filial}-${r.id_turno}-${r.category}-${idx}`}
                         >
@@ -574,6 +585,9 @@ export default function FinancePage() {
 
               <div className="card col-5">
                 <h2>Sinais de pagamento fora do padrão</h2>
+                <div style={{ marginTop: 12 }}>
+                  <GridSearchInput value={anomaliesQ} onChange={setAnomaliesQ} />
+                </div>
                 {!loading && paymentsStatus === "value_gap" ? (
                   <EmptyState
                     title="Motor de anomalias aguardando valor monetário confiável."
@@ -598,7 +612,7 @@ export default function FinancePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paymentsAnomalies
+                    {filteredAnomalies
                       .slice(0, 10)
                       .map((a: any, idx: number) => (
                         <tr key={`${a.insight_id || a.event_type}-${idx}`}>

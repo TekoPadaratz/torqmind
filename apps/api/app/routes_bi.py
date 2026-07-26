@@ -1278,6 +1278,8 @@ def fraud_overview(
         lancamentos_creditos: Dict[str, Any] = {"summary": {}, "lancamentos": []}
         troca_forma_pgto: List[Dict[str, Any]] = []
         troca_forma_pgto_totais: Dict[str, Any] = dict(empty_troca_totais)
+        devolucao_entrada: Dict[str, Any] = {"items": [], "summary": {"qtd": 0, "valor_total": 0.0}}
+        transferencia_cr: Dict[str, Any] = {"items": [], "summary": {"qtd": 0, "valor_total": 0.0}}
 
         if want_core:
             operational_kpis = repos_mart.fraud_kpis(role, tenant, filial, dt_ini, dt_fim)
@@ -1311,6 +1313,18 @@ def fraud_overview(
                     role, tenant, filial, dt_ini, dt_fim,
                     forma_nova=troca_forma_nova or "todos",
                 )
+            try:
+                devolucao_entrada = repos_mart.fraud_devolucao_entrada(
+                    role, tenant, filial, dt_ini, dt_fim, limit=200,
+                )
+            except Exception:
+                devolucao_entrada = {"items": [], "summary": {"qtd": 0, "valor_total": 0.0}, "source": "error"}
+            try:
+                transferencia_cr = repos_mart.fraud_transferencia_cr(
+                    role, tenant, filial, dt_ini, dt_fim, limit=200,
+                )
+            except Exception:
+                transferencia_cr = {"items": [], "summary": {"qtd": 0, "valor_total": 0.0}, "source": "error"}
 
         operational_summary = {
             "kind": "operational",
@@ -1354,6 +1368,8 @@ def fraud_overview(
             "lancamentos_creditos": lancamentos_creditos,
             "troca_forma_pgto": troca_forma_pgto,
             "troca_forma_pgto_totais": troca_forma_pgto_totais,
+            "devolucao_entrada": devolucao_entrada,
+            "transferencia_cr": transferencia_cr,
             "troca_only_suspeita": troca_only_suspeita,
             "sections": section,
         }

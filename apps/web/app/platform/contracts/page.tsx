@@ -4,9 +4,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../lib/api';
 import { formatCurrency, formatDateOnly } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,6 +40,7 @@ export default function PlatformContractsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<any>(emptyForm);
   const [error, setError] = useState('');
+  const contractsSearch = useGridSearch(items);
 
   async function load(session: any) {
     const [contractsRes, companiesRes, channelsRes] = await Promise.all([
@@ -194,6 +197,7 @@ export default function PlatformContractsPage() {
       <div style={{ height: 16 }} />
 
       <div className="card">
+        <GridSearchInput value={contractsSearch.query} onChange={contractsSearch.setQuery} aria-label="Pesquisar contratos" />
         <table className="table">
           <thead>
             <tr>
@@ -207,7 +211,7 @@ export default function PlatformContractsPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {contractsSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{item.tenant_name}</td>
                 <td>{item.plan_name}</td>
@@ -224,7 +228,7 @@ export default function PlatformContractsPage() {
                 </td>
               </tr>
             ))}
-            {!items.length ? (
+            {!contractsSearch.filteredRows.length ? (
               <tr>
                 <td colSpan={7}>Nenhum contrato cadastrado.</td>
               </tr>
