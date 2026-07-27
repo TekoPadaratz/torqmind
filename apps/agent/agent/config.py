@@ -22,12 +22,10 @@ FULL_REFRESH_LAST_RUN_KEY = "last_full_refresh_at"
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
 LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
+# TRY_CONVERT evita o CASE+LIKE '%[^0-9]%' (não-sargável) que forçava scan/nested-loop
+# monstro em rescan de 7 dias e travava o agent por dezenas de minutos sem erro.
 FORMAS_PGTO_COMPROVANTES_REFERENCE_EXPR = (
-    "CASE "
-    "WHEN NULLIF(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))), '') IS NOT NULL "
-    " AND LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) NOT LIKE '%[^0-9]%' "
-    "THEN CAST(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) AS int) "
-    "ELSE NULL END"
+    "TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(varchar(64), f.ID_REFERENCIA))), ''))"
 )
 
 
@@ -328,6 +326,9 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
+            # Drive a partir de COMPROVANTES: o filtro externo em TORQMIND_DT_EVENTO
+            # (= c.DATA) consegue seek por data. JOIN antigo (FORMAS → CASE em
+            # ID_REFERENCIA → COMPROVANTES) gerava scan full + hang de 30min+ no rescan.
             "SELECT f.*, "
             "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
             "(SELECT MAX(v.dt) "
@@ -335,11 +336,11 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "       (CAST(c.DATA AS datetime2)), "
             f"       (NULLIF(CAST(f.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
             "   ) AS v(dt)) AS TORQMIND_WATERMARK "
-            "FROM dbo.FORMAS_PGTO_COMPROVANTES f "
-            "JOIN dbo.COMPROVANTES c "
-            f"  ON c.REFERENCIA = {FORMAS_PGTO_COMPROVANTES_REFERENCE_EXPR} "
-            " AND c.ID_FILIAL = f.ID_FILIAL "
-            " AND c.ID_DB = f.ID_DB"
+            "FROM dbo.COMPROVANTES c "
+            "INNER JOIN dbo.FORMAS_PGTO_COMPROVANTES f "
+            "  ON f.ID_FILIAL = c.ID_FILIAL "
+            " AND f.ID_DB = c.ID_DB "
+            f" AND {FORMAS_PGTO_COMPROVANTES_REFERENCE_EXPR} = c.REFERENCIA"
         ),
         "enabled": True,
     },
@@ -987,6 +988,8 @@ class SQLServerConfig:
     encrypt: Optional[bool] = True
     trust_server_certificate: Optional[bool] = False
     login_timeout_seconds: int = 30
+    # 0 = sem limite (pyodbc default). Evita hang eterno em JOIN pesado (ex.: formas_pgto).
+    query_timeout_seconds: int = 600
 
 
 @dataclass
@@ -1107,6 +1110,7 @@ def build_default_raw_config() -> Dict[str, Any]:
             "encrypt": True,
             "trust_server_certificate": False,
             "login_timeout_seconds": 30,
+            "query_timeout_seconds": 600,
         },
         "api": {
             "base_url": "http://177.70.206.90:14023",
@@ -1202,6 +1206,10 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     sql["login_timeout_seconds"] = _env_int(
         "TORQMIND_SQLSERVER_LOGIN_TIMEOUT_SECONDS",
         int(sql.get("login_timeout_seconds", 30)),
+    )
+    sql["query_timeout_seconds"] = _env_int(
+        "TORQMIND_SQLSERVER_QUERY_TIMEOUT_SECONDS",
+        int(sql.get("query_timeout_seconds", 600)),
     )
 
     api["base_url"] = os.getenv("TORQMIND_API_BASE_URL", api.get("base_url", "http://177.70.206.90:14023"))

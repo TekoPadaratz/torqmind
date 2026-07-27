@@ -80,6 +80,21 @@ class SQLServerExtractor(BaseExtractor):
             raise RuntimeError("pyodbc is not installed. Install requirements and SQL Server ODBC driver first.")
         if self.conn is None:
             self.conn = pyodbc.connect(self._connection_string())
+            # pyodbc: query timeout em segundos (0 = infinito). Sem isso, um JOIN
+            # ruim segura o serviço por horas sem log de erro.
+            query_timeout = int(getattr(self.cfg.sqlserver, "query_timeout_seconds", 600) or 0)
+            try:
+                self.conn.timeout = query_timeout
+            except Exception:  # pragma: no cover
+                self.logger.warning(
+                    "phase=connect_warning msg=failed_to_set_query_timeout timeout_s=%s",
+                    query_timeout,
+                )
+            self.logger.info(
+                "phase=sql_connected driver=%s query_timeout_s=%s",
+                self.cfg.sqlserver.driver,
+                query_timeout,
+            )
         return self.conn
 
     def close(self) -> None:

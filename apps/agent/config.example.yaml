@@ -44,6 +44,7 @@ sqlserver:
   encrypt: false
   trust_server_certificate: true
   login_timeout_seconds: 20
+  query_timeout_seconds: 600  # evita hang eterno no SQL Server
 
 api:
   # Public base URL. The agent auto-detects the real API root behind nginx (/api).
@@ -317,10 +318,8 @@ datasets:
     watermark_overlap_seconds: 240
     query: SELECT f.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(c.DATA
       AS datetime2)),        (NULLIF(CAST(f.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
-      AS TORQMIND_WATERMARK FROM dbo.FORMAS_PGTO_COMPROVANTES f JOIN dbo.COMPROVANTES c   ON c.REFERENCIA = CASE WHEN NULLIF(LTRIM(RTRIM(CAST(f.ID_REFERENCIA
-      AS varchar(64)))), '') IS NOT NULL  AND LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) NOT LIKE '%[^0-9]%' THEN
-      CAST(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) AS int) ELSE NULL END  AND c.ID_FILIAL = f.ID_FILIAL  AND c.ID_DB
-      = f.ID_DB
+      AS TORQMIND_WATERMARK FROM dbo.COMPROVANTES c INNER JOIN dbo.FORMAS_PGTO_COMPROVANTES f   ON f.ID_FILIAL = c.ID_FILIAL  AND
+      f.ID_DB = c.ID_DB  AND TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(varchar(64), f.ID_REFERENCIA))), '')) = c.REFERENCIA
   contaspagar:
     enabled: true
     table: dbo.CONTASPAGAR

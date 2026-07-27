@@ -1067,14 +1067,31 @@ class AgentRunner:
     # ------------------------------------------------------------------
     # Rescan datasets (commercial datasets that benefit from re-extraction)
     # ------------------------------------------------------------------
-    RESCAN_DATASETS = ("comprovantes", "itenscomprovantes", "formas_pgto_comprovantes", "nfe", "contasreceber", "contasreceberbaixa")
+    # Daily rescan de 7d em formas_pgto com JOIN antigo travava o SQL Server.
+    # Mantém formas só no rescan horário (janela curta); o incremental cobre o resto.
+    RESCAN_HOURLY_DATASETS = (
+        "comprovantes",
+        "itenscomprovantes",
+        "formas_pgto_comprovantes",
+        "nfe",
+        "contasreceber",
+        "contasreceberbaixa",
+    )
+    RESCAN_DAILY_DATASETS = (
+        "comprovantes",
+        "itenscomprovantes",
+        "nfe",
+        "contasreceber",
+        "contasreceberbaixa",
+    )
+    RESCAN_DATASETS = RESCAN_HOURLY_DATASETS  # compat
 
     def _rescan_window(self, hours: int) -> None:
         """Run backfill for the last N hours on all commercial datasets."""
         now = datetime.now()
         dt_from = now - timedelta(hours=hours)
         dt_to = now + timedelta(hours=1)  # slight future margin for rounding
-        for dataset in self.RESCAN_DATASETS:
+        for dataset in self.RESCAN_HOURLY_DATASETS:
             ds_cfg = self.cfg.datasets.get(dataset, {})
             if not ds_cfg.get("enabled", False):
                 continue
@@ -1096,11 +1113,11 @@ class AgentRunner:
                 )
 
     def _rescan_daily(self, days: int) -> None:
-        """Run backfill for the last N days on all commercial datasets."""
+        """Run backfill for the last N days on commercial datasets (sem formas_pgto)."""
         now = datetime.now()
         dt_from = now - timedelta(days=days)
         dt_to = now + timedelta(days=1)
-        for dataset in self.RESCAN_DATASETS:
+        for dataset in self.RESCAN_DAILY_DATASETS:
             ds_cfg = self.cfg.datasets.get(dataset, {})
             if not ds_cfg.get("enabled", False):
                 continue
