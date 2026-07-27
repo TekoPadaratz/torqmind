@@ -1080,25 +1080,44 @@ def _bulk_upsert_with_stats(
     table: str,
     pk_cols: List[str],
     rows: List[Tuple[Any, ...]],
-) -> Tuple[int, int]:
+) -> Tuple[int, int, int]:
+    """Bulk upsert with no-op suppression.
+
+    Rows whose non-PK columns (incl. payload) are unchanged are NOT rewritten and
+    do not bump ingested_at/received_at — critical to cut WAL/CDC/CH write amplification
+    from agent full_refresh cycles.
+
+    Returns (inserted, updated, unchanged).
+    """
     if not rows:
-        return 0, 0
+        return 0, 0, 0
 
     cols = _batch_columns(dataset_key, DATASETS[dataset_key])
     schema_name, table_name = table.split(".", 1)
     temp_name = f"tmp_ingest_{table_name}_{uuid4().hex[:8]}"
     cols_sql = sql.SQL(", ").join(sql.Identifier(col) for col in cols)
     conflict_sql = sql.SQL(", ").join(sql.Identifier(col) for col in pk_cols)
+    update_cols = [col for col in cols if col not in pk_cols]
+    if not update_cols:
+        # Defensive: should never happen (payload always present).
+        update_cols = ["payload"]
     update_sql = sql.SQL(", ").join(
         [
             *[
                 sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(col), sql.Identifier(col))
-                for col in cols
-                if col not in pk_cols and col != "payload"
+                for col in update_cols
             ],
-            sql.SQL("payload = EXCLUDED.payload"),
             sql.SQL("ingested_at = now()"),
             sql.SQL("received_at = now()"),
+        ]
+    )
+    # Only rewrite when something material changed (payload and/or shadow cols).
+    change_where = sql.SQL(" OR ").join(
+        [
+            sql.SQL("target.{} IS DISTINCT FROM EXCLUDED.{}").format(
+                sql.Identifier(col), sql.Identifier(col)
+            )
+            for col in update_cols
         ]
     )
 
@@ -1112,14 +1131,16 @@ def _bulk_upsert_with_stats(
         with cur.copy(sql.SQL("COPY {} ({}) FROM STDIN").format(sql.Identifier(temp_name), cols_sql)) as copy:
             for row in rows:
                 copy.write_row(row)
+        # WHEN WHERE is false, RETURNING omits the row → unchanged = len(rows) - len(flags).
         cur.execute(
             sql.SQL(
                 """
-                INSERT INTO {} ({})
+                INSERT INTO {} AS target ({})
                 SELECT {}
                 FROM {}
                 ON CONFLICT ({})
                 DO UPDATE SET {}
+                WHERE {}
                 RETURNING (xmax = 0) AS inserted_flag
                 """
             ).format(
@@ -1129,12 +1150,14 @@ def _bulk_upsert_with_stats(
                 sql.Identifier(temp_name),
                 conflict_sql,
                 update_sql,
+                change_where,
             )
         )
         flags = cur.fetchall()
     inserted = sum(1 for f in flags if f["inserted_flag"])
     updated = len(flags) - inserted
-    return inserted, updated
+    unchanged = len(rows) - len(flags)
+    return inserted, updated, unchanged
 
 
 def _dedupe_rows_by_pk(pk_cols: List[str], rows: List[Tuple[Any, ...]]) -> Tuple[List[Tuple[Any, ...]], int]:
@@ -1241,22 +1264,26 @@ async def ingest_dataset(
     preco_fixo_item_rows: List[Dict[str, Any]] = []
     inserted = 0
     updated = 0
+    unchanged = 0
     duplicates_in_batch = 0
     inserted_or_updated = 0
 
     def flush_batch() -> None:
-        nonlocal batch_values, inserted, updated, duplicates_in_batch, inserted_or_updated
+        nonlocal batch_values, inserted, updated, unchanged, duplicates_in_batch, inserted_or_updated
         if not batch_values:
             return
         batch_values, batch_duplicates = _dedupe_rows_by_pk(spec.pk_cols, batch_values)
         duplicates_in_batch += batch_duplicates
         with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
             with conn.transaction():
-                batch_inserted, batch_updated = _bulk_upsert_with_stats(conn, dataset_key, spec.table, spec.pk_cols, batch_values)
+                batch_inserted, batch_updated, batch_unchanged = _bulk_upsert_with_stats(
+                    conn, dataset_key, spec.table, spec.pk_cols, batch_values
+                )
             conn.commit()
         inserted += batch_inserted
         updated += batch_updated
-        inserted_or_updated += len(batch_values)
+        unchanged += batch_unchanged
+        inserted_or_updated += batch_inserted + batch_updated
         batch_values = []
 
     async for obj in _stream_ndjson_objects(request, is_gzip=is_gzip):
@@ -1328,11 +1355,12 @@ async def ingest_dataset(
     flush_batch()
 
     logger.info(
-        "Ingest summary tenant=%s dataset=%s inserted=%s updated=%s duplicates_in_batch=%s rejected_invalid=%s rejected_by_retention=%s cutoff=%s cutoff_source=%s override_active=%s",
+        "Ingest summary tenant=%s dataset=%s inserted=%s updated=%s unchanged=%s duplicates_in_batch=%s rejected_invalid=%s rejected_by_retention=%s cutoff=%s cutoff_source=%s override_active=%s",
         id_empresa,
         dataset_key,
         inserted,
         updated,
+        unchanged,
         duplicates_in_batch,
         rejected_invalid_count,
         rejected_by_retention_count,
@@ -1349,6 +1377,7 @@ async def ingest_dataset(
             "inserted_or_updated": 0,
             "inserted": inserted,
             "updated": updated,
+            "unchanged": unchanged,
             "duplicates_in_batch": duplicates_in_batch,
             "rejected": rejected_invalid_count + rejected_by_retention_count,
             "rejected_invalid": rejected_invalid_count,
@@ -1428,6 +1457,7 @@ async def ingest_dataset(
         "inserted_or_updated": inserted_or_updated,
         "inserted": inserted,
         "updated": updated,
+        "unchanged": unchanged,
         "duplicates_in_batch": duplicates_in_batch,
         "rejected": rejected_invalid_count + rejected_by_retention_count,
         "rejected_invalid": rejected_invalid_count,

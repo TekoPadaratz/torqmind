@@ -249,7 +249,17 @@ export default function ResetPasswordPage() {
                     {error}
                   </div>
                 )}
-                <button className="btn" type="submit" disabled={!canSubmit}>
+                {!canSubmit && !loading && tokenValid && (
+                  <div className="muted" style={{ fontSize: 12.5 }}>
+                    Atenda todos os requisitos da senha e confirme igualmente para habilitar o botão.
+                  </div>
+                )}
+                <button
+                  className="btn"
+                  type="submit"
+                  disabled={!canSubmit}
+                  title={!canSubmit ? "Complete os requisitos da senha para continuar" : undefined}
+                >
                   {loading ? (
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                       <span className="loginSpinner" /> Salvando…

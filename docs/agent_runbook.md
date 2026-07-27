@@ -38,10 +38,36 @@ Campos críticos:
 
 Datasets mínimos habilitados:
 
-- `comprovantes`, `movprodutos`, `itensmovprodutos`
-- `produtos`, `grupoprodutos`, `entidades/clientes`, `funcionarios`
-- `filiais`, `localvendas`, `turnos`
-- `contaspagar`, `contasreceber` (ou equivalentes mapeados por schema-scan)
+- `comprovantes`, `itenscomprovantes`, `movprodutos`, `itensmovprodutos`, `formas_pgto_comprovantes`
+- `produtos`, `grupoprodutos`, **`entidades`** (não habilitar o alias `clientes` junto), `funcionarios`, `usuarios`
+- `turnos`, `nfe`, `contaspagar`, `contasreceber` (+ baixas), `movlctos`, `movlctoscancelados`
+- Antifraude/crédito: `credito`, `movcreditoentidades`, `controle_troca_pgto`, `saldoclientes`
+- Estoque/caixa: `estoque`, `tanques`, `movtanques`, `movbancos`, `contasbancaria`
+
+Mantidos **desabilitados** de propósito (salvo necessidade pontual):
+
+- `clientes` — alias duplicado de `entidades`
+- `filiais` / `localvendas` — escopo vem de `auth.filiais` na API
+- `financeiro` — legado; AR/AP usam `contasreceber` / `contaspagar`
+
+Se `entidades` ficou desligado por tempo longo, resetar watermark e rodar once
+(senão `LIMITE`/`LIMITE_VALE` antigos permanecem no STG).
+
+### Wear de SSD / full_refresh
+
+Datasets com `full_refresh: True` (`estoque`, `funcionarios`, `credito`,
+`saldoclientes`, `grupoprodutos`, etc.) só reenviam a tabela inteira no máximo
+a cada **30 min** (`full_refresh_min_interval_seconds=1800`). Entre ciclos o
+agent loga `phase=full_refresh_throttled`.
+
+A API de ingest **não** reescreve linha se o `payload` (e shadows) for idêntico
+— resposta inclui `unchanged`. Isso evita WAL/CDC/ClickHouse em cascata.
+
+Para forçar sync imediato de uma dim:
+
+```powershell
+torqmind-agent.exe run --once --dataset estoque --reset-watermark estoque --config config.enc
+```
 
 ## 4) Comandos operacionais
 

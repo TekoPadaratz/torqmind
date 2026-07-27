@@ -1,8 +1,15 @@
+x-logging: &torqmind-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     container_name: torqmind-clickhouse
     restart: unless-stopped
+    logging: *torqmind-logging
     environment:
       CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-torqmind_mart}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-torqmind}
@@ -30,6 +37,7 @@ services:
     image: docker.redpanda.com/redpandadata/redpanda:v24.1.7
     container_name: torqmind-redpanda
     restart: unless-stopped
+    logging: *torqmind-logging
     command:
       - redpanda
       - start
@@ -78,6 +86,7 @@ services:
     image: debezium/connect:2.6
     container_name: torqmind-debezium
     restart: unless-stopped
+    logging: *torqmind-logging
     environment:
       BOOTSTRAP_SERVERS: redpanda:9092
       GROUP_ID: ${DEBEZIUM_GROUP_ID:-torqmind-debezium-connect}
@@ -114,6 +123,7 @@ services:
       context: ./apps/cdc_consumer
     container_name: torqmind-cdc-consumer
     restart: unless-stopped
+    logging: *torqmind-logging
     environment:
       REDPANDA_BROKERS: redpanda:9092
       CLICKHOUSE_HOST: ${CDC_CLICKHOUSE_HOST:-clickhouse}

@@ -11,6 +11,7 @@
 | Uso (título) | `dbo.CONTASRECEBER` por `ID_ENTIDADE` | Toda a empresa; `HISTORICO` ~ `%vale%` → vale, senão a prazo |
 | Filial do gasto | `CONTASRECEBER.id_filial` | Só no detalhe do uso (nome reduzido) |
 | Operador | `stg.nfe` → `stg.comprovantes.ID_USUARIOS` → `USUARIOS` | Quem liberou no caixa |
+| Cliente (venda) | `comprovante.ID_ENTIDADE` / `id_cliente` → `dim_cliente` / `ENTIDADES` | Só se distinto do titular do crédito; senão `—` |
 | Data/hora real | `COMPROVANTES.DATA` via cupom/NF | Preferida a `DTACONTA` do título |
 | **Documento (tela)** | `stg.nfe` / `stg_nfe_slim` (+ parse HISTORICO NFC-e) | Número da NF-e/NFC-e — **nunca** comprovante |
 
@@ -21,7 +22,7 @@
 
 Grid: funcionários ativos na **filial selecionada** (ENTIDADES grupo 12 + ATIVO). Limites e uso são da entidade; o **uso** soma gastos em **toda a empresa**.
 
-Drill-down: **Filial** (onde gastou) | Data | NF-e/NFC-e | Tipo | Operador | Valor — ordenado por filial, data (mais recente), valor.
+Drill-down: **Filial** | Data | NF-e/NFC-e | Cliente | Tipo | Operador | Valor — ordenado por filial, data (mais recente), valor.
 
 Ordenação da lista: nome.
 
@@ -47,4 +48,22 @@ SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);
 ```
 
 Homolog/prod: `stg.entidades` com `ID_GRUPOENTIDADES=12` e `LIMITE`/`LIMITE_VALE` no payload.
+
+## Agent (obrigatório)
+
+Dataset **`entidades`** (`dbo.ENTIDADES`) deve estar **enabled** no agent.
+Sem ele, limites/vale ficam stale no STG (ex.: Ilson 22175 — STG de maio com
+`LIMITE=400`/`LIMITE_VALE=0` enquanto o Xpert já tinha vale atualizado).
+
+Após ligar o dataset (ou se `ULTALTERACAO` não sobe em mudança de limite):
+
+```powershell
+torqmind-agent.exe reset-watermark --dataset entidades --config config.enc
+torqmind-agent.exe run --once --config config.enc
+```
+
+Depois: `SELECT etl.refresh_fraud_credito_funcionario(1, :ano_mes);` e/ou
+`GET /bi/fraud/credito-funcionario?refresh=true`.
+
+Não habilitar o alias `clientes` junto (mesma tabela → ingest duplicado).
 Mash preferencial: `mash_fraud_credito_funcionario_ch` (ClickHouse STG→mart_rt, ~2–3s).

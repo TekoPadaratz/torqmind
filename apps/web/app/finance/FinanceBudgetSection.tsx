@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 
 const MONTHS = [
   "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
@@ -42,6 +44,7 @@ export default function FinanceBudgetSection() {
   }, [data, ano, mes]);
 
   const contas = useMemo(() => data?.contas || [], [data]);
+  const { query, setQuery, filteredRows } = useGridSearch(contas as Record<string, unknown>[]);
   const summary = data?.summary || {};
   // Sempre exibe o posto (apelido) no grid, mesmo com 1 filial no escopo.
   const showFilial = true;
@@ -87,6 +90,7 @@ export default function FinanceBudgetSection() {
             {summary.contas_em_alerta} conta(s) em alerta
           </span>
         ) : null}
+        <GridSearchInput value={query} onChange={setQuery} />
       </div>
 
       {/* Summary cards */}
@@ -130,7 +134,7 @@ export default function FinanceBudgetSection() {
               </tr>
             </thead>
             <tbody>
-              {contas.map((c: any) => {
+              {filteredRows.map((c: any) => {
                 const st = STATUS_STYLE[c.status] || STATUS_STYLE.ok;
                 return (
                   <tr key={`${c.id_filial}-${c.id_plano_conta}`}>

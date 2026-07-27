@@ -14,18 +14,32 @@ api.interceptors.response.use(
   (response: any) => response,
   (error: any) => {
     const status = error?.response?.status;
+    const path = typeof window !== "undefined" ? window.location.pathname : "";
+    const onAuthFlow =
+      path.startsWith("/change-password") ||
+      path.startsWith("/reset-password") ||
+      path.startsWith("/forgot-password") ||
+      path.startsWith("/security");
+    const errCode =
+      error?.response?.data?.error || error?.response?.data?.detail?.error || "";
+
+    // Não expulsar o usuário no meio da troca/redefinição de senha / MFA setup.
+    // 401 mfa_required precisa ser tratado na própria tela.
     if (
       status === 401 &&
       typeof window !== "undefined" &&
-      !window.location.pathname.match(/^\/?$/)
+      !path.match(/^\/?$/) &&
+      !onAuthFlow &&
+      errCode !== "mfa_required"
     ) {
       window.location.href = "/";
     }
     if (
       status === 403 &&
       typeof window !== "undefined" &&
-      error?.response?.data?.error === "password_change_required" &&
-      !window.location.pathname.startsWith("/change-password")
+      (error?.response?.data?.error === "password_change_required" ||
+        error?.response?.data?.detail?.error === "password_change_required") &&
+      !path.startsWith("/change-password")
     ) {
       window.location.href = "/change-password";
     }

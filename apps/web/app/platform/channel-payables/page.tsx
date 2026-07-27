@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +28,7 @@ export default function PlatformChannelPayablesPage() {
   const [payForm, setPayForm] = useState({ paid_at: '', notes: '' });
   const [noteForm, setNoteForm] = useState({ notes: '' });
   const [error, setError] = useState('');
+  const payablesSearch = useGridSearch(items);
 
   async function load(session: any, currentFilters = filters) {
     const query = new URLSearchParams({ limit: '200' });
@@ -150,6 +153,7 @@ export default function PlatformChannelPayablesPage() {
       <div style={{ height: 16 }} />
 
       <div className="card">
+        <GridSearchInput value={payablesSearch.query} onChange={payablesSearch.setQuery} aria-label="Pesquisar contas a pagar" />
         <table className="table">
           <thead>
             <tr>
@@ -165,7 +169,7 @@ export default function PlatformChannelPayablesPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {payablesSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{item.channel_name}</td>
                 <td>{item.tenant_name}</td>
@@ -182,7 +186,7 @@ export default function PlatformChannelPayablesPage() {
                 </td>
               </tr>
             ))}
-            {!items.length ? (
+            {!payablesSearch.filteredRows.length ? (
               <tr>
                 <td colSpan={9}>Nenhuma conta a pagar encontrada.</td>
               </tr>

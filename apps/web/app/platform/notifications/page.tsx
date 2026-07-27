@@ -4,9 +4,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../lib/api';
 import { formatDateTime } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +37,7 @@ export default function PlatformNotificationsPage() {
     is_enabled: true,
   });
   const [error, setError] = useState('');
+  const subscriptionsSearch = useGridSearch(subscriptions);
 
   async function load(session: any) {
     const [usersRes, companiesRes, subscriptionsRes] = await Promise.all([
@@ -264,6 +267,7 @@ export default function PlatformNotificationsPage() {
             <h2>Assinaturas configuradas</h2>
           </div>
         </div>
+        <GridSearchInput value={subscriptionsSearch.query} onChange={subscriptionsSearch.setQuery} aria-label="Pesquisar assinaturas configuradas" />
         <table className="table">
           <thead>
             <tr>
@@ -277,7 +281,7 @@ export default function PlatformNotificationsPage() {
             </tr>
           </thead>
           <tbody>
-            {subscriptions.map((item) => (
+            {subscriptionsSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{item.user_name}</td>
                 <td>{item.tenant_name || 'Global'}</td>

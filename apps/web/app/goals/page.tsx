@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
+import GridSearchInput from '../components/ui/GridSearchInput';
 import ScopeTransitionState from '../components/ui/ScopeTransitionState';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
@@ -12,6 +13,7 @@ import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/readi
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from '../lib/scope';
 import { canAccessScreenKey } from '../lib/session';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
+import { useGridSearch } from '../lib/use-grid-search';
 import { apiPost } from '../lib/api';
 import { extractApiError } from '../lib/errors';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
@@ -92,6 +94,17 @@ export default function GoalsPage() {
   );
   const podium = useMemo(() => leaderboard.slice(0, 5), [leaderboard]);
   const detailedLeaderboard = useMemo(() => leaderboard.slice(0, 15), [leaderboard]);
+  const { query: leaderboardQ, setQuery: setLeaderboardQ, filteredRows: filteredLeaderboard } =
+    useGridSearch(detailedLeaderboard as Record<string, unknown>[]);
+  const closedMonthsRows = useMemo(
+    () =>
+      (Array.isArray(data?.monthly_projection?.history?.last_3_months)
+        ? data.monthly_projection.history.last_3_months
+        : []) as Record<string, unknown>[],
+    [data?.monthly_projection?.history?.last_3_months],
+  );
+  const { query: closedMonthsQ, setQuery: setClosedMonthsQ, filteredRows: filteredClosedMonths } =
+    useGridSearch(closedMonthsRows);
   const motivation = useMemo(() => buildGoalsMotivation(detailedLeaderboard), [detailedLeaderboard]);
   const projection = data?.monthly_projection || {};
   const projectionSummary = projection.summary || {};
@@ -397,14 +410,15 @@ export default function GoalsPage() {
               <h2>Leaderboard detalhado</h2>
               <span className="muted">Até 15 nomes válidos para acompanhar a disputa completa da equipe.</span>
             </div>
+            <GridSearchInput value={leaderboardQ} onChange={setLeaderboardQ} />
             {!loading && !detailedLeaderboard.length ? (
               <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionário não retornou registros no período." />
             ) : null}
             <table className="table compact">
               <thead><tr><th>Pos.</th><th>Funcionário</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Leitura operacional</th><th>Status</th></tr></thead>
               <tbody>
-                {detailedLeaderboard.map((r: any) => {
-                  const badge = getSellerBadge(r, detailedLeaderboard);
+                {filteredLeaderboard.map((r: any) => {
+                  const badge = getSellerBadge(r, filteredLeaderboard as any);
                   const riskStatus = buildRiskStatus(Number(r.scoreRisco || 0));
                   return (
                     <tr key={r.id_funcionario} style={r.rank <= 5 ? { background: 'rgba(251,191,36,0.06)' } : undefined}>
@@ -583,13 +597,16 @@ export default function GoalsPage() {
 
           <div className="card col-12">
             <h2>Meses fechados de referência</h2>
-            {!loading && !(projectionHistory.last_3_months || []).length ? (
+            <div style={{ margin: '8px 0' }}>
+              <GridSearchInput value={closedMonthsQ} onChange={setClosedMonthsQ} />
+            </div>
+            {!loading && !closedMonthsRows.length ? (
               <EmptyState title="Sem meses fechados suficientes." detail="Assim que houver base histórica consolidada, esta comparação passa a mostrar os 3 últimos fechamentos." />
             ) : null}
             <table className="table compact">
               <thead><tr><th>Mês</th><th>Faturamento fechado</th></tr></thead>
               <tbody>
-                {(projectionHistory.last_3_months || []).map((item: any) => (
+                {filteredClosedMonths.map((item: any) => (
                   <tr key={item.month_ref}>
                     <td>{String(item.month_ref || '').slice(5, 7)}/{String(item.month_ref || '').slice(0, 4)}</td>
                     <td>{formatCurrency(item.faturamento)}</td>

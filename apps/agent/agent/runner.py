@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Any, Dict, Iterable, Optional
 
-from agent.config import AppConfig
+from agent.config import AppConfig, FULL_REFRESH_LAST_RUN_KEY
 from agent.extractors.xpert import SQLServerExtractor
 from agent.sink.torqmind_api import TorqMindSink
 from agent.state.watermark import IncrementalCursor, WatermarkStore
@@ -830,6 +830,28 @@ class AgentRunner:
                 turnos_pending = self._load_turnos_pending(scope) if dataset == TURNOS_DATASET else {}
                 turnos_seen_keys: set[str] = set()
                 full_refresh = bool(ds_cfg.get("full_refresh", False))
+                if full_refresh and not ignore_watermark and not manual_window:
+                    min_interval = int(ds_cfg.get("full_refresh_min_interval_seconds") or 0)
+                    if min_interval > 0:
+                        last_raw = self.state.get_scope_value(
+                            dataset, FULL_REFRESH_LAST_RUN_KEY, scope=scope
+                        )
+                        last_dt = WatermarkStore.parse_watermark_dt(str(last_raw)) if last_raw else None
+                        if last_dt is not None:
+                            if last_dt.tzinfo is None:
+                                last_dt = last_dt.replace(tzinfo=timezone.utc)
+                            elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+                            if elapsed < min_interval:
+                                metric.status = "throttled"
+                                metric.window_mode = "full_refresh_throttled"
+                                self.logger.info(
+                                    "dataset=%s phase=full_refresh_throttled elapsed_s=%.0f min_interval_s=%s last_run=%s",
+                                    dataset,
+                                    elapsed,
+                                    min_interval,
+                                    last_raw,
+                                )
+                                continue
                 stored_cursor = (
                     IncrementalCursor(last_watermark=None, last_pk_tuple=None)
                     if (ignore_watermark or full_refresh)
@@ -995,6 +1017,13 @@ class AgentRunner:
                             dataset,
                             scope,
                             watermark_after,
+                        )
+                    if full_refresh:
+                        self.state.set_scope_value(
+                            dataset,
+                            FULL_REFRESH_LAST_RUN_KEY,
+                            business_datetime_iso(datetime.now(timezone.utc), timespec="seconds"),
+                            scope=scope,
                         )
                 except Exception as exc:  # noqa: PERF203
                     metric.status = "failed"
@@ -1167,10 +1196,15 @@ class AgentRunner:
         scope = self._scope()
         self.state.set(dataset, None, scope=scope)
         self.state.clear_bootstrap(dataset, scope=scope)
+        self.state.clear_scope_value(dataset, FULL_REFRESH_LAST_RUN_KEY, scope=scope)
         if dataset.lower() == TURNOS_DATASET:
             self.state.clear_scope_value(TURNOS_DATASET, TURNOS_PENDING_STATE_KEY, scope=scope)
             self.logger.info("dataset=%s phase=revisit_state_reset scope=%s", dataset, scope)
-        self.logger.info("dataset=%s phase=watermark_reset scope=%s bootstrap_cleared=true", dataset, scope)
+        self.logger.info(
+            "dataset=%s phase=watermark_reset scope=%s bootstrap_cleared=true full_refresh_throttle_cleared=true",
+            dataset,
+            scope,
+        )
 
     def schema_scan(self, keywords: list[str]) -> dict:
         self.logger.info("phase=schema_scan_start keywords=%s", keywords)

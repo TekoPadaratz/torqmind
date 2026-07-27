@@ -5,9 +5,11 @@ import { useParams, useRouter } from 'next/navigation';
 
 import PlatformShell from '../../../components/PlatformShell';
 import BrandingEditor from '../../../components/BrandingEditor';
+import GridSearchInput from '../../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../../lib/format';
 import { loadSession } from '../../../lib/session';
+import { useGridSearch } from '../../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,6 +45,10 @@ export default function PlatformCompanyDetailPage() {
   const [branchSaving, setBranchSaving] = useState(false);
   const [error, setError] = useState('');
   const [branchError, setBranchError] = useState('');
+  const branchesSearch = useGridSearch(data?.branches || []);
+  const usersSearch = useGridSearch(data?.users || []);
+  const subscriptionsSearch = useGridSearch(data?.notification_subscriptions || []);
+  const auditSearch = useGridSearch(data?.audit || []);
 
   async function loadCompany(session: any, preferredBranchId?: number | null) {
     setLoading(true);
@@ -281,6 +287,7 @@ export default function PlatformCompanyDetailPage() {
 
           {branchError ? <div className="card errorCard" style={{ marginTop: 16 }}>{branchError}</div> : null}
 
+          <GridSearchInput value={branchesSearch.query} onChange={branchesSearch.setQuery} aria-label="Pesquisar filiais" />
           <table className="table compact">
             <thead>
               <tr>
@@ -294,7 +301,7 @@ export default function PlatformCompanyDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {(data?.branches || []).map((branch: any) => (
+              {branchesSearch.filteredRows.map((branch: any) => (
                 <tr key={branch.id_filial}>
                   <td>{branch.id_filial}</td>
                   <td>{branch.nome}</td>
@@ -309,7 +316,7 @@ export default function PlatformCompanyDetailPage() {
                   </td>
                 </tr>
               ))}
-              {!(data?.branches || []).length ? (
+              {!branchesSearch.filteredRows.length ? (
                 <tr>
                   <td colSpan={7}>Nenhuma filial sincronizada ainda para esta empresa.</td>
                 </tr>
@@ -372,6 +379,7 @@ export default function PlatformCompanyDetailPage() {
               <h2>Equipe vinculada</h2>
             </div>
           </div>
+          <GridSearchInput value={usersSearch.query} onChange={usersSearch.setQuery} aria-label="Pesquisar equipe vinculada" />
           <table className="table compact">
             <thead>
               <tr>
@@ -382,7 +390,7 @@ export default function PlatformCompanyDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {(data?.users || []).map((user: any) => (
+              {usersSearch.filteredRows.map((user: any) => (
                 <tr key={user.id}>
                   <td>{user.nome}</td>
                   <td>{user.email}</td>
@@ -427,6 +435,7 @@ export default function PlatformCompanyDetailPage() {
               <h2>Assinaturas</h2>
             </div>
           </div>
+          <GridSearchInput value={subscriptionsSearch.query} onChange={subscriptionsSearch.setQuery} aria-label="Pesquisar assinaturas" />
           <table className="table compact">
             <thead>
               <tr>
@@ -437,7 +446,7 @@ export default function PlatformCompanyDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {(data?.notification_subscriptions || []).map((item: any) => (
+              {subscriptionsSearch.filteredRows.map((item: any) => (
                 <tr key={item.id}>
                   <td>{item.user_name}</td>
                   <td>{item.event_type}</td>
@@ -456,6 +465,7 @@ export default function PlatformCompanyDetailPage() {
               <h2>Auditoria resumida</h2>
             </div>
           </div>
+          <GridSearchInput value={auditSearch.query} onChange={auditSearch.setQuery} aria-label="Pesquisar auditoria resumida" />
           <table className="table compact">
             <thead>
               <tr>
@@ -465,7 +475,7 @@ export default function PlatformCompanyDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {(data?.audit || []).map((item: any) => (
+              {auditSearch.filteredRows.map((item: any) => (
                 <tr key={item.id}>
                   <td>{formatDateTime(item.created_at)}</td>
                   <td>{item.action}</td>

@@ -2238,13 +2238,17 @@ def fraud_troca_forma_pgto(
     (ex.: NFC-e 89477 / VR05). Optional ``forma_nova``: ``cheque_pre`` | ``prazo`` | ``todos``.
     """
     filial = _branch_clause("t.id_filial", id_filial)
-    date_range = _date_range_filter(dt_ini, dt_fim, col="t.data_key")
-    suspeita = "AND t.is_suspeita = 1" if only_suspeita else ""
+    # Filtrar por dt (America/Sao_Paulo na mart), não data_key UTC da troca.
+    date_range = (
+        f" AND t.dt >= toDate('{dt_ini.isoformat()}')"
+        f" AND t.dt <= toDate('{dt_fim.isoformat()}')"
+    )
+    suspeita = "AND is_suspeita = 1" if only_suspeita else ""
     forma = str(forma_nova or "todos").strip().lower()
     if forma in ("cheque_pre", "cheque-pre", "cheque"):
-        forma_filter = "AND positionCaseInsensitive(t.forma_para, 'CHEQUE PRE') > 0"
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'CHEQUE PRE') > 0"
     elif forma == "prazo":
-        forma_filter = "AND positionCaseInsensitive(t.forma_para, 'PRAZO') > 0"
+        forma_filter = "AND positionCaseInsensitive(forma_para, 'PRAZO') > 0"
     else:
         forma_filter = ""
     try:
@@ -2253,41 +2257,83 @@ def fraud_troca_forma_pgto(
         lim = 200
     fetch_lim = min(lim * 3, 1500)
 
+    # Re-resolve forma DE / valor via controle→movlcto→plano quando a mart
+    # ficou incompleta (watermark futuro em DTACONTA ou join antigo por filial).
+    cat_de = (
+        "if(match(upperUTF8(ifNull(forma_de, '')), "
+        "'PRAZO|RECEBER|A_RECEBER|CONVENIO|CONV.NIO|CHEQUE|DUPLICATA|"
+        "CREDIARIO|CREDI.RIO|FIADO|BOLETO|PROMISSORIA|PROMISS.RIA|CARTEIRA'), "
+        "'A_RECEBER', 'RECEBIDA')"
+    )
+
     rows = query_dict(f"""
         SELECT
-            t.troca_id,
-            t.id_filial,
-            t.filial_nome,
-            t.data_key,
-            t.dt,
-            t.documento,
-            t.id_turno,
-            t.id_usuario,
-            t.nome_operador,
-            t.forma_de,
-            t.categoria_de,
-            t.forma_para,
-            t.categoria_para,
-            t.valor,
-            t.data_troca_ts,
-            t.hora,
-            t.is_suspeita,
-            t.score_risco,
-            t.reasons,
-            t.referencia,
-            coalesce(c.situacao, 0) AS comprovante_situacao,
-            coalesce(c.cancelado, toUInt8(0)) AS comprovante_cancelado_slim
-        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt AS t FINAL
-        LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c
-          ON c.id_empresa = {{id_empresa:Int32}}
-         AND c.id_filial = t.id_filial
-         AND c.id_comprovante = t.referencia
-         AND c.is_deleted = 0
-        WHERE t.id_empresa = {{id_empresa:Int32}} {filial} {date_range} {suspeita} {forma_filter}
-          AND t.valor > 0
-          AND t.forma_de != ''
-          AND t.forma_para != ''
-        ORDER BY t.data_key DESC, t.troca_id DESC
+            troca_id, id_filial, filial_nome, data_key, dt, documento,
+            id_turno, id_usuario, nome_operador,
+            forma_de, {cat_de} AS categoria_de,
+            forma_para, categoria_para, valor, data_troca_ts, hora,
+            toUInt8({cat_de} = 'RECEBIDA' AND categoria_para = 'A_RECEBER') AS is_suspeita,
+            score_risco, reasons, referencia,
+            comprovante_situacao, comprovante_cancelado_slim
+        FROM (
+            SELECT
+                t.troca_id AS troca_id,
+                t.id_filial AS id_filial,
+                t.filial_nome AS filial_nome,
+                t.data_key AS data_key,
+                t.dt AS dt,
+                if(t.documento != '', t.documento, ifNull(mc.documento_shadow, '')) AS documento,
+                toInt32(if(t.id_turno > 0, t.id_turno, ifNull(mc.id_turno_shadow, 0))) AS id_turno,
+                t.id_usuario AS id_usuario,
+                t.nome_operador AS nome_operador,
+                coalesce(
+                    nullIf(t.forma_de, ''),
+                    nullIf(JSONExtractString(pc.payload, 'NOMEPLANODECONTAS'), ''),
+                    nullIf(JSONExtractString(pc.payload, 'DESCRICAO'), ''),
+                    nullIf(JSONExtractString(pc.payload, 'NOME'), ''),
+                    ''
+                ) AS forma_de,
+                if(t.forma_para != '', t.forma_para, '—') AS forma_para,
+                if(t.categoria_para != '', t.categoria_para, 'RECEBIDA') AS categoria_para,
+                if(t.valor > 0, t.valor, coalesce(mc.valor_shadow, toDecimal64(0, 2))) AS valor,
+                t.data_troca_ts AS data_troca_ts,
+                t.hora AS hora,
+                t.score_risco AS score_risco,
+                t.reasons AS reasons,
+                coalesce(nullIf(t.referencia, 0), mc.referencia_shadow, toInt64(0)) AS referencia,
+                coalesce(c.situacao, 0) AS comprovante_situacao,
+                coalesce(c.cancelado, toUInt8(0)) AS comprovante_cancelado_slim
+            FROM {MART_RT_DB}.mart_troca_forma_pgto_rt AS t FINAL
+            LEFT JOIN {CURRENT_DB}.stg_controle_troca_pgto AS ct FINAL
+              ON ct.id_empresa = {{id_empresa:Int32}}
+             AND ct.id = t.troca_id
+             AND ct.is_deleted = 0
+            LEFT JOIN {CURRENT_DB}.stg_movlctoscancelados AS mc FINAL
+              ON mc.id_empresa = {{id_empresa:Int32}}
+             AND mc.id_db = ct.id_db
+             AND mc.id_movlctoscancelados = coalesce(
+                    nullIf(t.id_movlctoscancelados, 0),
+                    ct.id_movlctoscancelados_shadow,
+                    toInt64(0)
+                 )
+             AND mc.is_deleted = 0
+            LEFT JOIN {CURRENT_DB}.stg_planodecontas AS pc FINAL
+              ON pc.id_empresa = {{id_empresa:Int32}}
+             AND pc.id_filial = mc.id_filial
+             AND pc.id_planodecontas = mc.id_planodecontas_shadow
+            LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c
+              ON c.id_empresa = {{id_empresa:Int32}}
+             AND c.id_filial = t.id_filial
+             AND c.id_comprovante = coalesce(nullIf(t.referencia, 0), mc.referencia_shadow, toInt64(0))
+             AND c.is_deleted = 0
+            WHERE t.id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+        )
+        WHERE 1 {suspeita} {forma_filter}
+          AND (
+                valor > 0
+             OR (forma_de != '' AND forma_para != '' AND forma_para != '—')
+          )
+        ORDER BY data_key DESC, troca_id DESC
         LIMIT {fetch_lim}
     """, parameters={"id_empresa": id_empresa})
 
@@ -2314,41 +2360,27 @@ def fraud_troca_forma_pgto_kpis(
     forma_nova: Optional[str] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Period-wide totals for payment-form-change events (antifraud)."""
-    filial = _branch_clause("id_filial", id_filial)
-    date_range = _date_range_filter(dt_ini, dt_fim)
-    forma = str(forma_nova or "todos").strip().lower()
-    if forma in ("cheque_pre", "cheque-pre", "cheque"):
-        forma_filter = "AND positionCaseInsensitive(forma_para, 'CHEQUE PRE') > 0"
-    elif forma == "prazo":
-        forma_filter = "AND positionCaseInsensitive(forma_para, 'PRAZO') > 0"
-    else:
-        forma_filter = ""
+    """Period-wide totals for payment-form-change events (antifraud).
 
-    quality = f"""
-          AND valor > 0
-          AND forma_de != ''
-          AND forma_para != ''
-          {forma_filter}
+    Usa a mesma resolução da listagem (re-join movlcto) para não divergir
+    enquanto o sync de MOVLCTOSCANCELADOS estiver em catch-up.
     """
-
-    rows = query_dict(f"""
-        SELECT
-            countIf(is_suspeita = 1) AS suspeitas_qtd,
-            sumIf(valor, is_suspeita = 1) AS suspeitas_valor,
-            count() AS todas_qtd,
-            sum(valor) AS todas_valor
-        FROM {MART_RT_DB}.mart_troca_forma_pgto_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
-        {quality}
-    """, parameters={"id_empresa": id_empresa})
-
-    row = rows[0] if rows else {}
+    rows = fraud_troca_forma_pgto(
+        role,
+        id_empresa,
+        id_filial,
+        dt_ini,
+        dt_fim,
+        only_suspeita=False,
+        limit=1000,
+        forma_nova=forma_nova,
+    )
+    suspeitas = [r for r in rows if int(r.get("is_suspeita") or 0) == 1]
     return {
-        "suspeitas_qtd": int(row.get("suspeitas_qtd") or 0),
-        "suspeitas_valor": float(row.get("suspeitas_valor") or 0.0),
-        "todas_qtd": int(row.get("todas_qtd") or 0),
-        "todas_valor": float(row.get("todas_valor") or 0.0),
+        "suspeitas_qtd": len(suspeitas),
+        "suspeitas_valor": float(sum(_to_float(r.get("valor")) for r in suspeitas)),
+        "todas_qtd": len(rows),
+        "todas_valor": float(sum(_to_float(r.get("valor")) for r in rows)),
     }
 
 
@@ -3403,13 +3435,30 @@ def _enrich_credito_usos_operador_via_nfe(
                 argMax(c.id_usuario_shadow, n.source_ts_ms) AS id_usuario_caixa,
                 argMax(
                     coalesce(
+                        nullIf(toInt32OrZero(toString(c.id_cliente_shadow)), 0),
+                        toInt32OrZero(JSONExtractString(c.payload, 'ID_ENTIDADE')),
+                        0
+                    ),
+                    n.source_ts_ms
+                ) AS id_cliente,
+                argMax(
+                    coalesce(
                         nullIf(trim(du.nome), ''),
                         nullIf(JSONExtractString(us.payload, 'NOMEUSUARIOS'), ''),
                         nullIf(JSONExtractString(us.payload, 'NOME'), ''),
                         ''
                     ),
                     n.source_ts_ms
-                ) AS operador_caixa
+                ) AS operador_caixa,
+                argMax(
+                    coalesce(
+                        nullIf(trim(dc.nome), ''),
+                        nullIf(JSONExtractString(ent.payload, 'NOMEENTIDADE'), ''),
+                        nullIf(JSONExtractString(ent.payload, 'RAZAOSOCIALENTIDADE'), ''),
+                        ''
+                    ),
+                    n.source_ts_ms
+                ) AS cliente_nome
             FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
             INNER JOIN {CURRENT_DB}.stg_comprovantes AS c FINAL
                 ON c.id_empresa = n.id_empresa
@@ -3424,6 +3473,22 @@ def _enrich_credito_usos_operador_via_nfe(
                 ON us.id_empresa = c.id_empresa
                AND us.id_usuario = c.id_usuario_shadow
                AND us.is_deleted = 0
+            LEFT JOIN {CURRENT_DB}.dim_cliente AS dc FINAL
+                ON dc.id_empresa = c.id_empresa
+               AND dc.id_cliente = coalesce(
+                    nullIf(toInt32OrZero(toString(c.id_cliente_shadow)), 0),
+                    toInt32OrZero(JSONExtractString(c.payload, 'ID_ENTIDADE')),
+                    0
+                 )
+               AND dc.is_deleted = 0
+            LEFT JOIN {CURRENT_DB}.stg_entidades AS ent FINAL
+                ON ent.id_empresa = c.id_empresa
+               AND toInt32OrZero(JSONExtractString(ent.payload, 'ID_ENTIDADE')) = coalesce(
+                    nullIf(toInt32OrZero(toString(c.id_cliente_shadow)), 0),
+                    toInt32OrZero(JSONExtractString(c.payload, 'ID_ENTIDADE')),
+                    0
+                 )
+               AND ent.is_deleted = 0
             WHERE n.id_empresa = {{id_empresa:Int32}}
               AND n.is_deleted = 0
               AND n.status != 5
@@ -3464,6 +3529,16 @@ def _enrich_credito_usos_operador_via_nfe(
         if op and (not str(u.get("operador_caixa") or "").strip()
                    or str(u.get("operador_caixa") or "").strip() in ("—", "-")):
             u["operador_caixa"] = op
+        titular_id = int(u.get("id_entidade") or u.get("id_funcionario") or 0)
+        cliente_id = int(hit.get("id_cliente") or 0)
+        cliente_nome = str(hit.get("cliente_nome") or "").strip()
+        # Só exibe cliente quando a venda aponta para entidade distinta do titular do crédito.
+        if cliente_id > 0 and cliente_id != titular_id and cliente_nome:
+            u["id_cliente"] = cliente_id
+            u["cliente_nome"] = cliente_nome
+        elif not str(u.get("cliente_nome") or "").strip():
+            u["cliente_nome"] = "—"
+            u["id_cliente"] = None
 
 
 def _antifraude_documento(
@@ -4400,6 +4475,8 @@ def fraud_credito_funcionario(
                 "valor": float(u.get("valor") or 0),
                 "id_usuario_caixa": u.get("id_usuario_caixa") or None,
                 "operador_caixa": u.get("operador_caixa") or "—",
+                "id_cliente": u.get("id_cliente") or None,
+                "cliente_nome": u.get("cliente_nome") or "—",
                 "historico": u.get("historico") or "",
                 "atipico": bool(int(u.get("atipico") or 0)),
             })
@@ -4508,11 +4585,315 @@ def fraud_credito_funcionario(
             "limite_vale_total": float(summary.get("limite_vale_total") or 0),
         },
         "funcionarios": funcionarios,
-        "disclaimer": (
-            "Funcionários: ENTIDADES grupo 12 ativas na filial selecionada. "
-            "Limites LIMITE + LIMITE_VALE. Usos: CONTASRECEBER da entidade em toda a empresa "
-            "(pode gastar em qualquer posto). Documento = NF-e/NFC-e."
-        ),
+        "disclaimer": "",
+    }
+
+
+def fraud_devolucao_entrada(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 200,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Notas de devolução de entrada (CFOP 1202/1411/2202/2411) — antifraude.
+
+    Não inclui compra (nfe_entrada) nem devolução de compra (5202…).
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = (
+        f" AND dt >= toDate('{dt_ini.isoformat()}')"
+        f" AND dt <= toDate('{dt_fim.isoformat()}')"
+    )
+    try:
+        lim = max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        lim = 200
+
+    try:
+        rows = query_dict(
+            f"""
+            SELECT
+                id_filial,
+                filial_nome,
+                data_key,
+                dt,
+                id_comprovante,
+                documento,
+                id_turno,
+                id_usuario,
+                nome_operador,
+                cfop_principal,
+                qtd_itens,
+                valor,
+                published_at
+            FROM {MART_RT_DB}.mart_fraud_devolucao_entrada_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+              AND valor > 0
+            ORDER BY dt DESC, valor DESC, id_comprovante DESC
+            LIMIT {lim}
+            """,
+            parameters={"id_empresa": int(id_empresa)},
+        )
+    except Exception as exc:
+        logger.warning("fraud_devolucao_entrada mart miss: %s", str(exc)[:200])
+        # Fallback slim (ClickHouse-first, sem PG)
+        rows = query_dict(
+            f"""
+            SELECT
+                c.id_filial AS id_filial,
+                '' AS filial_nome,
+                c.data_key AS data_key,
+                toDate(parseDateTimeBestEffortOrZero(toString(c.data_key))) AS dt,
+                c.id_comprovante AS id_comprovante,
+                coalesce(nullIf(n.numero_nfe, ''), '') AS documento,
+                coalesce(c.id_turno, 0) AS id_turno,
+                coalesce(c.id_usuario, 0) AS id_usuario,
+                coalesce(
+                    nullIf(JSONExtractString(u.payload, 'NOMEUSUARIOS'), ''),
+                    nullIf(JSONExtractString(u.payload, 'NOME'), ''),
+                    ''
+                ) AS nome_operador,
+                toInt32(any(i.cfop)) AS cfop_principal,
+                toUInt32(count()) AS qtd_itens,
+                toDecimal64(sum(i.total), 2) AS valor
+            FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+            INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+              ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+             AND c.is_deleted = 0
+            LEFT JOIN (
+              SELECT id_empresa, id_filial, id_comprovante,
+                     argMax(numero_nfe, source_ts_ms) AS numero_nfe
+              FROM {CURRENT_DB}.stg_nfe_slim FINAL
+              WHERE is_deleted = 0 AND status != 5
+              GROUP BY id_empresa, id_filial, id_comprovante
+            ) AS n
+              ON n.id_empresa = c.id_empresa AND n.id_filial = c.id_filial
+             AND n.id_comprovante = c.id_comprovante
+            LEFT JOIN {CURRENT_DB}.stg_usuarios AS u FINAL
+              ON u.id_empresa = c.id_empresa AND u.id_usuario = c.id_usuario
+             AND u.is_deleted = 0
+            WHERE i.id_empresa = {{id_empresa:Int32}}
+              AND i.is_deleted = 0
+              AND i.cfop IN (1202, 1411, 2202, 2411)
+              AND c.cancelado = 0
+              {_branch_clause('c.id_filial', id_filial)}
+              AND c.data_key >= {int(dt_ini.strftime('%Y%m%d'))}
+              AND c.data_key <= {int(dt_fim.strftime('%Y%m%d'))}
+            GROUP BY
+              c.id_filial, c.data_key, dt, c.id_comprovante, documento,
+              id_turno, id_usuario, nome_operador
+            HAVING valor > 0
+            ORDER BY dt DESC, valor DESC
+            LIMIT {lim}
+            """,
+            parameters={"id_empresa": int(id_empresa)},
+        )
+
+    items: List[Dict[str, Any]] = []
+    total_valor = 0.0
+    for r in rows:
+        valor = _to_float(r.get("valor"))
+        total_valor += valor
+        doc = str(r.get("documento") or "").strip()
+        if not doc or doc == "0":
+            doc = "—"
+        id_filial_row = _to_int(r.get("id_filial"))
+        items.append({
+            "id_filial": id_filial_row or None,
+            "filial_label": _filial_label(id_filial_row, str(r.get("filial_nome") or "")),
+            "dt": str(r.get("dt") or ""),
+            "data_key": _to_int(r.get("data_key")),
+            "id_comprovante": _to_int(r.get("id_comprovante")) or None,
+            "documento": doc,
+            "documento_label": doc,
+            "id_turno": _to_int(r.get("id_turno")) or None,
+            "id_usuario": _to_int(r.get("id_usuario")) or None,
+            "nome_operador": str(r.get("nome_operador") or "").strip() or "—",
+            "cfop_principal": _to_int(r.get("cfop_principal")),
+            "qtd_itens": _to_int(r.get("qtd_itens")),
+            "valor": valor,
+        })
+
+    return {
+        "items": items,
+        "summary": {
+            "qtd": len(items),
+            "valor_total": round(total_valor, 2),
+        },
+        "source": "clickhouse",
+    }
+
+
+def fraud_transferencia_cr(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 200,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Transferências de contas a receber entre entidades (HISTORICO Xpert).
+
+    Fonte: ``stg_contasreceber.payload.HISTORICO`` com padrão
+    ``Transferência de Conta do cliente {de} para o {para}``.
+    """
+    filial = _branch_clause("cr.id_filial", id_filial)
+    date_from = int(dt_ini.strftime("%Y%m%d"))
+    date_to = int(dt_fim.strftime("%Y%m%d"))
+    try:
+        lim = max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        lim = 200
+
+    rows = query_dict(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                cr.id_filial AS id_filial,
+                coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
+                toInt64OrZero(JSONExtractString(cr.payload, 'ID_CONTASRECEBER')) AS id_contasreceber,
+                toInt32OrZero(extract(
+                    ifNull(JSONExtractString(cr.payload, 'HISTORICO'), ''),
+                    '(?i)cliente\\\\s+(\\\\d+)\\\\s+para'
+                )) AS id_entidade_de,
+                toInt32OrZero(extract(
+                    ifNull(JSONExtractString(cr.payload, 'HISTORICO'), ''),
+                    '(?i)para\\\\s+o\\\\s+(\\\\d+)'
+                )) AS id_entidade_para,
+                toInt32OrZero(JSONExtractString(cr.payload, 'ID_ENTIDADE')) AS id_entidade_atual,
+                toDecimal64OrZero(JSONExtractString(cr.payload, 'VALOR'), 2) AS valor,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTACONTA'))) AS dt,
+                ifNull(JSONExtractString(cr.payload, 'HISTORICO'), '') AS historico,
+                toInt32(formatDateTime(
+                    coalesce(
+                        parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTACONTA')),
+                        cr.dt_evento,
+                        cr.received_at,
+                        now64(6)
+                    ),
+                    '%Y%m%d'
+                )) AS data_key
+            FROM {CURRENT_DB}.stg_contasreceber AS cr FINAL
+            LEFT JOIN {CURRENT_DB}.stg_filiais AS f FINAL
+              ON f.id_empresa = cr.id_empresa AND f.id_filial = cr.id_filial
+            WHERE cr.id_empresa = {{id_empresa:Int32}}
+              AND cr.is_deleted = 0
+              {filial}
+              AND (
+                    positionCaseInsensitive(ifNull(JSONExtractString(cr.payload, 'HISTORICO'), ''), 'Transfer') > 0
+                 OR positionCaseInsensitive(ifNull(JSONExtractString(cr.payload, 'HISTORICO'), ''), 'Transferencia') > 0
+              )
+        )
+        WHERE data_key >= {date_from}
+          AND data_key <= {date_to}
+          AND id_entidade_de > 0
+          AND id_entidade_para > 0
+        ORDER BY dt DESC, valor DESC, id_contasreceber DESC
+        LIMIT {lim}
+        """,
+        parameters={"id_empresa": int(id_empresa)},
+    )
+
+    # Resolve nomes das entidades envolvidas
+    ent_ids: set[int] = set()
+    for r in rows:
+        for k in ("id_entidade_de", "id_entidade_para", "id_entidade_atual"):
+            v = _to_int(r.get(k))
+            if v > 0:
+                ent_ids.add(v)
+    nome_by_id: Dict[int, str] = {}
+    if ent_ids:
+        ids_csv = ", ".join(str(i) for i in sorted(ent_ids))
+        try:
+            nome_rows = query_dict(
+                f"""
+                SELECT
+                    id_cliente AS id_entidade,
+                    argMax(nome, source_ts_ms) AS nome
+                FROM {CURRENT_DB}.dim_cliente FINAL
+                WHERE id_empresa = {{id_empresa:Int32}}
+                  AND id_cliente IN ({ids_csv})
+                  AND is_deleted = 0
+                GROUP BY id_cliente
+                """,
+                parameters={"id_empresa": int(id_empresa)},
+            )
+            for nr in nome_rows:
+                nome_by_id[_to_int(nr.get("id_entidade"))] = str(nr.get("nome") or "").strip()
+        except Exception:
+            pass
+        missing = [i for i in ent_ids if i not in nome_by_id]
+        if missing:
+            miss_csv = ", ".join(str(i) for i in missing)
+            try:
+                ent_rows = query_dict(
+                    f"""
+                    SELECT
+                        toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) AS id_entidade,
+                        argMax(
+                            coalesce(
+                                nullIf(JSONExtractString(payload, 'NOMEENTIDADE'), ''),
+                                nullIf(JSONExtractString(payload, 'RAZAOSOCIALENTIDADE'), ''),
+                                ''
+                            ),
+                            source_ts_ms
+                        ) AS nome
+                    FROM {CURRENT_DB}.stg_entidades FINAL
+                    WHERE id_empresa = {{id_empresa:Int32}}
+                      AND is_deleted = 0
+                      AND toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) IN ({miss_csv})
+                    GROUP BY id_entidade
+                    """,
+                    parameters={"id_empresa": int(id_empresa)},
+                )
+                for er in ent_rows:
+                    eid = _to_int(er.get("id_entidade"))
+                    if eid and eid not in nome_by_id:
+                        nome_by_id[eid] = str(er.get("nome") or "").strip()
+            except Exception:
+                pass
+
+    def _label(eid: int) -> str:
+        if eid <= 0:
+            return "—"
+        nome = nome_by_id.get(eid) or ""
+        return f"{nome} ({eid})" if nome else f"#{eid}"
+
+    items: List[Dict[str, Any]] = []
+    total_valor = 0.0
+    for r in rows:
+        valor = _to_float(r.get("valor"))
+        total_valor += valor
+        id_de = _to_int(r.get("id_entidade_de"))
+        id_para = _to_int(r.get("id_entidade_para"))
+        id_filial_row = _to_int(r.get("id_filial"))
+        id_cr = _to_int(r.get("id_contasreceber"))
+        items.append({
+            "id_filial": id_filial_row or None,
+            "filial_label": _filial_label(id_filial_row, str(r.get("filial_nome") or "")),
+            "dt": str(r.get("dt") or ""),
+            "data_key": _to_int(r.get("data_key")),
+            "id_contasreceber": id_cr or None,
+            "documento": str(id_cr) if id_cr else "—",
+            "documento_label": str(id_cr) if id_cr else "—",
+            "id_entidade_de": id_de or None,
+            "id_entidade_para": id_para or None,
+            "entidade_de": _label(id_de),
+            "entidade_para": _label(id_para),
+            "valor": valor,
+            "historico": str(r.get("historico") or ""),
+        })
+
+    return {
+        "items": items,
+        "summary": {"qtd": len(items), "valor_total": round(total_valor, 2)},
+        "source": "clickhouse",
     }
 
 
@@ -4540,6 +4921,8 @@ REALTIME_FUNCTIONS = {
     "fraud_last_events",
     "fraud_troca_forma_pgto",
     "fraud_troca_forma_pgto_kpis",
+    "fraud_devolucao_entrada",
+    "fraud_transferencia_cr",
     "risk_top_employees",
     "finance_kpis",
     "finance_receipts_by_day",

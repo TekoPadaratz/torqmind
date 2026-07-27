@@ -14,10 +14,12 @@ import {
 
 import EmptyState from "../components/ui/EmptyState";
 import PortalDropdown from "../components/ui/PortalDropdown";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { readCachedSession } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 
 const ABC_COLORS: Record<string, string> = {
   A: "var(--color-positive)",
@@ -180,6 +182,9 @@ export default function SalesAbcSection() {
   // Dynamic field for the selected metric
   const metricKey = SORT_DATA_KEY[sortBy];
   const metricLabel = SORT_LABELS[sortBy];
+  const { query, setQuery, filteredRows } = useGridSearch(
+    data?.ranking as unknown as Record<string, unknown>[] | undefined,
+  );
 
   const formatMetricValue = useCallback(
     (value: number) => {
@@ -524,6 +529,9 @@ export default function SalesAbcSection() {
         <div className="muted" style={{ marginTop: 4 }}>
           Todos os produtos classificados pela Curva ABC — ordenados por {metricLabel.toLowerCase()}
         </div>
+        <div style={{ marginTop: 12 }}>
+          <GridSearchInput value={query} onChange={setQuery} />
+        </div>
         <div className="tableScroll" style={{ maxHeight: 400, overflowY: "auto", marginTop: 12 }}>
           <table className="table compact">
             <thead>
@@ -538,7 +546,7 @@ export default function SalesAbcSection() {
               </tr>
             </thead>
             <tbody>
-              {data.ranking.map((item) => (
+              {filteredRows.map((item: any) => (
                 <tr key={item.id_produto}>
                   <td>{item.posicao}</td>
                   <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency, formatDateOnly } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 
 type ChequeStatus = "a_compensar" | "depositado" | "devolvido" | "compensado";
 
@@ -46,6 +48,7 @@ export default function FinanceChequesSection() {
   const summary = data?.summary || {};
   const porStatus = summary?.por_status || {};
   const cheques = useMemo(() => data?.cheques || [], [data]);
+  const { query, setQuery, filteredRows } = useGridSearch(cheques as Record<string, unknown>[]);
   const showFilial = useMemo(
     () => new Set(cheques.map((c: any) => c.id_filial)).size > 1,
     [cheques],
@@ -53,13 +56,13 @@ export default function FinanceChequesSection() {
 
   useEffect(() => {
     setPage(0);
-  }, [statusParam, cheques.length]);
+  }, [statusParam, filteredRows.length]);
 
-  const pageCount = Math.max(1, Math.ceil(cheques.length / PAGE_SIZE));
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
   const pageItems = useMemo(() => {
     const safe = Math.min(page, pageCount - 1);
-    return cheques.slice(safe * PAGE_SIZE, safe * PAGE_SIZE + PAGE_SIZE);
-  }, [cheques, page, pageCount]);
+    return filteredRows.slice(safe * PAGE_SIZE, safe * PAGE_SIZE + PAGE_SIZE);
+  }, [filteredRows, page, pageCount]);
 
   const toggle = (s: ChequeStatus) =>
     setSelected((prev) => {
@@ -146,6 +149,7 @@ export default function FinanceChequesSection() {
             </button>
           );
         })}
+        <GridSearchInput value={query} onChange={setQuery} />
       </div>
 
       {/* Grid */}
@@ -207,7 +211,7 @@ export default function FinanceChequesSection() {
                 ← Anterior
               </button>
               <span className="muted" style={{ fontSize: 12 }}>
-                Página {Math.min(page, pageCount - 1) + 1} de {pageCount} · {cheques.length} cheque(s)
+                Página {Math.min(page, pageCount - 1) + 1} de {pageCount} · {filteredRows.length} cheque(s)
               </span>
               <button
                 type="button"

@@ -13,6 +13,7 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { apiGet } from "../lib/api";
 import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
@@ -23,6 +24,7 @@ import {
 import { describeChurnCoverage } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
 import { canViewSensitiveFinancials } from "../lib/session";
 
 export const dynamic = "force-dynamic";
@@ -67,16 +69,15 @@ export default function CustomersPage() {
   useEnsureScopedProductUrl();
   const [delinquencyPage, setDelinquencyPage] = useState(0);
   const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
-  const [delinquencySearch, setDelinquencySearch] = useState("");
   // Filtro-sobre-filtro: postos selecionados nos cards (vazio = todos os postos do escopo).
   const [selectedFiliais, setSelectedFiliais] = useState<Set<number>>(new Set());
   const [precoFixoPage, setPrecoFixoPage] = useState(0);
-  const [precoFixoSearch, setPrecoFixoSearch] = useState("");
   const [precoFixoLoading, setPrecoFixoLoading] = useState(false);
   const [precoFixoData, setPrecoFixoData] = useState<any>(null);
   const [precoFixoExpanded, setPrecoFixoExpanded] = useState<string | null>(null);
   const [precoFixoDetail, setPrecoFixoDetail] = useState<any>(null);
   const [precoFixoDetailLoading, setPrecoFixoDetailLoading] = useState(false);
+  const [precoFixoDetailQ, setPrecoFixoDetailQ] = useState("");
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -109,12 +110,6 @@ export default function CustomersPage() {
   const showFilialColumn = delinquencyByFilial.length > 1;
   const delinquencyCustomers = useMemo(() => {
     let customers = [...(delinquency?.customers || [])];
-    const term = delinquencySearch.trim().toUpperCase();
-    if (term) {
-      customers = customers.filter((c: any) =>
-        String(c.cliente_nome || "").toUpperCase().includes(term),
-      );
-    }
     if (selectedFiliais.size > 0) {
       customers = customers.filter((c: any) => selectedFiliais.has(Number(c.id_filial)));
     }
@@ -137,7 +132,9 @@ export default function CustomersPage() {
         break;
     }
     return customers;
-  }, [delinquency?.customers, delinquencySort, delinquencySearch, selectedFiliais]);
+  }, [delinquency?.customers, delinquencySort, selectedFiliais]);
+  const { query: delinquencySearch, setQuery: setDelinquencySearch, filteredRows: filteredDelinquency } =
+    useGridSearch(delinquencyCustomers as Record<string, unknown>[]);
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
@@ -150,16 +147,16 @@ export default function CustomersPage() {
   const delinquencyPageSize = 10;
   const delinquencyPageCount = Math.max(
     1,
-    Math.ceil(delinquencyCustomers.length / delinquencyPageSize),
+    Math.ceil(filteredDelinquency.length / delinquencyPageSize),
   );
   const delinquencyPageItems = useMemo(() => {
     const safePage = Math.min(delinquencyPage, Math.max(delinquencyPageCount - 1, 0));
     const start = safePage * delinquencyPageSize;
-    return delinquencyCustomers.slice(start, start + delinquencyPageSize);
-  }, [delinquencyCustomers, delinquencyPage, delinquencyPageCount]);
+    return filteredDelinquency.slice(start, start + delinquencyPageSize);
+  }, [filteredDelinquency, delinquencyPage, delinquencyPageCount]);
   useEffect(() => {
     setDelinquencyPage(0);
-  }, [data?.commercial_coverage?.effective_dt_fim, delinquencyCustomers.length]);
+  }, [data?.commercial_coverage?.effective_dt_fim, filteredDelinquency.length]);
   // Limpa a selecao de postos quando o escopo/janela muda (respeita o filtro global).
   useEffect(() => {
     setSelectedFiliais(new Set());
@@ -169,6 +166,7 @@ export default function CustomersPage() {
     setPrecoFixoPage(0);
     setPrecoFixoExpanded(null);
     setPrecoFixoDetail(null);
+    setPrecoFixoDetailQ("");
   }, [scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial, scope.id_filiais]);
 
   useEffect(() => {
@@ -179,7 +177,6 @@ export default function CustomersPage() {
         const params = buildScopeParams(scope);
         params.set("page", String(precoFixoPage));
         params.set("page_size", "15");
-        if (precoFixoSearch.trim()) params.set("search", precoFixoSearch.trim());
         const res = await apiGet(`/bi/customers/preco-fixo?${params.toString()}`);
         if (!cancelled) setPrecoFixoData(res);
       } catch {
@@ -201,7 +198,7 @@ export default function CustomersPage() {
     return () => {
       cancelled = true;
     };
-  }, [scope, precoFixoPage, precoFixoSearch]);
+  }, [scope, precoFixoPage]);
 
   const openPrecoFixoDetail = async (row: any) => {
     const key = `${row.id_filial}-${row.id_entidade}`;
@@ -213,6 +210,7 @@ export default function CustomersPage() {
     setPrecoFixoExpanded(key);
     setPrecoFixoDetailLoading(true);
     setPrecoFixoDetail(null);
+    setPrecoFixoDetailQ("");
     try {
       const params = buildScopeParams(scope);
       params.set("id_filial", String(row.id_filial));
@@ -230,7 +228,28 @@ export default function CustomersPage() {
   };
 
   const precoFixoItems = precoFixoData?.items || [];
+  const { query: precoFixoSearch, setQuery: setPrecoFixoSearch, filteredRows: filteredPrecoFixo } =
+    useGridSearch(precoFixoItems as Record<string, unknown>[]);
   const precoFixoPageCount = Math.max(1, Number(precoFixoData?.total_pages || 1));
+  const churnTopRows = useMemo(
+    () => (Array.isArray(data?.churn_top) ? data.churn_top : []) as Record<string, unknown>[],
+    [data?.churn_top],
+  );
+  const { query: churnQ, setQuery: setChurnQ, filteredRows: filteredChurn } = useGridSearch(churnTopRows);
+  const topCustomersRows = useMemo(
+    () =>
+      (Array.isArray(data?.top_customers) ? data.top_customers : [])
+        .slice(0, 10) as Record<string, unknown>[],
+    [data?.top_customers],
+  );
+  const { query: topCustomersQ, setQuery: setTopCustomersQ, filteredRows: filteredTopCustomers } =
+    useGridSearch(topCustomersRows);
+  const anonDowRows = useMemo(
+    () =>
+      (Array.isArray(anon?.breakdown_dow) ? anon.breakdown_dow : []) as Record<string, unknown>[],
+    [anon?.breakdown_dow],
+  );
+  const { query: anonQ, setQuery: setAnonQ, filteredRows: filteredAnonDow } = useGridSearch(anonDowRows);
 
   return (
     <div>
@@ -449,21 +468,16 @@ export default function CustomersPage() {
                       ))}
                     </div>
                     <div style={{ marginTop: 8 }}>
-                      <input
-                        type="text"
+                      <GridSearchInput
                         value={delinquencySearch}
-                        onChange={(e) => {
-                          setDelinquencySearch(e.target.value.toUpperCase());
+                        onChange={(value) => {
+                          setDelinquencySearch(value);
                           setDelinquencyPage(0);
                         }}
-                        placeholder="BUSCAR CLIENTE PELO NOME"
-                        aria-label="Buscar cliente pelo nome"
-                        className="input"
-                        style={{ maxWidth: 320, textTransform: "uppercase", fontSize: 13 }}
                       />
                     </div>
                   </div>
-                  {delinquencyCustomers.length > delinquencyPageSize ? (
+                  {filteredDelinquency.length > delinquencyPageSize ? (
                     <div className="inlinePager">
                       <button
                         className="btn"
@@ -495,10 +509,10 @@ export default function CustomersPage() {
                     detail="Quando houver recebíveis vencidos, os maiores riscos aparecem aqui."
                   />
                 ) : null}
-                {!loading && (delinquency?.customers || []).length > 0 && delinquencyCustomers.length === 0 ? (
+                {!loading && delinquencyCustomers.length > 0 && filteredDelinquency.length === 0 ? (
                   <EmptyState
                     title="Nenhum cliente encontrado para a busca."
-                    detail={`Não há cliente com "${delinquencySearch}" no nome dentro das prioridades de cobrança.`}
+                    detail={`Nenhum resultado para "${delinquencySearch}" nas prioridades de cobrança.`}
                   />
                 ) : null}
                 {showFilialColumn ? (
@@ -628,23 +642,7 @@ export default function CustomersPage() {
                       ? "Carregando…"
                       : `${Number(precoFixoData?.summary?.clientes || 0)} cliente(s) · ${Number(precoFixoData?.summary?.qtd_litros || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 })} L · total ${formatCurrency(precoFixoData?.summary?.desconto_total || 0)}`}
                   </div>
-                  <input
-                    type="text"
-                    value={precoFixoSearch}
-                    onChange={(e) => {
-                      setPrecoFixoSearch(e.target.value.toUpperCase());
-                      setPrecoFixoPage(0);
-                    }}
-                    placeholder="Buscar cliente…"
-                    style={{
-                      minWidth: 220,
-                      padding: "6px 10px",
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--surface-faint)",
-                      color: "inherit",
-                    }}
-                  />
+                  <GridSearchInput value={precoFixoSearch} onChange={setPrecoFixoSearch} />
                 </div>
                 {!precoFixoLoading && precoFixoItems.length === 0 ? (
                   <EmptyState
@@ -666,7 +664,7 @@ export default function CustomersPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {precoFixoItems.map((row: any) => {
+                          {filteredPrecoFixo.map((row: any) => {
                             const key = `${row.id_filial}-${row.id_entidade}`;
                             const open = precoFixoExpanded === key;
                             return (
@@ -691,6 +689,13 @@ export default function CustomersPage() {
                                         <div className="muted">Sem itens no período.</div>
                                       ) : (
                                         <div className="tableScroll">
+                                          <div style={{ marginBottom: 8 }}>
+                                            <GridSearchInput
+                                              value={precoFixoDetailQ}
+                                              onChange={setPrecoFixoDetailQ}
+                                              aria-label="Pesquisar itens de preço fixo"
+                                            />
+                                          </div>
                                           <table className="table compact">
                                             <thead>
                                               <tr>
@@ -705,7 +710,9 @@ export default function CustomersPage() {
                                               </tr>
                                             </thead>
                                             <tbody>
-                                              {(precoFixoDetail?.items || []).map((item: any, idx: number) => {
+                                              {(precoFixoDetail?.items || [])
+                                                .filter((item: any) => rowMatchesGridSearch(item, precoFixoDetailQ))
+                                                .map((item: any, idx: number) => {
                                                 if (item.row_kind === "subtotal") {
                                                   return (
                                                     <tr
@@ -797,7 +804,10 @@ export default function CustomersPage() {
                     .
                   </div>
                 ) : null}
-                {!loading && !(data?.churn_top || []).length ? (
+                <div style={{ margin: "8px 0" }}>
+                  <GridSearchInput value={churnQ} onChange={setChurnQ} />
+                </div>
+                {!loading && !churnTopRows.length ? (
                   <EmptyState
                     title="Nenhum cliente em risco relevante."
                     detail="A base identificada não trouxe sinais fortes de churn para este período."
@@ -817,7 +827,7 @@ export default function CustomersPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(data?.churn_top || []).map((c: any) => (
+                    {filteredChurn.map((c: any) => (
                       <tr key={c.id_cliente}>
                         <td>{c.cliente_nome}</td>
                         <td>
@@ -875,7 +885,10 @@ export default function CustomersPage() {
 
               <div className="card col-5">
                 <h2>Top clientes</h2>
-                {!loading && !(data?.top_customers || []).length ? (
+                <div style={{ margin: "8px 0" }}>
+                  <GridSearchInput value={topCustomersQ} onChange={setTopCustomersQ} />
+                </div>
+                {!loading && !topCustomersRows.length ? (
                   <EmptyState
                     title="Sem top clientes no período."
                     detail="Não houve base identificada suficiente para ranqueamento."
@@ -890,7 +903,7 @@ export default function CustomersPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(data?.top_customers || []).slice(0, 10).map((c: any) => (
+                    {filteredTopCustomers.map((c: any) => (
                       <tr key={c.id_cliente}>
                         <td>{c.cliente_nome}</td>
                         <td>{c.compras}</td>
@@ -909,7 +922,10 @@ export default function CustomersPage() {
                     : anonKpis?.recommendation ||
                       "Sem leitura adicional para o período."}
                 </div>
-                {!loading && !(anon?.breakdown_dow || []).length ? (
+                <div style={{ margin: "8px 0" }}>
+                  <GridSearchInput value={anonQ} onChange={setAnonQ} />
+                </div>
+                {!loading && !anonDowRows.length ? (
                   <EmptyState
                     title="Sem leitura anônima suficiente neste período."
                     detail="A integração ainda não trouxe volume confiável para comparar recorrência sem identificação nominal."
@@ -925,7 +941,7 @@ export default function CustomersPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(anon?.breakdown_dow || []).map((r: any) => (
+                    {filteredAnonDow.map((r: any) => (
                       <tr key={r.dow}>
                         <td>{r.dow}</td>
                         <td>{formatCurrency(r.anon_current)}</td>

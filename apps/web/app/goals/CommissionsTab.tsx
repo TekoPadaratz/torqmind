@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiGet } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
+import { useGridSearch } from "../lib/use-grid-search";
 
 // Tier styling
 const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> = {
@@ -83,6 +85,12 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
   useEffect(() => {
     fetchResults();
   }, [fetchResults]);
+  const { query: sellersQ, setQuery: setSellersQ, filteredRows: filteredSellers } = useGridSearch(
+    data?.vendedores as Record<string, unknown>[] | undefined,
+  );
+  const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
+    data?.grupos_configurados as Record<string, unknown>[] | undefined,
+  );
 
   if (!idFilial) {
     return (
@@ -235,6 +243,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                 <div style={{ padding: "8px 12px", background: "rgba(34,197,94,0.08)", borderRadius: 8, marginBottom: 10, fontSize: 13 }}>
                   Comissão total de vendedores: <strong>{formatCurrency(data.comissao_total || 0)}</strong>
                 </div>
+                <GridSearchInput value={sellersQ} onChange={setSellersQ} />
 
                 {(data.vendedores || []).length === 0 ? (
                   <EmptyState title="Sem vendedores" detail="Não há vendedores com identificação válida para o mês selecionado." />
@@ -251,7 +260,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                         </tr>
                       </thead>
                       <tbody>
-                        {(data.vendedores || []).map((emp: any) => (
+                        {filteredSellers.map((emp: any) => (
                           <tr key={emp.id_funcionario}>
                             <td style={{ fontWeight: 500 }}>{emp.nome_vendedor}</td>
                             <td>{formatCurrency(emp.venda_elegivel)}</td>
@@ -278,6 +287,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
               {(data.grupos_configurados || []).length > 0 && (
                 <div className="card" style={{ marginTop: 12 }}>
                   <h2 style={{ fontSize: 14, marginBottom: 8 }}>Grupos participantes</h2>
+                  <GridSearchInput value={groupsQ} onChange={setGroupsQ} />
                   <table className="table compact">
                     <thead>
                       <tr>
@@ -286,7 +296,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                       </tr>
                     </thead>
                     <tbody>
-                      {(data.grupos_configurados || []).map((g: any) => (
+                      {filteredGroups.map((g: any) => (
                         <tr key={g.id_grupo_produto}>
                           <td>{g.nome}</td>
                           <td>{formatCurrency(g.venda_total)}</td>

@@ -56,7 +56,7 @@ COMMERCIAL_CFOP_LABELS = {
     "saida_normal": "Vendas normais",
     "entrada_normal": "Entradas registradas",
     "devolucao_saida": "Devoluções de venda",
-    "devolucao_entrada": "Devoluções de entrada",
+    "devolucao_entrada": "Devolução de Vendas",
     "outro": "Outros CFOPs",
 }
 
@@ -3280,6 +3280,32 @@ def fraud_troca_forma_pgto_kpis(
         "todas_qtd": 0,
         "todas_valor": 0.0,
     }
+
+
+def fraud_devolucao_entrada(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 200,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Stub PG — canônico em ``repos_mart_realtime.fraud_devolucao_entrada``."""
+    return {"items": [], "summary": {"qtd": 0, "valor_total": 0.0}, "source": "stub"}
+
+
+def fraud_transferencia_cr(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+    dt_ini: date,
+    dt_fim: date,
+    limit: int = 200,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Stub PG — canônico em ``repos_mart_realtime.fraud_transferencia_cr``."""
+    return {"items": [], "summary": {"qtd": 0, "valor_total": 0.0}, "source": "stub"}
 
 
 def fraud_lancamentos_creditos(

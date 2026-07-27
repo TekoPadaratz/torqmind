@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { apiGet } from '../../lib/api';
 import { formatDateTime } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +19,7 @@ export default function PlatformAuditPage() {
   const [selected, setSelected] = useState<any>(null);
   const [filters, setFilters] = useState({ entity_type: '', action: '', entity_id: '', date_from: '', date_to: '' });
   const [error, setError] = useState('');
+  const auditSearch = useGridSearch(items);
 
   async function load(session: any, currentFilters = filters) {
     const query = new URLSearchParams({ limit: '200' });
@@ -109,6 +112,7 @@ export default function PlatformAuditPage() {
       <div style={{ height: 16 }} />
 
       <div className="card">
+        <GridSearchInput value={auditSearch.query} onChange={auditSearch.setQuery} aria-label="Pesquisar eventos de auditoria" />
         <table className="table">
           <thead>
             <tr>
@@ -121,7 +125,7 @@ export default function PlatformAuditPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {auditSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{formatDateTime(item.created_at)}</td>
                 <td>{item.action}</td>
@@ -135,7 +139,7 @@ export default function PlatformAuditPage() {
                 </td>
               </tr>
             ))}
-            {!items.length ? (
+            {!auditSearch.filteredRows.length ? (
               <tr>
                 <td colSpan={6}>Nenhum evento de auditoria encontrado.</td>
               </tr>

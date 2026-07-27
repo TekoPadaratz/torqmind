@@ -13,6 +13,7 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
   buildUserLabel,
@@ -30,6 +31,7 @@ import {
 import { sortGridRows } from "../lib/grid-sort";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useGridSearch } from "../lib/use-grid-search";
 
 export const dynamic = "force-dynamic";
 
@@ -110,6 +112,15 @@ export default function CashPage() {
     [inutilizacoes?.items],
   );
   const hasInutilizacoes = Number(inutilizacoes?.qtd || 0) > 0;
+  const { query: turnosQ, setQuery: setTurnosQ, filteredRows: filteredTurnos } = useGridSearch(
+    topTurnos as Record<string, unknown>[],
+  );
+  const { query: inutilizacoesQ, setQuery: setInutilizacoesQ, filteredRows: filteredInutilizacoes } = useGridSearch(
+    inutItems as Record<string, unknown>[],
+  );
+  const { query: caixasQ, setQuery: setCaixasQ, filteredRows: filteredCaixas } = useGridSearch(
+    openBoxes as Record<string, unknown>[],
+  );
   const paymentMixChartHeight = Math.max(280, paymentMix.length * 44);
 
   function formatNfeDateTime(item: any) {
@@ -248,6 +259,7 @@ export default function CashPage() {
 
               <div className="card col-12">
                 <h2>Fluxo do período selecionado</h2>
+                <div style={{ margin: "8px 0" }}><GridSearchInput value={turnosQ} onChange={setTurnosQ} /></div>
                 {!loading && !topTurnos.length ? (
                   <EmptyState
                     title="Sem turnos comerciais no período."
@@ -271,7 +283,7 @@ export default function CashPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {topTurnos.map((item: any) => (
+                        {filteredTurnos.map((item: any) => (
                           <tr key={`${item.id_filial}-${item.id_turno}`}>
                             <td>{item.filial_label}</td>
                             <td>
@@ -307,6 +319,9 @@ export default function CashPage() {
                       </div>
                     </div>
                   </div>
+                  <div style={{ marginBottom: 12 }}>
+                    <GridSearchInput value={inutilizacoesQ} onChange={setInutilizacoesQ} />
+                  </div>
                   {!loading && !inutItems.length ? (
                     <EmptyState
                       title="Lista detalhada em preparação"
@@ -328,7 +343,7 @@ export default function CashPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {inutItems.map((item: any, idx: number) => (
+                          {filteredInutilizacoes.map((item: any, idx: number) => (
                             <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
                               <td>{item.filial_label}</td>
                               <td>{formatNfeDateTime(item)}</td>
@@ -363,6 +378,7 @@ export default function CashPage() {
                       <div style={{ fontSize: 20, fontWeight: 800 }}>{loading ? "..." : formatCurrency(liveKpis.total_cancelamentos_abertos)}</div>
                     </div>
                   </div>
+                  <GridSearchInput value={caixasQ} onChange={setCaixasQ} />
                 </div>
                 {!loading && !openBoxes.length ? (
                   <EmptyState
@@ -386,7 +402,7 @@ export default function CashPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {openBoxes.map((item: any) => (
+                        {filteredCaixas.map((item: any) => (
                           <tr key={`${item.id_filial}-${item.id_turno}`}>
                             <td>{item.filial_label}</td>
                             <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>

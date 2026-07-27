@@ -4,9 +4,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridSearchInput from '../../components/ui/GridSearchInput';
 import { api, apiGet } from '../../lib/api';
 import { formatDateOnly } from '../../lib/format';
 import { loadSession } from '../../lib/session';
+import { useGridSearch } from '../../lib/use-grid-search';
 import {
   FALLBACK_SCREEN_TREE,
   TV_SCREEN_OPTIONS,
@@ -117,6 +119,7 @@ export default function PlatformUsersPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [screenTree, setScreenTree] = useState<ScreenMenu[]>(FALLBACK_SCREEN_TREE);
+  const usersSearch = useGridSearch(items);
 
   async function load(session: any) {
     setLoading(true);
@@ -719,6 +722,7 @@ export default function PlatformUsersPage() {
             <h2>Usuários cadastrados</h2>
           </div>
         </div>
+        <GridSearchInput value={usersSearch.query} onChange={usersSearch.setQuery} aria-label="Pesquisar usuários cadastrados" />
         <table className="table">
           <thead>
             <tr>
@@ -734,7 +738,7 @@ export default function PlatformUsersPage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {usersSearch.filteredRows.map((item) => (
               <tr key={item.id}>
                 <td>{item.nome}</td>
                 <td>{item.email}</td>
@@ -774,7 +778,7 @@ export default function PlatformUsersPage() {
                 </td>
               </tr>
             ))}
-            {!items.length && !loading ? (
+            {!usersSearch.filteredRows.length && !loading ? (
               <tr>
                 <td colSpan={9}>Nenhum usuário encontrado.</td>
               </tr>

@@ -13,6 +13,7 @@ from app.schemas_platform import (
     ContractUpsertRequest,
     NotificationSubscriptionRequest,
     PayableMarkPaidRequest,
+    PlatformEmailProfileUpdateRequest,
     ReceivableGenerationRequest,
     ReceivableMarkEmittedRequest,
     ReceivableMarkPaidRequest,
@@ -249,6 +250,38 @@ def channels_create(body: ChannelUpsertRequest, request: Request, claims=Depends
 def channels_update(channel_id: int, body: ChannelUpsertRequest, request: Request, claims=Depends(get_current_claims)):
     try:
         return repos_platform.upsert_channel(claims, body.model_dump(), ip=_ip(request), channel_id=channel_id)
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
+@router.get("/email")
+def platform_email_get(claims=Depends(get_current_claims)):
+    try:
+        return repos_platform.get_platform_email_profile(claims)
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
+@router.patch("/email")
+def platform_email_update(
+    body: PlatformEmailProfileUpdateRequest,
+    request: Request,
+    claims=Depends(get_current_claims),
+):
+    try:
+        return repos_platform.update_platform_email_profile(
+            claims,
+            body.model_dump(exclude_unset=True),
+            ip=_ip(request),
+        )
+    except repos_platform.AuthError as exc:
+        _raise(exc)
+
+
+@router.post("/email/test")
+def platform_email_test(request: Request, claims=Depends(get_current_claims)):
+    try:
+        return repos_platform.send_platform_email_test(claims, ip=_ip(request))
     except repos_platform.AuthError as exc:
         _raise(exc)
 

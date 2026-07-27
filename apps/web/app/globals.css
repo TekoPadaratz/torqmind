@@ -2257,6 +2257,15 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   max-width: 280px;
 }
 
+/* Busca universal dos grids — largura fixa (contrato 08-grids) */
+.gridSearchInput,
+input.gridSearchInput {
+  width: 280px;
+  flex: 0 0 280px;
+  max-width: 280px;
+  min-width: 280px;
+}
+
 .profitFilterBar select {
   min-width: 140px;
 }

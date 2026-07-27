@@ -18,6 +18,7 @@ import {
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
   buildUserLabel,
@@ -38,6 +39,7 @@ import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../l
 import { sortGridRows } from "../lib/grid-sort";
 import { canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
 
 export const dynamic = "force-dynamic";
 
@@ -167,16 +169,19 @@ function GridPager({
 export default function FraudPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
-  const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(true);
+  // Default "Todas": suspeitas dependem do join movlcto; com sync atrasado o filtro
+  // "Só suspeitas" esconde o período inteiro (gap jul/2026+).
+  const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(false);
   const [trocaFormaNova, setTrocaFormaNova] = useState<"todos" | "prazo" | "cheque_pre">("todos");
   const [creditoRisco, setCreditoRisco] = useState<"suspeitas" | "normais" | "todas">("suspeitas");
-  const [creditoClienteQ, setCreditoClienteQ] = useState("");
+  const [creditoUsoQuery, setCreditoUsoQuery] = useState("");
   const [creditoPage, setCreditoPage] = useState(1);
   const [creditoExpandido, setCreditoExpandido] = useState<string | null>(null);
   const [credFuncStatus, setCredFuncStatus] = useState<"todos" | "suspeitos" | "normais">("todos");
   const [credFuncMonth, setCredFuncMonth] = useState<number>(() => currentAnoMesSP());
   const [credFuncPage, setCredFuncPage] = useState(1);
   const [credFuncExpandido, setCredFuncExpandido] = useState<number | null>(null);
+  const [credFuncUsoQuery, setCredFuncUsoQuery] = useState("");
   const [trocaPage, setTrocaPage] = useState(1);
   const [cancelPage, setCancelPage] = useState(1);
   const [operadorPage, setOperadorPage] = useState(1);
@@ -213,7 +218,7 @@ export default function FraudPage() {
   }, [scopeKey]);
   useEffect(() => {
     setCreditoPage(1);
-  }, [creditoRisco, creditoClienteQ]);
+  }, [creditoRisco]);
   useEffect(() => {
     setCredFuncPage(1);
     setCredFuncExpandido(null);
@@ -284,6 +289,7 @@ export default function FraudPage() {
   const credFuncRows: any[] = Array.isArray(credFuncPayload?.funcionarios)
     ? credFuncPayload.funcionarios
     : [];
+  const credFuncSearch = useGridSearch(credFuncRows);
   const credFuncSummary = credFuncPayload?.summary || {};
   const credFuncMeses = useMemo(() => {
     const fromApi = Array.isArray(credFuncPayload?.meses_disponiveis)
@@ -300,9 +306,9 @@ export default function FraudPage() {
     }
     return Array.from(set).sort((a, b) => b - a);
   }, [credFuncMonth, credFuncPayload?.meses_disponiveis]);
-  const credFuncTotalPages = Math.max(1, Math.ceil(credFuncRows.length / pageSize));
+  const credFuncTotalPages = Math.max(1, Math.ceil(credFuncSearch.filteredRows.length / pageSize));
   const credFuncPageSafe = Math.min(Math.max(1, credFuncPage), credFuncTotalPages);
-  const credFuncPageRows = credFuncRows.slice(
+  const credFuncPageRows = credFuncSearch.filteredRows.slice(
     (credFuncPageSafe - 1) * pageSize,
     credFuncPageSafe * pageSize,
   );
@@ -350,6 +356,7 @@ export default function FraudPage() {
       ),
     [riscoData?.troca_forma_pgto],
   );
+  const trocaSearch = useGridSearch(trocaRows);
   const trocaTotais = riscoData?.troca_forma_pgto_totais || {};
   const trocaTotalQtd = trocaSoSuspeitas
     ? Number(trocaTotais.suspeitas_qtd || 0)
@@ -358,6 +365,60 @@ export default function FraudPage() {
     ? Number(trocaTotais.suspeitas_valor || 0)
     : Number(trocaTotais.todas_valor || 0);
   const trocaLoading = riscoLoading;
+
+  const devolucaoRows = useMemo(
+    () =>
+      sortGridRows(
+        Array.isArray(riscoData?.devolucao_entrada?.items)
+          ? riscoData.devolucao_entrada.items
+          : [],
+        (r: any) => ({
+          filial: r.filial_label ?? r.id_filial,
+          data: r.dt || r.data_key,
+          nome: r.nome_operador,
+        }),
+      ),
+    [riscoData?.devolucao_entrada?.items],
+  );
+  const devolucaoSearch = useGridSearch(devolucaoRows);
+  const devolucaoSummary = riscoData?.devolucao_entrada?.summary || {};
+  const [devolucaoPage, setDevolucaoPage] = useState(1);
+  const devolucaoTotalPages = Math.max(1, Math.ceil(devolucaoSearch.filteredRows.length / pageSize));
+  const devolucaoPageSafe = Math.min(Math.max(1, devolucaoPage), devolucaoTotalPages);
+  const devolucaoPageRows = devolucaoSearch.filteredRows.slice(
+    (devolucaoPageSafe - 1) * pageSize,
+    devolucaoPageSafe * pageSize,
+  );
+
+  const transferenciaRows = useMemo(
+    () =>
+      sortGridRows(
+        Array.isArray(riscoData?.transferencia_cr?.items)
+          ? riscoData.transferencia_cr.items
+          : [],
+        (r: any) => ({
+          filial: r.filial_label ?? r.id_filial,
+          data: r.dt || r.data_key,
+          nome: r.entidade_para || r.entidade_de,
+        }),
+      ),
+    [riscoData?.transferencia_cr?.items],
+  );
+  const transferenciaSearch = useGridSearch(transferenciaRows);
+  const transferenciaSummary = riscoData?.transferencia_cr?.summary || {};
+  const [transferenciaPage, setTransferenciaPage] = useState(1);
+  const transferenciaTotalPages = Math.max(
+    1,
+    Math.ceil(transferenciaSearch.filteredRows.length / pageSize),
+  );
+  const transferenciaPageSafe = Math.min(
+    Math.max(1, transferenciaPage),
+    transferenciaTotalPages,
+  );
+  const transferenciaPageRows = transferenciaSearch.filteredRows.slice(
+    (transferenciaPageSafe - 1) * pageSize,
+    transferenciaPageSafe * pageSize,
+  );
 
   const byDay = useMemo(
     () =>
@@ -390,19 +451,14 @@ export default function FraudPage() {
   const creditos = riscoData?.lancamentos_creditos || {};
   const creditosSummary = creditos?.summary || {};
   const creditosRows = creditos?.lancamentos || [];
+  const creditosSearch = useGridSearch(creditosRows);
   const creditosFiltered = useMemo(() => {
-    const term = creditoClienteQ.trim().toUpperCase();
-    const filtered = !term
-      ? creditosRows
-      : creditosRows.filter((c: any) =>
-          String(c.cliente || "").toUpperCase().includes(term),
-        );
-    return sortGridRows(filtered, (c: any) => ({
+    return sortGridRows(creditosSearch.filteredRows, (c: any) => ({
       filial: c.filial_label ?? c.id_filial,
       data: c.data_ts || c.data || c.data_key,
       nome: c.cliente,
     }));
-  }, [creditosRows, creditoClienteQ]);
+  }, [creditosSearch.filteredRows]);
   const creditoTotalPages = Math.max(1, Math.ceil(creditosFiltered.length / pageSize));
   const creditoPageSafe = Math.min(Math.max(1, creditoPage), creditoTotalPages);
   const creditosPageRows = creditosFiltered.slice(
@@ -435,10 +491,11 @@ export default function FraudPage() {
       nome: e.usuario_label || e.operador_label,
     }));
   }, [data?.last_events]);
+  const cancelSearch = useGridSearch(lastEventsOperational);
 
-  const cancelTotalPages = Math.max(1, Math.ceil(lastEventsOperational.length / pageSize));
+  const cancelTotalPages = Math.max(1, Math.ceil(cancelSearch.filteredRows.length / pageSize));
   const cancelPageSafe = Math.min(Math.max(1, cancelPage), cancelTotalPages);
-  const cancelPageRows = lastEventsOperational.slice(
+  const cancelPageRows = cancelSearch.filteredRows.slice(
     (cancelPageSafe - 1) * pageSize,
     cancelPageSafe * pageSize,
   );
@@ -447,19 +504,36 @@ export default function FraudPage() {
     () => (Array.isArray(data?.top_users) ? data.top_users : []),
     [data?.top_users],
   );
-  const operadorTotalPages = Math.max(1, Math.ceil(topUsersRows.length / pageSize));
+  const operadorSearch = useGridSearch(topUsersRows);
+  const operadorTotalPages = Math.max(1, Math.ceil(operadorSearch.filteredRows.length / pageSize));
   const operadorPageSafe = Math.min(Math.max(1, operadorPage), operadorTotalPages);
-  const operadorPageRows = topUsersRows.slice(
+  const operadorPageRows = operadorSearch.filteredRows.slice(
     (operadorPageSafe - 1) * pageSize,
     operadorPageSafe * pageSize,
   );
 
-  const trocaTotalPages = Math.max(1, Math.ceil(trocaRows.length / pageSize));
+  const trocaTotalPages = Math.max(1, Math.ceil(trocaSearch.filteredRows.length / pageSize));
   const trocaPageSafe = Math.min(Math.max(1, trocaPage), trocaTotalPages);
-  const trocaPageRows = trocaRows.slice(
+  const trocaPageRows = trocaSearch.filteredRows.slice(
     (trocaPageSafe - 1) * pageSize,
     trocaPageSafe * pageSize,
   );
+
+  useEffect(() => {
+    setCreditoPage(1);
+  }, [creditosSearch.query]);
+  useEffect(() => {
+    setCredFuncPage(1);
+  }, [credFuncSearch.query]);
+  useEffect(() => {
+    setTrocaPage(1);
+  }, [trocaSearch.query]);
+  useEffect(() => {
+    setCancelPage(1);
+  }, [cancelSearch.query]);
+  useEffect(() => {
+    setOperadorPage(1);
+  }, [operadorSearch.query]);
   const topOperationalUser = topUsersRows[0];
   const latestOperationalEvent = lastEventsOperational[0];
   const topEmployee = (data?.risk_top_employees || [])[0];
@@ -583,10 +657,6 @@ export default function FraudPage() {
             <div className="bi-grid" style={{ marginTop: 12 }}>
               <div className="card col-6 chartCard">
                 <h2>Cancelamentos por dia</h2>
-                <div className="muted" style={{ marginBottom: 8 }}>
-                  Série operacional de cancelamentos reconciliados por turno,
-                  usando a mesma base semântica do Caixa.
-                </div>
                 <div className="chartWrap">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={byDay}>
@@ -609,7 +679,8 @@ export default function FraudPage() {
 
               <div className="card col-6">
                 <h2>Operadores de caixa com mais cancelamentos</h2>
-                {!loading && !topUsersRows.length ? (
+                <GridSearchInput value={operadorSearch.query} onChange={operadorSearch.setQuery} aria-label="Pesquisar operadores com cancelamentos" />
+                {!loading && !operadorSearch.filteredRows.length ? (
                   <EmptyState
                     title="Sem operadores destacados."
                     detail="Não houve concentração operacional relevante por operador de caixa."
@@ -640,7 +711,7 @@ export default function FraudPage() {
                 <GridPager
                   page={operadorPageSafe}
                   totalPages={operadorTotalPages}
-                  total={topUsersRows.length}
+                  total={operadorSearch.filteredRows.length}
                   pageSize={pageSize}
                   onPrev={() => setOperadorPage((p) => Math.max(1, p - 1))}
                   onNext={() =>
@@ -651,7 +722,8 @@ export default function FraudPage() {
 
               <div className="card col-12">
                 <h2>Últimos cancelamentos operacionais</h2>
-                {!loading && !lastEventsOperational.length ? (
+                <GridSearchInput value={cancelSearch.query} onChange={cancelSearch.setQuery} aria-label="Pesquisar cancelamentos operacionais" />
+                {!loading && !cancelSearch.filteredRows.length ? (
                   <EmptyState
                     title="Sem eventos operacionais recentes."
                     detail="Não houve cancelamentos reconciliados por turno no período analisado."
@@ -692,7 +764,7 @@ export default function FraudPage() {
                 <GridPager
                   page={cancelPageSafe}
                   totalPages={cancelTotalPages}
-                  total={lastEventsOperational.length}
+                  total={cancelSearch.filteredRows.length}
                   pageSize={pageSize}
                   onPrev={() => setCancelPage((p) => Math.max(1, p - 1))}
                   onNext={() =>
@@ -724,12 +796,6 @@ export default function FraudPage() {
                     ) : null}
                   </div>
                   <h2 style={{ marginTop: 4 }}>Lançamentos de créditos</h2>
-                  <div className="muted" style={{ marginTop: 4 }}>
-                    Créditos lançados no cadastro do cliente. A injeção manual de crédito
-                    (&ldquo;Crédito adicionado manualmente&rdquo;), sem troco, cheque ou fatura por
-                    trás, é o padrão clássico de golpe: o operador cria saldo e depois usa para dar
-                    baixa em vendas. As linhas em vermelho são injeções manuais.
-                  </div>
                   <div
                     className="profitFilterBar"
                     style={{ marginTop: 10, marginBottom: 0, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}
@@ -771,15 +837,7 @@ export default function FraudPage() {
                         </button>
                       );
                     })}
-                    <input
-                      type="text"
-                      className="input"
-                      value={creditoClienteQ}
-                      onChange={(e) => setCreditoClienteQ(e.target.value.toUpperCase())}
-                      placeholder="BUSCAR CLIENTE PELO NOME"
-                      aria-label="Buscar cliente nos créditos"
-                      style={{ maxWidth: 320, textTransform: "uppercase", fontSize: 13, flex: "0 1 320px" }}
-                    />
+                    <GridSearchInput value={creditosSearch.query} onChange={creditosSearch.setQuery} aria-label="Pesquisar lançamentos de crédito" />
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 12 }}>
@@ -858,6 +916,8 @@ export default function FraudPage() {
                                 <tr>
                                   <td colSpan={10} style={{ padding: "10px 12px", background: "var(--surface-faint)" }}>
                                     {consumos.length ? (
+                                      <>
+                                      <GridSearchInput value={creditoUsoQuery} onChange={setCreditoUsoQuery} aria-label="Pesquisar usos do crédito" />
                                       <table className="table compact" style={{ margin: 0 }}>
                                         <thead>
                                           <tr>
@@ -869,7 +929,7 @@ export default function FraudPage() {
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {consumos.map((u: any, uIdx: number) => (
+                                          {consumos.filter((u: any) => rowMatchesGridSearch(u, creditoUsoQuery)).map((u: any, uIdx: number) => (
                                             <tr key={`${rowKey}-consumo-${uIdx}`}>
                                               <td style={{ whiteSpace: "nowrap" }}>
                                                 {u.data_ts && u.hora_conhecida
@@ -888,6 +948,7 @@ export default function FraudPage() {
                                           ))}
                                         </tbody>
                                       </table>
+                                      </>
                                     ) : (
                                       <div className="muted" style={{ fontSize: 13 }}>
                                         Nenhum uso deste crédito encontrado após a injeção.
@@ -935,12 +996,6 @@ export default function FraudPage() {
                     <div>
                       <div className="sectionEyebrow">Risco financeiro</div>
                       <h2 style={{ marginTop: 4 }}>Troca de forma de pagamento</h2>
-                      <div className="muted" style={{ marginTop: 4 }}>
-                        Pagamentos que foram recebidos e depois trocados para uma
-                        forma a receber (prazo, cheque, convênio, crediário). A
-                        troca de uma venda já quitada para &quot;a receber&quot; é
-                        o padrão clássico de desvio de caixa.
-                      </div>
                     </div>
                     <div className="profitFilterBar" style={{ marginBottom: 0 }}>
                       <select
@@ -1007,11 +1062,18 @@ export default function FraudPage() {
                       />
                     ) : (
                       <div className="tableScroll">
+                        <GridSearchInput value={trocaSearch.query} onChange={trocaSearch.setQuery} aria-label="Pesquisar trocas de pagamento" />
                         {trocaTotalQtd > trocaRows.length ? (
                           <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
                             Exibindo as {trocaRows.length} trocas mais recentes de{" "}
                             {trocaTotalQtd} no período.
                           </div>
+                        ) : null}
+                        {!trocaSearch.filteredRows.length ? (
+                          <EmptyState
+                            title="Nenhuma troca encontrada para a busca."
+                            detail="Ajuste o termo ou limpe a pesquisa."
+                          />
                         ) : null}
                         <table className="table compact">
                           <thead>
@@ -1098,7 +1160,7 @@ export default function FraudPage() {
                         <GridPager
                           page={trocaPageSafe}
                           totalPages={trocaTotalPages}
-                          total={trocaRows.length}
+                          total={trocaSearch.filteredRows.length}
                           pageSize={pageSize}
                           onPrev={() => setTrocaPage((p) => Math.max(1, p - 1))}
                           onNext={() =>
@@ -1110,6 +1172,160 @@ export default function FraudPage() {
                   </div>
                 </div>
               ) : null}
+
+              <div className="card col-12" style={{ marginTop: 12 }}>
+                <div className="platformSectionHead" style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div className="sectionEyebrow">Risco financeiro</div>
+                    <h2 style={{ marginTop: 4 }}>Devolução de Vendas</h2>
+                  </div>
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    {Number(devolucaoSummary.qtd || 0)} nota(s) ·{" "}
+                    {formatCurrency(Number(devolucaoSummary.valor_total || 0))}
+                  </div>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  {riscoLoading && !riscoData ? (
+                    <div className="muted">Carregando…</div>
+                  ) : !devolucaoRows.length ? (
+                    <EmptyState title="Sem devoluções de vendas no período." />
+                  ) : (
+                    <div className="tableScroll">
+                      <div style={{ marginBottom: 8 }}>
+                        <GridSearchInput
+                          value={devolucaoSearch.query}
+                          onChange={(v) => {
+                            devolucaoSearch.setQuery(v);
+                            setDevolucaoPage(1);
+                          }}
+                          aria-label="Pesquisar devoluções"
+                        />
+                      </div>
+                      <table className="table compact">
+                        <thead>
+                          <tr>
+                            <th>Filial</th>
+                            <th>Data</th>
+                            <th>Documento</th>
+                            <th>Operador</th>
+                            <th style={{ textAlign: "right" }}>Valor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {devolucaoPageRows.map((row: any) => (
+                            <tr key={`${row.id_filial}-${row.id_comprovante}-${row.documento}`}>
+                              <td>
+                                {row.filial_label ||
+                                  formatFilialLabel(row.id_filial, row.filial_nome)}
+                              </td>
+                              <td>{row.dt ? formatDateOnly(row.dt) : formatDateKey(row.data_key)}</td>
+                              <td>{row.documento || row.documento_label || "—"}</td>
+                              <td>{row.nome_operador || "—"}</td>
+                              <td style={{ textAlign: "right" }}>{formatCurrency(row.valor)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <GridPager
+                        page={devolucaoPageSafe}
+                        totalPages={devolucaoTotalPages}
+                        total={devolucaoSearch.filteredRows.length}
+                        pageSize={pageSize}
+                        onPrev={() => setDevolucaoPage((p) => Math.max(1, p - 1))}
+                        onNext={() =>
+                          setDevolucaoPage((p) => Math.min(devolucaoTotalPages, p + 1))
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="card col-12" style={{ marginTop: 12 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 12,
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div>
+                    <div className="sectionEyebrow">Risco financeiro</div>
+                    <h2 style={{ marginTop: 4 }}>Transferência de contas a receber</h2>
+                  </div>
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    {Number(transferenciaSummary.qtd || 0)} título(s) ·{" "}
+                    {formatCurrency(Number(transferenciaSummary.valor_total || 0))}
+                  </div>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  {riscoLoading && !riscoData ? (
+                    <div className="muted">Carregando…</div>
+                  ) : !transferenciaRows.length ? (
+                    <EmptyState title="Sem transferências de contas a receber no período." />
+                  ) : (
+                    <div className="tableScroll">
+                      <div style={{ marginBottom: 8 }}>
+                        <GridSearchInput
+                          value={transferenciaSearch.query}
+                          onChange={(v) => {
+                            transferenciaSearch.setQuery(v);
+                            setTransferenciaPage(1);
+                          }}
+                          aria-label="Pesquisar transferências de contas a receber"
+                        />
+                      </div>
+                      <table className="table compact">
+                        <thead>
+                          <tr>
+                            <th>Filial</th>
+                            <th>Data</th>
+                            <th>Título</th>
+                            <th>De</th>
+                            <th>Para</th>
+                            <th style={{ textAlign: "right" }}>Valor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {transferenciaPageRows.map((row: any) => (
+                            <tr
+                              key={`${row.id_filial}-${row.id_contasreceber}-${row.id_entidade_de}-${row.id_entidade_para}`}
+                            >
+                              <td>
+                                {row.filial_label ||
+                                  formatFilialLabel(row.id_filial, row.filial_nome)}
+                              </td>
+                              <td>
+                                {row.dt ? formatDateOnly(row.dt) : formatDateKey(row.data_key)}
+                              </td>
+                              <td>{row.documento || row.documento_label || "—"}</td>
+                              <td>{row.entidade_de || "—"}</td>
+                              <td>{row.entidade_para || "—"}</td>
+                              <td style={{ textAlign: "right" }}>
+                                {formatCurrency(row.valor)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <GridPager
+                        page={transferenciaPageSafe}
+                        totalPages={transferenciaTotalPages}
+                        total={transferenciaSearch.filteredRows.length}
+                        pageSize={pageSize}
+                        onPrev={() => setTransferenciaPage((p) => Math.max(1, p - 1))}
+                        onNext={() =>
+                          setTransferenciaPage((p) =>
+                            Math.min(transferenciaTotalPages, p + 1),
+                          )
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
               </>
             ) : null}
 
@@ -1125,14 +1341,6 @@ export default function FraudPage() {
                     ) : null}
                   </div>
                   <h2 style={{ marginTop: 4 }}>Vale / a prazo de colaboradores</h2>
-                  <div className="muted" style={{ marginTop: 4 }}>
-                    Limites do cadastro de entidade (grupo Funcionários): a prazo e vale, com
-                    totalizador. Lista filtrada pela filial selecionada (cadastro ativo no posto).
-                    Uso no mês em qualquer filial da empresa. Status{" "}
-                    <strong style={{ color: "var(--color-negative)" }}>Suspeito</strong> quando
-                    extrapola teto (prazo, vale ou total), passa 2+ vezes no mesmo dia ou o valor
-                    foge do padrão. Clique na linha para ver cada uso (filial, NF-e/NFC-e, tipo).
-                  </div>
                   <div
                     className="profitFilterBar"
                     style={{ marginTop: 10, marginBottom: 8, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}
@@ -1199,13 +1407,20 @@ export default function FraudPage() {
                     </div>
                   ) : credFuncLoading && !credFuncData ? (
                     <div className="muted">Carregando crédito de funcionário…</div>
-                  ) : credFuncPageRows.length === 0 ? (
+                  ) : !credFuncRows.length ? (
                     <EmptyState
                       title="Sem colaboradores com limite a prazo/vale no mês."
-                      detail="Entram entidades do grupo Funcionários (ID_GRUPOENTIDADES=12) com LIMITE ou LIMITE_VALE > 0."
+                      detail="Quando houver vale ou crédito a prazo de funcionário no mês, a lista aparece aqui."
                     />
                   ) : (
                     <div className="tableScroll">
+                      <GridSearchInput value={credFuncSearch.query} onChange={credFuncSearch.setQuery} aria-label="Pesquisar créditos de funcionário" />
+                      {!credFuncSearch.filteredRows.length ? (
+                        <EmptyState
+                          title="Nenhum colaborador encontrado para a busca."
+                          detail="Ajuste o termo ou limpe a pesquisa."
+                        />
+                      ) : null}
                       <table className="table compact">
                         <thead>
                           <tr>
@@ -1278,12 +1493,15 @@ export default function FraudPage() {
                                           Sem usos resolvidos no mês para este colaborador.
                                         </div>
                                       ) : (
+                                        <>
+                                        <GridSearchInput value={credFuncUsoQuery} onChange={setCredFuncUsoQuery} aria-label="Pesquisar usos de crédito de funcionário" />
                                         <table className="table compact">
                                           <thead>
                                             <tr>
                                               <th>Filial</th>
                                               <th>Data</th>
                                               <th>NF-e / NFC-e</th>
+                                              <th>Cliente</th>
                                               <th>Tipo</th>
                                               <th>Operador de caixa</th>
                                               <th style={{ textAlign: "right" }}>Valor</th>
@@ -1293,8 +1511,8 @@ export default function FraudPage() {
                                             {sortGridRows(row.usos || [], (u: any) => ({
                                               filial: u.filial_label ?? u.id_filial,
                                               data: u.dt_evento,
-                                              nome: u.operador_caixa,
-                                            })).map((u: any, idx: number) => (
+                                              nome: u.cliente_nome || u.operador_caixa,
+                                            })).filter((u: any) => rowMatchesGridSearch(u, credFuncUsoQuery)).map((u: any, idx: number) => (
                                               <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
                                                 <td>
                                                   {u.filial_label ||
@@ -1313,6 +1531,7 @@ export default function FraudPage() {
                                                     </span>
                                                   ) : null}
                                                 </td>
+                                                <td>{u.cliente_nome || "—"}</td>
                                                 <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
                                                 <td>{u.operador_caixa || "—"}</td>
                                                 <td style={{ textAlign: "right" }}>
@@ -1322,6 +1541,7 @@ export default function FraudPage() {
                                             ))}
                                           </tbody>
                                         </table>
+                                        </>
                                       )}
                                     </td>
                                   </tr>
@@ -1334,7 +1554,7 @@ export default function FraudPage() {
                       <GridPager
                         page={credFuncPageSafe}
                         totalPages={credFuncTotalPages}
-                        total={credFuncRows.length}
+                        total={credFuncSearch.filteredRows.length}
                         pageSize={pageSize}
                         onPrev={() => setCredFuncPage((p) => Math.max(1, p - 1))}
                         onNext={() =>

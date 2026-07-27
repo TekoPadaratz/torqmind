@@ -16,6 +16,9 @@ COMMERCIAL_WINDOW_DAYS = 365
 # (batch_delay_seconds) para nao estourar CPU no SQL Server do cliente.
 SOLVENCIA_BOOTSTRAP_DAYS = 560
 DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 240
+# Dims com full_refresh=True: no máximo 1 sync completo a cada 30 min (corta wear SSD).
+DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS = 1800
+FULL_REFRESH_LAST_RUN_KEY = "last_full_refresh_at"
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
 LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
@@ -41,7 +44,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": "ID_FUNCIONARIOS",
         "watermark_order_by": "ID_FUNCIONARIOS, ID_FILIAL",
         "full_refresh": True,
-        # Necessário para antifraude crédito funcionário (LIMITEVALE / VALES).
+        # Cadastro operacional (caixa/turno). Limites de crédito/vale vêm de ENTIDADES
+        # (grupo 12: LIMITE / LIMITE_VALE) — ver dataset entidades.
         "enabled": True,
     },
     "usuarios": {
@@ -58,10 +62,18 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT e.*, "
-            "COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (NULLIF(CAST(e.DATAREPL AS datetime2), CAST('19000101' AS datetime2))), "
+            "  (CAST(e.ULTALTERACAO AS datetime2)), "
+            "  (CAST(e.DTACADASTRO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.ENTIDADES e"
         ),
-        "enabled": False,
+        # Crítico: LIMITE / LIMITE_VALE / grupo 12 (crédito funcionário), clientes,
+        # inadimplência e nomes. Sem isto o STG fica stale (ex.: Ilson 22175).
+        # Dataset "clientes" é alias duplicado — manter desabilitado para não dobrar ingest.
+        # Watermark = MAX(DATAREPL, ULTALTERACAO, DTACADASTRO); DATAREPL sentinela 1900 ignorada.
+        "enabled": True,
     },
     "clientes": {
         "table": "dbo.ENTIDADES",
@@ -70,9 +82,14 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT e.*, "
-            "COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (NULLIF(CAST(e.DATAREPL AS datetime2), CAST('19000101' AS datetime2))), "
+            "  (CAST(e.ULTALTERACAO AS datetime2)), "
+            "  (CAST(e.DTACADASTRO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.ENTIDADES e"
         ),
+        # Alias de entidades — NÃO habilitar junto (mesma tabela Xpert → mesmo STG).
         "enabled": False,
     },
     "grupoprodutos": {
@@ -80,7 +97,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": "ID_GRUPOPRODUTOS",
         "watermark_order_by": "ID_GRUPOPRODUTOS, ID_FILIAL",
         "full_refresh": True,
-        "enabled": False,
+        # Usado em ABC/estoque/solvência (join produto→grupo). Dimensão pequena.
+        "enabled": True,
     },
     "planodecontas": {
         "table": "dbo.PLANODECONTAS",
@@ -794,14 +812,26 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         },
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        # DTACONTA de cheque/pré pode ser futura (2027+) e envenena o watermark
+        # MAX(DTACONTA, DATAREPL): o incremental avança para o futuro e deixa de
+        # capturar cancelamentos novos → mart de troca fica sem forma_de/valor.
+        # Watermark = DATAREPL (mudança real) + DTACONTA só se <= amanhã.
+        # Revisit: relê janela recente por DATAREPL e IDs altos (catch-up do gap).
+        "revisit_open_clause": (
+            "("
+            f"NULLIF(CAST(DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)) "
+            ">= DATEADD(day, -60, SYSUTCDATETIME())"
+            " OR ID_MOVLCTOSCANCELADOS >= 324000"
+            ")"
+        ),
         "query": (
             "SELECT m.*, "
             "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "(SELECT MAX(v.dt) "
-            "   FROM (VALUES "
-            "       (CAST(m.DTACONTA AS datetime2)), "
-            f"       (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
-            "   ) AS v(dt)) AS TORQMIND_WATERMARK "
+            "COALESCE("
+            f"NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)), "
+            "CASE WHEN CAST(m.DTACONTA AS datetime2) <= DATEADD(day, 1, SYSUTCDATETIME()) "
+            "     THEN CAST(m.DTACONTA AS datetime2) END"
+            ") AS TORQMIND_WATERMARK "
             "FROM dbo.MOVLCTOSCANCELADOS m"
         ),
         "enabled": True,
@@ -1086,6 +1116,9 @@ def _merge_dataset_configs(user_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]
         base = merged.get(key, {"enabled": False})
         base.update(cfg or {})
         merged[key] = base
+    for base in merged.values():
+        if base.get("full_refresh") and base.get("full_refresh_min_interval_seconds") is None:
+            base["full_refresh_min_interval_seconds"] = DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS
     return merged
 
 
