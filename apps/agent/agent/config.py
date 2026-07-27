@@ -352,6 +352,10 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         # DATAREPL do CP muitas vezes não acompanha baixa/vencimento (mesmo padrão
         # de CONTASRECEBER). Sem revisit, DRE perde títulos do mês (VR01 jun/2026).
+        #
+        # Watermark do cursor NÃO inclui DTAPGTO nem DTAVCTO: vencimento futuro é
+        # normal e pagamento futuro/sujo envenena o incremental (mesmo bug do CR).
+        # Baixas/alterações recentes vêm do revisit_open_clause.
         "revisit_open_clause": (
             "(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) "
             "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) "
@@ -362,9 +366,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
             "(SELECT MAX(v.dt) FROM (VALUES "
             "(CAST(c.DTACONTA AS datetime2)), "
-            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
-            "(CAST(c.DTAPGTO AS datetime2)), "
-            "(CAST(c.DTAVCTO AS datetime2))"
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
             ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASPAGAR c"
         ),
@@ -380,13 +382,13 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # onde o alias `c` da query base nao existe. As colunas vem de `c.*`, entao
         # devem ser referenciadas SEM prefixo (senao "multi-part identifier could not be bound").
         #
-        # IMPORTANTE (pagamento direto): quando um titulo e PAGO direto na
-        # CONTASRECEBER (DTAPGTO/VLRPAGO preenchidos) o ERP NAO atualiza DATAREPL
-        # (fica no sentinela 1900-01-01) e o watermark composto pode estar
-        # envenenado por linha suja (data futura), entao o incremental nao captura
-        # a baixa. A rede de seguranca precisa reler tanto os titulos AINDA ABERTOS
-        # quanto os RECEM-PAGOS (ultimos 120 dias por DTAPGTO), senao o titulo pago
-        # congela como aberto no STG -> DW -> mart de inadimplencia.
+        # Pagamento direto: DTAPGTO/VLRPAGO mudam SEM bump de DATAREPL. Por isso o
+        # revisit relê abertos (90d) + recém-pagos (120d por DTAPGTO).
+        #
+        # DEFINITIVO: DTAPGTO NÃO entra no TORQMIND_WATERMARK do cursor. Se entrar,
+        # uma data futura (suja ou agendada) empurra o watermark (ex.: 2033) e o
+        # incremental congela até alguém resetar. Baixa é responsabilidade do
+        # revisit_open_clause, não do avanço do cursor.
         "revisit_open_clause": (
             "(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)) "
             "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
@@ -396,8 +398,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
             "(SELECT MAX(v.dt) FROM (VALUES "
             "(CAST(c.DTACONTA AS datetime2)), "
-            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2))), "
-            "(CAST(c.DTAPGTO AS datetime2))"
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
             ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASRECEBER c"
         ),

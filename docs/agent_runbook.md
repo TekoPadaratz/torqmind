@@ -53,6 +53,18 @@ Mantidos **desabilitados** de propósito (salvo necessidade pontual):
 Se `entidades` ficou desligado por tempo longo, resetar watermark e rodar once
 (senão `LIMITE`/`LIMITE_VALE` antigos permanecem no STG).
 
+### Contas a receber / pagar — watermark sem “data futura”
+
+`contasreceber` e `contaspagar` **não** usam `DTAPGTO`/`DTAVCTO` no
+`TORQMIND_WATERMARK` do cursor (só `DTACONTA` + `DATAREPL` válido). Motivo:
+pagamento/vencimento futuro (sujo ou legítimo) empurrava o watermark (ex. 2033)
+e o incremental congelava até reset manual.
+
+Baixas e títulos recém-pagos entram pelo `revisit_open_clause` (abertos +
+pagos ~120d). O agent ainda **clampa** watermark futuro no state como rede de
+segurança. Rede de cura no servidor: `scripts/fix_contasreceber_sync.py`
+(não exige zerar watermark no posto).
+
 ### Wear de SSD / full_refresh
 
 Datasets com `full_refresh: True` (`estoque`, `funcionarios`, `credito`,

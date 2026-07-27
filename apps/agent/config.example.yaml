@@ -331,8 +331,8 @@ datasets:
       IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) OR (CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-120,GETDATE())
       AS date))
     query: SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA
-      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTAPGTO AS
-      datetime2)), (CAST(c.DTAVCTO AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONTASPAGAR c
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
+      FROM dbo.CONTASPAGAR c
   contasreceber:
     enabled: true
     table: dbo.CONTASRECEBER
@@ -343,8 +343,8 @@ datasets:
     revisit_open_clause: (DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)) OR (DTAPGTO
       IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))
     query: SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA
-      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTAPGTO AS
-      datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONTASRECEBER c
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
+      FROM dbo.CONTASRECEBER c
   contasreceberbaixa:
     enabled: true
     table: dbo.CONTASRECEBERBAIXA

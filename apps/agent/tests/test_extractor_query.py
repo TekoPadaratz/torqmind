@@ -178,6 +178,29 @@ class TestExtractorQuery(unittest.TestCase):
         # recently-paid titles (the fix) — no table alias prefix on columns
         self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
         self.assertNotIn("c.DTAPGTO", plan.sql)
+        # DEFINITIVO: DTAPGTO não pode entrar no watermark do cursor (data futura envenena).
+        self.assertNotIn("(CAST(c.DTAPGTO AS datetime2))", plan.sql)
+        self.assertIn("(CAST(c.DTACONTA AS datetime2))", plan.sql)
+
+    def test_contaspagar_watermark_excludes_future_prone_dates(self):
+        from agent.config import DEFAULT_DATASETS
+
+        cp = DEFAULT_DATASETS["contaspagar"]
+        cfg = self._cfg()
+        cfg.datasets["contaspagar"] = {**cp, "enabled": True}
+        ex = SQLServerExtractor(cfg, _DummyLogger())
+        plan = ex._build_query_plan(
+            dataset="contaspagar",
+            watermark_dt=datetime(2026, 6, 1, 0, 0, 0),
+            dt_from=None,
+            dt_to=None,
+            watermark_type_detected="datetime",
+            watermark_style=None,
+        )
+        self.assertNotIn("(CAST(c.DTAPGTO AS datetime2))", plan.sql)
+        self.assertNotIn("(CAST(c.DTAVCTO AS datetime2))", plan.sql)
+        self.assertIn("(CAST(c.DTACONTA AS datetime2))", plan.sql)
+        self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
 
 
 if __name__ == "__main__":
