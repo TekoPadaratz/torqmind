@@ -1,5 +1,9 @@
+import sys
 import unittest
 from datetime import datetime
+from unittest.mock import MagicMock
+
+sys.modules.setdefault("pyodbc", MagicMock())
 
 from agent.config import APIConfig, AppConfig, RuntimeConfig, SQLServerConfig
 from agent.extractors.xpert import SQLServerExtractor
