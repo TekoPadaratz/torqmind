@@ -444,6 +444,7 @@ class AgentRunner:
             rejected_invalid = int(body.get("rejected_invalid", 0) or 0)
             rejected_by_retention = int(body.get("rejected_by_retention", 0) or 0)
             retention_cutoff = body.get("retention_cutoff")
+            unchanged = int(body.get("unchanged", 0) or 0)
             details = body.get("details") if isinstance(body.get("details"), list) else []
             sample_reason = ""
             if details:
@@ -473,12 +474,24 @@ class AgentRunner:
                     f"rejected={rejected} sample_reason={sample_reason or 'Missing/invalid PK fields'}"
                 )
 
+            # API com upsert condicional: lote 100% igual → inserted_or_updated=0 e
+            # unchanged=N. Isso é sucesso (anti-SSD), não falha de entrega.
+            if rejected == 0 and rejected_invalid == 0 and rejected_by_retention == 0 and unchanged > 0:
+                self.logger.info(
+                    "dataset=%s phase=batch_noop extracted=%s unchanged=%s inserted_or_updated=0",
+                    dataset,
+                    extracted,
+                    unchanged,
+                )
+                return
+
             contract_hint = ""
             if validation_summary and validation_summary.contract_name:
                 contract_hint = f" Local {validation_summary.contract_name} validation passed before POST."
             raise RuntimeError(
                 f"Batch extracted but nothing inserted for dataset={dataset}. "
-                f"rejected={rejected}.{contract_hint} Verify API response details for retention or payload issues."
+                f"rejected={rejected} unchanged={unchanged}.{contract_hint} "
+                f"Verify API response details for retention or payload issues."
             )
 
     @staticmethod
@@ -1158,9 +1171,11 @@ class AgentRunner:
         )
 
         while True:
+# Default: um dataset com falha não mata o restante do ciclo (dados “faltando”
+            # no sistema vinham do abort em clientes/comprovantes noop).
             try:
                 # --- Normal incremental cycle ---
-                self.run_once(only_dataset=only_dataset, continue_on_error=continue_on_error)
+                self.run_once(only_dataset=only_dataset, continue_on_error=True)
             except Exception as exc:  # noqa: PERF203
                 self.logger.exception("phase=loop_error error=%s", str(exc)[:500])
 

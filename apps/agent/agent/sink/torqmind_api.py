@@ -418,10 +418,11 @@ class TorqMindSink:
 
         body = self._body_json(resp)
         self.logger.info(
-            "dataset=%s phase=send_done status=%s inserted_or_updated=%s rejected=%s delivery_key=%s",
+            "dataset=%s phase=send_done status=%s inserted_or_updated=%s unchanged=%s rejected=%s delivery_key=%s",
             dataset,
             resp.status_code,
             body.get("inserted_or_updated"),
+            body.get("unchanged"),
             body.get("rejected"),
             delivery_key[:18],
         )
