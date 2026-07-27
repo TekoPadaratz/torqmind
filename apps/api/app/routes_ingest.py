@@ -633,6 +633,16 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_movlctos", ["ID_MOVLCTOS", "ID_MOVLCTO", "id_movlctos", "id_movlcto"]),
         ],
     ),
+    # Ajustes TRANSF AJUSTE* (plano bancário sem espelho em MOVBANCOS) — Solvência.
+    "movbancos_ajuste_plano": DatasetSpec(
+        table="stg.movbancos_ajuste_plano",
+        pk_cols=["id_empresa", "id_filial", "id_db", "id_movlctos"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_db", ["ID_DB", "id_db"]),
+            ("id_movlctos", ["ID_MOVLCTOS", "ID_MOVLCTO", "id_movlctos", "id_movlcto"]),
+        ],
+    ),
     "itensmovprodutos": DatasetSpec(
         table="stg.itensmovprodutos",
         pk_cols=["id_empresa", "id_filial", "id_db", "id_movprodutos", "id_itensmovprodutos"],

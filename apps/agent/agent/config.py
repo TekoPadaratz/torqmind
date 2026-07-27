@@ -440,8 +440,14 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         # DRE Xpert usa DTACONTA; DATAREPL/DATA sozinhos perdem competência do mês.
+        # Ajustes de saldo/empréstimo no plano bancário (sem espelho em MOVBANCOS).
         "revisit_open_clause": (
-            "CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)"
+            "CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date) "
+            "OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'TRANSF AJUSTE%' "
+            "OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE-SALDO%' "
+            "OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE SALDO%' "
+            "OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%' "
+            "OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE EMPRESTIMO%'"
         ),
         "query": (
             "SELECT m.*, "
@@ -452,6 +458,34 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             f"(NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
             ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.MOVLCTOS m"
+        ),
+        "enabled": True,
+    },
+    # Ajustes de plano bancário (sem espelho em MOVBANCOS) — full refresh.
+    # Alimenta stg.movbancos_ajuste_plano (Solvência). Ver XPERT_BANCOS_MAP.md.
+    "movbancos_ajuste_plano": {
+        "table": "dbo.MOVLCTOS",
+        "watermark_column": "ID_MOVLCTOS",
+        "watermark_order_by": "ID_MOVLCTOS, ID_FILIAL, ID_DB",
+        "cursor_pk_columns": ["ID_MOVLCTOS", "ID_FILIAL", "ID_DB"],
+        "full_refresh": True,
+        "query": (
+            "SELECT m.*, "
+            "CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(m.DTACONTA AS datetime2)), "
+            "(CAST(m.DATA AS datetime2)), "
+            f"(NULLIF(CAST(m.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
+            "FROM dbo.MOVLCTOS m "
+            "WHERE ISNULL(m.ESTORNO, 0) = 0 "
+            "AND ("
+            " UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'TRANSF AJUSTE%'"
+            " OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE-SALDO%'"
+            " OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE SALDO%'"
+            " OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%'"
+            " OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE EMPRESTIMO%'"
+            ")"
         ),
         "enabled": True,
     },

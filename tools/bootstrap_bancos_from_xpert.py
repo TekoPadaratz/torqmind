@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bootstrap one-shot: CONTASBANCARIA + BANCOSPADRAO + MOVBANCOS (Xpert → STG PG).
+"""Bootstrap one-shot: CONTASBANCARIA + BANCOSPADRAO + MOVBANCOS + TRANSF AJUSTE* (Xpert → STG PG).
 
 Uso (homolog):
   set -a; source /home/tm/torqmind/config/source-explorer.env
@@ -7,6 +7,9 @@ Uso (homolog):
   .venv/bin/python tools/bootstrap_bancos_from_xpert.py --id-empresa 1 --pg-database torqmind_homolog
 
 Não imprime senhas. Idempotente (UPSERT pelas PKs STG).
+
+Inclui stg.movbancos_ajuste_plano (TRANSF AJUSTE / AJUSTE-SALDO / AJUSTE EMPRESTIMO…).
+Prova Banrisul VR01: movbancos 152.833,35 − TRANSF AJUSTE PIX 24.869,45 = 127.963,90.
 """
 from __future__ import annotations
 
@@ -110,6 +113,40 @@ def upsert_movbancos(cur, id_empresa: int, rows: Iterable[Dict[str, Any]]) -> in
     return n
 
 
+def upsert_ajuste_plano(cur, id_empresa: int, rows: Iterable[Dict[str, Any]]) -> int:
+    n = 0
+    sql = """
+      INSERT INTO stg.movbancos_ajuste_plano AS t
+        (id_empresa, id_filial, id_db, id_movlctos, payload, dt_evento,
+         id_db_shadow, id_chave_natural, ingested_at, received_at)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s, now(), now())
+      ON CONFLICT (id_empresa, id_filial, id_db, id_movlctos) DO UPDATE
+        SET payload = EXCLUDED.payload,
+            dt_evento = EXCLUDED.dt_evento,
+            ingested_at = now()
+    """
+    for r in rows:
+        fid = int(r["ID_FILIAL"])
+        id_db = int(r["ID_DB"])
+        mid = int(r["ID_MOVLCTOS"])
+        dt = r.get("DTACONTA")
+        cur.execute(
+            sql,
+            (
+                id_empresa,
+                fid,
+                id_db,
+                mid,
+                Jsonb(_jsonable(r)),
+                dt,
+                id_db,
+                f"{fid}:{id_db}:{mid}",
+            ),
+        )
+        n += 1
+    return n
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--id-empresa", type=int, default=1)
@@ -137,6 +174,7 @@ def main() -> None:
     print(f"  {len(bancos)} rows", flush=True)
 
     movs: List[Dict[str, Any]] = []
+    ajustes: List[Dict[str, Any]] = []
     if not args.skip_mov:
         print(f"loading MOVBANCOS since {args.from_date} (DELETAR=0)…", flush=True)
         mcur.execute(
@@ -150,6 +188,24 @@ def main() -> None:
         )
         movs = list(mcur.fetchall())
         print(f"  {len(movs)} rows", flush=True)
+
+    print("loading MOVLCTOS ajustes de plano bancário…", flush=True)
+    mcur.execute(
+        """
+        SELECT *
+        FROM dbo.MOVLCTOS
+        WHERE ISNULL(ESTORNO, 0) = 0
+          AND (
+            UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'TRANSF AJUSTE%'
+            OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE-SALDO%'
+            OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE SALDO%'
+            OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%'
+            OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE EMPRESTIMO%'
+          )
+        """
+    )
+    ajustes = list(mcur.fetchall())
+    print(f"  {len(ajustes)} rows", flush=True)
     mss.close()
 
     print(f"writing PG {args.pg_database}…", flush=True)
@@ -194,6 +250,10 @@ def main() -> None:
             if movs:
                 n_mv = upsert_movbancos(cur, args.id_empresa, movs)
                 print(f"  movbancos={n_mv}", flush=True)
+
+            if ajustes:
+                n_aj = upsert_ajuste_plano(cur, args.id_empresa, ajustes)
+                print(f"  movbancos_ajuste_plano={n_aj}", flush=True)
 
             conn.commit()
             print("STG committed. refresh_liquidez_banco…", flush=True)
