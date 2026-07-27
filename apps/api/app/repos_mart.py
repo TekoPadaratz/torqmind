@@ -56,7 +56,7 @@ COMMERCIAL_CFOP_LABELS = {
     "saida_normal": "Vendas normais",
     "entrada_normal": "Entradas registradas",
     "devolucao_saida": "Devoluções de venda",
-    "devolucao_entrada": "Devoluções de entrada",
+    "devolucao_entrada": "Devolução de Vendas",
     "outro": "Outros CFOPs",
 }
 

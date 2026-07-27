@@ -41,7 +41,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": "ID_FUNCIONARIOS",
         "watermark_order_by": "ID_FUNCIONARIOS, ID_FILIAL",
         "full_refresh": True,
-        # Necessário para antifraude crédito funcionário (LIMITEVALE / VALES).
+        # Cadastro operacional (caixa/turno). Limites de crédito/vale vêm de ENTIDADES
+        # (grupo 12: LIMITE / LIMITE_VALE) — ver dataset entidades.
         "enabled": True,
     },
     "usuarios": {
@@ -58,10 +59,18 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT e.*, "
-            "COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (NULLIF(CAST(e.DATAREPL AS datetime2), CAST('19000101' AS datetime2))), "
+            "  (CAST(e.ULTALTERACAO AS datetime2)), "
+            "  (CAST(e.DTACADASTRO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.ENTIDADES e"
         ),
-        "enabled": False,
+        # Crítico: LIMITE / LIMITE_VALE / grupo 12 (crédito funcionário), clientes,
+        # inadimplência e nomes. Sem isto o STG fica stale (ex.: Ilson 22175).
+        # Dataset "clientes" é alias duplicado — manter desabilitado para não dobrar ingest.
+        # Watermark = MAX(DATAREPL, ULTALTERACAO, DTACADASTRO); DATAREPL sentinela 1900 ignorada.
+        "enabled": True,
     },
     "clientes": {
         "table": "dbo.ENTIDADES",
@@ -70,9 +79,14 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT e.*, "
-            "COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "  (NULLIF(CAST(e.DATAREPL AS datetime2), CAST('19000101' AS datetime2))), "
+            "  (CAST(e.ULTALTERACAO AS datetime2)), "
+            "  (CAST(e.DTACADASTRO AS datetime2))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.ENTIDADES e"
         ),
+        # Alias de entidades — NÃO habilitar junto (mesma tabela Xpert → mesmo STG).
         "enabled": False,
     },
     "grupoprodutos": {
@@ -80,7 +94,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "watermark_column": "ID_GRUPOPRODUTOS",
         "watermark_order_by": "ID_GRUPOPRODUTOS, ID_FILIAL",
         "full_refresh": True,
-        "enabled": False,
+        # Usado em ABC/estoque/solvência (join produto→grupo). Dimensão pequena.
+        "enabled": True,
     },
     "planodecontas": {
         "table": "dbo.PLANODECONTAS",

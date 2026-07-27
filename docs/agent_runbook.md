@@ -38,10 +38,20 @@ Campos críticos:
 
 Datasets mínimos habilitados:
 
-- `comprovantes`, `movprodutos`, `itensmovprodutos`
-- `produtos`, `grupoprodutos`, `entidades/clientes`, `funcionarios`
-- `filiais`, `localvendas`, `turnos`
-- `contaspagar`, `contasreceber` (ou equivalentes mapeados por schema-scan)
+- `comprovantes`, `itenscomprovantes`, `movprodutos`, `itensmovprodutos`, `formas_pgto_comprovantes`
+- `produtos`, `grupoprodutos`, **`entidades`** (não habilitar o alias `clientes` junto), `funcionarios`, `usuarios`
+- `turnos`, `nfe`, `contaspagar`, `contasreceber` (+ baixas), `movlctos`, `movlctoscancelados`
+- Antifraude/crédito: `credito`, `movcreditoentidades`, `controle_troca_pgto`, `saldoclientes`
+- Estoque/caixa: `estoque`, `tanques`, `movtanques`, `movbancos`, `contasbancaria`
+
+Mantidos **desabilitados** de propósito (salvo necessidade pontual):
+
+- `clientes` — alias duplicado de `entidades`
+- `filiais` / `localvendas` — escopo vem de `auth.filiais` na API
+- `financeiro` — legado; AR/AP usam `contasreceber` / `contaspagar`
+
+Se `entidades` ficou desligado por tempo longo, resetar watermark e rodar once
+(senão `LIMITE`/`LIMITE_VALE` antigos permanecem no STG).
 
 ## 4) Comandos operacionais
 

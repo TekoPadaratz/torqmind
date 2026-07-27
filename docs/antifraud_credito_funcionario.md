@@ -48,4 +48,22 @@ SELECT etl.refresh_fraud_credito_funcionario(:id_empresa, :ano_mes);
 ```
 
 Homolog/prod: `stg.entidades` com `ID_GRUPOENTIDADES=12` e `LIMITE`/`LIMITE_VALE` no payload.
+
+## Agent (obrigatório)
+
+Dataset **`entidades`** (`dbo.ENTIDADES`) deve estar **enabled** no agent.
+Sem ele, limites/vale ficam stale no STG (ex.: Ilson 22175 — STG de maio com
+`LIMITE=400`/`LIMITE_VALE=0` enquanto o Xpert já tinha vale atualizado).
+
+Após ligar o dataset (ou se `ULTALTERACAO` não sobe em mudança de limite):
+
+```powershell
+torqmind-agent.exe reset-watermark --dataset entidades --config config.enc
+torqmind-agent.exe run --once --config config.enc
+```
+
+Depois: `SELECT etl.refresh_fraud_credito_funcionario(1, :ano_mes);` e/ou
+`GET /bi/fraud/credito-funcionario?refresh=true`.
+
+Não habilitar o alias `clientes` junto (mesma tabela → ingest duplicado).
 Mash preferencial: `mash_fraud_credito_funcionario_ch` (ClickHouse STG→mart_rt, ~2–3s).

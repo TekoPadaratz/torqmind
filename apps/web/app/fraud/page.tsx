@@ -1177,7 +1177,7 @@ export default function FraudPage() {
                 <div className="platformSectionHead" style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
                   <div>
                     <div className="sectionEyebrow">Risco financeiro</div>
-                    <h2 style={{ marginTop: 4 }}>Devoluções de entrada</h2>
+                    <h2 style={{ marginTop: 4 }}>Devolução de Vendas</h2>
                   </div>
                   <div className="muted" style={{ fontSize: 13 }}>
                     {Number(devolucaoSummary.qtd || 0)} nota(s) ·{" "}
@@ -1188,7 +1188,7 @@ export default function FraudPage() {
                   {riscoLoading && !riscoData ? (
                     <div className="muted">Carregando…</div>
                   ) : !devolucaoRows.length ? (
-                    <EmptyState title="Sem devoluções de entrada no período." />
+                    <EmptyState title="Sem devoluções de vendas no período." />
                   ) : (
                     <div className="tableScroll">
                       <div style={{ marginBottom: 8 }}>
