@@ -12,6 +12,10 @@ from agent.state.watermark import IncrementalCursor, WatermarkStore
 from agent.utils.log import append_summary_line
 from agent.utils.timezone import business_datetime_iso
 
+# Watermark temporal acima disso (ex.: DTAPGTO=2033 sujo no Xpert) envenena o
+# incremental de contasreceber e congela baixas na cobrança.
+WATERMARK_FUTURE_SLACK = timedelta(days=1)
+
 
 @dataclass
 class RunMetrics:
@@ -143,10 +147,46 @@ class AgentRunner:
         return max(0, int(value))
 
     @classmethod
+    def _sanitize_temporal_watermark(
+        cls,
+        watermark: Optional[str],
+        *,
+        dataset: str = "dataset",
+        logger=None,
+    ) -> Optional[str]:
+        """Evita usar/avançar watermark no futuro (ex.: DTAPGTO=2033 no Xpert)."""
+        if not watermark:
+            return watermark
+        watermark_dt = WatermarkStore.parse_watermark_dt(watermark)
+        if watermark_dt is None:
+            return watermark
+        if watermark_dt.tzinfo is None:
+            cap = datetime.now() + WATERMARK_FUTURE_SLACK
+            too_future = watermark_dt > cap
+            clamped_dt = cap
+        else:
+            now = datetime.now(timezone.utc)
+            cap = now + WATERMARK_FUTURE_SLACK
+            too_future = watermark_dt.astimezone(timezone.utc) > cap
+            clamped_dt = cap.astimezone(watermark_dt.tzinfo)
+        if not too_future:
+            return watermark
+        clamped = business_datetime_iso(clamped_dt, timespec="microseconds")
+        if logger is not None:
+            logger.warning(
+                "dataset=%s phase=watermark_clamped raw=%s clamped=%s reason=future_poison",
+                dataset,
+                watermark,
+                clamped,
+            )
+        return clamped
+
+    @classmethod
     def _effective_query_watermark(cls, watermark: Optional[str], ds_cfg: dict) -> tuple[Optional[str], int]:
         if not watermark:
             return watermark, 0
 
+        watermark = cls._sanitize_temporal_watermark(watermark, dataset=str(ds_cfg.get("table") or "dataset"))
         watermark_dt = WatermarkStore.parse_watermark_dt(watermark)
         if watermark_dt is None:
             return watermark, 0
@@ -870,6 +910,15 @@ class AgentRunner:
                     if (ignore_watermark or full_refresh)
                     else self.state.get_cursor(dataset, scope=scope)
                 )
+                safe_stored_wm = self._sanitize_temporal_watermark(
+                    stored_cursor.last_watermark,
+                    dataset=dataset,
+                    logger=self.logger,
+                )
+                if safe_stored_wm != stored_cursor.last_watermark:
+                    stored_cursor = IncrementalCursor(last_watermark=safe_stored_wm, last_pk_tuple=None)
+                    if not (ignore_watermark or full_refresh):
+                        self.state.set_cursor(dataset, stored_cursor, scope=scope)
                 watermark_before = stored_cursor.last_watermark
                 effective_dt_from, effective_dt_to, effective_ignore_watermark, window_mode, bootstrap_run = self._resolve_dataset_window(
                     dataset,
@@ -966,9 +1015,14 @@ class AgentRunner:
                             )
 
                         if batch.max_watermark:
-                            max_watermark_seen = batch.max_watermark
+                            safe_wm = self._sanitize_temporal_watermark(
+                                batch.max_watermark,
+                                dataset=dataset,
+                                logger=self.logger,
+                            )
+                            max_watermark_seen = safe_wm
                             batch_cursor = IncrementalCursor(
-                                last_watermark=batch.max_watermark,
+                                last_watermark=safe_wm,
                                 last_pk_tuple=list(batch.last_pk_tuple) if batch.last_pk_tuple else None,
                             )
                             if commit_cursor and self._is_newer_cursor(batch_cursor, committed_cursor):
@@ -1087,15 +1141,13 @@ class AgentRunner:
         "itenscomprovantes",
         "formas_pgto_comprovantes",
         "nfe",
-        "contasreceber",
-        "contasreceberbaixa",
+        # contasreceber/baixa: NÃO usar janela por DTACONTA — baixa de título antigo
+        # não aparece. O incremental + revisit_open_clause (DTAPGTO) é o caminho certo.
     )
     RESCAN_DAILY_DATASETS = (
         "comprovantes",
         "itenscomprovantes",
         "nfe",
-        "contasreceber",
-        "contasreceberbaixa",
     )
     RESCAN_DATASETS = RESCAN_HOURLY_DATASETS  # compat
 
