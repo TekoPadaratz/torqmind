@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from agent.config import (
     AgentConfigError,
+    DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS,
     build_default_raw_config,
     load_config,
     load_raw_config,
@@ -20,6 +21,37 @@ class TestEncryptedConfig(unittest.TestCase):
         self.assertEqual(raw["sqlserver"]["driver"], "ODBC Driver 18 for SQL Server")
         self.assertTrue(raw["sqlserver"]["encrypt"])
         self.assertFalse(raw["sqlserver"]["trust_server_certificate"])
+
+    def test_full_refresh_datasets_get_default_throttle_interval(self):
+        raw = build_default_raw_config()
+        estoque = raw["datasets"]["estoque"]
+        self.assertTrue(estoque.get("full_refresh"))
+        # Defaults are applied at merge/load time; build_default copies DEFAULT_DATASETS raw.
+        # Simulate merge via load path with minimal yaml.
+        with tempfile.TemporaryDirectory() as td:
+            yaml_path = Path(td) / "config.local.yaml"
+            yaml_path.write_text(
+                """
+sqlserver:
+  server: sql.internal
+  database: torq
+  user: sa
+  password: x
+api:
+  base_url: https://api.example.com
+  ingest_key: k
+""",
+                encoding="utf-8",
+            )
+            cfg = load_config(str(yaml_path))
+        self.assertEqual(
+            int(cfg.datasets["estoque"].get("full_refresh_min_interval_seconds")),
+            DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS,
+        )
+        self.assertEqual(
+            int(cfg.datasets["funcionarios"].get("full_refresh_min_interval_seconds")),
+            DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS,
+        )
 
     def test_save_and_load_encrypted_config_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:

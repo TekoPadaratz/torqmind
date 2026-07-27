@@ -1,9 +1,16 @@
+x-logging: &torqmind-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   api:
     build:
       context: ./apps/api
     container_name: torqmind-api
     restart: unless-stopped
+    logging: *torqmind-logging
     environment:
       APP_ENV: ${APP_ENV:-prod}
       APP_ROOT_PATH: ${APP_ROOT_PATH:-}
@@ -112,6 +119,7 @@ services:
         API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
     container_name: torqmind-web
     restart: unless-stopped
+    logging: *torqmind-logging
     environment:
       API_INTERNAL_URL: ${API_INTERNAL_URL:-http://api:8000}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
@@ -132,6 +140,7 @@ services:
     image: nginx:stable-alpine
     container_name: torqmind-nginx
     restart: unless-stopped
+    logging: *torqmind-logging
     depends_on:
       api:
         condition: service_healthy

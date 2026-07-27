@@ -13,6 +13,12 @@
 # NUNCA aponta para a porta 80, containers de prod, ou o volume torqmind_branding
 # de produção.
 
+x-logging: &torqmind-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   api:
     build:
@@ -21,6 +27,7 @@ services:
     image: torqmind-api:homolog
     container_name: torqmind-api-homolog
     restart: unless-stopped
+    logging: *torqmind-logging
     env_file:
       - /etc/torqmind/homolog.app.env
     expose:
@@ -52,6 +59,7 @@ services:
     image: torqmind-web:homolog
     container_name: torqmind-web-homolog
     restart: unless-stopped
+    logging: *torqmind-logging
     env_file:
       - /etc/torqmind/homolog.app.env
     expose:
@@ -70,6 +78,7 @@ services:
     image: nginx:stable-alpine
     container_name: torqmind-nginx-homolog
     restart: unless-stopped
+    logging: *torqmind-logging
     depends_on:
       api:
         condition: service_healthy

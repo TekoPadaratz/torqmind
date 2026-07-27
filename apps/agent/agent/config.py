@@ -16,6 +16,9 @@ COMMERCIAL_WINDOW_DAYS = 365
 # (batch_delay_seconds) para nao estourar CPU no SQL Server do cliente.
 SOLVENCIA_BOOTSTRAP_DAYS = 560
 DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 240
+# Dims com full_refresh=True: no máximo 1 sync completo a cada 30 min (corta wear SSD).
+DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS = 1800
+FULL_REFRESH_LAST_RUN_KEY = "last_full_refresh_at"
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
 LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
@@ -1113,6 +1116,9 @@ def _merge_dataset_configs(user_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]
         base = merged.get(key, {"enabled": False})
         base.update(cfg or {})
         merged[key] = base
+    for base in merged.values():
+        if base.get("full_refresh") and base.get("full_refresh_min_interval_seconds") is None:
+            base["full_refresh_min_interval_seconds"] = DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS
     return merged
 
 
