@@ -6,6 +6,8 @@ Set-Location $RepoRoot
 
 Write-Host "=== TorqMind Agent Build ===" -ForegroundColor Cyan
 Write-Host "Commit: $(git log -1 --format='%h %s')"
+$AgentVersion = python -c "import sys; sys.path.insert(0,'apps/agent'); from agent import __version__; print(__version__)"
+Write-Host "Agent version: $AgentVersion"
 Write-Host ""
 
 # --- Step 1: Dependencies ---

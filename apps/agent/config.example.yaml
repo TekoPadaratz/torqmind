@@ -27,6 +27,9 @@
 #    torqmind-agent-service.xml para --config config.enc (ou apenas suba o .exe
 #    novo, que ja acha config.enc/config.local.enc sozinho) e reinicie o servico.
 #
+# 6) Dims full_refresh: throttle default 1800s entre syncs completos
+#    (phase=full_refresh_throttled) para reduzir wear de SSD no SQL Server do posto.
+#
 # A secao `datasets:` abaixo e apenas REFERENCIA/documentacao do que o agent
 # coleta — a fonte da verdade e agent/config.py (embutido no .exe).
 # ====================================================================
@@ -76,205 +79,66 @@ runtime:
   rescan_daily_after_hour: 0       # dispara na primeira execução após meia-noite
 
 datasets:
-  comprovantes:
-    enabled: true
-    table: dbo.COMPROVANTES
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_COMPROVANTE, ID_FILIAL, ID_DB
-    cursor_pk_columns: [ID_COMPROVANTE, ID_FILIAL, ID_DB]
-    retention_days: 365
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT c.*,
-             CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(c.DATA AS datetime2)),
-                    (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.COMPROVANTES c
-
-  itenscomprovantes:
-    enabled: true
-    table: dbo.ITENSCOMPROVANTE
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_ITENSCOMPROVANTE, ID_DB
-    cursor_pk_columns: [ID_FILIAL, ID_ITENSCOMPROVANTE, ID_DB]
-    row_aliases:
-      ID_ITEMCOMPROVANTE: ID_ITENSCOMPROVANTE
-    retention_days: 365
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT i.*,
-             CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(c.DATA AS datetime2)),
-                    (NULLIF(CAST(i.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.ITENSCOMPROVANTE i
-      JOIN dbo.COMPROVANTES c
-        ON c.ID_COMPROVANTE = i.ID_COMPROVANTE
-       AND c.ID_FILIAL = i.ID_FILIAL
-       AND c.ID_DB = i.ID_DB
-
-  movprodutos:
-    enabled: true
-    # Nao e fonte canonica de venda (use comprovantes). Ligado para Solvencia:
-    # reconstrucao de estoque loja as-of. Bootstrap desde ~Jan/2025 (560d).
-    # Throttle: runtime.batch_delay_seconds (default 0.5) — NAO remover.
-    table: dbo.MOVPRODUTOS
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_MOVPRODUTOS, ID_FILIAL, ID_DB
-    cursor_pk_columns: [ID_MOVPRODUTOS, ID_FILIAL, ID_DB]
-    retention_days: 560
-    bootstrap_days: 560
-    watermark_overlap_seconds: 240
-    query: |
-      SELECT m.*,
-             CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(m.DATA AS datetime2)),
-                    (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.MOVPRODUTOS m
-
-  itensmovprodutos:
-    enabled: true
-    # Custo de reposicao Solvencia = VLRCUSTOCOMICMS (ultima NF CFOP 1.xxx/2.xxx).
-    table: dbo.ITENSMOVPRODUTOS
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB
-    cursor_pk_columns: [ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB]
-    retention_days: 560
-    bootstrap_days: 560
-    watermark_overlap_seconds: 240
-    query: |
-      SELECT i.*,
-             CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(m.DATA AS datetime2)),
-                    (NULLIF(CAST(i.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.ITENSMOVPRODUTOS i
-      JOIN dbo.MOVPRODUTOS m
-        ON m.ID_MOVPRODUTOS = i.ID_MOVPRODUTOS
-       AND m.ID_FILIAL = i.ID_FILIAL
-       AND m.ID_DB = i.ID_DB
-
-  formas_pgto_comprovantes:
-    enabled: true
-    table: dbo.FORMAS_PGTO_COMPROVANTES
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_FORMAS_PGTO_COMPROVANTES, ID_DB
-    cursor_pk_columns: [ID_FILIAL, ID_FORMAS_PGTO_COMPROVANTES, ID_DB]
-    retention_days: 365
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT f.*,
-             CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(c.DATA AS datetime2)),
-                    (NULLIF(CAST(f.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.FORMAS_PGTO_COMPROVANTES f
-      JOIN dbo.COMPROVANTES c
-        ON c.REFERENCIA = CASE
-             WHEN NULLIF(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))), '') IS NOT NULL
-              AND LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) NOT LIKE '%[^0-9]%'
-             THEN CAST(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) AS int)
-             ELSE NULL
-           END
-       AND c.ID_FILIAL = f.ID_FILIAL
-       AND c.ID_DB = f.ID_DB
-
   filiais:
-    enabled: true
+    enabled: false
     table: dbo.FILIAIS
     watermark_column: ID_FILIAL
     watermark_order_by: ID_FILIAL
     full_refresh: true
-
   funcionarios:
     enabled: true
     table: dbo.FUNCIONARIOS
     watermark_column: ID_FUNCIONARIOS
     watermark_order_by: ID_FUNCIONARIOS, ID_FILIAL
     full_refresh: true
-
   usuarios:
     enabled: true
     table: dbo.USUARIOS
     watermark_column: ID_USUARIOS
     watermark_order_by: ID_USUARIOS, ID_FILIAL
     full_refresh: true
-    # Mantém o operador de caixa sincronizado para que TURNOS.ID_USUARIOS sempre encontre o cadastro.
-
   entidades:
     enabled: true
     table: dbo.ENTIDADES
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_WATERMARK
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT e.*,
-             COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK
-      FROM dbo.ENTIDADES e
-
+    watermark_overlap_seconds: 240
+    query: SELECT e.*, (SELECT MAX(v.dt) FROM (VALUES   (NULLIF(CAST(e.DATAREPL AS datetime2), CAST('19000101' AS datetime2))),   (CAST(e.ULTALTERACAO
+      AS datetime2)),   (CAST(e.DTACADASTRO AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.ENTIDADES e
   clientes:
-    enabled: true
+    enabled: false
     table: dbo.ENTIDADES
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_WATERMARK
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT e.*,
-             COALESCE(CAST(e.ULTALTERACAO AS datetime2), CAST(e.DTACADASTRO AS datetime2)) AS TORQMIND_WATERMARK
-      FROM dbo.ENTIDADES e
-
+    watermark_overlap_seconds: 240
+    query: SELECT e.*, (SELECT MAX(v.dt) FROM (VALUES   (NULLIF(CAST(e.DATAREPL AS datetime2), CAST('19000101' AS datetime2))),   (CAST(e.ULTALTERACAO
+      AS datetime2)),   (CAST(e.DTACADASTRO AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.ENTIDADES e
   grupoprodutos:
     enabled: true
     table: dbo.GRUPOPRODUTOS
     watermark_column: ID_GRUPOPRODUTOS
     watermark_order_by: ID_GRUPOPRODUTOS, ID_FILIAL
     full_refresh: true
-
-  localvendas:
-    enabled: true
-    table: dbo.LOCALVENDAS
-    watermark_column: ID_LOCALVENDAS
-    watermark_order_by: ID_LOCALVENDAS, ID_FILIAL
-    full_refresh: true
-
   planodecontas:
     enabled: true
     table: dbo.PLANODECONTAS
     watermark_column: ID_PLANODECONTAS
     watermark_order_by: ID_PLANODECONTAS, ID_FILIAL
     full_refresh: true
-
+  localvendas:
+    enabled: false
+    table: dbo.LOCALVENDAS
+    watermark_column: ID_LOCALVENDAS
+    watermark_order_by: ID_LOCALVENDAS, ID_FILIAL
+    full_refresh: true
   produtos:
     enabled: true
     table: dbo.PRODUTOS
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_WATERMARK
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT p.*,
-             COALESCE(CAST(p.ULTALTERACAO AS datetime2), CAST(p.DATACADASTRO AS datetime2)) AS TORQMIND_WATERMARK
+    watermark_overlap_seconds: 240
+    query: SELECT p.*, COALESCE(CAST(p.ULTALTERACAO AS datetime2), CAST(p.DATACADASTRO AS datetime2)) AS TORQMIND_WATERMARK
       FROM dbo.PRODUTOS p
-
   turnos:
     enabled: true
     table: dbo.TURNOS
@@ -282,304 +146,647 @@ datasets:
     event_date_column: TORQMIND_DT_EVENTO
     watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_TURNOS
     allow_zero_inserted_batches: true
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT t.*,
-             CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(t.DATA AS datetime2)),
-                    (CAST(t.DATATURNO AS datetime2)),
-                    (CAST(t.DATAFECHAMENTO AS datetime2))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.TURNOS t
-
+    contract_name: turnos_pk
+    required_fields:
+    - ID_TURNOS
+    - ID_FILIAL
+    unique_key_fields:
+    - ID_TURNOS
+    - ID_FILIAL
+    preflight_tables:
+      dbo.TURNOS:
+      - ID_TURNOS
+      - ID_FILIAL
+      - DATA
+      - DATATURNO
+      - DATAFECHAMENTO
+      - ENCERRANTEFECHAMENTO
+    watermark_overlap_seconds: 240
+    query: SELECT t.*, CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(t.DATA
+      AS datetime2)),        (CAST(t.DATATURNO AS datetime2)),        (CAST(t.DATAFECHAMENTO AS datetime2))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.TURNOS t
+  comprovantes:
+    enabled: true
+    table: dbo.COMPROVANTES
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_COMPROVANTE, ID_FILIAL, ID_DB
+    cursor_pk_columns:
+    - ID_COMPROVANTE
+    - ID_FILIAL
+    - ID_DB
+    contract_name: comprovantes_pk_required_fields
+    required_fields:
+    - ID_COMPROVANTE
+    - ID_FILIAL
+    - ID_DB
+    - SITUACAO
+    unique_key_fields:
+    - ID_COMPROVANTE
+    - ID_FILIAL
+    - ID_DB
+    preflight_tables:
+      dbo.COMPROVANTES:
+      - ID_COMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - DATA
+      - DATAREPL
+      - SITUACAO
+    retention_days: 365
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT c.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(c.DATA
+      AS datetime2)),        (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.COMPROVANTES c
+  itenscomprovantes:
+    enabled: true
+    table: dbo.ITENSCOMPROVANTE
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_ITENSCOMPROVANTE, ID_DB
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_ITENSCOMPROVANTE
+    - ID_DB
+    contract_name: itenscomprovantes_pk_parent
+    required_fields:
+    - ID_ITENSCOMPROVANTE
+    - ID_ITEMCOMPROVANTE
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_ITENSCOMPROVANTE
+    - ID_DB
+    row_aliases:
+      ID_ITEMCOMPROVANTE: ID_ITENSCOMPROVANTE
+    preflight_tables:
+      dbo.ITENSCOMPROVANTE:
+      - ID_ITENSCOMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - ID_COMPROVANTE
+      - DATAREPL
+      dbo.COMPROVANTES:
+      - ID_COMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - DATA
+    retention_days: 365
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT i.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(c.DATA
+      AS datetime2)),        (NULLIF(CAST(i.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.ITENSCOMPROVANTE i JOIN dbo.COMPROVANTES c   ON c.ID_COMPROVANTE = i.ID_COMPROVANTE  AND
+      c.ID_FILIAL = i.ID_FILIAL  AND c.ID_DB = i.ID_DB
+  movprodutos:
+    enabled: true
+    table: dbo.MOVPRODUTOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_MOVPRODUTOS, ID_FILIAL, ID_DB
+    cursor_pk_columns:
+    - ID_MOVPRODUTOS
+    - ID_FILIAL
+    - ID_DB
+    retention_days: 560
+    bootstrap_days: 560
+    watermark_overlap_seconds: 240
+    query: SELECT m.*, CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(m.DATA
+      AS datetime2)),        (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.MOVPRODUTOS m
+    deprecated: false
+    deprecation_notice: Not canonical for sales (use comprovantes). Enabled for Solvencia stock reconstruction (movimentacao
+      de estoque).
+  itensmovprodutos:
+    enabled: true
+    table: dbo.ITENSMOVPRODUTOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB
+    cursor_pk_columns:
+    - ID_ITENSMOVPRODUTOS
+    - ID_FILIAL
+    - ID_DB
+    retention_days: 560
+    bootstrap_days: 560
+    watermark_overlap_seconds: 240
+    query: SELECT i.*, CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(m.DATA
+      AS datetime2)),        (NULLIF(CAST(i.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.ITENSMOVPRODUTOS i JOIN dbo.MOVPRODUTOS m   ON m.ID_MOVPRODUTOS = i.ID_MOVPRODUTOS  AND
+      m.ID_FILIAL = i.ID_FILIAL  AND m.ID_DB = i.ID_DB
+    deprecated: false
+    deprecation_notice: Not canonical for sales items (use itenscomprovantes). Enabled for Solvencia stock cost (VLRCUSTOCOMICMS).
+  formas_pgto_comprovantes:
+    enabled: true
+    table: dbo.FORMAS_PGTO_COMPROVANTES
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_FORMAS_PGTO_COMPROVANTES, ID_DB
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_FORMAS_PGTO_COMPROVANTES
+    - ID_DB
+    contract_name: formas_pgto_comprovantes_pk
+    required_fields:
+    - ID_FORMAS_PGTO_COMPROVANTES
+    - ID_FILIAL
+    - ID_DB
+    - ID_REFERENCIA
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_FORMAS_PGTO_COMPROVANTES
+    - ID_DB
+    preflight_tables:
+      dbo.FORMAS_PGTO_COMPROVANTES:
+      - ID_FORMAS_PGTO_COMPROVANTES
+      - ID_FILIAL
+      - ID_DB
+      - ID_REFERENCIA
+      - DATAREPL
+      dbo.COMPROVANTES:
+      - ID_COMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - REFERENCIA
+      - DATA
+    retention_days: 365
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT f.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(c.DATA
+      AS datetime2)),        (NULLIF(CAST(f.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.FORMAS_PGTO_COMPROVANTES f JOIN dbo.COMPROVANTES c   ON c.REFERENCIA = CASE WHEN NULLIF(LTRIM(RTRIM(CAST(f.ID_REFERENCIA
+      AS varchar(64)))), '') IS NOT NULL  AND LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) NOT LIKE '%[^0-9]%' THEN
+      CAST(LTRIM(RTRIM(CAST(f.ID_REFERENCIA AS varchar(64)))) AS int) ELSE NULL END  AND c.ID_FILIAL = f.ID_FILIAL  AND c.ID_DB
+      = f.ID_DB
   contaspagar:
     enabled: true
     table: dbo.CONTASPAGAR
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT c.*,
-             CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(c.DTACONTA AS datetime2)),
-                    (CAST(c.DTAVCTO AS datetime2)),
-                    (CAST(c.DTAPGTO AS datetime2)),
-                    (CAST(c.DATAPROGRAMACAO AS datetime2)),
-                    (CAST(c.API_DATE_TIME AS datetime2))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.CONTASPAGAR c
-
+    watermark_overlap_seconds: 240
+    bootstrap_days: 365
+    revisit_open_clause: (DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) OR (DTAPGTO
+      IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date)) OR (CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-120,GETDATE())
+      AS date))
+    query: SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTAPGTO AS
+      datetime2)), (CAST(c.DTAVCTO AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONTASPAGAR c
   contasreceber:
     enabled: true
     table: dbo.CONTASRECEBER
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT c.*,
-             CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(c.DTACONTA AS datetime2)),
-                    (CAST(c.DTAVCTO AS datetime2)),
-                    (CAST(c.DTAPGTO AS datetime2)),
-                    (CAST(c.DTAFECHAMENTO AS datetime2))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.CONTASRECEBER c
-
+    watermark_overlap_seconds: 240
+    bootstrap_days: 365
+    revisit_open_clause: (DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)) OR (DTAPGTO
+      IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))
+    query: SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTAPGTO AS
+      datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONTASRECEBER c
   contasreceberbaixa:
     enabled: true
     table: dbo.CONTASRECEBERBAIXA
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT c.*,
-             CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO,
-             CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK
+    watermark_overlap_seconds: 240
+    bootstrap_days: 365
+    query: SELECT c.*, CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DATABAIXA
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
       FROM dbo.CONTASRECEBERBAIXA c
-
   contaspagarbaixa:
     enabled: true
     table: dbo.CONTASPAGARBAIXA
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT c.*,
-             CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO,
-             CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK
+    watermark_overlap_seconds: 240
+    bootstrap_days: 365
+    query: SELECT c.*, CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK
       FROM dbo.CONTASPAGARBAIXA c
-
   movlctos:
     enabled: true
     table: dbo.MOVLCTOS
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    watermark_overlap_seconds: 120
-    retention_days: 365
-    bootstrap_days: 365
-    query: |
-      SELECT m.*,
-             CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             CAST(m.DATAREPL AS datetime2) AS TORQMIND_WATERMARK
-      FROM dbo.MOVLCTOS m
-
-  financeiro: { enabled: false, table: dbo.FINANCEIRO }
-
-  # Compliance ANP — fontes Xpert confirmadas (LMC/COMPENTRADAS)
-  nfe_entrada:
-    enabled: true
-    table: dbo.COMPROVANTES
-  itens_nfe_entrada:
-    enabled: true
-    table: dbo.ITENSCOMPROVANTE
-  preco_bomba_hist:
-    enabled: true
-    table: dbo.LMCBICOS
-
-  # NFE - Notas Fiscais Eletronicas
-  # Filtro por DATA (data de emissao comercial).
-  # NAO usa DATAREPL, NAO usa DATAEMISSAO, NAO exige SERIE.
-  # STATUS=5 = inutilizacao (coletado para auditoria, ignorado comercialmente).
-  nfe:
-    enabled: true
-    table: dbo.NFE
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_DB, ID_COMPROVANTE, ID_NFE
-    cursor_pk_columns: [ID_FILIAL, ID_DB, ID_COMPROVANTE, ID_NFE]
-    retention_days: 365
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT n.*,
-             CAST(n.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             CAST(n.DATA AS datetime2) AS TORQMIND_WATERMARK
-      FROM dbo.NFE n
-
-  # Antifraude - troca de forma de pagamento.
-  # CONTROLE_TROCA_PGTO = auditoria da troca (quem=USUARIO, quando=DATA),
-  # aponta para o lancamento ANTIGO via ID_MOVLCTOSCANCELADOS.
-  # ID_FILIAL como chave primaria padrao (cursor_pk_columns / watermark_order_by).
-  controle_troca_pgto:
-    enabled: true
-    table: dbo.CONTROLE_TROCA_PGTO
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID, ID_DB
-    cursor_pk_columns: [ID_FILIAL, ID, ID_DB]
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT t.*,
-             CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(t.DATA AS datetime2)),
-                    (NULLIF(CAST(t.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.CONTROLE_TROCA_PGTO t
-
-  # Antifraude - lancamentos financeiros CANCELADOS (forma DE da troca).
-  # A forma e a conta ID_PLANODECONTAS (-> PLANODECONTAS.NOMEPLANODECONTAS).
-  # DTACONTA = data contabil; TIPO aqui e debito/credito, NAO tipo_forma da venda.
-  movlctoscancelados:
-    enabled: true
-    table: dbo.MOVLCTOSCANCELADOS
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB
-    cursor_pk_columns: [ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB]
-    bootstrap_days: 365
-    watermark_overlap_seconds: 120
-    query: |
-      SELECT m.*,
-             CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt)
-                FROM (VALUES
-                    (CAST(m.DTACONTA AS datetime2)),
-                    (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-                ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.MOVLCTOSCANCELADOS m
-
-  # ------------------------------------------------------------------
-  # Coletas novas (Solvencia/DRE + Financeiro + Antifraude + Vendas).
-  # IMPORTANTE: estes datasets JA VEM EMBUTIDOS no binario (agent/config.py
-  # DEFAULT_DATASETS). Ao gerar um novo .exe eles passam a coletar sozinhos —
-  # voce NAO precisa copiar este mapeamento para o config do cliente. Estao
-  # aqui apenas como referencia/documentacao.
-  # ------------------------------------------------------------------
-
-  # Estoque para Solvencia/DRE (sensor de tanque + loja).
-  tanques:
-    enabled: true
-    table: dbo.TANQUES
-    watermark_column: ID_TANQUES
-    watermark_order_by: ID_TANQUES, ID_FILIAL
-    full_refresh: true
-
-  movtanques:
-    enabled: true
-    table: dbo.MOVTANQUES
-    watermark_column: TORQMIND_WATERMARK
-    event_date_column: TORQMIND_DT_EVENTO
-    bootstrap_days: 365
     watermark_overlap_seconds: 240
-    query: |
-      SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, CAST(m.DTACONTA AS datetime2) AS TORQMIND_WATERMARK FROM dbo.MOVTANQUES m
-
-  estoque:
+    bootstrap_days: 365
+    revisit_open_clause: CAST(DTACONTA AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date) OR UPPER(LTRIM(RTRIM(DOCUMENTO)))
+      LIKE 'TRANSF AJUSTE%' OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE-SALDO%' OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE
+      'AJUSTE SALDO%' OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%' OR UPPER(LTRIM(RTRIM(DOCUMENTO))) LIKE 'AJUSTE
+      EMPRESTIMO%'
+    query: SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DTACONTA
+      AS datetime2)), (CAST(m.DATA AS datetime2)), (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))))
+      AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.MOVLCTOS m
+  movbancos_ajuste_plano:
     enabled: true
-    table: dbo.ESTOQUE
-    watermark_column: ID_ESTOQUE
-    watermark_order_by: ID_ESTOQUE, ID_FILIAL
+    table: dbo.MOVLCTOS
+    watermark_column: ID_MOVLCTOS
+    watermark_order_by: ID_MOVLCTOS, ID_FILIAL, ID_DB
+    cursor_pk_columns:
+    - ID_MOVLCTOS
+    - ID_FILIAL
+    - ID_DB
     full_refresh: true
-
-  # Financeiro: controle de cheques recebidos + catalogo de situacoes (motivos).
+    query: SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DTACONTA
+      AS datetime2)), (CAST(m.DATA AS datetime2)), (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))))
+      AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.MOVLCTOS m WHERE ISNULL(m.ESTORNO, 0) = 0 AND ( UPPER(LTRIM(RTRIM(m.DOCUMENTO)))
+      LIKE 'TRANSF AJUSTE%' OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE-SALDO%' OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE
+      'AJUSTE SALDO%' OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%' OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE
+      'AJUSTE EMPRESTIMO%')
+  financeiro:
+    enabled: false
+    table: dbo.FINANCEIRO
   cheques:
     enabled: true
     table: dbo.CHEQUESRECEBIDOS
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    bootstrap_days: 365
     watermark_overlap_seconds: 240
-    revisit_open_clause: (DTACOMPENSADO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)) OR (DTACOMPENSADO IS NOT NULL AND CAST(DTACOMPENSADO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))
-    query: |
-      SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTACOMPENSADO AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CHEQUESRECEBIDOS c
-
+    bootstrap_days: 365
+    revisit_open_clause: (DTACOMPENSADO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)) OR
+      (DTACOMPENSADO IS NOT NULL AND CAST(DTACOMPENSADO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))
+    query: SELECT c.*, CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DTACONTA
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))), (CAST(c.DTACOMPENSADO
+      AS datetime2))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CHEQUESRECEBIDOS c
   situacoes:
     enabled: true
     table: dbo.SITUACOES
     watermark_column: ID_SITUACOES
     watermark_order_by: ID_SITUACOES, ID_FILIAL
     full_refresh: true
-
-  # Antifraude: lancamentos de credito de clientes (injecao/aplicacao) + saldo.
   movcreditoentidades:
     enabled: true
     table: dbo.MOVCREDITOENTIDADES
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
-    bootstrap_days: 365
     watermark_overlap_seconds: 240
-    query: |
-      SELECT m.*, CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DATA AS datetime2)), (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.MOVCREDITOENTIDADES m
-
+    bootstrap_days: 365
+    query: SELECT m.*, CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DATA AS datetime2)),
+      (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM
+      dbo.MOVCREDITOENTIDADES m
   credito:
     enabled: true
     table: dbo.CREDITO
     watermark_column: ID_CREDITO
     watermark_order_by: ID_CREDITO, ID_FILIAL
     full_refresh: true
-
-  # Vendas: abastecimentos do console da bomba (ticket medio de combustivel).
   consolearquivo:
     enabled: true
     table: dbo.CONSOLEARQUIVO
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
+    watermark_overlap_seconds: 240
+    bootstrap_days: 365
+    query: SELECT c.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DATA AS datetime2)),
+      (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM
+      dbo.CONSOLEARQUIVO c
+  nfe:
+    enabled: true
+    table: dbo.NFE
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_DB, ID_COMPROVANTE, ID_NFE
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    - ID_NFE
+    contract_name: nfe_pk_required_fields
+    required_fields:
+    - ID_NFE
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    - STATUS
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    - ID_NFE
+    preflight_tables:
+      dbo.NFE:
+      - ID_NFE
+      - ID_FILIAL
+      - ID_DB
+      - ID_COMPROVANTE
+      - DATA
+      - STATUS
+    retention_days: 365
     bootstrap_days: 365
     watermark_overlap_seconds: 240
-    query: |
-      SELECT c.*, CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DATA AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.CONSOLEARQUIVO c
-
-  # Solvencia DRE: prazo de repasse de cartoes (ID_CARTAO -> ID_CONVENIOS)
+    query: SELECT n.*, CAST(n.DATA AS datetime2) AS TORQMIND_DT_EVENTO, CAST(n.DATA AS datetime2) AS TORQMIND_WATERMARK FROM
+      dbo.NFE n
+  nfe_entrada:
+    enabled: true
+    table: dbo.COMPROVANTES
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_DB, ID_COMPROVANTE
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    contract_name: nfe_entrada_pk
+    required_fields:
+    - ID_COMPROVANTE
+    - ID_FILIAL
+    - ID_DB
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    preflight_tables:
+      dbo.COMPROVANTES:
+      - ID_COMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - DATA
+      - SAIDAS_ENTRADAS
+      dbo.COMPENTRADAS:
+      - ID_COMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - CHAVEACESSONFE
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT c.ID_FILIAL, c.ID_DB, c.ID_COMPROVANTE AS ID_NOTA, c.ID_COMPROVANTE, c.NROCOMPROVANTE AS NUMERO, ce.CHAVEACESSONFE
+      AS CHAVEACESSO, ce.CHAVEACESSONFE AS CHAVEACESSONFE, ce.VLRFRETE, ce.VLRIPI, ce.IMPORTOU_XML, ce.CONFERIDA, CAST(c.DATA
+      AS datetime2) AS DATAENTRADA, CAST(COALESCE(c.DTAEMISSAO, c.DATA) AS datetime2) AS DATA, CAST(c.DATA AS datetime2) AS
+      TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES   (CAST(c.DATA AS datetime2)),   (NULLIF(CAST(c.DATAREPL AS datetime2),
+      CAST('1900-01-01T00:00:00' AS datetime2))),   (NULLIF(CAST(ce.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS
+      datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.COMPROVANTES c WITH (NOLOCK) INNER JOIN dbo.COMPENTRADAS ce WITH
+      (NOLOCK)   ON ce.ID_FILIAL = c.ID_FILIAL AND ce.ID_DB = c.ID_DB  AND ce.ID_COMPROVANTE = c.ID_COMPROVANTE WHERE ISNULL(c.SAIDAS_ENTRADAS,
+      0) = 1
+  itens_nfe_entrada:
+    enabled: true
+    table: dbo.ITENSCOMPROVANTE
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_DB, ID_COMPROVANTE, ID_ITENSCOMPROVANTE
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    - ID_ITENSCOMPROVANTE
+    contract_name: itens_nfe_entrada_pk
+    required_fields:
+    - ID_ITENSCOMPROVANTE
+    - ID_COMPROVANTE
+    - ID_FILIAL
+    - ID_DB
+    - ID_PRODUTOS
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_DB
+    - ID_COMPROVANTE
+    - ID_ITENSCOMPROVANTE
+    preflight_tables:
+      dbo.ITENSCOMPROVANTE:
+      - ID_ITENSCOMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      - ID_COMPROVANTE
+      - ID_PRODUTOS
+      - QTDE
+      - VLRCUSTO
+      - VLRUNITARIO
+      dbo.COMPENTRADAS:
+      - ID_COMPROVANTE
+      - ID_FILIAL
+      - ID_DB
+      dbo.PRODUTOS:
+      - ID_PRODUTOS
+      - ID_FILIAL
+      - TIPOCOMBUSTIVEL
+      - NOMEPRODUTO
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT i.ID_FILIAL, i.ID_DB, i.ID_COMPROVANTE AS ID_NOTA, i.ID_COMPROVANTE, i.ID_ITENSCOMPROVANTE AS ID_ITEM, i.ID_ITENSCOMPROVANTE,
+      i.ID_PRODUTOS, i.QTDE AS QUANTIDADE, i.VLRCUSTO, i.VLRUNITARIO, i.VLRTOTALITEM, i.VLRVENDAENTRADA, COALESCE(NULLIF(i.VLRCUSTO,
+      0), i.VLRUNITARIO) AS CUSTO_UNITARIO, p.NOMEPRODUTO, p.TIPOCOMBUSTIVEL, p.CODIGOANP, p.UNIDADE, CAST(c.DATA AS datetime2)
+      AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES   (CAST(c.DATA AS datetime2)),   (NULLIF(CAST(c.DATAREPL AS datetime2),
+      CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.ITENSCOMPROVANTE i WITH (NOLOCK)
+      INNER JOIN dbo.COMPROVANTES c WITH (NOLOCK)   ON c.ID_FILIAL = i.ID_FILIAL AND c.ID_DB = i.ID_DB  AND c.ID_COMPROVANTE
+      = i.ID_COMPROVANTE INNER JOIN dbo.COMPENTRADAS ce WITH (NOLOCK)   ON ce.ID_FILIAL = i.ID_FILIAL AND ce.ID_DB = i.ID_DB  AND
+      ce.ID_COMPROVANTE = i.ID_COMPROVANTE INNER JOIN dbo.PRODUTOS p WITH (NOLOCK)   ON p.ID_FILIAL = i.ID_FILIAL AND p.ID_PRODUTOS
+      = i.ID_PRODUTOS WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1   AND (    ISNULL(p.TIPOCOMBUSTIVEL, 0) > 0     OR (      NULLIF(LTRIM(RTRIM(CAST(p.CODIGOANP
+      AS varchar(32)))), '') IS NOT NULL       AND UPPER(LTRIM(RTRIM(CAST(p.UNIDADE AS varchar(16))))) = 'LT'    )     OR
+      p.NOMEPRODUTO LIKE 'GASOLINA%'     OR p.NOMEPRODUTO LIKE 'ETANOL%'     OR p.NOMEPRODUTO LIKE 'OLEO DIESEL%'     OR p.NOMEPRODUTO
+      LIKE 'DIESEL%'  )
+  preco_bomba_hist:
+    enabled: true
+    table: dbo.LMCBICOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_LMCBICOS
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_LMCBICOS
+    contract_name: preco_bomba_hist_pk
+    required_fields:
+    - ID_LMCBICOS
+    - ID_FILIAL
+    - ID_PRODUTOS
+    - PPL
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_LMCBICOS
+    preflight_tables:
+      dbo.LMC:
+      - ID_LMC
+      - ID_FILIAL
+      - ID_PRODUTOS
+      - DTACONTA
+      dbo.LMCBICOS:
+      - ID_LMCBICOS
+      - ID_FILIAL
+      - ID_LMC
+      - ID_BICOS
+      - PPL
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT   lb.ID_FILIAL,   CAST(0 AS int) AS ID_DB,   l.ID_PRODUTOS AS ID_PRODUTOS,   lb.ID_LMCBICOS AS ID_EVENTO,   lb.ID_LMCBICOS,   lb.ID_LMC,   lb.ID_BICOS,   lb.PPL
+      AS PRECO,   lb.PPL AS PPL,   lb.VENDAS,   p.NOMEPRODUTO,   CAST(l.DTACONTA AS datetime2) AS DATAALTERACAO,   CAST(l.DTACONTA
+      AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES   (CAST(l.DTACONTA AS datetime2)),   (NULLIF(CAST(l.DATAREPL
+      AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))),   (NULLIF(CAST(lb.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00'
+      AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK FROM dbo.LMCBICOS lb WITH (NOLOCK) INNER JOIN dbo.LMC l WITH (NOLOCK)   ON
+      l.ID_FILIAL = lb.ID_FILIAL AND l.ID_LMC = lb.ID_LMC LEFT JOIN dbo.PRODUTOS p WITH (NOLOCK)   ON p.ID_FILIAL = l.ID_FILIAL
+      AND p.ID_PRODUTOS = l.ID_PRODUTOS WHERE ISNULL(lb.PPL, 0) > 0
+  descontos_entidades_itens:
+    enabled: true
+    table: dbo.DESCONTOSENTIDADESITENS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_DESCONTOENTIDADESITENS
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_DESCONTOENTIDADESITENS
+    contract_name: descontos_entidades_itens_pk
+    required_fields:
+    - ID_DESCONTOENTIDADESITENS
+    - ID_FILIAL
+    - ID_ENTIDADE
+    - ID_PRODUTOS
+    - VALOR
+    - VALORFIXO
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_DESCONTOENTIDADESITENS
+    preflight_tables:
+      dbo.DESCONTOSENTIDADESITENS:
+      - ID_DESCONTOENTIDADESITENS
+      - ID_FILIAL
+      - ID_ENTIDADE
+      - ID_PRODUTOS
+      - VALOR
+      - VALORFIXO
+      - ATIVO
+      - DATAREPL
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT d.*, CAST(d.DATAREPL AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES   (NULLIF(CAST(d.DATAREPL
+      AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2))),   (CAST('1900-01-01T00:00:00' AS datetime2))) AS v(dt)) AS
+      TORQMIND_WATERMARK FROM dbo.DESCONTOSENTIDADESITENS d WITH (NOLOCK) WHERE ISNULL(d.VALORFIXO, 0) = 1
+  controle_troca_pgto:
+    enabled: true
+    table: dbo.CONTROLE_TROCA_PGTO
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID, ID_DB
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID
+    - ID_DB
+    contract_name: controle_troca_pgto_pk
+    required_fields:
+    - ID
+    - ID_FILIAL
+    - ID_DB
+    unique_key_fields:
+    - ID_FILIAL
+    - ID
+    - ID_DB
+    preflight_tables:
+      dbo.CONTROLE_TROCA_PGTO:
+      - ID
+      - ID_FILIAL
+      - ID_DB
+      - ID_MOVLCTOSCANCELADOS
+      - USUARIO
+      - DATA
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    query: SELECT t.*, CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(t.DATA
+      AS datetime2)),        (NULLIF(CAST(t.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.CONTROLE_TROCA_PGTO t
+  movlctoscancelados:
+    enabled: true
+    table: dbo.MOVLCTOSCANCELADOS
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_FILIAL, ID_MOVLCTOSCANCELADOS, ID_DB
+    cursor_pk_columns:
+    - ID_FILIAL
+    - ID_MOVLCTOSCANCELADOS
+    - ID_DB
+    contract_name: movlctoscancelados_pk
+    required_fields:
+    - ID_MOVLCTOSCANCELADOS
+    - ID_FILIAL
+    - ID_DB
+    - ID_PLANODECONTAS
+    unique_key_fields:
+    - ID_FILIAL
+    - ID_MOVLCTOSCANCELADOS
+    - ID_DB
+    preflight_tables:
+      dbo.MOVLCTOSCANCELADOS:
+      - ID_MOVLCTOSCANCELADOS
+      - ID_FILIAL
+      - ID_DB
+      - ID_PLANODECONTAS
+      - REFERENCIA
+      - VALOR
+      - DTACONTA
+      - ID_TURNOS
+    bootstrap_days: 365
+    watermark_overlap_seconds: 240
+    revisit_open_clause: (NULLIF(CAST(DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)) >= DATEADD(day, -60,
+      SYSUTCDATETIME()) OR ID_MOVLCTOSCANCELADOS >= 324000)
+    query: SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, COALESCE(NULLIF(CAST(m.DATAREPL AS datetime2),
+      CAST('1900-01-01T00:00:00' AS datetime2)), CASE WHEN CAST(m.DTACONTA AS datetime2) <= DATEADD(day, 1, SYSUTCDATETIME())      THEN
+      CAST(m.DTACONTA AS datetime2) END) AS TORQMIND_WATERMARK FROM dbo.MOVLCTOSCANCELADOS m
+  tanques:
+    enabled: true
+    table: dbo.TANQUES
+    watermark_column: ID_TANQUES
+    watermark_order_by: ID_TANQUES, ID_FILIAL
+    full_refresh: true
+  movtanques:
+    enabled: true
+    table: dbo.MOVTANQUES
+    watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_DT_EVENTO
+    watermark_overlap_seconds: 240
+    bootstrap_days: 365
+    query: SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, CAST(m.DTACONTA AS datetime2) AS TORQMIND_WATERMARK
+      FROM dbo.MOVTANQUES m
+  estoque:
+    enabled: true
+    table: dbo.ESTOQUE
+    watermark_column: ID_ESTOQUE
+    watermark_order_by: ID_ESTOQUE, ID_FILIAL
+    full_refresh: true
   convenios:
     enabled: true
     table: dbo.CONVENIOS
     watermark_column: TORQMIND_WATERMARK
+    event_date_column: TORQMIND_WATERMARK
+    watermark_order_by: TORQMIND_WATERMARK, ID_CONVENIOS, ID_FILIAL
+    cursor_pk_columns:
+    - ID_CONVENIOS
+    - ID_FILIAL
     full_refresh: true
     bootstrap_days: 560
     watermark_overlap_seconds: 240
-    query: |
-      SELECT c.*, COALESCE(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)) AS TORQMIND_WATERMARK
+    query: SELECT c.*, COALESCE(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)) AS TORQMIND_WATERMARK
       FROM dbo.CONVENIOS c
-
   movbancos:
     enabled: true
     table: dbo.MOVBANCOS
     watermark_column: TORQMIND_WATERMARK
     event_date_column: TORQMIND_DT_EVENTO
+    watermark_order_by: TORQMIND_WATERMARK, ID_MOVBANCOS, ID_FILIAL, ID_DB
+    cursor_pk_columns:
+    - ID_MOVBANCOS
+    - ID_FILIAL
+    - ID_DB
     retention_days: 560
     bootstrap_days: 560
     watermark_overlap_seconds: 240
-    query: |
-      SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt) FROM (VALUES (CAST(m.DTACONTA AS datetime2)),
-               (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.MOVBANCOS m WHERE ISNULL(m.DELETAR, 0) = 0
-
-  # Ajustes de plano (sem espelho em MOVBANCOS): TRANSF AJUSTE / AJUSTE-SALDO / etc.
-  movbancos_ajuste_plano:
+    query: SELECT m.*, CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(m.DTACONTA
+      AS datetime2)),        (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))   ) AS v(dt))
+      AS TORQMIND_WATERMARK FROM dbo.MOVBANCOS m WHERE ISNULL(m.DELETAR, 0) = 0
+  contasbancaria:
     enabled: true
-    table: dbo.MOVLCTOS
-    watermark_column: ID_MOVLCTOS
-    watermark_order_by: ID_MOVLCTOS, ID_FILIAL, ID_DB
-    cursor_pk_columns: [ID_MOVLCTOS, ID_FILIAL, ID_DB]
+    table: dbo.CONTASBANCARIA
+    watermark_column: ID_CONTASBANCARIAS
+    watermark_order_by: ID_CONTASBANCARIAS, ID_FILIAL
+    cursor_pk_columns:
+    - ID_CONTASBANCARIAS
+    - ID_FILIAL
     full_refresh: true
-    query: |
-      SELECT m.*,
-             CAST(m.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO,
-             (SELECT MAX(v.dt) FROM (VALUES
-               (CAST(m.DTACONTA AS datetime2)),
-               (CAST(m.DATA AS datetime2)),
-               (NULLIF(CAST(m.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))
-             ) AS v(dt)) AS TORQMIND_WATERMARK
-      FROM dbo.MOVLCTOS m
-      WHERE ISNULL(m.ESTORNO, 0) = 0
-        AND (
-          UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'TRANSF AJUSTE%'
-          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE-SALDO%'
-          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE SALDO%'
-          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE DE SALDOS%'
-          OR UPPER(LTRIM(RTRIM(m.DOCUMENTO))) LIKE 'AJUSTE EMPRESTIMO%'
-        )
-
+  bancospadrao:
+    enabled: true
+    table: dbo.BANCOSPADRAO
+    watermark_column: ID_BANCOSPADRAO
+    watermark_order_by: ID_BANCOSPADRAO, ID_FILIAL
+    cursor_pk_columns:
+    - ID_BANCOSPADRAO
+    - ID_FILIAL
+    full_refresh: true
   saldoclientes:
     enabled: true
     table: dbo.SALDOCLIENTES

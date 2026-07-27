@@ -258,7 +258,10 @@ def _handle_config_command(args, logger) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from agent import __version__
+
     parser = argparse.ArgumentParser(prog="python -m agent", description="TorqMind Extractor Agent")
+    parser.add_argument("--version", action="version", version=f"torqmind-agent {__version__}")
     parser.add_argument("--config", default="config.local.yaml", help="Path to config file (.yaml or .enc)")
     parser.add_argument("--log-level", default=None, help="DEBUG/INFO/WARN/ERROR")
 

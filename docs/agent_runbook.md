@@ -188,10 +188,13 @@ sc start TorqMindAgent
 ```
 
 O `config.enc` permanece intacto (conexão preservada) e as tabelas novas
-(cheques, situacoes, movcreditoentidades, credito, consolearquivo, tanques,
-movtanques, estoque) começam a coletar automaticamente. Validar:
+(entidades, grupoprodutos, movbancos_ajuste_plano, contasbancaria, bancospadrao,
+descontos_entidades_itens, cheques, situacoes, movcreditoentidades, credito,
+consolearquivo, tanques, movtanques, estoque, …) começam a coletar automaticamente.
+Dims com `full_refresh` respeitam throttle padrão de 1800s (SSD). Validar:
 
 ```powershell
+torqmind-agent.exe --version
 torqmind-agent.exe check --config config.enc
 torqmind-agent.exe run --once --config config.enc
 ```
