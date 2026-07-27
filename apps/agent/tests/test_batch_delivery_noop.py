@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from agent.runner import AgentRunner
+import sys
+from unittest.mock import MagicMock
+
+# runner importa extractors.xpert → pyodbc; no CI Linux sem ODBC usamos mock.
+sys.modules.setdefault("pyodbc", MagicMock())
+
+from agent.runner import AgentRunner  # noqa: E402
 
 
 def test_validate_batch_delivery_accepts_unchanged_noop() -> None:
     runner = AgentRunner.__new__(AgentRunner)
     runner.logger = __import__("logging").getLogger("test")
 
-    # Não deve levantar: API reportou unchanged=135, rejected=0.
     runner._validate_batch_delivery(
         dataset="clientes",
         ds_cfg={"enabled": True, "full_refresh": False},
