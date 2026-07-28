@@ -143,9 +143,20 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
                 "DATATURNO",
                 "DATAFECHAMENTO",
                 "ENCERRANTEFECHAMENTO",
+                "STATUSTURNO",
             ]
         },
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        # Turnos abertos (STATUSTURNO=0) e janela recente precisam ser revisitados:
+        # o watermark usa MAX(DATA/DATATURNO/DATAFECHAMENTO); depois que o cursor
+        # avança, um turno antigo que falhou na 1ª entrega (ex.: 502 no nginx) some
+        # para sempre do incremental. Mesmo padrão de CR/CP.
+        # Colunas SEM alias: o WHERE externo é SELECT * FROM (base) AS src.
+        "revisit_open_clause": (
+            "(ISNULL(STATUSTURNO, 0) = 0) "
+            "OR (CAST(DATA AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date)) "
+            "OR (DATAFECHAMENTO IS NOT NULL AND CAST(DATAFECHAMENTO AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date))"
+        ),
         "query": (
             "SELECT t.*, "
             "CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "

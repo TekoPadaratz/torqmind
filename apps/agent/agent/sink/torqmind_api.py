@@ -471,7 +471,8 @@ class TorqMindSink:
                 failure_reason=str(exc),
             )
             phase = "spool_duplicate" if item.deduplicated else "spooled"
-            log_method = self.logger.warning if item.deduplicated else self.logger.error
+            # Spool é recuperação (retry), não falha definitiva — warning, não error.
+            log_method = self.logger.info if item.deduplicated else self.logger.warning
             log_method(
                 "dataset=%s phase=%s file=%s rows=%s reason=%s suggestion=%s",
                 dataset,

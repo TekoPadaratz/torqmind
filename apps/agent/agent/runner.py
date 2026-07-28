@@ -479,60 +479,90 @@ class AgentRunner:
         ingest_result: Optional[Dict[str, Any]] = None,
         validation_summary: Optional[BatchValidationSummary] = None,
     ) -> None:
-        if extracted > 0 and inserted == 0 and not spooled and not self._allow_zero_inserted(ds_cfg):
-            body = dict(ingest_result or {})
-            rejected_invalid = int(body.get("rejected_invalid", 0) or 0)
-            rejected_by_retention = int(body.get("rejected_by_retention", 0) or 0)
-            retention_cutoff = body.get("retention_cutoff")
-            unchanged = int(body.get("unchanged", 0) or 0)
-            details = body.get("details") if isinstance(body.get("details"), list) else []
-            sample_reason = ""
-            if details:
-                sample_reason = str((details[0] or {}).get("reason") or "").strip()
-            if validation_summary is not None:
-                summary = validation_summary
+        """Validate that an extracted batch was delivered or safely deferred.
+
+        Success paths:
+        - rows inserted/updated on API
+        - batch spooled for retry
+        - upsert condicional: ``unchanged > 0`` (anti-SSD noop), even if a few
+          rows in the overlap window were rejected (partial noop)
+        - ``allow_zero_inserted_batches`` with zero rejects
+
+        Always fail on full-batch rejection (invalid PK / retention), including
+        datasets with ``allow_zero_inserted_batches`` — that flag must not hide
+        a broken contract.
+        """
+        if extracted <= 0 or inserted > 0 or spooled:
+            return
+
+        body = dict(ingest_result or {})
+        rejected_invalid = int(body.get("rejected_invalid", 0) or 0)
+        rejected_by_retention = int(body.get("rejected_by_retention", 0) or 0)
+        retention_cutoff = body.get("retention_cutoff")
+        unchanged = int(body.get("unchanged", 0) or 0)
+        details = body.get("details") if isinstance(body.get("details"), list) else []
+        sample_reason = ""
+        if details:
+            sample_reason = str((details[0] or {}).get("reason") or "").strip()
+        if validation_summary is not None:
+            summary = validation_summary
+        else:
+            event_min, event_max = self._summarize_batch_event_range(rows)
+            summary = BatchValidationSummary(
+                dataset=dataset,
+                row_count=extracted,
+                event_min=event_min,
+                event_max=event_max,
+            )
+
+        if rejected_by_retention == extracted:
+            raise RuntimeError(
+                f"Batch extracted but fully rejected by retention for dataset={dataset}. "
+                f"rejected={rejected} retention_cutoff={retention_cutoff or 'unknown'} "
+                f"event_min={summary.event_min or 'unknown'} event_max={summary.event_max or 'unknown'} "
+                f"sample_reason={sample_reason or 'Rejected by retention window'}"
+            )
+
+        if rejected_invalid == extracted:
+            raise RuntimeError(
+                f"Batch extracted but rejected by API payload contract for dataset={dataset}. "
+                f"rejected={rejected} sample_reason={sample_reason or 'Missing/invalid PK fields'}"
+            )
+
+        # Upsert condicional: qualquer linha aceita como unchanged conta como
+        # entrega. Overlap de 240s frequentemente remanda o mesmo lote; 1 linha
+        # inválida no meio não pode marcar o dataset failed a cada ciclo.
+        if unchanged > 0:
+            if rejected > 0:
+                self.logger.warning(
+                    "dataset=%s phase=batch_partial_noop extracted=%s unchanged=%s rejected=%s "
+                    "inserted_or_updated=0 (overlap/idempotent OK; sample_reason=%s)",
+                    dataset,
+                    extracted,
+                    unchanged,
+                    rejected,
+                    sample_reason or "n/a",
+                )
             else:
-                event_min, event_max = self._summarize_batch_event_range(rows)
-                summary = BatchValidationSummary(
-                    dataset=dataset,
-                    row_count=extracted,
-                    event_min=event_min,
-                    event_max=event_max,
-                )
-
-            if rejected_by_retention == extracted:
-                raise RuntimeError(
-                    f"Batch extracted but fully rejected by retention for dataset={dataset}. "
-                    f"rejected={rejected} retention_cutoff={retention_cutoff or 'unknown'} "
-                    f"event_min={summary.event_min or 'unknown'} event_max={summary.event_max or 'unknown'} "
-                    f"sample_reason={sample_reason or 'Rejected by retention window'}"
-                )
-
-            if rejected_invalid == extracted:
-                raise RuntimeError(
-                    f"Batch extracted but rejected by API payload contract for dataset={dataset}. "
-                    f"rejected={rejected} sample_reason={sample_reason or 'Missing/invalid PK fields'}"
-                )
-
-            # API com upsert condicional: lote 100% igual → inserted_or_updated=0 e
-            # unchanged=N. Isso é sucesso (anti-SSD), não falha de entrega.
-            if rejected == 0 and rejected_invalid == 0 and rejected_by_retention == 0 and unchanged > 0:
                 self.logger.info(
                     "dataset=%s phase=batch_noop extracted=%s unchanged=%s inserted_or_updated=0",
                     dataset,
                     extracted,
                     unchanged,
                 )
-                return
+            return
 
-            contract_hint = ""
-            if validation_summary and validation_summary.contract_name:
-                contract_hint = f" Local {validation_summary.contract_name} validation passed before POST."
-            raise RuntimeError(
-                f"Batch extracted but nothing inserted for dataset={dataset}. "
-                f"rejected={rejected} unchanged={unchanged}.{contract_hint} "
-                f"Verify API response details for retention or payload issues."
-            )
+        if self._allow_zero_inserted(ds_cfg) and rejected == 0:
+            return
+
+        contract_hint = ""
+        if validation_summary and validation_summary.contract_name:
+            contract_hint = f" Local {validation_summary.contract_name} validation passed before POST."
+        raise RuntimeError(
+            f"Batch extracted but nothing inserted for dataset={dataset}. "
+            f"rejected={rejected} unchanged={unchanged}.{contract_hint} "
+            f"Verify API response details for retention or payload issues."
+        )
 
     @staticmethod
     def _serialize_state_value(value: Any) -> Optional[str]:
@@ -565,13 +595,27 @@ class AgentRunner:
 
     @staticmethod
     def _turno_is_closed(row: Dict[str, Any]) -> bool:
-        value = row.get("ENCERRANTEFECHAMENTO")
-        if value in {None, ""}:
+        """Xpert close semantics for TURNOS.
+
+        ``ENCERRANTEFECHAMENTO`` is a pump meter reading (often non-zero while the
+        shift is still open) — NEVER use it as a boolean close flag. That bug made
+        the agent drop shifts from ``turnos_pending`` on first delivery; after the
+        watermark advanced, those rows were never revisited and comprovantes
+        arrived referencing missing ``stg.turnos`` (antifraud turno_numero=0).
+
+        Canonical close signals (VR/Xpert):
+        - ``DATAFECHAMENTO`` populated, or
+        - ``STATUSTURNO`` != 0 (0 = aberto; 5 = encerrado/definitivo no posto).
+        """
+        if row.get("DATAFECHAMENTO") not in {None, ""}:
+            return True
+        status = row.get("STATUSTURNO")
+        if status in {None, ""}:
             return False
         try:
-            return int(value) != 0
+            return int(status) != 0
         except (TypeError, ValueError):
-            return str(value).strip().lower() not in {"", "0", "0.0", "false", "none"}
+            return str(status).strip().lower() not in {"", "0", "0.0", "false", "none"}
 
     def _turno_row_watermark(self, row: Dict[str, Any]) -> Optional[str]:
         for key in ("TORQMIND_WATERMARK", "DATAFECHAMENTO", "TORQMIND_DT_EVENTO", "DATA", "DATATURNO", "DATAREPL"):
@@ -1025,7 +1069,13 @@ class AgentRunner:
                                 last_watermark=safe_wm,
                                 last_pk_tuple=list(batch.last_pk_tuple) if batch.last_pk_tuple else None,
                             )
-                            if commit_cursor and self._is_newer_cursor(batch_cursor, committed_cursor):
+                            # Nunca avançar o cursor se o lote só foi para o spool:
+                            # senão dead-letter cria buraco permanente no incremental.
+                            if (
+                                commit_cursor
+                                and not spooled
+                                and self._is_newer_cursor(batch_cursor, committed_cursor)
+                            ):
                                 self.state.set_cursor(dataset, batch_cursor, scope=scope)
                                 committed_cursor = batch_cursor
                                 self.logger.info(
@@ -1033,6 +1083,13 @@ class AgentRunner:
                                     dataset,
                                     committed_cursor.last_watermark,
                                     committed_cursor.last_pk_tuple,
+                                )
+                            elif spooled:
+                                self.logger.warning(
+                                    "dataset=%s phase=checkpoint_skipped_spool watermark=%s pk_tuple=%s",
+                                    dataset,
+                                    safe_wm,
+                                    batch.last_pk_tuple,
                                 )
 
                         self.logger.info(

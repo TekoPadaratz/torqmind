@@ -1379,7 +1379,11 @@ class MartBuilder:
             f"parseDateTime64BestEffortOrNull(JSONExtractString(t.payload, 'DTHRFECHAMENTO'))), '{tz}'), NULL)"
         )
         id_usuario = "coalesce(toInt32OrZero(JSONExtractString(t.payload, 'ID_USUARIOS')), toInt32OrZero(JSONExtractString(t.payload, 'ID_USUARIO')))"
-        is_aberto = "if(toInt32OrZero(JSONExtractString(t.payload, 'ENCERRANTEFECHAMENTO')) = 0 AND fechamento_ts IS NULL, 1, 0)"
+        is_aberto = (
+            "if("
+            "toInt32OrZero(JSONExtractString(t.payload, 'STATUSTURNO')) = 0 "
+            "AND fechamento_ts IS NULL, 1, 0)"
+        )
         empresa_filter_t = f"AND t.id_empresa = {int(id_empresa)}" if id_empresa else ""
         filial_filter_t = f"AND t.id_filial = {int(id_filial)}" if id_filial else ""
         empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""

@@ -467,24 +467,10 @@ export default function FraudPage() {
   );
 
   const lastEventsOperational = useMemo(() => {
+    // Mesmo universo do gráfico (fraud_daily): não descartar turno 0 / NF ausente.
+    // Sem NF → "—" honesto; turno sem resolução → label da API.
     const rows = Array.isArray(data?.last_events) ? data.last_events : [];
-    const filtered = rows.filter((e: any) => {
-      const tn = Number(e?.turno_numero);
-      const label = String(e?.turno_label || "").toLowerCase();
-      if (Number.isFinite(tn) && tn < 1) return false;
-      if (
-        label.includes("sem cadastro") ||
-        label.includes("não resolvido") ||
-        label.includes("nao resolvido") ||
-        label === "caixa geral"
-      ) {
-        return false;
-      }
-      if (!e?.data && !e?.data_key) return false;
-      const doc = e?.documento_label || e?.documento_fiscal;
-      if (!doc || String(doc).trim() === "—" || String(doc).trim() === "-") return false;
-      return true;
-    });
+    const filtered = rows.filter((e: any) => Boolean(e?.data || e?.data_key || e?.id_comprovante));
     return sortGridRows(filtered, (e: any) => ({
       filial: e.filial_label ?? e.filial_nome ?? e.id_filial,
       data: e.data || e.data_key,
@@ -725,8 +711,8 @@ export default function FraudPage() {
                 <GridSearchInput value={cancelSearch.query} onChange={cancelSearch.setQuery} aria-label="Pesquisar cancelamentos operacionais" />
                 {!loading && !cancelSearch.filteredRows.length ? (
                   <EmptyState
-                    title="Sem eventos operacionais recentes."
-                    detail="Não houve cancelamentos reconciliados por turno no período analisado."
+                    title="Sem cancelamentos no período."
+                    detail="Não há comprovantes cancelados reconciliados no intervalo selecionado."
                   />
                 ) : null}
                 <div className="tableScroll">

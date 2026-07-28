@@ -186,6 +186,26 @@ class TestExtractorQuery(unittest.TestCase):
         self.assertNotIn("(CAST(c.DTAPGTO AS datetime2))", plan.sql)
         self.assertIn("(CAST(c.DTACONTA AS datetime2))", plan.sql)
 
+    def test_turnos_revisit_keeps_open_and_recent_window(self):
+        from agent.config import DEFAULT_DATASETS
+
+        turnos = DEFAULT_DATASETS["turnos"]
+        cfg = self._cfg()
+        cfg.datasets["turnos"] = {**turnos, "enabled": True}
+        ex = SQLServerExtractor(cfg, _DummyLogger())
+        plan = ex._build_query_plan(
+            dataset="turnos",
+            watermark_dt=datetime(2026, 7, 28, 0, 0, 0),
+            dt_from=None,
+            dt_to=None,
+            watermark_type_detected="datetime",
+            watermark_style=None,
+        )
+        self.assertIn("ISNULL(STATUSTURNO, 0) = 0", plan.sql)
+        self.assertIn("DATEADD(day,-14,GETDATE())", plan.sql)
+        # must not require table alias on revisit columns
+        self.assertNotIn("t.STATUSTURNO", plan.sql)
+
     def test_contaspagar_watermark_excludes_future_prone_dates(self):
         from agent.config import DEFAULT_DATASETS
 

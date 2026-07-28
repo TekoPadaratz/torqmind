@@ -1929,7 +1929,10 @@ def fraud_last_events(
 ) -> List[Dict[str, Any]]:
     """Recent cancellation events with operator/employee names, shift and register.
 
-    Excludes caixa geral (turno 0), unresolved shifts and non-cancellation events.
+    Same universe as ``fraud_series`` / ``fraud_daily_rt``: all cancellation
+    events in the window. Turno 0 / unresolved / missing NF stay visible with
+    honest labels ("Caixa geral", "Turno não resolvido", "—") so the detail
+    grids never go empty while the daily chart still has bars.
     """
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
@@ -1937,8 +1940,7 @@ def fraud_last_events(
         lim = max(1, min(int(limit), 200))
     except (TypeError, ValueError):
         lim = 30
-    # Over-fetch then filter unresolved/zero shifts so the visible grid still fills.
-    fetch_lim = min(lim * 4, 400)
+    fetch_lim = min(lim * 2, 400)
 
     try:
         rows = query_dict(f"""
@@ -1949,7 +1951,7 @@ def fraud_last_events(
             FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
               AND lower(event_type) IN ('cancelamento', 'cancelamento_seguido_venda')
-              AND turno_numero >= 1
+              AND id_comprovante > 0
             ORDER BY data_key DESC, score_risco DESC, event_id DESC
             LIMIT {fetch_lim}
         """, parameters={"id_empresa": id_empresa})
@@ -1964,23 +1966,10 @@ def fraud_last_events(
                     (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
                 )
                 ev = _build_antifraude_event(r)
-                # Defesa: só turnos operacionais 1..N, com documento e data
-                if _to_int(ev.get("turno_numero")) < 1:
+                if not ev.get("data") and not ev.get("data_key"):
                     continue
-                label_l = str(ev.get("turno_label") or "").lower()
-                if (
-                    not ev.get("turno_label")
-                    or "não resolvido" in label_l
-                    or "nao resolvido" in label_l
-                    or "sem cadastro" in label_l
-                    or label_l == "caixa geral"
-                ):
+                if not _to_int(ev.get("id_comprovante")):
                     continue
-                if not ev.get("data"):
-                    continue
-                if not ev.get("documento_label") or str(ev.get("documento_label") or "").strip() in ("", "—", "-"):
-                    if not ev.get("id_comprovante"):
-                        continue
                 out.append(ev)
                 if len(out) >= lim:
                     break
@@ -2040,13 +2029,14 @@ def fraud_top_users(
     limit: int = 10,
     **kwargs: Any,
 ) -> List[Dict[str, Any]]:
-    """Top users by cancellation volume from enriched mart_antifraude_eventos."""
+    """Top users by cancellation volume from enriched mart_antifraude_eventos.
+
+    Same cancellation universe as ``fraud_series`` (includes turno 0 / unresolved
+    when the operador name is known) so the ranking matches the daily chart.
+    """
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
 
-    # Mesmo universo de "Últimos cancelamentos": só turnos operacionais 1..N
-    # e tipos de cancelamento. Evita top_users contar caixa geral (turno 0)
-    # que o grid de últimos exclui — divergência VR01 15/07/2026.
     rows = query_dict(f"""
         SELECT id_filial,
                any(filial_nome) AS filial_nome,
@@ -2056,8 +2046,7 @@ def fraud_top_users(
         FROM {MART_RT_DB}.mart_antifraude_eventos FINAL
         WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
           AND lower(event_type) IN ('cancelamento', 'cancelamento_seguido_venda')
-          AND turno_numero >= 1
-          AND (id_comprovante > 0 OR nro_comprovante > 0)
+          AND id_comprovante > 0
         GROUP BY id_filial, nome_operador
         HAVING length(trim(nome_operador)) > 0
         ORDER BY valor_cancelado DESC
