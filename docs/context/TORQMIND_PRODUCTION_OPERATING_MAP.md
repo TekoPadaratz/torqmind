@@ -24,6 +24,8 @@ Checkout de referência: nova-branch-limpa @ a12e281 + ajustes locais desta roda
 ## Fluxo de dados
 
 - Agent Windows -> API ingest -> PostgreSQL STG -> ETL/DW -> Debezium/Redpanda/CDC -> ClickHouse current/slim -> mart_rt -> API/Web.
+- Posto na LAN `172.30.0.x`: agent usa `http://172.30.0.10` (não IP público / `:14023` interno).
+- `GET /api/ingest/health` = auth-only (`mode=auth`). Nunca COUNT em massa no hot path do agent. Pós-recreate da API, validar com curl + ingest key (ver AGENTS.md).
 - Backfill do Agent deve materializar primeiro em STG; downstream só é reprocessado quando STG estiver completa.
 - Bootstrap realtime usa STG como origem para current/slim.
 - Marts realtime são rebuildadas a partir de slim/current após bootstrap consistente.

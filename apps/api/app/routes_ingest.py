@@ -1193,8 +1193,25 @@ def _dedupe_rows_by_pk(pk_cols: List[str], rows: List[Tuple[Any, ...]]) -> Tuple
 def ingest_health(
     x_ingest_key: Optional[str] = Header(None, alias="X-Ingest-Key"),
     x_empresa_id: Optional[str] = Header(None, alias="X-Empresa-Id"),
+    stats: bool = Query(
+        False,
+        description="If true, run per-dataset COUNT/MAX (slow; can 504 behind nginx). Default is auth-only.",
+    ),
 ):
+    """Agent connectivity check — must stay fast.
+
+    Default: resolve tenant from X-Ingest-Key and return ok.
+    Optional ``?stats=true`` keeps the legacy heavy STG scan for ops/debug only.
+    """
     id_empresa = _resolve_id_empresa(x_ingest_key=x_ingest_key, x_empresa_id=x_empresa_id)
+    if not stats:
+        return {
+            "ok": True,
+            "id_empresa": id_empresa,
+            "mode": "auth",
+            "datasets": [],
+        }
+
     out: List[Dict[str, Any]] = []
     with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
         for dataset, spec in sorted(DATASETS.items()):
@@ -1220,7 +1237,7 @@ def ingest_health(
                     "max_dt_evento": row["max_dt_evento"],
                 }
             )
-    return {"ok": True, "id_empresa": id_empresa, "datasets": out}
+    return {"ok": True, "id_empresa": id_empresa, "mode": "stats", "datasets": out}
 
 
 @router.post("/{dataset}")
