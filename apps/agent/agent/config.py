@@ -1169,16 +1169,47 @@ def build_default_raw_config() -> Dict[str, Any]:
         },
         "id_empresa": 1,
         "id_db": 1,
-        "datasets": copy.deepcopy(DEFAULT_DATASETS),
+        # Só toggles — SQL/query fica sempre no DEFAULT_DATASETS do exe (evita congelar
+        # TRY_CONVERT etc. de builds antigos dentro do config.enc).
+        "datasets": {
+            name: {"enabled": bool(cfg.get("enabled", False))}
+            for name, cfg in DEFAULT_DATASETS.items()
+        },
     }
 
 
 def _merge_dataset_configs(user_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Merge user dataset toggles onto built-in defaults.
+
+    ``config.enc`` may contain a full snapshot of ``DEFAULT_DATASETS`` from an older
+    agent build (``config init``). Those frozen ``query`` / watermark SQL strings
+    must NOT override the SQL shipped in the current exe — otherwise a posto stays
+    broken after upgrading the binary (e.g. TRY_CONVERT on SQL Server 2008 R2).
+    """
+    # Only operational knobs are honored from config.enc / YAML.
+    user_override_keys = {
+        "enabled",
+        "retention_days",
+        "bootstrap_days",
+        "full_refresh",
+        "full_refresh_min_interval_seconds",
+        "watermark_overlap_seconds",
+        "rescan_hourly_window_hours",
+        "rescan_daily_window_days",
+        "batch_size",
+        "fetch_size",
+        "revisit_max_rows",
+    }
     merged = {k: dict(v) for k, v in DEFAULT_DATASETS.items()}
     for ds, cfg in (user_cfg or {}).items():
-        key = ds.strip().lower()
+        key = str(ds or "").strip().lower()
+        if not key:
+            continue
         base = merged.get(key, {"enabled": False})
-        base.update(cfg or {})
+        incoming = cfg or {}
+        if key in DEFAULT_DATASETS:
+            incoming = {k: v for k, v in incoming.items() if k in user_override_keys}
+        base.update(incoming)
         merged[key] = base
     for base in merged.values():
         if base.get("full_refresh") and base.get("full_refresh_min_interval_seconds") is None:
