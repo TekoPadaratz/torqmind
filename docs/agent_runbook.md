@@ -153,6 +153,18 @@ Opção simples (sem NSSM):
 
 ## 7) Build do executável e atualização de versão (seguro)
 
+### 7.0 Rede do agent (LAN TorqMind)
+
+Se o Windows do Xpert estiver na mesma rede das VMs TorqMind:
+
+```text
+api.base_url = http://172.30.0.10
+```
+
+`GET /api/ingest/health` deve responder rápido (`mode=auth`). Se der **504**, a API
+foi recriada com código antigo que fazia COUNT em todas as STG — redeploy/hotpatch
+obrigatório (ver `AGENTS.md`).
+
 ### 7.1 Gerar o .exe (uma vez por versão)
 
 No repositório (Windows, PowerShell):

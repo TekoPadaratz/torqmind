@@ -52,3 +52,4 @@ async def get_vendas_overview(
 - Use `async/await` em todos os endpoints de banco
 - Connection pool configurado — não abra conexões avulsas
 - Para queries pesadas de BI, use `background_tasks` se a resposta puder ser assíncrona
+- **`GET /ingest/health`**: default **auth-only** (sem COUNT em STG). Stats pesados só com `?stats=true`. Agent/`config test` dependem disso; recreate da API sem esse código → 504 no nginx
