@@ -108,6 +108,10 @@ class Settings(BaseSettings):
         "comprovantes,movprodutos,itensmovprodutos,formas_pgto_comprovantes,turnos"
     )
 
+    # Agent 2.0 self-update channel (manifest + binaries on App VM)
+    agent_release_dir: str = "/var/torqmind/agent-releases"
+    agent_min_version: str = "2.0.0"
+
     # Telegram (optional)
     telegram_bot_token: str | None = None
     notify_min_severity: str = "CRITICAL"

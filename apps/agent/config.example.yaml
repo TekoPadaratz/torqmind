@@ -59,8 +59,8 @@ id_empresa: 1
 id_db: 1
 
 runtime:
-  batch_size: 5000
-  fetch_size: 2000
+  batch_size: 2000
+  fetch_size: 1000
   max_retries: 5
   timeout_seconds: 30
   connect_timeout_seconds: 10
@@ -68,13 +68,18 @@ runtime:
   retry_backoff_base_seconds: 1.0
   retry_backoff_max_seconds: 30.0
   retry_jitter_seconds: 0.0
+  batch_delay_seconds: 0.75
   gzip_enabled: true
   state_dir: state
   spool_dir: spool
   spool_flush_max_files: 200
   interval_seconds: 60
   summary_log_file: logs/torqmind-agent-summary.txt
+  log_file: logs/torqmind-agent.log
   log_level: INFO
+  revisit_max_rows: 5000
+  auto_update: true
+  update_check_cycles: 30
   rescan_hourly_window_hours: 2    # de hora em hora, re-extrai últimas 2h
   rescan_daily_window_days: 7      # diário, re-extrai últimos 7 dias
   rescan_daily_after_hour: 0       # dispara na primeira execução após meia-noite

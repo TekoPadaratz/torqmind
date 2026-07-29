@@ -7,10 +7,14 @@ from typing import Any, Dict, Iterable, Optional
 
 from agent.config import AppConfig, FULL_REFRESH_LAST_RUN_KEY
 from agent.extractors.xpert import SQLServerExtractor
+from agent.runtime.budget import budget_from_runtime
+from agent.runtime.scheduler import filter_datasets_for_cycle
 from agent.sink.torqmind_api import TorqMindSink
 from agent.state.watermark import IncrementalCursor, WatermarkStore
-from agent.utils.log import append_summary_line
+from agent.state.watermark_guard import sanitize_temporal_watermark
+from agent.utils.log import write_cycle_summary
 from agent.utils.timezone import business_datetime_iso
+from agent import __version__ as AGENT_VERSION
 
 # Watermark temporal acima disso (ex.: DTAPGTO=2033 sujo no Xpert) envenena o
 # incremental de contasreceber e congela baixas na cobrança.
@@ -80,34 +84,38 @@ class AgentRunner:
         )
 
     def _write_cycle_summary(self, metrics: list[RunMetrics], *, started: float) -> None:
-        now_iso = self._utc_now_iso(timespec="seconds")
         spool = self.sink.spool_status()
         ok = sum(1 for m in metrics if m.status == "ok")
         failed = sum(1 for m in metrics if m.status == "failed")
-
-        append_summary_line(
+        throttled = sum(1 for m in metrics if m.status == "throttled")
+        write_cycle_summary(
             self.cfg.runtime.summary_log_file,
-            (
-                f"{now_iso} cycle datasets_total={len(metrics)} datasets_ok={ok} datasets_failed={failed} "
-                f"pending_spool={spool.get('pending_files', 0)} dead_letter={spool.get('dead_letter_files', 0)} "
-                f"elapsed_s={time.monotonic() - started:.2f}"
-            ),
+            {
+                "version": AGENT_VERSION,
+                "datasets_total": len(metrics),
+                "datasets_ok": ok,
+                "datasets_failed": failed,
+                "datasets_throttled": throttled,
+                "extracted": sum(m.extracted for m in metrics),
+                "sent": sum(m.sent for m in metrics),
+                "rejected": sum(m.rejected for m in metrics),
+                "spooled_batches": sum(m.spooled_batches for m in metrics),
+                "pending_spool": spool.get("pending_files", 0),
+                "dead_letter": spool.get("dead_letter_files", 0),
+                "elapsed_s": round(time.monotonic() - started, 2),
+                "datasets": [
+                    {
+                        "dataset": m.dataset,
+                        "status": m.status,
+                        "extracted": m.extracted,
+                        "sent": m.sent,
+                        "error": m.error,
+                    }
+                    for m in metrics
+                    if m.status == "failed"
+                ],
+            },
         )
-        for metric in metrics:
-            append_summary_line(
-                self.cfg.runtime.summary_log_file,
-                (
-                    f"{now_iso} dataset={metric.dataset} status={metric.status} extracted={metric.extracted} "
-                    f"sent={metric.sent} rejected={metric.rejected} spooled_batches={metric.spooled_batches} "
-                    f"batches={metric.batches} mode={metric.window_mode or ''} "
-                    f"watermark_before={metric.watermark_before or ''} "
-                    f"query_watermark={metric.query_watermark or ''} "
-                    f"watermark_after={metric.watermark_after or ''} "
-                    f"overlap_seconds={metric.watermark_overlap_seconds} "
-                    f"from={metric.dt_from or ''} to={metric.dt_to or ''} "
-                    f"error={metric.error or ''}"
-                ),
-            )
 
     def _enabled_datasets(self) -> Iterable[str]:
         for ds, ds_cfg in self.cfg.datasets.items():
@@ -154,32 +162,14 @@ class AgentRunner:
         dataset: str = "dataset",
         logger=None,
     ) -> Optional[str]:
-        """Evita usar/avançar watermark no futuro (ex.: DTAPGTO=2033 no Xpert)."""
-        if not watermark:
-            return watermark
-        watermark_dt = WatermarkStore.parse_watermark_dt(watermark)
-        if watermark_dt is None:
-            return watermark
-        if watermark_dt.tzinfo is None:
-            cap = datetime.now() + WATERMARK_FUTURE_SLACK
-            too_future = watermark_dt > cap
-            clamped_dt = cap
-        else:
-            now = datetime.now(timezone.utc)
-            cap = now + WATERMARK_FUTURE_SLACK
-            too_future = watermark_dt.astimezone(timezone.utc) > cap
-            clamped_dt = cap.astimezone(watermark_dt.tzinfo)
-        if not too_future:
-            return watermark
-        clamped = business_datetime_iso(clamped_dt, timespec="microseconds")
-        if logger is not None:
-            logger.warning(
-                "dataset=%s phase=watermark_clamped raw=%s clamped=%s reason=future_poison",
-                dataset,
-                watermark,
-                clamped,
-            )
-        return clamped
+        """Evita usar/avançar watermark no futuro ou sentinela (1970/1900)."""
+        safe, _clamped = sanitize_temporal_watermark(
+            watermark,
+            dataset=dataset,
+            future_slack=WATERMARK_FUTURE_SLACK,
+            logger=logger,
+        )
+        return safe
 
     @classmethod
     def _effective_query_watermark(cls, watermark: Optional[str], ds_cfg: dict) -> tuple[Optional[str], int]:
@@ -907,6 +897,7 @@ class AgentRunner:
         dt_to: Optional[datetime] = None,
         ignore_watermark: bool = False,
         continue_on_error: bool = False,
+        cycle_index: Optional[int] = None,
     ) -> None:
         started = time.monotonic()
         metrics: list[RunMetrics] = []
@@ -916,7 +907,26 @@ class AgentRunner:
             if flushed_at_start:
                 self.logger.info("phase=spool_flush_startup files=%s", flushed_at_start)
 
-            datasets = [only_dataset.lower()] if only_dataset else list(self._enabled_datasets())
+            if only_dataset:
+                datasets = [only_dataset.lower()]
+            elif cycle_index is not None:
+                runtime_cfg = {
+                    "tier_periods": getattr(self.cfg.runtime, "tier_periods", None),
+                }
+                datasets = filter_datasets_for_cycle(
+                    list(self._enabled_datasets()),
+                    int(cycle_index),
+                    cfg_datasets=self.cfg.datasets,
+                    runtime_cfg=runtime_cfg,
+                    force_all=False,
+                )
+                self.logger.info(
+                    "phase=cycle_schedule index=%s datasets=%s",
+                    cycle_index,
+                    ",".join(datasets) or "(none)",
+                )
+            else:
+                datasets = list(self._enabled_datasets())
 
             for dataset in datasets:
                 t0 = time.monotonic()
@@ -1007,15 +1017,25 @@ class AgentRunner:
                 committed_cursor = effective_cursor
                 try:
                     self._preflight_dataset(dataset)
+                    budget = budget_from_runtime(self.cfg.runtime, ds_cfg)
+                    rows_cap = max(1, int(budget.revisit_max_rows))
                     for batch in self.extractor.iter_batches(
                         dataset=dataset,
                         watermark=query_watermark,
                         cursor_pk_tuple=query_cursor.last_pk_tuple,
-                        batch_size=self.cfg.runtime.batch_size,
-                        fetch_size=self.cfg.runtime.fetch_size,
+                        batch_size=budget.batch_size,
+                        fetch_size=budget.fetch_size,
                         dt_from=effective_dt_from,
                         dt_to=effective_dt_to,
                     ):
+                        if metric.extracted >= rows_cap:
+                            self.logger.info(
+                                "dataset=%s phase=budget_cap extracted=%s cap=%s",
+                                dataset,
+                                metric.extracted,
+                                rows_cap,
+                            )
+                            break
                         metric.batches += 1
                         metric.extracted += len(batch.rows)
 
@@ -1092,7 +1112,7 @@ class AgentRunner:
                                     batch.last_pk_tuple,
                                 )
 
-                        self.logger.info(
+                        self.logger.debug(
                             "dataset=%s phase=batch batches=%s extracted=%s inserted=%s rejected=%s spooled=%s watermark=%s pk_tuple=%s",
                             dataset,
                             metric.batches,
@@ -1105,7 +1125,7 @@ class AgentRunner:
                         )
 
                         # Throttle between batches to avoid CPU saturation on SQL Server
-                        batch_delay = self.cfg.runtime.batch_delay_seconds
+                        batch_delay = budget.batch_delay_seconds
                         if batch_delay > 0:
                             time.sleep(batch_delay)
 
@@ -1174,7 +1194,7 @@ class AgentRunner:
                 spool.get("dead_letter_files", 0),
             )
             for m in metrics:
-                self.logger.info(
+                self.logger.debug(
                     "phase=summary_dataset dataset=%s status=%s extracted=%s sent=%s rejected=%s spooled_batches=%s batches=%s error=%s",
                     m.dataset,
                     m.status,
@@ -1269,24 +1289,48 @@ class AgentRunner:
     ) -> None:
         last_hourly_rescan_hour: Optional[int] = None
         last_daily_rescan_date: Optional[str] = None
+        cycle_index = 0
 
         rescan_hourly_hours = self.cfg.runtime.rescan_hourly_window_hours
         rescan_daily_days = self.cfg.runtime.rescan_daily_window_days
         rescan_daily_after_hour = self.cfg.runtime.rescan_daily_after_hour
+        update_every = max(1, int(getattr(self.cfg.runtime, "update_check_cycles", 30) or 30))
 
         self.logger.info(
-            "phase=loop_start rescan_hourly_window_hours=%s rescan_daily_window_days=%s rescan_daily_after_hour=%s",
-            rescan_hourly_hours, rescan_daily_days, rescan_daily_after_hour,
+            "phase=loop_start version=%s rescan_hourly_window_hours=%s rescan_daily_window_days=%s "
+            "rescan_daily_after_hour=%s auto_update=%s update_check_cycles=%s",
+            AGENT_VERSION,
+            rescan_hourly_hours,
+            rescan_daily_days,
+            rescan_daily_after_hour,
+            bool(getattr(self.cfg.runtime, "auto_update", True)),
+            update_every,
         )
 
         while True:
-# Default: um dataset com falha não mata o restante do ciclo (dados “faltando”
-            # no sistema vinham do abort em clientes/comprovantes noop).
+            cycle_index += 1
+            # Default: um dataset com falha não mata o restante do ciclo.
             try:
-                # --- Normal incremental cycle ---
-                self.run_once(only_dataset=only_dataset, continue_on_error=True)
+                self.run_once(
+                    only_dataset=only_dataset,
+                    continue_on_error=True,
+                    cycle_index=None if only_dataset else cycle_index,
+                )
             except Exception as exc:  # noqa: PERF203
                 self.logger.exception("phase=loop_error error=%s", str(exc)[:500])
+
+            if cycle_index == 1 or (cycle_index % update_every) == 0:
+                try:
+                    from agent.update import check_and_apply_update
+
+                    check_and_apply_update(
+                        api_base_url=self.cfg.api.base_url,
+                        ingest_key=self.cfg.api.ingest_key,
+                        logger=self.logger,
+                        auto_update=bool(getattr(self.cfg.runtime, "auto_update", True)),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning("phase=update_check_error error=%s", str(exc)[:200])
 
             now = datetime.now()
             current_hour = now.hour

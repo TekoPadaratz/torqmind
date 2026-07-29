@@ -120,8 +120,11 @@ class TorqMindSink:
         include_content_type: bool = True,
         idempotency_key: str = "",
     ) -> Dict[str, str]:
+        from agent import __version__ as agent_version
+
         headers = {
             "Accept": "application/json",
+            "X-Agent-Version": str(agent_version),
         }
         if include_content_type:
             headers["Content-Type"] = "application/x-ndjson"
