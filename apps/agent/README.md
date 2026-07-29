@@ -240,8 +240,8 @@ com ranking de tabelas candidatas e amostra `TOP 5`.
 
 Se a coluna de watermark for `varchar/nvarchar`, o agent aplica:
 
-1. `TRY_CONVERT(datetime2, <col>, 121)` (ISO)
-2. fallback para `TRY_CONVERT(datetime2, <col>, 103)` quando houver watermark e a primeira estratégia retornar 0 linhas.
+1. `CONVERT(datetime2, <col>, 121)` com guarda `ISDATE` (compatível SQL Server 2008 R2; sem `TRY_CONVERT`)
+2. fallback para style `103` quando houver watermark e a primeira estratégia retornar 0 linhas.
 
 Você também pode fixar por dataset:
 

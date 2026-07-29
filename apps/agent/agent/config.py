@@ -22,10 +22,15 @@ FULL_REFRESH_LAST_RUN_KEY = "last_full_refresh_at"
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
 WATERMARK_ALIAS = "TORQMIND_WATERMARK"
 LEGACY_SENTINEL_DATETIME_SQL = "1900-01-01T00:00:00"
-# TRY_CONVERT evita o CASE+LIKE '%[^0-9]%' (não-sargável) que forçava scan/nested-loop
-# monstro em rescan de 7 dias e travava o agent por dezenas de minutos sem erro.
+# Join FORMAS↔COMPROVANTES por REFERENCIA numérica.
+# NÃO usar TRY_CONVERT: vários Xpert ainda rodam SQL Server 2008 R2 (sem TRY_*).
+# CASE+LIKE é mais caro que TRY_CONVERT, mas é o que funciona nesses postos.
 FORMAS_PGTO_COMPROVANTES_REFERENCE_EXPR = (
-    "TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(varchar(64), f.ID_REFERENCIA))), ''))"
+    "CASE "
+    "WHEN NULLIF(LTRIM(RTRIM(CONVERT(varchar(64), f.ID_REFERENCIA))), '') IS NULL THEN NULL "
+    "WHEN LTRIM(RTRIM(CONVERT(varchar(64), f.ID_REFERENCIA))) LIKE '%[^0-9]%' THEN NULL "
+    "ELSE CONVERT(int, LTRIM(RTRIM(CONVERT(varchar(64), f.ID_REFERENCIA)))) "
+    "END"
 )
 
 

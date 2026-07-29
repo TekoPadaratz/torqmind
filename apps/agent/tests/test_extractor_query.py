@@ -62,8 +62,10 @@ class TestExtractorQuery(unittest.TestCase):
             watermark_type_detected="text",
             watermark_style=121,
         )
-        self.assertIn("TRY_CONVERT(datetime2, DATAREPL, 121)", plan.sql)
-        self.assertEqual(plan.query_mode, "try_convert")
+        self.assertIn("CONVERT(datetime2, DATAREPL, 121)", plan.sql)
+        self.assertIn("ISDATE(", plan.sql)
+        self.assertNotIn("TRY_CONVERT", plan.sql)
+        self.assertEqual(plan.query_mode, "convert")
         self.assertEqual(plan.watermark_style, 121)
 
     def test_nfe_query_uses_data_only_for_event_date_and_watermark(self):

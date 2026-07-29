@@ -309,7 +309,13 @@ class SQLServerExtractor(BaseExtractor):
         return normalized
 
     def _legacy_text_watermark_expr(self, base_wm_expr: str, style: int) -> str:
-        return self._clean_query(f"TRY_CONVERT(datetime2, {base_wm_expr}, {int(style)})")
+        # SQL Server 2008 R2 não tem TRY_CONVERT (só 2012+). ISDATE+CONVERT é o fallback.
+        return self._clean_query(
+            "CASE WHEN ISDATE(CONVERT(varchar(64), "
+            f"{base_wm_expr})) = 1 "
+            f"THEN CONVERT(datetime2, {base_wm_expr}, {int(style)}) "
+            "ELSE NULL END"
+        )
 
     @staticmethod
     def _apply_row_aliases(ds_cfg: Dict[str, Any], row: Dict[str, Any]) -> None:
@@ -541,7 +547,7 @@ class SQLServerExtractor(BaseExtractor):
         if watermark_type_detected == "text":
             style = watermark_style or 121
             wm_expr = self._legacy_text_watermark_expr(base_wm_expr, style)
-            query_mode = "try_convert"
+            query_mode = "convert"
         else:
             style = None
         if not event_date_expr:
