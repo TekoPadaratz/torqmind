@@ -23,11 +23,7 @@ class TestEncryptedConfig(unittest.TestCase):
         self.assertFalse(raw["sqlserver"]["trust_server_certificate"])
 
     def test_full_refresh_datasets_get_default_throttle_interval(self):
-        raw = build_default_raw_config()
-        estoque = raw["datasets"]["estoque"]
-        self.assertTrue(estoque.get("full_refresh"))
-        # Defaults are applied at merge/load time; build_default copies DEFAULT_DATASETS raw.
-        # Simulate merge via load path with minimal yaml.
+        # Defaults are applied at merge/load time; build_default only stores enabled toggles.
         with tempfile.TemporaryDirectory() as td:
             yaml_path = Path(td) / "config.local.yaml"
             yaml_path.write_text(
@@ -44,6 +40,7 @@ api:
                 encoding="utf-8",
             )
             cfg = load_config(str(yaml_path))
+        self.assertTrue(cfg.datasets["estoque"].get("full_refresh"))
         self.assertEqual(
             int(cfg.datasets["estoque"].get("full_refresh_min_interval_seconds")),
             DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS,
@@ -145,6 +142,39 @@ runtime:
             with patch("agent.secrets._protect_data", side_effect=lambda value: b"enc:" + value):
                 with self.assertRaises(AgentConfigError):
                     save_encrypted_config(target, raw)
+
+    def test_stale_dataset_query_in_config_does_not_override_builtin_sql(self):
+        """config.enc from an older build must not keep TRY_CONVERT after exe upgrade."""
+        with tempfile.TemporaryDirectory() as td:
+            yaml_path = Path(td) / "config.local.yaml"
+            yaml_path.write_text(
+                """
+sqlserver:
+  server: sql.internal
+  database: torq
+  user: sa
+  password: x
+api:
+  base_url: https://api.example.com
+  ingest_key: k
+datasets:
+  formas_pgto_comprovantes:
+    enabled: true
+    query: "SELECT 1 AS broken WHERE TRY_CONVERT(int, '1') = 1"
+""",
+                encoding="utf-8",
+            )
+            cfg = load_config(str(yaml_path))
+        query = str(cfg.datasets["formas_pgto_comprovantes"].get("query") or "")
+        self.assertNotIn("TRY_CONVERT", query)
+        self.assertIn("FORMAS_PGTO_COMPROVANTES", query.upper())
+        self.assertIn("CASE", query.upper())
+
+    def test_build_default_raw_config_does_not_embed_dataset_sql(self):
+        raw = build_default_raw_config()
+        formas = raw["datasets"]["formas_pgto_comprovantes"]
+        self.assertIn("enabled", formas)
+        self.assertNotIn("query", formas)
 
 
 if __name__ == "__main__":
