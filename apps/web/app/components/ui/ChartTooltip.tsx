@@ -1,7 +1,5 @@
 'use client';
 
-import type { TooltipProps } from 'recharts';
-
 type PayloadItem = {
   name?: string;
   value?: number | string;
@@ -10,7 +8,10 @@ type PayloadItem = {
   payload?: Record<string, unknown>;
 };
 
-type Props = TooltipProps<number, string> & {
+type Props = {
+  active?: boolean;
+  payload?: PayloadItem[];
+  label?: string | number;
   valueFormatter?: (value: number | string, name: string, item: PayloadItem) => string;
   labelFormatter?: (label: string | number) => string;
 };

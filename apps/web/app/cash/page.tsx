@@ -83,15 +83,26 @@ export default function CashPage() {
   const dreSummary = data?.dre_summary || {};
   const paymentMix = historical?.payment_mix || [];
   const commercialByDay = commercial?.by_day || [];
+  const isOperationalTurno = (item: any) => {
+    const idTurno = Number(item?.id_turno || 0);
+    if (!Number.isFinite(idTurno) || idTurno <= 0) return false;
+    const tv = Number(item?.turno_value);
+    if (Number.isFinite(tv) && tv >= 1) return true;
+    const label = String(item?.turno_label || "").trim().toLowerCase();
+    if (!label || label.includes("não resolvido") || label.includes("nao resolvido")) {
+      return false;
+    }
+    if (label.includes("caixa geral")) return false;
+    return /turno\s*[1-9]\d*/.test(label) || (Number.isFinite(Number(label)) && Number(label) >= 1);
+  };
+
   const topTurnos = (commercial?.top_turnos || [])
-    .filter((item: any) => Number(item?.id_turno || 0) > 0)
+    .filter(isOperationalTurno)
     .slice(0, 15);
   const openBoxes = useMemo(
     () =>
       sortGridRows(
-        (liveNow?.open_boxes || data?.open_boxes || []).filter(
-          (item: any) => Number(item?.id_turno || 0) > 0,
-        ),
+        (liveNow?.open_boxes || data?.open_boxes || []).filter(isOperationalTurno),
         (i: any) => ({
           filial: i.filial_label ?? i.id_filial,
           data: i.abertura_ts,
@@ -100,7 +111,7 @@ export default function CashPage() {
       ),
     [liveNow?.open_boxes, data?.open_boxes],
   );
-  const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
+  const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter(isOperationalTurno);
   const alerts = liveNow?.alerts || data?.alerts || [];
   const inutilizacoes = data?.inutilizacoes || {};
   const inutItems = useMemo(

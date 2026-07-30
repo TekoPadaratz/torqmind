@@ -1306,6 +1306,29 @@ def payments_overview(
 # CASH / CAIXA
 # ================================================================
 
+def _operational_turno_numero(turno_value: Any) -> Optional[int]:
+    """Número operacional do turno (1..N). 0/vazio/nulo = caixa geral / inválido."""
+    raw = str(turno_value or "").strip()
+    if not raw or raw == "0":
+        return None
+    if raw.isdigit():
+        n = int(raw)
+        return n if n >= 1 else None
+    # "Turno 3"
+    parts = raw.lower().replace("turno", "").strip().split()
+    for part in parts:
+        if part.isdigit() and int(part) >= 1:
+            return int(part)
+    return None
+
+
+def _is_operational_turno_row(row: Dict[str, Any]) -> bool:
+    """Rankings/listas de caixa nunca incluem turno 0, nulo ou não resolvido."""
+    if _to_int(row.get("id_turno")) <= 0:
+        return False
+    return _operational_turno_numero(row.get("turno_value")) is not None
+
+
 def _enrich_open_turno(
     t: Dict[str, Any],
     filial_names: Dict[int, str],
@@ -1329,6 +1352,8 @@ def _enrich_open_turno(
         if id_filial is not None and id_turno is not None
         else None
     )
+    if turno_value is None and t.get("turno_value") is not None:
+        turno_value = str(t.get("turno_value") or "").strip() or None
     usuario_nome = str(t.get("nome_operador") or "").strip()
     if not usuario_nome and operator_names and id_filial is not None and id_usuario:
         usuario_nome = str(operator_names.get((id_filial, id_usuario)) or "").strip()
@@ -1339,12 +1364,14 @@ def _enrich_open_turno(
             horas_aberto = round((datetime.now(timezone.utc) - ts.replace(tzinfo=timezone.utc)).total_seconds() / 3600, 1)
         except Exception:
             pass
+    op_n = _operational_turno_numero(turno_value)
+    turno_label = f"Turno {op_n}" if op_n is not None else _turno_label(turno_value, id_turno)
     return {
         **t,
         "filial_nome": filial_nome,
         "filial_label": _filial_label(id_filial, filial_nome),
-        "turno_value": turno_value,
-        "turno_label": _turno_label(turno_value, id_turno),
+        "turno_value": str(op_n) if op_n is not None else None,
+        "turno_label": turno_label,
         "usuario_nome": usuario_nome,
         "usuario_label": _cash_operator_label(usuario_nome, t.get("id_usuario")),
         "total_vendas": fat,
@@ -1430,16 +1457,55 @@ def cash_overview(
     sales_date_range = _date_range_filter(dt_ini, dt_fim, "c.data_key") if dt_ini and dt_fim else ""
     params = {"id_empresa": id_empresa}
 
-    # Open shifts
+    # Open shifts — só turnos operacionais (TURNO >= 1). Caixa geral (0) fora.
     turnos_raw = query_dict(f"""
-        SELECT id_filial, id_turno, id_usuario, nome_operador,
-               abertura_ts, fechamento_ts, is_aberto,
-               faturamento_turno, qtd_vendas_turno
-        FROM {MART_RT_DB}.cash_overview_rt FINAL
-        WHERE id_empresa = {{id_empresa:Int32}} {filial}
-          AND is_aberto = 1
-                    AND id_turno > 0
-        ORDER BY abertura_ts DESC
+        WITH open_shifts AS (
+            SELECT id_filial, id_turno, id_usuario, nome_operador,
+                   abertura_ts, fechamento_ts, is_aberto,
+                   faturamento_turno, qtd_vendas_turno
+            FROM {MART_RT_DB}.cash_overview_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND is_aberto = 1
+              AND id_turno > 0
+        ), turn_ops AS (
+            SELECT
+                id_filial,
+                id_turno,
+                argMax(
+                    coalesce(
+                        nullIf(JSONExtractString(payload, 'TURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NO_TURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NUMTURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NR_TURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NROTURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'TURNO_CAIXA'), ''),
+                        nullIf(JSONExtractString(payload, 'TURNOCAIXA'), '')
+                    ),
+                    source_ts_ms
+                ) AS turno_value
+            FROM {CURRENT_DB}.stg_turnos FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND is_deleted = 0
+              AND id_turno > 0
+            GROUP BY id_filial, id_turno
+            HAVING toInt32OrZero(turno_value) >= 1
+        )
+        SELECT
+            s.id_filial AS id_filial,
+            s.id_turno AS id_turno,
+            s.id_usuario AS id_usuario,
+            s.nome_operador AS nome_operador,
+            s.abertura_ts AS abertura_ts,
+            s.fechamento_ts AS fechamento_ts,
+            s.is_aberto AS is_aberto,
+            s.faturamento_turno AS faturamento_turno,
+            s.qtd_vendas_turno AS qtd_vendas_turno,
+            o.turno_value AS turno_value
+        FROM open_shifts AS s
+        INNER JOIN turn_ops AS o
+          ON o.id_filial = s.id_filial
+         AND o.id_turno = s.id_turno
+        ORDER BY s.abertura_ts DESC
         LIMIT 50
     """, parameters=params)
 
@@ -1608,12 +1674,20 @@ def cash_overview(
     operator_names = _load_operator_names(id_empresa, label_source_rows)
 
     turnos = [
-        _enrich_open_turno(t, filial_names, turno_values, operator_names)
-        for t in turnos_raw
+        row
+        for row in (
+            _enrich_open_turno(t, filial_names, turno_values, operator_names)
+            for t in turnos_raw
+        )
+        if _is_operational_turno_row(row)
     ]
     all_turnos = [
-        _enrich_open_turno(t, filial_names, turno_values, operator_names)
-        for t in all_turnos_raw
+        row
+        for row in (
+            _enrich_open_turno(t, filial_names, turno_values, operator_names)
+            for t in all_turnos_raw
+        )
+        if _is_operational_turno_row(row)
     ]
 
     # Commercial KPIs from sales_daily_rt

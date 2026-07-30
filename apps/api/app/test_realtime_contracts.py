@@ -348,7 +348,13 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
     def test_cash_uses_real_labels_when_current_dimensions_exist(self, mock_qd: MagicMock):
         def side_effect(query: str, parameters=None):
             q = " ".join(query.lower().split())
-            if "from torqmind_mart_rt.cash_overview_rt" in q and "order by abertura_ts desc" in q:
+            if "open_shifts as" in q or (
+                "from torqmind_mart_rt.cash_overview_rt" in q
+                and "is_aberto = 1" in q
+                and "order by" in q
+                and "abertura_ts" in q
+                and "turn_sales" not in q
+            ):
                 return [{
                     "id_filial": 10169,
                     "id_turno": 7134,
@@ -359,6 +365,7 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
                     "is_aberto": 1,
                     "faturamento_turno": Decimal("950.00"),
                     "qtd_vendas_turno": 12,
+                    "turno_value": "3",
                 }]
             if "with turn_sales as" in q and "from torqmind_current.stg_comprovantes_slim as c final" in q:
                 self.assertIn("and c.id_turno > 0", q)

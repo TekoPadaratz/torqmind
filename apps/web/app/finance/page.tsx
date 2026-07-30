@@ -249,12 +249,9 @@ export default function FinancePage() {
                     <XAxis dataKey="data" stroke="var(--muted)" />
                     <YAxis stroke="var(--muted)" tickFormatter={formatCurrency} width={112} />
                     <Tooltip
-                      content={(props) => (
-                        <ChartTooltip
-                          {...props}
-                          valueFormatter={(v) => formatCurrency(v)}
-                        />
-                      )}
+                      content={
+                        <ChartTooltip valueFormatter={(v) => formatCurrency(v)} />
+                      }
                     />
                     <Bar dataKey="valor" name="Recebido" fill="#60a5fa" radius={[6, 6, 0, 0]} />
                   </BarChart>
@@ -286,12 +283,9 @@ export default function FinancePage() {
                       ))}
                     </Pie>
                     <Tooltip
-                      content={(props) => (
-                        <ChartTooltip
-                          {...props}
-                          valueFormatter={(v) => formatCurrency(v)}
-                        />
-                      )}
+                      content={
+                        <ChartTooltip valueFormatter={(v) => formatCurrency(v)} />
+                      }
                     />
                   </PieChart>
                 </ResponsiveContainer>
