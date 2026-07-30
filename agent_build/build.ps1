@@ -13,8 +13,11 @@ Write-Host ""
 # --- Step 1: Dependencies ---
 Write-Host "Instalando dependencias..." -ForegroundColor Yellow
 
-pip install -r apps/agent/requirements.txt
-pip install pyinstaller
+# Sempre via `python -m` para usar o mesmo interpretador (PATH do Scripts
+# do Windows costuma não ter pyinstaller.exe após pip install).
+python -m pip install -r apps/agent/requirements.txt
+python -m pip install pyinstaller
+if ($LASTEXITCODE -ne 0) { Write-Host "FALHA: pip install" -ForegroundColor Red; exit 1 }
 
 # --- Step 2: Compile check ---
 Write-Host "Validando compilacao..." -ForegroundColor Yellow
@@ -28,7 +31,7 @@ python -c "import sys; sys.path.insert(0,'apps/agent'); from agent import config
 # --- Step 3: PyInstaller build ---
 Write-Host "Compilando agent com PyInstaller..." -ForegroundColor Yellow
 
-pyinstaller `
+python -m PyInstaller `
   --onefile `
   --clean `
   --noconfirm `
