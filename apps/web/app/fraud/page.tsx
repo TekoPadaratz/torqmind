@@ -103,11 +103,11 @@ function scoreLevelLabel(level: string) {
 export default function FraudPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
-  // Default "Todas": suspeitas dependem do join movlcto; com sync atrasado o filtro
-  // "Só suspeitas" esconde o período inteiro (gap jul/2026+).
+  // Default "Todas": em muitos dias (ex. hoje) há trocas/créditos normais e 0 suspeitas —
+  // "Só suspeitas" zera a grade e parece "sem dado". Usuário ainda pode filtrar suspeitas.
   const [trocaSoSuspeitas, setTrocaSoSuspeitas] = useState(false);
   const [trocaFormaNova, setTrocaFormaNova] = useState<"todos" | "prazo" | "cheque_pre">("todos");
-  const [creditoRisco, setCreditoRisco] = useState<"suspeitas" | "normais" | "todas">("suspeitas");
+  const [creditoRisco, setCreditoRisco] = useState<"suspeitas" | "normais" | "todas">("todas");
   const [creditoUsoQuery, setCreditoUsoQuery] = useState("");
   const [creditoPage, setCreditoPage] = useState(1);
   const [creditoExpandido, setCreditoExpandido] = useState<string | null>(null);
@@ -138,9 +138,9 @@ export default function FraudPage() {
   };
 
   useEffect(() => {
-    setTrocaSoSuspeitas(true);
+    setTrocaSoSuspeitas(false);
     setTrocaFormaNova("todos");
-    setCreditoRisco("suspeitas");
+    setCreditoRisco("todas");
     setCreditoPage(1);
     setTrocaPage(1);
     setCancelPage(1);

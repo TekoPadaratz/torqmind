@@ -1309,15 +1309,29 @@ def fraud_overview(
                 limit=500, risco=credito_risco or "suspeitas", cliente_q=credito_q,
             )
             # Payment-form-change antifraud: sensitive — only MASTER/OWNER (never manager/seller).
+            # claims["role"] já vem como analytics role (MASTER/OWNER) via login.
+            # Uma só leitura CH (all) → KPIs + lista filtrada; evita 2× join pesado (~2–4s).
             if role in ("MASTER", "OWNER"):
-                troca_forma_pgto = repos_mart.fraud_troca_forma_pgto(
+                troca_all = repos_mart.fraud_troca_forma_pgto(
                     role, tenant, filial, dt_ini, dt_fim,
-                    only_suspeita=troca_only_suspeita, limit=200,
+                    only_suspeita=False, limit=1000,
                     forma_nova=troca_forma_nova or "todos",
                 )
-                troca_forma_pgto_totais = repos_mart.fraud_troca_forma_pgto_kpis(
-                    role, tenant, filial, dt_ini, dt_fim,
-                    forma_nova=troca_forma_nova or "todos",
+                troca_suspeitas = [
+                    r for r in troca_all if int(r.get("is_suspeita") or 0) == 1
+                ]
+                troca_forma_pgto_totais = {
+                    "suspeitas_qtd": len(troca_suspeitas),
+                    "suspeitas_valor": float(
+                        sum(float(r.get("valor") or 0) for r in troca_suspeitas)
+                    ),
+                    "todas_qtd": len(troca_all),
+                    "todas_valor": float(
+                        sum(float(r.get("valor") or 0) for r in troca_all)
+                    ),
+                }
+                troca_forma_pgto = (
+                    troca_suspeitas[:200] if troca_only_suspeita else troca_all[:200]
                 )
             try:
                 devolucao_entrada = repos_mart.fraud_devolucao_entrada(

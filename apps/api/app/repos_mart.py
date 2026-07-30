@@ -3589,8 +3589,8 @@ def fraud_lancamentos_creditos(
             """,
             params_ch,
         )
-        if not rows and float(srow.get("injecoes_qtd") or 0) == 0:
-            raise RuntimeError("CH empty — fallback PG")
+        # Vazio no período (só saídas / sem injeção / filtro suspeitas) é válido —
+        # NÃO cair no PG: isso gera 10–15s e números divergentes do CH.
         for r in rows:
             fid = int(r.get("id_filial") or 0)
             filial_nome_map[fid] = apelido_for(fid)
