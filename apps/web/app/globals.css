@@ -738,6 +738,32 @@ body.product-shell .container {
   flex-wrap: wrap;
 }
 
+.themeToggleBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+.themeToggleIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-copper);
+}
+.themeToggleLabel {
+  font-size: 13px;
+  font-weight: 600;
+}
+@media (max-width: 900px) {
+  .themeToggleLabel {
+    display: none;
+  }
+  .themeToggleBtn {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+
 .productSidebar {
   position: fixed;
   top: calc(var(--product-nav-h, 100px) + 8px);

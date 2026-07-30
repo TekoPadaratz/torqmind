@@ -24,6 +24,7 @@ import {
   hasExplicitBranchSelection,
   readScopeFromSearch,
 } from '../lib/product-scope.mjs';
+import ThemeToggleButton from './ThemeToggleButton';
 
 type BranchOption = {
   id_filial: number;
@@ -545,6 +546,7 @@ export default function AppNav({
           </nav>
 
           <div className="productTopActions">
+            <ThemeToggleButton />
             <span className="pill">Alertas {unread}</span>
             {currentUserLabel ? <div className="pill productUserPill">{currentUserLabel}</div> : null}
             {session?.access?.platform ? (
@@ -552,12 +554,12 @@ export default function AppNav({
                 Plataforma
               </Link>
             ) : null}
-                        <Link className="btn" href="/settings">
-                          Configurações
-                        </Link>
-                        <Link className="btn" href="/security">
-                          Minha Segurança
-                        </Link>
+            <Link className="btn" href="/settings">
+              Configurações
+            </Link>
+            <Link className="btn" href="/security">
+              Minha Segurança
+            </Link>
             <button className="btn" onClick={onLogout} aria-label="Sair da conta">
               Sair
             </button>
