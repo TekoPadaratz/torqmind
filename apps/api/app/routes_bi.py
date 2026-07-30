@@ -1837,7 +1837,7 @@ def finance_titles(
     q: Optional[str] = Query(None, max_length=160),
     preset: Optional[str] = Query(None, description="vencidos | a_vencer_7d | a_vencer_mes | a_vencer"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(30, ge=1, le=200),
+    page_size: int = Query(20, ge=1, le=200),
     refresh: bool = Query(False, description="Reservado para publicação operacional; a leitura não consulta STG."),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),

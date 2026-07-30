@@ -2602,6 +2602,31 @@ def finance_kpis(
     }
 
 
+def _finance_titles_filial_sort_expr(id_empresa: int) -> str:
+    """ORDER BY alfabético pelo apelido (fallback: Filial {id})."""
+    from app.filial_apelido import load_apelido_map
+
+    mapa = load_apelido_map(int(id_empresa)) or {}
+    if not mapa:
+        return "toString(id_filial)"
+    ids: List[int] = []
+    labels: List[str] = []
+    for fid, apelido in sorted(mapa.items(), key=lambda item: str(item[1]).casefold()):
+        label = str(apelido or "").strip().replace("\\", "\\\\").replace("'", "\\'")
+        if not label:
+            continue
+        ids.append(int(fid))
+        labels.append(f"'{label}'")
+    if not ids:
+        return "toString(id_filial)"
+    id_list = ", ".join(str(i) for i in ids)
+    label_list = ", ".join(labels)
+    return (
+        f"transform(id_filial, [{id_list}], [{label_list}], "
+        f"concat('Filial ', toString(id_filial)))"
+    )
+
+
 def finance_titles_overview(
     role: str,
     id_empresa: int,
@@ -2612,7 +2637,7 @@ def finance_titles_overview(
     q: Optional[str] = None,
     preset: Optional[str] = None,
     page: int = 1,
-    page_size: int = 30,
+    page_size: int = 20,
     refresh: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
@@ -2622,6 +2647,7 @@ def finance_titles_overview(
         raise ValueError("tipo deve ser 0 (pagar) ou 1 (receber)")
     page = max(1, int(page))
     page_size = max(1, min(int(page_size), 200))
+    filial_sort = _finance_titles_filial_sort_expr(int(id_empresa))
     filial = _branch_clause("id_filial", id_filial)
     params: Dict[str, Any] = {
         "id_empresa": int(id_empresa),
@@ -2706,7 +2732,7 @@ def finance_titles_overview(
           dt_lancamento, dt_vencimento, valor, valor_pago, valor_aberto, status
         FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
         WHERE {where}
-        ORDER BY id_filial ASC, dt_lancamento DESC, dt_vencimento DESC, entidade_nome ASC, id_titulo ASC
+        ORDER BY {filial_sort} ASC, dt_vencimento ASC, id_titulo ASC
         LIMIT {page_size} OFFSET {offset}
     """, parameters=params)
     for row in rows:

@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import EmptyState from '../components/ui/EmptyState';
-import GridPager, { GRID_PAGE_SIZE } from '../components/ui/GridPager';
+import GridPager from '../components/ui/GridPager';
 import GridSearchInput from '../components/ui/GridSearchInput';
 import PresetFilterChips from '../components/ui/PresetFilterChips';
 import { formatCurrency, formatDateOnly } from '../lib/format';
 import { apiGet } from '../lib/api';
 import { extractApiError } from '../lib/errors';
 import { buildScopeParams, type ScopeQuery } from '../lib/scope';
+
+/** Contas a pagar/receber: 20 por página (pedido operacional). */
+const TITLES_PAGE_SIZE = 20;
 
 type TitleRow = {
   id_filial: number;
@@ -74,7 +77,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
         const params = buildScopeParams(scope);
         params.set('tipo', String(tipo));
         params.set('page', String(page));
-        params.set('page_size', String(GRID_PAGE_SIZE));
+        params.set('page_size', String(TITLES_PAGE_SIZE));
         if (debouncedQ) params.set('q', debouncedQ);
         if (preset) params.set('preset', preset);
         const payload = await apiGet(`/bi/finance/titles?${params.toString()}`, {
@@ -95,7 +98,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
 
   const items = data?.items || [];
   const total = Number(data?.total || 0);
-  const totalPages = Math.max(1, Math.ceil(total / GRID_PAGE_SIZE) || 1);
+  const totalPages = Math.max(1, Math.ceil(total / TITLES_PAGE_SIZE) || 1);
   const safePage = Math.min(page, totalPages);
   const pageTotals = data?.page_totals || {};
   const grandTotals = data?.totals || {};
@@ -184,7 +187,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
                   </tr>
                 ))}
               </tbody>
-              <tfoot>
+              <tfoot className="financeTitlesFoot">
                 <tr>
                   <td colSpan={4} style={{ fontWeight: 600 }}>
                     Total da página
@@ -216,7 +219,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
             page={safePage}
             totalPages={totalPages}
             total={total}
-            pageSize={GRID_PAGE_SIZE}
+            pageSize={TITLES_PAGE_SIZE}
             onPrev={() => setPage((p) => Math.max(1, p - 1))}
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
           />

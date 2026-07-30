@@ -718,17 +718,40 @@ export default function AppNav({
               </div>
             ) : null}
             {currentUserLabel ? <div className="pill productUserPill">{currentUserLabel}</div> : null}
-            {session?.access?.platform ? (
-              <Link className="btn" href="/platform">
-                Plataforma
+
+            <div className="productTopSecondary" aria-label="Atalhos da conta">
+              {session?.access?.platform ? (
+                <Link className="btn productSecondaryBtn" href="/platform">
+                  Plataforma
+                </Link>
+              ) : null}
+              <Link className="btn productSecondaryBtn" href="/settings">
+                Configurações
               </Link>
-            ) : null}
-            <Link className="btn" href="/settings">
-              Configurações
-            </Link>
-            <Link className="btn" href="/security">
-              Minha Segurança
-            </Link>
+              <Link className="btn productSecondaryBtn" href="/security">
+                Minha Segurança
+              </Link>
+            </div>
+
+            <details className="productAccountMenu">
+              <summary className="btn productAccountMenuSummary" aria-label="Menu da conta">
+                Conta
+              </summary>
+              <div className="productAccountMenuPanel" role="menu">
+                {session?.access?.platform ? (
+                  <Link className="productAccountMenuLink" href="/platform" role="menuitem">
+                    Plataforma
+                  </Link>
+                ) : null}
+                <Link className="productAccountMenuLink" href="/settings" role="menuitem">
+                  Configurações
+                </Link>
+                <Link className="productAccountMenuLink" href="/security" role="menuitem">
+                  Minha Segurança
+                </Link>
+              </div>
+            </details>
+
             <button className="btn" onClick={onLogout} aria-label="Sair da conta">
               Sair
             </button>

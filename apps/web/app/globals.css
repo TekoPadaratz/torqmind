@@ -674,8 +674,8 @@ body.product-shell .container {
 
 .productTopBar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 18px;
+  grid-template-columns: minmax(160px, auto) minmax(0, 1fr) auto;
+  gap: 14px;
   align-items: center;
   padding: 16px 18px;
   border: 1px solid var(--chrome-border);
@@ -700,10 +700,17 @@ body.product-shell .container {
 
 .productTopLinks {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.productTopLinks::-webkit-scrollbar {
+  display: none;
 }
 
 .productTopLink {
@@ -717,6 +724,8 @@ body.product-shell .container {
   background: var(--chrome-item-bg);
   color: var(--text);
   text-decoration: none;
+  white-space: nowrap;
+  flex: 0 0 auto;
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 
@@ -736,7 +745,96 @@ body.product-shell .container {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.productTopSecondary {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.productSecondaryBtn {
+  white-space: nowrap;
+}
+.productAccountMenu {
+  display: none;
+  position: relative;
+}
+.productAccountMenuSummary {
+  list-style: none;
+  cursor: pointer;
+}
+.productAccountMenuSummary::-webkit-details-marker {
+  display: none;
+}
+.productAccountMenuPanel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 180px;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid var(--chrome-border);
+  background: var(--chrome-face);
+  box-shadow: var(--chrome-shadow);
+  z-index: 40;
+}
+.productAccountMenuLink {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+}
+.productAccountMenuLink:hover {
+  background: rgba(184, 115, 51, 0.12);
+}
+
+/* Notebooks ~1366: comprime atalhos secundários, menus principais ficam na linha */
+@media (max-width: 1480px) {
+  .productTopTitle {
+    font-size: 16px;
+  }
+  .productEyebrow {
+    font-size: 10px;
+  }
+  .productTopSecondary {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .productSecondaryBtn {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 11px;
+    border-radius: 10px;
+  }
+  .productUserPill {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 1180px) {
+  .productTopSecondary {
+    display: none;
+  }
+  .productAccountMenu {
+    display: inline-block;
+  }
+  .productTopLink {
+    min-height: 38px;
+    padding: 0 12px;
+    font-size: 13px;
+  }
 }
 
 .themeToggleBtn {
@@ -1125,12 +1223,19 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
     display: none;
   }
 
+  /* Mantém menus principais em linha; não empilha Comercial/Financeiro/Operação */
   .productTopBar {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(120px, auto) minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 12px 14px;
   }
 
   .productTopLinks,
   .productTopActions {
+    justify-content: flex-start;
+  }
+
+  .productTopLinks {
     justify-content: flex-start;
   }
 
@@ -1150,6 +1255,31 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
     padding: 12px 12px 0;
   }
 
+  .productTopBar {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .productTopLinks {
+    width: 100%;
+    justify-content: flex-start;
+    padding-bottom: 2px;
+  }
+
+  .productTopActions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .productBrandInline .productEyebrow {
+    display: none;
+  }
+
+  .productTopTitle {
+    font-size: 15px;
+  }
+
   .productSidebar {
     margin: 12px 12px 0;
   }
@@ -1163,7 +1293,7 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   }
 
   .productTopLink {
-    min-height: 38px;
+    min-height: 36px;
     padding: 0 12px;
     font-size: 13px;
   }
@@ -1487,6 +1617,14 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   cursor: not-allowed;
 }
 
+.financeTitlesFoot td {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-1, var(--chrome-face));
+  border-top: 1px solid var(--border);
+  z-index: 1;
+}
+
 /* Chips de filtro pré-programado */
 .presetFilterChips {
   display: flex;
@@ -1562,14 +1700,15 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
 
 /* Tanque visual (estoque) */
 .tankVisual {
-  width: 72px;
-  height: 120px;
+  width: 64px;
+  height: 108px;
   border: 2px solid var(--border);
   border-radius: 10px 10px 14px 14px;
   background: var(--surface-2, var(--surface-1));
   position: relative;
   overflow: hidden;
   margin: 0 auto;
+  flex: 0 0 auto;
 }
 .tankVisual.is-sm {
   width: 44px;
@@ -1602,8 +1741,15 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   text-align: center;
   margin-top: 6px;
   font-size: 11px;
-  max-width: 88px;
-  line-height: 1.25;
+  width: 100%;
+  max-width: 72px;
+  height: 2.6em;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1611,8 +1757,9 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  min-width: 72px;
+  justify-content: flex-start;
+  width: 72px;
+  min-height: 148px;
 }
 .inventoryFilialHead {
   margin-bottom: 12px;
@@ -1623,27 +1770,46 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
 }
 .inventoryFilialBody {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 16px 20px;
   align-items: start;
 }
 .inventoryTankGallery {
   display: grid;
-  grid-template-columns: repeat(4, minmax(56px, 1fr));
-  gap: 10px 8px;
-  justify-items: center;
+  grid-template-columns: repeat(4, 72px);
+  gap: 12px 10px;
+  justify-content: start;
+  align-content: start;
   padding: 4px 2px 8px;
+  width: max-content;
+  max-width: 100%;
 }
 .inventoryFilialGrid {
   min-width: 0;
 }
-@media (max-width: 960px) {
+@media (max-width: 1100px) {
   .inventoryFilialBody {
     grid-template-columns: 1fr;
   }
   .inventoryTankGallery {
-    grid-template-columns: repeat(4, minmax(52px, 1fr));
-    max-width: 320px;
+    grid-template-columns: repeat(4, 72px);
+  }
+}
+@media (max-width: 520px) {
+  .inventoryTankGallery {
+    grid-template-columns: repeat(4, minmax(56px, 1fr));
+    width: 100%;
+  }
+  .tankVisualCell {
+    width: 100%;
+    min-height: 140px;
+  }
+  .tankVisual {
+    width: 56px;
+    height: 96px;
+  }
+  .tankVisualMeta {
+    max-width: 64px;
   }
 }
 
