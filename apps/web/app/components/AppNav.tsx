@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 
-import { apiGet } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 import { clearAuth } from '../lib/auth';
 import { getVisibleBranches, uniqueBranchIds } from '../lib/branch-state.mjs';
 import { buildQuickShortcutRanges, formatBusinessCalendarDate, parseCalendarDate } from '../lib/calendar-date.mjs';
@@ -138,12 +138,12 @@ function branchSelectionLabel(branches: BranchOption[], selectedIds: string[], s
 export default function AppNav({
   title,
   userLabel,
+  initialUnread,
   deferAuxiliaryLoads = false,
   hideScopeOnMobile = false,
 }: {
   title: string;
   userLabel?: string;
-  /** @deprecated Alertas saíram do topo; mantido só por compat de props. */
   initialUnread?: number;
   deferAuxiliaryLoads?: boolean;
   hideScopeOnMobile?: boolean;
@@ -163,6 +163,11 @@ export default function AppNav({
   const [branchSearch, setBranchSearch] = useState('');
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
+  const [unread, setUnread] = useState(initialUnread ?? 0);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [alertsMarking, setAlertsMarking] = useState(false);
+  const [alerts, setAlerts] = useState<any[]>([]);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
   const [navHidden, setNavHidden] = useState(false);
@@ -348,6 +353,77 @@ export default function AppNav({
     activeScope.branch_scope,
     scopeControls.branchLocked,
   ]);
+
+  useEffect(() => {
+    if (typeof initialUnread === 'number') {
+      setUnread(initialUnread);
+    }
+  }, [initialUnread]);
+
+  useEffect(() => {
+    if (typeof initialUnread === 'number') return;
+    let active = true;
+    const loadUnread = async () => {
+      try {
+        const qs = buildScopeSearchParams(activeScope).toString();
+        const response = await apiGet(`/bi/notifications/unread-count${qs ? `?${qs}` : ''}`);
+        if (active) setUnread(Number(response?.unread || 0));
+      } catch {
+        if (active) setUnread(0);
+      }
+    };
+    void loadUnread();
+    return () => {
+      active = false;
+    };
+  }, [activeScope, initialUnread]);
+
+  const loadAlerts = async () => {
+    setAlertsLoading(true);
+    try {
+      const qs = buildScopeSearchParams(activeScope).toString();
+      const response = await apiGet(
+        `/bi/notifications?unread_only=true&limit=100${qs ? `&${qs}` : ''}`,
+      );
+      setAlerts(Array.isArray(response?.items) ? response.items : []);
+      setUnread(Number(response?.unread || 0));
+    } catch {
+      setAlerts([]);
+    } finally {
+      setAlertsLoading(false);
+    }
+  };
+
+  const toggleAlerts = async () => {
+    const next = !alertsOpen;
+    setAlertsOpen(next);
+    if (next) await loadAlerts();
+  };
+
+  const markAlertRead = async (notificationId: number) => {
+    try {
+      const qs = buildScopeSearchParams(activeScope).toString();
+      await apiPost(`/bi/notifications/${notificationId}/read${qs ? `?${qs}` : ''}`, {});
+      setAlerts((prev) => prev.filter((item) => Number(item.id) !== Number(notificationId)));
+      setUnread((prev) => Math.max(0, Number(prev) - 1));
+    } catch {
+      /* keep list */
+    }
+  };
+
+  const markAllAlertsRead = async () => {
+    setAlertsMarking(true);
+    try {
+      const qs = buildScopeSearchParams(activeScope).toString();
+      const response = await apiPost(`/bi/notifications/read-all${qs ? `?${qs}` : ''}`, {});
+      setAlerts([]);
+      setUnread(Number(response?.unread || 0));
+    } catch {
+      /* keep list */
+    } finally {
+      setAlertsMarking(false);
+    }
+  };
 
   useEffect(() => {
     if (!auxiliaryLoadsEnabled) return;
@@ -704,6 +780,61 @@ export default function AppNav({
             >
               {topNavCollapsed ? '☰' : '⌃'}
             </button>
+
+            <div className="alertsMenu">
+              <button
+                type="button"
+                className="pill alertsPill"
+                aria-expanded={alertsOpen}
+                aria-label={unread > 0 ? `Alertas não lidos: ${unread}` : 'Alertas'}
+                onClick={() => void toggleAlerts()}
+              >
+                Alertas{unread > 0 ? ` ${unread}` : ''}
+              </button>
+              {alertsOpen ? (
+                <div className="alertsDropdown" role="dialog" aria-label="Alertas não lidos">
+                  <div className="alertsDropdownHeader">
+                    <div className="alertsDropdownTitle">Não lidos ({unread})</div>
+                    <button
+                      type="button"
+                      className="btn alertsMarkAllBtn"
+                      disabled={alertsMarking || unread <= 0}
+                      onClick={() => void markAllAlertsRead()}
+                    >
+                      {alertsMarking ? 'Marcando…' : 'Ler todos'}
+                    </button>
+                  </div>
+                  {alertsLoading ? (
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Carregando…
+                    </div>
+                  ) : !alerts.length ? (
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      Sem alertas não lidos.
+                    </div>
+                  ) : (
+                    <ul className="alertsList">
+                      {alerts.map((item: any) => (
+                        <li key={item.id || item.notification_id || item.title}>
+                          <button
+                            type="button"
+                            className="alertsListItemBtn"
+                            onClick={() => void markAlertRead(Number(item.id))}
+                            title="Marcar como lido"
+                          >
+                            <strong>{item.title || item.severity || 'Alerta'}</strong>
+                            <span className="muted">
+                              {item.body || item.message || item.detail || ''}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
             {currentUserLabel ? (
               <div className="pill productUserPill" title={currentUserLabel}>
                 {currentUserLabel}

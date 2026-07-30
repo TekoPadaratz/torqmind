@@ -2579,7 +2579,7 @@ def notifications_list(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     unread_only: bool = Query(False),
-    limit: int = Query(30, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=200),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _kiosk=Depends(require_not_kiosk()),
@@ -2590,6 +2590,23 @@ def notifications_list(
         "items": repos_mart.notifications_list(role, tenant, filial, limit=limit, unread_only=unread_only),
         "unread": repos_mart.notifications_unread_count(role, tenant, filial),
     }
+
+
+@router.post("/notifications/read-all")
+def notifications_mark_all_read(
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
+):
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    result = repos_mart.notifications_mark_all_read(role, tenant, filial)
+    unread = repos_mart.notifications_unread_count(role, tenant, filial)
+    return {"ok": True, **result, "unread": unread}
 
 
 @router.post("/notifications/{notification_id}/read")

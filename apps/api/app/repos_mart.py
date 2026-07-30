@@ -9632,7 +9632,7 @@ def notifications_list(
     role: str,
     id_empresa: int,
     id_filial: Optional[int],
-    limit: int = 30,
+    limit: int = 100,
     unread_only: bool = False,
 ) -> List[Dict[str, Any]]:
     where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
@@ -9686,6 +9686,27 @@ def notification_mark_read(
         row = conn.execute(sql, params).fetchone()
         conn.commit()
     return row or {"id": notification_id, "read_at": None}
+
+
+def notifications_mark_all_read(
+    role: str,
+    id_empresa: int,
+    id_filial: Optional[int],
+) -> Dict[str, Any]:
+    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    params = [id_empresa] + branch_params
+    sql = f"""
+      UPDATE app.notifications
+      SET read_at = COALESCE(read_at, now())
+      WHERE id_empresa = %s
+        {where_filial}
+        AND read_at IS NULL
+      RETURNING id
+    """
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        rows = list(conn.execute(sql, params).fetchall())
+        conn.commit()
+    return {"marked": len(rows)}
 
 
 def customers_summary_paginated(

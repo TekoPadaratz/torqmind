@@ -684,6 +684,7 @@ body.product-shell .container {
   color: var(--text);
   box-shadow: var(--chrome-shadow);
   backdrop-filter: blur(18px);
+  overflow: visible;
 }
 
 .productTopTitle {
@@ -705,12 +706,8 @@ body.product-shell .container {
   align-items: center;
   justify-content: center;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-.productTopLinks::-webkit-scrollbar {
-  display: none;
+  /* NÃO usar overflow-x aqui: corta os flyouts (submenus). */
+  overflow: visible;
 }
 
 .productTopLink {
@@ -895,11 +892,11 @@ body.product-shell .container {
   padding: 8px;
   border-radius: 14px;
   border: 1px solid var(--chrome-border);
-  background: var(--chrome-face-sidebar);
-  box-shadow: var(--chrome-shadow);
+  background: var(--option-bg, #12191f);
+  box-shadow: var(--chrome-shadow), 0 12px 40px rgba(0, 0, 0, 0.45);
   display: grid;
   gap: 4px;
-  z-index: 40;
+  z-index: 80;
 }
 
 .productFlyoutLink {
@@ -1171,7 +1168,7 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   .productTopNav {
     position: relative;
     inset: auto;
-    z-index: auto;
+    z-index: 40;
   }
 
   .productTopNav.navHidden {
@@ -1792,28 +1789,83 @@ body.product-shell.topnav-collapsed .container {
   border: 1px solid var(--accent-copper);
   background: var(--accent-copper-soft);
   color: var(--accent-copper);
+  white-space: nowrap;
 }
 .alertsDropdown {
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
-  width: min(360px, 80vw);
-  z-index: 80;
+  width: min(420px, 88vw);
+  z-index: 90;
   padding: 12px;
-  max-height: 360px;
+  max-height: min(420px, 70vh);
   overflow: auto;
+  border: 1px solid var(--chrome-border);
+  border-radius: 14px;
+  background: var(--option-bg, #12191f);
+  color: var(--text);
+  box-shadow: var(--chrome-shadow), 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.alertsDropdownHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.alertsDropdownTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-copper);
+}
+.alertsMarkAllBtn {
+  font-size: 12px;
+  min-height: 30px;
+  padding: 0 10px;
 }
 .alertsList {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 .alertsList li {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   font-size: 13px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--chrome-border);
+  background: rgba(255, 255, 255, 0.03);
+}
+[data-theme="light"] .alertsList li,
+html[data-theme="light"] .alertsList li {
+  background: rgba(0, 0, 0, 0.03);
+}
+.alertsListItemBtn {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.alertsListItemBtn:hover strong {
+  color: var(--accent-copper);
+}
+.alertsList strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.alertsList .muted {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: pre-wrap;
 }
 .topNavReveal {
   position: fixed;
