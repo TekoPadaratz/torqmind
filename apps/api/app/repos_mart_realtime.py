@@ -10,6 +10,7 @@ Feature flag: USE_REALTIME_MARTS=true activates this module.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -2627,6 +2628,94 @@ def _finance_titles_filial_sort_expr(id_empresa: int) -> str:
     )
 
 
+def _finance_titles_search_variants(raw: str) -> List[str]:
+    """Expande q para casar digitação BR (data dd/mm e valor 1.234,56)."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    variants: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        v = (value or "").strip()
+        if not v or v in seen:
+            return
+        seen.add(v)
+        variants.append(v)
+
+    _add(text)
+    compact = re.sub(r"\s+", "", text)
+    _add(compact)
+
+    # Valor BR: 1.234,56 → 1234.56 / 1234,56; 1234,56 → 1234.56
+    if re.fullmatch(r"[\d.,]+", compact or ""):
+        if "," in compact and "." in compact:
+            as_dot = compact.replace(".", "").replace(",", ".")
+            _add(as_dot)
+            _add(as_dot.replace(".", ","))
+        elif "," in compact:
+            _add(compact.replace(",", "."))
+        elif "." in compact:
+            _add(compact.replace(".", ","))
+            # 1.234 pode ser milhar BR sem decimais
+            if re.fullmatch(r"\d{1,3}(\.\d{3})+", compact):
+                _add(compact.replace(".", ""))
+
+    # Data ISO colada → dd/mm/aaaa (e vice-versa já no haystack)
+    iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", compact or "")
+    if iso:
+        y, m, d = iso.group(1), iso.group(2), iso.group(3)
+        _add(f"{d}/{m}/{y}")
+        _add(f"{d}/{m}")
+
+    br = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", compact or "")
+    if br:
+        d, m, y = br.group(1).zfill(2), br.group(2).zfill(2), br.group(3)
+        _add(f"{d}/{m}")
+        if y:
+            yyyy = y if len(y) == 4 else f"20{y.zfill(2)}"
+            _add(f"{d}/{m}/{yyyy}")
+            _add(f"{yyyy}-{m}-{d}")
+
+    return variants
+
+
+_FINANCE_TITLES_SEARCH_HAYSTACK = """
+concat(
+  entidade_nome, ' ',
+  toString(id_titulo), ' ',
+  toString(valor), ' ',
+  replaceAll(toString(valor), '.', ','), ' ',
+  toString(valor_pago), ' ',
+  replaceAll(toString(valor_pago), '.', ','), ' ',
+  toString(valor_aberto), ' ',
+  replaceAll(toString(valor_aberto), '.', ','), ' ',
+  formatDateTime(dt_vencimento, '%Y-%m-%d'), ' ',
+  formatDateTime(dt_vencimento, '%d/%m/%Y'), ' ',
+  formatDateTime(dt_vencimento, '%d/%m/%y'), ' ',
+  formatDateTime(dt_vencimento, '%d/%m'), ' ',
+  ifNull(formatDateTime(dt_lancamento, '%Y-%m-%d'), ''), ' ',
+  ifNull(formatDateTime(dt_lancamento, '%d/%m/%Y'), ''), ' ',
+  ifNull(formatDateTime(dt_lancamento, '%d/%m/%y'), ''), ' ',
+  ifNull(formatDateTime(dt_lancamento, '%d/%m'), '')
+)
+"""
+
+
+def _finance_titles_search_sql(search: str, params: Dict[str, Any]) -> str:
+    variants = _finance_titles_search_variants(search)
+    if not variants:
+        return ""
+    clauses: List[str] = []
+    for i, variant in enumerate(variants):
+        key = f"q{i}"
+        params[key] = variant
+        clauses.append(
+            f"positionCaseInsensitiveUTF8({_FINANCE_TITLES_SEARCH_HAYSTACK}, {{{key}:String}}) > 0"
+        )
+    return " AND (" + " OR ".join(clauses) + ")"
+
+
 def finance_titles_overview(
     role: str,
     id_empresa: int,
@@ -2694,20 +2783,7 @@ def finance_titles_overview(
 
     search = (q or "").strip()
     if search:
-        params["q"] = search
-        where += """
-          AND positionCaseInsensitiveUTF8(
-            concat(
-              entidade_nome, ' ',
-              toString(valor), ' ',
-              toString(valor_pago), ' ',
-              toString(valor_aberto), ' ',
-              formatDateTime(dt_vencimento, '%Y-%m-%d'), ' ',
-              ifNull(formatDateTime(dt_lancamento, '%Y-%m-%d'), '')
-            ),
-            {q:String}
-          ) > 0
-        """
+        where += _finance_titles_search_sql(search, params)
 
     count = query_scalar(
         f"SELECT count() FROM {MART_RT_DB}.mart_finance_titles_rt FINAL WHERE {where}",
