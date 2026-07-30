@@ -11,15 +11,21 @@ services:
     container_name: torqmind-api
     restart: unless-stopped
     logging: *torqmind-logging
+    # PIN de produção: este arquivo NUNCA deve receber homolog.app.env.
+    # DATABASE_URL / PG_DATABASE vêm SÓ do env_file abaixo (não interpolar
+    # via --env-file da CLI — isso já apontou a API prod para torqmind_homolog).
+    env_file:
+      - /etc/torqmind/prod.app.env
     environment:
-      APP_ENV: ${APP_ENV:-prod}
+      # Literais — não usar ${APP_ENV} (CLI com env errado sobrescrevia para homolog).
+      APP_ENV: prod
+      TORQMIND_STACK: prod
+      TORQMIND_CONTAINER_NAME: torqmind-api
       APP_ROOT_PATH: ${APP_ROOT_PATH:-}
       PG_HOST: ${PG_HOST:-CHANGE_ME_PRIVATE_POSTGRES_HOST}
       PG_PORT: ${PG_PORT:-5432}
-      PG_DATABASE: ${POSTGRES_DB:-TORQMIND}
       PG_USER: ${POSTGRES_USER:-postgres}
       PG_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_POSTGRES_PASSWORD}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:CHANGE_ME_STRONG_POSTGRES_PASSWORD@CHANGE_ME_PRIVATE_POSTGRES_HOST:5432/TORQMIND}
       CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-CHANGE_ME_PRIVATE_ANALYTICS_HOST}
       CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-torqmind_mart}
@@ -97,13 +103,14 @@ services:
     volumes:
       - ./sql/migrations:/app/sql/migrations:ro
       - torqmind_branding:/app/var/branding
+      - /var/torqmind/agent-releases:/var/torqmind/agent-releases:ro
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+          "import os,urllib.request; assert os.environ.get('APP_ENV')=='prod'; assert os.environ.get('TORQMIND_STACK')=='prod'; assert 'homolog' not in (os.environ.get('DATABASE_URL') or '').lower(); urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
         ]
       interval: 15s
       timeout: 5s

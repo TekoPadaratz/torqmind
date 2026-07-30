@@ -5,6 +5,11 @@ import time
 from collections import defaultdict
 from threading import Lock
 
+# Abort boot before wiring routes if prod/homolog stacks are crossed.
+from app.runtime_guard import assert_runtime_stack_or_exit
+
+assert_runtime_stack_or_exit()
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

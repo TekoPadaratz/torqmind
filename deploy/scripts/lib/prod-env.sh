@@ -80,6 +80,24 @@ tm_warn_if_localhost_cors() {
 tm_require_prod_runtime_env() {
   local env_file="$1"
   tm_load_env_file "$env_file" || return 1
+
+  local base
+  base="$(basename "$env_file")"
+  if [[ "$base" == *homolog* ]]; then
+    echo "Recusado: env de homolog ($env_file) nao pode ser usado em scripts/compose de producao." >&2
+    return 1
+  fi
+  if [[ "${APP_ENV:-}" == "homolog" || "${APP_ENV:-}" == "staging" ]]; then
+    echo "Recusado: APP_ENV=${APP_ENV} no arquivo $env_file (esperado prod)." >&2
+    return 1
+  fi
+  local db_url="${DATABASE_URL:-}"
+  local db_name="${POSTGRES_DB:-${PG_DATABASE:-}}"
+  if [[ "$db_url" == *homolog* || "$db_name" == *homolog* ]]; then
+    echo "Recusado: DATABASE_URL/POSTGRES_DB aponta para homolog em $env_file." >&2
+    return 1
+  fi
+
   tm_require_safe_env POSTGRES_PASSWORD || return 1
   tm_require_safe_env API_JWT_SECRET || return 1
   if [[ "${INGEST_REQUIRE_KEY:-true}" != "true" ]]; then
@@ -88,6 +106,19 @@ tm_require_prod_runtime_env() {
   fi
   tm_warn_if_localhost_cors
 }
+
+# Compose canônico da App VM de produção (api/web/nginx).
+# Sempre: docker-compose.app.yml + /etc/torqmind/prod.app.env + projeto torqmind.
+tm_compose_prod_app() {
+  local root_dir="${ROOT_DIR:-}"
+  if [[ -z "$root_dir" ]]; then
+    root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+  fi
+  local env_file="${ENV_FILE:-/etc/torqmind/prod.app.env}"
+  tm_require_prod_runtime_env "$env_file" || return 1
+  docker compose -f "$root_dir/docker-compose.app.yml" --env-file "$env_file" -p torqmind "$@"
+}
+
 
 tm_require_prod_seed_env() {
   local env_file="$1"

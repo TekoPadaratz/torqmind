@@ -30,6 +30,10 @@ services:
     logging: *torqmind-logging
     env_file:
       - /etc/torqmind/homolog.app.env
+    environment:
+      APP_ENV: homolog
+      TORQMIND_STACK: homolog
+      TORQMIND_CONTAINER_NAME: torqmind-api-homolog
     expose:
       - "8000"
     volumes:
@@ -41,7 +45,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
+          "import os,urllib.request; assert os.environ.get('TORQMIND_STACK')=='homolog'; assert 'torqmind_homolog' in (os.environ.get('DATABASE_URL') or ''); urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()",
         ]
       interval: 15s
       timeout: 5s

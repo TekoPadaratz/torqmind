@@ -277,8 +277,11 @@ if $ENABLE_AFTER_PASS && [[ "$VALIDATE_RESULT" == "PASS" ]]; then
   grep -q '^REALTIME_MARTS_SOURCE=' "$ENV_FILE" || echo 'REALTIME_MARTS_SOURCE=stg' >> "$ENV_FILE"
   sed -i 's/^REALTIME_MARTS_FALLBACK=.*/REALTIME_MARTS_FALLBACK=false/' "$ENV_FILE"
   grep -q '^REALTIME_MARTS_FALLBACK=' "$ENV_FILE" || echo 'REALTIME_MARTS_FALLBACK=false' >> "$ENV_FILE"
-  # Recreate api, web, nginx to pick up new env
-  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --force-recreate api web nginx
+  # Recreate api/web/nginx to pick up new env (sempre via guard de prod)
+  # shellcheck source=deploy/scripts/lib/prod-env.sh
+  source "$ROOT_DIR/deploy/scripts/lib/prod-env.sh"
+  tm_require_prod_runtime_env "$ENV_FILE"
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" -p torqmind up -d --force-recreate api web nginx
   log "Realtime ENABLED. Backup: ${ENV_FILE}.bak.*"
 elif $ENABLE_AFTER_PASS && [[ "$VALIDATE_RESULT" != "PASS" ]]; then
   log "--enable-after-pass requested but validate did not PASS. Realtime NOT enabled."
