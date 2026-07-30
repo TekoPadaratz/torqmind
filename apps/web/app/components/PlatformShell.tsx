@@ -57,7 +57,7 @@ export default function PlatformShell({ title, subtitle, me, children }: Platfor
         <div className="platformNavActions">
           <ThemeToggleButton />
           {me?.access?.product ? (
-            <Link className="btn" href={me?.home_path || '/dashboard'}>
+            <Link className="btn" href={me?.home_path || '/sales'}>
               Produto
             </Link>
           ) : null}

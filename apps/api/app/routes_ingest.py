@@ -892,6 +892,22 @@ DATASETS: Dict[str, DatasetSpec] = {
             ("id_movtanque", ["ID_MOVTANQUES", "id_movtanque"]),
         ],
     ),
+    "afericoes": DatasetSpec(
+        table="stg.afericoes",
+        pk_cols=["id_empresa", "id_filial", "id_afericao"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_afericao", ["ID_AFERICAO", "id_afericao"]),
+        ],
+    ),
+    "bicos": DatasetSpec(
+        table="stg.bicos",
+        pk_cols=["id_empresa", "id_filial", "id_bico"],
+        pk_extractors=[
+            ("id_filial", ["ID_FILIAL", "id_filial"]),
+            ("id_bico", ["ID_BICOS", "id_bico"]),
+        ],
+    ),
     # Solvencia DRE: prazo de repasse de cartoes (join ID_CARTAO -> ID_CONVENIOS)
     "convenios": DatasetSpec(
         table="stg.convenios",

@@ -17,7 +17,9 @@ import {
 } from "recharts";
 
 import AppNav from "../components/AppNav";
+import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
+import GridPager from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
@@ -98,74 +100,6 @@ function scoreLevelLabel(level: string) {
   return { label: normalized || "—", color: "#94a3b8" };
 }
 
-function GridPager({
-  page,
-  totalPages,
-  total,
-  pageSize,
-  onPrev,
-  onNext,
-}: {
-  page: number;
-  totalPages: number;
-  total: number;
-  pageSize: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  if (total <= pageSize) return null;
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 8,
-        alignItems: "center",
-        justifyContent: "flex-end",
-        marginTop: 10,
-      }}
-    >
-      <span className="muted" style={{ fontSize: 12 }}>
-        Página {page} de {totalPages}
-      </span>
-      <button
-        type="button"
-        disabled={page <= 1}
-        onClick={onPrev}
-        style={{
-          border: "1px solid var(--border)",
-          background: "transparent",
-          color: "var(--text)",
-          borderRadius: 6,
-          padding: "6px 12px",
-          cursor: page <= 1 ? "not-allowed" : "pointer",
-          fontSize: 12,
-          opacity: page <= 1 ? 0.5 : 1,
-        }}
-      >
-        Anterior
-      </button>
-      <button
-        type="button"
-        disabled={page >= totalPages}
-        onClick={onNext}
-        style={{
-          border: "1px solid var(--border)",
-          background: "transparent",
-          color: "var(--text)",
-          borderRadius: 6,
-          padding: "6px 12px",
-          cursor: page >= totalPages ? "not-allowed" : "pointer",
-          fontSize: 12,
-          opacity: page >= totalPages ? 0.5 : 1,
-        }}
-      >
-        Próxima
-      </button>
-    </div>
-  );
-}
-
 export default function FraudPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
@@ -185,7 +119,7 @@ export default function FraudPage() {
   const [trocaPage, setTrocaPage] = useState(1);
   const [cancelPage, setCancelPage] = useState(1);
   const [operadorPage, setOperadorPage] = useState(1);
-  const pageSize = 20;
+  const pageSize = 30;
   const riscoFinanceiroRef = useRef<HTMLDivElement | null>(null);
   const scrollAnchorElRef = useRef<HTMLElement | null>(null);
   const scrollAnchorTopRef = useRef<number | null>(null);
@@ -233,6 +167,8 @@ export default function FraudPage() {
       moduleKey: "fraud_overview_core",
       scope,
       errorMessage: "Falha ao carregar fraude",
+      requestTimeoutMs: 60_000,
+      keepPreviousData: true,
       buildRequestUrl: (currentScope, session) => {
         if (!canAccessScreenKey(session, "fraud.core")) return null;
         const params = buildScopeParams(currentScope);
@@ -250,6 +186,7 @@ export default function FraudPage() {
     moduleKey: `fraud_risco:${creditoRisco}:${trocaFormaNova}:${trocaSoSuspeitas ? "susp" : "all"}`,
     scope,
     errorMessage: "Falha ao carregar risco financeiro",
+    requestTimeoutMs: 60_000,
     keepPreviousData: true,
     buildRequestUrl: (currentScope, session) => {
       if (!canAccessScreenKey(session, "fraud.risco_financeiro")) return null;
@@ -270,6 +207,7 @@ export default function FraudPage() {
     moduleKey: `fraud_cred_func:${credFuncMonth}:${credFuncStatus}:${scope?.id_filial || scope?.id_filiais?.join(",") || "all"}`,
     scope,
     errorMessage: "Falha ao carregar crédito de funcionário",
+    requestTimeoutMs: 60_000,
     keepPreviousData: true,
     buildRequestUrl: (currentScope, session) => {
       if (!canAccessScreenKey(session, "fraud.credito_funcionario")) return null;
@@ -652,7 +590,7 @@ export default function FraudPage() {
                       />
                       <XAxis dataKey="data" stroke="var(--muted)" />
                       <YAxis stroke="var(--muted)" />
-                      <Tooltip />
+                      <Tooltip content={<ChartTooltip />} />
                       <Bar
                         dataKey="cancelamentos"
                         fill="#f97316"

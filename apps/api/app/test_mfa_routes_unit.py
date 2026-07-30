@@ -49,7 +49,7 @@ def test_login_returns_challenge_when_totp_enabled(client, monkeypatch):
         "role": "tenant_admin",
         "id_empresa": 1,
         "id_filial": None,
-        "home_path": "/dashboard",
+        "home_path": "/sales",
     }
     monkeypatch.setattr(repos_auth, "verify_login", lambda *a, **k: dict(session))
     monkeypatch.setattr(repos_mfa, "get_mfa_state", lambda uid: {"totp_enabled": True})
@@ -73,7 +73,7 @@ def test_login_normal_when_totp_disabled(client, monkeypatch):
         "analytics_role": "tenant_admin",
         "id_empresa": 1,
         "id_filial": None,
-        "home_path": "/dashboard",
+        "home_path": "/sales",
     }
     monkeypatch.setattr(repos_auth, "verify_login", lambda *a, **k: dict(session))
     monkeypatch.setattr(repos_mfa, "get_mfa_state", lambda uid: {"totp_enabled": False})
@@ -95,7 +95,7 @@ def test_login_forces_setup_when_required_not_enrolled(client, monkeypatch):
         "role": "tenant_admin",
         "id_empresa": 1,
         "id_filial": None,
-        "home_path": "/dashboard",
+        "home_path": "/sales",
     }
     monkeypatch.setattr(repos_auth, "verify_login", lambda *a, **k: dict(session))
     monkeypatch.setattr(repos_mfa, "get_mfa_state", lambda uid: {"totp_enabled": False, "totp_required": True})
@@ -139,7 +139,7 @@ def test_full_mfa_verify_issues_token(client, key, monkeypatch):
             "analytics_role": "tenant_admin",
             "id_empresa": 1,
             "id_filial": None,
-            "home_path": "/dashboard",
+            "home_path": "/sales",
         },
     )
 

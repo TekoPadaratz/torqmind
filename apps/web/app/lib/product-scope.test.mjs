@@ -50,7 +50,7 @@ test("product scope builder keeps legacy single-branch links when exactly one fi
     "dt_ini=2026-03-01&dt_fim=2026-03-24&id_empresa=12&id_filial=7&dt_ref=2026-03-24&scope_epoch=epoch-123",
   );
   assert.equal(
-    buildProductHref("/dashboard", {
+    buildProductHref("/sales", {
       dt_ini: "2026-03-01",
       dt_fim: "2026-03-24",
       dt_ref: "2026-03-24",
@@ -58,7 +58,7 @@ test("product scope builder keeps legacy single-branch links when exactly one fi
       id_filiais: [7],
       scope_epoch: "epoch-123",
     }),
-    "/dashboard?dt_ini=2026-03-01&dt_fim=2026-03-24&id_empresa=12&id_filial=7&dt_ref=2026-03-24&scope_epoch=epoch-123",
+    "/sales?dt_ini=2026-03-01&dt_fim=2026-03-24&id_empresa=12&id_filial=7&dt_ref=2026-03-24&scope_epoch=epoch-123",
   );
 });
 
@@ -308,7 +308,7 @@ test("channel admin can switch company and branch inside its carteira", () => {
 
 test("canonical product href builds scoped dashboard link from session fallback", () => {
   const href = buildCanonicalProductHref(
-    "/dashboard",
+    "/sales",
     {
       id_empresa: 12,
       id_filial: 7,
@@ -317,7 +317,7 @@ test("canonical product href builds scoped dashboard link from session fallback"
     { scopeEpoch: "epoch-login" },
   );
 
-  assert.match(href, /^\/dashboard\?/);
+  assert.match(href, /^\/sales\?/);
   assert.match(href, /dt_ini=\d{4}-\d{2}-\d{2}/);
   assert.match(href, /dt_fim=\d{4}-\d{2}-\d{2}/);
   assert.match(href, /id_empresa=12/);
@@ -327,7 +327,7 @@ test("canonical product href builds scoped dashboard link from session fallback"
 
 test("canonical product href derives all accessible branches for company-level sessions", () => {
   const href = buildCanonicalProductHref(
-    "/dashboard",
+    "/sales",
     {
       id_empresa: 12,
       id_filial: null,
@@ -341,7 +341,7 @@ test("canonical product href derives all accessible branches for company-level s
     { scopeEpoch: "epoch-all-branches" },
   );
 
-  assert.match(href, /^\/dashboard\?/);
+  assert.match(href, /^\/sales\?/);
   assert.match(href, /id_empresa=12/);
   assert.match(href, /branch_scope=all/);
   assert.doesNotMatch(href, /id_filiais=/);
@@ -383,9 +383,9 @@ test("canonical product href preserves explicit scope and keeps unrelated params
 });
 
 test("scope canonicalization detects missing URL scope", () => {
-  assert.equal(needsCanonicalScope("/dashboard"), true);
+  assert.equal(needsCanonicalScope("/sales"), true);
   assert.equal(
-    needsCanonicalScope("/dashboard?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=7&scope_epoch=epoch-1"),
+    needsCanonicalScope("/sales?dt_ini=2026-05-01&dt_fim=2026-05-11&id_empresa=1&id_filial=7&scope_epoch=epoch-1"),
     false,
   );
 });
@@ -419,9 +419,9 @@ test("filterProductLinks with null returns all links (admin fallback)", () => {
 });
 
 test("filterProductLinks with single screen returns only that link", () => {
-  const result = filterProductLinks(["dashboard_home"]);
+  const result = filterProductLinks(["sales"]);
   assert.equal(result.length, 1);
-  assert.equal(result[0].path, "/dashboard");
+  assert.equal(result[0].path, "/sales");
 });
 
 test("filterProductLinks with all screens returns all links", () => {

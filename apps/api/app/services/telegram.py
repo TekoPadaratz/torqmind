@@ -369,6 +369,17 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
         if _send_telegram_sync(chat_id=cid, text=text, retries=3):
             sent_count += 1
     sent = sent_count > 0
+
+    _insert_in_app_notification(
+        id_empresa=id_empresa,
+        id_filial=id_filial,
+        severity=severity or "CRITICAL",
+        title=title,
+        body=body,
+        url=url,
+        dedupe_key=f"tg|{id_empresa}|{id_filial}|{insight_id or event_type}|{event_date}",
+    )
+
     logger.info(
         "telegram_dispatch id_empresa=%s id_filial=%s recipients=%s sent=%s event_type=%s insight_id=%s dedupe_hash=%s",
         id_empresa,
@@ -380,6 +391,93 @@ def send_telegram_alert(id_empresa: int, payload: Dict[str, Any], force: bool = 
         dedupe_hash,
     )
     return {"ok": True, "sent": sent, "recipients": len(chat_ids), "sent_count": sent_count, "dedupe_hash": dedupe_hash}
+
+
+def _insert_in_app_notification(
+    *,
+    id_empresa: int,
+    id_filial: Optional[int],
+    severity: str,
+    title: str,
+    body: str,
+    url: str,
+    dedupe_key: Optional[str] = None,
+) -> bool:
+    """Espelha alerta Telegram na inbox in-app (app.notifications) até o usuário marcar lido.
+
+    Sem migration: dedupe por título+corpo recentes (7d) ou insight_id sintético via hash.
+    """
+    sev = str(severity or "CRITICAL").upper()
+    if sev not in {"INFO", "WARN", "CRITICAL"}:
+        sev = "CRITICAL"
+    title_s = str(title or "Alerta").strip()[:240]
+    body_s = str(body or "").strip()[:4000]
+    url_s = str(url or "/dashboard").strip()[:500]
+    insight_id = None
+    if dedupe_key:
+        # insight_id positivo grande e estável a partir do dedupe (evita colisão com insights reais pequenos)
+        digest = hashlib.sha1(dedupe_key.encode("utf-8")).hexdigest()[:15]
+        insight_id = int(digest, 16) % 9000000000000000 + 1000000000000000
+
+    sql = """
+      INSERT INTO app.notifications (
+        id_empresa, id_filial, insight_id, severity, title, body, url
+      )
+      VALUES (%s, %s, %s, %s, %s, %s, %s)
+      ON CONFLICT (id_empresa, id_filial, insight_id) WHERE insight_id IS NOT NULL
+      DO UPDATE SET
+        severity = EXCLUDED.severity,
+        title = EXCLUDED.title,
+        body = EXCLUDED.body,
+        url = EXCLUDED.url,
+        created_at = now(),
+        read_at = NULL
+      RETURNING id
+    """
+    try:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+            if insight_id is None:
+                # Sem chave: evita flood de duplicatas idênticas na mesma hora
+                exists = conn.execute(
+                    """
+                    SELECT id FROM app.notifications
+                    WHERE id_empresa = %s
+                      AND COALESCE(id_filial, -1) = COALESCE(%s::int, -1)
+                      AND title = %s
+                      AND body = %s
+                      AND created_at >= now() - interval '1 day'
+                      AND read_at IS NULL
+                    LIMIT 1
+                    """,
+                    (id_empresa, id_filial, title_s, body_s),
+                ).fetchone()
+                if exists:
+                    return False
+                row = conn.execute(
+                    """
+                    INSERT INTO app.notifications (
+                      id_empresa, id_filial, insight_id, severity, title, body, url
+                    )
+                    VALUES (%s, %s, NULL, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (id_empresa, id_filial, sev, title_s, body_s, url_s),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    sql,
+                    (id_empresa, id_filial, insight_id, sev, title_s, body_s, url_s),
+                ).fetchone()
+            conn.commit()
+            return bool(row)
+    except Exception:
+        logger.exception(
+            "in_app_notification_failed id_empresa=%s id_filial=%s title=%s",
+            id_empresa,
+            id_filial,
+            title_s,
+        )
+        return False
 
 
 def _insert_alert_if_new(
@@ -520,14 +618,13 @@ def json_dumps(obj: Any) -> str:
 
 
 async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str, Any]]) -> None:
-    """Scan ingested comprovantes; send Telegram alert for each real cancellation (CANCELADO=true)."""
+    """Scan ingested comprovantes; alert Telegram + inbox in-app for each real cancellation."""
 
-    if not settings.telegram_bot_token:
-        return
-
-    recipients = resolve_telegram_recipients(id_empresa, EVENT_VENDA_CANCELADA)
-    if not recipients:
-        return
+    recipients = (
+        resolve_telegram_recipients(id_empresa, EVENT_VENDA_CANCELADA)
+        if settings.telegram_bot_token
+        else []
+    )
 
     tasks: List[asyncio.Task] = []
 
@@ -586,6 +683,16 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
             f"👤 Operador: {nome_usuario or id_usuario or '?'}"
         )
 
+        _insert_in_app_notification(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            severity="CRITICAL",
+            title=f"Venda cancelada — {filial_nome}",
+            body=text,
+            url="/fraud",
+            dedupe_key=f"venda_cancelada|{id_empresa}|{id_filial}|{id_db}|{id_comprovante}",
+        )
+
         for chat_id in recipients:
             tasks.append(asyncio.create_task(_send_telegram(chat_id, text)))
 
@@ -594,14 +701,13 @@ async def notify_cancelled_comprovantes(id_empresa: int, raw_rows: List[Dict[str
 
 
 async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) -> None:
-    """Scan ingested NFEs; send Telegram alert for each voided note (STATUS=5, inutilização)."""
+    """Scan ingested NFEs; alert Telegram + inbox in-app for each voided note (STATUS=5)."""
 
-    if not settings.telegram_bot_token:
-        return
-
-    recipients = resolve_telegram_recipients(id_empresa, EVENT_NFE_INUTILIZADA)
-    if not recipients:
-        return
+    recipients = (
+        resolve_telegram_recipients(id_empresa, EVENT_NFE_INUTILIZADA)
+        if settings.telegram_bot_token
+        else []
+    )
 
     tasks: List[asyncio.Task] = []
 
@@ -701,6 +807,16 @@ async def notify_voided_nfes(id_empresa: int, raw_rows: List[Dict[str, Any]]) ->
             f"📅 Emissão: {data_emissao}\n"
             f"📅 Inutilização: {data_inut}\n"
             f"👤 Operador: {nome_usuario or id_usuario or '?'}"
+        )
+
+        _insert_in_app_notification(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            severity="CRITICAL",
+            title=f"Nota inutilizada — {filial_nome}",
+            body=text,
+            url="/cash",
+            dedupe_key=f"nfe_inutilizada|{id_empresa}|{id_filial}|{id_db or 0}|{id_nfe}",
         )
 
         for chat_id in recipients:

@@ -160,7 +160,7 @@ class AnalyticsFacadeUnitTest(unittest.TestCase):
         inventory = repos_analytics.analytics_backend_inventory()
         names = {row["function"] for row in inventory["functions"]}
 
-        self.assertEqual(len(names), 85)
+        self.assertEqual(len(names), 91)
         self.assertIn("dashboard_kpis", names)
         self.assertIn("cash_dre_summary", names)
         self.assertIn("cheques_pendentes_overview", names)

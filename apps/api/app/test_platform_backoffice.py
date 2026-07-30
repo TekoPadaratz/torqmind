@@ -571,7 +571,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body["user_role"], "tenant_admin")
-        self.assertTrue(body["home_path"].startswith("/dashboard?"), body["home_path"])
+        self.assertTrue(body["home_path"].startswith("/sales?"), body["home_path"])
 
     def test_login_accepts_case_insensitive_username(self) -> None:
         tenant_id = self._create_tenant("Tenant Username Login")
@@ -800,7 +800,7 @@ class PlatformBackofficeTest(unittest.TestCase):
             conn.commit()
 
         login_response = self._login(email, "Senha@123")
-        self.assertTrue(login_response.json()["home_path"].startswith("/dashboard?"), login_response.json()["home_path"])
+        self.assertTrue(login_response.json()["home_path"].startswith("/sales?"), login_response.json()["home_path"])
 
         headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
         me_response = self.client.get("/auth/me", headers=headers)
@@ -1686,7 +1686,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         self.assertNotEqual(master_login.json()["home_path"], "/scope")
         self.assertTrue(
             master_login.json()["home_path"] == "/platform"
-            or master_login.json()["home_path"].startswith("/dashboard?"),
+            or master_login.json()["home_path"].startswith("/sales?"),
             master_login.json()["home_path"],
         )
 
@@ -1736,7 +1736,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         body = login_response.json()
         today = business_today()
         expected_start = (today - timedelta(days=29)).isoformat()
-        self.assertTrue(body["home_path"].startswith("/dashboard?"), body["home_path"])
+        self.assertTrue(body["home_path"].startswith("/sales?"), body["home_path"])
         self.assertEqual(body["home_path"], body["session"]["home_path"])
         self.assertEqual(body["session"]["default_scope"]["dt_ini"], expected_start)
         self.assertEqual(body["session"]["default_scope"]["dt_fim"], today.isoformat())
@@ -1745,7 +1745,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         me_response = self.client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(me_response.status_code, 200, me_response.text)
         me_body = me_response.json()
-        self.assertTrue(me_body["home_path"].startswith("/dashboard?"), me_body["home_path"])
+        self.assertTrue(me_body["home_path"].startswith("/sales?"), me_body["home_path"])
         qs = parse_qs(urlparse(me_body["home_path"]).query)
         self.assertEqual(qs["dt_ini"][0], expected_start)
         self.assertEqual(qs["dt_fim"][0], today.isoformat())
@@ -1809,7 +1809,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         body = login_response.json()
         today = business_today()
         expected_start = (today - timedelta(days=13)).isoformat()
-        self.assertTrue(body["home_path"].startswith("/dashboard?"), body["home_path"])
+        self.assertTrue(body["home_path"].startswith("/sales?"), body["home_path"])
         self.assertEqual(body["home_path"], body["session"]["home_path"])
         self.assertEqual(body["session"]["default_scope"]["dt_ini"], expected_start)
         self.assertEqual(body["session"]["default_scope"]["dt_fim"], today.isoformat())
@@ -1837,7 +1837,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         email = self._create_user("product_global", "Senha@123")
 
         login_response = self._login(email, "Senha@123")
-        self.assertTrue(login_response.json()["home_path"].startswith("/dashboard?"), login_response.json()["home_path"])
+        self.assertTrue(login_response.json()["home_path"].startswith("/sales?"), login_response.json()["home_path"])
         self.assertNotIn("/scope", login_response.json()["home_path"])
 
         headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}

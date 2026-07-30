@@ -103,13 +103,12 @@ export function buildUserLabel(claims: any) {
 
 export function formatTurnoLabel(idTurno: any, friendlyLabel?: string | null) {
   const label = String(friendlyLabel || '').trim();
-  if (label) {
-    const numericLabel = Number(label);
-    if (!Number.isFinite(numericLabel) || numericLabel > 0) return label;
-  }
+  if (label) return label;
   const numericTurno = Number(idTurno);
-  if (Number.isFinite(numericTurno) && numericTurno > 0 && numericTurno <= 99) return String(Math.trunc(numericTurno));
-  return 'Turno sem cadastro';
+  if (Number.isFinite(numericTurno) && numericTurno > 0 && numericTurno <= 99) {
+    return `Turno ${Math.trunc(numericTurno)}`;
+  }
+  return 'Turno não resolvido';
 }
 
 export function formatPercent(value: any, decimals = 1): string {

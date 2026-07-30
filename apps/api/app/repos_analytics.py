@@ -182,6 +182,15 @@ def _dispatch(name: str) -> Callable[..., Any]:
 def __getattr__(name: str) -> Any:
     if name in _PUBLIC_POSTGRES_FUNCTIONS:
         return _dispatch(name)
+    # Contratos só-CH (ex.: inventory_fuel_*): sem mash PG, mas a rota usa o facade.
+    if name in getattr(_realtime, "REALTIME_FUNCTIONS", set()):
+        realtime = _realtime_function(name)
+        if realtime is not None:
+            return realtime
+        raise AttributeError(
+            f"Realtime function {name!r} is registered but unavailable "
+            f"(use_realtime_marts={bool(settings.use_realtime_marts)})"
+        )
     return getattr(_postgres, name)
 
 

@@ -821,6 +821,12 @@ def _safe_finance_overview_payload(
             "by_turno": [],
             "anomalies": [],
         }
+        payload["receipts_by_day"] = {
+            "by_day": [],
+            "total_recebido": None,
+            "qtd_baixas": None,
+            "source": "unavailable",
+        }
     if include_operational:
         payload["open_cash"] = {"source_status": "unavailable", "severity": "UNAVAILABLE", "summary": "Monitor operacional indisponível.", "items": []}
     return _with_fallback_state(
@@ -1823,6 +1829,55 @@ def finance_overview(
     ), claims)
 
 
+@router.get("/finance/titles")
+def finance_titles(
+    tipo: int = Query(..., ge=0, le=1, description="0=pagar, 1=receber"),
+    dt_ini: date = Query(...),
+    dt_fim: date = Query(...),
+    q: Optional[str] = Query(None, max_length=160),
+    preset: Optional[str] = Query(None, description="vencidos | a_vencer_7d | a_vencer_mes | a_vencer"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    refresh: bool = Query(False, description="Reservado para publicação operacional; a leitura não consulta STG."),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+):
+    """Títulos de pagar/receber da mart realtime publicada."""
+    from app.permissions import can_access_screen
+    from fastapi import HTTPException
+
+    screen_key = "finance.receivable" if tipo == 1 else "finance.payable"
+    if not can_access_screen(claims, screen_key):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "screen_access_denied",
+                "message": f"Acesso negado à tela '{screen_key}'.",
+                "screen_key": screen_key,
+            },
+        )
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.finance_titles_overview(
+        role,
+        tenant,
+        filial,
+        tipo,
+        dt_ini,
+        dt_fim,
+        q=q,
+        preset=preset,
+        page=page,
+        page_size=page_size,
+        refresh=refresh,
+    )
+    return redact_sensitive(payload, claims)
+
+
 @router.get("/payments/overview")
 def payments_overview(
     dt_ini: date,
@@ -1969,6 +2024,128 @@ def cash_overview(
         safe_fallback=_safe_cash_overview_payload,
     ), claims)
 
+
+# ------------------------
+# Estoque combustível
+# ------------------------
+
+@router.get("/estoque/combustivel")
+def inventory_fuel_overview(
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    ano: Optional[int] = Query(None, ge=2000, le=2100),
+    mes: Optional[int] = Query(None, ge=1, le=12),
+    dias_alvo: int = Query(7, ge=1, le=90),
+    refresh: bool = Query(False),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("inventory")),
+):
+    """Estoque de tanques (combustível) + cobertura + sugestão de compra."""
+    from calendar import monthrange
+
+    role = claims["role"]
+    tenant, filial, branch_scope = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    today = resolve_business_date(None, tenant)
+
+    if dt_ini is None or dt_fim is None:
+        if ano and mes:
+            last = monthrange(int(ano), int(mes))[1]
+            dt_ini = date(int(ano), int(mes), 1)
+            dt_fim = min(date(int(ano), int(mes), last), today)
+        else:
+            # default: mês corrente até hoje
+            dt_ini = date(today.year, today.month, 1)
+            dt_fim = today
+
+    return redact_sensitive(
+        repos_mart.inventory_fuel_overview(
+            role,
+            tenant,
+            filial,
+            dt_ini=dt_ini,
+            dt_fim=dt_fim,
+            dias_alvo=dias_alvo,
+            refresh=refresh,
+        ),
+        claims,
+    )
+
+
+@router.get("/estoque/perda")
+def inventory_fuel_loss_overview(
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    refresh: bool = Query(False),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fuel_loss")),
+):
+    """Conciliação sensor D−1 × D × vendas → perda de combustível."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    today = resolve_business_date(None, tenant)
+    if dt_ini is None or dt_fim is None:
+        from datetime import timedelta as _td
+
+        dt_fim = today
+        dt_ini = today - _td(days=13)
+
+    return redact_sensitive(
+        repos_mart.inventory_fuel_loss_overview(
+            role,
+            tenant,
+            filial,
+            dt_ini=dt_ini,
+            dt_fim=dt_fim,
+            refresh=refresh,
+        ),
+        claims,
+    )
+
+
+@router.get("/estoque/afericoes")
+def inventory_fuel_afericoes_overview(
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    refresh: bool = Query(False),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("fuel_loss")),
+):
+    """Aferições de bico no período do menu (Operação / perda de combustível)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    today = resolve_business_date(None, tenant)
+    if dt_ini is None or dt_fim is None:
+        from datetime import timedelta as _td
+
+        dt_fim = today
+        dt_ini = today - _td(days=13)
+
+    return redact_sensitive(
+        repos_mart.inventory_fuel_afericoes_overview(
+            role,
+            tenant,
+            filial,
+            dt_ini=dt_ini,
+            dt_fim=dt_fim,
+            refresh=refresh,
+        ),
+        claims,
+    )
 
 
 @router.get("/sync/status")
@@ -2402,7 +2579,7 @@ def notifications_list(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     unread_only: bool = Query(False),
-    limit: int = Query(30, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=200),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _kiosk=Depends(require_not_kiosk()),
@@ -2413,6 +2590,23 @@ def notifications_list(
         "items": repos_mart.notifications_list(role, tenant, filial, limit=limit, unread_only=unread_only),
         "unread": repos_mart.notifications_unread_count(role, tenant, filial),
     }
+
+
+@router.post("/notifications/read-all")
+def notifications_mark_all_read(
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _kiosk=Depends(require_not_kiosk()),
+):
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    result = repos_mart.notifications_mark_all_read(role, tenant, filial)
+    unread = repos_mart.notifications_unread_count(role, tenant, filial)
+    return {"ok": True, **result, "unread": unread}
 
 
 @router.post("/notifications/{notification_id}/read")

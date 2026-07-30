@@ -14,6 +14,8 @@ import {
 
 import EmptyState from "../components/ui/EmptyState";
 import PortalDropdown from "../components/ui/PortalDropdown";
+import ChartTooltip from "../components/ui/ChartTooltip";
+import GridPager, { useClientPager } from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
@@ -185,6 +187,7 @@ export default function SalesAbcSection() {
   const { query, setQuery, filteredRows } = useGridSearch(
     data?.ranking as unknown as Record<string, unknown>[] | undefined,
   );
+  const rankingPager = useClientPager(filteredRows, 30);
 
   const formatMetricValue = useCallback(
     (value: number) => {
@@ -330,9 +333,6 @@ export default function SalesAbcSection() {
       <div className="card col-12" style={{ marginTop: 24 }}>
         <div className="sectionEyebrow">Gestão de Produtos</div>
         <h2 style={{ marginTop: 4 }}>Curva ABC — Análise de Pareto</h2>
-        <div className="muted" style={{ marginTop: 8 }}>
-          Classifica produtos por contribuição ao {metricLabel.toLowerCase()}. Classe A (até {params.abc_threshold_a}%), B ({params.abc_threshold_a}–{params.abc_threshold_b}%), C ({params.abc_threshold_b}–100%).
-        </div>
         {groupSelector}
       </div>
 
@@ -494,13 +494,15 @@ export default function SalesAbcSection() {
                 width={50}
               />
               <Tooltip
-                contentStyle={{ background: "var(--option-bg)", border: "1px solid var(--border)", color: "var(--text)" }}
-                formatter={(value: any, name: string) => {
-                  if (name === metricKey) return [formatMetricValue(value), metricLabel];
-                  if (name === "acumulado_pct") return [formatPercent(value), "Acumulado"];
-                  return [value, name];
-                }}
-                labelFormatter={(label: string) => label}
+                content={
+                  <ChartTooltip
+                    valueFormatter={(value, name) => {
+                      if (name === metricKey) return formatMetricValue(Number(value));
+                      if (name === "acumulado_pct") return formatPercent(Number(value));
+                      return String(value);
+                    }}
+                  />
+                }
               />
               <Bar
                 yAxisId="val"
@@ -526,9 +528,6 @@ export default function SalesAbcSection() {
       {/* Ranking Table */}
       <div className="card col-12">
         <h2>Ranking completo</h2>
-        <div className="muted" style={{ marginTop: 4 }}>
-          Todos os produtos classificados pela Curva ABC — ordenados por {metricLabel.toLowerCase()}
-        </div>
         <div style={{ marginTop: 12 }}>
           <GridSearchInput value={query} onChange={setQuery} />
         </div>
@@ -546,7 +545,7 @@ export default function SalesAbcSection() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((item: any) => (
+              {rankingPager.slice.map((item: any) => (
                 <tr key={item.id_produto}>
                   <td>{item.posicao}</td>
                   <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -572,6 +571,14 @@ export default function SalesAbcSection() {
             </tbody>
           </table>
         </div>
+        <GridPager
+          page={rankingPager.page}
+          totalPages={rankingPager.totalPages}
+          total={rankingPager.total}
+          pageSize={30}
+          onPrev={rankingPager.onPrev}
+          onNext={rankingPager.onNext}
+        />
       </div>
 
       {/* Auto-insights */}

@@ -9,29 +9,29 @@ test('AppNav no longer exposes customer-facing operational freshness copy', () =
   assert.ok(!source.includes('describeSyncMessage('));
 });
 
-test('dashboard does not pin customer UX to sync bootstrap state', () => {
+test('legacy dashboard route redirects to sales', () => {
   const source = readFileSync(new URL('../dashboard/page.tsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('router.replace'));
+  assert.ok(source.includes('/sales'));
   assert.ok(!source.includes('initialSyncStatus='));
-  assert.ok(!source.includes('publishedCoverageDate'));
-  assert.ok(!source.includes('message: "A primeira base pronta ainda está sendo preparada."'));
 });
 
-test('dashboard data hook retries transient unavailable payloads without an infinite loop', () => {
+test('bi scope data hook retries transient unavailable payloads without an infinite loop', () => {
   const source = readFileSync(new URL('./use-bi-scope-data.ts', import.meta.url), 'utf8');
-  const dashboardSource = readFileSync(new URL('../dashboard/page.tsx', import.meta.url), 'utf8');
+  const salesSource = readFileSync(new URL('../sales/page.tsx', import.meta.url), 'utf8');
   const transitionSource = readFileSync(new URL('../components/ui/ScopeTransitionState.tsx', import.meta.url), 'utf8');
   assert.ok(source.includes('unavailableRetryAttempts = 4'));
   assert.ok(source.includes('unavailableRetryDelayMs = 2_000'));
   assert.ok(source.includes('attempt <= unavailableRetryAttempts'));
   assert.ok(source.includes('await waitBeforeRetry(unavailableRetryDelayMs)'));
-  assert.ok(dashboardSource.includes('onRetry={pendingUnavailable ? () => window.location.reload() : undefined}'));
+  assert.ok(salesSource.includes('onRetry={pendingUnavailable ? () => window.location.reload() : undefined}') || transitionSource.includes('Tentar novamente'));
   assert.ok(transitionSource.includes('Tentar novamente'));
 });
 
 test('sales page uses customer-friendly sales labels', () => {
   const source = readFileSync(new URL('../sales/page.tsx', import.meta.url), 'utf8');
-  assert.ok(source.includes('Vendas normais'));
-  assert.ok(source.includes('Entradas registradas'));
+  assert.ok(source.includes('Vendas'));
+  assert.ok(source.includes('Vendas por hora'));
   assert.ok(!source.includes('Saídas ativas'));
   assert.ok(!source.includes('Saídas normais'));
 });

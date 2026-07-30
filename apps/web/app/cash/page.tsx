@@ -12,6 +12,7 @@ import {
 } from "recharts";
 
 import AppNav from "../components/AppNav";
+import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
@@ -82,15 +83,26 @@ export default function CashPage() {
   const dreSummary = data?.dre_summary || {};
   const paymentMix = historical?.payment_mix || [];
   const commercialByDay = commercial?.by_day || [];
+  const isOperationalTurno = (item: any) => {
+    const idTurno = Number(item?.id_turno || 0);
+    if (!Number.isFinite(idTurno) || idTurno <= 0) return false;
+    const tv = Number(item?.turno_value);
+    if (Number.isFinite(tv) && tv >= 1) return true;
+    const label = String(item?.turno_label || "").trim().toLowerCase();
+    if (!label || label.includes("não resolvido") || label.includes("nao resolvido")) {
+      return false;
+    }
+    if (label.includes("caixa geral")) return false;
+    return /turno\s*[1-9]\d*/.test(label) || (Number.isFinite(Number(label)) && Number(label) >= 1);
+  };
+
   const topTurnos = (commercial?.top_turnos || [])
-    .filter((item: any) => Number(item?.id_turno || 0) > 0)
+    .filter(isOperationalTurno)
     .slice(0, 15);
   const openBoxes = useMemo(
     () =>
       sortGridRows(
-        (liveNow?.open_boxes || data?.open_boxes || []).filter(
-          (item: any) => Number(item?.id_turno || 0) > 0,
-        ),
+        (liveNow?.open_boxes || data?.open_boxes || []).filter(isOperationalTurno),
         (i: any) => ({
           filial: i.filial_label ?? i.id_filial,
           data: i.abertura_ts,
@@ -99,7 +111,7 @@ export default function CashPage() {
       ),
     [liveNow?.open_boxes, data?.open_boxes],
   );
-  const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter((item: any) => Number(item?.id_turno || 0) > 0);
+  const staleBoxes = (liveNow?.stale_boxes || data?.stale_boxes || []).filter(isOperationalTurno);
   const alerts = liveNow?.alerts || data?.alerts || [];
   const inutilizacoes = data?.inutilizacoes || {};
   const inutItems = useMemo(
@@ -154,62 +166,31 @@ export default function CashPage() {
         ) : (
           <>
             <div className="bi-grid" style={{ marginTop: 12 }}>
-              <div
-                className="card col-12"
-                style={{
-                  background:
-                    "linear-gradient(135deg, rgba(14,116,144,0.22), var(--bg) 45%, rgba(16,185,129,0.16))",
-                  borderColor: "rgba(56, 189, 248, 0.24)",
-                }}
-              >
-                <div className="sectionEyebrow">Visão comercial e financeira</div>
-                <h2 style={{ marginTop: 4 }}>Caixa do período e caixa agora</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {commercial?.summary || data?.summary}
+              <div className="col-6" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+                <div className="card kpi">
+                  <div className="label">Vendas no período</div>
+                  <div className="value">{loading ? "..." : formatCurrency(commercialKpis?.total_vendas)}</div>
                 </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {liveNow?.summary || "Leitura dos turnos indisponível no momento."}
+                <div className="card kpi">
+                  <div className="label">Cancelamentos</div>
+                  <div className="value">{loading ? "..." : formatCurrency(commercialKpis?.total_cancelamentos)}</div>
                 </div>
-              </div>
-
-              <div className="card col-12">
-                <div className="sectionEyebrow">Caixa do período selecionado</div>
-                <h2 style={{ marginTop: 4 }}>Vendas, cancelamentos e recebimentos</h2>
-              </div>
-
-              <div className="card kpi col-3">
-                <div className="label">Vendas no período</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercialKpis?.total_vendas)}
+                <div className="card kpi">
+                  <div className="label">Recebimentos</div>
+                  <div className="value">{loading ? "..." : formatCurrency(commercialKpis?.total_pagamentos)}</div>
+                  {!loading && Math.abs(Number(commercialKpis?.diferenca_conciliacao || 0)) > 0.01 ? (
+                    <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                      Não conciliado: {formatCurrency(commercialKpis?.diferenca_conciliacao)}
+                    </div>
+                  ) : null}
                 </div>
-              </div>
-              <div className="card kpi col-3">
-                <div className="label">Cancelamentos</div>
-                <div className="value">
-                  {loading
-                    ? "..."
-                    : formatCurrency(commercialKpis?.total_cancelamentos)}
-                </div>
-              </div>
-              <div className="card kpi col-3">
-                <div className="label">Recebimentos</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercialKpis?.total_pagamentos)}
-                </div>
-                {!loading && Math.abs(Number(commercialKpis?.diferenca_conciliacao || 0)) > 0.01 ? (
-                  <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
-                    Não conciliado: {formatCurrency(commercialKpis?.diferenca_conciliacao)}
-                  </div>
-                ) : null}
-              </div>
-              <div className="card kpi col-3">
-                <div className="label">Saldo comercial</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercialKpis?.saldo_comercial)}
+                <div className="card kpi">
+                  <div className="label">Saldo comercial</div>
+                  <div className="value">{loading ? "..." : formatCurrency(commercialKpis?.saldo_comercial)}</div>
                 </div>
               </div>
 
-              <div className="card col-12 chartCard">
+              <div className="card col-6 chartCard">
                 <h2>Formas de Pagamento Vendas</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
                   Distribuição conciliada dos recebimentos de vendas do período por forma de pagamento.
@@ -243,9 +224,13 @@ export default function CashPage() {
                           dataKey="label"
                           type="category"
                           stroke="var(--muted)"
-                          width={140}
+                          width={220}
+                          tick={{ fontSize: 12 }}
+                          interval={0}
                         />
-                        <Tooltip formatter={(value: any) => formatCurrency(value)} />
+                        <Tooltip
+                          content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
+                        />
                         <Bar
                           dataKey="total_valor"
                           fill="#818cf8"
@@ -287,10 +272,11 @@ export default function CashPage() {
                           <tr key={`${item.id_filial}-${item.id_turno}`}>
                             <td>{item.filial_label}</td>
                             <td>
-                              {formatTurnoLabel(item.id_turno, item.turno_label)}
+                              {item.turno_label ||
+                                formatTurnoLabel(item.id_turno, item.turno_label)}
                             </td>
                             <td>{formatTurnoPeriod(item.abertura_ts, item.fechamento_ts)}</td>
-                            <td>{item.usuario_label}</td>
+                            <td>{item.usuario_label || item.nome_operador || "Operador sem cadastro"}</td>
                             <td>{Number(item.qtd_vendas || 0)}</td>
                             <td>{formatCurrency(item.total_vendas)}</td>
                             <td>{formatCurrency(item.total_cancelamentos)}</td>

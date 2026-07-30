@@ -348,7 +348,13 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
     def test_cash_uses_real_labels_when_current_dimensions_exist(self, mock_qd: MagicMock):
         def side_effect(query: str, parameters=None):
             q = " ".join(query.lower().split())
-            if "from torqmind_mart_rt.cash_overview_rt" in q and "order by abertura_ts desc" in q:
+            if "open_shifts as" in q or (
+                "from torqmind_mart_rt.cash_overview_rt" in q
+                and "is_aberto = 1" in q
+                and "order by" in q
+                and "abertura_ts" in q
+                and "turn_sales" not in q
+            ):
                 return [{
                     "id_filial": 10169,
                     "id_turno": 7134,
@@ -359,9 +365,12 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
                     "is_aberto": 1,
                     "faturamento_turno": Decimal("950.00"),
                     "qtd_vendas_turno": 12,
+                    "turno_value": "3",
                 }]
             if "with turn_sales as" in q and "from torqmind_current.stg_comprovantes_slim as c final" in q:
                 self.assertIn("and c.id_turno > 0", q)
+                self.assertIn("turn_ops", q)
+                self.assertIn("inner join turn_ops", q)
                 self.assertRegex(q, r"and c\.data_key >= 20260401 and c\.data_key <= 20260430|and data_key >= 20260401 and data_key <= 20260430")
                 self.assertIn("limit 15", q)
                 return [{
@@ -408,7 +417,7 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
         validated = CashOverviewResponse.model_validate(result)
         turno = validated.turnos[0]
         self.assertEqual(turno["filial_label"], "AUTO POSTO VR 07")
-        self.assertEqual(turno["turno_label"], "3")
+        self.assertEqual(turno["turno_label"], "Turno 3")
         self.assertEqual(turno["usuario_label"], "Camila S")
         self.assertEqual(turno["qtd_vendas"], 12)
         self.assertEqual(float(turno["total_cancelamentos"]), 50.0)

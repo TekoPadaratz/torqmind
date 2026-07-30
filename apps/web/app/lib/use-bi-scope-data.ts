@@ -92,7 +92,7 @@ export function useBiScopeData<T>({
         setClaims(me);
 
         if (!scope.dt_ini || !scope.dt_fim) {
-          router.replace(me?.home_path || '/dashboard');
+          router.replace(me?.home_path || '/sales');
           return;
         }
 

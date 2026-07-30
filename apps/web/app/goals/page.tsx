@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
@@ -21,18 +21,21 @@ import { formatGoalTargetInputFromNumber, normalizeGoalTargetInput, parseGoalTar
 import { startScopeTransition } from '../lib/scope-runtime';
 import CommissionsTab from './CommissionsTab';
 import CommissionConfigTab from './CommissionConfigTab';
-import BudgetConfigTab from './BudgetConfigTab';
 
 export const dynamic = 'force-dynamic';
 
-type GoalsTab = 'metas' | 'comissoes' | 'config' | 'orcamento';
+type GoalsTab = 'metas' | 'comissoes' | 'config';
 
 const GOALS_TAB_SCREENS: Record<GoalsTab, string> = {
   metas: 'goals_team.metas',
   comissoes: 'goals_team.comissoes',
   config: 'goals_team.config',
-  orcamento: 'goals_team.orcamento',
 };
+
+function parseGoalsTab(raw: string | null): GoalsTab | null {
+  if (raw === 'metas' || raw === 'comissoes' || raw === 'config') return raw;
+  return null;
+}
 
 function buildRiskStatus(score: number) {
   if (score >= 80) return { label: 'Atenção operacional', className: 'warn' };
@@ -63,21 +66,34 @@ export default function GoalsPage() {
   const [metaError, setMetaError] = useState('');
   const singleBranchId = scope.id_filial || (scope.id_filiais.length === 1 ? scope.id_filiais[0] : null);
   const metaEditable = Boolean(singleBranchId);
-  const [activeTab, setActiveTab] = useState<GoalsTab>('metas');
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<GoalsTab>(
+    () => parseGoalsTab(searchParams.get('tab')) || 'metas',
+  );
   const [commissionRefresh, setCommissionRefresh] = useState(0);
+
+  useEffect(() => {
+    const fromUrl = parseGoalsTab(searchParams.get('tab'));
+    if (fromUrl) setActiveTab(fromUrl);
+  }, [searchParams]);
 
   const userLabel = useMemo(() => {
     return buildUserLabel(claims);
   }, [claims]);
 
   const allowedTabs = useMemo(() => {
-    const all: GoalsTab[] = ['metas', 'comissoes', 'config', 'orcamento'];
+    const all: GoalsTab[] = ['metas', 'comissoes', 'config'];
     return all.filter((tab) => canAccessScreenKey(claims, GOALS_TAB_SCREENS[tab]));
   }, [claims]);
   const effectiveTab: GoalsTab = allowedTabs.includes(activeTab)
     ? activeTab
     : (allowedTabs[0] || 'metas');
 
+  const selectTab = (tab: GoalsTab) => {
+    setActiveTab(tab);
+    const href = buildProductHref(tab === 'metas' ? '/goals' : `/goals?tab=${tab}`, scope);
+    router.replace(href);
+  };
   const leaderboard = useMemo(
     () =>
       (data?.leaderboard || [])
@@ -174,33 +190,32 @@ export default function GoalsPage() {
     <div>
       <AppNav title="Metas e Equipe" userLabel={userLabel} />
       <div className="container">
-        {/* Tab navigation */}
-        <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0, marginTop: 8 }}>
-          {([
-            { key: 'metas' as const, label: 'Metas & Equipe' },
-            { key: 'comissoes' as const, label: 'Comissões' },
-            { key: 'config' as const, label: 'Configuração' },
-            { key: 'orcamento' as const, label: 'Gestão Orçamentária' },
-          ] as const).filter((tab) => allowedTabs.includes(tab.key)).map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              style={{
-                padding: '10px 20px',
-                fontSize: 13,
-                fontWeight: effectiveTab === tab.key ? 700 : 400,
-                background: 'transparent',
-                border: 'none',
-                borderBottom: effectiveTab === tab.key ? '2px solid var(--color-accent, #3b82f6)' : '2px solid transparent',
-                color: effectiveTab === tab.key ? 'var(--text)' : 'var(--text-muted)',
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+        {effectiveTab !== 'metas' ? (
+          <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0, marginTop: 8 }}>
+            {([
+              { key: 'comissoes' as const, label: 'Comissões' },
+              { key: 'config' as const, label: 'Configuração' },
+            ] as const).filter((tab) => allowedTabs.includes(tab.key)).map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => selectTab(tab.key)}
+                style={{
+                  padding: '10px 20px',
+                  fontSize: 13,
+                  fontWeight: effectiveTab === tab.key ? 700 : 400,
+                  background: 'transparent',
+                  border: 'none',
+                  borderBottom: effectiveTab === tab.key ? '2px solid var(--accent-gold)' : '2px solid transparent',
+                  color: effectiveTab === tab.key ? 'var(--text)' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {/* Commission tabs */}
         {effectiveTab === 'comissoes' && (
@@ -216,13 +231,6 @@ export default function GoalsPage() {
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
             onSaved={() => setCommissionRefresh((n) => n + 1)}
-          />
-        )}
-
-        {effectiveTab === 'orcamento' && (
-          <BudgetConfigTab
-            idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
-            idFilial={singleBranchId ? Number(singleBranchId) : null}
           />
         )}
 
@@ -242,6 +250,13 @@ export default function GoalsPage() {
           </div>
         ) : (
           <div className="bi-grid" style={{ marginTop: 12 }}>
+            <div className="card col-12" style={{ paddingBottom: 8 }}>
+              <div className="sectionEyebrow">Ranking da equipe</div>
+              <h2 style={{ marginTop: 4 }}>Desempenho e pódio</h2>
+              <div className="muted" style={{ marginTop: 6 }}>
+                Rankings e motivação da equipe — separado da configuração de metas financeiras.
+              </div>
+            </div>
             <div
               className="card col-12"
               style={{
@@ -461,7 +476,11 @@ export default function GoalsPage() {
           </div>
 
           <div className="card col-12 teamIndicatorsCard">
-            <div className="panelHead">
+            <div className="sectionEyebrow">Metas e projeção</div>
+            <h2 style={{ marginTop: 4 }}>Acompanhamento da meta do período</h2>
+            <div className="muted" style={{ marginTop: 6, marginBottom: 12 }}>
+              Definição de meta, projeção de fechamento e histórico — fora do ranking de vendedores.
+            </div>            <div className="panelHead">
               <div>
                 <h2>Indicadores da equipe</h2>
                 <div className="muted">Foco em metas válidas para o período atual e insights por filial.</div>

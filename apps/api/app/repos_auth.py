@@ -617,7 +617,7 @@ def _build_dashboard_home_path(
     include_dt_ref: bool = False,
     *,
     include_dates: bool = True,
-    base_route: str = "/dashboard",
+    base_route: str = "/sales",
 ) -> str:
     params: list[tuple[str, str]] = [("id_empresa", str(scope["id_empresa"]))]
     if include_dates:
@@ -1033,7 +1033,7 @@ def _build_session_context(
         if product_access_enabled
         else "/platform"
         if can_access_platform(user_role)
-        else "/dashboard"
+        else "/sales"
     )
     if include_default_scope and product_access_enabled and product_scope_tenant is not None:
         default_scope = _build_default_product_scope(product_scope_tenant, product_scope_branch)

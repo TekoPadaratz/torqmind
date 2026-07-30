@@ -26,11 +26,11 @@ export default function ScopePage() {
           id_empresa: params.get('id_empresa') || me?.default_scope?.id_empresa,
           id_filial: params.get('id_filial') || me?.default_scope?.id_filial,
         });
-        router.replace(`/dashboard?${redirected.toString()}`);
+        router.replace(`/sales?${redirected.toString()}`);
         return;
       }
 
-      router.replace(me?.home_path || '/dashboard');
+      router.replace(me?.home_path || '/sales');
     };
 
     redirect();
@@ -38,7 +38,7 @@ export default function ScopePage() {
 
   return (
     <div className="container">
-      <div className="card">Redirecionando para o dashboard de produção...</div>
+      <div className="card">Redirecionando para Vendas…</div>
     </div>
   );
 }

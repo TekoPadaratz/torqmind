@@ -40,7 +40,7 @@ class ReposAuthUnitTests(unittest.TestCase):
 
         self.assertEqual(
             path,
-            "/dashboard?dt_ini=2026-03-01&dt_fim=2026-03-28&id_empresa=1&dt_ref=2026-03-28&id_filial=14458",
+            "/sales?dt_ini=2026-03-01&dt_fim=2026-03-28&id_empresa=1&dt_ref=2026-03-28&id_filial=14458",
         )
 
     def test_build_dashboard_home_path_keeps_multi_branch_query_string_stable(self):
@@ -58,7 +58,7 @@ class ReposAuthUnitTests(unittest.TestCase):
 
         self.assertEqual(
             path,
-            "/dashboard?dt_ini=2026-03-01&dt_fim=2026-03-28&id_empresa=1&dt_ref=2026-03-28&id_filiais=14458&id_filiais=17337",
+            "/sales?dt_ini=2026-03-01&dt_fim=2026-03-28&id_empresa=1&dt_ref=2026-03-28&id_filiais=14458&id_filiais=17337",
         )
 
     def test_build_dashboard_home_path_can_omit_server_side_date_defaults(self):
@@ -74,7 +74,7 @@ class ReposAuthUnitTests(unittest.TestCase):
             include_dates=False,
         )
 
-        self.assertEqual(path, "/dashboard?id_empresa=1&id_filial=14458")
+        self.assertEqual(path, "/sales?id_empresa=1&id_filial=14458")
 
     def test_default_product_scope_anchors_on_business_today_while_preserving_latest_operational_date(self):
         with patch(
@@ -118,7 +118,7 @@ class ReposAuthUnitTests(unittest.TestCase):
         self.assertEqual(scope["branch_scope"], "all")
         self.assertEqual(
             _build_dashboard_home_path(scope, include_dates=False),
-            "/dashboard?id_empresa=1&id_filiais=14458&id_filiais=17337",
+            "/sales?id_empresa=1&id_filiais=14458&id_filiais=17337",
         )
 
     def test_email_lookup_uses_parameterized_query(self):
