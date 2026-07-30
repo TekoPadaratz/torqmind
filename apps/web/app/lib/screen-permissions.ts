@@ -19,31 +19,23 @@ export type ScreenMenu = {
 
 /** Fallback local se o registry da API falhar (mantém UI utilizável). */
 export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
-  { key: "dashboard_home", label: "Dashboard Geral", category: "BI", panels: [] },
-  { key: "sales", label: "Vendas", category: "BI", panels: [] },
-  { key: "cash", label: "Caixa", category: "Operação", panels: [] },
   {
-    key: "fraud",
-    label: "Antifraude",
-    category: "Operação",
-    panels: [
-      { key: "fraud.core", label: "Cancelamentos e operadores" },
-      { key: "fraud.risco_financeiro", label: "Risco financeiro / créditos" },
-    ],
+    key: "sales",
+    label: "Vendas",
+    category: "Comercial",
+    panels: [{ key: "sales.abc", label: "Curva ABC" }],
   },
-  { key: "customers", label: "Clientes", category: "Comercial", panels: [] },
-  { key: "finance", label: "Financeiro", category: "Financeiro", panels: [] },
   {
-    key: "profit_management",
-    label: "Gestão de Lucro",
-    category: "Financeiro",
-    panels: [
-      { key: "profit_management.overview", label: "Visão Geral (DRE)" },
-      { key: "profit_management.products", label: "Produtos" },
-      { key: "profit_management.repricing", label: "Oportunidades" },
-      { key: "profit_management.solvencia", label: "Solvência", requires_sensitive_role: true },
-      { key: "profit_management.anp", label: "Compliance ANP", requires_sensitive_role: true },
-    ],
+    key: "customers",
+    label: "Clientes",
+    category: "Comercial",
+    panels: [],
+  },
+  {
+    key: "inventory",
+    label: "Estoque",
+    category: "Comercial",
+    panels: [],
   },
   {
     key: "competitor_pricing",
@@ -58,12 +50,57 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
   {
     key: "goals_team",
     label: "Metas & Equipe",
-    category: "Equipe",
+    category: "Comercial",
     panels: [
       { key: "goals_team.metas", label: "Metas" },
       { key: "goals_team.comissoes", label: "Comissões" },
       { key: "goals_team.config", label: "Config. comissões" },
-      { key: "goals_team.orcamento", label: "Orçamento" },
+    ],
+  },
+  {
+    key: "cash",
+    label: "Caixa",
+    category: "Operação",
+    panels: [],
+  },
+  {
+    key: "fraud",
+    label: "Antifraude",
+    category: "Operação",
+    panels: [
+      { key: "fraud.core", label: "Cancelamentos e operadores" },
+      { key: "fraud.risco_financeiro", label: "Risco financeiro / créditos" },
+      { key: "fraud.credito_funcionario", label: "Crédito funcionário" },
+    ],
+  },
+  {
+    key: "fuel_loss",
+    label: "Perda de combustível",
+    category: "Operação",
+    panels: [],
+  },
+  {
+    key: "finance",
+    label: "Financeiro",
+    category: "Financeiro",
+    panels: [
+      { key: "finance.overview", label: "Geral (Pagar × Receber)" },
+      { key: "finance.payable", label: "Contas a pagar" },
+      { key: "finance.receivable", label: "Contas a receber" },
+      { key: "finance.cheques", label: "Controle de cheques" },
+      { key: "finance.budget", label: "Gestão orçamentária" },
+    ],
+  },
+  {
+    key: "profit_management",
+    label: "Gestão de Lucro",
+    category: "Financeiro",
+    panels: [
+      { key: "profit_management.overview", label: "Visão Geral (DRE)" },
+      { key: "profit_management.products", label: "Produtos" },
+      { key: "profit_management.repricing", label: "Oportunidades" },
+      { key: "profit_management.solvencia", label: "Solvência", requires_sensitive_role: true },
+      { key: "profit_management.anp", label: "Compliance ANP", requires_sensitive_role: true },
     ],
   },
 ];

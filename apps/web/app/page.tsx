@@ -35,7 +35,7 @@ export default function LoginPage() {
           return;
         }
         window.location.href = buildCanonicalProductHref(
-          res.data?.home_path || "/dashboard",
+          res.data?.home_path || "/sales",
           session,
           { scopeEpoch: createScopeEpoch() },
         );
@@ -89,7 +89,7 @@ export default function LoginPage() {
       return;
     }
     window.location.href = buildCanonicalProductHref(
-      data?.home_path || "/dashboard",
+      data?.home_path || "/sales",
       session,
       { scopeEpoch: createScopeEpoch() },
     );

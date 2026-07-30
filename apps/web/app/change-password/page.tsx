@@ -99,10 +99,10 @@ export default function ChangePasswordPage() {
 
       try {
         const me = await apiGet("/auth/me");
-        const dest = me?.home_path || me?.default_route || "/dashboard";
+        const dest = me?.home_path || me?.default_route || "/sales";
         window.location.href = dest;
       } catch {
-        window.location.href = "/dashboard";
+        window.location.href = "/sales";
       }
     } catch (err: any) {
       const status = err?.response?.status;

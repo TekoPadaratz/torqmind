@@ -912,6 +912,45 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         ),
         "enabled": True,
     },
+    # Aferição operacional do bico (ato + litros). Não é validade INMETRO.
+    "afericoes": {
+        "table": "dbo.AFERICAO",
+        "watermark_column": WATERMARK_ALIAS,
+        "event_date_column": EVENT_DATE_ALIAS,
+        "watermark_order_by": f"{WATERMARK_ALIAS}, ID_AFERICAO, ID_FILIAL",
+        "cursor_pk_columns": ["ID_AFERICAO", "ID_FILIAL"],
+        "required_fields": ["ID_AFERICAO", "ID_FILIAL"],
+        "unique_key_fields": ["ID_FILIAL", "ID_AFERICAO"],
+        "preflight_tables": {
+            "dbo.AFERICAO": [
+                "ID_AFERICAO",
+                "ID_FILIAL",
+                "ID_BICOS",
+                "ID_TURNOS",
+                "QTDE",
+                "DATA",
+            ],
+        },
+        "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "query": (
+            "SELECT a.*, "
+            "CAST(a.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
+            "CAST(a.DATA AS datetime2) AS TORQMIND_WATERMARK "
+            "FROM dbo.AFERICAO a"
+        ),
+        "enabled": True,
+    },
+    "bicos": {
+        "table": "dbo.BICOS",
+        "watermark_column": "ID_BICOS",
+        "watermark_order_by": "ID_BICOS, ID_FILIAL",
+        "full_refresh": True,
+        "preflight_tables": {
+            "dbo.BICOS": ["ID_BICOS", "ID_FILIAL"],
+        },
+        "enabled": True,
+    },
     "estoque": {
         "table": "dbo.ESTOQUE",
         "watermark_column": "ID_ESTOQUE",

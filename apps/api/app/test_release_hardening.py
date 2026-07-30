@@ -457,7 +457,7 @@ class ReleaseHardeningTest(unittest.TestCase):
                 env,
             )
             self.assertEqual(login.returncode, 0, login.stderr or login.stdout)
-            self.assertIn("/dashboard?", login.stdout)
+            self.assertIn("/sales?", login.stdout)
 
     def test_migrate_fixes_operational_business_date_semantics_independent_of_session_timezone(self) -> None:
         with temporary_database() as db_name:

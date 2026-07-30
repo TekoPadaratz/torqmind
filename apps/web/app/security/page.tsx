@@ -139,10 +139,10 @@ export default function SecurityPage() {
     sessionStorage.removeItem(SETUP_TOKEN_KEY);
     void apiGet("/auth/me")
       .then((me) => {
-        window.location.href = me?.home_path || me?.default_route || "/dashboard";
+        window.location.href = me?.home_path || me?.default_route || "/sales";
       })
       .catch(() => {
-        window.location.href = "/dashboard";
+        window.location.href = "/sales";
       });
   }
 

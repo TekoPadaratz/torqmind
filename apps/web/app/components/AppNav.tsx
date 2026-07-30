@@ -15,16 +15,48 @@ import { clearSessionCache, loadSession, readCachedSession } from '../lib/sessio
 import { buildValidatedScope, validateScopeDraft } from '../lib/scope-validation.mjs';
 import { prefetchProductScope, startScopeTransition, useScopeTransitionState } from '../lib/scope-runtime';
 import {
-  PRODUCT_LINKS,
   buildProductHref,
   buildScopeSearchParams,
   createScopeEpoch,
-  filterProductLinks,
+  filterProductNavGroups,
   getScopeControls,
   hasExplicitBranchSelection,
   readScopeFromSearch,
 } from '../lib/product-scope.mjs';
 import ThemeToggleButton from './ThemeToggleButton';
+
+const FILTER_DOCK_KEY = 'tm.filterDock';
+const TOPNAV_KEY = 'tm.topNav';
+
+function linkIsActive(pathname: string, searchParams: URLSearchParams, itemPath: string) {
+  const url = new URL(itemPath, 'https://torqmind.local');
+  if (pathname !== url.pathname) return false;
+  let paramsMatch = true;
+  url.searchParams.forEach((value, key) => {
+    if (searchParams.get(key) !== value) paramsMatch = false;
+  });
+  if (!paramsMatch) return false;
+  // Exact finance overview: no view= when item has none
+  if (url.pathname === '/finance' && !url.searchParams.has('view')) {
+    return !searchParams.get('view');
+  }
+  if (url.pathname === '/goals' && !url.searchParams.has('tab')) {
+    const tab = searchParams.get('tab');
+    return !tab || tab === 'metas';
+  }
+  // /sales should not stay active on /sales/abc
+  if (url.pathname === '/sales' && !itemPath.includes('/abc')) {
+    return pathname === '/sales';
+  }
+  return true;
+}
+
+function groupIsActive(pathname: string, children: { path: string }[]) {
+  return children.some((child) => {
+    const url = new URL(child.path, 'https://torqmind.local');
+    return pathname === url.pathname;
+  });
+}
 
 type BranchOption = {
   id_filial: number;
@@ -132,14 +164,59 @@ export default function AppNav({
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [unread, setUnread] = useState(initialUnread ?? 0);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [alerts, setAlerts] = useState<any[]>([]);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
   const [navHidden, setNavHidden] = useState(false);
+  const [topNavCollapsed, setTopNavCollapsed] = useState(false);
   const headerRef = useRef<HTMLElement | null>(null);
+  const [filterDockCollapsed, setFilterDockCollapsed] = useState(false);
+  const [openFlyout, setOpenFlyout] = useState<string | null>(null);
+  const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     document.body.classList.add('product-shell');
     return () => document.body.classList.remove('product-shell');
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(FILTER_DOCK_KEY);
+      if (stored === 'collapsed') setFilterDockCollapsed(true);
+      const top = window.localStorage.getItem(TOPNAV_KEY);
+      if (top === 'collapsed') setTopNavCollapsed(true);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle('filter-dock-collapsed', filterDockCollapsed);
+    document.body.style.setProperty('--sidebar-w', filterDockCollapsed ? '56px' : '316px');
+    try {
+      window.localStorage.setItem(FILTER_DOCK_KEY, filterDockCollapsed ? 'collapsed' : 'pinned');
+    } catch {
+      /* ignore */
+    }
+  }, [filterDockCollapsed]);
+
+  useEffect(() => {
+    document.body.classList.toggle('topnav-collapsed', topNavCollapsed);
+    try {
+      window.localStorage.setItem(TOPNAV_KEY, topNavCollapsed ? 'collapsed' : 'pinned');
+    } catch {
+      /* ignore */
+    }
+  }, [topNavCollapsed]);
+
+  useEffect(() => {
+    return () => {
+      document.body.classList.remove('filter-dock-collapsed');
+      document.body.classList.remove('topnav-collapsed');
+      document.body.style.removeProperty('--sidebar-w');
+    };
   }, []);
 
   // Segurança de scroll: ao clicar na barra (sidebar ou documento), limpa seleção
@@ -301,6 +378,23 @@ export default function AppNav({
       active = false;
     };
   }, [activeScope, initialUnread]);
+
+  const toggleAlerts = async () => {
+    const next = !alertsOpen;
+    setAlertsOpen(next);
+    if (!next) return;
+    setAlertsLoading(true);
+    try {
+      const qs = buildScopeSearchParams(activeScope).toString();
+      const response = await apiGet(`/bi/notifications?unread_only=true&limit=12${qs ? `&${qs}` : ''}`);
+      setAlerts(Array.isArray(response?.items) ? response.items : []);
+      setUnread(Number(response?.unread || 0));
+    } catch {
+      setAlerts([]);
+    } finally {
+      setAlertsLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!auxiliaryLoadsEnabled) return;
@@ -520,7 +614,7 @@ export default function AppNav({
 
   return (
     <>
-      <header ref={headerRef} className={`productTopNav${navHidden ? ' navHidden' : ''}`}>
+      <header ref={headerRef} className={`productTopNav${navHidden || topNavCollapsed ? ' navHidden' : ''}`}>
         <div className="productTopBar">
           <div className="productBrand productBrandInline">
             <Image src="/brand/Logo_Icone.png" alt="TorqMind" width={34} height={34} priority />
@@ -531,23 +625,98 @@ export default function AppNav({
           </div>
 
           <nav className="productTopLinks" aria-label="Navegação principal do produto">
-            {filterProductLinks(session?.allowed_screens).map((item: any) => {
-              const isActive = pathname === item.path;
+            {filterProductNavGroups(session?.allowed_screens).map((group) => {
+              const active = groupIsActive(pathname, group.children);
+              const open = openFlyout === group.id;
               return (
-                <Link
-                  key={item.path}
-                  href={buildProductHref(item.path, navScope)}
-                  className={`productTopLink ${isActive ? 'productTopLinkActive' : ''}`}
+                <div
+                  key={group.id}
+                  className={`productNavGroup${active ? ' is-active' : ''}${open ? ' is-open' : ''}`}
+                  onMouseEnter={() => {
+                    if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+                    setOpenFlyout(group.id);
+                  }}
+                  onMouseLeave={() => {
+                    flyoutCloseTimer.current = setTimeout(() => setOpenFlyout(null), 160);
+                  }}
                 >
-                  {item.label}
-                </Link>
+                  <button
+                    type="button"
+                    className={`productTopLink productNavGroupBtn${active ? ' productTopLinkActive' : ''}`}
+                    aria-expanded={open}
+                    aria-haspopup="menu"
+                    onClick={() => setOpenFlyout((cur) => (cur === group.id ? null : group.id))}
+                    onFocus={() => setOpenFlyout(group.id)}
+                  >
+                    {group.label}
+                    <span className="productNavCaret" aria-hidden>
+                      ▾
+                    </span>
+                  </button>
+                  {open ? (
+                    <div className="productFlyout" role="menu">
+                      {group.children.map((item) => {
+                        const itemActive = linkIsActive(pathname, searchParams, item.path);
+                        return (
+                          <Link
+                            key={`${group.id}-${item.path}`}
+                            href={buildProductHref(item.path, navScope)}
+                            className={`productFlyoutLink${itemActive ? ' is-active' : ''}`}
+                            role="menuitem"
+                            onClick={() => setOpenFlyout(null)}
+                          >
+                            {item.label}
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
               );
             })}
           </nav>
 
           <div className="productTopActions">
             <ThemeToggleButton />
-            <span className="pill">Alertas {unread}</span>
+            <button
+              type="button"
+              className="btn"
+              aria-label={topNavCollapsed ? 'Mostrar menu superior' : 'Ocultar menu superior'}
+              title={topNavCollapsed ? 'Mostrar menu superior' : 'Ocultar menu superior'}
+              onClick={() => setTopNavCollapsed((v) => !v)}
+            >
+              {topNavCollapsed ? '☰' : '⌃'}
+            </button>
+            {unread > 0 ? (
+              <div className="alertsMenu">
+                <button
+                  type="button"
+                  className="pill alertsPill"
+                  aria-expanded={alertsOpen}
+                  onClick={() => void toggleAlerts()}
+                >
+                  Alertas {unread}
+                </button>
+                {alertsOpen ? (
+                  <div className="alertsDropdown card">
+                    {alertsLoading ? (
+                      <div className="muted" style={{ fontSize: 12 }}>Carregando…</div>
+                    ) : !alerts.length ? (
+                      <div className="muted" style={{ fontSize: 12 }}>Sem alertas não lidos.</div>
+                    ) : (
+                      <ul className="alertsList">
+                        {alerts.map((item: any) => (
+                          <li key={item.id || item.notification_id || item.title}>
+                            <strong>{item.title || item.severity || 'Alerta'}</strong>
+                            <span className="muted">{item.message || item.body || item.detail || ''}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {currentUserLabel ? <div className="pill productUserPill">{currentUserLabel}</div> : null}
             {session?.access?.platform ? (
               <Link className="btn" href="/platform">
@@ -567,7 +736,39 @@ export default function AppNav({
         </div>
       </header>
 
-      <aside className="productSidebar">
+      {topNavCollapsed ? (
+        <button
+          type="button"
+          className="btn topNavReveal"
+          aria-label="Mostrar menu superior"
+          title="Mostrar menu superior"
+          onClick={() => setTopNavCollapsed(false)}
+        >
+          ☰ Menu
+        </button>
+      ) : null}
+
+      <aside className={`productSidebar${filterDockCollapsed ? ' is-collapsed' : ''}`}>
+        <div className="productSidebarDockBar">
+          <button
+            type="button"
+            className="btn productDockToggle"
+            aria-expanded={!filterDockCollapsed}
+            aria-label={filterDockCollapsed ? 'Expandir filtros' : 'Recolher filtros'}
+            title={filterDockCollapsed ? 'Expandir filtros' : 'Recolher filtros'}
+            onClick={() => setFilterDockCollapsed((v) => !v)}
+          >
+            {filterDockCollapsed ? '»' : '«'}
+          </button>
+          {!filterDockCollapsed ? (
+            <span className="productDockLabel">Filtros</span>
+          ) : (
+            <span className="productDockCollapsedHint">Filtros</span>
+          )}
+        </div>
+
+        {!filterDockCollapsed ? (
+          <>
         <div className="productSidebarHeader">
           <div className="productEyebrow">Contexto operacional</div>
           <div className="productBrandTitle">{title}</div>
@@ -749,6 +950,8 @@ export default function AppNav({
             {applying ? 'Aplicando...' : 'Aplicar filtros'}
           </button>
         </div>
+          </>
+        ) : null}
       </aside>
     </>
   );

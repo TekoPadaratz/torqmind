@@ -239,8 +239,11 @@ def _turno_value_sql(payload_expr: str, id_turno_expr: str) -> str:
 def _turno_label(turno_value: Any, id_turno: Any = None) -> str:
     value = str(turno_value or "").strip()
     if value and value != "0":
+        # Prefer operational number as "Turno N" when purely numeric.
+        if value.isdigit():
+            return f"Turno {value}"
         return value
-    return "Turno sem cadastro"
+    return "Turno não resolvido"
 
 
 def _event_type_label(event_type: Any) -> str:

@@ -12,7 +12,9 @@ import {
 } from "recharts";
 
 import AppNav from "../components/AppNav";
+import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
+import GridPager from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { apiGet } from "../lib/api";
@@ -21,7 +23,6 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { describeChurnCoverage } from "../lib/reading-copy.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
@@ -67,7 +68,7 @@ function buildChurnSignal(customer: any) {
 export default function CustomersPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
-  const [delinquencyPage, setDelinquencyPage] = useState(0);
+  const [delinquencyPage, setDelinquencyPage] = useState(1);
   const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
   // Filtro-sobre-filtro: postos selecionados nos cards (vazio = todos os postos do escopo).
   const [selectedFiliais, setSelectedFiliais] = useState<Set<number>>(new Set());
@@ -102,8 +103,6 @@ export default function CustomersPage() {
       })),
     [data],
   );
-  const anon = data?.anonymous_retention || {};
-  const anonKpis = anon?.kpis || {};
   const churnSnapshot = data?.churn_snapshot || {};
   const delinquency = data?.delinquency || {};
   const delinquencyByFilial = delinquency?.by_filial || [];
@@ -144,18 +143,18 @@ export default function CustomersPage() {
       })),
     [delinquency],
   );
-  const delinquencyPageSize = 10;
+  const delinquencyPageSize = 30;
   const delinquencyPageCount = Math.max(
     1,
     Math.ceil(filteredDelinquency.length / delinquencyPageSize),
   );
   const delinquencyPageItems = useMemo(() => {
-    const safePage = Math.min(delinquencyPage, Math.max(delinquencyPageCount - 1, 0));
-    const start = safePage * delinquencyPageSize;
+    const safePage = Math.min(Math.max(1, delinquencyPage), delinquencyPageCount);
+    const start = (safePage - 1) * delinquencyPageSize;
     return filteredDelinquency.slice(start, start + delinquencyPageSize);
   }, [filteredDelinquency, delinquencyPage, delinquencyPageCount]);
   useEffect(() => {
-    setDelinquencyPage(0);
+    setDelinquencyPage(1);
   }, [data?.commercial_coverage?.effective_dt_fim, filteredDelinquency.length]);
   // Limpa a selecao de postos quando o escopo/janela muda (respeita o filtro global).
   useEffect(() => {
@@ -244,13 +243,6 @@ export default function CustomersPage() {
   );
   const { query: topCustomersQ, setQuery: setTopCustomersQ, filteredRows: filteredTopCustomers } =
     useGridSearch(topCustomersRows);
-  const anonDowRows = useMemo(
-    () =>
-      (Array.isArray(anon?.breakdown_dow) ? anon.breakdown_dow : []) as Record<string, unknown>[],
-    [anon?.breakdown_dow],
-  );
-  const { query: anonQ, setQuery: setAnonQ, filteredRows: filteredAnonDow } = useGridSearch(anonDowRows);
-
   return (
     <div>
       <AppNav title="Análise de Clientes" userLabel={userLabel} />
@@ -293,40 +285,6 @@ export default function CustomersPage() {
                   {loading ? "..." : formatCurrency(data?.rfm?.faturamento_90d)}
                 </div>
               </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Recorrência anônima</div>
-                <div className="value">
-                  {loading
-                    ? "..."
-                    : `${Number(anonKpis?.trend_pct || 0).toFixed(1)}%`}
-                </div>
-              </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Impacto estimado (7d)</div>
-                <div className="value">
-                  {loading
-                    ? "..."
-                    : formatCurrency(anonKpis?.impact_estimated_7d)}
-                </div>
-              </div>
-              <div className="card kpi col-4 riskCard">
-                <div className="label">Índice de recorrência anônima</div>
-                <div className="value">
-                  {loading
-                    ? "..."
-                    : `${Number(anonKpis?.repeat_proxy_idx || 0).toFixed(1)}%`}
-                </div>
-              </div>
-
-
-              <div className="card col-12">
-                <div className="sectionEyebrow">Inadimplência e cobrança</div>
-                <h2 style={{ marginTop: 4 }}>Visão completa de contas vencidas e a vencer</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Apenas contas já vencidas entram no ranking de cobrança. As contas a vencer são exibidas como contexto para planejamento de fluxo de caixa.
-                </div>
-              </div>
-
               <div className="card kpi col-3 riskCard">
                 <div className="label">Clientes em atraso</div>
                 <div className="value">
@@ -385,26 +343,7 @@ export default function CustomersPage() {
                 </div>
               </div>
 
-              <div className="card col-12">
-                <h2>Distribuição por faixa de atraso (vencidos)</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Concentração de títulos e valores vencidos por faixa de dias em atraso.
-                </div>
-              </div>
-
-              {(delinquency?.buckets || []).map((b: any) => (
-                <div className="card kpi col-4 riskCard" key={b?.bucket || b?.label}>
-                  <div className="label">{`Vencido ${b?.label || b?.bucket || ""}`}</div>
-                  <div className="value">
-                    {loading ? "..." : formatCurrency(Number(b?.valor || 0))}
-                  </div>
-                  <div className="muted" style={{ marginTop: 8 }}>
-                    {loading ? "..." : `${Number(b?.titulos || 0)} título(s)`}
-                  </div>
-                </div>
-              ))}
-
-              <div className="card col-12 chartCard">
+              <div className="card col-6 chartCard">
                 <h2>Distribuição por faixa de atraso</h2>
                 {!loading && !delinquencyChart.length ? (
                   <EmptyState
@@ -425,7 +364,9 @@ export default function CustomersPage() {
                         tickFormatter={formatCurrency}
                         width={112}
                       />
-                      <Tooltip formatter={(value: any) => formatCurrency(value)} />
+                      <Tooltip
+                        content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
+                      />
                       <Bar
                         dataKey="valor"
                         fill="#f97316"
@@ -433,6 +374,20 @@ export default function CustomersPage() {
                       />
                     </BarChart>
                   </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="card col-6">
+                <h2>Faixas em atraso</h2>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginTop: 12 }}>
+                  {(delinquency?.buckets || []).map((b: any) => (
+                    <div className="card kpi riskCard" key={b?.bucket || b?.label}>
+                      <div className="label">{`Vencido ${b?.label || b?.bucket || ""}`}</div>
+                      <div className="value">{loading ? "..." : formatCurrency(Number(b?.valor || 0))}</div>
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        {loading ? "..." : `${Number(b?.titulos || 0)} título(s)`}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -461,7 +416,7 @@ export default function CustomersPage() {
                             color: delinquencySort === opt.key ? "var(--on-accent)" : undefined,
                             borderColor: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
                           }}
-                          onClick={() => { setDelinquencySort(opt.key); setDelinquencyPage(0); }}
+                          onClick={() => { setDelinquencySort(opt.key); setDelinquencyPage(1); }}
                         >
                           {opt.label}
                         </button>
@@ -472,36 +427,11 @@ export default function CustomersPage() {
                         value={delinquencySearch}
                         onChange={(value) => {
                           setDelinquencySearch(value);
-                          setDelinquencyPage(0);
+                          setDelinquencyPage(1);
                         }}
                       />
                     </div>
                   </div>
-                  {filteredDelinquency.length > delinquencyPageSize ? (
-                    <div className="inlinePager">
-                      <button
-                        className="btn"
-                        type="button"
-                        onClick={() => setDelinquencyPage((current) => Math.max(current - 1, 0))}
-                        disabled={delinquencyPage <= 0}
-                      >
-                        Pagina anterior
-                      </button>
-                      <div className="muted">
-                        Pagina {Math.min(delinquencyPage + 1, delinquencyPageCount)} de {delinquencyPageCount}
-                      </div>
-                      <button
-                        className="btn"
-                        type="button"
-                        onClick={() =>
-                          setDelinquencyPage((current) => Math.min(current + 1, delinquencyPageCount - 1))
-                        }
-                        disabled={delinquencyPage >= delinquencyPageCount - 1}
-                      >
-                        Proxima pagina
-                      </button>
-                    </div>
-                  ) : null}
                 </div>
                 {!loading && !(delinquency?.customers || []).length ? (
                   <EmptyState
@@ -624,6 +554,14 @@ export default function CustomersPage() {
                     </tbody>
                   </table>
                 </div>
+                <GridPager
+                  page={Math.min(Math.max(1, delinquencyPage), delinquencyPageCount)}
+                  totalPages={delinquencyPageCount}
+                  total={filteredDelinquency.length}
+                  pageSize={delinquencyPageSize}
+                  onPrev={() => setDelinquencyPage((page) => Math.max(1, page - 1))}
+                  onNext={() => setDelinquencyPage((page) => Math.min(delinquencyPageCount, page + 1))}
+                />
               </div>
 
                             <div className="card col-12">
@@ -871,7 +809,7 @@ export default function CustomersPage() {
                         width={112}
                       />
                       <Tooltip
-                        formatter={(value: any) => formatCurrency(value)}
+                        content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
                       />
                       <Bar
                         dataKey="faturamento"
@@ -914,66 +852,6 @@ export default function CustomersPage() {
                 </table>
               </div>
 
-              <div className="card col-12">
-                <h2>Radar de recorrência anônima</h2>
-                <div className="muted" style={{ marginBottom: 8 }}>
-                  {loading
-                    ? "..."
-                    : anonKpis?.recommendation ||
-                      "Sem leitura adicional para o período."}
-                </div>
-                <div style={{ margin: "8px 0" }}>
-                  <GridSearchInput value={anonQ} onChange={setAnonQ} />
-                </div>
-                {!loading && !anonDowRows.length ? (
-                  <EmptyState
-                    title="Sem leitura anônima suficiente neste período."
-                    detail="A integração ainda não trouxe volume confiável para comparar recorrência sem identificação nominal."
-                  />
-                ) : null}
-                <table className="table compact">
-                  <thead>
-                    <tr>
-                      <th>Dia da semana</th>
-                      <th>Atual</th>
-                      <th>Período anterior</th>
-                      <th>Tendência</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAnonDow.map((r: any) => (
-                      <tr key={r.dow}>
-                        <td>{r.dow}</td>
-                        <td>{formatCurrency(r.anon_current)}</td>
-                        <td>{formatCurrency(r.anon_prev)}</td>
-                        <td>{Number(r.trend_pct || 0).toFixed(1)}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div className="card" style={{ marginTop: 12 }}>
-              <div className="muted">
-                Recorrência, churn e oportunidades de reativação da base, com
-                leitura própria de comportamento do cliente e sem misturar
-                sinais de caixa ou cancelamento operacional.
-              </div>
-              {!loading ? (
-                <div style={{ marginTop: 10, fontWeight: 700 }}>
-                  {describeChurnCoverage(churnSnapshot)}
-                </div>
-              ) : null}
-            </div>
-            <div className="card" style={{ marginTop: 12 }}>
-              <div className="muted">
-                A recorrência anônima compara o movimento recente de clientes
-                sem identificação nominal com a semana comparável anterior.
-                Quando o percentual fica negativo, a frequência caiu. Quando
-                sobe, a rotina de retorno ficou mais forte. O índice de
-                recorrência junta estabilidade e repetição do fluxo para mostrar
-                onde vale agir primeiro.
-              </div>
             </div>
           </>
         )}

@@ -1,16 +1,75 @@
 import { buildBrowserLocalDefaultScope } from './local-scope-defaults.mjs';
 
+/** Leaf product routes (used for scope prefetch + ACL flat filter). */
 export const PRODUCT_LINKS = [
-  { path: '/dashboard', label: 'Dashboard Geral', screen_key: 'dashboard_home' },
   { path: '/sales', label: 'Vendas', screen_key: 'sales' },
-  { path: '/cash', label: 'Caixa', screen_key: 'cash' },
-  { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
+  { path: '/sales/abc', label: 'Curva ABC', screen_key: 'sales.abc', parent_screen: 'sales' },
   { path: '/customers', label: 'Clientes', screen_key: 'customers' },
-  { path: '/finance', label: 'Financeiro', screen_key: 'finance' },
-  { path: '/profit-management', label: 'Gestão de Lucro', screen_key: 'profit_management' },
+  { path: '/inventory', label: 'Estoque', screen_key: 'inventory' },
   { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
   { path: '/goals', label: 'Metas & Equipe', screen_key: 'goals_team' },
+  { path: '/goals?tab=comissoes', label: 'Comissões', screen_key: 'goals_team.comissoes', parent_screen: 'goals_team' },
+  { path: '/cash', label: 'Caixa', screen_key: 'cash' },
+  { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
+  { path: '/fuel-loss', label: 'Perda de combustível', screen_key: 'fuel_loss' },
+  { path: '/finance', label: 'Geral (Pagar × Receber)', screen_key: 'finance.overview', parent_screen: 'finance' },
+  { path: '/finance?view=payable', label: 'Contas a pagar', screen_key: 'finance.payable', parent_screen: 'finance' },
+  { path: '/finance?view=receivable', label: 'Contas a receber', screen_key: 'finance.receivable', parent_screen: 'finance' },
+  { path: '/finance?view=cheques', label: 'Controle de cheques', screen_key: 'finance.cheques', parent_screen: 'finance' },
+  { path: '/finance?view=budget', label: 'Gestão orçamentária', screen_key: 'finance.budget', parent_screen: 'finance' },
+  { path: '/profit-management', label: 'Gestão de Lucro', screen_key: 'profit_management' },
 ];
+
+/**
+ * Top-nav domains with flyout children.
+ * `screen_key` on a child may be a panel; visibility also checks parent_screen / menu key.
+ */
+export const PRODUCT_NAV_GROUPS = [
+  {
+    id: 'comercial',
+    label: 'Comercial',
+    children: [
+      { path: '/sales', label: 'Vendas', screen_key: 'sales' },
+      { path: '/sales/abc', label: 'Curva ABC', screen_key: 'sales.abc', parent_screen: 'sales' },
+      { path: '/customers', label: 'Clientes', screen_key: 'customers' },
+      { path: '/inventory', label: 'Estoque', screen_key: 'inventory' },
+      { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
+      { path: '/goals', label: 'Metas & Equipe', screen_key: 'goals_team' },
+      { path: '/goals?tab=comissoes', label: 'Comissões', screen_key: 'goals_team.comissoes', parent_screen: 'goals_team' },
+    ],
+  },
+  {
+    id: 'financeiro',
+    label: 'Financeiro',
+    children: [
+      { path: '/finance', label: 'Geral (Pagar × Receber)', screen_key: 'finance.overview', parent_screen: 'finance' },
+      { path: '/finance?view=payable', label: 'Contas a pagar', screen_key: 'finance.payable', parent_screen: 'finance' },
+      { path: '/finance?view=receivable', label: 'Contas a receber', screen_key: 'finance.receivable', parent_screen: 'finance' },
+      { path: '/finance?view=cheques', label: 'Controle de cheques', screen_key: 'finance.cheques', parent_screen: 'finance' },
+      { path: '/finance?view=budget', label: 'Gestão orçamentária', screen_key: 'finance.budget', parent_screen: 'finance' },
+      { path: '/profit-management', label: 'Gestão de Lucro', screen_key: 'profit_management' },
+    ],
+  },
+  {
+    id: 'operacao',
+    label: 'Operação',
+    children: [
+      { path: '/cash', label: 'Caixa', screen_key: 'cash' },
+      { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
+      { path: '/fuel-loss', label: 'Perda de combustível', screen_key: 'fuel_loss' },
+    ],
+  },
+];
+
+function screenAllowed(set, link) {
+  if (set.has(link.screen_key)) return true;
+  if (link.parent_screen && set.has(link.parent_screen)) return true;
+  // Legado: finance menu without panels → all finance children
+  if (link.parent_screen === 'finance' && set.has('finance')) return true;
+  if (link.screen_key === 'goals_team.comissoes' && set.has('goals_team')) return true;
+  if (link.screen_key === 'sales.abc' && set.has('sales')) return true;
+  return false;
+}
 
 /**
  * Filter PRODUCT_LINKS to only those the user has screen access to.
@@ -25,7 +84,24 @@ export function filterProductLinks(allowed_screens) {
     return [];
   }
   const set = new Set(allowed_screens);
-  return PRODUCT_LINKS.filter((link) => set.has(link.screen_key));
+  return PRODUCT_LINKS.filter((link) => screenAllowed(set, link));
+}
+
+/** Filter nav groups for flyout rendering. */
+export function filterProductNavGroups(allowed_screens) {
+  if (!Array.isArray(allowed_screens)) {
+    return PRODUCT_NAV_GROUPS;
+  }
+  if (allowed_screens.length === 0) {
+    return [];
+  }
+  const set = new Set(allowed_screens);
+  return PRODUCT_NAV_GROUPS
+    .map((group) => ({
+      ...group,
+      children: group.children.filter((link) => screenAllowed(set, link)),
+    }))
+    .filter((group) => group.children.length > 0);
 }
 
 function normalizeScopeEpoch(rawValue) {
@@ -45,12 +121,12 @@ const SCOPE_QUERY_KEYS = [
 ];
 
 function normalizeProductPath(rawPath) {
-  const fallbackPath = typeof rawPath === 'string' && rawPath.trim() ? rawPath.trim() : '/dashboard';
+  const fallbackPath = typeof rawPath === 'string' && rawPath.trim() ? rawPath.trim() : '/sales';
   const normalizedPath = fallbackPath.startsWith('/') ? fallbackPath : `/${fallbackPath}`;
   const url = new URL(normalizedPath, 'https://torqmind.local');
 
   return {
-    pathname: url.pathname || '/dashboard',
+    pathname: url.pathname || '/sales',
     searchParams: new URLSearchParams(url.searchParams),
   };
 }
@@ -196,8 +272,19 @@ export function buildScopeSearchParams(scope, options = {}) {
 }
 
 export function buildProductHref(path, scope, options = {}) {
-  const qs = buildScopeSearchParams(scope, options).toString();
-  return qs ? `${path}?${qs}` : path;
+  const { pathname, searchParams: pathParams } = normalizeProductPath(path);
+  const merged = new URLSearchParams(pathParams);
+  const scopeParams = buildScopeSearchParams(scope, options);
+  for (const [key, value] of scopeParams.entries()) {
+    if (SCOPE_QUERY_KEYS.includes(key)) {
+      merged.delete(key);
+    }
+  }
+  for (const [key, value] of scopeParams.entries()) {
+    merged.append(key, value);
+  }
+  const qs = merged.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
 }
 
 export function buildCanonicalProductHref(path, session, options = {}) {

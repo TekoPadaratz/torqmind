@@ -362,6 +362,8 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
                 }]
             if "with turn_sales as" in q and "from torqmind_current.stg_comprovantes_slim as c final" in q:
                 self.assertIn("and c.id_turno > 0", q)
+                self.assertIn("turn_ops", q)
+                self.assertIn("inner join turn_ops", q)
                 self.assertRegex(q, r"and c\.data_key >= 20260401 and c\.data_key <= 20260430|and data_key >= 20260401 and data_key <= 20260430")
                 self.assertIn("limit 15", q)
                 return [{
@@ -408,7 +410,7 @@ class TestCashOverviewRealtimeLabels(unittest.TestCase):
         validated = CashOverviewResponse.model_validate(result)
         turno = validated.turnos[0]
         self.assertEqual(turno["filial_label"], "AUTO POSTO VR 07")
-        self.assertEqual(turno["turno_label"], "3")
+        self.assertEqual(turno["turno_label"], "Turno 3")
         self.assertEqual(turno["usuario_label"], "Camila S")
         self.assertEqual(turno["qtd_vendas"], 12)
         self.assertEqual(float(turno["total_cancelamentos"]), 50.0)

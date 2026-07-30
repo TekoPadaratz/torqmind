@@ -50,14 +50,22 @@ logger = logging.getLogger(__name__)
 # - Toda nova aba/painel DEVE ser registrada aqui + require_screen no endpoint
 #   + checkbox no cadastro de usuário (árvore via screen_permission_tree()).
 SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
+    # Legado: mantido para API/cache; oculto do menu e do cadastro de ACL.
     "dashboard_home": {
-        "label": "Dashboard",
+        "label": "Dashboard (legado)",
         "category": "BI",
         "has_sensitive": True,
+        "nav_hidden": True,
     },
     "sales": {
         "label": "Vendas",
-        "category": "BI",
+        "category": "Comercial",
+        "has_sensitive": True,
+    },
+    "sales.abc": {
+        "label": "Curva ABC",
+        "category": "Comercial",
+        "parent": "sales",
         "has_sensitive": True,
     },
     "cash": {
@@ -93,9 +101,49 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "category": "Financeiro",
         "has_sensitive": True,
     },
+    "finance.overview": {
+        "label": "Geral (Pagar × Receber)",
+        "category": "Financeiro",
+        "parent": "finance",
+        "has_sensitive": True,
+    },
+    "finance.payable": {
+        "label": "Contas a pagar",
+        "category": "Financeiro",
+        "parent": "finance",
+        "has_sensitive": True,
+    },
+    "finance.receivable": {
+        "label": "Contas a receber",
+        "category": "Financeiro",
+        "parent": "finance",
+        "has_sensitive": True,
+    },
+    "finance.cheques": {
+        "label": "Controle de cheques",
+        "category": "Financeiro",
+        "parent": "finance",
+        "has_sensitive": True,
+    },
+    "finance.budget": {
+        "label": "Gestão orçamentária",
+        "category": "Financeiro",
+        "parent": "finance",
+        "has_sensitive": True,
+    },
     "customers": {
         "label": "Clientes",
         "category": "Comercial",
+        "has_sensitive": False,
+    },
+    "inventory": {
+        "label": "Estoque",
+        "category": "Comercial",
+        "has_sensitive": True,
+    },
+    "fuel_loss": {
+        "label": "Perda de combustível",
+        "category": "Operação",
         "has_sensitive": False,
     },
     "competitor_pricing": {
@@ -123,30 +171,30 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     "goals_team": {
         "label": "Metas & Equipe",
-        "category": "Equipe",
+        "category": "Comercial",
         "has_sensitive": True,
     },
     "goals_team.metas": {
         "label": "Metas",
-        "category": "Equipe",
+        "category": "Comercial",
         "parent": "goals_team",
         "has_sensitive": True,
     },
     "goals_team.comissoes": {
         "label": "Comissões",
-        "category": "Equipe",
+        "category": "Comercial",
         "parent": "goals_team",
         "has_sensitive": True,
     },
     "goals_team.config": {
         "label": "Config. comissões",
-        "category": "Equipe",
+        "category": "Comercial",
         "parent": "goals_team",
         "has_sensitive": True,
     },
     "goals_team.orcamento": {
         "label": "Orçamento",
-        "category": "Equipe",
+        "category": "Comercial",
         "parent": "goals_team",
         "has_sensitive": True,
     },
@@ -214,7 +262,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
 
 def is_menu_screen(screen_key: str) -> bool:
     meta = SCREEN_REGISTRY.get(screen_key) or {}
-    return bool(meta) and not meta.get("parent") and not meta.get("platform_only")
+    return bool(meta) and not meta.get("parent") and not meta.get("platform_only") and not meta.get("nav_hidden")
 
 
 def is_panel_screen(screen_key: str) -> bool:
@@ -232,8 +280,12 @@ def expand_screen_permissions(raw: Set[str]) -> Set[str]:
 
     - Parent present without any of its panels → grant all panels (legado).
     - Any panel present → ensure parent is present (nav + pré-requisito).
+    - dashboard_home (legado) → garante sales (nova home do produto).
     """
     result = {k for k in raw if k in SCREEN_REGISTRY}
+    # Migração IA: Dashboard Geral removido do menu; quem tinha só ele passa a Vendas.
+    if "dashboard_home" in result and "sales" not in result:
+        result.add("sales")
     parents = {
         k for k, v in SCREEN_REGISTRY.items()
         if not v.get("parent") and not v.get("platform_only") and not v.get("kiosk_only")
@@ -257,6 +309,8 @@ def screen_permission_tree(*, include_kiosk: bool = False, include_platform: boo
     for key, meta in SCREEN_REGISTRY.items():
         if meta.get("parent"):
             continue
+        if meta.get("nav_hidden"):
+            continue
         if meta.get("platform_only") and not include_platform:
             continue
         if meta.get("kiosk_only") and not include_kiosk:
@@ -264,6 +318,8 @@ def screen_permission_tree(*, include_kiosk: bool = False, include_platform: boo
         children = []
         for child_key in screen_children(key):
             child = SCREEN_REGISTRY[child_key]
+            if child.get("nav_hidden"):
+                continue
             children.append(
                 {
                     "key": child_key,
@@ -341,6 +397,7 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
     "custo_medio",
     "custo_total",
     "custo_unitario",
+    "custo_estoque",
     "cost",
     "markup",
     "rentabilidade",
@@ -423,28 +480,31 @@ def resolve_default_route(claims: dict[str, Any]) -> str:
 
     if user_role in _FINANCIAL_ROLES or user_role in {"tenant_manager", "tenant_viewer"}:
         screens = get_allowed_screens(claims)
-        # First product screen in product order
+        # First product screen in IA order (Comercial → Operação → Financeiro)
         ordered = [
-            "dashboard_home", "sales", "cash", "fraud",
-            "customers", "finance", "profit_management",
-            "competitor_pricing", "goals_team",
+            "sales", "customers", "inventory", "competitor_pricing", "goals_team",
+            "cash", "fraud", "fuel_loss",
+            "finance", "profit_management",
+            "dashboard_home",  # legado
         ]
         for key in ordered:
             if key in screens:
                 route_map = {
-                    "dashboard_home": "/dashboard",
+                    "dashboard_home": "/sales",
                     "sales": "/sales",
                     "cash": "/cash",
                     "fraud": "/fraud",
                     "customers": "/customers",
                     "finance": "/finance",
                     "profit_management": "/profit-management",
+                    "inventory": "/inventory",
+                    "fuel_loss": "/fuel-loss",
                     "competitor_pricing": "/pricing",
                     "goals_team": "/goals",
                 }
                 return route_map[key]
 
-    return "/dashboard"
+    return "/sales"
 
 
 # ──────────────────────────────────────────────────────────────────────

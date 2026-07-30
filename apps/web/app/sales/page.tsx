@@ -13,6 +13,7 @@ import {
 } from "recharts";
 
 import AppNav from "../components/AppNav";
+import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
@@ -25,7 +26,6 @@ import {
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
-import SalesAbcSection from "./SalesAbcSection";
 
 export const dynamic = "force-dynamic";
 
@@ -172,15 +172,6 @@ export default function SalesPage() {
         ) : (
           <>
             <div className="bi-grid" style={{ marginTop: 12 }}>
-              <div className="card col-12">
-                <div className="sectionEyebrow">Resumo comercial</div>
-                <h2 style={{ marginTop: 4 }}>Vendas e cancelamentos por comprovante</h2>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  A tela usa comprovantes comerciais e separa movimentos válidos e cancelamentos.
-                  Margem e ticket seguem abaixo pela leitura por item.
-                </div>
-              </div>
-
               <div className="card kpi col-4">
                 <div className="label">Vendas</div>
                 <div className="value">
@@ -225,7 +216,9 @@ export default function SalesPage() {
                         tickFormatter={formatCurrency}
                         width={112}
                       />
-                      <Tooltip formatter={(value: any) => formatCurrency(value)} />
+                      <Tooltip
+                        content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
+                      />
                       <Legend />
                       <Bar
                         dataKey="atual"
@@ -305,7 +298,9 @@ export default function SalesPage() {
                         tickFormatter={formatCurrency}
                         width={112}
                       />
-                      <Tooltip formatter={(value: any) => formatCurrency(value)} />
+                      <Tooltip
+                        content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
+                      />
                       <Bar
                         dataKey="saidas"
                         fill="#34d399"
@@ -425,8 +420,6 @@ export default function SalesPage() {
                   />
                 </div>
               ) : null}
-
-              <SalesAbcSection />
             </div>
           </>
         )}

@@ -79,7 +79,7 @@ export async function loadSession(router: any, area: 'product' | 'platform', opt
       return null;
     }
     if (area === 'platform' && !canUsePlatform) {
-      router.push(me?.home_path || '/dashboard');
+      router.push(me?.home_path || '/sales');
       return null;
     }
 

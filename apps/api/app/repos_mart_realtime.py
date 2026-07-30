@@ -158,6 +158,7 @@ def _load_current_turno_values(id_empresa: int, rows: List[Dict[str, Any]]) -> D
             (int(row["id_filial"]), int(row["id_turno"]))
             for row in rows
             if row.get("id_filial") is not None and row.get("id_turno") is not None
+            and int(row.get("id_turno") or 0) > 0
         }
     )
     if not turno_pairs:
@@ -192,7 +193,72 @@ def _load_current_turno_values(id_empresa: int, rows: List[Dict[str, Any]]) -> D
     return {
         (int(row["id_filial"]), int(row["id_turno"])): str(row.get("turno_value") or "").strip()
         for row in result
+        if str(row.get("turno_value") or "").strip() not in {"", "0"}
     }
+
+
+def _load_operator_names(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple[int, int], str]:
+    """Resolve operador by (id_filial, id_usuario) from stg_usuarios / stg_funcionarios."""
+    pairs = sorted(
+        {
+            (int(row["id_filial"]), int(row["id_usuario"]))
+            for row in rows
+            if row.get("id_filial") is not None
+            and int(row.get("id_usuario") or 0) > 0
+            and not str(row.get("nome_operador") or "").strip()
+        }
+    )
+    if not pairs:
+        return {}
+    values = ", ".join(f"({fid}, {uid})" for fid, uid in pairs)
+    result = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            id_usuario,
+            argMax(
+                coalesce(
+                    nullIf(JSONExtractString(payload, 'NOME'), ''),
+                    nullIf(JSONExtractString(payload, 'LOGIN'), ''),
+                    nullIf(JSONExtractString(payload, 'NOMEUSUARIO'), '')
+                ),
+                source_ts_ms
+            ) AS nome
+        FROM {CURRENT_DB}.stg_usuarios FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND is_deleted = 0
+          AND (id_filial, id_usuario) IN ({values})
+        GROUP BY id_filial, id_usuario
+        """,
+        parameters={"id_empresa": id_empresa},
+    )
+    out = {
+        (int(row["id_filial"]), int(row["id_usuario"])): str(row.get("nome") or "").strip()
+        for row in result
+        if str(row.get("nome") or "").strip()
+    }
+    missing = [(f, u) for f, u in pairs if (f, u) not in out]
+    if missing:
+        values2 = ", ".join(f"({fid}, {uid})" for fid, uid in missing)
+        func_rows = query_dict(
+            f"""
+            SELECT
+                id_filial,
+                id_funcionario AS id_usuario,
+                argMax(nullIf(JSONExtractString(payload, 'NOME'), ''), source_ts_ms) AS nome
+            FROM {CURRENT_DB}.stg_funcionarios FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND is_deleted = 0
+              AND (id_filial, id_funcionario) IN ({values2})
+            GROUP BY id_filial, id_funcionario
+            """,
+            parameters={"id_empresa": id_empresa},
+        )
+        for row in func_rows:
+            nome = str(row.get("nome") or "").strip()
+            if nome:
+                out[(int(row["id_filial"]), int(row["id_usuario"]))] = nome
+    return out
 
 
 # ================================================================
@@ -1244,6 +1310,7 @@ def _enrich_open_turno(
     t: Dict[str, Any],
     filial_names: Dict[int, str],
     turno_values: Dict[tuple[int, int], str],
+    operator_names: Optional[Dict[tuple[int, int], str]] = None,
 ) -> Dict[str, Any]:
     """Add frontend-expected fields to turno data."""
     from datetime import datetime, timezone
@@ -1255,6 +1322,7 @@ def _enrich_open_turno(
     abertura = t.get("abertura_ts")
     id_filial = int(t["id_filial"]) if t.get("id_filial") is not None else None
     id_turno = int(t["id_turno"]) if t.get("id_turno") is not None else None
+    id_usuario = int(t["id_usuario"]) if t.get("id_usuario") is not None else None
     filial_nome = filial_names.get(id_filial or -1)
     turno_value = (
         turno_values.get((id_filial, id_turno))
@@ -1262,6 +1330,8 @@ def _enrich_open_turno(
         else None
     )
     usuario_nome = str(t.get("nome_operador") or "").strip()
+    if not usuario_nome and operator_names and id_filial is not None and id_usuario:
+        usuario_nome = str(operator_names.get((id_filial, id_usuario)) or "").strip()
     horas_aberto = None
     if abertura:
         try:
@@ -1374,11 +1444,14 @@ def cash_overview(
     """, parameters=params)
 
     # Top commercial turnos in the requested period.
+    # Ranking operacional: só turnos com TURNO >= 1 em stg_turnos (exclui caixa
+    # geral TURNO=0 e id_turno técnico órfão que polui o top com "não resolvido").
     all_turnos_raw = query_dict(f"""
         WITH turn_sales AS (
             SELECT
                 c.id_filial AS id_filial,
                 c.id_turno AS id_turno,
+                argMaxIf(c.id_usuario, c.dt_evento_local, c.id_usuario IS NOT NULL AND c.id_usuario > 0) AS id_usuario_venda,
                 min(c.dt_evento_local) AS first_event_at,
                 max(c.dt_evento_local) AS last_event_at,
                 round(sumIf(c.valor_total, c.cancelado = 0), 2) AS total_vendas,
@@ -1390,6 +1463,28 @@ def cash_overview(
               AND c.is_deleted = 0
               AND c.id_turno > 0
             GROUP BY c.id_filial, c.id_turno
+        ), turn_ops AS (
+            SELECT
+                id_filial,
+                id_turno,
+                argMax(
+                    coalesce(
+                        nullIf(JSONExtractString(payload, 'TURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NO_TURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NUMTURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NR_TURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'NROTURNO'), ''),
+                        nullIf(JSONExtractString(payload, 'TURNO_CAIXA'), ''),
+                        nullIf(JSONExtractString(payload, 'TURNOCAIXA'), '')
+                    ),
+                    source_ts_ms
+                ) AS turno_value
+            FROM {CURRENT_DB}.stg_turnos FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial}
+              AND is_deleted = 0
+              AND id_turno > 0
+            GROUP BY id_filial, id_turno
+            HAVING toInt32OrZero(turno_value) >= 1
         ), turn_meta AS (
             SELECT
                 id_filial,
@@ -1404,22 +1499,25 @@ def cash_overview(
               AND id_turno > 0
         )
         SELECT
-            s.id_filial,
-            s.id_turno,
-            m.id_usuario,
-            m.nome_operador,
+            s.id_filial AS id_filial,
+            s.id_turno AS id_turno,
+            coalesce(m.id_usuario, s.id_usuario_venda) AS id_usuario,
+            coalesce(nullIf(m.nome_operador, ''), '') AS nome_operador,
             coalesce(m.abertura_ts, s.first_event_at) AS abertura_ts,
             coalesce(m.fechamento_ts, s.last_event_at) AS fechamento_ts,
             coalesce(m.is_aberto, toUInt8(0)) AS is_aberto,
-            s.first_event_at,
-            s.last_event_at,
-            s.total_vendas,
-            s.qtd_vendas,
-            s.total_cancelamentos,
-            s.qtd_cancelamentos,
+            s.first_event_at AS first_event_at,
+            s.last_event_at AS last_event_at,
+            s.total_vendas AS total_vendas,
+            s.qtd_vendas AS qtd_vendas,
+            s.total_cancelamentos AS total_cancelamentos,
+            s.qtd_cancelamentos AS qtd_cancelamentos,
             toFloat64(0) AS total_pagamentos,
             round(s.total_vendas - s.total_cancelamentos, 2) AS saldo_comercial
         FROM turn_sales AS s
+        INNER JOIN turn_ops AS o
+          ON o.id_filial = s.id_filial
+         AND o.id_turno = s.id_turno
         LEFT JOIN turn_meta AS m
           ON m.id_filial = s.id_filial
          AND m.id_turno = s.id_turno
@@ -1507,9 +1605,16 @@ def cash_overview(
     label_source_rows = turnos_raw + all_turnos_raw
     filial_names = _load_current_filial_names(id_empresa, label_source_rows)
     turno_values = _load_current_turno_values(id_empresa, label_source_rows)
+    operator_names = _load_operator_names(id_empresa, label_source_rows)
 
-    turnos = [_enrich_open_turno(t, filial_names, turno_values) for t in turnos_raw]
-    all_turnos = [_enrich_open_turno(t, filial_names, turno_values) for t in all_turnos_raw]
+    turnos = [
+        _enrich_open_turno(t, filial_names, turno_values, operator_names)
+        for t in turnos_raw
+    ]
+    all_turnos = [
+        _enrich_open_turno(t, filial_names, turno_values, operator_names)
+        for t in all_turnos_raw
+    ]
 
     # Commercial KPIs from sales_daily_rt
     sales_rows = query_dict(f"""
@@ -2385,7 +2490,7 @@ def finance_kpis(
     dt_fim: date,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Finance aging KPIs."""
+    """KPIs de títulos financeiros a partir das faixas da mart realtime."""
     filial = _branch_clause("id_filial", id_filial)
 
     rows = query_dict(f"""
@@ -2400,7 +2505,157 @@ def finance_kpis(
         GROUP BY tipo_titulo, faixa
     """, parameters={"id_empresa": id_empresa})
 
-    return {"aging": rows, "source": "realtime", "realtime_source": _realtime_source()}
+    def _sum(tipo_titulo: int, faixas: set[str]) -> float:
+        return round(sum(
+            _to_float(row.get("valor_em_aberto"))
+            for row in rows
+            if _to_int(row.get("tipo_titulo")) == tipo_titulo
+            and str(row.get("faixa") or "") in faixas
+        ), 2)
+
+    abertas = {"vencido", "vence_7d", "vence_30d", "futuro"}
+    a_vencer = {"vence_7d", "vence_30d", "futuro"}
+    return {
+        "receber_aberto": _sum(1, abertas),
+        "pagar_aberto": _sum(0, abertas),
+        "receber_vencido": _sum(1, {"vencido"}),
+        "pagar_vencido": _sum(0, {"vencido"}),
+        "receber_a_vencer": _sum(1, a_vencer),
+        "pagar_a_vencer": _sum(0, a_vencer),
+        "aging": rows,
+        "source": "realtime",
+        "realtime_source": _realtime_source(),
+    }
+
+
+def finance_titles_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    tipo: int,
+    dt_ini: date,
+    dt_fim: date,
+    q: Optional[str] = None,
+    preset: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 30,
+    refresh: bool = False,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Lista títulos financeiros exclusivamente da mart publicada no ClickHouse."""
+    tipo = int(tipo)
+    if tipo not in (0, 1):
+        raise ValueError("tipo deve ser 0 (pagar) ou 1 (receber)")
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    filial = _branch_clause("id_filial", id_filial)
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "tipo": tipo,
+        "dt_ini": dt_ini,
+        "dt_fim": dt_fim,
+    }
+    # Base: títulos em aberto. Período do menu cobre vencimentos na janela
+    # e também vencidos ainda abertos (até dt_fim), para o grid não ficar
+    # “mudo” quando o KPI de aberto inclui carteira fora do mês filtrado.
+    where = (
+        "id_empresa = {id_empresa:Int32} "
+        "AND tipo_titulo = {tipo:Int8} "
+        "AND valor_aberto > 0.01"
+        f"{filial}"
+    )
+
+    preset = (preset or "").strip().lower()
+    if preset == "vencidos":
+        where += " AND status = 'vencido' AND dt_vencimento <= {dt_fim:Date}"
+    elif preset == "a_vencer_7d":
+        where += (
+            " AND status = 'a_vencer'"
+            " AND dt_vencimento >= today()"
+            " AND dt_vencimento <= today() + 7"
+        )
+    elif preset == "a_vencer_mes":
+        where += (
+            " AND status = 'a_vencer'"
+            " AND dt_vencimento >= today()"
+            " AND dt_vencimento <= toLastDayOfMonth(today())"
+        )
+    elif preset == "a_vencer":
+        where += " AND status = 'a_vencer' AND dt_vencimento >= today()"
+    elif preset:
+        raise ValueError("preset inválido")
+    else:
+        where += (
+            " AND ("
+            "  dt_vencimento BETWEEN {dt_ini:Date} AND {dt_fim:Date}"
+            "  OR (status = 'vencido' AND dt_vencimento <= {dt_fim:Date})"
+            " )"
+        )
+
+    search = (q or "").strip()
+    if search:
+        params["q"] = search
+        where += """
+          AND positionCaseInsensitiveUTF8(
+            concat(
+              entidade_nome, ' ',
+              toString(valor), ' ',
+              toString(valor_pago), ' ',
+              toString(valor_aberto), ' ',
+              formatDateTime(dt_vencimento, '%Y-%m-%d'), ' ',
+              ifNull(formatDateTime(dt_lancamento, '%Y-%m-%d'), '')
+            ),
+            {q:String}
+          ) > 0
+        """
+
+    count = query_scalar(
+        f"SELECT count() FROM {MART_RT_DB}.mart_finance_titles_rt FINAL WHERE {where}",
+        parameters=params,
+    )
+    total = int(count or 0)
+    totals_rows = query_dict(
+        f"""
+        SELECT
+          round(sum(valor), 2) AS total_valor,
+          round(sum(valor_aberto), 2) AS total_valor_aberto
+        FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
+        WHERE {where}
+        """,
+        parameters=params,
+    )
+    totals = totals_rows[0] if totals_rows else {}
+    offset = (page - 1) * page_size
+    rows = query_dict(f"""
+        SELECT
+          id_filial, tipo_titulo, id_titulo, id_db, id_entidade, entidade_nome,
+          dt_lancamento, dt_vencimento, valor, valor_pago, valor_aberto, status
+        FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
+        WHERE {where}
+        ORDER BY id_filial ASC, dt_lancamento DESC, dt_vencimento DESC, entidade_nome ASC, id_titulo ASC
+        LIMIT {page_size} OFFSET {offset}
+    """, parameters=params)
+    for row in rows:
+        fid = _to_int(row.get("id_filial"))
+        row["filial_nome"] = _filial_label(fid)
+
+    page_valor = round(sum(_to_float(r.get("valor")) for r in rows), 2)
+    page_aberto = round(sum(_to_float(r.get("valor_aberto")) for r in rows), 2)
+
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if page_size else 0,
+        "page_totals": {"valor": page_valor, "valor_aberto": page_aberto},
+        "totals": {
+            "valor": _to_float(totals.get("total_valor")),
+            "valor_aberto": _to_float(totals.get("total_valor_aberto")),
+        },
+        "source": "realtime",
+        "refresh_requested": bool(refresh),
+    }
 
 
 def finance_receipts_by_day(
@@ -4887,6 +5142,571 @@ def fraud_transferencia_cr(
 
 
 # ================================================================
+# ESTOQUE COMBUSTÍVEL (tanques + cobertura + sugestão)
+# ================================================================
+
+def inventory_fuel_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any = None,
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
+    dias_alvo: int = 7,
+    refresh: bool = False,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Estoque de combustíveis — leitura exclusiva ClickHouse.
+
+    Snapshot: ``torqmind_mart_rt.mart_inventory_tanks_rt`` (sensor LEITURA).
+    Média diária: ``stg_itenscomprovantes_slim`` no período (só produtos de tanque).
+    Exclui CFOP 1652 (cargas/transferências de 10k L) da média de venda na bomba.
+    """
+    try:
+        from app.filial_apelido import set_apelido_scope
+
+        set_apelido_scope(int(id_empresa))
+    except Exception:  # noqa: BLE001
+        pass
+
+    if refresh:
+        try:
+            from app.services.inventory_fuel import publish_inventory_tanks
+
+            publish_inventory_tanks(role, int(id_empresa))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inventory_fuel refresh/publish failed empresa=%s: %s",
+                id_empresa,
+                str(exc)[:240],
+            )
+
+    today = business_today(id_empresa)
+    if dt_ini is None or dt_fim is None:
+        dt_fim = today
+        dt_ini = today - timedelta(days=29)
+    if dt_fim < dt_ini:
+        dt_ini, dt_fim = dt_fim, dt_ini
+
+    try:
+        alvo = max(1, min(int(dias_alvo), 90))
+    except (TypeError, ValueError):
+        alvo = 7
+
+    days = max(1, (dt_fim - dt_ini).days + 1)
+    filial_sql = _branch_clause("id_filial", id_filial)
+
+    tanks = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            id_tanque,
+            id_produto,
+            produto_nome,
+            capacidade_l,
+            estoque_l,
+            custo_unitario,
+            custo_estoque,
+            data_leitura,
+            leitura_fresca
+        FROM {MART_RT_DB}.mart_inventory_tanks_rt FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND ativo = 1
+          {filial_sql}
+        ORDER BY id_filial, id_produto, id_tanque
+        """,
+        {"id_empresa": int(id_empresa)},
+    )
+
+    product_ids = sorted({int(r["id_produto"]) for r in tanks if int(r.get("id_produto") or 0) > 0})
+    media_map: Dict[tuple[int, int], float] = {}
+    if product_ids:
+        prod_list = ", ".join(str(i) for i in product_ids)
+        media_rows = query_dict(
+            f"""
+            SELECT
+                id_filial,
+                id_produto,
+                sum(litros) AS litros_periodo
+            FROM {MART_RT_DB}.mart_inventory_fuel_sales_daily_rt FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND id_produto IN ({prod_list})
+              AND dia >= %(dt_ini)s
+              AND dia <= %(dt_fim)s
+              {filial_sql}
+            GROUP BY id_filial, id_produto
+            """,
+            {
+                "id_empresa": int(id_empresa),
+                "dt_ini": dt_ini,
+                "dt_fim": dt_fim,
+            },
+        )
+        for row in media_rows:
+            litros = float(row.get("litros_periodo") or 0)
+            media_map[(int(row["id_filial"]), int(row["id_produto"]))] = litros / float(days)
+
+    # Capacidade total por (filial, produto) — rateia média de venda entre tanques.
+    cap_by_fp: Dict[tuple[int, int], float] = {}
+    for t in tanks:
+        fid = int(t["id_filial"])
+        pid = int(t.get("id_produto") or 0)
+        key = (fid, pid)
+        cap_by_fp[key] = _to_float(cap_by_fp.get(key, 0.0) + _to_float(t.get("capacidade_l"), 3), 3)
+
+    # Grão = tanque físico (uma linha por tanque; evita 7 tanques × 5 combustíveis).
+    by_filial: Dict[int, Dict[str, Any]] = {}
+    for t in tanks:
+        fid = int(t["id_filial"])
+        pid = int(t.get("id_produto") or 0)
+        tid = int(t.get("id_tanque") or 0)
+        block = by_filial.setdefault(
+            fid,
+            {
+                "id_filial": fid,
+                "filial_nome": _filial_label(fid) or f"Filial {fid}",
+                "tanques": 0,
+                "capacidade_l": 0.0,
+                "estoque_l": 0.0,
+                "custo_estoque": 0.0,
+                "data_leitura": None,
+                "leitura_fresca": False,
+                "itens": [],
+            },
+        )
+        block["tanques"] += 1
+        cap = _to_float(t.get("capacidade_l"), 3)
+        est = _to_float(t.get("estoque_l"), 3)
+        cus = _to_float(t.get("custo_estoque"), 2)
+        block["capacidade_l"] = _to_float(block["capacidade_l"] + cap, 3)
+        block["estoque_l"] = _to_float(block["estoque_l"] + est, 3)
+        block["custo_estoque"] = _to_float(block["custo_estoque"] + cus, 2)
+        dl = t.get("data_leitura")
+        dl_s = str(dl)[:10] if dl is not None else None
+        if dl_s:
+            prev = block["data_leitura"]
+            if prev is None or dl_s > str(prev):
+                block["data_leitura"] = dl_s
+        if int(t.get("leitura_fresca") or 0) == 1:
+            block["leitura_fresca"] = True
+
+        media_prod = _to_float(media_map.get((fid, pid), 0.0), 3)
+        cap_prod = _to_float(cap_by_fp.get((fid, pid), 0.0), 3)
+        share = (cap / cap_prod) if cap_prod > 0 else 0.0
+        media = _to_float(media_prod * share, 3)
+        disponivel = _to_float(max(cap - est, 0), 3)
+        pct_ocupado = _to_float((est / cap * 100.0) if cap > 0 else 0.0, 1)
+        pct_disp = _to_float((disponivel / cap * 100.0) if cap > 0 else 0.0, 1)
+        cobertura = _to_float(est / media, 1) if media > 0 else None
+        necessidade = _to_float(alvo * media, 3)
+        comprar = _to_float(max(necessidade - est, 0), 3)
+        combustivel = str(t.get("produto_nome") or "").strip() or f"Produto {pid}"
+        block["itens"].append(
+            {
+                "id_tanque": tid,
+                "id_produto": pid,
+                "combustivel": combustivel,
+                "tanques": 1,
+                "capacidade_l": cap,
+                "estoque_l": est,
+                "pct_ocupado": pct_ocupado,
+                "disponivel_l": disponivel,
+                "pct_disponivel": pct_disp,
+                "media_diaria_l": media,
+                "dias_cobertura": cobertura,
+                "necessidade_l": necessidade,
+                "comprar_l": comprar,
+                "custo_estoque": cus,
+                "data_leitura": dl_s,
+            }
+        )
+
+    filiais_out: List[Dict[str, Any]] = []
+    for fid in sorted(by_filial):
+        block = by_filial[fid]
+        rows_out = sorted(
+            block["itens"],
+            key=lambda r: (
+                str(r.get("combustivel") or ""),
+                int(r.get("id_tanque") or 0),
+            ),
+        )
+        cap_f = _to_float(block["capacidade_l"], 3)
+        est_f = _to_float(block["estoque_l"], 3)
+        filiais_out.append(
+            {
+                "id_filial": fid,
+                "filial_nome": block["filial_nome"],
+                "tanques": int(block["tanques"]),
+                "capacidade_l": cap_f,
+                "estoque_l": est_f,
+                "pct_ocupado": _to_float((est_f / cap_f * 100.0) if cap_f > 0 else 0.0, 1),
+                "custo_estoque": _to_float(block["custo_estoque"], 2),
+                "data_leitura": block["data_leitura"],
+                "leitura_fresca": bool(block["leitura_fresca"]),
+                "itens": rows_out,
+            }
+        )
+
+    tot_cap = _to_float(sum(f["capacidade_l"] for f in filiais_out), 3)
+    tot_est = _to_float(sum(f["estoque_l"] for f in filiais_out), 3)
+    tot_custo = _to_float(sum(f["custo_estoque"] for f in filiais_out), 2)
+
+    return {
+        "source": "clickhouse",
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
+        "dias_periodo": days,
+        "dias_alvo": alvo,
+        "kpis": {
+            "filiais": len(filiais_out),
+            "tanques": int(sum(f["tanques"] for f in filiais_out)),
+            "capacidade_l": tot_cap,
+            "estoque_l": tot_est,
+            "pct_estoque": _to_float((tot_est / tot_cap * 100.0) if tot_cap > 0 else 0.0, 1),
+            "custo_estoque": tot_custo,
+        },
+        "filiais": filiais_out,
+        "disclaimer": (
+            "Estoque de combustível = sensor do tanque (última LEITURA). "
+            "Média diária = litros vendidos no período ÷ dias do período "
+            "(mart publicada do STG; exclui CFOP 1652). "
+            f"Sugestão de compra = max(0, {alvo}×média − estoque)."
+        ),
+    }
+
+
+def inventory_fuel_loss_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any = None,
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
+    refresh: bool = False,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Conciliação diária: leitura D−1 × leitura D × vendas do dia D−1.
+
+    Perda = (LEITURA_ant − LEITURA_atu) − vendas, quando o tanque não sobe.
+    Dia com reposição (leitura sobe): status ``reposicao``, perda nula.
+    Leituras: ``mart_inventory_tank_readings_rt`` (sensor MOVTANQUES).
+    Vendas: slim itens (exclui CFOP 1652).
+    """
+    try:
+        from app.filial_apelido import set_apelido_scope
+
+        set_apelido_scope(int(id_empresa))
+    except Exception:  # noqa: BLE001
+        pass
+
+    if refresh:
+        try:
+            from app.services.inventory_fuel import publish_inventory_fuel_bundle
+
+            publish_inventory_fuel_bundle(role, int(id_empresa))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inventory_fuel_loss refresh failed empresa=%s: %s",
+                id_empresa,
+                str(exc)[:240],
+            )
+
+    today = business_today(id_empresa)
+    if dt_ini is None or dt_fim is None:
+        dt_fim = today
+        dt_ini = today - timedelta(days=13)
+    if dt_fim < dt_ini:
+        dt_ini, dt_fim = dt_fim, dt_ini
+
+    # Precisa do dia anterior à janela para formar o primeiro par
+    read_ini = dt_ini - timedelta(days=1)
+    filial_sql = _branch_clause("id_filial", id_filial)
+
+    readings = query_dict(
+        f"""
+        SELECT
+            id_filial,
+            id_tanque,
+            id_produto,
+            produto_nome,
+            capacidade_l,
+            dia,
+            leitura_l
+        FROM {MART_RT_DB}.mart_inventory_tank_readings_rt FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND ativo = 1
+          AND capacidade_l > 0
+          AND dia >= %(read_ini)s
+          AND dia <= %(dt_fim)s
+          {filial_sql}
+        ORDER BY id_filial, id_tanque, dia
+        """,
+        {
+            "id_empresa": int(id_empresa),
+            "read_ini": read_ini,
+            "dt_fim": dt_fim,
+        },
+    )
+
+    product_ids = sorted({int(r["id_produto"]) for r in readings if int(r.get("id_produto") or 0) > 0})
+    sales_map: Dict[tuple[int, int, str], float] = {}
+    if product_ids:
+        prod_list = ", ".join(str(i) for i in product_ids)
+        sales_rows = query_dict(
+            f"""
+            SELECT
+                id_filial,
+                id_produto,
+                dia,
+                litros
+            FROM {MART_RT_DB}.mart_inventory_fuel_sales_daily_rt FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND id_produto IN ({prod_list})
+              AND dia >= %(read_ini)s
+              AND dia <= %(dt_fim)s
+              {filial_sql}
+            """,
+            {
+                "id_empresa": int(id_empresa),
+                "read_ini": read_ini,
+                "dt_fim": dt_fim,
+            },
+        )
+        for row in sales_rows:
+            key = (int(row["id_filial"]), int(row["id_produto"]), str(row["dia"])[:10])
+            sales_map[key] = float(row.get("litros") or 0)
+
+    # Index readings by (filial, tanque) → list by day
+    by_tank: Dict[tuple[int, int], List[Dict[str, Any]]] = {}
+    meta: Dict[tuple[int, int], Dict[str, Any]] = {}
+    for r in readings:
+        key = (int(r["id_filial"]), int(r["id_tanque"]))
+        by_tank.setdefault(key, []).append(r)
+        meta[key] = {
+            "id_produto": int(r.get("id_produto") or 0),
+            "produto_nome": str(r.get("produto_nome") or ""),
+            "capacidade_l": _to_float(r.get("capacidade_l"), 3),
+        }
+
+    rows_out: List[Dict[str, Any]] = []
+    for (fid, tid), series in by_tank.items():
+        series_sorted = sorted(series, key=lambda x: str(x.get("dia")))
+        by_day = {str(x["dia"])[:10]: _to_float(x.get("leitura_l"), 3) for x in series_sorted}
+        info = meta[(fid, tid)]
+        pid = info["id_produto"]
+        d = dt_ini
+        while d <= dt_fim:
+            dia_s = d.isoformat()
+            ant_s = (d - timedelta(days=1)).isoformat()
+            if dia_s in by_day and ant_s in by_day:
+                leit_atu = by_day[dia_s]
+                leit_ant = by_day[ant_s]
+                vendas = _to_float(sales_map.get((fid, pid, ant_s), 0.0), 3)
+                delta = _to_float(leit_ant - leit_atu, 3)
+                if leit_atu > leit_ant + 0.5:
+                    status = "reposicao"
+                    entrada_aparente = _to_float(leit_atu - leit_ant, 3)
+                    perda = None
+                else:
+                    status = "ok"
+                    entrada_aparente = 0.0
+                    perda = _to_float(delta - vendas, 3)
+                    if abs(perda) < 0.05:
+                        perda = 0.0
+                rows_out.append(
+                    {
+                        "id_filial": fid,
+                        "filial_nome": _filial_label(fid) or f"Filial {fid}",
+                        "id_tanque": tid,
+                        "id_produto": pid,
+                        "combustivel": info["produto_nome"] or f"Produto {pid}",
+                        "capacidade_l": info["capacidade_l"],
+                        "dia": dia_s,
+                        "dia_anterior": ant_s,
+                        "leitura_anterior_l": leit_ant,
+                        "leitura_atual_l": leit_atu,
+                        "delta_sensor_l": delta,
+                        "vendas_l": vendas,
+                        "entrada_aparente_l": entrada_aparente,
+                        "perda_l": perda,
+                        "status": status,
+                    }
+                )
+            d += timedelta(days=1)
+
+    rows_out.sort(key=lambda r: (r["dia"], r["filial_nome"], r["combustivel"], r["id_tanque"]), reverse=True)
+
+    perdas = [float(r["perda_l"]) for r in rows_out if r.get("perda_l") is not None]
+    perda_total = _to_float(sum(perdas), 3) if perdas else 0.0
+    repos = sum(1 for r in rows_out if r.get("status") == "reposicao")
+
+    by_filial: Dict[int, Dict[str, Any]] = {}
+    for r in rows_out:
+        fid = int(r["id_filial"])
+        block = by_filial.setdefault(
+            fid,
+            {
+                "id_filial": fid,
+                "filial_nome": r["filial_nome"],
+                "itens": [],
+                "perda_l": 0.0,
+                "dias_reposicao": 0,
+            },
+        )
+        block["itens"].append(r)
+        if r.get("perda_l") is not None:
+            block["perda_l"] = _to_float(block["perda_l"] + float(r["perda_l"]), 3)
+        if r.get("status") == "reposicao":
+            block["dias_reposicao"] += 1
+
+    return {
+        "source": "clickhouse",
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
+        "kpis": {
+            "filiais": len(by_filial),
+            "pares": len(rows_out),
+            "perda_l": perda_total,
+            "dias_reposicao": repos,
+        },
+        "filiais": [by_filial[k] for k in sorted(by_filial)],
+        "itens": rows_out,
+        "disclaimer": (
+            "Leitura = sensor do tanque (MOVTANQUES.LEITURA na abertura). "
+            "Vendas = litros do combustível no dia da leitura anterior (após abertura D−1 até abertura D). "
+            "Perda = (leitura D−1 − leitura D) − vendas. "
+            "Dia com leitura maior que a anterior = reposição (entrada); perda não calculada. "
+            "Entradas LMC ainda não ingeridas no STG — bombas/bicos ficam para depois."
+        ),
+    }
+
+
+def inventory_fuel_afericoes_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any = None,
+    dt_ini: Optional[date] = None,
+    dt_fim: Optional[date] = None,
+    refresh: bool = False,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Aferições operacionais de bico no período (mart_afericoes_rt)."""
+    try:
+        from app.filial_apelido import set_apelido_scope
+
+        set_apelido_scope(int(id_empresa))
+    except Exception:  # noqa: BLE001
+        pass
+
+    if refresh:
+        try:
+            from app.services.afericoes import publish_afericoes
+
+            publish_afericoes(role, int(id_empresa))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inventory_fuel_afericoes refresh failed empresa=%s: %s",
+                id_empresa,
+                str(exc)[:240],
+            )
+
+    today = business_today(id_empresa)
+    if dt_ini is None or dt_fim is None:
+        dt_fim = today
+        dt_ini = today - timedelta(days=13)
+    if dt_fim < dt_ini:
+        dt_ini, dt_fim = dt_fim, dt_ini
+
+    filial_sql = _branch_clause("id_filial", id_filial)
+    rows = query_dict(
+        f"""
+        SELECT
+            id_empresa,
+            id_filial,
+            id_afericao,
+            id_bico,
+            id_turno,
+            turno_operacional,
+            bico_label,
+            produto_nome,
+            qtde_l,
+            dia,
+            dt_evento,
+            id_usuario,
+            id_usuario_lib,
+            operador_nome,
+            liberador_nome
+        FROM {MART_RT_DB}.mart_afericoes_rt FINAL
+        WHERE id_empresa = %(id_empresa)s
+          AND dia >= %(dt_ini)s
+          AND dia <= %(dt_fim)s
+          {filial_sql}
+        ORDER BY dia DESC, id_filial, id_afericao DESC
+        LIMIT 2000
+        """,
+        {
+            "id_empresa": int(id_empresa),
+            "dt_ini": dt_ini,
+            "dt_fim": dt_fim,
+        },
+    )
+
+    itens: List[Dict[str, Any]] = []
+    total_l = 0.0
+    for r in rows:
+        fid = _to_int(r.get("id_filial"))
+        qtde = _to_float(r.get("qtde_l"), 3)
+        total_l = _to_float(total_l + qtde, 3)
+        turno_op = _to_int(r.get("turno_operacional"))
+        if turno_op > 0:
+            turno_label = f"Turno {turno_op}"
+        else:
+            turno_label = "Turno não resolvido"
+        bico = str(r.get("bico_label") or "").strip()
+        if not bico:
+            id_bico = _to_int(r.get("id_bico"))
+            bico = f"Bico {id_bico}" if id_bico > 0 else "—"
+        dia_raw = r.get("dia")
+        dia_s = (
+            dia_raw.isoformat()
+            if hasattr(dia_raw, "isoformat")
+            else str(dia_raw or "")[:10]
+        )
+        itens.append(
+            {
+                "id_filial": fid,
+                "filial_nome": _filial_label(fid) or f"Filial {fid}",
+                "id_afericao": _to_int(r.get("id_afericao")),
+                "id_bico": _to_int(r.get("id_bico")),
+                "bico_label": bico,
+                "produto_nome": str(r.get("produto_nome") or "").strip() or "—",
+                "turno_operacional": turno_op,
+                "turno_label": turno_label,
+                "qtde_l": qtde,
+                "dia": dia_s,
+                "operador_nome": str(r.get("operador_nome") or "").strip() or "—",
+                "liberador_nome": str(r.get("liberador_nome") or "").strip() or "—",
+            }
+        )
+
+    return {
+        "source": "clickhouse",
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
+        "kpis": {
+            "afericoes": len(itens),
+            "litros": total_l,
+            "filiais": len({i["id_filial"] for i in itens}),
+        },
+        "itens": itens,
+        "disclaimer": (
+            "Aferição = ato operacional de bico (Xpert dbo.AFERICAO). "
+            "Turno exibido é o número operacional (payload TURNO), não o id técnico. "
+            "Sem sync do Agent, a lista fica vazia."
+        ),
+    }
+
+
+# ================================================================
 # INVENTORY (for analytics facade routing)
 # ================================================================
 
@@ -4914,6 +5734,7 @@ REALTIME_FUNCTIONS = {
     "fraud_transferencia_cr",
     "risk_top_employees",
     "finance_kpis",
+    "finance_titles_overview",
     "finance_receipts_by_day",
     "streaming_health",
     "goals_today",
@@ -4942,4 +5763,7 @@ REALTIME_FUNCTIONS = {
     "operational_score",
     "jarvis_briefing",
     "fraud_credito_funcionario",
+    "inventory_fuel_overview",
+    "inventory_fuel_loss_overview",
+    "inventory_fuel_afericoes_overview",
 }
