@@ -5,6 +5,7 @@ import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 
 import { clearAuth } from '../lib/auth';
+import ThemeToggleButton from './ThemeToggleButton';
 
 type PlatformShellProps = {
   title: string;
@@ -54,6 +55,7 @@ export default function PlatformShell({ title, subtitle, me, children }: Platfor
         </div>
 
         <div className="platformNavActions">
+          <ThemeToggleButton />
           {me?.access?.product ? (
             <Link className="btn" href={me?.home_path || '/dashboard'}>
               Produto
