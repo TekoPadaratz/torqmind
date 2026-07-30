@@ -749,54 +749,23 @@ body.product-shell .container {
   min-width: 0;
 }
 
-.productTopSecondary {
-  display: flex;
-  flex-direction: row;
+.productIconBtn {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 10px;
 }
-.productSecondaryBtn {
-  white-space: nowrap;
+.productLogoutBtn {
+  color: var(--accent-copper);
 }
-.productAccountMenu {
-  display: none;
-  position: relative;
-}
-.productAccountMenuSummary {
-  list-style: none;
-  cursor: pointer;
-}
-.productAccountMenuSummary::-webkit-details-marker {
-  display: none;
-}
-.productAccountMenuPanel {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  min-width: 180px;
-  display: grid;
-  gap: 2px;
-  padding: 8px;
-  border-radius: 12px;
-  border: 1px solid var(--chrome-border);
-  background: var(--chrome-face);
-  box-shadow: var(--chrome-shadow);
-  z-index: 40;
-}
-.productAccountMenuLink {
-  display: block;
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: var(--text);
-  text-decoration: none;
-  font-size: 13px;
-}
-.productAccountMenuLink:hover {
-  background: rgba(184, 115, 51, 0.12);
+.productLogoutBtn:hover {
+  border-color: rgba(184, 115, 51, 0.45);
+  background: rgba(184, 115, 51, 0.1);
 }
 
-/* Notebooks ~1366: comprime atalhos secundários, menus principais ficam na linha */
+/* Notebooks ~1366: comprime título/usuário; menus principais ficam na linha */
 @media (max-width: 1480px) {
   .productTopTitle {
     font-size: 16px;
@@ -804,19 +773,8 @@ body.product-shell .container {
   .productEyebrow {
     font-size: 10px;
   }
-  .productTopSecondary {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-  }
-  .productSecondaryBtn {
-    min-height: 28px;
-    padding: 0 10px;
-    font-size: 11px;
-    border-radius: 10px;
-  }
   .productUserPill {
-    max-width: 120px;
+    max-width: 140px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -824,16 +782,13 @@ body.product-shell .container {
 }
 
 @media (max-width: 1180px) {
-  .productTopSecondary {
-    display: none;
-  }
-  .productAccountMenu {
-    display: inline-block;
-  }
   .productTopLink {
     min-height: 38px;
     padding: 0 12px;
     font-size: 13px;
+  }
+  .productUserPill {
+    max-width: 100px;
   }
 }
 

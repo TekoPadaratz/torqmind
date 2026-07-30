@@ -138,12 +138,12 @@ function branchSelectionLabel(branches: BranchOption[], selectedIds: string[], s
 export default function AppNav({
   title,
   userLabel,
-  initialUnread,
   deferAuxiliaryLoads = false,
   hideScopeOnMobile = false,
 }: {
   title: string;
   userLabel?: string;
+  /** @deprecated Alertas saíram do topo; mantido só por compat de props. */
   initialUnread?: number;
   deferAuxiliaryLoads?: boolean;
   hideScopeOnMobile?: boolean;
@@ -163,10 +163,6 @@ export default function AppNav({
   const [branchSearch, setBranchSearch] = useState('');
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
-  const [unread, setUnread] = useState(initialUnread ?? 0);
-  const [alertsOpen, setAlertsOpen] = useState(false);
-  const [alertsLoading, setAlertsLoading] = useState(false);
-  const [alerts, setAlerts] = useState<any[]>([]);
   const [auxiliaryLoadsEnabled, setAuxiliaryLoadsEnabled] = useState(!deferAuxiliaryLoads);
   const scopeTransition = useScopeTransitionState();
   const [navHidden, setNavHidden] = useState(false);
@@ -282,12 +278,6 @@ export default function AppNav({
     };
   }, [router]);
 
-  useEffect(() => {
-    if (typeof initialUnread === 'number') {
-      setUnread(initialUnread);
-    }
-  }, [initialUnread]);
-
   // Keep the page content offset and sidebar position in sync with the REAL
   // height of the fixed top navigation. When the menu wraps to 3+ lines the
   // header grows; without this the content would be covered by the bar.
@@ -358,43 +348,6 @@ export default function AppNav({
     activeScope.branch_scope,
     scopeControls.branchLocked,
   ]);
-
-  useEffect(() => {
-    if (typeof initialUnread === 'number') return;
-
-    let active = true;
-    const loadUnread = async () => {
-      try {
-        const qs = buildScopeSearchParams(activeScope).toString();
-        const response = await apiGet(`/bi/notifications/unread-count${qs ? `?${qs}` : ''}`);
-        if (active) setUnread(Number(response?.unread || 0));
-      } catch {
-        if (active) setUnread(0);
-      }
-    };
-
-    loadUnread();
-    return () => {
-      active = false;
-    };
-  }, [activeScope, initialUnread]);
-
-  const toggleAlerts = async () => {
-    const next = !alertsOpen;
-    setAlertsOpen(next);
-    if (!next) return;
-    setAlertsLoading(true);
-    try {
-      const qs = buildScopeSearchParams(activeScope).toString();
-      const response = await apiGet(`/bi/notifications?unread_only=true&limit=12${qs ? `&${qs}` : ''}`);
-      setAlerts(Array.isArray(response?.items) ? response.items : []);
-      setUnread(Number(response?.unread || 0));
-    } catch {
-      setAlerts([]);
-    } finally {
-      setAlertsLoading(false);
-    }
-  };
 
   useEffect(() => {
     if (!auxiliaryLoadsEnabled) return;
@@ -674,86 +627,110 @@ export default function AppNav({
                 </div>
               );
             })}
+
+            {(() => {
+              const optionsActive =
+                pathname === '/platform' ||
+                pathname === '/settings' ||
+                pathname === '/security';
+              const open = openFlyout === 'options';
+              return (
+                <div
+                  className={`productNavGroup${optionsActive ? ' is-active' : ''}${open ? ' is-open' : ''}`}
+                  onMouseEnter={() => {
+                    if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+                    setOpenFlyout('options');
+                  }}
+                  onMouseLeave={() => {
+                    flyoutCloseTimer.current = setTimeout(() => setOpenFlyout(null), 160);
+                  }}
+                >
+                  <button
+                    type="button"
+                    className={`productTopLink productNavGroupBtn${optionsActive ? ' productTopLinkActive' : ''}`}
+                    aria-expanded={open}
+                    aria-haspopup="menu"
+                    onClick={() => setOpenFlyout((cur) => (cur === 'options' ? null : 'options'))}
+                    onFocus={() => setOpenFlyout('options')}
+                  >
+                    Opções
+                    <span className="productNavCaret" aria-hidden>
+                      ▾
+                    </span>
+                  </button>
+                  {open ? (
+                    <div className="productFlyout" role="menu">
+                      {session?.access?.platform ? (
+                        <Link
+                          href="/platform"
+                          className={`productFlyoutLink${pathname === '/platform' ? ' is-active' : ''}`}
+                          role="menuitem"
+                          onClick={() => setOpenFlyout(null)}
+                        >
+                          Plataforma
+                        </Link>
+                      ) : null}
+                      <Link
+                        href="/settings"
+                        className={`productFlyoutLink${pathname === '/settings' ? ' is-active' : ''}`}
+                        role="menuitem"
+                        onClick={() => setOpenFlyout(null)}
+                      >
+                        Configurações
+                      </Link>
+                      <Link
+                        href="/security"
+                        className={`productFlyoutLink${pathname === '/security' ? ' is-active' : ''}`}
+                        role="menuitem"
+                        onClick={() => setOpenFlyout(null)}
+                      >
+                        Minha Segurança
+                      </Link>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })()}
           </nav>
 
           <div className="productTopActions">
             <ThemeToggleButton />
             <button
               type="button"
-              className="btn"
+              className="btn productIconBtn"
               aria-label={topNavCollapsed ? 'Mostrar menu superior' : 'Ocultar menu superior'}
               title={topNavCollapsed ? 'Mostrar menu superior' : 'Ocultar menu superior'}
               onClick={() => setTopNavCollapsed((v) => !v)}
             >
               {topNavCollapsed ? '☰' : '⌃'}
             </button>
-            {unread > 0 ? (
-              <div className="alertsMenu">
-                <button
-                  type="button"
-                  className="pill alertsPill"
-                  aria-expanded={alertsOpen}
-                  onClick={() => void toggleAlerts()}
-                >
-                  Alertas {unread}
-                </button>
-                {alertsOpen ? (
-                  <div className="alertsDropdown card">
-                    {alertsLoading ? (
-                      <div className="muted" style={{ fontSize: 12 }}>Carregando…</div>
-                    ) : !alerts.length ? (
-                      <div className="muted" style={{ fontSize: 12 }}>Sem alertas não lidos.</div>
-                    ) : (
-                      <ul className="alertsList">
-                        {alerts.map((item: any) => (
-                          <li key={item.id || item.notification_id || item.title}>
-                            <strong>{item.title || item.severity || 'Alerta'}</strong>
-                            <span className="muted">{item.message || item.body || item.detail || ''}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ) : null}
+            {currentUserLabel ? (
+              <div className="pill productUserPill" title={currentUserLabel}>
+                {currentUserLabel}
               </div>
             ) : null}
-            {currentUserLabel ? <div className="pill productUserPill">{currentUserLabel}</div> : null}
-
-            <div className="productTopSecondary" aria-label="Atalhos da conta">
-              {session?.access?.platform ? (
-                <Link className="btn productSecondaryBtn" href="/platform">
-                  Plataforma
-                </Link>
-              ) : null}
-              <Link className="btn productSecondaryBtn" href="/settings">
-                Configurações
-              </Link>
-              <Link className="btn productSecondaryBtn" href="/security">
-                Minha Segurança
-              </Link>
-            </div>
-
-            <details className="productAccountMenu">
-              <summary className="btn productAccountMenuSummary" aria-label="Menu da conta">
-                Conta
-              </summary>
-              <div className="productAccountMenuPanel" role="menu">
-                {session?.access?.platform ? (
-                  <Link className="productAccountMenuLink" href="/platform" role="menuitem">
-                    Plataforma
-                  </Link>
-                ) : null}
-                <Link className="productAccountMenuLink" href="/settings" role="menuitem">
-                  Configurações
-                </Link>
-                <Link className="productAccountMenuLink" href="/security" role="menuitem">
-                  Minha Segurança
-                </Link>
-              </div>
-            </details>
-
-            <button className="btn" onClick={onLogout} aria-label="Sair da conta">
-              Sair
+            <button
+              type="button"
+              className="btn productIconBtn productLogoutBtn"
+              onClick={onLogout}
+              aria-label="Sair da conta"
+              title="Sair"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
             </button>
           </div>
         </div>
