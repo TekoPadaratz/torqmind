@@ -1020,8 +1020,8 @@ class APIConfig:
 
 @dataclass
 class RuntimeConfig:
-    batch_size: int = 5000
-    fetch_size: int = 2000
+    batch_size: int = 2000
+    fetch_size: int = 1000
     max_retries: int = 5
     timeout_seconds: int = 30
     connect_timeout_seconds: Optional[int] = None
@@ -1029,7 +1029,7 @@ class RuntimeConfig:
     retry_backoff_base_seconds: float = 1.0
     retry_backoff_max_seconds: float = 30.0
     retry_jitter_seconds: float = 0.0
-    batch_delay_seconds: float = 0.5
+    batch_delay_seconds: float = 0.75
     gzip_enabled: bool = True
     state_dir: str = "state"
     spool_dir: str = "spool"
@@ -1040,6 +1040,11 @@ class RuntimeConfig:
     rescan_hourly_window_hours: int = 2
     rescan_daily_window_days: int = 7
     rescan_daily_after_hour: int = 0
+    # Agent 2.0
+    revisit_max_rows: int = 5000
+    auto_update: bool = True
+    update_check_cycles: int = 30  # check every N cycles (~30 min at 60s)
+    log_file: str = "logs/torqmind-agent.log"
 
     @property
     def effective_connect_timeout_seconds(self) -> int:
@@ -1137,8 +1142,8 @@ def build_default_raw_config() -> Dict[str, Any]:
             "idempotency_header": "X-Idempotency-Key",
         },
         "runtime": {
-            "batch_size": 5000,
-            "fetch_size": 2000,
+            "batch_size": 2000,
+            "fetch_size": 1000,
             "max_retries": 5,
             "timeout_seconds": 30,
             "connect_timeout_seconds": 10,
@@ -1146,7 +1151,7 @@ def build_default_raw_config() -> Dict[str, Any]:
             "retry_backoff_base_seconds": 1.0,
             "retry_backoff_max_seconds": 30.0,
             "retry_jitter_seconds": 0.0,
-            "batch_delay_seconds": 0.5,
+            "batch_delay_seconds": 0.75,
             "gzip_enabled": True,
             "state_dir": "state",
             "spool_dir": "spool",
@@ -1157,6 +1162,10 @@ def build_default_raw_config() -> Dict[str, Any]:
             "rescan_hourly_window_hours": 2,
             "rescan_daily_window_days": 7,
             "rescan_daily_after_hour": 0,
+            "revisit_max_rows": 5000,
+            "auto_update": True,
+            "update_check_cycles": 30,
+            "log_file": "logs/torqmind-agent.log",
         },
         "id_empresa": 1,
         "id_db": 1,
@@ -1440,8 +1449,8 @@ def load_config(
     api = APIConfig(**(raw.get("api") or {}))
     runtime_raw = raw.get("runtime") or {}
     runtime = RuntimeConfig(
-        batch_size=int(runtime_raw.get("batch_size", 5000)),
-        fetch_size=int(runtime_raw.get("fetch_size", 2000)),
+        batch_size=int(runtime_raw.get("batch_size", 2000)),
+        fetch_size=int(runtime_raw.get("fetch_size", 1000)),
         max_retries=int(runtime_raw.get("max_retries", 5)),
         timeout_seconds=int(runtime_raw.get("timeout_seconds", 30)),
         connect_timeout_seconds=(
@@ -1457,7 +1466,7 @@ def load_config(
         retry_backoff_base_seconds=float(runtime_raw.get("retry_backoff_base_seconds", 1.0)),
         retry_backoff_max_seconds=float(runtime_raw.get("retry_backoff_max_seconds", 30.0)),
         retry_jitter_seconds=float(runtime_raw.get("retry_jitter_seconds", 0.0)),
-        batch_delay_seconds=float(runtime_raw.get("batch_delay_seconds", 0.5)),
+        batch_delay_seconds=float(runtime_raw.get("batch_delay_seconds", 0.75)),
         gzip_enabled=bool(runtime_raw.get("gzip_enabled", True)),
         state_dir=str(runtime_raw.get("state_dir", "state")),
         spool_dir=str(runtime_raw.get("spool_dir", "spool")),
@@ -1468,6 +1477,10 @@ def load_config(
         rescan_hourly_window_hours=int(runtime_raw.get("rescan_hourly_window_hours", 2)),
         rescan_daily_window_days=int(runtime_raw.get("rescan_daily_window_days", 7)),
         rescan_daily_after_hour=int(runtime_raw.get("rescan_daily_after_hour", 0)),
+        revisit_max_rows=int(runtime_raw.get("revisit_max_rows", 5000)),
+        auto_update=bool(runtime_raw.get("auto_update", True)),
+        update_check_cycles=int(runtime_raw.get("update_check_cycles", 30)),
+        log_file=str(runtime_raw.get("log_file", "logs/torqmind-agent.log")),
     )
 
     datasets = _merge_dataset_configs(raw.get("datasets") or {})

@@ -17,7 +17,7 @@ from agent.config import (
     migrate_yaml_to_encrypted_config,
     save_encrypted_config,
 )
-from agent.utils.log import build_logger
+from agent.utils.log import build_logger, resolve_log_level
 
 
 SAFE_MASK_KEYS = {"password", "ingest_key", "token", "secret"}
@@ -356,7 +356,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    bootstrap_level = getattr(logging, str(args.log_level or "INFO").upper(), logging.INFO)
+    bootstrap_level = resolve_log_level(args.log_level or "INFO")
     logger = build_logger(level=bootstrap_level)
 
     config_path = getattr(args, "command_config", None) or args.config
@@ -373,11 +373,9 @@ def main() -> None:
         config_path,
         require_sql=args.command not in api_only_commands,
     )
-    effective_level_name = args.log_level or cfg.runtime.log_level
-    effective_level = getattr(logging, str(effective_level_name).upper(), logging.INFO)
-    logger.setLevel(effective_level)
-    for handler in logger.handlers:
-        handler.setLevel(effective_level)
+    effective_level = resolve_log_level(args.log_level or cfg.runtime.log_level)
+    log_file = getattr(cfg.runtime, "log_file", None) or "logs/torqmind-agent.log"
+    logger = build_logger(level=effective_level, log_file=log_file)
 
     if args.command in api_only_commands:
         from agent.sink.torqmind_api import TorqMindSink

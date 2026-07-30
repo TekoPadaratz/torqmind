@@ -40,6 +40,15 @@ pyinstaller `
   --hidden-import agent.secrets `
   --hidden-import agent.state `
   --hidden-import agent.state.watermark `
+  --hidden-import agent.state.watermark_guard `
+  --hidden-import agent.runtime `
+  --hidden-import agent.runtime.scheduler `
+  --hidden-import agent.runtime.budget `
+  --hidden-import agent.runtime.log_policy `
+  --hidden-import agent.update `
+  --hidden-import agent.update.manifest `
+  --hidden-import agent.update.downloader `
+  --hidden-import agent.update.apply `
   --hidden-import agent.extractors `
   --hidden-import agent.extractors.base `
   --hidden-import agent.extractors.xpert `
@@ -66,6 +75,8 @@ Copy-Item dist/torqmind-agent.exe release/
 Copy-Item apps/agent/config.example.yaml release/
 Copy-Item agent_build/update-config.bat release/
 Copy-Item agent_build/service/torqmind-agent-service.xml.template release/
+New-Item -ItemType Directory release/update -Force | Out-Null
+Copy-Item agent_build/update/torqmind-agent-update.bat release/update/
 
 # Copy service wrapper if available
 if (Test-Path agent_build/service/torqmind-agent-service.exe) {

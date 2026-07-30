@@ -1,6 +1,15 @@
-# TorqMind Extractor Agent (apps/agent)
+# TorqMind Extractor Agent 2.0 Turbo (apps/agent)
 
 Agent de produção para rodar no servidor do cliente, extrair incrementalmente do SQL Server (Xpert) e enviar para a API TorqMind em **NDJSON**.
+
+## O que mudou no 2.0
+
+- **Scheduler por tier** (hot / warm / cold) — menos carga no SQL Server.
+- **Budget** (`batch_size=2000`, `revisit_max_rows=5000`, delay entre lotes).
+- **WatermarkGuard** — bloqueia datas futuras e sentinelas (1970/1900).
+- **Logs quietos** — detalhe de batch em DEBUG; summary JSON **1 linha por ciclo**.
+- **Auto-update** — manifesto na API + SHA256 + swap WinSW com rollback (`TorqMindAgent`).
+- Header **`X-Agent-Version`** em todo ingest.
 
 ## Modelo de configuração corporativo
 
@@ -291,6 +300,7 @@ O release gerado inclui:
 - `torqmind-agent-service.exe`
 - `torqmind-agent-service.xml.template`
 - `update-config.bat`
+- `update/torqmind-agent-update.bat` (sidecar de auto-update WinSW)
 
 Instalador Inno Setup:
 

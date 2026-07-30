@@ -200,22 +200,31 @@ torqmind-agent.exe config migrate-from-yaml --source config.yaml --config config
 del config.yaml   # apaga o arquivo em texto do servidor do cliente
 ```
 
-### 7.3 Atualizar um cliente para uma versão nova (tabelas novas)
+### 7.3 Atualizar um cliente (Agent 2.0 — manual ou auto-update)
 
-Como o mapeamento vem embutido no `.exe`, **não é preciso copiar nada de
-mapeamento**. Basta trocar o binário:
+**Auto-update (2.0+):** com `runtime.auto_update: true` o agent consulta
+`GET /api/agent/update/manifest` (header `X-Ingest-Key`), baixa o `.exe`,
+valida SHA256, para o serviço `TorqMindAgent`, move o atual para `backup\`,
+promove o novo e reinicia. Em falha, faz rollback automático do backup.
+Publicar release na App VM:
+
+```bash
+python scripts/publish_agent_release.py \
+  --exe release/torqmind-agent.exe \
+  --version 2.0.0 \
+  --release-dir /var/torqmind/agent-releases \
+  --public-base-url http://redevr.ddns.me/api
+```
+
+**Manual (ainda válido):**
 
 ```powershell
 sc stop TorqMindAgent
-copy /Y torqmind-agent.exe C:\TorqMind\torqmind-agent.exe   # substitui o exe
+copy /Y torqmind-agent.exe C:\TorqMind\torqmind-agent.exe
 sc start TorqMindAgent
 ```
 
-O `config.enc` permanece intacto (conexão preservada) e as tabelas novas
-(entidades, grupoprodutos, movbancos_ajuste_plano, contasbancaria, bancospadrao,
-descontos_entidades_itens, cheques, situacoes, movcreditoentidades, credito,
-consolearquivo, tanques, movtanques, estoque, …) começam a coletar automaticamente.
-Dims com `full_refresh` respeitam throttle padrão de 1800s (SSD). Validar:
+O `config.enc` permanece intacto. Validar:
 
 ```powershell
 torqmind-agent.exe --version
