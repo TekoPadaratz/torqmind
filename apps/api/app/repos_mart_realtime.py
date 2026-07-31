@@ -2879,6 +2879,326 @@ def finance_titles_overview(
     }
 
 
+def finance_despesas_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    ano: int,
+    mes: int,
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    id_planodecontas: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Despesas por plano de contas (mês) + drill de títulos CAP — ClickHouse."""
+    ano = int(ano)
+    mes = int(mes)
+    if mes < 1 or mes > 12:
+        raise ValueError("mes inválido")
+    ano_mes = ano * 100 + mes
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    filial = _branch_clause("id_filial", id_filial)
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "ano_mes": int(ano_mes),
+    }
+    where = (
+        "id_empresa = {id_empresa:Int32} "
+        "AND ano_mes_vencimento = {ano_mes:Int32}"
+        f"{filial}"
+    )
+    status_key = (status or "").strip().lower()
+    if status_key in {"pago", "vencido"}:
+        where += f" AND status = '{status_key}'"
+    elif status_key in {"aberto", "a_vencer"}:
+        where += " AND status = 'a_vencer'"
+    elif status_key and status_key not in {"todos", "all"}:
+        raise ValueError("status inválido")
+
+    search = (q or "").strip()
+    if search:
+        params["q"] = search
+        params["q_like"] = f"%{search}%"
+        where += (
+            " AND ("
+            " positionCaseInsensitiveUTF8(nome_plano, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(codigo_plano, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(historico, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(filial_nome, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(documento, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(classificacao_gerencial, {q:String}) > 0"
+            " OR cast(id_titulo AS String) = {q:String}"
+            ")"
+        )
+
+    # Drill por conta
+    if id_planodecontas is not None:
+        params["id_plano"] = int(id_planodecontas)
+        where += " AND id_planodecontas = {id_plano:Int32}"
+        count = query_scalar(
+            f"SELECT count() FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL WHERE {where}",
+            parameters=params,
+        )
+        total = int(count or 0)
+        totals_rows = query_dict(
+            f"""
+            SELECT
+              round(sum(valor), 2) AS total_valor,
+              round(sum(if(status = 'pago', valor, 0)), 2) AS total_pago,
+              round(sum(if(status = 'a_vencer', valor, 0)), 2) AS total_aberto,
+              round(sum(if(status = 'vencido', valor, 0)), 2) AS total_vencido
+            FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+            WHERE {where}
+            """,
+            parameters=params,
+        )
+        totals = totals_rows[0] if totals_rows else {}
+        offset = (page - 1) * page_size
+        rows = query_dict(
+            f"""
+            SELECT
+              id_filial, filial_nome, id_titulo, id_db, id_planodecontas,
+              codigo_plano, nome_plano, historico, documento,
+              dt_vencimento, dt_pagamento, valor, valor_pago, valor_aberto, status
+            FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+            WHERE {where}
+            ORDER BY filial_nome ASC, nome_plano ASC, dt_vencimento ASC, valor ASC, id_titulo ASC
+            LIMIT {page_size} OFFSET {offset}
+            """,
+            parameters=params,
+        )
+        for row in rows:
+            fid = _to_int(row.get("id_filial"))
+            row["filial_nome"] = _filial_label(fid, str(row.get("filial_nome") or ""))
+            st = str(row.get("status") or "")
+            row["status_label"] = (
+                "Pago" if st == "pago" else "Vencido" if st == "vencido" else "Aberto"
+            )
+        return {
+            "mode": "detail",
+            "ano": ano,
+            "mes": mes,
+            "id_planodecontas": int(id_planodecontas),
+            "items": rows,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size if page_size else 0,
+            "totals": {
+                "valor": _to_float(totals.get("total_valor")),
+                "pago": _to_float(totals.get("total_pago")),
+                "aberto": _to_float(totals.get("total_aberto")),
+                "vencido": _to_float(totals.get("total_vencido")),
+            },
+            "source": "realtime",
+        }
+
+    # Grid principal: agregação por conta
+    agg_rows = query_dict(
+        f"""
+        SELECT
+          id_planodecontas,
+          any(codigo_plano) AS codigo_plano,
+          any(nome_plano) AS nome_plano,
+          any(classificacao_gerencial) AS classificacao_gerencial,
+          round(sum(valor), 2) AS valor_total,
+          toUInt32(count()) AS qtd,
+          round(sum(if(status = 'pago', valor, 0)), 2) AS valor_pago,
+          round(sum(if(status = 'a_vencer', valor, 0)), 2) AS valor_aberto,
+          round(sum(if(status = 'vencido', valor, 0)), 2) AS valor_vencido
+        FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+        WHERE {where}
+        GROUP BY id_planodecontas
+        ORDER BY nome_plano ASC, codigo_plano ASC, id_planodecontas ASC
+        """,
+        parameters=params,
+    )
+    for row in agg_rows:
+        row["valor"] = _to_float(row.pop("valor_total", 0))
+    totals = {
+        "valor": round(sum(_to_float(r.get("valor")) for r in agg_rows), 2),
+        "pago": round(sum(_to_float(r.get("valor_pago")) for r in agg_rows), 2),
+        "aberto": round(sum(_to_float(r.get("valor_aberto")) for r in agg_rows), 2),
+        "vencido": round(sum(_to_float(r.get("valor_vencido")) for r in agg_rows), 2),
+        "qtd_contas": len(agg_rows),
+    }
+    return {
+        "mode": "summary",
+        "ano": ano,
+        "mes": mes,
+        "items": agg_rows,
+        "totals": totals,
+        "source": "realtime",
+    }
+
+
+def team_employee_cost_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    ano: int,
+    mes: int,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Custo fully-loaded por funcionário ativo (salário STG + rateio despesas CH)."""
+    ano = int(ano)
+    mes = int(mes)
+    if mes < 1 or mes > 12:
+        raise ValueError("mes inválido")
+    ano_mes = ano * 100 + mes
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    filial = _branch_clause("id_filial", id_filial)
+    params: Dict[str, Any] = {"id_empresa": int(id_empresa), "ano_mes": int(ano_mes)}
+
+    emp_where = f"id_empresa = {{id_empresa:Int32}} AND ativo = 1{filial}"
+    search = (q or "").strip()
+    if search:
+        params["q"] = search
+        emp_where += (
+            " AND ("
+            " positionCaseInsensitiveUTF8(nome, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(funcao, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(filial_nome, {q:String}) > 0"
+            ")"
+        )
+
+    emp_count = query_scalar(
+        f"SELECT count() FROM {MART_RT_DB}.mart_team_employees_rt FINAL WHERE {emp_where}",
+        parameters=params,
+    )
+    headcount = max(int(emp_count or 0), 0)
+
+    # Rateio: despesas operacionais do mês excluindo classificação financeira
+    # (financiamentos / recuperação judicial) e excepcional — por cabeça.
+    rateio_rows = query_dict(
+        f"""
+        SELECT
+          round(sum(if(classificacao_gerencial = 'pessoal', valor, 0)), 2) AS total_pessoal,
+          round(sum(if(
+            entra_custo_operacional = 1
+            AND classificacao_gerencial NOT IN ('pessoal', 'financeiro', 'excepcional', 'tributos'),
+            valor,
+            0
+          )), 2) AS total_overhead
+        FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND ano_mes_vencimento = {{ano_mes:Int32}}
+          {filial}
+        """,
+        parameters=params,
+    )
+    rateio = rateio_rows[0] if rateio_rows else {}
+    total_pessoal = _to_float(rateio.get("total_pessoal"))
+    total_overhead = _to_float(rateio.get("total_overhead"))
+    rateio_pessoal = round(total_pessoal / headcount, 2) if headcount else 0.0
+    rateio_overhead = round(total_overhead / headcount, 2) if headcount else 0.0
+
+    # Vendas do mês por usuário de caixa (vínculo ID_USUARIO do funcionário)
+    sales_by_user: Dict[tuple[int, int], float] = {}
+    try:
+        from calendar import monthrange
+
+        dt_ini = date(ano, mes, 1)
+        dt_fim = date(ano, mes, monthrange(ano, mes)[1])
+        sales_rows = query_dict(
+            f"""
+            SELECT
+              id_filial,
+              id_usuario,
+              round(sum(valor_total), 2) AS vendas
+            FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+              AND cancelado = 0 AND is_deleted = 0
+              AND commercial_eligible = 1
+              AND id_usuario > 0
+              {_branch_clause('id_filial', id_filial)}
+            GROUP BY id_filial, id_usuario
+            """,
+            parameters={
+                "id_empresa": int(id_empresa),
+                "ini": _date_key(dt_ini),
+                "fim": _date_key(dt_fim),
+            },
+        )
+        for r in sales_rows:
+            key = (_to_int(r.get("id_filial")), _to_int(r.get("id_usuario")))
+            sales_by_user[key] = _to_float(r.get("vendas"))
+    except Exception as exc:
+        logger.warning("team_employee_cost sales miss: %s", str(exc)[:160])
+
+    offset = (page - 1) * page_size
+    employees = query_dict(
+        f"""
+        SELECT
+          id_filial, filial_nome, id_funcionario, id_usuario, nome, funcao,
+          salario_bruto, salario_total, vales, horas_extras
+        FROM {MART_RT_DB}.mart_team_employees_rt FINAL
+        WHERE {emp_where}
+        ORDER BY nome ASC, filial_nome ASC, id_funcionario ASC
+        LIMIT {page_size} OFFSET {offset}
+        """,
+        parameters=params,
+    )
+    items = []
+    for row in employees:
+        fid = _to_int(row.get("id_filial"))
+        eid = _to_int(row.get("id_funcionario"))
+        uid = _to_int(row.get("id_usuario"))
+        salario = _to_float(row.get("salario_bruto")) or _to_float(row.get("salario_total"))
+        vales = _to_float(row.get("vales"))
+        he = _to_float(row.get("horas_extras"))
+        direto = round(salario + vales + he, 2)
+        vendas = sales_by_user.get((fid, uid), 0.0) if uid else 0.0
+        custo_total = round(direto + rateio_overhead, 2)
+        items.append(
+            {
+                "id_filial": fid,
+                "filial_nome": _filial_label(fid, str(row.get("filial_nome") or "")),
+                "id_funcionario": eid,
+                "nome": str(row.get("nome") or ""),
+                "funcao": str(row.get("funcao") or "") or "—",
+                "salario": salario,
+                "vales": vales,
+                "horas_extras": he,
+                "custo_direto": direto,
+                "rateio_overhead": rateio_overhead,
+                "custo_total": custo_total,
+                "vendas": vendas,
+            }
+        )
+
+    return {
+        "ano": ano,
+        "mes": mes,
+        "items": items,
+        "total": headcount,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (headcount + page_size - 1) // page_size if page_size else 0,
+        "summary": {
+            "qtd_funcionarios": headcount,
+            "total_pessoal_mes": total_pessoal,
+            "total_overhead_mes": total_overhead,
+            "rateio_pessoal_cabeca": rateio_pessoal,
+            "rateio_overhead_cabeca": rateio_overhead,
+            "nota": (
+                "Custo total = salário/vale/HE do cadastro + rateio por cabeça das "
+                "despesas operacionais do posto (água, luz, aluguel, marketing, etc.). "
+                "Financiamentos e itens excepcionais/financeiros não entram no rateio."
+            ),
+        },
+        "source": "realtime",
+    }
+
+
 def finance_receipts_by_day(
     role: str,
     id_empresa: int,
@@ -5956,6 +6276,8 @@ REALTIME_FUNCTIONS = {
     "risk_top_employees",
     "finance_kpis",
     "finance_titles_overview",
+    "finance_despesas_overview",
+    "team_employee_cost_overview",
     "finance_receipts_by_day",
     "streaming_health",
     "goals_today",

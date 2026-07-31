@@ -33,11 +33,12 @@ import { canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import FinanceChequesSection from "./FinanceChequesSection";
 import FinanceBudgetSection from "./FinanceBudgetSection";
+import FinanceDespesasSection from "./FinanceDespesasSection";
 import FinanceTitlesSection from "./FinanceTitlesSection";
 
 export const dynamic = "force-dynamic";
 
-type FinanceView = "overview" | "payable" | "receivable" | "cheques" | "budget";
+type FinanceView = "overview" | "payable" | "receivable" | "cheques" | "budget" | "despesas";
 
 const VIEW_SCREEN: Record<FinanceView, string> = {
   overview: "finance.overview",
@@ -45,6 +46,7 @@ const VIEW_SCREEN: Record<FinanceView, string> = {
   receivable: "finance.receivable",
   cheques: "finance.cheques",
   budget: "finance.budget",
+  despesas: "finance.despesas",
 };
 
 const VIEW_TITLE: Record<FinanceView, string> = {
@@ -53,6 +55,7 @@ const VIEW_TITLE: Record<FinanceView, string> = {
   receivable: "Financeiro — Contas a receber",
   cheques: "Financeiro — Cheques",
   budget: "Financeiro — Orçamento",
+  despesas: "Financeiro — Despesas",
 };
 
 function resolveFinanceView(raw: string | null, claims: any): FinanceView {
@@ -61,11 +64,12 @@ function resolveFinanceView(raw: string | null, claims: any): FinanceView {
     requested === "payable" ||
     requested === "receivable" ||
     requested === "cheques" ||
-    requested === "budget"
+    requested === "budget" ||
+    requested === "despesas"
       ? (requested as FinanceView)
       : "overview";
   if (canAccessScreenKey(claims, VIEW_SCREEN[candidate])) return candidate;
-  const order: FinanceView[] = ["overview", "receivable", "payable", "cheques", "budget"];
+  const order: FinanceView[] = ["overview", "receivable", "payable", "despesas", "cheques", "budget"];
   return order.find((v) => canAccessScreenKey(claims, VIEW_SCREEN[v])) || "overview";
 }
 
@@ -82,7 +86,7 @@ export default function FinancePage() {
       errorMessage: "Falha ao carregar financeiro",
       buildRequestUrl: (currentScope, session) => {
         const view = resolveFinanceView(searchParams.get("view"), session);
-        if (view === "cheques" || view === "budget") return null;
+        if (view === "cheques" || view === "budget" || view === "despesas") return null;
         return `/bi/finance/overview?${buildScopeParams(currentScope).toString()}&include_operational=false`;
       },
     });
@@ -126,6 +130,19 @@ export default function FinancePage() {
     if (othersValue > 0) topRows.push({ label: "Outras formas", value: othersValue });
     return topRows;
   }, [data]);
+
+  if (view === "despesas") {
+    return (
+      <div>
+        <AppNav title={VIEW_TITLE.despesas} userLabel={userLabel} />
+        <div className="container">
+          <div className="bi-grid" style={{ marginTop: 12 }}>
+            <FinanceDespesasSection scope={scope} />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (view === "cheques") {
     return (

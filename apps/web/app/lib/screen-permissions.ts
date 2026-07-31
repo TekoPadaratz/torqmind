@@ -49,13 +49,19 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
   },
   {
     key: "goals_team",
-    label: "Metas & Equipe",
+    label: "Metas",
     category: "Comercial",
     panels: [
       { key: "goals_team.metas", label: "Metas" },
       { key: "goals_team.comissoes", label: "Comissões" },
       { key: "goals_team.config", label: "Config. comissões" },
     ],
+  },
+  {
+    key: "team",
+    label: "Equipe",
+    category: "Comercial",
+    panels: [{ key: "team.custos", label: "Custo do funcionário" }],
   },
   {
     key: "cash",
@@ -88,6 +94,7 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
       { key: "finance.payable", label: "Contas a pagar" },
       { key: "finance.receivable", label: "Contas a receber" },
       { key: "finance.cheques", label: "Controle de cheques" },
+      { key: "finance.despesas", label: "Despesas" },
       { key: "finance.budget", label: "Gestão orçamentária" },
     ],
   },

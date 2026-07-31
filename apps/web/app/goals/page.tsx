@@ -188,7 +188,7 @@ export default function GoalsPage() {
 
   return (
     <div>
-      <AppNav title="Metas e Equipe" userLabel={userLabel} />
+      <AppNav title="Metas" userLabel={userLabel} />
       <div className="container">
         {effectiveTab !== 'metas' ? (
           <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0, marginTop: 8 }}>
