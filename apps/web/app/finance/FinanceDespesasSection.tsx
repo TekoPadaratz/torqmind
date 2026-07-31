@@ -217,35 +217,36 @@ export default function FinanceDespesasSection({ scope }: Props) {
 
       <div
         style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "8px 18px",
-          marginTop: 12,
-          fontSize: 13,
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+          gap: 12,
+          marginTop: 16,
         }}
       >
-        <span>
-          <span className="muted">Total </span>
-          <strong>{loading ? "…" : formatCurrency(totals.valor)}</strong>
-        </span>
-        <span>
-          <span className="muted">Pago </span>
-          <strong style={{ color: "var(--color-positive)" }}>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 12 }}>Total</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>
+            {loading ? "…" : formatCurrency(totals.valor)}
+          </div>
+        </div>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 12 }}>Pago</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-positive)" }}>
             {loading ? "…" : formatCurrency(totals.pago)}
-          </strong>
-        </span>
-        <span>
-          <span className="muted">Aberto </span>
-          <strong style={{ color: "var(--color-warning)" }}>
+          </div>
+        </div>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 12 }}>Aberto</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-warning)" }}>
             {loading ? "…" : formatCurrency(totals.aberto)}
-          </strong>
-        </span>
-        <span>
-          <span className="muted">Vencido </span>
-          <strong style={{ color: "var(--color-negative)" }}>
+          </div>
+        </div>
+        <div className="card">
+          <div className="muted" style={{ fontSize: 12 }}>Vencido</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-negative)" }}>
             {loading ? "…" : formatCurrency(totals.vencido)}
-          </strong>
-        </span>
+          </div>
+        </div>
       </div>
 
       {error ? <div className="errorCard" style={{ marginTop: 12 }}>{error}</div> : null}

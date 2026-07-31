@@ -11,10 +11,40 @@ import { extractApiError } from "../lib/errors";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 
 const PAGE_SIZE = 50;
-const MONTHS = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-];
+
+function currentAnoMesSP(): number {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  });
+  const parts = fmt.formatToParts(new Date());
+  const y = Number(parts.find((p) => p.type === "year")?.value || 0);
+  const m = Number(parts.find((p) => p.type === "month")?.value || 0);
+  return y * 100 + m;
+}
+
+function fmtAnoMes(ym: number): string {
+  const y = Math.floor(ym / 100);
+  const m = ym % 100;
+  const nomes = [
+    "", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
+  ];
+  return `${nomes[m] || m}/${y}`;
+}
+
+function buildMesesDisponiveis(selected: number, monthsBack = 18): number[] {
+  const set = new Set<number>([selected]);
+  let cursor = currentAnoMesSP();
+  for (let i = 0; i < monthsBack; i += 1) {
+    set.add(cursor);
+    const y = Math.floor(cursor / 100);
+    const m = cursor % 100;
+    cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
+  }
+  return Array.from(set).sort((a, b) => b - a);
+}
 
 type EmployeeRow = {
   filial_nome?: string;
@@ -31,9 +61,7 @@ type EmployeeRow = {
 
 export default function TeamCostSection() {
   const scope = useScopeQuery();
-  const now = new Date();
-  const [ano, setAno] = useState(now.getFullYear());
-  const [mes, setMes] = useState(now.getMonth() + 1);
+  const [anoMes, setAnoMes] = useState<number>(() => currentAnoMesSP());
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [page, setPage] = useState(1);
@@ -41,7 +69,7 @@ export default function TeamCostSection() {
   const [error, setError] = useState("");
   const [data, setData] = useState<any>(null);
 
-  const years = useMemo(() => [ano - 1, ano, ano + 1], [ano]);
+  const mesesDisponiveis = useMemo(() => buildMesesDisponiveis(anoMes), [anoMes]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -50,7 +78,7 @@ export default function TeamCostSection() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQ, ano, mes, scope.scope_key]);
+  }, [debouncedQ, anoMes, scope.scope_key]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -59,8 +87,7 @@ export default function TeamCostSection() {
       setError("");
       try {
         const params = buildScopeParams(scope);
-        params.set("ano", String(ano));
-        params.set("mes", String(mes));
+        params.set("ano_mes", String(anoMes));
         params.set("page", String(page));
         params.set("page_size", String(PAGE_SIZE));
         if (debouncedQ) params.set("q", debouncedQ);
@@ -77,10 +104,11 @@ export default function TeamCostSection() {
     };
     load();
     return () => controller.abort();
-  }, [ano, mes, debouncedQ, page, scope]);
+  }, [anoMes, debouncedQ, page, scope]);
 
   const summary = data?.summary || {};
   const items: EmployeeRow[] = data?.items || [];
+  const totalPages = Math.max(1, Math.ceil(Number(data?.total || 0) / PAGE_SIZE) || 1);
 
   return (
     <div className="card col-12" style={{ marginTop: 12 }}>
@@ -92,36 +120,21 @@ export default function TeamCostSection() {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <select
-          value={mes}
-          onChange={(e) => setMes(parseInt(e.target.value, 10))}
-          style={{
-            padding: "7px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "var(--filter-bg)",
-            color: "var(--text)",
-          }}
-        >
-          {MONTHS.map((m, i) => (
-            <option key={m} value={i + 1}>{m}</option>
-          ))}
-        </select>
-        <select
-          value={ano}
-          onChange={(e) => setAno(parseInt(e.target.value, 10))}
-          style={{
-            padding: "7px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "var(--filter-bg)",
-            color: "var(--text)",
-          }}
-        >
-          {years.map((y) => (
-            <option key={y} value={y}>{y}</option>
-          ))}
-        </select>
+        <label className="profitScopeMonth" title="Mês de referência do custo da equipe">
+          <span className="profitScopeMonthLabel">Mês</span>
+          <select
+            className="profitScopeMonthSelect"
+            value={anoMes}
+            onChange={(e) => setAnoMes(Number(e.target.value))}
+            aria-label="Mês do custo da equipe"
+          >
+            {mesesDisponiveis.map((m) => (
+              <option key={m} value={m}>
+                {fmtAnoMes(m)}
+              </option>
+            ))}
+          </select>
+        </label>
         <GridSearchInput value={q} onChange={setQ} placeholder="Buscar nome, função, filial…" />
       </div>
 
@@ -168,8 +181,8 @@ export default function TeamCostSection() {
             detail="Publique a mart de equipe ou ajuste filial/busca."
           />
         ) : (
-          <div className="tableScroll">
-            <table className="table">
+          <div className="tableScroll tableScroll--compact">
+            <table className="table compact">
               <thead>
                 <tr>
                   <th>Filial</th>
@@ -207,16 +220,9 @@ export default function TeamCostSection() {
           page={page}
           pageSize={PAGE_SIZE}
           total={Number(data?.total || 0)}
-          totalPages={Math.max(1, Math.ceil(Number(data?.total || 0) / PAGE_SIZE) || 1)}
+          totalPages={totalPages}
           onPrev={() => setPage((p) => Math.max(1, p - 1))}
-          onNext={() =>
-            setPage((p) =>
-              Math.min(
-                Math.max(1, Math.ceil(Number(data?.total || 0) / PAGE_SIZE) || 1),
-                p + 1,
-              ),
-            )
-          }
+          onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
         />
       </div>
     </div>
