@@ -3148,8 +3148,8 @@ def team_employee_cost_overview(
               HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
             )
             SELECT
-              i.id_filial,
-              i.id_funcionario,
+              i.id_filial AS id_filial,
+              i.id_funcionario AS id_funcionario,
               round(sum(i.total), 2) AS vendas
             FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
             INNER JOIN docs AS c
@@ -3168,7 +3168,7 @@ def team_employee_cost_overview(
               AND i.cfop > 5000
               AND i.id_funcionario > 0
               {_branch_clause('i.id_filial', id_filial)}
-            GROUP BY i.id_filial, i.id_funcionario
+            GROUP BY id_filial, id_funcionario
             """,
             parameters={
                 "id_empresa": int(id_empresa),
@@ -3177,10 +3177,15 @@ def team_employee_cost_overview(
             },
         )
         for r in sales_rows:
-            key = (_to_int(r.get("id_filial")), _to_int(r.get("id_funcionario")))
+            key = (
+                _to_int(r.get("id_filial") or r.get("i.id_filial")),
+                _to_int(r.get("id_funcionario") or r.get("i.id_funcionario")),
+            )
+            if key[0] <= 0 or key[1] <= 0:
+                continue
             sales_by_func[key] = _to_float(r.get("vendas"))
     except Exception as exc:
-        logger.warning("team_employee_cost sales miss: %s", str(exc)[:160])
+        logger.warning("team_employee_cost sales miss: %s", str(exc)[:220])
 
     offset = (page - 1) * page_size
     employees = query_dict(
@@ -3446,7 +3451,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
           HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
         )
         SELECT
-            i.id_funcionario,
+            i.id_funcionario AS id_funcionario,
             coalesce(
               nullIf(any(f.nome), ''),
               concat('Funcionário #', toString(i.id_funcionario))
@@ -3469,7 +3474,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
           AND i.is_deleted = 0
           AND i.cfop > 5000 AND i.id_funcionario > 0
           {branch_i}
-        GROUP BY i.id_funcionario
+        GROUP BY id_funcionario
         ORDER BY faturamento DESC
         LIMIT {{limit:UInt32}}
     """, parameters={
@@ -3480,7 +3485,9 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
     })
     return [
         {
-            "id_funcionario": _to_int(row.get("id_funcionario")),
+            "id_funcionario": _to_int(
+                row.get("id_funcionario") or row.get("i.id_funcionario")
+            ),
             "funcionario_nome": row.get("funcionario_nome") or "",
             "faturamento": _to_float(row.get("faturamento")),
             "margem": _to_float(row.get("margem")),
