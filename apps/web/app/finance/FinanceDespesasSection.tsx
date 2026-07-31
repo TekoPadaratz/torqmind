@@ -187,7 +187,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
       <div className="sectionEyebrow">Financeiro</div>
       <h2 style={{ marginTop: 4 }}>Despesas</h2>
       <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-        Plano de contas do mês. Clique na linha para expandir o grão (filial, vencimento, pagamento e status).
+        Clique na linha para ver filial, vencimento, pagamento e status.
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -255,7 +255,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
         {!loading && items.length === 0 ? (
           <EmptyState
             title="Sem despesas no período."
-            detail="Publique a mart de despesas ou escolha outro mês."
+            detail="Escolha outro mês ou ajuste o filtro de status/busca."
           />
         ) : (
           <table className="table compact">

@@ -174,7 +174,7 @@ export default function TeamCostSection() {
         {!loading && items.length === 0 ? (
           <EmptyState
             title="Sem funcionários ativos no escopo."
-            detail="Publique a mart de equipe ou ajuste filial/busca."
+            detail="Ajuste a filial ou a busca e tente de novo."
           />
         ) : (
           <div className="tableScroll tableScroll--compact">
