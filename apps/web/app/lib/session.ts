@@ -123,3 +123,23 @@ export function isKioskMode(me: any): boolean {
 export function canViewSensitiveFinancials(me: any): boolean {
   return Boolean(me?.can_view_sensitive_financials);
 }
+
+/**
+ * Modo piso/loja: usuário sem visão financeira sensível e com permissão
+ * apenas do menu Vendas (mais painéis sob sales.*). Exibe painel limpo
+ * (totalizadores + gráfico horário) em vez da overview completa.
+ */
+export function isSalesFloorMode(me: any): boolean {
+  if (!me) return false;
+  if (canViewSensitiveFinancials(me)) return false;
+  const screens = getAllowedScreens(me);
+  if (!Array.isArray(screens)) return false;
+  const menus = screens.filter((key: unknown) => {
+    if (typeof key !== 'string' || !key) return false;
+    if (key.includes('.')) return false;
+    if (key.startsWith('tv_')) return false;
+    if (key === 'dashboard_home') return false;
+    return true;
+  });
+  return menus.length === 1 && menus[0] === 'sales';
+}

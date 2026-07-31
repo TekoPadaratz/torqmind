@@ -612,6 +612,39 @@ def dashboard_home_bundle(
 # SALES DOMAIN
 # ================================================================
 
+def _devolucoes_period_totals(
+    *,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+) -> tuple[float, int]:
+    """Totais de devolução de venda (CFOP 1202/1411/2202/2411) no período.
+
+    Fonte canônica: ``mart_fraud_devolucao_entrada_rt`` (ClickHouse).
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+    try:
+        rows = query_dict(
+            f"""
+            SELECT
+                sum(valor) AS valor,
+                toUInt32(count()) AS qtd
+            FROM {MART_RT_DB}.mart_fraud_devolucao_entrada_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
+              AND valor > 0
+            """,
+            parameters={"id_empresa": int(id_empresa)},
+        )
+    except Exception as exc:
+        logger.warning("devolucoes_period_totals miss: %s", str(exc)[:200])
+        return 0.0, 0
+    if not rows:
+        return 0.0, 0
+    return float(rows[0].get("valor") or 0), int(rows[0].get("qtd") or 0)
+
+
 def sales_overview_bundle(
     role: str,
     id_empresa: int,
@@ -655,13 +688,25 @@ def sales_overview_bundle(
     qtd_canceladas = int(raw_kpis.get("qtd_canceladas") or 0)
     valor_cancelado = float(raw_kpis.get("valor_cancelado") or 0)
 
-    kpis = {"faturamento": faturamento, "margem": margem, "ticket_medio": ticket_medio, "devolucoes": 0}
+    devolucoes, qtd_devolucoes = _devolucoes_period_totals(
+        id_empresa=id_empresa,
+        id_filial=id_filial,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
+    )
+
+    kpis = {
+        "faturamento": faturamento,
+        "margem": margem,
+        "ticket_medio": ticket_medio,
+        "devolucoes": devolucoes,
+    }
 
     commercial_kpis = {
         "saidas": faturamento,
         "qtd_saidas": qtd_vendas,
-        "entradas": 0,
-        "qtd_entradas": 0,
+        "entradas": devolucoes,
+        "qtd_entradas": qtd_devolucoes,
         "cancelamentos": valor_cancelado,
         "qtd_cancelamentos": qtd_canceladas,
     }

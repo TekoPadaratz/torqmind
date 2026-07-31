@@ -186,10 +186,29 @@ class TestTVEndpointScreens(unittest.TestCase):
     def test_tv_hourly_allowed_with_tv_sales_hourly(self):
         claims = _kiosk_claims(allowed_screens=["tv_sales_hourly"])
         app.dependency_overrides[get_current_claims] = lambda: claims
-        with patch("app.repos_analytics.dashboard_series") as mock_fn:
-            mock_fn.return_value = [{"data_key": 20260514, "faturamento": 1000}]
+        with patch("app.repos_analytics.sales_overview_bundle") as mock_fn:
+            mock_fn.return_value = {
+                "commercial_kpis": {
+                    "saidas": 1000.0,
+                    "qtd_saidas": 3,
+                    "cancelamentos": 50.0,
+                    "qtd_cancelamentos": 1,
+                    "entradas": 20.0,
+                    "qtd_entradas": 1,
+                },
+                "kpis": {"faturamento": 1000.0, "devolucoes": 20.0},
+                "commercial_by_hour": [{"hora": 9, "saidas": 1000.0}],
+                "stats": {"vendas": 3},
+            }
             resp = self.client.get("/bi/tv/sales-hourly")
         self.assertNotEqual(resp.status_code, 403)
+        if resp.status_code == 200:
+            body = resp.json()
+            self.assertIn("totals", body)
+            self.assertEqual(body["totals"]["vendas"], 1000.0)
+            self.assertEqual(body["totals"]["cancelamentos"], 50.0)
+            self.assertEqual(body["totals"]["devolucoes"], 20.0)
+            self.assertEqual(len(body.get("points") or []), 24)
 
     def test_tv_ranking_allowed_with_tv_sales_ranking(self):
         claims = _kiosk_claims(allowed_screens=["tv_sales_ranking"])
@@ -622,7 +641,15 @@ class TestKioskAllowedTVEndpoints(unittest.TestCase):
 
     def test_kiosk_can_access_tv_sales_hourly(self):
         app.dependency_overrides[get_current_claims] = lambda: _kiosk_claims()
-        with patch("app.repos_analytics.dashboard_series", return_value=[]):
+        with patch(
+            "app.repos_analytics.sales_overview_bundle",
+            return_value={
+                "commercial_kpis": {},
+                "kpis": {},
+                "commercial_by_hour": [],
+                "stats": {},
+            },
+        ):
             resp = self.client.get("/bi/tv/sales-hourly")
         self.assertNotEqual(resp.status_code, 403)
 

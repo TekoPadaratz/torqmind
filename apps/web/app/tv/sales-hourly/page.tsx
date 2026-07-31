@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { apiGet, apiPost, setAuthToken } from "../../lib/api";
 import { getToken, setToken, clearAuth } from "../../lib/auth";
 import { loadSession } from "../../lib/session";
+import SalesFloorBoard, { SalesFloorHourPoint } from "../../components/SalesFloorBoard";
 
 export default function TVSalesHourlyPage() {
   const router = useRouter();
@@ -23,7 +24,6 @@ export default function TVSalesHourlyPage() {
   const fetchData = useCallback(async () => {
     if (!session) return;
     try {
-      // Refresh token to keep kiosk session alive
       try {
         const refreshRes = await apiPost("/auth/refresh", {});
         if (refreshRes?.access_token) {
@@ -32,9 +32,11 @@ export default function TVSalesHourlyPage() {
       } catch {}
       const res = await apiGet(`/bi/tv/sales-hourly`);
       setData(res);
-      setLastUpdated(new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
+      setLastUpdated(
+        new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      );
       setError(null);
-    } catch (err: any) {
+    } catch {
       setError("Erro ao carregar dados");
     }
   }, [session]);
@@ -45,60 +47,54 @@ export default function TVSalesHourlyPage() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  const hours: SalesFloorHourPoint[] = useMemo(() => {
+    const rows = new Array(24).fill(0).map((_, hora) => ({
+      hora: `${hora.toString().padStart(2, "0")}:00`,
+      saidas: 0,
+    }));
+    for (const point of data?.points || []) {
+      const hour = Number(
+        point?.hora ?? String(point?.hour || point?.label || "").slice(0, 2),
+      );
+      if (hour >= 0 && hour < 24) {
+        rows[hour].saidas += Number(
+          point?.total ?? point?.faturamento ?? point?.saidas ?? 0,
+        );
+      }
+    }
+    return rows;
+  }, [data]);
+
   if (!session) {
-    return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>Carregando...</div>;
+    return (
+      <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>
+        Carregando...
+      </div>
+    );
   }
 
-  const points = data?.points || [];
+  const totals = data?.totals || {};
 
   return (
-    <div style={{ padding: "24px 32px", background: "var(--bg)", minHeight: "100vh", color: "var(--text)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 700 }}>⏱️ Vendas por Hora — Hoje</h1>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <span style={{ color: "var(--muted)", fontSize: 14 }}>
-            {lastUpdated ? `Última atualização: ${lastUpdated}` : "Atualização automática a cada 5 min"}
-          </span>
-          <button
-            onClick={() => { clearAuth(); router.push("/"); }}
-            style={{ padding: "6px 16px", background: "var(--color-negative)", color: "var(--on-accent)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
-          >
-            Sair
-          </button>
-        </div>
-      </div>
-
-      {error && <div style={{ color: "var(--color-negative)", marginBottom: 16 }}>{error}</div>}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 12 }}>
-        {points.length === 0 && (
-          <div style={{ color: "var(--muted)", textAlign: "center", padding: 40, gridColumn: "1 / -1" }}>
-            Nenhum dado disponível ainda.
-          </div>
-        )}
-        {points.map((point: any, idx: number) => (
-          <div
-            key={point.hour || point.dt || idx}
-            style={{
-              padding: "16px",
-              background: "var(--surface-soft)",
-              borderRadius: 8,
-              textAlign: "center",
-            }}
-          >
-            <div style={{ fontSize: 14, color: "var(--muted)", marginBottom: 4 }}>
-              {point.hour || point.label || point.dt || `${idx}h`}
-            </div>
-            <div style={{ fontSize: 24, fontWeight: 700, color: "#22d3ee" }}>
-              {typeof point.total === "number"
-                ? point.total.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-                : typeof point.faturamento === "number"
-                  ? point.faturamento.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-                  : "—"}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+    <SalesFloorBoard
+      title="Vendas por hora — Hoje"
+      subtitle="Totalizadores do dia e distribuição horária"
+      lastUpdated={lastUpdated}
+      totals={{
+        vendas: Number(totals.vendas || 0),
+        qtd_vendas: Number(totals.qtd_vendas || 0),
+        cancelamentos: Number(totals.cancelamentos || 0),
+        qtd_cancelamentos: Number(totals.qtd_cancelamentos || 0),
+        devolucoes: Number(totals.devolucoes || 0),
+        qtd_devolucoes: Number(totals.qtd_devolucoes || 0),
+      }}
+      hours={hours}
+      error={error}
+      showLogout
+      onLogout={() => {
+        clearAuth();
+        router.push("/");
+      }}
+    />
   );
 }

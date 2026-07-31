@@ -22,7 +22,6 @@ router = APIRouter(prefix="/bi/tv", tags=["tv"])
 logger = logging.getLogger(__name__)
 
 # Fields that are safe to expose on public TV displays
-_HOURLY_SAFE_FIELDS = {"data_key", "id_filial", "faturamento", "hour", "label", "dt", "total"}
 _RANKING_SAFE_FIELDS = {"id_vendedor", "vendedor", "nome", "total", "qtd_vendas", "ticket_medio"}
 
 
@@ -44,6 +43,47 @@ def _strip_fields(rows: list[dict[str, Any]], allowed: set[str]) -> list[dict[st
     return [{k: v for k, v in row.items() if k in allowed} for row in rows]
 
 
+def _hour_label(hora: Any) -> str:
+    try:
+        h = int(hora)
+    except (TypeError, ValueError):
+        h = 0
+    h = max(0, min(23, h))
+    return f"{h:02d}:00"
+
+
+def _build_hourly_points(commercial_by_hour: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize 0..23 hour series for the TV floor chart."""
+    buckets = {h: 0.0 for h in range(24)}
+    for row in commercial_by_hour or []:
+        try:
+            hora = int(row.get("hora") if row.get("hora") is not None else row.get("hour") or 0)
+        except (TypeError, ValueError):
+            continue
+        if hora < 0 or hora > 23:
+            continue
+        valor = row.get("saidas")
+        if valor is None:
+            valor = row.get("faturamento")
+        if valor is None:
+            valor = row.get("total")
+        try:
+            buckets[hora] += float(valor or 0)
+        except (TypeError, ValueError):
+            continue
+    return [
+        {
+            "hora": h,
+            "hour": _hour_label(h),
+            "label": _hour_label(h),
+            "total": round(buckets[h], 2),
+            "faturamento": round(buckets[h], 2),
+            "saidas": round(buckets[h], 2),
+        }
+        for h in range(24)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # GET /bi/tv/sales-hourly
 # ---------------------------------------------------------------------------
@@ -52,20 +92,44 @@ def tv_sales_hourly(
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("tv_sales_hourly")),
 ):
-    """Hourly sales series for the current day — TV display safe."""
+    """Hourly sales + floor totals for the current day — TV display safe.
+
+    Returns:
+      - totals: vendas / cancelamentos / devoluções (sem margem/custo)
+      - points: série horária 0..23
+    """
     role, tenant, branch = _tv_scope(claims)
     today = business_today(tenant)
 
     try:
         from app import repos_analytics as repos_mart
 
-        points = repos_mart.dashboard_series(role, tenant, branch, today, today)
+        bundle = repos_mart.sales_overview_bundle(
+            role, tenant, branch, today, today, include_details=False,
+        )
     except Exception:
-        logger.exception("Error fetching TV hourly series")
-        raise HTTPException(status_code=500, detail="Erro ao buscar série horária.")
+        logger.exception("Error fetching TV hourly floor payload")
+        raise HTTPException(status_code=500, detail="Erro ao buscar painel de vendas por hora.")
 
-    safe_points = _strip_fields(points, _HOURLY_SAFE_FIELDS)
-    return {"ok": True, "points": safe_points, "dt": today.isoformat()}
+    commercial = bundle.get("commercial_kpis") or {}
+    kpis = bundle.get("kpis") or {}
+    devolucoes = float(kpis.get("devolucoes") or commercial.get("entradas") or 0)
+    qtd_devolucoes = int(commercial.get("qtd_entradas") or 0)
+
+    points = _build_hourly_points(bundle.get("commercial_by_hour") or [])
+    return {
+        "ok": True,
+        "dt": today.isoformat(),
+        "totals": {
+            "vendas": round(float(commercial.get("saidas") or kpis.get("faturamento") or 0), 2),
+            "qtd_vendas": int(commercial.get("qtd_saidas") or (bundle.get("stats") or {}).get("vendas") or 0),
+            "cancelamentos": round(float(commercial.get("cancelamentos") or 0), 2),
+            "qtd_cancelamentos": int(commercial.get("qtd_cancelamentos") or 0),
+            "devolucoes": round(devolucoes, 2),
+            "qtd_devolucoes": qtd_devolucoes,
+        },
+        "points": points,
+    }
 
 
 # ---------------------------------------------------------------------------

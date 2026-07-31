@@ -3547,3 +3547,156 @@ html, body {
   overflow: auto;
 }
 
+
+/* =====================================================================
+   Sales Floor Board — painel operacional (viewer / TV vendas por hora)
+   ===================================================================== */
+.salesFloor {
+  min-height: 100vh;
+  padding: 28px 32px 40px;
+  background:
+    radial-gradient(1200px 480px at 12% -10%, rgba(52, 211, 153, 0.14), transparent 60%),
+    radial-gradient(900px 420px at 88% 0%, rgba(184, 115, 51, 0.16), transparent 55%),
+    var(--bg);
+  color: var(--text);
+}
+.salesFloor--embedded {
+  min-height: auto;
+  padding: 12px 0 28px;
+  background: transparent;
+}
+.salesFloorHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+.salesFloorEyebrow {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-copper);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.salesFloorTitle {
+  margin: 0;
+  font-size: clamp(28px, 3.2vw, 40px);
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.salesFloorSubtitle {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+.salesFloorHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.salesFloorUpdated {
+  color: var(--muted);
+  font-size: 13px;
+}
+.salesFloorLogout {
+  padding: 8px 16px;
+  background: var(--color-negative);
+  color: var(--on-accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 650;
+}
+.salesFloorError {
+  color: var(--color-negative);
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+.salesFloorMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.salesFloorMetric {
+  position: relative;
+  overflow: hidden;
+  padding: 22px 22px 18px;
+  border-radius: 16px;
+  border: 1px solid var(--surface-panel-border);
+  background: var(--surface-panel);
+  box-shadow: var(--surface-team-shadow);
+  min-width: 0;
+}
+.salesFloorMetric::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+}
+.salesFloorMetric--good::before { background: var(--color-positive); }
+.salesFloorMetric--warn::before { background: var(--color-warning); }
+.salesFloorMetric--risk::before { background: var(--color-negative); }
+.salesFloorMetricLabel {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.salesFloorMetricValue {
+  margin-top: 10px;
+  font-size: clamp(26px, 3vw, 36px);
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.salesFloorMetric--good .salesFloorMetricValue { color: #34d399; }
+.salesFloorMetric--warn .salesFloorMetricValue { color: #fbbf24; }
+.salesFloorMetric--risk .salesFloorMetricValue { color: #fb7185; }
+.salesFloorMetricHint {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.salesFloorChartCard {
+  border-radius: 18px;
+  border: 1px solid var(--surface-panel-border);
+  background: var(--surface-panel);
+  box-shadow: var(--surface-team-shadow);
+  padding: 20px 22px 16px;
+}
+.salesFloorChartHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.salesFloorChartHead h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+.salesFloorChartWrap {
+  height: min(52vh, 420px);
+  min-height: 280px;
+  margin-top: 8px;
+}
+.salesFloorEmpty {
+  color: var(--muted);
+  padding: 12px 0 4px;
+  font-size: 14px;
+}
+@media (max-width: 900px) {
+  .salesFloor { padding: 20px 16px 28px; }
+  .salesFloorMetrics { grid-template-columns: 1fr; }
+  .salesFloorChartWrap { height: 280px; min-height: 240px; }
+}

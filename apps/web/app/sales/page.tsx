@@ -13,6 +13,7 @@ import {
 } from "recharts";
 
 import AppNav from "../components/AppNav";
+import SalesFloorBoard from "../components/SalesFloorBoard";
 import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
@@ -24,6 +25,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
+import { isSalesFloorMode } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
 
@@ -57,6 +59,7 @@ export default function SalesPage() {
     });
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
+  const floorMode = useMemo(() => isSalesFloorMode(claims), [claims]);
   const transitionCopy = pendingUnavailable
     ? buildModuleUnavailableCopy("vendas")
     : buildModuleLoadingCopy("vendas");
@@ -149,6 +152,52 @@ export default function SalesPage() {
       else next.add(nome);
       return next;
     });
+
+  if (floorMode) {
+    const devolucoes = Number(
+      data?.kpis?.devolucoes || commercial?.entradas || 0,
+    );
+    const qtdDevolucoes = Number(commercial?.qtd_entradas || 0);
+    return (
+      <div>
+        <AppNav title="Vendas" userLabel={userLabel} />
+        <div className="container">
+          {error ? (
+            <div className="card errorCard" style={{ marginTop: 12 }}>
+              {error}
+            </div>
+          ) : null}
+          {!data ? (
+            <div style={{ marginTop: 12 }}>
+              <ScopeTransitionState
+                mode={pendingUnavailable ? "unavailable" : "loading"}
+                headline={transitionCopy.headline}
+                detail={transitionCopy.detail}
+                metrics={3}
+                panels={1}
+              />
+            </div>
+          ) : (
+            <SalesFloorBoard
+              embedded
+              title="Vendas do dia"
+              subtitle="Totalizadores e distribuição por hora"
+              totals={{
+                vendas: Number(commercial?.saidas || 0),
+                qtd_vendas: Number(commercial?.qtd_saidas || 0),
+                cancelamentos: Number(commercial?.cancelamentos || 0),
+                qtd_cancelamentos: Number(commercial?.qtd_cancelamentos || 0),
+                devolucoes,
+                qtd_devolucoes: qtdDevolucoes,
+              }}
+              hours={hourAgg}
+              loading={loading}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
