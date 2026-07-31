@@ -3157,7 +3157,7 @@ def team_employee_cost_overview(
              AND c.id_filial = i.id_filial
              AND c.id_db = i.id_db
              AND c.id_comprovante = i.id_comprovante
-            LEFT JOIN nfe_bloqueada AS n
+            LEFT ANTI JOIN nfe_bloqueada AS n
               ON n.id_empresa = i.id_empresa
              AND n.id_filial = i.id_filial
              AND n.id_db = i.id_db
@@ -3167,7 +3167,6 @@ def team_employee_cost_overview(
               AND i.is_deleted = 0
               AND i.cfop > 5000
               AND i.id_funcionario > 0
-              AND n.id_comprovante IS NULL
               {_branch_clause('i.id_filial', id_filial)}
             GROUP BY i.id_filial, i.id_funcionario
             """,
@@ -3459,7 +3458,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
         INNER JOIN docs AS c
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
            AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
-        LEFT JOIN nfe_bloqueada AS n
+        LEFT ANTI JOIN nfe_bloqueada AS n
             ON n.id_empresa = i.id_empresa AND n.id_filial = i.id_filial
            AND n.id_db = i.id_db AND n.id_comprovante = i.id_comprovante
         LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
@@ -3469,7 +3468,6 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           AND i.is_deleted = 0
           AND i.cfop > 5000 AND i.id_funcionario > 0
-          AND n.id_comprovante IS NULL
           {branch_i}
         GROUP BY i.id_funcionario
         ORDER BY faturamento DESC
