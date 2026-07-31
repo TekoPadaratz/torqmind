@@ -1894,8 +1894,9 @@ def finance_titles(
 
 @router.get("/finance/despesas")
 def finance_despesas(
-    ano: int = Query(..., ge=2000, le=2100),
-    mes: int = Query(..., ge=1, le=12),
+    ano_mes: Optional[int] = Query(None, description="YYYYMM (padrão DRE/Solvência)"),
+    ano: Optional[int] = Query(None, ge=2000, le=2100),
+    mes: Optional[int] = Query(None, ge=1, le=12),
     q: Optional[str] = Query(None, max_length=160),
     status: Optional[str] = Query(None, description="todos | aberto | pago | vencido"),
     id_planodecontas: Optional[int] = Query(None, description="Drill por conta"),
@@ -1908,6 +1909,18 @@ def finance_despesas(
     _screen=Depends(require_screen("finance.despesas")),
 ):
     """Despesas por plano de contas (CAP × DRE) — leitura ClickHouse."""
+    if ano_mes is not None:
+        am = int(ano_mes)
+        ano_v, mes_v = am // 100, am % 100
+    elif ano is not None and mes is not None:
+        ano_v, mes_v = int(ano), int(mes)
+    else:
+        from zoneinfo import ZoneInfo
+
+        now_sp = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        ano_v, mes_v = now_sp.year, now_sp.month
+    if mes_v < 1 or mes_v > 12:
+        raise HTTPException(status_code=400, detail="ano_mes inválido")
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(
         claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
@@ -1916,8 +1929,8 @@ def finance_despesas(
         role,
         tenant,
         filial,
-        ano=ano,
-        mes=mes,
+        ano=ano_v,
+        mes=mes_v,
         q=q,
         status=status,
         id_planodecontas=id_planodecontas,

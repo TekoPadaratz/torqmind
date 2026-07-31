@@ -2920,18 +2920,21 @@ def finance_despesas_overview(
 
     search = (q or "").strip()
     if search:
+        # Haystack evita colisão de alias no SELECT agregado (CH code 184).
         params["q"] = search
-        params["q_like"] = f"%{search}%"
         where += (
-            " AND ("
-            " positionCaseInsensitiveUTF8(nome_plano, {q:String}) > 0"
-            " OR positionCaseInsensitiveUTF8(codigo_plano, {q:String}) > 0"
-            " OR positionCaseInsensitiveUTF8(historico, {q:String}) > 0"
-            " OR positionCaseInsensitiveUTF8(filial_nome, {q:String}) > 0"
-            " OR positionCaseInsensitiveUTF8(documento, {q:String}) > 0"
-            " OR positionCaseInsensitiveUTF8(classificacao_gerencial, {q:String}) > 0"
-            " OR cast(id_titulo AS String) = {q:String}"
-            ")"
+            " AND positionCaseInsensitiveUTF8("
+            "concat("
+            "ifNull(nome_plano, ''), ' ',"
+            "ifNull(codigo_plano, ''), ' ',"
+            "ifNull(historico, ''), ' ',"
+            "ifNull(filial_nome, ''), ' ',"
+            "ifNull(documento, ''), ' ',"
+            "ifNull(classificacao_gerencial, ''), ' ',"
+            "toString(id_titulo)"
+            "),"
+            " {q:String}"
+            ") > 0"
         )
 
     # Drill por conta
@@ -2981,6 +2984,7 @@ def finance_despesas_overview(
             "mode": "detail",
             "ano": ano,
             "mes": mes,
+            "ano_mes": ano_mes,
             "id_planodecontas": int(id_planodecontas),
             "items": rows,
             "total": total,
@@ -2996,7 +3000,9 @@ def finance_despesas_overview(
             "source": "realtime",
         }
 
-    # Grid principal: agregação por conta
+    # Grid principal: agregação por conta.
+    # Subquery isola o WHERE (busca) dos aliases do SELECT — senão o CH
+    # reescreve nome_plano/codigo_plano do WHERE para any(...) e estoura code 184.
     agg_rows = query_dict(
         f"""
         SELECT
@@ -3009,8 +3015,13 @@ def finance_despesas_overview(
           round(sum(if(status = 'pago', valor, 0)), 2) AS valor_pago,
           round(sum(if(status = 'a_vencer', valor, 0)), 2) AS valor_aberto,
           round(sum(if(status = 'vencido', valor, 0)), 2) AS valor_vencido
-        FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
-        WHERE {where}
+        FROM (
+          SELECT
+            id_planodecontas, codigo_plano, nome_plano, classificacao_gerencial,
+            valor, status
+          FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+          WHERE {where}
+        )
         GROUP BY id_planodecontas
         ORDER BY nome_plano ASC, codigo_plano ASC, id_planodecontas ASC
         """,
@@ -3029,6 +3040,7 @@ def finance_despesas_overview(
         "mode": "summary",
         "ano": ano,
         "mes": mes,
+        "ano_mes": ano_mes,
         "items": agg_rows,
         "totals": totals,
         "source": "realtime",

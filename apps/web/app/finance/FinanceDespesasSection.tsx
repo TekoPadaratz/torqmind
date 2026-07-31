@@ -13,16 +13,45 @@ import { buildScopeParams, type ScopeQuery } from "../lib/scope";
 
 const DETAIL_PAGE_SIZE = 30;
 
-const MONTHS = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-];
-
 const STATUS_PRESETS = [
   { id: "aberto", label: "Aberto" },
   { id: "pago", label: "Pago" },
   { id: "vencido", label: "Vencido" },
 ];
+
+function currentAnoMesSP(): number {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  });
+  const parts = fmt.formatToParts(new Date());
+  const y = Number(parts.find((p) => p.type === "year")?.value || 0);
+  const m = Number(parts.find((p) => p.type === "month")?.value || 0);
+  return y * 100 + m;
+}
+
+function fmtAnoMes(ym: number): string {
+  const y = Math.floor(ym / 100);
+  const m = ym % 100;
+  const nomes = [
+    "", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
+  ];
+  return `${nomes[m] || m}/${y}`;
+}
+
+function buildMesesDisponiveis(selected: number, monthsBack = 18): number[] {
+  const set = new Set<number>([selected]);
+  let cursor = currentAnoMesSP();
+  for (let i = 0; i < monthsBack; i += 1) {
+    set.add(cursor);
+    const y = Math.floor(cursor / 100);
+    const m = cursor % 100;
+    cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
+  }
+  return Array.from(set).sort((a, b) => b - a);
+}
 
 type SummaryRow = {
   id_planodecontas: number;
@@ -58,9 +87,7 @@ type DetailPayload = {
 type Props = { scope: ScopeQuery };
 
 export default function FinanceDespesasSection({ scope }: Props) {
-  const now = new Date();
-  const [ano, setAno] = useState(now.getFullYear());
-  const [mes, setMes] = useState(now.getMonth() + 1);
+  const [anoMes, setAnoMes] = useState<number>(() => currentAnoMesSP());
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [status, setStatus] = useState<string | null>(null);
@@ -72,10 +99,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
   const [summary, setSummary] = useState<any>(null);
   const [detailCache, setDetailCache] = useState<Record<number, DetailPayload>>({});
 
-  const years = useMemo(
-    () => [ano - 2, ano - 1, ano, ano + 1].filter((y, i, arr) => arr.indexOf(y) === i),
-    [ano],
-  );
+  const mesesDisponiveis = useMemo(() => buildMesesDisponiveis(anoMes), [anoMes]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -86,7 +110,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
     setExpandedId(null);
     setDetailCache({});
     setDetailPage(1);
-  }, [debouncedQ, status, ano, mes, scope.scope_key]);
+  }, [debouncedQ, status, anoMes, scope.scope_key]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -95,8 +119,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
       setError("");
       try {
         const params = buildScopeParams(scope);
-        params.set("ano", String(ano));
-        params.set("mes", String(mes));
+        params.set("ano_mes", String(anoMes));
         if (debouncedQ) params.set("q", debouncedQ);
         if (status) params.set("status", status);
         const payload = await apiGet(`/bi/finance/despesas?${params.toString()}`, {
@@ -112,7 +135,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
     };
     load();
     return () => controller.abort();
-  }, [ano, mes, debouncedQ, status, scope.scope_key, scope]);
+  }, [anoMes, debouncedQ, status, scope.scope_key, scope]);
 
   useEffect(() => {
     if (expandedId == null) return;
@@ -122,8 +145,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
       setError("");
       try {
         const params = buildScopeParams(scope);
-        params.set("ano", String(ano));
-        params.set("mes", String(mes));
+        params.set("ano_mes", String(anoMes));
         params.set("id_planodecontas", String(expandedId));
         params.set("page", String(detailPage));
         params.set("page_size", String(DETAIL_PAGE_SIZE));
@@ -142,7 +164,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
     };
     loadDetail();
     return () => controller.abort();
-  }, [expandedId, detailPage, ano, mes, debouncedQ, status, scope]);
+  }, [expandedId, detailPage, anoMes, debouncedQ, status, scope]);
 
   const items: SummaryRow[] = summary?.items || [];
   const totals = summary?.totals || {};
@@ -169,36 +191,21 @@ export default function FinanceDespesasSection({ scope }: Props) {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <select
-          value={mes}
-          onChange={(e) => setMes(parseInt(e.target.value, 10))}
-          style={{
-            padding: "7px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "var(--filter-bg)",
-            color: "var(--text)",
-          }}
-        >
-          {MONTHS.map((m, i) => (
-            <option key={m} value={i + 1}>{m}</option>
-          ))}
-        </select>
-        <select
-          value={ano}
-          onChange={(e) => setAno(parseInt(e.target.value, 10))}
-          style={{
-            padding: "7px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            background: "var(--filter-bg)",
-            color: "var(--text)",
-          }}
-        >
-          {years.map((y) => (
-            <option key={y} value={y}>{y}</option>
-          ))}
-        </select>
+        <label className="profitScopeMonth" title="Mês de referência das despesas">
+          <span className="profitScopeMonthLabel">Mês</span>
+          <select
+            className="profitScopeMonthSelect"
+            value={anoMes}
+            onChange={(e) => setAnoMes(Number(e.target.value))}
+            aria-label="Mês das despesas"
+          >
+            {mesesDisponiveis.map((m) => (
+              <option key={m} value={m}>
+                {fmtAnoMes(m)}
+              </option>
+            ))}
+          </select>
+        </label>
         <PresetFilterChips
           options={STATUS_PRESETS}
           value={status}

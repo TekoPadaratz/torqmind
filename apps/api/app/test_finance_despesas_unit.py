@@ -1,13 +1,15 @@
-"""Unit tests for finance despesas ACL."""
+"""Unit tests for finance despesas ACL + search aggregation SQL."""
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.deps import get_current_claims
 from app.main import app
 from app.permissions import can_access_screen
+from app import repos_mart_realtime as rt
 
 
 def _claims(screens):
@@ -40,6 +42,37 @@ class TestFinanceDespesasAcl(unittest.TestCase):
         app.dependency_overrides[get_current_claims] = lambda: _claims(["finance.payable"])
         resp = self.client.get("/bi/finance/despesas?ano=2026&mes=7")
         self.assertEqual(resp.status_code, 403)
+
+
+class TestFinanceDespesasSearchSql(unittest.TestCase):
+    def test_summary_search_uses_subquery_not_alias_collision(self):
+        """Busca no summary não pode filtrar pelo alias any(nome_plano) (CH 184)."""
+        captured: list[str] = []
+
+        def fake_query_dict(sql, parameters=None):
+            captured.append(sql)
+            return []
+
+        with patch.object(rt, "query_dict", side_effect=fake_query_dict):
+            out = rt.finance_despesas_overview(
+                role="platform_master",
+                id_empresa=1,
+                id_filial=None,
+                ano=2026,
+                mes=7,
+                q="energia",
+            )
+        self.assertEqual(out["mode"], "summary")
+        self.assertEqual(out["ano_mes"], 202607)
+        self.assertEqual(len(captured), 1)
+        sql = captured[0]
+        self.assertIn("FROM (", sql)
+        self.assertIn("positionCaseInsensitiveUTF8", sql)
+        self.assertIn("concat(", sql)
+        # WHERE da busca fica na subquery; outer só agrega.
+        where_idx = sql.find("WHERE")
+        group_idx = sql.find("GROUP BY")
+        self.assertTrue(0 <= where_idx < group_idx)
 
 
 if __name__ == "__main__":
