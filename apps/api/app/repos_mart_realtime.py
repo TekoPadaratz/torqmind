@@ -3112,8 +3112,10 @@ def team_employee_cost_overview(
     rateio_pessoal = round(total_pessoal / headcount, 2) if headcount else 0.0
     rateio_overhead = round(total_overhead / headcount, 2) if headcount else 0.0
 
-    # Vendas do mês por usuário de caixa (vínculo ID_USUARIO do funcionário)
-    sales_by_user: Dict[tuple[int, int], float] = {}
+    # Vendas do mês por vendedor (ID_FUNCIONARIOS no item — não id_usuario de caixa).
+    # Exclui cancelado no comprovante, item deletado e NFE status 4/5 (cancelada/inutilizada).
+    # Fonte canônica: itenscomprovantes (não movprodutos).
+    sales_by_func: Dict[tuple[int, int], float] = {}
     try:
         from calendar import monthrange
 
@@ -3121,18 +3123,53 @@ def team_employee_cost_overview(
         dt_fim = date(ano, mes, monthrange(ano, mes)[1])
         sales_rows = query_dict(
             f"""
+            WITH
+            docs AS (
+              SELECT id_empresa, id_filial, id_db, id_comprovante
+              FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+              WHERE id_empresa = {{id_empresa:Int32}}
+                AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                AND is_deleted = 0
+                AND cancelado = 0
+                AND commercial_eligible = 1
+                {_branch_clause('id_filial', id_filial)}
+            ),
+            nfe_bloqueada AS (
+              SELECT
+                n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+              FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
+              INNER JOIN docs AS d
+                ON d.id_empresa = n.id_empresa
+               AND d.id_filial = n.id_filial
+               AND d.id_db = n.id_db
+               AND d.id_comprovante = n.id_comprovante
+              WHERE n.is_deleted = 0
+              GROUP BY n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+              HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
+            )
             SELECT
-              id_filial,
-              id_usuario,
-              round(sum(valor_total), 2) AS vendas
-            FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
-            WHERE id_empresa = {{id_empresa:Int32}}
-              AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-              AND cancelado = 0 AND is_deleted = 0
-              AND commercial_eligible = 1
-              AND id_usuario > 0
-              {_branch_clause('id_filial', id_filial)}
-            GROUP BY id_filial, id_usuario
+              i.id_filial,
+              i.id_funcionario,
+              round(sum(i.total), 2) AS vendas
+            FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+            INNER JOIN docs AS c
+              ON c.id_empresa = i.id_empresa
+             AND c.id_filial = i.id_filial
+             AND c.id_db = i.id_db
+             AND c.id_comprovante = i.id_comprovante
+            LEFT JOIN nfe_bloqueada AS n
+              ON n.id_empresa = i.id_empresa
+             AND n.id_filial = i.id_filial
+             AND n.id_db = i.id_db
+             AND n.id_comprovante = i.id_comprovante
+            WHERE i.id_empresa = {{id_empresa:Int32}}
+              AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+              AND i.is_deleted = 0
+              AND i.cfop > 5000
+              AND i.id_funcionario > 0
+              AND n.id_comprovante IS NULL
+              {_branch_clause('i.id_filial', id_filial)}
+            GROUP BY i.id_filial, i.id_funcionario
             """,
             parameters={
                 "id_empresa": int(id_empresa),
@@ -3141,8 +3178,8 @@ def team_employee_cost_overview(
             },
         )
         for r in sales_rows:
-            key = (_to_int(r.get("id_filial")), _to_int(r.get("id_usuario")))
-            sales_by_user[key] = _to_float(r.get("vendas"))
+            key = (_to_int(r.get("id_filial")), _to_int(r.get("id_funcionario")))
+            sales_by_func[key] = _to_float(r.get("vendas"))
     except Exception as exc:
         logger.warning("team_employee_cost sales miss: %s", str(exc)[:160])
 
@@ -3163,12 +3200,11 @@ def team_employee_cost_overview(
     for row in employees:
         fid = _to_int(row.get("id_filial"))
         eid = _to_int(row.get("id_funcionario"))
-        uid = _to_int(row.get("id_usuario"))
         salario = _to_float(row.get("salario_bruto")) or _to_float(row.get("salario_total"))
         vales = _to_float(row.get("vales"))
         he = _to_float(row.get("horas_extras"))
         direto = round(salario + vales + he, 2)
-        vendas = sales_by_user.get((fid, uid), 0.0) if uid else 0.0
+        vendas = sales_by_func.get((fid, eid), 0.0) if eid else 0.0
         custo_total = round(direto + rateio_overhead, 2)
         items.append(
             {
@@ -3387,25 +3423,55 @@ def customers_summary_paginated(
 # ================================================================
 
 def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
-    """Top employees by sales revenue from realtime mart (comprovantes_slim + dim_funcionario)."""
-    branch = _branch_clause("s.id_filial", id_filial)
+    """Top vendedores por faturamento de itens (ID_FUNCIONARIOS), não usuário de caixa."""
+    branch_i = _branch_clause("i.id_filial", id_filial)
+    branch_docs = _branch_clause("id_filial", id_filial)
     rows = query_dict(f"""
+        WITH
+        docs AS (
+          SELECT id_empresa, id_filial, id_db, id_comprovante
+          FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+          WHERE id_empresa = {{id_empresa:Int32}}
+            AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND is_deleted = 0 AND cancelado = 0 AND commercial_eligible = 1
+            {branch_docs}
+        ),
+        nfe_bloqueada AS (
+          SELECT n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+          FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
+          INNER JOIN docs AS d
+            ON d.id_empresa = n.id_empresa AND d.id_filial = n.id_filial
+           AND d.id_db = n.id_db AND d.id_comprovante = n.id_comprovante
+          WHERE n.is_deleted = 0
+          GROUP BY n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+          HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
+        )
         SELECT
-            s.id_usuario,
-            coalesce(nullIf(u.nome, ''), concat('Usuário #', toString(s.id_usuario))) AS funcionario_nome,
-            sum(s.valor_total) AS faturamento,
+            i.id_funcionario,
+            coalesce(
+              nullIf(any(f.nome), ''),
+              concat('Funcionário #', toString(i.id_funcionario))
+            ) AS funcionario_nome,
+            sum(i.total) AS faturamento,
             toDecimal64(0, 2) AS margem,
-            toUInt32(count()) AS vendas
-        FROM {CURRENT_DB}.stg_comprovantes_slim AS s
-        LEFT JOIN {CURRENT_DB}.dim_usuario_caixa AS u FINAL
-            ON s.id_empresa = u.id_empresa AND s.id_filial = u.id_filial AND s.id_usuario = u.id_usuario
-        WHERE s.id_empresa = {{id_empresa:Int32}}
-          AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND s.cancelado = 0 AND s.is_deleted = 0
-          AND s.commercial_eligible = 1
-          AND s.id_usuario > 0
-          {branch}
-        GROUP BY s.id_usuario, u.nome
+            toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS vendas
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN docs AS c
+            ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+           AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+        LEFT JOIN nfe_bloqueada AS n
+            ON n.id_empresa = i.id_empresa AND n.id_filial = i.id_filial
+           AND n.id_db = i.id_db AND n.id_comprovante = i.id_comprovante
+        LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
+            ON f.id_empresa = i.id_empresa AND f.id_filial = i.id_filial
+           AND f.id_funcionario = i.id_funcionario
+        WHERE i.id_empresa = {{id_empresa:Int32}}
+          AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND i.is_deleted = 0
+          AND i.cfop > 5000 AND i.id_funcionario > 0
+          AND n.id_comprovante IS NULL
+          {branch_i}
+        GROUP BY i.id_funcionario
         ORDER BY faturamento DESC
         LIMIT {{limit:UInt32}}
     """, parameters={
@@ -3416,7 +3482,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
     })
     return [
         {
-            "id_funcionario": _to_int(row.get("id_usuario")),
+            "id_funcionario": _to_int(row.get("id_funcionario")),
             "funcionario_nome": row.get("funcionario_nome") or "",
             "faturamento": _to_float(row.get("faturamento")),
             "margem": _to_float(row.get("margem")),

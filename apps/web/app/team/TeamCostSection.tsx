@@ -155,13 +155,13 @@ export default function TeamCostSection() {
           </div>
         </div>
         <div className="card">
-          <div className="muted" style={{ fontSize: 12 }}>Overhead rateável (mês)</div>
+          <div className="muted" style={{ fontSize: 12 }}>Despesas rateáveis (mês)</div>
           <div style={{ fontSize: 20, fontWeight: 700 }}>
             {loading ? "…" : formatCurrency(summary.total_overhead_mes)}
           </div>
         </div>
         <div className="card">
-          <div className="muted" style={{ fontSize: 12 }}>Rateio / cabeça</div>
+          <div className="muted" style={{ fontSize: 12 }}>Rateio por funcionário</div>
           <div style={{ fontSize: 20, fontWeight: 700 }}>
             {loading ? "…" : formatCurrency(summary.rateio_overhead_cabeca)}
           </div>
