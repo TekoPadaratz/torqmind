@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MART_TABLE = "torqmind_mart_rt.mart_inventory_tanks_rt"
 READINGS_TABLE = "torqmind_mart_rt.mart_inventory_tank_readings_rt"
 SALES_DAILY_TABLE = "torqmind_mart_rt.mart_inventory_fuel_sales_daily_rt"
+ENTRIES_DAILY_TABLE = "torqmind_mart_rt.mart_inventory_fuel_entries_daily_rt"
 FRESH_DAYS = 7
 READINGS_DAYS = 120
 
@@ -321,6 +322,7 @@ def fetch_fuel_sales_daily(
                       AND i.id_filial = %s
                       AND i.id_produto_shadow = ANY(%s)
                       AND i.qtd_shadow > 0
+                      AND coalesce(i.cfop_shadow, 0) > 5000
                       AND coalesce(i.cfop_shadow, 0) <> 1652
                       AND c.dt_evento >= %s
                     GROUP BY 1, 2, 3, 4
@@ -372,12 +374,98 @@ def publish_fuel_sales_daily(
     return n
 
 
+def fetch_fuel_entries_daily(
+    role: str, id_empresa: int, days: int = READINGS_DAYS
+) -> List[Dict[str, Any]]:
+    """Litros de entrada (NFe compra) por produto/dia — só combustível de tanque."""
+    from datetime import date, timedelta
+
+    days = max(7, min(int(days), 366))
+    cutoff = date.today() - timedelta(days=days)
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        rows = conn.execute(
+            """
+            WITH tanque_prods AS (
+              SELECT DISTINCT
+                t.id_filial,
+                coalesce(nullif(t.payload->>'ID_PRODUTOS','')::int, 0) AS id_produto
+              FROM stg.tanques t
+              WHERE t.id_empresa = %s
+                AND coalesce(nullif(t.payload->>'ID_PRODUTOS','')::int, 0) > 0
+                AND coalesce((nullif(t.payload->>'CAPACIDADE',''))::numeric, 0) > 0
+                AND coalesce(nullif(t.payload->>'ATIVO',''),'1')
+                    NOT IN ('0','false','False','f','N','n')
+            )
+            SELECT
+              i.id_empresa,
+              i.id_filial,
+              i.id_produto_shadow AS id_produto,
+              (coalesce(n.dt_entrada_shadow, i.dt_evento)
+                 AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
+              sum(coalesce(i.qtd_shadow, 0))::numeric AS litros
+            FROM stg.itens_nfe_entrada i
+            JOIN stg.nfe_entrada n
+              ON n.id_empresa = i.id_empresa
+             AND n.id_filial = i.id_filial
+             AND n.id_db = i.id_db
+             AND n.id_nota = i.id_nota
+            JOIN tanque_prods tp
+              ON tp.id_filial = i.id_filial
+             AND tp.id_produto = i.id_produto_shadow
+            WHERE i.id_empresa = %s
+              AND coalesce(i.qtd_shadow, 0) > 0
+              AND i.id_produto_shadow IS NOT NULL
+              AND coalesce(n.dt_entrada_shadow, i.dt_evento) IS NOT NULL
+              AND (coalesce(n.dt_entrada_shadow, i.dt_evento)
+                     AT TIME ZONE 'America/Sao_Paulo')::date >= %s
+              AND (
+                coalesce(i.eh_combustivel_shadow, false) = true
+                OR i.id_produto_shadow IN (SELECT id_produto FROM tanque_prods)
+              )
+            GROUP BY 1, 2, 3, 4
+            """,
+            [id_empresa, id_empresa, cutoff],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def publish_fuel_entries_daily(
+    role: str, id_empresa: int, days: int = READINGS_DAYS
+) -> int:
+    rows = fetch_fuel_entries_daily(role, id_empresa, days=days)
+    pub = _now()
+    payload = [
+        {
+            "id_empresa": int(r["id_empresa"]),
+            "id_filial": int(r["id_filial"]),
+            "id_produto": int(r["id_produto"]),
+            "dia": r["dia"],
+            "litros": float(r.get("litros") or 0),
+            "published_at": pub,
+        }
+        for r in rows
+    ]
+    n = insert_batch(
+        ENTRIES_DAILY_TABLE,
+        payload,
+        order_by=["id_empresa", "id_filial", "id_produto", "dia"],
+    )
+    logger.info(
+        "inventory_fuel entries_daily publish empresa=%s rows=%s inserted=%s",
+        id_empresa,
+        len(payload),
+        n,
+    )
+    return n
+
+
 def publish_inventory_fuel_bundle(
     role: str, id_empresa: int, days: int = READINGS_DAYS
 ) -> Dict[str, int]:
-    """Snapshot atual + leituras diárias + vendas diárias dos combustíveis."""
+    """Snapshot atual + leituras + saídas + entradas diárias dos combustíveis."""
     return {
         "tanks": publish_inventory_tanks(role, id_empresa),
         "readings": publish_tank_readings(role, id_empresa, days=days),
         "sales_daily": publish_fuel_sales_daily(role, id_empresa, days=days),
+        "entries_daily": publish_fuel_entries_daily(role, id_empresa, days=days),
     }

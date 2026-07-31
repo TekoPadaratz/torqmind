@@ -6004,12 +6004,11 @@ def inventory_fuel_loss_overview(
     refresh: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Conciliação diária: leitura D−1 × leitura D × vendas do dia D−1.
+    """Conciliação diária do tanque: leitura × movimentação (saídas − entradas).
 
-    Perda = (LEITURA_ant − LEITURA_atu) − vendas, quando o tanque não sobe.
-    Dia com reposição (leitura sobe): status ``reposicao``, perda nula.
-    Leituras: ``mart_inventory_tank_readings_rt`` (sensor MOVTANQUES).
-    Vendas: slim itens (exclui CFOP 1652).
+    Dif Leitura = LEITURA_D − LEITURA_D−1  (sobe = +, desce = −).
+    Movimentação = entradas_NFe − saídas_bomba  (efeito esperado no tanque).
+    Diferença = Dif Leitura − Movimentação.
     """
     try:
         from app.filial_apelido import set_apelido_scope
@@ -6068,7 +6067,8 @@ def inventory_fuel_loss_overview(
     )
 
     product_ids = sorted({int(r["id_produto"]) for r in readings if int(r.get("id_produto") or 0) > 0})
-    sales_map: Dict[tuple[int, int, str], float] = {}
+    saidas_map: Dict[tuple[int, int, str], float] = {}
+    entradas_map: Dict[tuple[int, int, str], float] = {}
     if product_ids:
         prod_list = ", ".join(str(i) for i in product_ids)
         sales_rows = query_dict(
@@ -6093,7 +6093,38 @@ def inventory_fuel_loss_overview(
         )
         for row in sales_rows:
             key = (int(row["id_filial"]), int(row["id_produto"]), str(row["dia"])[:10])
-            sales_map[key] = float(row.get("litros") or 0)
+            saidas_map[key] = float(row.get("litros") or 0)
+
+        try:
+            entry_rows = query_dict(
+                f"""
+                SELECT
+                    id_filial,
+                    id_produto,
+                    dia,
+                    litros
+                FROM {MART_RT_DB}.mart_inventory_fuel_entries_daily_rt FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  AND id_produto IN ({prod_list})
+                  AND dia >= %(read_ini)s
+                  AND dia <= %(dt_fim)s
+                  {filial_sql}
+                """,
+                {
+                    "id_empresa": int(id_empresa),
+                    "read_ini": read_ini,
+                    "dt_fim": dt_fim,
+                },
+            )
+            for row in entry_rows:
+                key = (int(row["id_filial"]), int(row["id_produto"]), str(row["dia"])[:10])
+                entradas_map[key] = float(row.get("litros") or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inventory_fuel_loss entries miss empresa=%s: %s",
+                id_empresa,
+                str(exc)[:200],
+            )
 
     # Index readings by (filial, tanque) → list by day
     by_tank: Dict[tuple[int, int], List[Dict[str, Any]]] = {}
@@ -6120,18 +6151,16 @@ def inventory_fuel_loss_overview(
             if dia_s in by_day and ant_s in by_day:
                 leit_atu = by_day[dia_s]
                 leit_ant = by_day[ant_s]
-                vendas = _to_float(sales_map.get((fid, pid, ant_s), 0.0), 3)
-                delta = _to_float(leit_ant - leit_atu, 3)
-                if leit_atu > leit_ant + 0.5:
-                    status = "reposicao"
-                    entrada_aparente = _to_float(leit_atu - leit_ant, 3)
-                    perda = None
-                else:
-                    status = "ok"
-                    entrada_aparente = 0.0
-                    perda = _to_float(delta - vendas, 3)
-                    if abs(perda) < 0.05:
-                        perda = 0.0
+                # Movimento do intervalo abertura D−1 → abertura D usa docs do dia D−1.
+                saidas = _to_float(saidas_map.get((fid, pid, ant_s), 0.0), 3)
+                entradas = _to_float(entradas_map.get((fid, pid, ant_s), 0.0), 3)
+                # Dif Leitura: sobe = +, desce = −
+                dif_leitura = _to_float(leit_atu - leit_ant, 3)
+                # Movimentação: efeito esperado no tanque (entrada sobe, saída desce)
+                movimentacao = _to_float(entradas - saidas, 3)
+                diferenca = _to_float(dif_leitura - movimentacao, 3)
+                if abs(diferenca) < 0.05:
+                    diferenca = 0.0
                 rows_out.append(
                     {
                         "id_filial": fid,
@@ -6144,20 +6173,27 @@ def inventory_fuel_loss_overview(
                         "dia_anterior": ant_s,
                         "leitura_anterior_l": leit_ant,
                         "leitura_atual_l": leit_atu,
-                        "delta_sensor_l": delta,
-                        "vendas_l": vendas,
-                        "entrada_aparente_l": entrada_aparente,
-                        "perda_l": perda,
-                        "status": status,
+                        "dif_leitura_l": dif_leitura,
+                        "delta_sensor_l": dif_leitura,  # compat
+                        "saidas_l": saidas,
+                        "entradas_l": entradas,
+                        "movimentacao_l": movimentacao,
+                        "vendas_l": movimentacao,  # compat com FE antigo
+                        "entrada_aparente_l": entradas,
+                        "diferenca_l": diferenca,
+                        "perda_l": diferenca,  # compat
+                        "status": "ok",
                     }
                 )
             d += timedelta(days=1)
 
-    rows_out.sort(key=lambda r: (r["dia"], r["filial_nome"], r["combustivel"], r["id_tanque"]), reverse=True)
+    # Data DESC, depois combustível ASC, depois tanque ASC (stable sorts)
+    rows_out.sort(key=lambda r: (str(r["combustivel"]).casefold(), int(r["id_tanque"])))
+    rows_out.sort(key=lambda r: str(r["dia"]), reverse=True)
 
-    perdas = [float(r["perda_l"]) for r in rows_out if r.get("perda_l") is not None]
-    perda_total = _to_float(sum(perdas), 3) if perdas else 0.0
-    repos = sum(1 for r in rows_out if r.get("status") == "reposicao")
+    diffs = [float(r["diferenca_l"]) for r in rows_out if r.get("diferenca_l") is not None]
+    diferenca_total = _to_float(sum(diffs), 3) if diffs else 0.0
+    dias_entrada = sum(1 for r in rows_out if float(r.get("entradas_l") or 0) > 0.5)
 
     by_filial: Dict[int, Dict[str, Any]] = {}
     for r in rows_out:
@@ -6168,14 +6204,17 @@ def inventory_fuel_loss_overview(
                 "id_filial": fid,
                 "filial_nome": r["filial_nome"],
                 "itens": [],
+                "diferenca_l": 0.0,
                 "perda_l": 0.0,
                 "dias_reposicao": 0,
+                "dias_entrada": 0,
             },
         )
         block["itens"].append(r)
-        if r.get("perda_l") is not None:
-            block["perda_l"] = _to_float(block["perda_l"] + float(r["perda_l"]), 3)
-        if r.get("status") == "reposicao":
+        block["diferenca_l"] = _to_float(block["diferenca_l"] + float(r["diferenca_l"]), 3)
+        block["perda_l"] = block["diferenca_l"]
+        if float(r.get("entradas_l") or 0) > 0.5:
+            block["dias_entrada"] += 1
             block["dias_reposicao"] += 1
 
     return {
@@ -6185,17 +6224,17 @@ def inventory_fuel_loss_overview(
         "kpis": {
             "filiais": len(by_filial),
             "pares": len(rows_out),
-            "perda_l": perda_total,
-            "dias_reposicao": repos,
+            "diferenca_l": diferenca_total,
+            "perda_l": diferenca_total,
+            "dias_entrada": dias_entrada,
+            "dias_reposicao": dias_entrada,
         },
         "filiais": [by_filial[k] for k in sorted(by_filial)],
         "itens": rows_out,
         "disclaimer": (
-            "Leitura = sensor do tanque (MOVTANQUES.LEITURA na abertura). "
-            "Vendas = litros do combustível no dia da leitura anterior (após abertura D−1 até abertura D). "
-            "Perda = (leitura D−1 − leitura D) − vendas. "
-            "Dia com leitura maior que a anterior = reposição (entrada); perda não calculada. "
-            "Entradas LMC ainda não ingeridas no STG — bombas/bicos ficam para depois."
+            "Dif Leitura = leitura D − leitura D−1. "
+            "Movimentação = entradas (NFe) − saídas (bomba) no intervalo. "
+            "Diferença = Dif Leitura − Movimentação."
         ),
     }
 

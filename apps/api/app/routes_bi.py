@@ -2149,7 +2149,7 @@ def inventory_fuel_loss_overview(
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("fuel_loss")),
 ):
-    """Conciliação sensor D−1 × D × vendas → perda de combustível."""
+    """Conciliação sensor D−1 × D × movimentação (saídas e entradas) → diferença."""
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(
         claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais

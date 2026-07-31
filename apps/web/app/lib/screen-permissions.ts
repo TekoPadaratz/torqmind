@@ -81,7 +81,7 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
   },
   {
     key: "fuel_loss",
-    label: "Perda de combustível",
+    label: "Aferição de Combustível",
     category: "Operação",
     panels: [],
   },

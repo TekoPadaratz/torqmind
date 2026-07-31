@@ -16,6 +16,8 @@ import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
 
+const SCREEN_TITLE = "Aferição de Combustível";
+
 type LossItem = {
   id_filial: number;
   filial_nome: string;
@@ -25,10 +27,14 @@ type LossItem = {
   dia_anterior: string;
   leitura_anterior_l: number;
   leitura_atual_l: number;
-  delta_sensor_l: number;
-  vendas_l: number;
-  entrada_aparente_l: number;
-  perda_l: number | null;
+  dif_leitura_l?: number;
+  delta_sensor_l?: number;
+  movimentacao_l?: number;
+  vendas_l?: number;
+  saidas_l?: number;
+  entradas_l?: number;
+  diferenca_l?: number | null;
+  perda_l?: number | null;
   status: string;
 };
 
@@ -36,17 +42,20 @@ type LossPayload = {
   kpis?: {
     filiais: number;
     pares: number;
-    perda_l: number;
-    dias_reposicao: number;
+    diferenca_l?: number;
+    perda_l?: number;
+    dias_entrada?: number;
+    dias_reposicao?: number;
   };
   filiais?: {
     id_filial: number;
     filial_nome: string;
-    perda_l: number;
-    dias_reposicao: number;
+    diferenca_l?: number;
+    perda_l?: number;
+    dias_entrada?: number;
+    dias_reposicao?: number;
     itens: LossItem[];
   }[];
-  disclaimer?: string;
 };
 
 type AfericaoItem = {
@@ -71,7 +80,6 @@ type AfericoesPayload = {
     filiais: number;
   };
   itens?: AfericaoItem[];
-  disclaimer?: string;
 };
 
 function fmtL(value: unknown, digits = 1): string {
@@ -90,22 +98,34 @@ function fmtDia(iso: string | undefined): string {
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
-function PerdaCell({ value, status }: { value: number | null; status: string }) {
-  if (status === "reposicao") {
-    return <span className="muted">Reposição</span>;
-  }
-  if (value == null) return <span>—</span>;
+/** Sinal invertido visual: sobe = verde (+), desce = vermelho (−). */
+function SignedLiters({ value }: { value: number | null | undefined }) {
+  if (value == null || !Number.isFinite(Number(value))) return <span>—</span>;
+  const n = Number(value);
   const tone =
-    value > 0.5
-      ? "var(--color-negative, #ef4444)"
-      : value < -0.5
-        ? "var(--positive, #22c55e)"
+    n > 0.5
+      ? "var(--color-positive, var(--positive, #22c55e))"
+      : n < -0.5
+        ? "var(--color-negative, #ef4444)"
         : "var(--muted)";
+  const prefix = n > 0 ? "+" : "";
   return (
     <span style={{ color: tone, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-      {fmtL(value)}
+      {prefix}
+      {fmtL(n)}
     </span>
   );
+}
+
+function sortTankItems(items: LossItem[]): LossItem[] {
+  return [...items].sort((a, b) => {
+    const da = String(a.dia || "");
+    const db = String(b.dia || "");
+    if (da !== db) return db.localeCompare(da);
+    const ca = String(a.combustivel || "").localeCompare(String(b.combustivel || ""), "pt-BR");
+    if (ca !== 0) return ca;
+    return Number(a.id_tanque || 0) - Number(b.id_tanque || 0);
+  });
 }
 
 export default function FuelLossPage() {
@@ -118,7 +138,7 @@ export default function FuelLossPage() {
     useBiScopeData<LossPayload>({
       moduleKey: "inventory_fuel_loss",
       scope,
-      errorMessage: "Falha ao carregar perda de combustível",
+      errorMessage: "Falha ao carregar aferição de combustível",
       buildRequestUrl: (currentScope) => {
         if (!allowed) return null;
         return `/bi/estoque/perda?${buildScopeParams(currentScope).toString()}`;
@@ -132,7 +152,7 @@ export default function FuelLossPage() {
   } = useBiScopeData<AfericoesPayload>({
     moduleKey: "inventory_fuel_afericoes",
     scope,
-    errorMessage: "Falha ao carregar aferições",
+    errorMessage: "Falha ao carregar aferições de bico",
     keepPreviousData: true,
     buildRequestUrl: (currentScope) => {
       if (!allowed) return null;
@@ -142,33 +162,38 @@ export default function FuelLossPage() {
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
   const transitionCopy = pendingUnavailable
-    ? buildModuleUnavailableCopy("perda de combustível")
-    : buildModuleLoadingCopy("perda de combustível");
+    ? buildModuleUnavailableCopy("aferição de combustível")
+    : buildModuleLoadingCopy("aferição de combustível");
 
   const kpis = data?.kpis;
   const filiais = useMemo(
     () =>
-      [...(data?.filiais || [])].sort((a, b) =>
-        a.filial_nome.localeCompare(b.filial_nome, "pt-BR"),
-      ),
+      [...(data?.filiais || [])]
+        .map((f) => ({ ...f, itens: sortTankItems(f.itens || []) }))
+        .sort((a, b) => a.filial_nome.localeCompare(b.filial_nome, "pt-BR")),
     [data?.filiais],
   );
   const afericoes = useMemo(
     () =>
-      [...(afericoesData?.itens || [])].sort((a, b) =>
-        a.filial_nome.localeCompare(b.filial_nome, "pt-BR"),
-      ),
+      [...(afericoesData?.itens || [])].sort((a, b) => {
+        const fa = a.filial_nome.localeCompare(b.filial_nome, "pt-BR");
+        if (fa !== 0) return fa;
+        const da = String(b.dia || "").localeCompare(String(a.dia || ""));
+        if (da !== 0) return da;
+        return String(a.produto_nome || "").localeCompare(String(b.produto_nome || ""), "pt-BR");
+      }),
     [afericoesData?.itens],
   );
   const afericoesKpis = afericoesData?.kpis;
+  const diferencaKpi = Number(kpis?.diferenca_l ?? kpis?.perda_l ?? 0);
 
   if (!allowed && session) {
     return (
       <div>
-        <AppNav title="Perda de combustível" userLabel={userLabel} />
+        <AppNav title={SCREEN_TITLE} userLabel={userLabel} />
         <div className="container">
           <div className="bi-grid">
-            <div className="card col-12">Sem permissão para Perda de combustível.</div>
+            <div className="card col-12">Sem permissão para {SCREEN_TITLE}.</div>
           </div>
         </div>
       </div>
@@ -177,16 +202,13 @@ export default function FuelLossPage() {
 
   return (
     <div>
-      <AppNav title="Perda de combustível" userLabel={userLabel} />
+      <AppNav title={SCREEN_TITLE} userLabel={userLabel} />
       <div className="container">
         <div className="bi-grid">
           <header className="pageHeader col-12">
             <div>
               <div className="sectionEyebrow">Operação</div>
-              <h1>Perda de combustível</h1>
-              <p className="muted" style={{ marginTop: 4, maxWidth: 760 }}>
-                Conciliação entre leituras do tanque e vendas para identificar perdas.
-              </p>
+              <h1>{SCREEN_TITLE}</h1>
             </div>
           </header>
 
@@ -204,169 +226,177 @@ export default function FuelLossPage() {
 
           {data && kpis ? (
             <>
-            <div className="card kpi col-3">
-              <div className="label">Filiais</div>
-              <div className="value">{kpis.filiais}</div>
-            </div>
-            <div className="card kpi col-3">
-              <div className="label">Pares D−1×D</div>
-              <div className="value">{kpis.pares}</div>
-            </div>
-            <div className="card kpi col-3">
-              <div className="label">Perda no período</div>
-              <div className="value" style={{ color: kpis.perda_l > 0.5 ? "var(--color-negative, #ef4444)" : undefined }}>
-                {fmtL(kpis.perda_l)}
+              <div className="card kpi col-3">
+                <div className="label">Filiais</div>
+                <div className="value">{kpis.filiais}</div>
               </div>
-            </div>
-            <div className="card kpi col-3">
-              <div className="label">Dias c/ reposição</div>
-              <div className="value">{kpis.dias_reposicao}</div>
-            </div>
-
-          {!filiais.length ? (
-            <div className="col-12">
-              <EmptyState
-                title="Sem pares de leitura"
-                detail="É preciso ter leitura do sensor em dias consecutivos no período selecionado."
-              />
-            </div>
-          ) : (
-            filiais.map((filial) => (
-              <section key={filial.id_filial} className="card col-12" style={{ marginBottom: 16 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    flexWrap: "wrap",
-                    marginBottom: 12,
-                  }}
-                >
-                  <div>
-                    <div className="eyebrow">Filial</div>
-                    <h2 style={{ margin: 0, fontSize: "1.15rem" }}>{filial.filial_nome}</h2>
-                  </div>
-                  <div className="muted" style={{ fontSize: 13 }}>
-                    Perda {fmtL(filial.perda_l)}
-                    {filial.dias_reposicao
-                      ? ` · ${filial.dias_reposicao} reposição(ões)`
-                      : ""}
-                  </div>
+              <div className="card kpi col-3">
+                <div className="label">Pares D−1×D</div>
+                <div className="value">{kpis.pares}</div>
+              </div>
+              <div className="card kpi col-3">
+                <div className="label">Diferença no período</div>
+                <div className="value">
+                  <SignedLiters value={diferencaKpi} />
                 </div>
+              </div>
+              <div className="card kpi col-3">
+                <div className="label">Dias c/ entrada</div>
+                <div className="value">{kpis.dias_entrada ?? kpis.dias_reposicao ?? 0}</div>
+              </div>
 
-                <div className="tableScroll">
-                  <table className="table compact" style={{ minWidth: 920 }}>
-                    <thead>
-                      <tr>
-                        <th>Dia</th>
-                        <th>Tanque</th>
-                        <th>Combustível</th>
-                        <th>Leitura D−1</th>
-                        <th>Leitura D</th>
-                        <th>Δ sensor</th>
-                        <th>Vendas (D−1)</th>
-                        <th>Perda</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filial.itens.map((item) => (
-                        <tr key={`${item.id_filial}-${item.id_tanque}-${item.dia}`}>
-                          <td>{fmtDia(item.dia)}</td>
-                          <td>#{item.id_tanque}</td>
-                          <td>{item.combustivel}</td>
-                          <td>{fmtL(item.leitura_anterior_l)}</td>
-                          <td>{fmtL(item.leitura_atual_l)}</td>
-                          <td>{fmtL(item.delta_sensor_l)}</td>
-                          <td>{fmtL(item.vendas_l)}</td>
-                          <td>
-                            <PerdaCell value={item.perda_l} status={item.status} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {!filiais.length ? (
+                <div className="col-12">
+                  <EmptyState
+                    title="Sem pares de leitura"
+                    detail="É preciso ter leitura do tanque em dias consecutivos no período selecionado."
+                  />
                 </div>
-              </section>
-            ))
-          )}
+              ) : (
+                filiais.map((filial) => (
+                  <section key={filial.id_filial} className="card col-12" style={{ marginBottom: 16 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        flexWrap: "wrap",
+                        marginBottom: 12,
+                      }}
+                    >
+                      <div>
+                        <div className="eyebrow">Filial</div>
+                        <h2 style={{ margin: 0, fontSize: "1.15rem" }}>{filial.filial_nome}</h2>
+                      </div>
+                      <div className="muted" style={{ fontSize: 13 }}>
+                        Diferença{" "}
+                        <SignedLiters value={Number(filial.diferenca_l ?? filial.perda_l ?? 0)} />
+                        {(filial.dias_entrada ?? filial.dias_reposicao)
+                          ? ` · ${filial.dias_entrada ?? filial.dias_reposicao} dia(s) c/ entrada`
+                          : ""}
+                      </div>
+                    </div>
 
-        </>
-      ) : null}
-
-      <section className="card col-12">
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            marginBottom: 12,
-            alignItems: "baseline",
-          }}
-        >
-          <div>
-            <div className="sectionEyebrow">Operação</div>
-            <h2 style={{ margin: 0, fontSize: "1.15rem" }}>Aferições no período</h2>
-            <p className="muted" style={{ margin: "4px 0 0", fontSize: 13 }}>
-              Litros aferidos por bico no período selecionado.
-            </p>
-          </div>
-          {afericoesKpis ? (
-            <div className="muted" style={{ fontSize: 13 }}>
-              {afericoesKpis.afericoes} registro(s)
-              {afericoesKpis.litros > 0 ? ` · ${fmtL(afericoesKpis.litros)}` : ""}
-            </div>
+                    <div className="tableScroll">
+                      <table className="table compact" style={{ minWidth: 920 }}>
+                        <thead>
+                          <tr>
+                            <th>Dia</th>
+                            <th>Tanque</th>
+                            <th>Combustível</th>
+                            <th>Leitura D−1</th>
+                            <th>Leitura D</th>
+                            <th>Dif Leitura</th>
+                            <th>Movimentação</th>
+                            <th>Diferença</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filial.itens.map((item) => {
+                            const difLeitura = Number(
+                              item.dif_leitura_l ?? item.delta_sensor_l ?? 0,
+                            );
+                            const mov = Number(item.movimentacao_l ?? item.vendas_l ?? 0);
+                            const dif = item.diferenca_l ?? item.perda_l;
+                            return (
+                              <tr key={`${item.id_filial}-${item.id_tanque}-${item.dia}`}>
+                                <td>{fmtDia(item.dia)}</td>
+                                <td>#{item.id_tanque}</td>
+                                <td>{item.combustivel}</td>
+                                <td>{fmtL(item.leitura_anterior_l)}</td>
+                                <td>{fmtL(item.leitura_atual_l)}</td>
+                                <td>
+                                  <SignedLiters value={difLeitura} />
+                                </td>
+                                <td>
+                                  <SignedLiters value={mov} />
+                                </td>
+                                <td>
+                                  <SignedLiters value={dif} />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ))
+              )}
+            </>
           ) : null}
-        </div>
 
-        {afericoesError ? (
-          <div className="errorCard" style={{ marginBottom: 8 }}>
-            {afericoesError}
-          </div>
-        ) : null}
+          <section className="card col-12">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                flexWrap: "wrap",
+                marginBottom: 12,
+                alignItems: "baseline",
+              }}
+            >
+              <div>
+                <div className="sectionEyebrow">Operação</div>
+                <h2 style={{ margin: 0, fontSize: "1.15rem" }}>Aferições de bico</h2>
+              </div>
+              {afericoesKpis ? (
+                <div className="muted" style={{ fontSize: 13 }}>
+                  {afericoesKpis.afericoes} registro(s)
+                  {afericoesKpis.litros > 0 ? ` · ${fmtL(afericoesKpis.litros)}` : ""}
+                </div>
+              ) : null}
+            </div>
 
-        {afericoesLoading && !afericoesData ? (
-          <p className="muted" style={{ fontSize: 13 }}>
-            Carregando aferições…
-          </p>
-        ) : !afericoes.length ? (
-          <EmptyState
-            title="Sem aferições no período"
-            detail="Não há registros de aferição para as filiais selecionadas."
-          />
-        ) : (
-          <div className="tableScroll">
-            <table className="table compact" style={{ minWidth: 880 }}>
-              <thead>
-                <tr>
-                  <th>Filial</th>
-                  <th>Data</th>
-                  <th>Bico</th>
-                  <th>Produto</th>
-                  <th>Turno</th>
-                  <th>Litros</th>
-                  <th>Operador</th>
-                  <th>Liberador</th>
-                </tr>
-              </thead>
-              <tbody>
-                {afericoes.map((item) => (
-                  <tr key={`${item.id_filial}-${item.id_afericao}`}>
-                    <td>{item.filial_nome}</td>
-                    <td>{fmtDia(item.dia)}</td>
-                    <td>{item.bico_label}</td>
-                    <td>{item.produto_nome}</td>
-                    <td>{item.turno_label}</td>
-                    <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtL(item.qtde_l)}</td>
-                    <td>{item.operador_nome}</td>
-                    <td>{item.liberador_nome}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+            {afericoesError ? (
+              <div className="errorCard" style={{ marginBottom: 8 }}>
+                {afericoesError}
+              </div>
+            ) : null}
+
+            {afericoesLoading && !afericoesData ? (
+              <p className="muted" style={{ fontSize: 13 }}>
+                Carregando aferições…
+              </p>
+            ) : !afericoes.length ? (
+              <EmptyState
+                title="Sem aferições no período"
+                detail="Não há registros de aferição de bico para as filiais selecionadas."
+              />
+            ) : (
+              <div className="tableScroll">
+                <table className="table compact" style={{ minWidth: 880 }}>
+                  <thead>
+                    <tr>
+                      <th>Filial</th>
+                      <th>Data</th>
+                      <th>Bico</th>
+                      <th>Produto</th>
+                      <th>Turno</th>
+                      <th>Litros</th>
+                      <th>Operador</th>
+                      <th>Liberador</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {afericoes.map((item) => (
+                      <tr key={`${item.id_filial}-${item.id_afericao}`}>
+                        <td>{item.filial_nome}</td>
+                        <td>{fmtDia(item.dia)}</td>
+                        <td>{item.bico_label}</td>
+                        <td>{item.produto_nome}</td>
+                        <td>{item.turno_label}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtL(item.qtde_l)}</td>
+                        <td>{item.operador_nome}</td>
+                        <td>{item.liberador_nome}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         </div>
       </div>
     </div>

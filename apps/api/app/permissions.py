@@ -148,7 +148,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "has_sensitive": True,
     },
     "fuel_loss": {
-        "label": "Perda de combustível",
+        "label": "Aferição de Combustível",
         "category": "Operação",
         "has_sensitive": False,
     },
