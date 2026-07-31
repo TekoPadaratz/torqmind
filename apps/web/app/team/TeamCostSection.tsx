@@ -114,10 +114,6 @@ export default function TeamCostSection() {
     <div className="card col-12" style={{ marginTop: 12 }}>
       <div className="sectionEyebrow">Equipe</div>
       <h2 style={{ marginTop: 4 }}>Custo do funcionário</h2>
-      <div className="muted" style={{ marginTop: 8, fontSize: 13 }}>
-        {summary.nota ||
-          "Salário/vale/HE do cadastro + rateio por cabeça das despesas operacionais do posto."}
-      </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
         <label className="profitScopeMonth" title="Mês de referência do custo da equipe">

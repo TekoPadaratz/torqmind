@@ -3190,6 +3190,7 @@ def team_employee_cost_overview(
     return {
         "ano": ano,
         "mes": mes,
+        "ano_mes": ano_mes,
         "items": items,
         "total": headcount,
         "page": page,
@@ -3201,11 +3202,6 @@ def team_employee_cost_overview(
             "total_overhead_mes": total_overhead,
             "rateio_pessoal_cabeca": rateio_pessoal,
             "rateio_overhead_cabeca": rateio_overhead,
-            "nota": (
-                "Custo total = salário/vale/HE do cadastro + rateio por cabeça das "
-                "despesas operacionais do posto (água, luz, aluguel, marketing, etc.). "
-                "Financiamentos e itens excepcionais/financeiros não entram no rateio."
-            ),
         },
         "source": "realtime",
     }

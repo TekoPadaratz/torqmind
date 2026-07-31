@@ -151,6 +151,11 @@ colunas Filial→Data→Documento, ordenação canônica, **busca geral** via
 `GridSearchInput` + `useGridSearch` (largura fixa 280px; termo varre todos os
 campos da linha), e labels limpos (sem disclaimer/debug/mart/SQL na UI).
 
+**Copy de produto:** nunca expor fórmula/pipeline/nota de engenharia na tela
+(“custo = …”, “não entra no rateio…”, “publicado da mart…”). Isso é para o
+time (contrato UI + docstring); o cliente vê só título, KPIs e dados.
+Detalhe: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10.
+
 ## Estilo de trabalho
 
 Sempre diagnosticar, explicar causa provável, alterar o mínimo necessário, testar, validar API/Web, limpar sujeira, commit/push quando solicitado e entregar relatório PASS/FAIL com prova.

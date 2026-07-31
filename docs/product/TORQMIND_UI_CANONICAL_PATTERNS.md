@@ -170,6 +170,17 @@ Não encontrados em strings visíveis de páginas: `mart`, `DW`, `CDC`, `Debeziu
 
 `lib/reading-copy.mjs` é o **padrão oficial de copy de frescor/cobertura** (“Base pronta…”, “Atualizado em…”, “Em atualização…”).
 
+### 4.4 Proibido — copy de debug / engenharia na UI
+
+Não exibir na tela (subtítulo, `nota` de API, tooltip de painel, empty “explicativo”):
+
+- Fórmulas (“custo = salário + rateio…”)
+- Regras de exclusão de pipeline (“financiamentos não entram…”)
+- Jargão de implementação (mart, rateio por cabeça como *howto*, STG, join)
+
+Isso é documentação para o time — contrato / `AGENTS.md` / docstring.  
+Cliente final vê: título + números + grid + empty acionável.
+
 ---
 
 ## 5. Componentes canônicos (lista oficial encontrada)
