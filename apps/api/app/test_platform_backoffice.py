@@ -323,7 +323,7 @@ class PlatformBackofficeTest(unittest.TestCase):
         elif parsed.path == "/bi/fraud/overview":
             as_of = dt_ref or business_today(tenant_id)
             risk_window = repos_mart.risk_data_window(role, tenant_id, filial)
-            model_coverage = repos_mart.risk_model_coverage(dt_ini, dt_fim, risk_window)
+            model_coverage = repos_mart.risk_model_coverage(role, tenant_id, filial, dt_ini, dt_fim)
             operational_kpis = repos_mart.fraud_kpis(role, tenant_id, filial, dt_ini, dt_fim)
             operational_series = repos_mart.fraud_series(role, tenant_id, filial, dt_ini, dt_fim)
             top_users = repos_mart.fraud_top_users(role, tenant_id, filial, dt_ini, dt_fim, limit=10)

@@ -418,10 +418,20 @@ test("filterProductLinks with null returns all links (admin fallback)", () => {
   assert.equal(result.length, PRODUCT_LINKS.length);
 });
 
-test("filterProductLinks with single screen returns only that link", () => {
+test("filterProductLinks with single screen returns that link and its panels", () => {
+  // Pai sem painéis explícitos ganha os painéis (mesma semântica do backend
+  // expand_screen_permissions): sales → sales + sales.abc.
   const result = filterProductLinks(["sales"]);
+  assert.deepEqual(
+    result.map((l) => l.path),
+    ["/sales", "/sales/abc"],
+  );
+});
+
+test("filterProductLinks with screen without panels returns only that link", () => {
+  const result = filterProductLinks(["cash"]);
   assert.equal(result.length, 1);
-  assert.equal(result[0].path, "/sales");
+  assert.equal(result[0].path, "/cash");
 });
 
 test("filterProductLinks with all screens returns all links", () => {

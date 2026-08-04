@@ -100,12 +100,14 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
         self.assertEqual(float(annual["months"][1]["saidas_anterior"]), 50.0)
         self.assertEqual(float(annual["months"][3]["saidas_atual"]), 125.0)
 
-    def test_turno_label_falls_back_to_numeric_identifier_when_payload_label_is_missing(self) -> None:
-        self.assertEqual(repos_mart._turno_label(None, 356), "Turno sem cadastro")
-        self.assertEqual(repos_mart._turno_label("", 0), "Turno sem cadastro")
-        self.assertEqual(repos_mart._turno_label("0", 1), "Turno sem cadastro")
-        self.assertEqual(repos_mart._turno_label("4", 17679), "4")
-        self.assertEqual(repos_mart._turno_label("2", 463), "2")
+    def test_turno_label_falls_back_to_honest_unresolved_label(self) -> None:
+        # Contrato AGENTS.md: turno operacional exibido é "Turno N" (payload
+        # TURNO); sem número resolvido → "Turno não resolvido" (nunca id técnico).
+        self.assertEqual(repos_mart._turno_label(None, 356), "Turno não resolvido")
+        self.assertEqual(repos_mart._turno_label("", 0), "Turno não resolvido")
+        self.assertEqual(repos_mart._turno_label("0", 1), "Turno não resolvido")
+        self.assertEqual(repos_mart._turno_label("4", 17679), "Turno 4")
+        self.assertEqual(repos_mart._turno_label("2", 463), "Turno 2")
 
     def test_commercial_docs_window_cte_uses_comprovantes_as_canonical_source(self) -> None:
         cte, _params, _branch = repos_mart._commercial_docs_window_cte(
@@ -127,8 +129,11 @@ class SalesOverviewBundleUnitTest(unittest.TestCase):
             date_params=[20260414, 20260415],
         )
 
+        # Vendas válidas = situacao 1. situacao 2 (cancelada) e 3 (ignorada
+        # comercialmente) ficam fora do window fact — devoluções são tratadas
+        # em fluxo próprio (antifraude/CR), não aqui.
         self.assertIn("COALESCE(v.situacao, 0) = 1", cte)
-        self.assertIn("COALESCE(v.situacao, 0) = 3", cte)
+        self.assertNotIn("COALESCE(v.situacao, 0) = 3", cte)
         self.assertNotIn("COALESCE(v.situacao, 0) > 2", cte)
         self.assertIn("COALESCE(i.cfop, 0) > 5000", cte)
         self.assertNotIn("COALESCE(i.cfop, 0) >= 5000", cte)

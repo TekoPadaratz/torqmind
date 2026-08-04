@@ -32,15 +32,16 @@ class MultiVmDeployContractTest(unittest.TestCase):
         self.assertNotIn("depends_on", services["api"])
 
     def test_app_compose_uses_remote_pg_and_clickhouse_env(self) -> None:
+        # A API monta a conexão via PG_* (DATABASE_URL é opcional — db.py faz
+        # fallback para PG_HOST/PG_PORT/PG_USER/PG_PASSWORD).
         api_env = compose("docker-compose.app.yml")["services"]["api"]["environment"]
         self.assertIn("PG_HOST", api_env)
+        self.assertIn("PG_PASSWORD", api_env)
         self.assertIn("CLICKHOUSE_HOST", api_env)
-        self.assertIn("DATABASE_URL", api_env)
         self.assertNotEqual(api_env["PG_HOST"], "postgres")
         self.assertNotEqual(api_env["CLICKHOUSE_HOST"], "clickhouse")
         self.assertIn("CHANGE_ME_PRIVATE_POSTGRES_HOST", api_env["PG_HOST"])
         self.assertIn("CHANGE_ME_PRIVATE_ANALYTICS_HOST", api_env["CLICKHOUSE_HOST"])
-        self.assertIn("CHANGE_ME_PRIVATE_POSTGRES_HOST", api_env["DATABASE_URL"])
 
     def test_pg_compose_only_runs_postgres_with_logical_replication(self) -> None:
         data = compose("docker-compose.pg.yml")

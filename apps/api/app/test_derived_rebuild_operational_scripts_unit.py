@@ -42,7 +42,10 @@ class DerivedRebuildOperationalScriptsTest(unittest.TestCase):
         self.assertNotIn("DELETE FROM stg.itenscomprovantes", source)
 
     def test_rebuild_script_is_executable(self) -> None:
-        self.assertEqual(mode("deploy/scripts/prod-rebuild-derived-from-stg.sh"), 0o755)
+        # Git só rastreia o bit de execução; o modo completo (755 vs 775)
+        # depende do umask do clone. O contrato é: executável por todos.
+        script_mode = mode("deploy/scripts/prod-rebuild-derived-from-stg.sh")
+        self.assertEqual(script_mode & 0o111, 0o111)
 
     def test_rebuild_script_has_safety_and_verification_flags(self) -> None:
         source = read("deploy/scripts/prod-rebuild-derived-from-stg.sh")

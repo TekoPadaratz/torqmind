@@ -181,13 +181,12 @@ class TestMartOnlyMode:
         mock_client = MagicMock()
 
         with patch.object(builder, "_get_client", return_value=mock_client):
-            # Table exists but empty
-            mock_client.query.side_effect = [
-                FakeQueryResult([(1,)]),  # table exists
-                FakeQueryResult([(1,)]),  # table exists
-                FakeQueryResult([(1,)]),  # table exists
-                FakeQueryResult([(0,)]),  # comprovantes_slim empty
-            ]
+            # All REQUIRED_SLIM_TABLES exist, but comprovantes_slim is empty
+            n_required = len(type(builder).REQUIRED_SLIM_TABLES)
+            mock_client.query.side_effect = (
+                [FakeQueryResult([(1,)])] * n_required  # each table exists
+                + [FakeQueryResult([(0,)])]  # comprovantes_slim empty
+            )
 
             with pytest.raises(RuntimeError, match="empty"):
                 builder.backfill(mart_only=True, from_date="2026-04-30")

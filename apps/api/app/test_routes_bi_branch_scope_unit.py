@@ -16,7 +16,12 @@ class BranchScopeRouteUnitTest(unittest.TestCase):
         cls.client = TestClient(app)
 
     def setUp(self) -> None:
-        app.dependency_overrides[get_current_claims] = lambda: {"role": "OWNER"}
+        # user_role define o ACL de telas (require_screen); tenant_admin tem
+        # acesso default a todas as telas do produto.
+        app.dependency_overrides[get_current_claims] = lambda: {
+            "role": "OWNER",
+            "user_role": "tenant_admin",
+        }
 
     def tearDown(self) -> None:
         app.dependency_overrides.pop(get_current_claims, None)

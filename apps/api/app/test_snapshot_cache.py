@@ -124,10 +124,13 @@ class SnapshotCacheTests(unittest.TestCase):
         )
 
     def test_hot_bi_routes_use_snapshot_cache(self):
-        self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
-        self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
-        self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("pricing_competitor_overview"))
-        self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("noncritical_probe"))
+        # Hermético: com USE_REALTIME_MARTS=true no ambiente, as rotas quentes
+        # fazem bypass legítimo (verdade realtime CH). Aqui testamos o modo snapshot.
+        with patch.object(snapshot_cache.settings, "use_realtime_marts", False):
+            self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("sales_overview"))
+            self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("dashboard_home"))
+            self.assertTrue(snapshot_cache.route_snapshot_is_bypassed("pricing_competitor_overview"))
+            self.assertFalse(snapshot_cache.route_snapshot_is_bypassed("noncritical_probe"))
 
     def test_realtime_hot_bi_routes_bypass_snapshot_cache_for_truth(self):
         with patch.object(snapshot_cache.settings, "use_realtime_marts", True):
@@ -497,6 +500,7 @@ class SnapshotCacheTests(unittest.TestCase):
         compute = MagicMock(side_effect=AssertionError("live compute should not run when a fresh snapshot exists"))
 
         with (
+            patch.object(routes_bi.snapshot_cache.settings, "use_realtime_marts", False),
             patch.object(routes_bi.snapshot_cache, "read_snapshot_record", return_value=cached_record),
             patch.object(
                 routes_bi.snapshot_cache,

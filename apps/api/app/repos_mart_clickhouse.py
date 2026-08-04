@@ -667,7 +667,17 @@ def _sales_sync_meta(role: str, id_empresa: int, id_filial: Any, dt_ini: date, d
     }
 
 
-def risk_model_coverage(dt_ini: date, dt_fim: date, risk_window: Dict[str, Any]) -> Dict[str, Any]:
+def risk_model_coverage(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    risk_window: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Coverage da leitura modelada — assinatura padrão (role, empresa, filial, janela)."""
+    if risk_window is None:
+        risk_window = risk_data_window(role, id_empresa, id_filial)
     requested_start_key = _date_key(dt_ini)
     requested_end_key = _date_key(dt_fim)
     requested_days = max((dt_fim - dt_ini).days + 1, 0)
