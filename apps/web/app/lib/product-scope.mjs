@@ -5,57 +5,60 @@ export const PRODUCT_LINKS = [
   { path: '/sales', label: 'Vendas', screen_key: 'sales' },
   { path: '/sales/abc', label: 'Curva ABC', screen_key: 'sales.abc', parent_screen: 'sales' },
   { path: '/customers', label: 'Clientes', screen_key: 'customers' },
+  { path: '/team', label: 'Equipe', screen_key: 'team' },
   { path: '/inventory', label: 'Estoque', screen_key: 'inventory' },
-  { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
-  { path: '/goals', label: 'Metas & Equipe', screen_key: 'goals_team' },
+  { path: '/goals', label: 'Metas', screen_key: 'goals_team' },
   { path: '/goals?tab=comissoes', label: 'Comissões', screen_key: 'goals_team.comissoes', parent_screen: 'goals_team' },
+  { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
   { path: '/cash', label: 'Caixa', screen_key: 'cash' },
   { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
   { path: '/fuel-loss', label: 'Perda de combustível', screen_key: 'fuel_loss' },
-  { path: '/finance', label: 'Geral (Pagar × Receber)', screen_key: 'finance.overview', parent_screen: 'finance' },
   { path: '/finance?view=payable', label: 'Contas a pagar', screen_key: 'finance.payable', parent_screen: 'finance' },
   { path: '/finance?view=receivable', label: 'Contas a receber', screen_key: 'finance.receivable', parent_screen: 'finance' },
   { path: '/finance?view=cheques', label: 'Controle de cheques', screen_key: 'finance.cheques', parent_screen: 'finance' },
-  { path: '/finance?view=budget', label: 'Gestão orçamentária', screen_key: 'finance.budget', parent_screen: 'finance' },
+  { path: '/finance?view=despesas', label: 'Despesas', screen_key: 'finance.despesas', parent_screen: 'finance' },
+  { path: '/finance', label: 'Geral (Pagar × Receber)', screen_key: 'finance.overview', parent_screen: 'finance' },
   { path: '/profit-management', label: 'Gestão de Lucro', screen_key: 'profit_management' },
+  { path: '/finance?view=budget', label: 'Gestão orçamentária', screen_key: 'finance.budget', parent_screen: 'finance' },
 ];
 
 /**
- * Top-nav domains with flyout children.
- * `screen_key` on a child may be a panel; visibility also checks parent_screen / menu key.
+ * Top-nav domains with flyout children — ordem alfabética por label dentro do grupo.
  */
 export const PRODUCT_NAV_GROUPS = [
   {
     id: 'comercial',
     label: 'Comercial',
     children: [
-      { path: '/sales', label: 'Vendas', screen_key: 'sales' },
-      { path: '/sales/abc', label: 'Curva ABC', screen_key: 'sales.abc', parent_screen: 'sales' },
       { path: '/customers', label: 'Clientes', screen_key: 'customers' },
-      { path: '/inventory', label: 'Estoque', screen_key: 'inventory' },
-      { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
-      { path: '/goals', label: 'Metas & Equipe', screen_key: 'goals_team' },
       { path: '/goals?tab=comissoes', label: 'Comissões', screen_key: 'goals_team.comissoes', parent_screen: 'goals_team' },
+      { path: '/sales/abc', label: 'Curva ABC', screen_key: 'sales.abc', parent_screen: 'sales' },
+      { path: '/team', label: 'Equipe', screen_key: 'team' },
+      { path: '/inventory', label: 'Estoque', screen_key: 'inventory' },
+      { path: '/goals', label: 'Metas', screen_key: 'goals_team' },
+      { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
+      { path: '/sales', label: 'Vendas', screen_key: 'sales' },
     ],
   },
   {
     id: 'financeiro',
     label: 'Financeiro',
     children: [
-      { path: '/finance', label: 'Geral (Pagar × Receber)', screen_key: 'finance.overview', parent_screen: 'finance' },
       { path: '/finance?view=payable', label: 'Contas a pagar', screen_key: 'finance.payable', parent_screen: 'finance' },
       { path: '/finance?view=receivable', label: 'Contas a receber', screen_key: 'finance.receivable', parent_screen: 'finance' },
       { path: '/finance?view=cheques', label: 'Controle de cheques', screen_key: 'finance.cheques', parent_screen: 'finance' },
-      { path: '/finance?view=budget', label: 'Gestão orçamentária', screen_key: 'finance.budget', parent_screen: 'finance' },
+      { path: '/finance?view=despesas', label: 'Despesas', screen_key: 'finance.despesas', parent_screen: 'finance' },
+      { path: '/finance', label: 'Geral (Pagar × Receber)', screen_key: 'finance.overview', parent_screen: 'finance' },
       { path: '/profit-management', label: 'Gestão de Lucro', screen_key: 'profit_management' },
+      { path: '/finance?view=budget', label: 'Gestão orçamentária', screen_key: 'finance.budget', parent_screen: 'finance' },
     ],
   },
   {
     id: 'operacao',
     label: 'Operação',
     children: [
-      { path: '/cash', label: 'Caixa', screen_key: 'cash' },
       { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
+      { path: '/cash', label: 'Caixa', screen_key: 'cash' },
       { path: '/fuel-loss', label: 'Perda de combustível', screen_key: 'fuel_loss' },
     ],
   },
@@ -64,9 +67,9 @@ export const PRODUCT_NAV_GROUPS = [
 function screenAllowed(set, link) {
   if (set.has(link.screen_key)) return true;
   if (link.parent_screen && set.has(link.parent_screen)) return true;
-  // Legado: finance menu without panels → all finance children
   if (link.parent_screen === 'finance' && set.has('finance')) return true;
   if (link.screen_key === 'goals_team.comissoes' && set.has('goals_team')) return true;
+  if (link.screen_key === 'team.custos' && set.has('team')) return true;
   if (link.screen_key === 'sales.abc' && set.has('sales')) return true;
   return false;
 }

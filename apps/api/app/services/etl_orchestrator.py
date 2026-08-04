@@ -1048,6 +1048,35 @@ def _run_sql_count(conn, query: str, params: tuple[Any, ...]) -> int:
     return int((row or {}).get("rows") or 0)
 
 
+def _publish_finance_despesas_marts(tenant_id: int) -> int:
+    """Publica despesas (CAP × plano) + funcionários ativos nas marts CH."""
+    from app.services.finance_despesas import (
+        publish_finance_despesas,
+        publish_team_employees,
+    )
+
+    despesas = publish_finance_despesas("platform_master", int(tenant_id))
+    employees = publish_team_employees("platform_master", int(tenant_id))
+    return int(despesas) + int(employees)
+
+
+# Janela curta no ciclo (30 min): purge+reinsert só dos últimos N dias — cobre a
+# tela (14d) e cancelamentos retroativos recentes sem repetir o scan de 120 dias.
+INVENTORY_FUEL_PUBLISH_DAYS = 21
+
+
+def _publish_inventory_fuel_marts(tenant_id: int) -> int:
+    """Publica marts CH de combustível (tanques/leituras/vendas/entradas) + aferições."""
+    from app.services.afericoes import publish_afericoes
+    from app.services.inventory_fuel import publish_inventory_fuel_bundle
+
+    bundle = publish_inventory_fuel_bundle(
+        "platform_master", int(tenant_id), days=INVENTORY_FUEL_PUBLISH_DAYS
+    )
+    afericoes = publish_afericoes("platform_master", int(tenant_id))
+    return sum(int(v or 0) for v in bundle.values()) + int(afericoes)
+
+
 def _run_payment_loader_detail(conn, tenant_id: int) -> tuple[int, dict[str, Any]]:
     row = conn.execute(
         "SELECT etl.load_fact_pagamento_comprovante_detail(%s) AS result",
@@ -2450,6 +2479,26 @@ def _run_tenant_post_refresh(
                 post_meta["ticket_combustivel_refreshed"] = True
             except Exception as exc:  # defensive: ticket must never break the cycle
                 post_meta["ticket_combustivel_error"] = str(exc)[:200]
+
+            # Publica despesas (CAP × plano) + funcionários ativos no CH.
+            # Telas Financeiro/Despesas e Equipe/Custo leem essas marts; sem
+            # este step a publicação era manual e congelava no último run.
+            try:
+                rows, step_ms = _run_logged_count_step(
+                    conn,
+                    tenant_id,
+                    "finance_despesas_publish",
+                    stage="post_refresh",
+                    ref_date=ref_date,
+                    operation=lambda: _publish_finance_despesas_marts(tenant_id),
+                    meta={},
+                    progress_callback=progress_callback,
+                )
+                post_meta["finance_despesas_published"] = True
+                post_meta["finance_despesas_rows"] = rows
+                post_meta["finance_despesas_ms"] = step_ms
+            except Exception as exc:  # defensive: publish must never break the cycle
+                post_meta["finance_despesas_error"] = str(exc)[:200]
         else:
             post_meta["cheques_skipped"] = True
 
@@ -2546,6 +2595,28 @@ def _run_tenant_post_refresh(
         else:
             post_meta["insights_generated_skipped"] = True
             _skip_step("insights_generated", "no_domain_changes" if runs_risk else "track_excludes_step")
+
+        # Publica marts de combustível (tanques/leituras/vendas/entradas) e
+        # aferições de bico no CH. Telas Estoque/Aferição leem essas marts;
+        # sem este step a publicação era manual e congelava no último run.
+        # Ciclo de risco (30 min): janela curta, não pesa no operacional de 5 min.
+        if runs_risk:
+            try:
+                rows, step_ms = _run_logged_count_step(
+                    conn,
+                    tenant_id,
+                    "inventory_fuel_publish",
+                    stage="post_refresh",
+                    ref_date=ref_date,
+                    operation=lambda: _publish_inventory_fuel_marts(tenant_id),
+                    meta={"days": INVENTORY_FUEL_PUBLISH_DAYS},
+                    progress_callback=progress_callback,
+                )
+                post_meta["inventory_fuel_published"] = True
+                post_meta["inventory_fuel_rows"] = rows
+                post_meta["inventory_fuel_ms"] = step_ms
+            except Exception as exc:  # defensive: publish must never break the cycle
+                post_meta["inventory_fuel_error"] = str(exc)[:200]
 
         snapshot_bounds = [
             customer_sales_start,

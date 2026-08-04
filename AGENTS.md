@@ -82,6 +82,18 @@ PG STG/DW → Debezium/CDC/ETL → ClickHouse (torqmind_mart_rt / torqmind_mart)
 Nunca servir dashboard a partir de `stg.*` / `dw.fact_*` / `mart.*` PostgreSQL.
 PG `mart.*` é mash/staging para publish no CH. Ver `.cursor/rules/06-clickhouse-bi-reads.mdc`.
 
+### ⛔ Homolog e produção compartilham o analytics (perigoso)
+
+Em produção multi-VM, **Homolog e Prod NÃO são isolados no ClickHouse / Redpanda / Debezium / cdc-consumer** (`172.30.0.9`). O PG de app Homolog pode ser espelho, mas o **pipeline realtime CH é único**.
+
+Consequência (incidente 31/07–03/08/2026): `ALTER` / evolução de slim (`id_funcionario` em `stg_itenscomprovantes_slim`) feita no fluxo Homolog quebrou o `cdc-consumer` de Prod (`NUMBER_OF_COLUMNS_DOESNT_MATCH` 15 vs 16) e congelou `sales_daily_rt` / dashboard.
+
+Regras:
+- Tratar DDL/schema de `torqmind_current` / `torqmind_mart_rt` e rebuild do `cdc-consumer` como **mudança de produção**.
+- Nunca aplicar `ALTER` em slim/mart CH “só em Homolog” sem deploy alinhado do consumer na analytics VM.
+- Repo em `172.30.0.9:/home/tm/torqmind` pode estar em branch antiga — rebuild do consumer deve usar o código canônico (não assume que Homolog = isolado).
+- Depois de mudança de schema CH: provar `mart_publication_log` de `sales_daily_rt` + ausência de `NUMBER_OF_COLUMNS` nos logs do consumer.
+
 ## Controle de acesso
 
 - `platform_master`: acesso total, todas empresas/filiais, vê Plataforma, vê margem/lucro/custo.
@@ -150,6 +162,11 @@ Todo grid novo ou alterado deve seguir `.cursor/rules/08-grids-colunas-ordenacao
 colunas Filial→Data→Documento, ordenação canônica, **busca geral** via
 `GridSearchInput` + `useGridSearch` (largura fixa 280px; termo varre todos os
 campos da linha), e labels limpos (sem disclaimer/debug/mart/SQL na UI).
+
+**Copy de produto:** nunca expor fórmula/pipeline/nota de engenharia na tela
+(“custo = …”, “não entra no rateio…”, “publicado da mart…”). Isso é para o
+time (contrato UI + docstring); o cliente vê só título, KPIs e dados.
+Detalhe: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10.
 
 ## Estilo de trabalho
 

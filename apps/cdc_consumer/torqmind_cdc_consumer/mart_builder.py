@@ -628,6 +628,7 @@ class MartBuilder:
                 id_itemcomprovante Int32 NOT NULL, data_key Int32 NOT NULL,
                 id_produto Int32 NOT NULL DEFAULT 0,
                 id_grupo_produto Int32 NOT NULL DEFAULT 0,
+                id_funcionario Int32 NOT NULL DEFAULT 0,
                 cfop Int32 NOT NULL DEFAULT 0,
                 qtd Decimal(18,3) NOT NULL DEFAULT 0,
                 total Decimal(18,2) NOT NULL DEFAULT 0,
@@ -668,6 +669,11 @@ class MartBuilder:
         ]
         for ddl in ddls:
             client.command(ddl)
+        # Evolução de schema em slim já existente (CREATE IF NOT EXISTS não adiciona coluna).
+        client.command(
+            f"ALTER TABLE {self.current_db}.stg_itenscomprovantes_slim "
+            "ADD COLUMN IF NOT EXISTS id_funcionario Int32 DEFAULT 0 AFTER id_grupo_produto"
+        )
 
     def _populate_slim_comprovantes(self, client: Any, data_keys: list[int]) -> None:
         """Extract typed columns from stg_comprovantes payload into slim table.
@@ -750,6 +756,10 @@ class MartBuilder:
 
         id_produto = f"ifNull(i.id_produto_shadow, toInt32OrZero(JSONExtractString(i.payload, 'ID_PRODUTOS')))"
         id_grupo = f"ifNull(i.id_grupo_produto_shadow, toInt32OrZero(JSONExtractString(i.payload, 'ID_GRUPOPRODUTOS')))"
+        id_funcionario = (
+            "ifNull(i.id_funcionario_shadow, "
+            "toInt32OrZero(JSONExtractString(i.payload, 'ID_FUNCIONARIOS')))"
+        )
         cfop = f"ifNull(i.cfop_shadow, toInt32OrZero(replaceAll(JSONExtractString(i.payload, 'CFOP'), '.', '')))"
         qtd = f"ifNull(i.qtd_shadow, toDecimal64OrZero(JSONExtractString(i.payload, 'QTDE'), 3))"
         total = self._stg_item_total_expr("i")
@@ -757,13 +767,18 @@ class MartBuilder:
         custo = f"ifNull(i.custo_unitario_shadow, toDecimal64(0, 6)) * {qtd}"
 
         sql = f"""
-        INSERT INTO {self.current_db}.stg_itenscomprovantes_slim
+        INSERT INTO {self.current_db}.stg_itenscomprovantes_slim (
+            id_empresa, id_filial, id_db, id_comprovante, id_itemcomprovante,
+            data_key, id_produto, id_grupo_produto, id_funcionario, cfop,
+            qtd, total, desconto, custo_total, is_deleted, source_ts_ms
+        )
         SELECT
             i.id_empresa, i.id_filial, i.id_db, i.id_comprovante,
             i.id_itemcomprovante,
             {data_key_expr} AS data_key,
             {id_produto} AS id_produto,
             {id_grupo} AS id_grupo_produto,
+            {id_funcionario} AS id_funcionario,
             {cfop} AS cfop,
             {qtd} AS qtd,
             {total} AS total,

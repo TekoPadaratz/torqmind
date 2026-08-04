@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS torqmind_current.stg_itenscomprovantes_slim (
     data_key            Int32 NOT NULL,
     id_produto          Int32 NOT NULL DEFAULT 0,
     id_grupo_produto    Int32 NOT NULL DEFAULT 0,
+    id_funcionario      Int32 NOT NULL DEFAULT 0,
     cfop                Int32 NOT NULL DEFAULT 0,
     qtd                 Decimal(18,3) NOT NULL DEFAULT 0,
     total               Decimal(18,2) NOT NULL DEFAULT 0,

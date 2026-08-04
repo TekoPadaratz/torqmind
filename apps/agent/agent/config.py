@@ -628,7 +628,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "required_fields": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB"],
         "unique_key_fields": ["ID_FILIAL", "ID_DB", "ID_COMPROVANTE"],
         "preflight_tables": {
-            "dbo.COMPROVANTES": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "DATA", "SAIDAS_ENTRADAS"],
+            "dbo.COMPROVANTES": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "DATA", "SAIDAS_ENTRADAS", "CANCELADO", "SITUACAO"],
             "dbo.COMPENTRADAS": ["ID_COMPROVANTE", "ID_FILIAL", "ID_DB", "CHAVEACESSONFE"],
         },
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
@@ -638,6 +638,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "c.ID_COMPROVANTE, c.NROCOMPROVANTE AS NUMERO, "
             "ce.CHAVEACESSONFE AS CHAVEACESSO, ce.CHAVEACESSONFE AS CHAVEACESSONFE, "
             "ce.VLRFRETE, ce.VLRIPI, ce.IMPORTOU_XML, ce.CONFERIDA, "
+            "c.CANCELADO, c.SITUACAO, "
             "CAST(c.DATA AS datetime2) AS DATAENTRADA, "
             "CAST(COALESCE(c.DTAEMISSAO, c.DATA) AS datetime2) AS DATA, "
             "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
@@ -650,7 +651,9 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "INNER JOIN dbo.COMPENTRADAS ce WITH (NOLOCK) "
             "  ON ce.ID_FILIAL = c.ID_FILIAL AND ce.ID_DB = c.ID_DB "
             " AND ce.ID_COMPROVANTE = c.ID_COMPROVANTE "
-            "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1"
+            "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1 "
+            "  AND ISNULL(c.CANCELADO, 0) = 0 "
+            "  AND ISNULL(c.SITUACAO, 1) = 1"
         ),
         "enabled": True,
     },
@@ -701,6 +704,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "INNER JOIN dbo.PRODUTOS p WITH (NOLOCK) "
             "  ON p.ID_FILIAL = i.ID_FILIAL AND p.ID_PRODUTOS = i.ID_PRODUTOS "
             "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1 "
+            "  AND ISNULL(c.CANCELADO, 0) = 0 "
+            "  AND ISNULL(c.SITUACAO, 1) = 1 "
             "  AND ("
             "    ISNULL(p.TIPOCOMBUSTIVEL, 0) > 0 "
             "    OR ("

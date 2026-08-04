@@ -5,6 +5,13 @@ Fonte canônica (validada migração 100):
 - Litros atuais: última LEITURA positiva em stg.movtanques (sensor)
 - Custo: stg.produtos.CUSTOMEDIO
 - Nunca usar stg.estoque para combustível.
+
+Movimentação documentada (aferição):
+- Saídas: itens de comprovante de venda comercialmente ativos
+  (não cancelado, situacao=1, CFOP saída; CFOP via shadow com fallback payload).
+- Entradas: NFe de compra (SAIDAS_ENTRADAS=1) com comprovante ativo
+  (não cancelado, situacao=1). Nota sem comprovante resolvido é excluída.
+  Agent também filtra CANCELADO/SITUACAO na origem.
 """
 from __future__ import annotations
 
@@ -13,15 +20,58 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.db import get_conn
-from app.db_clickhouse import insert_batch
+from app.db_clickhouse import execute_command, insert_batch
+from app.sales_semantics import SALE_STATUS
 
 logger = logging.getLogger(__name__)
 
 MART_TABLE = "torqmind_mart_rt.mart_inventory_tanks_rt"
 READINGS_TABLE = "torqmind_mart_rt.mart_inventory_tank_readings_rt"
 SALES_DAILY_TABLE = "torqmind_mart_rt.mart_inventory_fuel_sales_daily_rt"
+ENTRIES_DAILY_TABLE = "torqmind_mart_rt.mart_inventory_fuel_entries_daily_rt"
 FRESH_DAYS = 7
 READINGS_DAYS = 120
+
+# NFe fiscal: 4=cancelada, 5=inutilização — nunca contam como movimento de tanque.
+_NFE_EXCLUDED_STATUSES = (4, 5)
+
+
+def _comprovante_ativo_sql(alias: str = "c") -> str:
+    """Comprovante comercialmente ativo (venda ou entrada)."""
+    return (
+        f"coalesce({alias}.cancelado_shadow, false) IS NOT TRUE "
+        f"AND coalesce({alias}.situacao_shadow, {SALE_STATUS}) = {SALE_STATUS}"
+    )
+
+
+def _item_cfop_sql(alias: str = "i") -> str:
+    """CFOP tipado; fallback no payload quando shadow veio 0/NULL (caso combustível)."""
+    return (
+        f"coalesce("
+        f"nullif({alias}.cfop_shadow, 0), "
+        f"nullif(replace(coalesce({alias}.payload->>'CFOP',''), '.', ''), '')::int, "
+        f"0)"
+    )
+
+
+def _nfe_venda_ok_sql(alias: str = "nfe") -> str:
+    excluded = ", ".join(str(s) for s in _NFE_EXCLUDED_STATUSES)
+    return (
+        f"({alias}.status_shadow IS NULL "
+        f"OR {alias}.status_shadow NOT IN ({excluded}))"
+    )
+
+
+def _purge_daily_window(table: str, id_empresa: int, cutoff) -> None:
+    """Remove snapshot da janela antes do republish (evita litros fantasma de nota cancelada)."""
+    execute_command(
+        f"""
+        ALTER TABLE {table}
+        DELETE WHERE id_empresa = {{id_empresa:Int32}} AND dia >= toDate({{cutoff:String}})
+        SETTINGS mutations_sync = 1
+        """,
+        {"id_empresa": int(id_empresa), "cutoff": str(cutoff)},
+    )
 
 
 def _now() -> datetime:
@@ -272,14 +322,18 @@ def publish_tank_readings(
 def fetch_fuel_sales_daily(
     role: str, id_empresa: int, days: int = READINGS_DAYS
 ) -> List[Dict[str, Any]]:
-    """Litros vendidos/dia dos produtos de tanque — por filial (evita timeout)."""
+    """Litros vendidos/dia dos produtos de tanque — por filial (evita timeout).
+
+    Raises RuntimeError se alguma filial falhar (evita purge parcial no publish).
+    """
     from datetime import date, timedelta
 
     days = max(7, min(int(days), 366))
     cutoff = date.today() - timedelta(days=days)
     out: List[Dict[str, Any]] = []
+    skipped: List[int] = []
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
-        conn.execute("SET LOCAL statement_timeout = '120s'")
+        conn.execute("SET LOCAL statement_timeout = '600s'")
         scopes = conn.execute(
             """
             SELECT DISTINCT
@@ -303,8 +357,12 @@ def fetch_fuel_sales_daily(
             if not produtos:
                 continue
             try:
+                cfop = _item_cfop_sql("i")
+                # Ativo = cancelado≠true + situacao=1. NFe 4/5 sem cancelamento
+                # no comprovante é residual raro; EXISTS em stg.nfe estoura timeout
+                # em filiais grandes (ex.: 17337).
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                       i.id_empresa,
                       i.id_filial,
@@ -321,14 +379,17 @@ def fetch_fuel_sales_daily(
                       AND i.id_filial = %s
                       AND i.id_produto_shadow = ANY(%s)
                       AND i.qtd_shadow > 0
-                      AND coalesce(i.cfop_shadow, 0) <> 1652
+                      AND {cfop} > 5000
+                      AND {cfop} <> 1652
                       AND c.dt_evento >= %s
+                      AND {_comprovante_ativo_sql("c")}
                     GROUP BY 1, 2, 3, 4
                     """,
                     [id_empresa, id_filial, produtos, cutoff],
                 ).fetchall()
                 out.extend(dict(r) for r in rows)
             except Exception as exc:  # noqa: BLE001
+                skipped.append(int(id_filial))
                 logger.warning(
                     "inventory_fuel sales_daily skip filial=%s: %s",
                     id_filial,
@@ -336,16 +397,25 @@ def fetch_fuel_sales_daily(
                 )
                 try:
                     conn.rollback()
-                    conn.execute("SET LOCAL statement_timeout = '120s'")
+                    conn.execute("SET LOCAL statement_timeout = '600s'")
                 except Exception:  # noqa: BLE001
                     pass
+    if skipped:
+        raise RuntimeError(
+            f"inventory_fuel sales_daily incomplete; skipped filiais={skipped}"
+        )
     return out
 
 
 def publish_fuel_sales_daily(
     role: str, id_empresa: int, days: int = READINGS_DAYS
 ) -> int:
+    from datetime import date, timedelta
+
+    days = max(7, min(int(days), 366))
+    cutoff = date.today() - timedelta(days=days)
     rows = fetch_fuel_sales_daily(role, id_empresa, days=days)
+    _purge_daily_window(SALES_DAILY_TABLE, id_empresa, cutoff)
     pub = _now()
     payload = [
         {
@@ -372,12 +442,113 @@ def publish_fuel_sales_daily(
     return n
 
 
+def fetch_fuel_entries_daily(
+    role: str, id_empresa: int, days: int = READINGS_DAYS
+) -> List[Dict[str, Any]]:
+    """Litros de entrada (NFe compra) por produto/dia — só combustível de tanque.
+
+    Apenas notas com comprovante comercialmente ativo (não cancelado, situacao=1).
+    """
+    from datetime import date, timedelta
+
+    days = max(7, min(int(days), 366))
+    cutoff = date.today() - timedelta(days=days)
+    ativo = _comprovante_ativo_sql("c")
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        rows = conn.execute(
+            f"""
+            WITH tanque_prods AS (
+              SELECT DISTINCT
+                t.id_filial,
+                coalesce(nullif(t.payload->>'ID_PRODUTOS','')::int, 0) AS id_produto
+              FROM stg.tanques t
+              WHERE t.id_empresa = %s
+                AND coalesce(nullif(t.payload->>'ID_PRODUTOS','')::int, 0) > 0
+                AND coalesce((nullif(t.payload->>'CAPACIDADE',''))::numeric, 0) > 0
+                AND coalesce(nullif(t.payload->>'ATIVO',''),'1')
+                    NOT IN ('0','false','False','f','N','n')
+            )
+            SELECT
+              i.id_empresa,
+              i.id_filial,
+              i.id_produto_shadow AS id_produto,
+              (coalesce(n.dt_entrada_shadow, i.dt_evento)
+                 AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
+              sum(coalesce(i.qtd_shadow, 0))::numeric AS litros
+            FROM stg.itens_nfe_entrada i
+            JOIN stg.nfe_entrada n
+              ON n.id_empresa = i.id_empresa
+             AND n.id_filial = i.id_filial
+             AND n.id_db = i.id_db
+             AND n.id_nota = i.id_nota
+            JOIN stg.comprovantes c
+              ON c.id_empresa = n.id_empresa
+             AND c.id_filial = n.id_filial
+             AND c.id_db = n.id_db
+             AND c.id_comprovante = n.id_nota
+            JOIN tanque_prods tp
+              ON tp.id_filial = i.id_filial
+             AND tp.id_produto = i.id_produto_shadow
+            WHERE i.id_empresa = %s
+              AND coalesce(i.qtd_shadow, 0) > 0
+              AND i.id_produto_shadow IS NOT NULL
+              AND coalesce(n.dt_entrada_shadow, i.dt_evento) IS NOT NULL
+              AND (coalesce(n.dt_entrada_shadow, i.dt_evento)
+                     AT TIME ZONE 'America/Sao_Paulo')::date >= %s
+              AND (
+                coalesce(i.eh_combustivel_shadow, false) = true
+                OR i.id_produto_shadow IN (SELECT id_produto FROM tanque_prods)
+              )
+              AND {ativo}
+            GROUP BY 1, 2, 3, 4
+            """,
+            [id_empresa, id_empresa, cutoff],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def publish_fuel_entries_daily(
+    role: str, id_empresa: int, days: int = READINGS_DAYS
+) -> int:
+    from datetime import date, timedelta
+
+    days = max(7, min(int(days), 366))
+    cutoff = date.today() - timedelta(days=days)
+    rows = fetch_fuel_entries_daily(role, id_empresa, days=days)
+    _purge_daily_window(ENTRIES_DAILY_TABLE, id_empresa, cutoff)
+    pub = _now()
+    payload = [
+        {
+            "id_empresa": int(r["id_empresa"]),
+            "id_filial": int(r["id_filial"]),
+            "id_produto": int(r["id_produto"]),
+            "dia": r["dia"],
+            "litros": float(r.get("litros") or 0),
+            "published_at": pub,
+        }
+        for r in rows
+    ]
+    n = insert_batch(
+        ENTRIES_DAILY_TABLE,
+        payload,
+        order_by=["id_empresa", "id_filial", "id_produto", "dia"],
+    )
+    logger.info(
+        "inventory_fuel entries_daily publish empresa=%s rows=%s inserted=%s",
+        id_empresa,
+        len(payload),
+        n,
+    )
+    return n
+
+
 def publish_inventory_fuel_bundle(
     role: str, id_empresa: int, days: int = READINGS_DAYS
 ) -> Dict[str, int]:
-    """Snapshot atual + leituras diárias + vendas diárias dos combustíveis."""
+    """Snapshot atual + leituras + saídas + entradas diárias dos combustíveis."""
     return {
         "tanks": publish_inventory_tanks(role, id_empresa),
         "readings": publish_tank_readings(role, id_empresa, days=days),
         "sales_daily": publish_fuel_sales_daily(role, id_empresa, days=days),
+        "entries_daily": publish_fuel_entries_daily(role, id_empresa, days=days),
     }

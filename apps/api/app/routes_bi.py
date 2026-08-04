@@ -1892,6 +1892,54 @@ def finance_titles(
     return redact_sensitive(payload, claims)
 
 
+@router.get("/finance/despesas")
+def finance_despesas(
+    ano_mes: Optional[int] = Query(None, description="YYYYMM (padrão DRE/Solvência)"),
+    ano: Optional[int] = Query(None, ge=2000, le=2100),
+    mes: Optional[int] = Query(None, ge=1, le=12),
+    q: Optional[str] = Query(None, max_length=160),
+    status: Optional[str] = Query(None, description="todos | aberto | pago | vencido"),
+    id_planodecontas: Optional[int] = Query(None, description="Drill por conta"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance.despesas")),
+):
+    """Despesas por plano de contas (CAP × DRE) — leitura ClickHouse."""
+    if ano_mes is not None:
+        am = int(ano_mes)
+        ano_v, mes_v = am // 100, am % 100
+    elif ano is not None and mes is not None:
+        ano_v, mes_v = int(ano), int(mes)
+    else:
+        from zoneinfo import ZoneInfo
+
+        now_sp = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        ano_v, mes_v = now_sp.year, now_sp.month
+    if mes_v < 1 or mes_v > 12:
+        raise HTTPException(status_code=400, detail="ano_mes inválido")
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.finance_despesas_overview(
+        role,
+        tenant,
+        filial,
+        ano=ano_v,
+        mes=mes_v,
+        q=q,
+        status=status,
+        id_planodecontas=id_planodecontas,
+        page=page,
+        page_size=page_size,
+    )
+    return redact_sensitive(payload, claims)
+
+
 @router.get("/payments/overview")
 def payments_overview(
     dt_ini: date,
@@ -1945,9 +1993,9 @@ def budget_config_get(
     id_filial: int = Query(..., description="Branch ID (single)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team.orcamento")),
+    _screen=Depends(require_screen("finance.budget")),
 ):
-    """Contas gerenciais + orçamento configurado (Metas & Equipe, 1 filial)."""
+    """Contas gerenciais + orçamento configurado (Financeiro → Gestão orçamentária)."""
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
     single = filial if isinstance(filial, int) else id_filial
@@ -1960,7 +2008,7 @@ def budget_config_put(
     id_filial: int = Query(..., description="Branch ID (single)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team.orcamento")),
+    _screen=Depends(require_screen("finance.budget")),
 ):
     """Salva o orçamento (teto + % de alerta) por conta de uma filial."""
     role = claims["role"]
@@ -2101,7 +2149,7 @@ def inventory_fuel_loss_overview(
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("fuel_loss")),
 ):
-    """Conciliação sensor D−1 × D × vendas → perda de combustível."""
+    """Conciliação sensor D−1 × D × movimentação (saídas e entradas) → diferença."""
     role = claims["role"]
     tenant, filial, _ = resolve_scope_filters(
         claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
@@ -2177,6 +2225,50 @@ def sync_status(
 # ------------------------
 # Metas & Equipe
 # ------------------------
+
+@router.get("/team/employee-cost")
+def team_employee_cost(
+    ano_mes: Optional[int] = Query(None, description="YYYYMM (padrão DRE/Solvência)"),
+    ano: Optional[int] = Query(None, ge=2000, le=2100),
+    mes: Optional[int] = Query(None, ge=1, le=12),
+    q: Optional[str] = Query(None, max_length=160),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("team.custos")),
+):
+    """Custo fully-loaded por funcionário (cadastro + rateio de despesas)."""
+    if ano_mes is not None:
+        am = int(ano_mes)
+        ano_v, mes_v = am // 100, am % 100
+    elif ano is not None and mes is not None:
+        ano_v, mes_v = int(ano), int(mes)
+    else:
+        from zoneinfo import ZoneInfo
+
+        now_sp = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        ano_v, mes_v = now_sp.year, now_sp.month
+    if mes_v < 1 or mes_v > 12:
+        raise HTTPException(status_code=400, detail="ano_mes inválido")
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.team_employee_cost_overview(
+        role,
+        tenant,
+        filial,
+        ano=ano_v,
+        mes=mes_v,
+        q=q,
+        page=page,
+        page_size=page_size,
+    )
+    return redact_sensitive(payload, claims)
+
 
 @router.get("/goals/overview")
 def goals_overview(

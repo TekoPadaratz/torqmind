@@ -195,19 +195,14 @@ class TestDDLMartBuilderAlignment:
     @pytest.fixture(autouse=True)
     def _load_paths(self):
         self.root = Path(__file__).parent.parent.parent.parent
-        self.ddl_db_path = self.root / "sql" / "clickhouse" / "streaming" / "040_mart_rt_database.sql"
-        self.ddl_path = self.root / "sql" / "clickhouse" / "streaming" / "041_mart_rt_tables.sql"
-        self.ddl_nfe_path = self.root / "sql" / "clickhouse" / "streaming" / "042_mart_nfe_inutilizations.sql"
+        self.ddl_dir = self.root / "sql" / "clickhouse" / "streaming"
         self.builder_path = self.root / "apps" / "cdc_consumer" / "torqmind_cdc_consumer" / "mart_builder.py"
         self.realtime_repo_path = self.root / "apps" / "api" / "app" / "repos_mart_realtime.py"
 
     def _ddl_text(self) -> str:
-        return (
-            self.ddl_db_path.read_text()
-            + "\n"
-            + self.ddl_path.read_text()
-            + "\n"
-            + self.ddl_nfe_path.read_text()
+        # All streaming DDL files: new marts get their own NNN_*.sql file.
+        return "\n".join(
+            p.read_text() for p in sorted(self.ddl_dir.glob("*.sql"))
         )
 
     def _split_top_level_commas(self, text: str) -> list[str]:
@@ -598,15 +593,19 @@ class TestMartBuilderDedupSemantics:
             assert "JSONExtractString" not in sql_text, f"{method} SQL must not use JSONExtractString"
 
     def test_cancelado_uses_canonical_pg_rule(self):
-        """Slim population must encode PG etl.comprovante_is_cancelled logic:
-        situacao=2 → cancelled, situacao IN(3,5) → not cancelled, else → cancelado field."""
+        """Slim population must encode PG etl.comprovante_is_cancelled (migration 075):
+        situacao=2 → cancelled, else → cancelado field. situacao=3 is NOT cancelled —
+        it is business-ignored (ignored_business) and excluded via commercial_eligible."""
         idx = self.code.index("def _populate_slim_comprovantes")
         next_def = self.code.index("\n    def ", idx + 10)
         body = self.code[idx:next_def]
-        # Must contain multiIf with situacao=2 and situacao IN(3,5)
         assert "situacao" in body
         assert "= 2, 1" in body or "= 2,1" in body, "Must map situacao=2 to cancelled=1"
-        assert "IN (3, 5), 0" in body or "IN (3,5), 0" in body, "Must map situacao IN(3,5) to cancelled=0"
+        assert "ignored_business" in body, "Must derive ignored_business (situacao=3)"
+        assert "= 3)" in body, "ignored_business must come from situacao=3"
+        assert "commercial_eligible" in body, (
+            "Must derive commercial_eligible = not cancelled and not business-ignored"
+        )
 
     def test_faturamento_is_sum_of_items(self):
         """Faturamento must be sum(i.total) from items, not sum of header."""

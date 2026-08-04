@@ -69,13 +69,20 @@ class TestConfigFailFast(unittest.TestCase):
         _validate_production_settings(s)
 
     def test_production_rejects_default_jwt_secret(self):
-        s = Settings(
-            app_env="production",
-            pg_password="s3cur3-db-pass!",
-            clickhouse_user="torqmind",
-            clickhouse_password="ch_s3cur3-pass!",
-            ingest_require_key=True,
-        )
+        # Hermético: máquinas de dev têm API_JWT_SECRET forte no ambiente/.env,
+        # que o pydantic-settings usaria no lugar do default inseguro.
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+
+            os.environ.pop("API_JWT_SECRET", None)
+            s = Settings(
+                _env_file=None,
+                app_env="production",
+                pg_password="s3cur3-db-pass!",
+                clickhouse_user="torqmind",
+                clickhouse_password="ch_s3cur3-pass!",
+                ingest_require_key=True,
+            )
         with self.assertRaises(SystemExit) as ctx:
             _validate_production_settings(s)
         self.assertIn("API_JWT_SECRET", str(ctx.exception))

@@ -137,12 +137,14 @@ class CashPaymentMixUnitTest(unittest.TestCase):
         self.assertEqual(payload["payment_mix"][0]["label"], "PIX")
         self.assertEqual(payload["payment_mix"][1]["label"], "Depósito Bancário")
         self.assertEqual(float(payload["kpis"]["total_devolucoes"]), 15.0)
-        self.assertEqual(float(payload["kpis"]["caixa_liquido"]), 495.0)
+        # cash_net_value: vendas − cancelamentos; devoluções são evento de
+        # antifraude/CR e não reduzem o caixa líquido (sales_semantics.py).
+        self.assertEqual(float(payload["kpis"]["caixa_liquido"]), 510.0)
         self.assertEqual(float(payload["kpis"]["recebimentos_periodo"]), 510.0)
         self.assertEqual(float(payload["kpis"]["cancelamentos_periodo"]), 40.0)
-        self.assertEqual(float(payload["by_day"][0]["caixa_liquido"]), 285.0)
+        self.assertEqual(float(payload["by_day"][0]["caixa_liquido"]), 300.0)
         self.assertEqual(float(payload["top_turnos"][0]["total_devolucoes"]), 15.0)
-        self.assertEqual(float(payload["top_turnos"][0]["caixa_liquido"]), 495.0)
+        self.assertEqual(float(payload["top_turnos"][0]["caixa_liquido"]), 510.0)
         summary_call = next(
             (item for item in conn.calls if "FROM vendas v" in item[0] and "CROSS JOIN pagamentos p" in item[0]),
             None,
@@ -150,7 +152,8 @@ class CashPaymentMixUnitTest(unittest.TestCase):
         self.assertIsNotNone(summary_call)
         self.assertIn("dw.fact_venda v", summary_call[0])
         self.assertIn("dw.fact_venda_item i", summary_call[0])
-        self.assertIn("COALESCE(v.situacao, 0) IN (1, 2, 3)", summary_call[0])
+        # situacao 3 (ignorada comercialmente) não entra no caixa histórico.
+        self.assertIn("COALESCE(v.situacao, 0) IN (1, 2)", summary_call[0])
         self.assertIn("COALESCE(i.cfop, 0) > 5000", summary_call[0])
         self.assertNotIn("COALESCE(fc.cancelado, false)", summary_call[0])
         payment_mix_call = next(

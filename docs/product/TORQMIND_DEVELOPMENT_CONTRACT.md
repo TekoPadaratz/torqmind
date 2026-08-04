@@ -247,6 +247,19 @@ Referência correta: sales, cash, customers, finance, fraud, goals, profit-manag
 Interno (código, logs, SQL, comentários de engenharia): termos técnicos OK.  
 UI e mensagens ao usuário: **nunca**.
 
+### Proibido: copy de debug / fórmula de engenharia na tela
+
+A UI é para o **cliente final** (dono/gerente/financeiro). Não colocar:
+
+- Fórmulas de cálculo (“custo = salário + rateio…”, “não entra no rateio…”)
+- Explicação de pipeline, fonte, mart, join, exclusão de classificação
+- Disclaimer técnico / nota de implementação / “como foi feito”
+- Texto que só importa para desenvolvedor (isso vai em regra, PR, docstring ou runbook)
+
+**Onde fica a regra de negócio:** contrato, `AGENTS.md`, migration/SQL, docstring da função API — **não** em subtítulo `muted` da tela nem em campo `nota`/`hint` do payload consumido pelo frontend.
+
+Tela = título claro + KPIs + grid. Detalhe operacional só se o usuário precisa agir (ex.: empty state útil).
+
 Margem/lucro/CMV/custo: nunca para gerente/vendedor (`AGENTS.md`).
 
 ---
@@ -300,7 +313,7 @@ Antes de declarar pronto / PASS de UI:
 - [ ] Tabelas: `.tableScroll` > `.table`; empty com `EmptyState`
 - [ ] Gráficos: só recharts + `.chartCard`/`.chartWrap`
 - [ ] Sem empty/loading improvisado (`muted` solto, spinner novo)
-- [ ] Linguagem: zero termos da lista proibida; “Filial”; copy via `reading-copy` se frescor
+- [ ] Linguagem: zero termos da lista proibida; sem fórmula/debug de engenharia na UI; “Filial”; copy via `reading-copy` se frescor
 - [ ] Roles: sem margem/lucro/custo para gerente/vendedor
 - [ ] Permissão real na API (frontend não é segurança)
 - [ ] Consistência visual com tela irmã do mesmo módulo

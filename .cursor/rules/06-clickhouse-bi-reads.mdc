@@ -48,3 +48,7 @@ Leitura EXCLUSIVA de marts ClickHouse:
 - Writes/upserts de configuração
 
 Se a mart CH ainda não existe: **criar a mart e o publish** — não entregar a tela lendo PG “temporariamente”.
+
+## ⛔ Homolog ≠ isolado no analytics
+
+Homolog e Prod compartilham ClickHouse/CDC em `172.30.0.9`. DDL/ALTER em slim ou mart e rebuild do `cdc-consumer` são **mudança de produção**. Detalhes e incidente: `AGENTS.md` (seção Homolog e produção compartilham o analytics).

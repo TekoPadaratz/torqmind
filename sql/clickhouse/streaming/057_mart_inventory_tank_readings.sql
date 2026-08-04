@@ -31,3 +31,16 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_inventory_fuel_sales_daily_rt (
 ORDER BY (id_empresa, id_filial, id_produto, dia)
 PARTITION BY toYYYYMM(dia)
 SETTINGS index_granularity = 8192;
+
+-- Entradas de combustível (NFe de compra) por produto/dia — para conciliação do tanque.
+CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_inventory_fuel_entries_daily_rt (
+    id_empresa       Int32,
+    id_filial        Int32,
+    id_produto       Int32,
+    dia              Date,
+    litros           Decimal(18, 3) DEFAULT 0,
+    published_at     DateTime64(3, 'UTC') DEFAULT now64(3)
+) ENGINE = ReplacingMergeTree(published_at)
+ORDER BY (id_empresa, id_filial, id_produto, dia)
+PARTITION BY toYYYYMM(dia)
+SETTINGS index_granularity = 8192;

@@ -50,6 +50,13 @@ if (error) return <ErrorState message={error.message} />
 - Client Components apenas quando necessário (interatividade, hooks de estado)
 - Tailwind CSS para estilização — sem CSS modules ou styled-components
 
+## Copy na UI (cliente final)
+
+- ⛔ Nunca subtítulo/nota com fórmula, pipeline, “como calculamos”, exclusões técnicas ou jargão de engenharia
+- Isso fica em contrato/`AGENTS.md`/docstring — não em `muted` da tela nem em `summary.nota` da API
+- Tela = título + KPIs + filtros + grid; empty state só com ação útil ao usuário
+- Gate: `lib/ui-copy-quality.test.mjs` + `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10
+
 ## Performance
 
 - Use `React.memo` em componentes de gráfico que recebem dados estáticos

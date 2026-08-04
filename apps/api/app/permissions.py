@@ -131,6 +131,12 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "parent": "finance",
         "has_sensitive": True,
     },
+    "finance.despesas": {
+        "label": "Despesas",
+        "category": "Financeiro",
+        "parent": "finance",
+        "has_sensitive": True,
+    },
     "customers": {
         "label": "Clientes",
         "category": "Comercial",
@@ -142,7 +148,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "has_sensitive": True,
     },
     "fuel_loss": {
-        "label": "Perda de combustível",
+        "label": "Aferição de Combustível",
         "category": "Operação",
         "has_sensitive": False,
     },
@@ -170,7 +176,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "has_sensitive": False,
     },
     "goals_team": {
-        "label": "Metas & Equipe",
+        "label": "Metas",
         "category": "Comercial",
         "has_sensitive": True,
     },
@@ -193,9 +199,20 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "has_sensitive": True,
     },
     "goals_team.orcamento": {
-        "label": "Orçamento",
+        "label": "Orçamento (legado)",
         "category": "Comercial",
         "parent": "goals_team",
+        "has_sensitive": True,
+    },
+    "team": {
+        "label": "Equipe",
+        "category": "Comercial",
+        "has_sensitive": True,
+    },
+    "team.custos": {
+        "label": "Custo do funcionário",
+        "category": "Comercial",
+        "parent": "team",
         "has_sensitive": True,
     },
     "profit_management": {
@@ -408,6 +425,9 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
     "margem_score",
     "profit_margin",
     "gross_margin",
+    # Folha / custo de pessoal (Equipe — custo do funcionário)
+    "vales",
+    "horas_extras",
 }
 
 # Stems for substring-based redaction — any key whose lowercased name
@@ -415,6 +435,8 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
 _SENSITIVE_STEMS: tuple[str, ...] = (
     "margem", "margin", "lucro", "profit", "cmv",
     "custo", "cost", "markup", "rentab",
+    # Folha/pessoal: salario_*, rateio_*, *_overhead_*, total_pessoal_*, folha_*
+    "salario", "rateio", "overhead", "pessoal", "folha",
 )
 
 # Roles that can see sensitive financial data
@@ -482,7 +504,7 @@ def resolve_default_route(claims: dict[str, Any]) -> str:
         screens = get_allowed_screens(claims)
         # First product screen in IA order (Comercial → Operação → Financeiro)
         ordered = [
-            "sales", "customers", "inventory", "competitor_pricing", "goals_team",
+            "sales", "customers", "equipe", "team", "inventory", "competitor_pricing", "goals_team",
             "cash", "fraud", "fuel_loss",
             "finance", "profit_management",
             "dashboard_home",  # legado
@@ -501,6 +523,8 @@ def resolve_default_route(claims: dict[str, Any]) -> str:
                     "fuel_loss": "/fuel-loss",
                     "competitor_pricing": "/pricing",
                     "goals_team": "/goals",
+                    "team": "/team",
+                    "equipe": "/team",
                 }
                 return route_map[key]
 

@@ -65,9 +65,10 @@ class TestBackfillDataKeyCoverage:
         assert "data_key > 0" in method_body, (
             "backfill must exclude data_key=0 from publishable keys"
         )
-        # Must filter cancelado = 0
-        assert "cancelado = 0" in method_body, (
-            "backfill must only publish non-cancelled comprovantes"
+        # Must filter commercially eligible comprovantes (cancelado=0 AND
+        # ignored_business=0 — semântica da migration 075, embutida no slim).
+        assert "commercial_eligible = 1" in method_body, (
+            "backfill must only publish commercially eligible comprovantes"
         )
         # Must filter cfop > 5000
         assert "cfop > 5000" in method_body, (

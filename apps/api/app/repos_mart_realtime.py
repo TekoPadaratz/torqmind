@@ -2879,6 +2879,374 @@ def finance_titles_overview(
     }
 
 
+def finance_despesas_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    ano: int,
+    mes: int,
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    id_planodecontas: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Despesas por plano de contas (mês) + drill de títulos CAP — ClickHouse."""
+    ano = int(ano)
+    mes = int(mes)
+    if mes < 1 or mes > 12:
+        raise ValueError("mes inválido")
+    ano_mes = ano * 100 + mes
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    filial = _branch_clause("id_filial", id_filial)
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "ano_mes": int(ano_mes),
+    }
+    where = (
+        "id_empresa = {id_empresa:Int32} "
+        "AND ano_mes_vencimento = {ano_mes:Int32}"
+        f"{filial}"
+    )
+    status_key = (status or "").strip().lower()
+    if status_key in {"pago", "vencido"}:
+        where += f" AND status = '{status_key}'"
+    elif status_key in {"aberto", "a_vencer"}:
+        where += " AND status = 'a_vencer'"
+    elif status_key and status_key not in {"todos", "all"}:
+        raise ValueError("status inválido")
+
+    search = (q or "").strip()
+    if search:
+        # Haystack evita colisão de alias no SELECT agregado (CH code 184).
+        params["q"] = search
+        where += (
+            " AND positionCaseInsensitiveUTF8("
+            "concat("
+            "ifNull(nome_plano, ''), ' ',"
+            "ifNull(codigo_plano, ''), ' ',"
+            "ifNull(historico, ''), ' ',"
+            "ifNull(filial_nome, ''), ' ',"
+            "ifNull(documento, ''), ' ',"
+            "ifNull(classificacao_gerencial, ''), ' ',"
+            "toString(id_titulo)"
+            "),"
+            " {q:String}"
+            ") > 0"
+        )
+
+    # Drill por conta
+    if id_planodecontas is not None:
+        params["id_plano"] = int(id_planodecontas)
+        where += " AND id_planodecontas = {id_plano:Int32}"
+        count = query_scalar(
+            f"SELECT count() FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL WHERE {where}",
+            parameters=params,
+        )
+        total = int(count or 0)
+        totals_rows = query_dict(
+            f"""
+            SELECT
+              round(sum(valor), 2) AS total_valor,
+              round(sum(if(status = 'pago', valor, 0)), 2) AS total_pago,
+              round(sum(if(status = 'a_vencer', valor, 0)), 2) AS total_aberto,
+              round(sum(if(status = 'vencido', valor, 0)), 2) AS total_vencido
+            FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+            WHERE {where}
+            """,
+            parameters=params,
+        )
+        totals = totals_rows[0] if totals_rows else {}
+        offset = (page - 1) * page_size
+        rows = query_dict(
+            f"""
+            SELECT
+              id_filial, filial_nome, id_titulo, id_db, id_planodecontas,
+              codigo_plano, nome_plano, historico, documento,
+              dt_vencimento, dt_pagamento, valor, valor_pago, valor_aberto, status
+            FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+            WHERE {where}
+            ORDER BY filial_nome ASC, nome_plano ASC, dt_vencimento ASC, valor ASC, id_titulo ASC
+            LIMIT {page_size} OFFSET {offset}
+            """,
+            parameters=params,
+        )
+        for row in rows:
+            fid = _to_int(row.get("id_filial"))
+            row["filial_nome"] = _filial_label(fid, str(row.get("filial_nome") or ""))
+            st = str(row.get("status") or "")
+            row["status_label"] = (
+                "Pago" if st == "pago" else "Vencido" if st == "vencido" else "Aberto"
+            )
+        return {
+            "mode": "detail",
+            "ano": ano,
+            "mes": mes,
+            "ano_mes": ano_mes,
+            "id_planodecontas": int(id_planodecontas),
+            "items": rows,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size if page_size else 0,
+            "totals": {
+                "valor": _to_float(totals.get("total_valor")),
+                "pago": _to_float(totals.get("total_pago")),
+                "aberto": _to_float(totals.get("total_aberto")),
+                "vencido": _to_float(totals.get("total_vencido")),
+            },
+            "source": "realtime",
+        }
+
+    # Grid principal: agregação por conta.
+    # Subquery isola o WHERE (busca) dos aliases do SELECT — senão o CH
+    # reescreve nome_plano/codigo_plano do WHERE para any(...) e estoura code 184.
+    agg_rows = query_dict(
+        f"""
+        SELECT
+          id_planodecontas,
+          any(codigo_plano) AS codigo_plano,
+          any(nome_plano) AS nome_plano,
+          any(classificacao_gerencial) AS classificacao_gerencial,
+          round(sum(valor), 2) AS valor_total,
+          toUInt32(count()) AS qtd,
+          round(sum(if(status = 'pago', valor, 0)), 2) AS valor_pago,
+          round(sum(if(status = 'a_vencer', valor, 0)), 2) AS valor_aberto,
+          round(sum(if(status = 'vencido', valor, 0)), 2) AS valor_vencido
+        FROM (
+          SELECT
+            id_planodecontas, codigo_plano, nome_plano, classificacao_gerencial,
+            valor, status
+          FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+          WHERE {where}
+        )
+        GROUP BY id_planodecontas
+        ORDER BY nome_plano ASC, codigo_plano ASC, id_planodecontas ASC
+        """,
+        parameters=params,
+    )
+    for row in agg_rows:
+        row["valor"] = _to_float(row.pop("valor_total", 0))
+    totals = {
+        "valor": round(sum(_to_float(r.get("valor")) for r in agg_rows), 2),
+        "pago": round(sum(_to_float(r.get("valor_pago")) for r in agg_rows), 2),
+        "aberto": round(sum(_to_float(r.get("valor_aberto")) for r in agg_rows), 2),
+        "vencido": round(sum(_to_float(r.get("valor_vencido")) for r in agg_rows), 2),
+        "qtd_contas": len(agg_rows),
+    }
+    return {
+        "mode": "summary",
+        "ano": ano,
+        "mes": mes,
+        "ano_mes": ano_mes,
+        "items": agg_rows,
+        "totals": totals,
+        "source": "realtime",
+    }
+
+
+def team_employee_cost_overview(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    ano: int,
+    mes: int,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Custo fully-loaded por funcionário ativo (salário STG + rateio despesas CH)."""
+    ano = int(ano)
+    mes = int(mes)
+    if mes < 1 or mes > 12:
+        raise ValueError("mes inválido")
+    ano_mes = ano * 100 + mes
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 200))
+    filial = _branch_clause("id_filial", id_filial)
+    params: Dict[str, Any] = {"id_empresa": int(id_empresa), "ano_mes": int(ano_mes)}
+
+    emp_where = f"id_empresa = {{id_empresa:Int32}} AND ativo = 1{filial}"
+    search = (q or "").strip()
+    if search:
+        params["q"] = search
+        emp_where += (
+            " AND ("
+            " positionCaseInsensitiveUTF8(nome, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(funcao, {q:String}) > 0"
+            " OR positionCaseInsensitiveUTF8(filial_nome, {q:String}) > 0"
+            ")"
+        )
+
+    emp_count = query_scalar(
+        f"SELECT count() FROM {MART_RT_DB}.mart_team_employees_rt FINAL WHERE {emp_where}",
+        parameters=params,
+    )
+    headcount = max(int(emp_count or 0), 0)
+
+    # Rateio: despesas operacionais do mês excluindo classificação financeira
+    # (financiamentos / recuperação judicial) e excepcional — por cabeça.
+    rateio_rows = query_dict(
+        f"""
+        SELECT
+          round(sum(if(classificacao_gerencial = 'pessoal', valor, 0)), 2) AS total_pessoal,
+          round(sum(if(
+            entra_custo_operacional = 1
+            AND classificacao_gerencial NOT IN ('pessoal', 'financeiro', 'excepcional', 'tributos'),
+            valor,
+            0
+          )), 2) AS total_overhead
+        FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND ano_mes_vencimento = {{ano_mes:Int32}}
+          {filial}
+        """,
+        parameters=params,
+    )
+    rateio = rateio_rows[0] if rateio_rows else {}
+    total_pessoal = _to_float(rateio.get("total_pessoal"))
+    total_overhead = _to_float(rateio.get("total_overhead"))
+    rateio_pessoal = round(total_pessoal / headcount, 2) if headcount else 0.0
+    rateio_overhead = round(total_overhead / headcount, 2) if headcount else 0.0
+
+    # Vendas do mês por vendedor (ID_FUNCIONARIOS no item — não id_usuario de caixa).
+    # Exclui cancelado no comprovante, item deletado e NFE status 4/5 (cancelada/inutilizada).
+    # Fonte canônica: itenscomprovantes (não movprodutos).
+    sales_by_func: Dict[tuple[int, int], float] = {}
+    try:
+        from calendar import monthrange
+
+        dt_ini = date(ano, mes, 1)
+        dt_fim = date(ano, mes, monthrange(ano, mes)[1])
+        sales_rows = query_dict(
+            f"""
+            WITH
+            docs AS (
+              SELECT id_empresa, id_filial, id_db, id_comprovante
+              FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+              WHERE id_empresa = {{id_empresa:Int32}}
+                AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                AND is_deleted = 0
+                AND cancelado = 0
+                AND commercial_eligible = 1
+                {_branch_clause('id_filial', id_filial)}
+            ),
+            nfe_bloqueada AS (
+              SELECT
+                n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+              FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
+              INNER JOIN docs AS d
+                ON d.id_empresa = n.id_empresa
+               AND d.id_filial = n.id_filial
+               AND d.id_db = n.id_db
+               AND d.id_comprovante = n.id_comprovante
+              WHERE n.is_deleted = 0
+              GROUP BY n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+              HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
+            )
+            SELECT
+              i.id_filial AS id_filial,
+              i.id_funcionario AS id_funcionario,
+              round(sum(i.total), 2) AS vendas
+            FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+            INNER JOIN docs AS c
+              ON c.id_empresa = i.id_empresa
+             AND c.id_filial = i.id_filial
+             AND c.id_db = i.id_db
+             AND c.id_comprovante = i.id_comprovante
+            LEFT ANTI JOIN nfe_bloqueada AS n
+              ON n.id_empresa = i.id_empresa
+             AND n.id_filial = i.id_filial
+             AND n.id_db = i.id_db
+             AND n.id_comprovante = i.id_comprovante
+            WHERE i.id_empresa = {{id_empresa:Int32}}
+              AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+              AND i.is_deleted = 0
+              AND i.cfop > 5000
+              AND i.id_funcionario > 0
+              {_branch_clause('i.id_filial', id_filial)}
+            GROUP BY id_filial, id_funcionario
+            """,
+            parameters={
+                "id_empresa": int(id_empresa),
+                "ini": _date_key(dt_ini),
+                "fim": _date_key(dt_fim),
+            },
+        )
+        for r in sales_rows:
+            key = (
+                _to_int(r.get("id_filial") or r.get("i.id_filial")),
+                _to_int(r.get("id_funcionario") or r.get("i.id_funcionario")),
+            )
+            if key[0] <= 0 or key[1] <= 0:
+                continue
+            sales_by_func[key] = _to_float(r.get("vendas"))
+    except Exception as exc:
+        logger.warning("team_employee_cost sales miss: %s", str(exc)[:220])
+
+    offset = (page - 1) * page_size
+    employees = query_dict(
+        f"""
+        SELECT
+          id_filial, filial_nome, id_funcionario, id_usuario, nome, funcao,
+          salario_bruto, salario_total, vales, horas_extras
+        FROM {MART_RT_DB}.mart_team_employees_rt FINAL
+        WHERE {emp_where}
+        ORDER BY filial_nome ASC, nome ASC, id_funcionario ASC
+        LIMIT {page_size} OFFSET {offset}
+        """,
+        parameters=params,
+    )
+    items = []
+    for row in employees:
+        fid = _to_int(row.get("id_filial"))
+        eid = _to_int(row.get("id_funcionario"))
+        salario = _to_float(row.get("salario_bruto")) or _to_float(row.get("salario_total"))
+        vales = _to_float(row.get("vales"))
+        he = _to_float(row.get("horas_extras"))
+        direto = round(salario + vales + he, 2)
+        vendas = sales_by_func.get((fid, eid), 0.0) if eid else 0.0
+        custo_total = round(direto + rateio_overhead, 2)
+        items.append(
+            {
+                "id_filial": fid,
+                "filial_nome": _filial_label(fid, str(row.get("filial_nome") or "")),
+                "id_funcionario": eid,
+                "nome": str(row.get("nome") or ""),
+                "funcao": str(row.get("funcao") or "") or "—",
+                "salario": salario,
+                "vales": vales,
+                "horas_extras": he,
+                "custo_direto": direto,
+                "rateio_overhead": rateio_overhead,
+                "custo_total": custo_total,
+                "vendas": vendas,
+            }
+        )
+
+    return {
+        "ano": ano,
+        "mes": mes,
+        "ano_mes": ano_mes,
+        "items": items,
+        "total": headcount,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (headcount + page_size - 1) // page_size if page_size else 0,
+        "summary": {
+            "qtd_funcionarios": headcount,
+            "total_pessoal_mes": total_pessoal,
+            "total_overhead_mes": total_overhead,
+            "rateio_pessoal_cabeca": rateio_pessoal,
+            "rateio_overhead_cabeca": rateio_overhead,
+        },
+        "source": "realtime",
+    }
+
+
 def finance_receipts_by_day(
     role: str,
     id_empresa: int,
@@ -3059,25 +3427,54 @@ def customers_summary_paginated(
 # ================================================================
 
 def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 10) -> List[Dict[str, Any]]:
-    """Top employees by sales revenue from realtime mart (comprovantes_slim + dim_funcionario)."""
-    branch = _branch_clause("s.id_filial", id_filial)
+    """Top vendedores por faturamento de itens (ID_FUNCIONARIOS), não usuário de caixa."""
+    branch_i = _branch_clause("i.id_filial", id_filial)
+    branch_docs = _branch_clause("id_filial", id_filial)
     rows = query_dict(f"""
+        WITH
+        docs AS (
+          SELECT id_empresa, id_filial, id_db, id_comprovante
+          FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+          WHERE id_empresa = {{id_empresa:Int32}}
+            AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND is_deleted = 0 AND cancelado = 0 AND commercial_eligible = 1
+            {branch_docs}
+        ),
+        nfe_bloqueada AS (
+          SELECT n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+          FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
+          INNER JOIN docs AS d
+            ON d.id_empresa = n.id_empresa AND d.id_filial = n.id_filial
+           AND d.id_db = n.id_db AND d.id_comprovante = n.id_comprovante
+          WHERE n.is_deleted = 0
+          GROUP BY n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+          HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
+        )
         SELECT
-            s.id_usuario,
-            coalesce(nullIf(u.nome, ''), concat('Usuário #', toString(s.id_usuario))) AS funcionario_nome,
-            sum(s.valor_total) AS faturamento,
+            i.id_funcionario AS id_funcionario,
+            coalesce(
+              nullIf(any(f.nome), ''),
+              concat('Funcionário #', toString(i.id_funcionario))
+            ) AS funcionario_nome,
+            sum(i.total) AS faturamento,
             toDecimal64(0, 2) AS margem,
-            toUInt32(count()) AS vendas
-        FROM {CURRENT_DB}.stg_comprovantes_slim AS s
-        LEFT JOIN {CURRENT_DB}.dim_usuario_caixa AS u FINAL
-            ON s.id_empresa = u.id_empresa AND s.id_filial = u.id_filial AND s.id_usuario = u.id_usuario
-        WHERE s.id_empresa = {{id_empresa:Int32}}
-          AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND s.cancelado = 0 AND s.is_deleted = 0
-          AND s.commercial_eligible = 1
-          AND s.id_usuario > 0
-          {branch}
-        GROUP BY s.id_usuario, u.nome
+            toUInt32(uniqExact(c.id_empresa, c.id_filial, c.id_db, c.id_comprovante)) AS vendas
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN docs AS c
+            ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+           AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+        LEFT ANTI JOIN nfe_bloqueada AS n
+            ON n.id_empresa = i.id_empresa AND n.id_filial = i.id_filial
+           AND n.id_db = i.id_db AND n.id_comprovante = i.id_comprovante
+        LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
+            ON f.id_empresa = i.id_empresa AND f.id_filial = i.id_filial
+           AND f.id_funcionario = i.id_funcionario
+        WHERE i.id_empresa = {{id_empresa:Int32}}
+          AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND i.is_deleted = 0
+          AND i.cfop > 5000 AND i.id_funcionario > 0
+          {branch_i}
+        GROUP BY id_funcionario
         ORDER BY faturamento DESC
         LIMIT {{limit:UInt32}}
     """, parameters={
@@ -3088,7 +3485,9 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
     })
     return [
         {
-            "id_funcionario": _to_int(row.get("id_usuario")),
+            "id_funcionario": _to_int(
+                row.get("id_funcionario") or row.get("i.id_funcionario")
+            ),
             "funcionario_nome": row.get("funcionario_nome") or "",
             "faturamento": _to_float(row.get("faturamento")),
             "margem": _to_float(row.get("margem")),
@@ -4433,8 +4832,8 @@ def commercial_window_coverage(
     role: str,
     id_empresa: int,
     id_filial: Any,
-    dt_ini: date,
-    dt_fim: date,
+    requested_dt_ini: date,
+    requested_dt_fim: date,
 ) -> Dict[str, Any]:
     """Commercial window coverage from sales_daily_rt."""
     filial = _branch_clause("id_filial", id_filial)
@@ -4449,8 +4848,8 @@ def commercial_window_coverage(
     r = row[0] if row else {}
     min_dk = r.get("min_data_key")
     max_dk = r.get("max_data_key")
-    requested_start_key = _date_key(dt_ini)
-    requested_end_key = _date_key(dt_fim)
+    requested_start_key = _date_key(requested_dt_ini)
+    requested_end_key = _date_key(requested_dt_fim)
 
     if not min_dk or not max_dk or _to_int(min_dk) == 0:
         return {
@@ -5605,12 +6004,11 @@ def inventory_fuel_loss_overview(
     refresh: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Conciliação diária: leitura D−1 × leitura D × vendas do dia D−1.
+    """Conciliação diária do tanque: leitura × movimentação (saídas − entradas).
 
-    Perda = (LEITURA_ant − LEITURA_atu) − vendas, quando o tanque não sobe.
-    Dia com reposição (leitura sobe): status ``reposicao``, perda nula.
-    Leituras: ``mart_inventory_tank_readings_rt`` (sensor MOVTANQUES).
-    Vendas: slim itens (exclui CFOP 1652).
+    Dif Leitura = LEITURA_D − LEITURA_D−1  (sobe = +, desce = −).
+    Movimentação = entradas_NFe − saídas_bomba  (efeito esperado no tanque).
+    Diferença = Dif Leitura − Movimentação.
     """
     try:
         from app.filial_apelido import set_apelido_scope
@@ -5669,7 +6067,8 @@ def inventory_fuel_loss_overview(
     )
 
     product_ids = sorted({int(r["id_produto"]) for r in readings if int(r.get("id_produto") or 0) > 0})
-    sales_map: Dict[tuple[int, int, str], float] = {}
+    saidas_map: Dict[tuple[int, int, str], float] = {}
+    entradas_map: Dict[tuple[int, int, str], float] = {}
     if product_ids:
         prod_list = ", ".join(str(i) for i in product_ids)
         sales_rows = query_dict(
@@ -5694,7 +6093,38 @@ def inventory_fuel_loss_overview(
         )
         for row in sales_rows:
             key = (int(row["id_filial"]), int(row["id_produto"]), str(row["dia"])[:10])
-            sales_map[key] = float(row.get("litros") or 0)
+            saidas_map[key] = float(row.get("litros") or 0)
+
+        try:
+            entry_rows = query_dict(
+                f"""
+                SELECT
+                    id_filial,
+                    id_produto,
+                    dia,
+                    litros
+                FROM {MART_RT_DB}.mart_inventory_fuel_entries_daily_rt FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  AND id_produto IN ({prod_list})
+                  AND dia >= %(read_ini)s
+                  AND dia <= %(dt_fim)s
+                  {filial_sql}
+                """,
+                {
+                    "id_empresa": int(id_empresa),
+                    "read_ini": read_ini,
+                    "dt_fim": dt_fim,
+                },
+            )
+            for row in entry_rows:
+                key = (int(row["id_filial"]), int(row["id_produto"]), str(row["dia"])[:10])
+                entradas_map[key] = float(row.get("litros") or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inventory_fuel_loss entries miss empresa=%s: %s",
+                id_empresa,
+                str(exc)[:200],
+            )
 
     # Index readings by (filial, tanque) → list by day
     by_tank: Dict[tuple[int, int], List[Dict[str, Any]]] = {}
@@ -5721,18 +6151,16 @@ def inventory_fuel_loss_overview(
             if dia_s in by_day and ant_s in by_day:
                 leit_atu = by_day[dia_s]
                 leit_ant = by_day[ant_s]
-                vendas = _to_float(sales_map.get((fid, pid, ant_s), 0.0), 3)
-                delta = _to_float(leit_ant - leit_atu, 3)
-                if leit_atu > leit_ant + 0.5:
-                    status = "reposicao"
-                    entrada_aparente = _to_float(leit_atu - leit_ant, 3)
-                    perda = None
-                else:
-                    status = "ok"
-                    entrada_aparente = 0.0
-                    perda = _to_float(delta - vendas, 3)
-                    if abs(perda) < 0.05:
-                        perda = 0.0
+                # Movimento do intervalo abertura D−1 → abertura D usa docs do dia D−1.
+                saidas = _to_float(saidas_map.get((fid, pid, ant_s), 0.0), 3)
+                entradas = _to_float(entradas_map.get((fid, pid, ant_s), 0.0), 3)
+                # Dif Leitura: sobe = +, desce = −
+                dif_leitura = _to_float(leit_atu - leit_ant, 3)
+                # Movimentação: efeito esperado no tanque (entrada sobe, saída desce)
+                movimentacao = _to_float(entradas - saidas, 3)
+                diferenca = _to_float(dif_leitura - movimentacao, 3)
+                if abs(diferenca) < 0.05:
+                    diferenca = 0.0
                 rows_out.append(
                     {
                         "id_filial": fid,
@@ -5745,20 +6173,27 @@ def inventory_fuel_loss_overview(
                         "dia_anterior": ant_s,
                         "leitura_anterior_l": leit_ant,
                         "leitura_atual_l": leit_atu,
-                        "delta_sensor_l": delta,
-                        "vendas_l": vendas,
-                        "entrada_aparente_l": entrada_aparente,
-                        "perda_l": perda,
-                        "status": status,
+                        "dif_leitura_l": dif_leitura,
+                        "delta_sensor_l": dif_leitura,  # compat
+                        "saidas_l": saidas,
+                        "entradas_l": entradas,
+                        "movimentacao_l": movimentacao,
+                        "vendas_l": movimentacao,  # compat com FE antigo
+                        "entrada_aparente_l": entradas,
+                        "diferenca_l": diferenca,
+                        "perda_l": diferenca,  # compat
+                        "status": "ok",
                     }
                 )
             d += timedelta(days=1)
 
-    rows_out.sort(key=lambda r: (r["dia"], r["filial_nome"], r["combustivel"], r["id_tanque"]), reverse=True)
+    # Data DESC, depois combustível ASC, depois tanque ASC (stable sorts)
+    rows_out.sort(key=lambda r: (str(r["combustivel"]).casefold(), int(r["id_tanque"])))
+    rows_out.sort(key=lambda r: str(r["dia"]), reverse=True)
 
-    perdas = [float(r["perda_l"]) for r in rows_out if r.get("perda_l") is not None]
-    perda_total = _to_float(sum(perdas), 3) if perdas else 0.0
-    repos = sum(1 for r in rows_out if r.get("status") == "reposicao")
+    diffs = [float(r["diferenca_l"]) for r in rows_out if r.get("diferenca_l") is not None]
+    diferenca_total = _to_float(sum(diffs), 3) if diffs else 0.0
+    dias_entrada = sum(1 for r in rows_out if float(r.get("entradas_l") or 0) > 0.5)
 
     by_filial: Dict[int, Dict[str, Any]] = {}
     for r in rows_out:
@@ -5769,14 +6204,17 @@ def inventory_fuel_loss_overview(
                 "id_filial": fid,
                 "filial_nome": r["filial_nome"],
                 "itens": [],
+                "diferenca_l": 0.0,
                 "perda_l": 0.0,
                 "dias_reposicao": 0,
+                "dias_entrada": 0,
             },
         )
         block["itens"].append(r)
-        if r.get("perda_l") is not None:
-            block["perda_l"] = _to_float(block["perda_l"] + float(r["perda_l"]), 3)
-        if r.get("status") == "reposicao":
+        block["diferenca_l"] = _to_float(block["diferenca_l"] + float(r["diferenca_l"]), 3)
+        block["perda_l"] = block["diferenca_l"]
+        if float(r.get("entradas_l") or 0) > 0.5:
+            block["dias_entrada"] += 1
             block["dias_reposicao"] += 1
 
     return {
@@ -5786,17 +6224,17 @@ def inventory_fuel_loss_overview(
         "kpis": {
             "filiais": len(by_filial),
             "pares": len(rows_out),
-            "perda_l": perda_total,
-            "dias_reposicao": repos,
+            "diferenca_l": diferenca_total,
+            "perda_l": diferenca_total,
+            "dias_entrada": dias_entrada,
+            "dias_reposicao": dias_entrada,
         },
         "filiais": [by_filial[k] for k in sorted(by_filial)],
         "itens": rows_out,
         "disclaimer": (
-            "Leitura = sensor do tanque (MOVTANQUES.LEITURA na abertura). "
-            "Vendas = litros do combustível no dia da leitura anterior (após abertura D−1 até abertura D). "
-            "Perda = (leitura D−1 − leitura D) − vendas. "
-            "Dia com leitura maior que a anterior = reposição (entrada); perda não calculada. "
-            "Entradas LMC ainda não ingeridas no STG — bombas/bicos ficam para depois."
+            "Dif Leitura = leitura D − leitura D−1. "
+            "Movimentação = entradas (NFe) − saídas (bomba) no intervalo. "
+            "Diferença = Dif Leitura − Movimentação."
         ),
     }
 
@@ -5956,6 +6394,8 @@ REALTIME_FUNCTIONS = {
     "risk_top_employees",
     "finance_kpis",
     "finance_titles_overview",
+    "finance_despesas_overview",
+    "team_employee_cost_overview",
     "finance_receipts_by_day",
     "streaming_health",
     "goals_today",

@@ -93,9 +93,10 @@ class ClickHouseOperationalScriptsTest(unittest.TestCase):
         self.assertIn("sys.stdin.read()", incremental_source)
         self.assertNotIn('"$TRACK" "$error_code" "$message"', incremental_source)
 
-    def test_cron_defaults_to_two_minutes_and_risk_interval_is_configurable(self) -> None:
+    def test_cron_defaults_to_five_minutes_and_risk_interval_is_configurable(self) -> None:
+        # Default 5 min (era 2): reduz pressão de I/O no PG; override por env.
         source = read("deploy/scripts/prod-install-cron.sh")
-        self.assertIn('OPERATIONAL_INTERVAL_MINUTES="${OPERATIONAL_INTERVAL_MINUTES:-2}"', source)
+        self.assertIn('OPERATIONAL_INTERVAL_MINUTES="${OPERATIONAL_INTERVAL_MINUTES:-5}"', source)
         self.assertIn('RISK_INTERVAL_MINUTES="${RISK_INTERVAL_MINUTES:-30}"', source)
         self.assertIn("*/$OPERATIONAL_INTERVAL_MINUTES", source)
 
