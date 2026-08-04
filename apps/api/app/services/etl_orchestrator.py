@@ -465,6 +465,15 @@ def run_incremental_cycle(
                     if track == TRACK_OPERATIONAL:
                         needs_post_refresh = True
                         publication_mode = PUBLICATION_MODE_FAST_PATH
+                    elif track == TRACK_RISK:
+                        # Realtime STG desliga publication_enabled; o pós-refresh
+                        # do risk (health/insights/combustível) precisa rodar mesmo assim.
+                        needs_post_refresh = True
+                        publication_mode = (
+                            PUBLICATION_MODE_GLOBAL_REFRESH
+                            if publication_enabled and refreshed_any
+                            else PUBLICATION_MODE_NONE
+                        )
                     elif publication_enabled and refreshed_any:
                         needs_post_refresh = True
                         publication_mode = PUBLICATION_MODE_GLOBAL_REFRESH
