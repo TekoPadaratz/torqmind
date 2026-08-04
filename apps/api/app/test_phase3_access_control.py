@@ -282,6 +282,39 @@ class TestRedactionStems(unittest.TestCase):
         self.assertIsNone(result["margin_10d"])
         self.assertIsNone(result["margem_score"])
 
+    def test_manager_does_not_see_payroll_fields(self):
+        """Folha/pessoal (Equipe — custo do funcionário) é sensível: salário,
+        vales, horas extras, rateio e totais de pessoal nunca vazam p/ manager."""
+        claims = _manager_claims()
+        data = {
+            "items": [{
+                "nome": "João", "vendas": 5000.0,
+                "salario": 2500.0, "vales": 300.0, "horas_extras": 150.0,
+                "rateio_overhead": 420.0,
+            }],
+            "summary": {
+                "qtd_funcionarios": 10,
+                "total_pessoal_mes": 25000.0,
+                "total_overhead_mes": 4200.0,
+                "rateio_pessoal_cabeca": 2500.0,
+                "rateio_overhead_cabeca": 420.0,
+            },
+        }
+        result = redact_sensitive(data, claims)
+        item = result["items"][0]
+        self.assertEqual(item["nome"], "João")
+        self.assertEqual(item["vendas"], 5000.0)
+        self.assertIsNone(item["salario"])
+        self.assertIsNone(item["vales"])
+        self.assertIsNone(item["horas_extras"])
+        self.assertIsNone(item["rateio_overhead"])
+        summary = result["summary"]
+        self.assertEqual(summary["qtd_funcionarios"], 10)
+        self.assertIsNone(summary["total_pessoal_mes"])
+        self.assertIsNone(summary["total_overhead_mes"])
+        self.assertIsNone(summary["rateio_pessoal_cabeca"])
+        self.assertIsNone(summary["rateio_overhead_cabeca"])
+
 
 class TestMojibakeRepair(unittest.TestCase):
     """Central text hygiene: repair double-encoded source strings."""

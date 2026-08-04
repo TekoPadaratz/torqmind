@@ -425,6 +425,9 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
     "margem_score",
     "profit_margin",
     "gross_margin",
+    # Folha / custo de pessoal (Equipe — custo do funcionário)
+    "vales",
+    "horas_extras",
 }
 
 # Stems for substring-based redaction — any key whose lowercased name
@@ -432,6 +435,8 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
 _SENSITIVE_STEMS: tuple[str, ...] = (
     "margem", "margin", "lucro", "profit", "cmv",
     "custo", "cost", "markup", "rentab",
+    # Folha/pessoal: salario_*, rateio_*, *_overhead_*, total_pessoal_*, folha_*
+    "salario", "rateio", "overhead", "pessoal", "folha",
 )
 
 # Roles that can see sensitive financial data
