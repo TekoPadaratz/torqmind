@@ -1002,6 +1002,8 @@ class EtlOrchestrationTest(unittest.TestCase):
                 "customer_rfm_snapshot",
                 "customer_churn_risk_snapshot",
                 "customer_delinquency_summary",
+                "cheques_refresh",
+                "finance_despesas_publish",
                 "payment_notifications",
                 "cash_notifications",
             ],
@@ -1046,7 +1048,10 @@ class EtlOrchestrationTest(unittest.TestCase):
             track=etl_orchestrator.TRACK_RISK,
         )
 
-        self.assertEqual(step_order, ["health_score_snapshot", "insights_generated"])
+        self.assertEqual(
+            step_order,
+            ["health_score_snapshot", "insights_generated", "inventory_fuel_publish"],
+        )
         self.assertEqual(step_meta["health_score_snapshot"]["start_dt_ref"], "2026-03-21")
         self.assertEqual(step_meta["health_score_snapshot"]["end_dt_ref"], "2026-03-22")
         self.assertEqual(result["health_score_window_source"], "risk_delta")
@@ -1087,7 +1092,7 @@ class EtlOrchestrationTest(unittest.TestCase):
             track=etl_orchestrator.TRACK_RISK,
         )
 
-        self.assertEqual(step_order, ["health_score_snapshot"])
+        self.assertEqual(step_order, ["health_score_snapshot", "inventory_fuel_publish"])
         self.assertFalse(result["insights_generated"])
         skipped_reasons = [call.kwargs["meta"]["reason"] for call in mock_log_instant.call_args_list]
         self.assertIn("no_domain_changes", skipped_reasons)
