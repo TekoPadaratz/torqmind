@@ -3195,7 +3195,7 @@ def team_employee_cost_overview(
           salario_bruto, salario_total, vales, horas_extras
         FROM {MART_RT_DB}.mart_team_employees_rt FINAL
         WHERE {emp_where}
-        ORDER BY nome ASC, filial_nome ASC, id_funcionario ASC
+        ORDER BY filial_nome ASC, nome ASC, id_funcionario ASC
         LIMIT {page_size} OFFSET {offset}
         """,
         parameters=params,
@@ -4832,8 +4832,8 @@ def commercial_window_coverage(
     role: str,
     id_empresa: int,
     id_filial: Any,
-    dt_ini: date,
-    dt_fim: date,
+    requested_dt_ini: date,
+    requested_dt_fim: date,
 ) -> Dict[str, Any]:
     """Commercial window coverage from sales_daily_rt."""
     filial = _branch_clause("id_filial", id_filial)
@@ -4848,8 +4848,8 @@ def commercial_window_coverage(
     r = row[0] if row else {}
     min_dk = r.get("min_data_key")
     max_dk = r.get("max_data_key")
-    requested_start_key = _date_key(dt_ini)
-    requested_end_key = _date_key(dt_fim)
+    requested_start_key = _date_key(requested_dt_ini)
+    requested_end_key = _date_key(requested_dt_fim)
 
     if not min_dk or not max_dk or _to_int(min_dk) == 0:
         return {

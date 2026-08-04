@@ -131,7 +131,7 @@ export default function TeamCostSection() {
             ))}
           </select>
         </label>
-        <GridSearchInput value={q} onChange={setQ} placeholder="Buscar nome, função, filial…" />
+        <GridSearchInput value={q} onChange={setQ} />
       </div>
 
       <div

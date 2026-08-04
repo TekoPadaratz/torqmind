@@ -212,7 +212,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
           onChange={setStatus}
           clearLabel="Todos"
         />
-        <GridSearchInput value={q} onChange={setQ} placeholder="Buscar despesa, histórico, filial…" />
+        <GridSearchInput value={q} onChange={setQ} />
       </div>
 
       <div
@@ -326,8 +326,8 @@ export default function FinanceDespesasSection({ scope }: Props) {
                                 <thead>
                                   <tr>
                                     <th>Filial</th>
-                                    <th>Despesa</th>
                                     <th>Vencimento</th>
+                                    <th>Despesa</th>
                                     <th style={{ textAlign: "right" }}>Valor</th>
                                     <th>Pagamento</th>
                                     <th>Status</th>
@@ -337,10 +337,10 @@ export default function FinanceDespesasSection({ scope }: Props) {
                                   {detailItems.map((d, idx) => (
                                     <tr key={`${d.id_filial}-${d.dt_vencimento}-${idx}`}>
                                       <td>{d.filial_nome || "—"}</td>
-                                      <td>{d.nome_plano || "—"}</td>
                                       <td style={{ whiteSpace: "nowrap" }}>
                                         {formatDateOnly(d.dt_vencimento) || "—"}
                                       </td>
+                                      <td>{d.nome_plano || "—"}</td>
                                       <td style={{ textAlign: "right" }}>{formatCurrency(d.valor)}</td>
                                       <td style={{ whiteSpace: "nowrap" }}>
                                         {formatDateOnly(d.dt_pagamento) || "—"}

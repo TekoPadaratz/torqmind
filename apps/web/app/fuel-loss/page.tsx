@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { buildUserLabel } from "../lib/format";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
@@ -166,14 +168,26 @@ export default function FuelLossPage() {
     : buildModuleLoadingCopy("aferição de combustível");
 
   const kpis = data?.kpis;
-  const filiais = useMemo(
-    () =>
-      [...(data?.filiais || [])]
-        .map((f) => ({ ...f, itens: sortTankItems(f.itens || []) }))
-        .sort((a, b) => a.filial_nome.localeCompare(b.filial_nome, "pt-BR")),
-    [data?.filiais],
-  );
-  const afericoes = useMemo(
+  const [lossQuery, setLossQuery] = useState("");
+  const filiais = useMemo(() => {
+    const base = [...(data?.filiais || [])]
+      .map((f) => ({ ...f, itens: sortTankItems(f.itens || []) }))
+      .sort((a, b) => a.filial_nome.localeCompare(b.filial_nome, "pt-BR"));
+    if (!lossQuery.trim()) return base;
+    return base
+      .map((f) => ({
+        ...f,
+        itens: f.itens.filter((item) =>
+          rowMatchesGridSearch(
+            { ...item, filial_nome: f.filial_nome },
+            lossQuery,
+            { excludeKeys: /^id_/ },
+          ),
+        ),
+      }))
+      .filter((f) => f.itens.length > 0);
+  }, [data?.filiais, lossQuery]);
+  const afericoesOrdenadas = useMemo(
     () =>
       [...(afericoesData?.itens || [])].sort((a, b) => {
         const fa = a.filial_nome.localeCompare(b.filial_nome, "pt-BR");
@@ -184,6 +198,11 @@ export default function FuelLossPage() {
       }),
     [afericoesData?.itens],
   );
+  const {
+    query: afericoesQuery,
+    setQuery: setAfericoesQuery,
+    filteredRows: afericoes,
+  } = useGridSearch(afericoesOrdenadas, { excludeKeys: /^id_/ });
   const afericoesKpis = afericoesData?.kpis;
   const diferencaKpi = Number(kpis?.diferenca_l ?? kpis?.perda_l ?? 0);
 
@@ -245,11 +264,22 @@ export default function FuelLossPage() {
                 <div className="value">{kpis.dias_entrada ?? kpis.dias_reposicao ?? 0}</div>
               </div>
 
+              <div
+                className="col-12"
+                style={{ display: "flex", justifyContent: "flex-end" }}
+              >
+                <GridSearchInput value={lossQuery} onChange={setLossQuery} />
+              </div>
+
               {!filiais.length ? (
                 <div className="col-12">
                   <EmptyState
-                    title="Sem pares de leitura"
-                    detail="É preciso ter leitura do tanque em dias consecutivos no período selecionado."
+                    title={lossQuery.trim() ? "Nada encontrado" : "Sem pares de leitura"}
+                    detail={
+                      lossQuery.trim()
+                        ? "Nenhuma linha corresponde à pesquisa no período."
+                        : "É preciso ter leitura do tanque em dias consecutivos no período selecionado."
+                    }
                   />
                 </div>
               ) : (
@@ -341,12 +371,15 @@ export default function FuelLossPage() {
                 <div className="sectionEyebrow">Operação</div>
                 <h2 style={{ margin: 0, fontSize: "1.15rem" }}>Aferições de bico</h2>
               </div>
-              {afericoesKpis ? (
-                <div className="muted" style={{ fontSize: 13 }}>
-                  {afericoesKpis.afericoes} registro(s)
-                  {afericoesKpis.litros > 0 ? ` · ${fmtL(afericoesKpis.litros)}` : ""}
-                </div>
-              ) : null}
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                {afericoesKpis ? (
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    {afericoesKpis.afericoes} registro(s)
+                    {afericoesKpis.litros > 0 ? ` · ${fmtL(afericoesKpis.litros)}` : ""}
+                  </div>
+                ) : null}
+                <GridSearchInput value={afericoesQuery} onChange={setAfericoesQuery} />
+              </div>
             </div>
 
             {afericoesError ? (
@@ -361,8 +394,12 @@ export default function FuelLossPage() {
               </p>
             ) : !afericoes.length ? (
               <EmptyState
-                title="Sem aferições no período"
-                detail="Não há registros de aferição de bico para as filiais selecionadas."
+                title={afericoesQuery.trim() ? "Nada encontrado" : "Sem aferições no período"}
+                detail={
+                  afericoesQuery.trim()
+                    ? "Nenhuma aferição corresponde à pesquisa."
+                    : "Não há registros de aferição de bico para as filiais selecionadas."
+                }
               />
             ) : (
               <div className="tableScroll">
