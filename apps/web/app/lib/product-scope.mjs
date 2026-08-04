@@ -12,7 +12,7 @@ export const PRODUCT_LINKS = [
   { path: '/pricing', label: 'Preço Concorrente', screen_key: 'competitor_pricing' },
   { path: '/cash', label: 'Caixa', screen_key: 'cash' },
   { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
-  { path: '/fuel-loss', label: 'Perda de combustível', screen_key: 'fuel_loss' },
+  { path: '/fuel-loss', label: 'Aferição de Combustível', screen_key: 'fuel_loss' },
   { path: '/finance?view=payable', label: 'Contas a pagar', screen_key: 'finance.payable', parent_screen: 'finance' },
   { path: '/finance?view=receivable', label: 'Contas a receber', screen_key: 'finance.receivable', parent_screen: 'finance' },
   { path: '/finance?view=cheques', label: 'Controle de cheques', screen_key: 'finance.cheques', parent_screen: 'finance' },
@@ -59,7 +59,7 @@ export const PRODUCT_NAV_GROUPS = [
     children: [
       { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
       { path: '/cash', label: 'Caixa', screen_key: 'cash' },
-      { path: '/fuel-loss', label: 'Perda de combustível', screen_key: 'fuel_loss' },
+      { path: '/fuel-loss', label: 'Aferição de Combustível', screen_key: 'fuel_loss' },
     ],
   },
 ];

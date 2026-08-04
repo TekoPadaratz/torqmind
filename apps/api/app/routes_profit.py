@@ -27,6 +27,16 @@ router = APIRouter(prefix="/bi/profit-management", tags=["profit-management"])
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Coerce CH NULL/None to float — .get(k, 0) still returns None when key exists."""
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def _despesas_pg_por_regime(
     id_empresa: int,
     branch_ids: List[int],
@@ -681,13 +691,13 @@ def profit_products(
                 id_produto, nome_produto, nome_grupo_produto,
                 setor_gerencial, qtd_vendida_agg AS qtd_vendida,
                 receita_agg AS receita,
-                toFloat64(receita_agg) / nullIf(qtd_vendida_agg, 0) AS preco_medio,
-                toFloat64(cmv_agg) / nullIf(qtd_vendida_agg, 0) AS custo_medio,
+                coalesce(toFloat64(receita_agg) / nullIf(qtd_vendida_agg, 0), 0) AS preco_medio,
+                coalesce(toFloat64(cmv_agg) / nullIf(qtd_vendida_agg, 0), 0) AS custo_medio,
                 cmv_agg AS cmv,
-                1 - toFloat64(cmv_agg) / nullIf(receita_agg, 0) AS margem_bruta_pct,
-                toFloat64(desp_op_total) / nullIf(qtd_vendida_agg, 0) AS desp_operacional_unitaria,
-                toFloat64(receita_agg - cmv_agg - desp_op_total) / nullIf(receita_agg, 0) AS margem_gerencial_pct,
-                toFloat64(receita_agg) / nullIf(cmv_agg, 0) - 1 AS markup_real,
+                coalesce(1 - toFloat64(cmv_agg) / nullIf(receita_agg, 0), 0) AS margem_bruta_pct,
+                coalesce(toFloat64(desp_op_total) / nullIf(qtd_vendida_agg, 0), 0) AS desp_operacional_unitaria,
+                coalesce(toFloat64(receita_agg - cmv_agg - desp_op_total) / nullIf(receita_agg, 0), 0) AS margem_gerencial_pct,
+                coalesce(toFloat64(receita_agg) / nullIf(cmv_agg, 0) - 1, 0) AS markup_real,
                 preco_minimo_saudavel, preco_ideal_sugerido,
                 reajuste_sugerido_valor, reajuste_sugerido_pct,
                 qtd_mes_anterior, impacto_estimado_60d,
@@ -764,25 +774,25 @@ def profit_products(
     products = []
     for r in rows:
         products.append({
-            "id_produto": int(r.get("id_produto", 0)),
+            "id_produto": int(r.get("id_produto") or 0),
             "nome_produto": r.get("nome_produto", ""),
             "grupo": r.get("nome_grupo_produto", ""),
             "setor": r.get("setor_gerencial", ""),
-            "qtd_vendida": float(r.get("qtd_vendida", 0)),
-            "receita": float(r.get("receita", 0)),
-            "preco_atual": float(r.get("preco_medio", 0)),
-            "custo_unitario": float(r.get("custo_medio", 0)),
-            "cmv": float(r.get("cmv", 0)),
-            "margem_bruta_pct": float(r.get("margem_bruta_pct", 0)),
-            "desp_unitaria": float(r.get("desp_operacional_unitaria", 0)),
-            "margem_gerencial_pct": float(r.get("margem_gerencial_pct", 0)),
-            "markup_real": float(r.get("markup_real", 0)),
-            "preco_minimo": float(r.get("preco_minimo_saudavel", 0)),
-            "preco_ideal": float(r.get("preco_ideal_sugerido", 0)),
-            "reajuste_valor": float(r.get("reajuste_sugerido_valor", 0)),
-            "reajuste_pct": float(r.get("reajuste_sugerido_pct", 0)),
-            "qtd_mes_anterior": float(r.get("qtd_mes_anterior", 0)),
-            "impacto_60d": float(r.get("impacto_estimado_60d", 0)),
+            "qtd_vendida": _safe_float(r.get("qtd_vendida")),
+            "receita": _safe_float(r.get("receita")),
+            "preco_atual": _safe_float(r.get("preco_medio")),
+            "custo_unitario": _safe_float(r.get("custo_medio")),
+            "cmv": _safe_float(r.get("cmv")),
+            "margem_bruta_pct": _safe_float(r.get("margem_bruta_pct")),
+            "desp_unitaria": _safe_float(r.get("desp_operacional_unitaria")),
+            "margem_gerencial_pct": _safe_float(r.get("margem_gerencial_pct")),
+            "markup_real": _safe_float(r.get("markup_real")),
+            "preco_minimo": _safe_float(r.get("preco_minimo_saudavel")),
+            "preco_ideal": _safe_float(r.get("preco_ideal_sugerido")),
+            "reajuste_valor": _safe_float(r.get("reajuste_sugerido_valor")),
+            "reajuste_pct": _safe_float(r.get("reajuste_sugerido_pct")),
+            "qtd_mes_anterior": _safe_float(r.get("qtd_mes_anterior")),
+            "impacto_60d": _safe_float(r.get("impacto_estimado_60d")),
             "status": r.get("status_preco", "sem_dados"),
             "recomendacao": r.get("recomendacao_curta", ""),
         })
@@ -877,23 +887,23 @@ def profit_repricing(
         """
     rows = query_dict(sql, params)
 
-    total_impact = sum(float(r.get("impacto_estimado_60d", 0)) for r in rows)
+    total_impact = sum(_safe_float(r.get("impacto_estimado_60d")) for r in rows)
 
     opportunities = []
     for r in rows:
         opportunities.append({
-            "id_produto": int(r.get("id_produto", 0)),
+            "id_produto": int(r.get("id_produto") or 0),
             "nome_produto": r.get("nome_produto", ""),
             "grupo": r.get("nome_grupo_produto", ""),
             "setor": r.get("setor_gerencial", ""),
-            "preco_atual": float(r.get("preco_medio", 0)),
-            "preco_ideal": float(r.get("preco_ideal_sugerido", 0)),
-            "reajuste_valor": float(r.get("reajuste_sugerido_valor", 0)),
-            "reajuste_pct": float(r.get("reajuste_sugerido_pct", 0)),
-            "qtd_mes_anterior": float(r.get("qtd_mes_anterior", 0)),
-            "impacto_60d": float(r.get("impacto_estimado_60d", 0)),
+            "preco_atual": _safe_float(r.get("preco_medio")),
+            "preco_ideal": _safe_float(r.get("preco_ideal_sugerido")),
+            "reajuste_valor": _safe_float(r.get("reajuste_sugerido_valor")),
+            "reajuste_pct": _safe_float(r.get("reajuste_sugerido_pct")),
+            "qtd_mes_anterior": _safe_float(r.get("qtd_mes_anterior")),
+            "impacto_60d": _safe_float(r.get("impacto_estimado_60d")),
             "status": r.get("status_preco", ""),
-            "margem_atual_pct": float(r.get("margem_bruta_pct", 0)),
+            "margem_atual_pct": _safe_float(r.get("margem_bruta_pct")),
         })
 
     payload = {
