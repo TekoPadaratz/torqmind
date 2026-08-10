@@ -626,10 +626,12 @@ def _devolucoes_period_totals(
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
     try:
+        # Alias != coluna base: ``sum(valor) AS valor`` + ``WHERE valor > 0``
+        # faz o ClickHouse tratar o WHERE como agregado → ILLEGAL_AGGREGATION 184.
         rows = query_dict(
             f"""
             SELECT
-                sum(valor) AS valor,
+                sum(valor) AS valor_total,
                 toUInt32(count()) AS qtd
             FROM {MART_RT_DB}.mart_fraud_devolucao_entrada_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial} {date_range}
@@ -642,7 +644,7 @@ def _devolucoes_period_totals(
         return 0.0, 0
     if not rows:
         return 0.0, 0
-    return float(rows[0].get("valor") or 0), int(rows[0].get("qtd") or 0)
+    return float(rows[0].get("valor_total") or 0), int(rows[0].get("qtd") or 0)
 
 
 def sales_overview_bundle(
@@ -663,7 +665,25 @@ def sales_overview_bundle(
     product_meta_sql = _sales_product_meta_subquery()
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
-    params = {"id_empresa": id_empresa}
+    params: Dict[str, Any] = {"id_empresa": id_empresa}
+
+    # Filtro de grupos no TOP produtos: ranqueia DENTRO dos grupos (não corta o TOP global).
+    raw_grupos = kwargs.get("id_grupos") or None
+    id_grupos: List[int] = []
+    if raw_grupos:
+        for g in raw_grupos:
+            try:
+                gid = int(g)
+            except (TypeError, ValueError):
+                continue
+            if gid not in id_grupos:
+                id_grupos.append(gid)
+    group_product_filter = ""
+    product_params: Dict[str, Any] = {"id_empresa": id_empresa}
+    if id_grupos:
+        product_params["id_grupos"] = id_grupos
+        group_product_filter = "AND id_grupo_produto IN ({id_grupos:Array(Int32)})"
+    top_products_limit = 50 if id_grupos else 20
 
     # --- Aggregated KPIs ---
     kpis_rows = query_dict(f"""
@@ -741,7 +761,7 @@ def sales_overview_bundle(
     # --- Commercial by hour (with saidas) ---
     commercial_by_hour = [{"hora": r.get("hora"), "saidas": float(r.get("faturamento") or 0)} for r in by_hour]
 
-    # --- Top products ---
+    # --- Top products (opcionalmente restrito aos grupos selecionados) ---
     top_products = query_dict(f"""
         SELECT
             ranked.id_produto,
@@ -749,6 +769,7 @@ def sales_overview_bundle(
             ranked.nome_produto AS produto_nome,
             ranked.nome_grupo,
             ranked.nome_grupo AS grupo_nome,
+            ranked.id_grupo_produto,
             meta.unidade AS unidade,
             {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
             ranked.faturamento,
@@ -757,20 +778,22 @@ def sales_overview_bundle(
             ranked.custo_total,
             if(ranked.qtd > 0, toFloat64(ranked.faturamento) / toFloat64(ranked.qtd), 0) AS valor_unitario_medio
         FROM (
-            SELECT id_produto, nome_produto, nome_grupo,
+            SELECT id_produto, nome_produto, nome_grupo, id_grupo_produto,
                    sum(faturamento) AS faturamento, sum(qtd) AS qtd, sum(margem) AS margem,
                    sum(custo_total) AS custo_total
             FROM {MART_RT_DB}.sales_products_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}
-            GROUP BY id_produto, nome_produto, nome_grupo
+              {group_product_filter}
+            GROUP BY id_produto, nome_produto, nome_grupo, id_grupo_produto
         ) AS ranked
         LEFT JOIN ({product_meta_sql}) AS meta
             ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = ranked.id_produto
         ORDER BY ranked.faturamento DESC
-        LIMIT 20
-    """, parameters=params)
+        LIMIT {{top_products_limit:UInt32}}
+    """, parameters={**product_params, "top_products_limit": top_products_limit})
 
     # --- Top groups ---
+    # Ranking de grupos permanece global (filtro só afeta top_products).
     top_groups = query_dict(f"""
         SELECT id_grupo_produto, nome_grupo AS grupo_nome,
                s_fat AS faturamento, s_margem AS margem, s_itens AS qtd_itens
@@ -950,6 +973,90 @@ def sales_top_groups(
         ORDER BY faturamento DESC
         LIMIT {limit}
     """, parameters={"id_empresa": id_empresa})
+
+
+def _combustivel_nome_grupo_predicate(col: str = "nome_grupo") -> str:
+    """Mesmo universo comercial do Top grupos COMBUSTÍVEIS (não console/bomba)."""
+    excludes = (
+        "FILTRO",
+        "OLEO",
+        "LUBR",
+        "ADITIV",
+        "GRAXA",
+        "ARLA",
+        "CARRO",
+        "UTILIDADE",
+        "LIMPEZA",
+    )
+    exclude_sql = " AND ".join(
+        f"positionCaseInsensitiveUTF8({col}, '{token}') = 0" for token in excludes
+    )
+    return f"""(
+      (
+        positionCaseInsensitiveUTF8({col}, 'COMBUST') > 0
+        OR upperUTF8({col}) IN ('GASOLINA', 'ETANOL', 'DIESEL', 'GNV')
+      )
+      AND {exclude_sql}
+    )"""
+
+
+def sales_ticket_combustivel(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Ticket médio de combustível — mesma receita do Top grupos (sales_groups_rt).
+
+    Contrato: ``valor_total`` = faturamento do(s) grupo(s) COMBUSTÍVEIS no período/escopo;
+    ``qtd_abastecimentos`` = ``qtd_itens`` desses grupos; ticket = valor / qtd.
+    Não usa CONSOLEARQUIVO (bomba física diverge do cupom/Xpert).
+    """
+    filial = _branch_clause("id_filial", id_filial)
+    date_range = _date_range_filter(dt_ini, dt_fim)
+    combustivel = _combustivel_nome_grupo_predicate("nome_grupo")
+    params: Dict[str, Any] = {"id_empresa": int(id_empresa)}
+
+    rows = query_dict(
+        f"""
+        SELECT
+          sum(faturamento) AS valor_sum,
+          sum(qtd_itens) AS qtd_sum
+        FROM {MART_RT_DB}.sales_groups_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          {date_range}
+          {filial}
+          AND {combustivel}
+        """,
+        parameters=params,
+    )
+    row = rows[0] if rows else {}
+    valor = float(row.get("valor_sum") or 0)
+    qtd = int(row.get("qtd_sum") or 0)
+
+    litros_rows = query_dict(
+        f"""
+        SELECT sum(qtd) AS litros_sum
+        FROM {MART_RT_DB}.sales_products_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          {date_range}
+          {filial}
+          AND {combustivel}
+        """,
+        parameters=params,
+    )
+    litros = float((litros_rows[0] if litros_rows else {}).get("litros_sum") or 0)
+
+    return {
+        "ticket_medio": round(valor / qtd, 2) if qtd else 0.0,
+        "valor_total": round(valor, 2),
+        "qtd_abastecimentos": qtd,
+        "litros_total": round(litros, 3),
+        "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
+        "source": "sales_groups_rt",
+    }
 
 
 # ================================================================
@@ -3224,8 +3331,32 @@ def team_employee_cost_overview(
                 "rateio_overhead": rateio_overhead,
                 "custo_total": custo_total,
                 "vendas": vendas,
+                "vales_manual": False,
+                "horas_extras_manual": False,
             }
         )
+
+    # Overlay mensal: Vale / HE digitados na competência (app.employee_cost_manual).
+    try:
+        from app.services.employee_cost_manual import fetch_employee_cost_manual
+
+        overrides = fetch_employee_cost_manual(role, int(id_empresa), ano_mes, id_filial)
+        if overrides:
+            for item in items:
+                key = (int(item["id_filial"]), int(item["id_funcionario"]))
+                ov = overrides.get(key)
+                if not ov:
+                    continue
+                item["vales"] = _to_float(ov.get("vales"))
+                item["horas_extras"] = _to_float(ov.get("horas_extras"))
+                item["vales_manual"] = True
+                item["horas_extras_manual"] = True
+                salario = _to_float(item.get("salario"))
+                direto = round(salario + item["vales"] + item["horas_extras"], 2)
+                item["custo_direto"] = direto
+                item["custo_total"] = round(direto + rateio_overhead, 2)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("team_employee_cost manual overlay miss: %s", str(exc)[:220])
 
     return {
         "ano": ano,
@@ -3630,17 +3761,39 @@ def monthly_goal_projection(role: str, id_empresa: int, id_filial: Any, as_of: O
 # ================================================================
 
 def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
-    """Top customers by revenue in the period."""
+    """Top customers by revenue in the period (somente saídas CFOP > 5000)."""
     filial = _branch_clause("s.id_filial", id_filial)
     rows = query_dict(f"""
         SELECT
             s.id_cliente,
             coalesce(nullIf(c.nome, ''), concat('#ID ', toString(s.id_cliente))) AS cliente_nome,
-            sum(s.valor_total) AS faturamento,
-            toUInt32(count()) AS compras,
+            sum(i.item_total) AS faturamento,
+            toUInt32(uniqExact(s.id_filial, s.id_db, s.id_comprovante)) AS compras,
             max(s.data_key) AS ultima_compra,
-            if(count() = 0, toDecimal64(0, 2), toDecimal64(sum(s.valor_total) / count(), 2)) AS ticket_medio
+            if(
+              uniqExact(s.id_filial, s.id_db, s.id_comprovante) = 0,
+              toDecimal64(0, 2),
+              toDecimal64(
+                sum(i.item_total) / uniqExact(s.id_filial, s.id_db, s.id_comprovante),
+                2
+              )
+            ) AS ticket_medio
         FROM {CURRENT_DB}.stg_comprovantes_slim AS s
+        INNER JOIN (
+            SELECT
+                id_empresa, id_filial, id_db, id_comprovante,
+                sum(total) AS item_total
+            FROM {CURRENT_DB}.stg_itenscomprovantes_slim FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND is_deleted = 0
+              AND cfop > 5000
+              AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            GROUP BY id_empresa, id_filial, id_db, id_comprovante
+        ) AS i
+          ON i.id_empresa = s.id_empresa
+         AND i.id_filial = s.id_filial
+         AND i.id_db = s.id_db
+         AND i.id_comprovante = s.id_comprovante
         LEFT JOIN (
             SELECT id_empresa, id_cliente, argMax(nome, source_ts_ms) AS nome
             FROM {CURRENT_DB}.dim_cliente FINAL
@@ -3651,6 +3804,7 @@ def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_f
           AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           AND s.cancelado = 0 AND s.is_deleted = 0
           AND s.situacao != 3
+          AND s.commercial_eligible = 1
           AND s.id_cliente > 0
           {filial}
         GROUP BY s.id_cliente, c.nome
@@ -5765,6 +5919,45 @@ def fraud_transferencia_cr(
 # ESTOQUE COMBUSTÍVEL (tanques + cobertura + sugestão)
 # ================================================================
 
+def _inventory_period_clamp(
+    dt_ini: Optional[date],
+    dt_fim: Optional[date],
+    today: date,
+    *,
+    default_days: int = 7,
+) -> tuple[date, date]:
+    """Janela para média: padrão últimos ``default_days`` (inclui hoje); fim ≤ hoje."""
+    if dt_ini is None or dt_fim is None:
+        dt_fim = today
+        dt_ini = today - timedelta(days=max(1, int(default_days)) - 1)
+    if dt_fim > today:
+        dt_fim = today
+    if dt_ini > dt_fim:
+        dt_ini, dt_fim = dt_fim, dt_ini
+    return dt_ini, dt_fim
+
+
+def estimate_tank_estoque_l(
+    leitura_l: float,
+    capacidade_l: float,
+    share: float,
+    entradas_l: float,
+    saidas_l: float,
+) -> float:
+    """Estoque = última LEITURA + rateio×(entradas − saídas) do dia.
+
+    Mesma lógica de efeito no tanque da aferição (movimentação = entradas − saídas),
+    aplicada só sobre o movimento do dia de negócio atual — não reaplica dias
+    anteriores à leitura (a LEITURA de abertura já reflete o passado).
+    """
+    mov = float(share) * (float(entradas_l) - float(saidas_l))
+    est = float(leitura_l) + mov
+    cap = float(capacidade_l)
+    if cap > 0:
+        return max(0.0, min(cap, est))
+    return max(0.0, est)
+
+
 def inventory_fuel_overview(
     role: str,
     id_empresa: int,
@@ -5777,9 +5970,10 @@ def inventory_fuel_overview(
 ) -> Dict[str, Any]:
     """Estoque de combustíveis — leitura exclusiva ClickHouse.
 
-    Snapshot: ``torqmind_mart_rt.mart_inventory_tanks_rt`` (sensor LEITURA).
-    Média diária: ``stg_itenscomprovantes_slim`` no período (só produtos de tanque).
-    Exclui CFOP 1652 (cargas/transferências de 10k L) da média de venda na bomba.
+    Snapshot base: ``mart_inventory_tanks_rt`` (última LEITURA / abertura).
+    Estoque exibido: LEITURA + rateio×(entradas − saídas) **do dia de negócio**
+    (``mart_inventory_fuel_entries_daily_rt`` / ``mart_inventory_fuel_sales_daily_rt``).
+    Média diária: litros vendidos no período ÷ dias do período.
     """
     try:
         from app.filial_apelido import set_apelido_scope
@@ -5790,9 +5984,9 @@ def inventory_fuel_overview(
 
     if refresh:
         try:
-            from app.services.inventory_fuel import publish_inventory_tanks
+            from app.services.inventory_fuel import publish_inventory_fuel_bundle
 
-            publish_inventory_tanks(role, int(id_empresa))
+            publish_inventory_fuel_bundle(role, int(id_empresa), days=21)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "inventory_fuel refresh/publish failed empresa=%s: %s",
@@ -5801,11 +5995,7 @@ def inventory_fuel_overview(
             )
 
     today = business_today(id_empresa)
-    if dt_ini is None or dt_fim is None:
-        dt_fim = today
-        dt_ini = today - timedelta(days=29)
-    if dt_fim < dt_ini:
-        dt_ini, dt_fim = dt_fim, dt_ini
+    dt_ini, dt_fim = _inventory_period_clamp(dt_ini, dt_fim, today, default_days=7)
 
     try:
         alvo = max(1, min(int(dias_alvo), 90))
@@ -5839,6 +6029,10 @@ def inventory_fuel_overview(
 
     product_ids = sorted({int(r["id_produto"]) for r in tanks if int(r.get("id_produto") or 0) > 0})
     media_map: Dict[tuple[int, int], float] = {}
+    # Movimentação do dia de negócio (hoje) por (filial, produto).
+    saidas_hoje: Dict[tuple[int, int], float] = {}
+    entradas_hoje: Dict[tuple[int, int], float] = {}
+
     if product_ids:
         prod_list = ", ".join(str(i) for i in product_ids)
         media_rows = query_dict(
@@ -5865,7 +6059,48 @@ def inventory_fuel_overview(
             litros = float(row.get("litros_periodo") or 0)
             media_map[(int(row["id_filial"]), int(row["id_produto"]))] = litros / float(days)
 
-    # Capacidade total por (filial, produto) — rateia média de venda entre tanques.
+        sales_today = query_dict(
+            f"""
+            SELECT id_filial, id_produto, sum(litros) AS litros
+            FROM {MART_RT_DB}.mart_inventory_fuel_sales_daily_rt FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND id_produto IN ({prod_list})
+              AND dia = %(today)s
+              {filial_sql}
+            GROUP BY id_filial, id_produto
+            """,
+            {"id_empresa": int(id_empresa), "today": today},
+        )
+        for row in sales_today:
+            saidas_hoje[(int(row["id_filial"]), int(row["id_produto"]))] = float(
+                row.get("litros") or 0
+            )
+
+        try:
+            entry_today = query_dict(
+                f"""
+                SELECT id_filial, id_produto, sum(litros) AS litros
+                FROM {MART_RT_DB}.mart_inventory_fuel_entries_daily_rt FINAL
+                WHERE id_empresa = %(id_empresa)s
+                  AND id_produto IN ({prod_list})
+                  AND dia = %(today)s
+                  {filial_sql}
+                GROUP BY id_filial, id_produto
+                """,
+                {"id_empresa": int(id_empresa), "today": today},
+            )
+            for row in entry_today:
+                entradas_hoje[(int(row["id_filial"]), int(row["id_produto"]))] = float(
+                    row.get("litros") or 0
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "inventory_fuel entries miss empresa=%s: %s",
+                id_empresa,
+                str(exc)[:200],
+            )
+
+    # Capacidade total por (filial, produto) — rateia média e movimento entre tanques.
     cap_by_fp: Dict[tuple[int, int], float] = {}
     for t in tanks:
         fid = int(t["id_filial"])
@@ -5895,13 +6130,27 @@ def inventory_fuel_overview(
         )
         block["tanques"] += 1
         cap = _to_float(t.get("capacidade_l"), 3)
-        est = _to_float(t.get("estoque_l"), 3)
-        cus = _to_float(t.get("custo_estoque"), 2)
+        leitura = _to_float(t.get("estoque_l"), 3)
+        custo_u = _to_float(t.get("custo_unitario"), 6)
+        dl = t.get("data_leitura")
+        dl_s = str(dl)[:10] if dl is not None else None
+
+        media_prod = _to_float(media_map.get((fid, pid), 0.0), 3)
+        cap_prod = _to_float(cap_by_fp.get((fid, pid), 0.0), 3)
+        share = (cap / cap_prod) if cap_prod > 0 else 0.0
+
+        # Última LEITURA (abertura) + movimentação só do dia corrente.
+        ent_l = _to_float(entradas_hoje.get((fid, pid), 0.0), 3)
+        sai_l = _to_float(saidas_hoje.get((fid, pid), 0.0), 3)
+        est = _to_float(
+            estimate_tank_estoque_l(leitura, cap, share, ent_l, sai_l),
+            3,
+        )
+
+        cus = _to_float(est * custo_u, 2) if custo_u else _to_float(t.get("custo_estoque"), 2)
         block["capacidade_l"] = _to_float(block["capacidade_l"] + cap, 3)
         block["estoque_l"] = _to_float(block["estoque_l"] + est, 3)
         block["custo_estoque"] = _to_float(block["custo_estoque"] + cus, 2)
-        dl = t.get("data_leitura")
-        dl_s = str(dl)[:10] if dl is not None else None
         if dl_s:
             prev = block["data_leitura"]
             if prev is None or dl_s > str(prev):
@@ -5909,9 +6158,6 @@ def inventory_fuel_overview(
         if int(t.get("leitura_fresca") or 0) == 1:
             block["leitura_fresca"] = True
 
-        media_prod = _to_float(media_map.get((fid, pid), 0.0), 3)
-        cap_prod = _to_float(cap_by_fp.get((fid, pid), 0.0), 3)
-        share = (cap / cap_prod) if cap_prod > 0 else 0.0
         media = _to_float(media_prod * share, 3)
         disponivel = _to_float(max(cap - est, 0), 3)
         pct_ocupado = _to_float((est / cap * 100.0) if cap > 0 else 0.0, 1)
@@ -5928,6 +6174,7 @@ def inventory_fuel_overview(
                 "tanques": 1,
                 "capacidade_l": cap,
                 "estoque_l": est,
+                "estoque_leitura_l": leitura,
                 "pct_ocupado": pct_ocupado,
                 "disponivel_l": disponivel,
                 "pct_disponivel": pct_disp,
@@ -5986,12 +6233,6 @@ def inventory_fuel_overview(
             "custo_estoque": tot_custo,
         },
         "filiais": filiais_out,
-        "disclaimer": (
-            "Estoque de combustível = sensor do tanque (última LEITURA). "
-            "Média diária = litros vendidos no período ÷ dias do período "
-            "(mart publicada do STG; exclui CFOP 1652). "
-            f"Sugestão de compra = max(0, {alvo}×média − estoque)."
-        ),
     }
 
 
@@ -6318,6 +6559,8 @@ def inventory_fuel_afericoes_overview(
         turno_op = _to_int(r.get("turno_operacional"))
         if turno_op > 0:
             turno_label = f"Turno {turno_op}"
+        elif turno_op == 0:
+            turno_label = "Caixa geral"
         else:
             turno_label = "Turno não resolvido"
         bico = str(r.get("bico_label") or "").strip()
@@ -6378,6 +6621,7 @@ REALTIME_FUNCTIONS = {
     "sales_by_hour",
     "sales_top_products",
     "sales_top_groups",
+    "sales_ticket_combustivel",
     "sales_top_employees",
     "leaderboard_employees",
     "payments_overview",

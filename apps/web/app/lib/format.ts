@@ -105,8 +105,12 @@ export function formatTurnoLabel(idTurno: any, friendlyLabel?: string | null) {
   const label = String(friendlyLabel || '').trim();
   if (label) return label;
   const numericTurno = Number(idTurno);
+  // Só aceita número operacional 1..99. IDs técnicos (ex.: 34292) nunca viram "Turno N".
   if (Number.isFinite(numericTurno) && numericTurno > 0 && numericTurno <= 99) {
     return `Turno ${Math.trunc(numericTurno)}`;
+  }
+  if (Number.isFinite(numericTurno) && numericTurno === 0) {
+    return 'Caixa geral';
   }
   return 'Turno não resolvido';
 }

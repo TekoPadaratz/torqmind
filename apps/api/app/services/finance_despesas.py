@@ -63,18 +63,14 @@ def fetch_finance_despesas(
                 coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
                 least(
                   coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0),
-                  greatest(
-                    coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0),
-                    coalesce(bp.total_baixa, 0)
-                  )
+                  coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
+                  + coalesce(bp.total_baixa, 0)
                 )::numeric(18,2) AS valor_pago,
                 greatest(
                   0,
                   coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)
-                  - greatest(
-                    coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0),
-                    coalesce(bp.total_baixa, 0)
-                  )
+                  - coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
+                  - coalesce(bp.total_baixa, 0)
                 )::numeric(18,2) AS valor_aberto
               FROM stg.contaspagar cp
               JOIN dw.dim_plano_contas_gerencial d

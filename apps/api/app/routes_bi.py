@@ -1105,6 +1105,7 @@ def sales_overview(
     dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
+    id_grupos: Optional[List[int]] = Query(None, description="Restringe o top produtos aos grupos (multi-seleção)"),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("sales")),
@@ -1112,9 +1113,12 @@ def sales_overview(
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
+    grupo_ids = sorted({int(g) for g in (id_grupos or []) if g is not None})
 
     def build_response() -> Dict[str, Any]:
-        bundle = repos_mart.sales_overview_bundle(role, tenant, filial, dt_ini, dt_fim, as_of=as_of)
+        bundle = repos_mart.sales_overview_bundle(
+            role, tenant, filial, dt_ini, dt_fim, as_of=as_of, id_grupos=grupo_ids or None
+        )
         try:
             bundle["ticket_combustivel"] = repos_mart.sales_ticket_combustivel(role, tenant, filial, dt_ini, dt_fim)
         except Exception:
@@ -1130,7 +1134,7 @@ def sales_overview(
         dt_fim=dt_fim,
         dt_ref=as_of,
         compute=build_response,
-        extra_context={"module": "sales"},
+        extra_context={"module": "sales", "id_grupos": grupo_ids},
         safe_fallback=lambda: _safe_sales_overview_payload(role, tenant, filial, dt_ini, dt_fim, as_of),
     ), claims)
 
@@ -2120,9 +2124,15 @@ def inventory_fuel_overview(
             dt_ini = date(int(ano), int(mes), 1)
             dt_fim = min(date(int(ano), int(mes), last), today)
         else:
-            # default: mês corrente até hoje
-            dt_ini = date(today.year, today.month, 1)
+            # padrão: últimos 7 dias (inclui hoje)
+            from datetime import timedelta as _td
+
             dt_fim = today
+            dt_ini = today - _td(days=6)
+    if dt_fim > today:
+        dt_fim = today
+    if dt_ini is not None and dt_fim is not None and dt_ini > dt_fim:
+        dt_ini, dt_fim = dt_fim, dt_ini
 
     return redact_sensitive(
         repos_mart.inventory_fuel_overview(
@@ -2268,6 +2278,57 @@ def team_employee_cost(
         page_size=page_size,
     )
     return redact_sensitive(payload, claims)
+
+
+@router.put("/team/employee-cost")
+def team_employee_cost_upsert(
+    body: Dict[str, Any],
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("team.custos")),
+):
+    """Grava Vale e Hora extra do funcionário na competência (YYYYMM)."""
+    from app.permissions import can_view_sensitive_financials
+
+    if not can_view_sensitive_financials(claims):
+        raise HTTPException(status_code=403, detail="Sem permissão para editar Vale/Hora extra")
+
+    ano_mes = body.get("ano_mes")
+    id_filial_body = body.get("id_filial")
+    id_funcionario = body.get("id_funcionario")
+    if ano_mes is None or id_filial_body is None or id_funcionario is None:
+        raise HTTPException(status_code=422, detail="ano_mes, id_filial e id_funcionario são obrigatórios")
+
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa,
+        id_filial_q=int(id_filial_body),
+        id_filiais_q=None,
+    )
+    # Escopo de filial da sessão deve cobrir o funcionário editado.
+    if filial is not None and not (isinstance(filial, int) and int(filial) == -1):
+        allowed = {int(filial)} if not isinstance(filial, (list, tuple, set)) else {
+            int(v) for v in filial if v is not None and int(v) != -1
+        }
+        if int(id_filial_body) not in allowed:
+            raise HTTPException(status_code=403, detail="Filial fora do escopo")
+
+    try:
+        result = repos_mart.team_employee_cost_upsert(
+            role,
+            tenant,
+            int(id_filial_body),
+            int(id_funcionario),
+            int(ano_mes),
+            body.get("vales", 0),
+            body.get("horas_extras", 0),
+            updated_by=str(claims.get("username") or claims.get("sub") or "")[:120] or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return redact_sensitive(result, claims)
 
 
 @router.get("/goals/overview")

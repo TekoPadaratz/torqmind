@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import inspect
+from datetime import date
 
 from app.permissions import SCREEN_REGISTRY, SENSITIVE_FIELD_NAMES
-from app.repos_mart_realtime import REALTIME_FUNCTIONS
+from app.repos_mart_realtime import (
+    REALTIME_FUNCTIONS,
+    _inventory_period_clamp,
+    estimate_tank_estoque_l,
+)
 from app.sales_semantics import SALE_STATUS
 from app.services import inventory_fuel as inv
 
@@ -35,6 +40,30 @@ def test_inventory_fuel_diferenca_formula():
     assert (leit_atu - leit_ant) - (0 - 100) == -1400.0
     # Subida por entrada → diferença ~0 se bate
     assert (12000.0 - 10000.0) - (2000.0 - 0.0) == 0.0
+
+
+def test_estimate_tank_estoque_applies_movements_like_afericao():
+    # LEITURA 10k, share 100%, saiu 1.5k no dia, entrou 0 → 8.5k
+    assert estimate_tank_estoque_l(10000.0, 20000.0, 1.0, 0.0, 1500.0) == 8500.0
+    # Entrada 2k no dia → sobe
+    assert estimate_tank_estoque_l(10000.0, 20000.0, 1.0, 2000.0, 0.0) == 12000.0
+    # Rateio 50% do produto entre 2 tanques
+    assert estimate_tank_estoque_l(10000.0, 15000.0, 0.5, 0.0, 1000.0) == 9500.0
+    # Não passa da capacidade nem fica negativo
+    assert estimate_tank_estoque_l(100.0, 500.0, 1.0, 0.0, 9999.0) == 0.0
+    assert estimate_tank_estoque_l(400.0, 500.0, 1.0, 9999.0, 0.0) == 500.0
+    # Caso VR01 gasolina: não zerar com saída do dia < leitura
+    assert estimate_tank_estoque_l(15631.0, 30210.0, 1.0, 0.0, 10932.731) == 4698.269
+
+
+def test_inventory_period_clamp_defaults_7_days_and_caps_today():
+    today = date(2026, 8, 6)
+    ini, fim = _inventory_period_clamp(None, None, today)
+    assert ini == date(2026, 7, 31)
+    assert fim == today
+    ini2, fim2 = _inventory_period_clamp(date(2026, 8, 1), date(2026, 8, 20), today)
+    assert fim2 == today
+    assert ini2 == date(2026, 8, 1)
 
 
 def test_comprovante_ativo_sql_requires_sale_status():

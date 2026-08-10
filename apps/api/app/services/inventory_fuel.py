@@ -2,11 +2,13 @@
 
 Fonte canônica (validada migração 100):
 - Capacidade / produto: stg.tanques (CAPACIDADE, ID_PRODUTOS)
-- Litros atuais: última LEITURA positiva em stg.movtanques (sensor)
+- Litros base: última LEITURA positiva em stg.movtanques (sensor / abertura)
+- Estoque exibido na API: LEITURA + rateio×(entradas − saídas) **do dia de negócio**
+  (mesma lógica de movimentação da aferição), via marts diárias CH
 - Custo: stg.produtos.CUSTOMEDIO
 - Nunca usar stg.estoque para combustível.
 
-Movimentação documentada (aferição):
+Movimentação documentada (aferição / estoque ao vivo):
 - Saídas: itens de comprovante de venda comercialmente ativos
   (não cancelado, situacao=1, CFOP saída; CFOP via shadow com fallback payload).
 - Entradas: NFe de compra (SAIDAS_ENTRADAS=1) com comprovante ativo

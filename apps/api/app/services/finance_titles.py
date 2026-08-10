@@ -60,18 +60,14 @@ def fetch_finance_titles(
                 coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
                 least(
                   coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0),
-                  greatest(
-                    coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0),
-                    coalesce(bp.total_baixa, 0)
-                  )
+                  coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
+                  + coalesce(bp.total_baixa, 0)
                 )::numeric(18,2) AS valor_pago,
                 greatest(
                   0,
                   coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)
-                  - greatest(
-                    coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0),
-                    coalesce(bp.total_baixa, 0)
-                  )
+                  - coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
+                  - coalesce(bp.total_baixa, 0)
                 )::numeric(18,2) AS valor_aberto,
                 coalesce(
                   (etl.safe_timestamp(cp.payload->>'DTAPGTO'))::date,
@@ -104,18 +100,14 @@ def fetch_finance_titles(
                 coalesce(etl.safe_numeric(cr.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
                 least(
                   coalesce(etl.safe_numeric(cr.payload->>'VALOR'), 0),
-                  greatest(
-                    coalesce(etl.safe_numeric(cr.payload->>'VLRPAGO'), 0),
-                    coalesce(br.total_baixa, 0)
-                  )
+                  coalesce(etl.safe_numeric(cr.payload->>'VLRPAGO'), 0)
+                  + coalesce(br.total_baixa, 0)
                 )::numeric(18,2) AS valor_pago,
                 greatest(
                   0,
                   coalesce(etl.safe_numeric(cr.payload->>'VALOR'), 0)
-                  - greatest(
-                    coalesce(etl.safe_numeric(cr.payload->>'VLRPAGO'), 0),
-                    coalesce(br.total_baixa, 0)
-                  )
+                  - coalesce(etl.safe_numeric(cr.payload->>'VLRPAGO'), 0)
+                  - coalesce(br.total_baixa, 0)
                 )::numeric(18,2) AS valor_aberto,
                 coalesce(
                   (etl.safe_timestamp(cr.payload->>'DTAPGTO'))::date,
@@ -145,7 +137,11 @@ def fetch_finance_titles(
             FROM src
             WHERE dt_vencimento IS NOT NULL
               AND (
-                valor_aberto > 0.01
+                -- Aberto: alinha ao Xpert "Não Pagas" com Data Final = hoje (DTACONTA).
+                (
+                  valor_aberto > 0.01
+                  AND (dt_lancamento IS NULL OR dt_lancamento <= (now() AT TIME ZONE 'America/Sao_Paulo')::date)
+                )
                 OR (
                   valor_aberto <= 0.01
                   AND dt_pagamento >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s

@@ -49,13 +49,24 @@ const MONTH_LABELS = [
 export default function SalesPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
+  // Top grupos como filtro do top produtos (multi-seleção por id_grupo).
+  const [selectedGrupoIds, setSelectedGrupoIds] = useState<number[]>([]);
+  const grupoFilterKey = selectedGrupoIds.length
+    ? [...selectedGrupoIds].sort((a, b) => a - b).join(",")
+    : "";
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
-      moduleKey: "sales_overview",
+      moduleKey: grupoFilterKey ? `sales_overview:g:${grupoFilterKey}` : "sales_overview",
       scope,
       errorMessage: "Falha ao carregar vendas",
-      buildRequestUrl: (currentScope) =>
-        `/bi/sales/overview?${buildScopeParams(currentScope).toString()}`,
+      keepPreviousData: true,
+      buildRequestUrl: (currentScope) => {
+        const params = buildScopeParams(currentScope);
+        for (const id of selectedGrupoIds) {
+          params.append("id_grupos", String(id));
+        }
+        return `/bi/sales/overview?${params.toString()}`;
+      },
     });
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
@@ -131,28 +142,18 @@ export default function SalesPage() {
     (row) => Number(row.atual || 0) > 0 || Number(row.anterior || 0) > 0,
   );
 
-  // Top grupos como filtro do top produtos (multi-selecao por nome do grupo).
-  const [selectedGrupos, setSelectedGrupos] = useState<Set<string>>(new Set());
-  const grupoNome = (x: any) => String(x?.grupo_nome ?? x?.nome_grupo ?? "");
-  const topProductsFiltered = useMemo(() => {
-    const all = data?.top_products || [];
-    if (!selectedGrupos.size) return all;
-    return all.filter((p: any) => selectedGrupos.has(grupoNome(p)));
-  }, [data, selectedGrupos]);
   const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
     data?.top_groups as Record<string, unknown>[] | undefined,
   );
+  // Servidor já filtra por id_grupos; search local só sobre o ranking retornado.
   const { query: productsQ, setQuery: setProductsQ, filteredRows: searchedProducts } = useGridSearch(
-    topProductsFiltered as Record<string, unknown>[],
+    (data?.top_products || []) as Record<string, unknown>[],
   );
-  const toggleGrupo = (nome: string) =>
-    setSelectedGrupos((prev) => {
-      const next = new Set(prev);
-      if (next.has(nome)) next.delete(nome);
-      else next.add(nome);
-      return next;
-    });
-
+  const toggleGrupo = (idGrupo: number) =>
+    setSelectedGrupoIds((prev) =>
+      prev.includes(idGrupo) ? prev.filter((id) => id !== idGrupo) : [...prev, idGrupo],
+    );
+  const productsDisplayLimit = selectedGrupoIds.length ? 50 : 15;
   if (floorMode) {
     const devolucoes = Number(
       data?.kpis?.devolucoes || commercial?.entradas || 0,
@@ -239,8 +240,17 @@ export default function SalesPage() {
                   {Number(commercial?.qtd_cancelamentos || 0)} comprovante(s)
                 </div>
               </div>
+              <div className="card kpi col-4">
+                <div className="label">Devoluções do período</div>
+                <div className="value">
+                  {loading ? "..." : formatCurrency(data?.kpis?.devolucoes)}
+                </div>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  {Number(commercial?.qtd_entradas || 0)} comprovante(s)
+                </div>
+              </div>
 
-              <div className="card col-8 chartCard">
+              <div className="card col-12 chartCard">
                 <h2>Evolução de vendas</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
                   Comparativo mensal fechado de janeiro a dezembro entre{" "}
@@ -291,17 +301,11 @@ export default function SalesPage() {
                 <div className="value">
                   {loading ? "..." : formatCurrency(data?.kpis?.margem)}
                 </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Calculada pelos itens dos comprovantes.
-                </div>
               </div>
               <div className="card kpi col-4">
                 <div className="label">Ticket Médio Produtos</div>
                 <div className="value">
                   {loading ? "..." : formatCurrency(data?.kpis?.ticket_medio)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Receita média por documento de venda (leitura por comprovante) no período.
                 </div>
               </div>
               <div className="card kpi col-4">
@@ -310,19 +314,15 @@ export default function SalesPage() {
                   {loading ? "..." : formatCurrency(data?.ticket_combustivel?.ticket_medio)}
                 </div>
                 <div className="muted" style={{ marginTop: 8 }}>
-                  Valor médio por abastecimento no console da bomba.
-                  {Number(data?.ticket_combustivel?.qtd_abastecimentos || 0) > 0
-                    ? ` ${Number(data?.ticket_combustivel?.qtd_abastecimentos || 0).toLocaleString("pt-BR")} abastecimento(s).`
-                    : ""}
-                </div>
-              </div>
-              <div className="card kpi col-4">
-                <div className="label">Devoluções do período</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(data?.kpis?.devolucoes)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Valor tratado como devolução na leitura por item.
+                  {!loading ? (
+                    <>
+                      {Number(data?.ticket_combustivel?.qtd_abastecimentos || 0).toLocaleString("pt-BR")}{" "}
+                      item(ns)
+                      {Number(data?.ticket_combustivel?.valor_total || 0) > 0
+                        ? ` · ${formatCurrency(data?.ticket_combustivel?.valor_total)} em combustível`
+                        : ""}
+                    </>
+                  ) : null}
                 </div>
               </div>
 
@@ -374,16 +374,16 @@ export default function SalesPage() {
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
                   <button
                     type="button"
-                    onClick={() => setSelectedGrupos(new Set())}
-                    aria-pressed={selectedGrupos.size === 0}
+                    onClick={() => setSelectedGrupoIds([])}
+                    aria-pressed={selectedGrupoIds.length === 0}
                     style={{
                       padding: "4px 12px",
                       borderRadius: 8,
                       fontSize: 12,
                       cursor: "pointer",
-                      border: `1px solid ${selectedGrupos.size === 0 ? "var(--accent-copper)" : "var(--border)"}`,
-                      background: selectedGrupos.size === 0 ? "var(--accent-copper-soft)" : "transparent",
-                      color: selectedGrupos.size === 0 ? "var(--text)" : "var(--muted)",
+                      border: `1px solid ${selectedGrupoIds.length === 0 ? "var(--accent-copper)" : "var(--border)"}`,
+                      background: selectedGrupoIds.length === 0 ? "var(--accent-copper-soft)" : "transparent",
+                      color: selectedGrupoIds.length === 0 ? "var(--text)" : "var(--muted)",
                     }}
                   >
                     Todos os grupos
@@ -391,27 +391,35 @@ export default function SalesPage() {
                   <GridSearchInput value={groupsQ} onChange={setGroupsQ} />
                 </div>
                 <div className="tableScroll">
-                  <table className="table compact">
+                  <table className="table compact" style={{ minWidth: "max-content", width: "100%" }}>
                     <thead>
                       <tr>
-                        <th>Grupo</th>
-                        <th>Fat.</th>
-                        <th>Margem</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Grupo</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Receita</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Margem</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredGroups.slice(0, 10).map((g: any) => {
-                        const nome = grupoNome(g);
-                        const on = selectedGrupos.has(nome);
+                        const idGrupo = Number(g.id_grupo_produto);
+                        const on = selectedGrupoIds.includes(idGrupo);
                         return (
                           <tr
                             key={g.grupo_key || `${g.id_grupo_produto}-${g.grupo_nome}`}
-                            onClick={() => toggleGrupo(nome)}
+                            onClick={() => toggleGrupo(idGrupo)}
                             style={{ cursor: "pointer", background: on ? "var(--accent-copper-soft)" : undefined }}
                           >
-                            <td style={on ? { color: "var(--accent-copper)", fontWeight: 700 } : undefined}>{g.grupo_nome}</td>
-                            <td>{formatCurrency(g.faturamento)}</td>
-                            <td>{formatCurrency(g.margem)}</td>
+                            <td
+                              style={{
+                                whiteSpace: "nowrap",
+                                color: on ? "var(--accent-copper)" : undefined,
+                                fontWeight: on ? 700 : undefined,
+                              }}
+                            >
+                              {g.grupo_nome}
+                            </td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(g.faturamento)}</td>
+                            <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(g.margem)}</td>
                           </tr>
                         );
                       })}
@@ -421,39 +429,39 @@ export default function SalesPage() {
               </div>
 
               <div className="card col-6">
-                <h2>Top produtos{selectedGrupos.size ? ` · ${selectedGrupos.size} grupo(s)` : ""}</h2>
+                <h2>Top produtos{selectedGrupoIds.length ? ` · ${selectedGrupoIds.length} grupo(s)` : ""}</h2>
                 <div style={{ margin: "8px 0" }}>
                   <GridSearchInput value={productsQ} onChange={setProductsQ} />
                 </div>
                 {!loading && !searchedProducts.length ? (
                   <EmptyState
-                    title={selectedGrupos.size ? "Sem produtos no(s) grupo(s) selecionado(s)." : "Sem produtos ranqueados."}
-                    detail={selectedGrupos.size ? "Nenhum produto do ranking pertence ao(s) grupo(s) escolhido(s). Ajuste a seleção." : "A leitura por item não trouxe produtos ativos para este período."}
+                    title={selectedGrupoIds.length ? "Sem produtos no(s) grupo(s) selecionado(s)." : "Sem produtos ranqueados."}
+                    detail={selectedGrupoIds.length ? "Nenhum produto vendido no(s) grupo(s) escolhido(s) neste período." : "A leitura por item não trouxe produtos ativos para este período."}
                   />
                 ) : null}
                 <div className="tableScroll">
-                  <table className="table compact">
+                  <table className="table compact" style={{ minWidth: "max-content", width: "100%" }}>
                     <thead>
                       <tr>
-                        <th>Produto</th>
-                        <th>Receita</th>
-                        <th>Custo</th>
-                        <th>Margem</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Produto</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Receita</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Custo</th>
+                        <th style={{ whiteSpace: "nowrap" }}>Margem</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {searchedProducts.slice(0, 15).map((p: any) => (
+                      {searchedProducts.slice(0, productsDisplayLimit).map((p: any) => (
                         <tr key={p.id_produto}>
-                          <td>
+                          <td style={{ whiteSpace: "nowrap" }}>
                             <div>{p.produto_nome}</div>
                             <div className="muted" style={{ marginTop: 4 }}>
                               {formatSalesQuantity(p.qtd, p)} · preço médio{" "}
                               {formatCurrency(p.valor_unitario_medio)}
                             </div>
                           </td>
-                          <td>{formatCurrency(p.faturamento)}</td>
-                          <td>{formatCurrency(p.custo_total)}</td>
-                          <td>{formatCurrency(p.margem)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.faturamento)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.custo_total)}</td>
+                          <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.margem)}</td>
                         </tr>
                       ))}
                     </tbody>

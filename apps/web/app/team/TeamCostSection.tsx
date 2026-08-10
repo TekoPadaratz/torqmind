@@ -6,7 +6,7 @@ import EmptyState from "../components/ui/EmptyState";
 import GridPager from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency } from "../lib/format";
-import { apiGet } from "../lib/api";
+import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 
@@ -46,7 +46,25 @@ function buildMesesDisponiveis(selected: number, monthsBack = 18): number[] {
   return Array.from(set).sort((a, b) => b - a);
 }
 
+function parseMoneyInput(raw: string): number {
+  const cleaned = String(raw || "")
+    .replace(/\s/g, "")
+    .replace(/R\$/gi, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+  const n = Number(cleaned);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+function moneyDraft(value: unknown): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 type EmployeeRow = {
+  id_filial?: number;
+  id_funcionario?: number;
   filial_nome?: string;
   nome?: string;
   funcao?: string;
@@ -57,7 +75,15 @@ type EmployeeRow = {
   rateio_overhead?: number;
   custo_total?: number;
   vendas?: number;
+  vales_manual?: boolean;
+  horas_extras_manual?: boolean;
 };
+
+type DraftPair = { vales: string; horas_extras: string };
+
+function rowKey(row: EmployeeRow): string {
+  return `${Number(row.id_filial || 0)}:${Number(row.id_funcionario || 0)}`;
+}
 
 export default function TeamCostSection() {
   const scope = useScopeQuery();
@@ -67,7 +93,10 @@ export default function TeamCostSection() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [data, setData] = useState<any>(null);
+  const [drafts, setDrafts] = useState<Record<string, DraftPair>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
 
   const mesesDisponiveis = useMemo(() => buildMesesDisponiveis(anoMes), [anoMes]);
 
@@ -85,6 +114,7 @@ export default function TeamCostSection() {
     const load = async () => {
       setLoading(true);
       setError("");
+      setSaveError("");
       try {
         const params = buildScopeParams(scope);
         params.set("ano_mes", String(anoMes));
@@ -95,6 +125,14 @@ export default function TeamCostSection() {
           signal: controller.signal,
         });
         setData(payload);
+        const next: Record<string, DraftPair> = {};
+        for (const row of (payload?.items || []) as EmployeeRow[]) {
+          next[rowKey(row)] = {
+            vales: moneyDraft(row.vales),
+            horas_extras: moneyDraft(row.horas_extras),
+          };
+        }
+        setDrafts(next);
       } catch (err: any) {
         if (err?.name === "AbortError" || err?.code === "ERR_CANCELED") return;
         setError(extractApiError(err, "Falha ao carregar custo da equipe"));
@@ -109,6 +147,88 @@ export default function TeamCostSection() {
   const summary = data?.summary || {};
   const items: EmployeeRow[] = data?.items || [];
   const totalPages = Math.max(1, Math.ceil(Number(data?.total || 0) / PAGE_SIZE) || 1);
+  const canEditMoney = items.some((r) => typeof r.vales === "number");
+
+  const updateDraft = (key: string, field: keyof DraftPair, raw: string) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        vales: prev[key]?.vales ?? "",
+        horas_extras: prev[key]?.horas_extras ?? "",
+        [field]: raw,
+      },
+    }));
+  };
+
+  const saveRow = async (row: EmployeeRow) => {
+    const key = rowKey(row);
+    const draft = drafts[key];
+    if (!draft || !row.id_filial || !row.id_funcionario) return;
+    if (typeof row.vales !== "number" || typeof row.horas_extras !== "number") return;
+
+    const vales = parseMoneyInput(draft.vales);
+    const horas_extras = parseMoneyInput(draft.horas_extras);
+    const unchanged =
+      Math.abs(vales - Number(row.vales || 0)) < 0.005 &&
+      Math.abs(horas_extras - Number(row.horas_extras || 0)) < 0.005;
+    if (unchanged) {
+      setDrafts((prev) => ({
+        ...prev,
+        [key]: { vales: moneyDraft(vales), horas_extras: moneyDraft(horas_extras) },
+      }));
+      return;
+    }
+
+    setSavingKey(key);
+    setSaveError("");
+    try {
+      const params = buildScopeParams(scope);
+      await apiPut(`/bi/team/employee-cost?${params.toString()}`, {
+        id_filial: Number(row.id_filial),
+        id_funcionario: Number(row.id_funcionario),
+        ano_mes: anoMes,
+        vales,
+        horas_extras,
+      });
+      const salario = Number(row.salario || 0);
+      const rateio = Number(row.rateio_overhead || 0);
+      const direto = Math.round((salario + vales + horas_extras) * 100) / 100;
+      setData((prev: any) => {
+        if (!prev?.items) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((it: EmployeeRow) =>
+            rowKey(it) === key
+              ? {
+                  ...it,
+                  vales,
+                  horas_extras,
+                  custo_direto: direto,
+                  custo_total: Math.round((direto + rateio) * 100) / 100,
+                  vales_manual: true,
+                  horas_extras_manual: true,
+                }
+              : it
+          ),
+        };
+      });
+      setDrafts((prev) => ({
+        ...prev,
+        [key]: { vales: moneyDraft(vales), horas_extras: moneyDraft(horas_extras) },
+      }));
+    } catch (err: any) {
+      setSaveError(extractApiError(err, "Falha ao salvar Vale/Hora extra"));
+      setDrafts((prev) => ({
+        ...prev,
+        [key]: {
+          vales: moneyDraft(row.vales),
+          horas_extras: moneyDraft(row.horas_extras),
+        },
+      }));
+    } finally {
+      setSavingKey(null);
+    }
+  };
 
   return (
     <div className="card col-12" style={{ marginTop: 12 }}>
@@ -169,6 +289,7 @@ export default function TeamCostSection() {
       </div>
 
       {error ? <div className="errorCard" style={{ marginTop: 12 }}>{error}</div> : null}
+      {saveError ? <div className="errorCard" style={{ marginTop: 12 }}>{saveError}</div> : null}
 
       <div style={{ marginTop: 16 }}>
         {!loading && items.length === 0 ? (
@@ -194,20 +315,63 @@ export default function TeamCostSection() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((row, idx) => (
-                  <tr key={`${row.nome}-${idx}`}>
-                    <td>{row.filial_nome || "—"}</td>
-                    <td style={{ fontWeight: 600 }}>{row.nome || "—"}</td>
-                    <td>{row.funcao || "—"}</td>
-                    <td>{formatCurrency(row.salario)}</td>
-                    <td>{formatCurrency(row.vales)}</td>
-                    <td>{formatCurrency(row.horas_extras)}</td>
-                    <td>{formatCurrency(row.custo_direto)}</td>
-                    <td>{formatCurrency(row.rateio_overhead)}</td>
-                    <td style={{ fontWeight: 700 }}>{formatCurrency(row.custo_total)}</td>
-                    <td>{formatCurrency(row.vendas)}</td>
-                  </tr>
-                ))}
+                {items.map((row, idx) => {
+                  const key = rowKey(row);
+                  const draft = drafts[key];
+                  const editable =
+                    canEditMoney &&
+                    typeof row.vales === "number" &&
+                    typeof row.horas_extras === "number" &&
+                    Boolean(row.id_filial) &&
+                    Boolean(row.id_funcionario);
+                  const busy = savingKey === key;
+                  return (
+                    <tr key={`${key}-${idx}`}>
+                      <td>{row.filial_nome || "—"}</td>
+                      <td style={{ fontWeight: 600 }}>{row.nome || "—"}</td>
+                      <td>{row.funcao || "—"}</td>
+                      <td>{formatCurrency(row.salario)}</td>
+                      <td>
+                        {editable ? (
+                          <input
+                            className="input"
+                            type="text"
+                            inputMode="decimal"
+                            aria-label={`Vale de ${row.nome || "funcionário"}`}
+                            value={draft?.vales ?? ""}
+                            disabled={busy}
+                            onChange={(e) => updateDraft(key, "vales", e.target.value)}
+                            onBlur={() => void saveRow(row)}
+                            style={{ width: 110, textAlign: "right" }}
+                          />
+                        ) : (
+                          formatCurrency(row.vales)
+                        )}
+                      </td>
+                      <td>
+                        {editable ? (
+                          <input
+                            className="input"
+                            type="text"
+                            inputMode="decimal"
+                            aria-label={`Hora extra de ${row.nome || "funcionário"}`}
+                            value={draft?.horas_extras ?? ""}
+                            disabled={busy}
+                            onChange={(e) => updateDraft(key, "horas_extras", e.target.value)}
+                            onBlur={() => void saveRow(row)}
+                            style={{ width: 110, textAlign: "right" }}
+                          />
+                        ) : (
+                          formatCurrency(row.horas_extras)
+                        )}
+                      </td>
+                      <td>{formatCurrency(row.custo_direto)}</td>
+                      <td>{formatCurrency(row.rateio_overhead)}</td>
+                      <td style={{ fontWeight: 700 }}>{formatCurrency(row.custo_total)}</td>
+                      <td>{formatCurrency(row.vendas)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

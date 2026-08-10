@@ -413,7 +413,7 @@ export default function FuelLossPage() {
                       <th>Turno</th>
                       <th>Litros</th>
                       <th>Operador</th>
-                      <th>Liberador</th>
+                      <th>Autorizado por</th>
                     </tr>
                   </thead>
                   <tbody>

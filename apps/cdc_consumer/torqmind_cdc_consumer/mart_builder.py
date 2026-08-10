@@ -1799,25 +1799,26 @@ class MartBuilder:
         sql = f"""
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
         WITH baixa_receber AS (
-            SELECT id_empresa, id_filial,
+            SELECT id_empresa, id_filial, id_db,
                    toInt32OrZero(JSONExtractString(payload, 'ID_CONTASRECEBER')) AS id_conta,
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contasreceberbaixa FINAL
             WHERE is_deleted = 0 {empresa_filter} {filial_filter}
-            GROUP BY id_empresa, id_filial, id_conta
+            GROUP BY id_empresa, id_filial, id_db, id_conta
         ),
         baixa_pagar AS (
-            SELECT id_empresa, id_filial,
+            SELECT id_empresa, id_filial, id_db,
                    toInt32OrZero(JSONExtractString(payload, 'ID_CONTASPAGAR')) AS id_conta,
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contaspagarbaixa FINAL
             WHERE is_deleted = 0 {empresa_filter} {filial_filter}
-            GROUP BY id_empresa, id_filial, id_conta
+            GROUP BY id_empresa, id_filial, id_db, id_conta
         ),
         src AS (
             SELECT id_empresa, id_filial, tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'))) AS data_pagamento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTACONTA'))) AS data_conta,
                 toDecimal64OrZero(JSONExtractString(payload, 'VALOR'), 2) AS valor,
                 toDecimal64OrZero(JSONExtractString(payload, 'VLRPAGO'), 2) AS valor_pago
             FROM {self.current_db}.stg_financeiro FINAL WHERE is_deleted = 0 {empresa_filter} {filial_filter}
@@ -1825,28 +1826,35 @@ class MartBuilder:
             SELECT cp.id_empresa, cp.id_filial, 0 AS tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTAPGTO'))) AS data_pagamento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cp.payload, 'DTACONTA'))) AS data_conta,
                 toDecimal64OrZero(JSONExtractString(cp.payload, 'VALOR'), 2) AS valor,
+                -- Fonte Xpert: VALOR = VLRPAGO + Σ VALORBAIXA (sem overlap) → soma, não GREATEST
                 greatest(
-                    toDecimal64OrZero(JSONExtractString(cp.payload, 'VLRPAGO'), 2),
-                    coalesce(bp.total_baixa, toDecimal64(0, 2))
+                    toDecimal64(0, 2),
+                    toDecimal64OrZero(JSONExtractString(cp.payload, 'VLRPAGO'), 2)
+                    + coalesce(bp.total_baixa, toDecimal64(0, 2))
                 ) AS valor_pago
             FROM {self.current_db}.stg_contaspagar AS cp FINAL
             LEFT JOIN baixa_pagar AS bp
                 ON cp.id_empresa = bp.id_empresa AND cp.id_filial = bp.id_filial
+                AND cp.id_db = bp.id_db
                 AND cp.id_contaspagar = bp.id_conta
             WHERE cp.is_deleted = 0 {cp_filter}
             UNION ALL
             SELECT cr.id_empresa, cr.id_filial, 1 AS tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAVCTO'))) AS vencimento,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAPGTO'))) AS data_pagamento,
+                toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTACONTA'))) AS data_conta,
                 toDecimal64OrZero(JSONExtractString(cr.payload, 'VALOR'), 2) AS valor,
                 greatest(
-                    toDecimal64OrZero(JSONExtractString(cr.payload, 'VLRPAGO'), 2),
-                    coalesce(br.total_baixa, toDecimal64(0, 2))
+                    toDecimal64(0, 2),
+                    toDecimal64OrZero(JSONExtractString(cr.payload, 'VLRPAGO'), 2)
+                    + coalesce(br.total_baixa, toDecimal64(0, 2))
                 ) AS valor_pago
             FROM {self.current_db}.stg_contasreceber AS cr FINAL
             LEFT JOIN baixa_receber AS br
                 ON cr.id_empresa = br.id_empresa AND cr.id_filial = br.id_filial
+                AND cr.id_db = br.id_db
                 AND cr.id_contasreceber = br.id_conta
             WHERE cr.is_deleted = 0 {cr_filter}
         )
@@ -1855,9 +1863,10 @@ class MartBuilder:
                     vencimento <= today() + 7, 'vence_7d', vencimento <= today() + 30, 'vence_30d', 'futuro') AS faixa,
             toUInt32(count()) AS qtd_titulos,
             sum(valor) AS valor_total, sum(valor_pago) AS valor_pago_total,
-            sum(valor) - sum(valor_pago) AS valor_em_aberto,
+            sum(greatest(valor - valor_pago, toDecimal64(0, 2))) AS valor_em_aberto,
             now64(6) AS published_at
         FROM src
+        WHERE data_conta IS NULL OR data_conta <= today()
         GROUP BY id_empresa, id_filial, tipo_titulo, faixa
         """
         rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql, id_empresa, id_filial)

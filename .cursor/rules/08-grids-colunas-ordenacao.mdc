@@ -66,10 +66,12 @@ Todo grid de produto/platform com linhas em tela deve expor **um** campo de pesq
 
 ## 5) Labels limpos (padrão ouro)
 
-Na UI do grid: **título + resultado**. Proibido:
+Na UI (grids **e** cards/KPIs): **título + resultado**. Proibido:
 
 - Disclaimer / watermark / “fonte mart/CH/STG/SQL”
+- Fórmula, “como calculamos”, exclusão técnica, jargão de pipeline
 - Explicações técnicas longas sob o título
-- Texto de debug ou jargão de pipeline
+- Texto de debug
 
-Empty state curto e operacional. Regras de negócio ficam na documentação, não no card.
+Empty state curto e operacional. Regras de negócio ficam na documentação/docstring, não no card.
+Contrato: `.cursor/rules/04-frontend-nextjs.mdc` (Copy na UI) e `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10.

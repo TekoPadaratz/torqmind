@@ -35,11 +35,17 @@ def fetch_afericoes(
               a.id_afericao,
               coalesce(nullif(a.payload->>'ID_BICOS','')::int, 0) AS id_bico,
               coalesce(nullif(a.payload->>'ID_TURNOS','')::int, 0) AS id_turno,
-              coalesce(
-                nullif(t.payload->>'TURNO','')::int,
-                nullif(t.payload->>'NROTURNO','')::int,
-                0
-              ) AS turno_operacional,
+              CASE
+                WHEN t.id_turno IS NULL THEN -1  -- ID_TURNOS órfão / sem cadastro
+                ELSE coalesce(
+                  nullif(t.payload->>'TURNO','')::int,
+                  nullif(t.payload->>'NROTURNO','')::int,
+                  nullif(t.payload->>'NO_TURNO','')::int,
+                  nullif(t.payload->>'NUMTURNO','')::int,
+                  nullif(t.payload->>'NRO_TURNO','')::int,
+                  0  -- cadastro existe com TURNO=0 → caixa geral
+                )
+              END AS turno_operacional,
               coalesce(
                 nullif(b.payload->>'DESCRICAO',''),
                 nullif(b.payload->>'NOME',''),
@@ -68,14 +74,19 @@ def fetch_afericoes(
               coalesce(nullif(a.payload->>'ID_USUARIOS','')::int, 0) AS id_usuario,
               coalesce(nullif(a.payload->>'ID_USUARIOS_LIB','')::int, 0) AS id_usuario_lib,
               left(coalesce(
+                nullif(u.payload->>'NOMEUSUARIOS',''),
                 nullif(u.payload->>'NOME',''),
                 nullif(u.payload->>'LOGIN',''),
+                -- Só cai em funcionário se o usuário apontar ID_FUNCIONARIOS (sem colisão de PK).
+                nullif(f.payload->>'NOMEFUNCIONARIO',''),
                 nullif(f.payload->>'NOME',''),
                 ''
               ), 80) AS operador_nome,
               left(coalesce(
+                nullif(ul.payload->>'NOMEUSUARIOS',''),
                 nullif(ul.payload->>'NOME',''),
                 nullif(ul.payload->>'LOGIN',''),
+                nullif(fl.payload->>'NOMEFUNCIONARIO',''),
                 nullif(fl.payload->>'NOME',''),
                 ''
               ), 80) AS liberador_nome
@@ -119,11 +130,19 @@ def fetch_afericoes(
             LEFT JOIN stg.funcionarios f
               ON f.id_empresa = a.id_empresa
              AND f.id_filial = a.id_filial
-             AND f.id_funcionario = coalesce(nullif(a.payload->>'ID_USUARIOS','')::int, 0)
+             AND f.id_funcionario = coalesce(
+                   nullif(u.payload->>'ID_FUNCIONARIOS','')::int,
+                   nullif(u.payload->>'ID_FUNCIONARIO','')::int,
+                   0
+                 )
             LEFT JOIN stg.funcionarios fl
               ON fl.id_empresa = a.id_empresa
              AND fl.id_filial = a.id_filial
-             AND fl.id_funcionario = coalesce(nullif(a.payload->>'ID_USUARIOS_LIB','')::int, 0)
+             AND fl.id_funcionario = coalesce(
+                   nullif(ul.payload->>'ID_FUNCIONARIOS','')::int,
+                   nullif(ul.payload->>'ID_FUNCIONARIO','')::int,
+                   0
+                 )
             WHERE a.id_empresa = %s
               AND coalesce(
                     (a.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date,
@@ -154,7 +173,7 @@ def publish_afericoes(
                 "id_afericao": int(r["id_afericao"]),
                 "id_bico": int(r.get("id_bico") or 0),
                 "id_turno": int(r.get("id_turno") or 0),
-                "turno_operacional": int(r.get("turno_operacional") or 0),
+                "turno_operacional": int(r.get("turno_operacional") if r.get("turno_operacional") is not None else -1),
                 "bico_label": str(r.get("bico_label") or ""),
                 "produto_nome": str(r.get("produto_nome") or ""),
                 "qtde_l": float(r.get("qtde_l") or 0),

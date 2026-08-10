@@ -5,7 +5,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
-import { buildUserLabel, formatCurrency } from "../lib/format";
+import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
@@ -15,6 +15,33 @@ import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
+
+function isoTodayLocal(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysIso(iso: string, delta: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + delta);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+function clampPeriod(ini: string, fim: string, today: string): { ini: string; fim: string } {
+  let nextIni = ini;
+  let nextFim = fim > today ? today : fim;
+  if (nextIni > nextFim) {
+    nextIni = nextFim;
+  }
+  return { ini: nextIni, fim: nextFim };
+}
 
 type InventoryItem = {
   id_tanque?: number;
@@ -193,18 +220,25 @@ function BadgeValue({ children, tone = "accent" }: { children: ReactNode; tone?:
 export default function InventoryPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
+  const todayIso = useMemo(() => isoTodayLocal(), []);
   const [diasAlvo, setDiasAlvo] = useState(7);
+  const [dtIni, setDtIni] = useState(() => addDaysIso(isoTodayLocal(), -6));
+  const [dtFim, setDtFim] = useState(() => isoTodayLocal());
   const session = readCachedSession();
   const allowed = canAccessScreenKey(session, "inventory");
 
+  const periodKey = `${dtIni}:${dtFim}`;
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<InventoryPayload>({
-      moduleKey: `inventory_fuel:${diasAlvo}`,
+      moduleKey: `inventory_fuel:${diasAlvo}:${periodKey}`,
       scope,
       errorMessage: "Falha ao carregar estoque de combustíveis",
       buildRequestUrl: (currentScope) => {
         if (!allowed) return null;
         const params = buildScopeParams(currentScope);
+        const period = clampPeriod(dtIni, dtFim, todayIso);
+        params.set("dt_ini", period.ini);
+        params.set("dt_fim", period.fim);
         params.set("dias_alvo", String(diasAlvo));
         return `/bi/estoque/combustivel?${params.toString()}`;
       },
@@ -229,6 +263,21 @@ export default function InventoryPage() {
     claims?.role === "MASTER" ||
     claims?.role === "OWNER";
 
+  const mediaIniLabel = formatDateOnly(data?.dt_ini || dtIni);
+  const mediaFimLabel = formatDateOnly(data?.dt_fim || dtFim);
+  const diasPeriodo = Number(data?.dias_periodo || 0);
+
+  const applyIni = (value: string) => {
+    const period = clampPeriod(value, dtFim, todayIso);
+    setDtIni(period.ini);
+    setDtFim(period.fim);
+  };
+  const applyFim = (value: string) => {
+    const period = clampPeriod(dtIni, value, todayIso);
+    setDtIni(period.ini);
+    setDtFim(period.fim);
+  };
+
   if (!allowed && session) {
     return (
       <div>
@@ -251,24 +300,48 @@ export default function InventoryPage() {
             <div>
               <div className="sectionEyebrow">Comercial</div>
               <h1>Estoque de Combustíveis</h1>
-              <p className="muted" style={{ marginTop: 4, maxWidth: 720 }}>
-                Sensor do tanque e média diária para orientar a reposição.
+              <p className="muted" style={{ marginTop: 4 }}>
+                Média diária: de {mediaIniLabel} a {mediaFimLabel}
+                {diasPeriodo > 0 ? ` (${diasPeriodo} dias)` : ""}.
               </p>
             </div>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 120 }}>
-              <span className="sectionEyebrow">Dias alvo</span>
-              <input
-                type="number"
-                min={1}
-                max={90}
-                value={diasAlvo}
-                onChange={(e) => {
-                  const n = Number(e.target.value);
-                  if (Number.isFinite(n)) setDiasAlvo(Math.max(1, Math.min(90, Math.round(n))));
-                }}
-                style={{ width: 100 }}
-              />
-            </label>
+            <div className="anpFilterLeft" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span className="anpConfigLabel">Início</span>
+                <input
+                  type="date"
+                  value={dtIni}
+                  max={dtFim}
+                  onChange={(e) => applyIni(e.target.value)}
+                  aria-label="Data inicial da média"
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <span className="anpConfigLabel">Fim</span>
+                <input
+                  type="date"
+                  value={dtFim}
+                  max={todayIso}
+                  min={dtIni}
+                  onChange={(e) => applyFim(e.target.value)}
+                  aria-label="Data final da média"
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 100 }}>
+                <span className="anpConfigLabel">Dias alvo</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={diasAlvo}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n)) setDiasAlvo(Math.max(1, Math.min(90, Math.round(n))));
+                  }}
+                  style={{ width: 100 }}
+                />
+              </label>
+            </div>
           </header>
 
           {error ? <div className="card errorCard col-12">{error}</div> : null}

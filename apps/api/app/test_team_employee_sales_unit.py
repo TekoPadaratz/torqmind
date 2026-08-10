@@ -36,6 +36,9 @@ class TestTeamEmployeeSalesByFuncionario(unittest.TestCase):
 
         with patch.object(rt, "query_dict", side_effect=fake_query_dict), patch.object(
             rt, "query_scalar", return_value=1
+        ), patch(
+            "app.services.employee_cost_manual.fetch_employee_cost_manual",
+            return_value={},
         ):
             out = rt.team_employee_cost_overview(
                 role="platform_master",
@@ -79,6 +82,9 @@ class TestTeamEmployeeSalesByFuncionario(unittest.TestCase):
 
         with patch.object(rt, "query_dict", side_effect=fake_query_dict), patch.object(
             rt, "query_scalar", return_value=1
+        ), patch(
+            "app.services.employee_cost_manual.fetch_employee_cost_manual",
+            return_value={},
         ):
             out = rt.team_employee_cost_overview(
                 role="platform_master",
@@ -88,6 +94,49 @@ class TestTeamEmployeeSalesByFuncionario(unittest.TestCase):
                 mes=7,
             )
         self.assertEqual(out["items"][0]["vendas"], 285183.41)
+
+    def test_manual_vales_he_overlay_recalculates_custo(self):
+        def fake_query_dict(sql, parameters=None):
+            if "mart_team_employees_rt" in sql:
+                return [
+                    {
+                        "id_filial": 1,
+                        "filial_nome": "Posto A",
+                        "id_funcionario": 10,
+                        "id_usuario": 1,
+                        "nome": "João",
+                        "funcao": "Frentista",
+                        "salario_bruto": 2000,
+                        "salario_total": 2000,
+                        "vales": 0,
+                        "horas_extras": 0,
+                    }
+                ]
+            if "stg_itenscomprovantes_slim" in sql:
+                return []
+            if "mart_finance_despesas_rt" in sql:
+                return [{"total_pessoal": 0, "total_overhead": 100}]
+            return []
+
+        with patch.object(rt, "query_dict", side_effect=fake_query_dict), patch.object(
+            rt, "query_scalar", return_value=1
+        ), patch(
+            "app.services.employee_cost_manual.fetch_employee_cost_manual",
+            return_value={(1, 10): {"vales": 500.0, "horas_extras": 800.0}},
+        ):
+            out = rt.team_employee_cost_overview(
+                role="platform_master",
+                id_empresa=1,
+                id_filial=1,
+                ano=2026,
+                mes=8,
+            )
+        item = out["items"][0]
+        self.assertEqual(item["vales"], 500.0)
+        self.assertEqual(item["horas_extras"], 800.0)
+        self.assertTrue(item["vales_manual"])
+        self.assertEqual(item["custo_direto"], 3300.0)
+        self.assertEqual(item["custo_total"], 3400.0)
 
 
 if __name__ == "__main__":

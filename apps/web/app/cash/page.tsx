@@ -273,7 +273,10 @@ export default function CashPage() {
                             <td>{item.filial_label}</td>
                             <td>
                               {item.turno_label ||
-                                formatTurnoLabel(item.id_turno, item.turno_label)}
+                                formatTurnoLabel(
+                                  item.turno_operacional ?? item.turno_numero,
+                                  item.turno_label
+                                )}
                             </td>
                             <td>{formatTurnoPeriod(item.abertura_ts, item.fechamento_ts)}</td>
                             <td>{item.usuario_label || item.nome_operador || "Operador sem cadastro"}</td>
@@ -333,7 +336,7 @@ export default function CashPage() {
                             <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
                               <td>{item.filial_label}</td>
                               <td>{formatNfeDateTime(item)}</td>
-                              <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
+                              <td>{formatTurnoLabel(item.turno_operacional ?? item.turno_numero, item.turno_label)}</td>
                               <td>{item.usuario_label}</td>
                               <td>{item.numero_nfe || "-"}</td>
                               <td>{formatCurrency(item.valor_comprovante)}</td>
@@ -391,7 +394,7 @@ export default function CashPage() {
                         {filteredCaixas.map((item: any) => (
                           <tr key={`${item.id_filial}-${item.id_turno}`}>
                             <td>{item.filial_label}</td>
-                            <td>{formatTurnoLabel(item.id_turno, item.turno_label)}</td>
+                            <td>{formatTurnoLabel(item.turno_operacional ?? item.turno_numero, item.turno_label)}</td>
                             <td>{item.usuario_label}</td>
                             <td>{formatHoursLabel(item.horas_aberto)}</td>
                             <td>{formatHoursLabel(item.horas_sem_movimento)}</td>

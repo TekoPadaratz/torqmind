@@ -54,6 +54,7 @@ _POSTGRES_OWNED_FUNCTIONS = {
     "solvencia_manual_upsert",
     "get_filial_params",
     "upsert_filial_params",
+    "team_employee_cost_upsert",
 }
 
 # Analytical functions that remain on the legacy path until a mart exists with

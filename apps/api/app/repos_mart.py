@@ -2262,65 +2262,124 @@ def sales_top_products(role: str, id_empresa: int, id_filial: Optional[int], dt_
 
 
 def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int], dt_ini: date, dt_fim: date, **kwargs: Any) -> Dict[str, Any]:
-    """Ticket medio de COMBUSTIVEL — lê ClickHouse ``mart_ticket_combustivel_diaria``."""
+    """Ticket medio de COMBUSTIVEL — mesma receita do Top grupos (fallback PG/CH).
+
+    Preferir ``repos_mart_realtime.sales_ticket_combustivel`` (sales_groups_rt).
+    Este path só roda se o facade realtime não estiver ativo.
+    """
     from app.db_clickhouse import query_dict
 
     branch_ids = None
-    if id_filial is not None and int(id_filial) != -1:
+    if id_filial is not None and not (isinstance(id_filial, int) and int(id_filial) == -1):
         branch_ids = [int(id_filial)] if not isinstance(id_filial, (list, tuple, set)) else [
             int(v) for v in id_filial if v is not None and int(v) != -1
         ]
+    from_key = int(dt_ini.strftime("%Y%m%d"))
+    to_key = int(dt_fim.strftime("%Y%m%d"))
     params: Dict[str, Any] = {
         "id_empresa": int(id_empresa),
-        "dt_ini": dt_ini.isoformat(),
-        "dt_fim": dt_fim.isoformat(),
+        "from_key": from_key,
+        "to_key": to_key,
     }
     filial_sql = ""
     if branch_ids:
         if len(branch_ids) == 1:
-            filial_sql = "AND id_filial = %(id_filial)s"
+            filial_sql = "AND id_filial = {id_filial:Int32}"
             params["id_filial"] = branch_ids[0]
         else:
-            filial_sql = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+            filial_sql = "AND id_filial IN ({id_filiais:Array(Int32)})"
+            params["id_filiais"] = branch_ids
+    combustivel = """(
+      (
+        positionCaseInsensitiveUTF8(nome_grupo, 'COMBUST') > 0
+        OR upperUTF8(nome_grupo) IN ('GASOLINA', 'ETANOL', 'DIESEL', 'GNV')
+      )
+      AND positionCaseInsensitiveUTF8(nome_grupo, 'FILTRO') = 0
+      AND positionCaseInsensitiveUTF8(nome_grupo, 'OLEO') = 0
+      AND positionCaseInsensitiveUTF8(nome_grupo, 'LUBR') = 0
+      AND positionCaseInsensitiveUTF8(nome_grupo, 'ADITIV') = 0
+      AND positionCaseInsensitiveUTF8(nome_grupo, 'GRAXA') = 0
+      AND positionCaseInsensitiveUTF8(nome_grupo, 'ARLA') = 0
+    )"""
     try:
         rows = query_dict(
             f"""
             SELECT
-              sum(valor_total) AS valor_total,
-              sum(qtd_abastecimentos) AS qtd_abastecimentos,
-              sum(litros_total) AS litros_total
-            FROM torqmind_mart_rt.mart_ticket_combustivel_diaria FINAL
-            WHERE id_empresa = %(id_empresa)s
-              AND data_ref BETWEEN toDate(%(dt_ini)s) AND toDate(%(dt_fim)s)
+              sum(faturamento) AS valor_sum,
+              sum(qtd_itens) AS qtd_sum
+            FROM torqmind_mart_rt.sales_groups_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND data_key >= {{from_key:Int32}} AND data_key <= {{to_key:Int32}}
               {filial_sql}
+              AND {combustivel}
             """,
             params,
         )
         row = rows[0] if rows else {}
-        if float(row.get("qtd_abastecimentos") or 0) > 0 or float(row.get("valor_total") or 0) > 0:
-            valor = float(row.get("valor_total") or 0)
-            qtd = int(row.get("qtd_abastecimentos") or 0)
-            litros = float(row.get("litros_total") or 0)
+        valor = float(row.get("valor_sum") or 0)
+        qtd = int(row.get("qtd_sum") or 0)
+        litros_rows = query_dict(
+            f"""
+            SELECT sum(qtd) AS litros_sum
+            FROM torqmind_mart_rt.sales_products_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND data_key >= {{from_key:Int32}} AND data_key <= {{to_key:Int32}}
+              {filial_sql}
+              AND {combustivel}
+            """,
+            params,
+        )
+        litros = float((litros_rows[0] if litros_rows else {}).get("litros_sum") or 0)
+        if qtd > 0 or valor > 0:
             return {
                 "ticket_medio": round(valor / qtd, 2) if qtd else 0.0,
                 "valor_total": round(valor, 2),
                 "qtd_abastecimentos": qtd,
                 "litros_total": round(litros, 3),
                 "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
-                "source": "clickhouse",
+                "source": "sales_groups_rt",
             }
     except Exception as exc:
         logging.getLogger(__name__).warning("sales_ticket_combustivel CH failed: %s", str(exc)[:200])
 
-    # Fallback legado PG (só se CH vazio)
-    where_filial, branch_params = _branch_scope_clause("id_filial", id_filial)
+    # Fallback PG: agrega itens comerciais do grupo combustíveis (não console).
+    where_filial, branch_params = _branch_scope_clause("c.id_filial", id_filial)
     sql = f"""
       SELECT
-        COALESCE(SUM(valor_total), 0)::numeric(18,2) AS valor_total,
-        COALESCE(SUM(qtd_abastecimentos), 0)::int AS qtd_abastecimentos,
-        COALESCE(SUM(litros_total), 0)::numeric(18,3) AS litros_total
-      FROM mart.ticket_combustivel_diaria
-      WHERE id_empresa = %s AND data_ref BETWEEN %s AND %s
+        COALESCE(SUM(COALESCE(i.total_shadow, (i.payload->>'VLRTOTALITEM')::numeric)), 0)::numeric(18,2) AS valor_total,
+        COUNT(*)::int AS qtd_abastecimentos,
+        COALESCE(SUM(COALESCE(i.qtd_shadow, (i.payload->>'QTDE')::numeric)), 0)::numeric(18,3) AS litros_total
+      FROM stg.itenscomprovantes i
+      JOIN stg.comprovantes c
+        ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+       AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+      LEFT JOIN stg.produtos p
+        ON p.id_empresa = i.id_empresa
+       AND p.id_filial = i.id_filial
+       AND p.id_produto = COALESCE(
+             i.id_produto_shadow,
+             NULLIF((i.payload->>'ID_PRODUTOS'), '')::int,
+             NULLIF((i.payload->>'ID_PRODUTO'), '')::int
+           )
+      LEFT JOIN stg.grupoprodutos g
+        ON g.id_empresa = i.id_empresa
+       AND g.id_filial = i.id_filial
+       AND g.id_grupoprodutos = COALESCE(
+             i.id_grupo_produto_shadow,
+             NULLIF((p.payload->>'ID_GRUPOPRODUTOS'), '')::int,
+             NULLIF((i.payload->>'ID_GRUPOPRODUTOS'), '')::int
+           )
+      WHERE i.id_empresa = %s
+        AND NULLIF(LEFT(c.payload->>'DATA', 10), '')::date BETWEEN %s AND %s
+        AND COALESCE((i.payload->>'SITUACAO')::int, 0) <> 3
+        AND COALESCE((c.payload->>'SITUACAO')::int, 0) <> 3
+        AND COALESCE(i.cfop_shadow, NULLIF((i.payload->>'CFOP'), '')::int, 0) > 5000
+        AND (
+          UPPER(COALESCE(g.payload->>'NOMEGRUPOPRODUTOS', '')) LIKE '%%COMBUST%%'
+          OR UPPER(COALESCE(g.payload->>'NOMEGRUPOPRODUTOS', '')) IN ('GASOLINA','ETANOL','DIESEL','GNV')
+        )
+        AND UPPER(COALESCE(g.payload->>'NOMEGRUPOPRODUTOS', '')) NOT LIKE '%%LUBR%%'
+        AND UPPER(COALESCE(g.payload->>'NOMEGRUPOPRODUTOS', '')) NOT LIKE '%%OLEO%%'
         {where_filial}
     """
     params_pg = [id_empresa, dt_ini, dt_fim] + branch_params
@@ -2335,7 +2394,7 @@ def sales_ticket_combustivel(role: str, id_empresa: int, id_filial: Optional[int
         "qtd_abastecimentos": qtd,
         "litros_total": round(litros, 3),
         "preco_medio_litro": round(valor / litros, 3) if litros else 0.0,
-        "source": "postgres",
+        "source": "postgres_itens",
     }
 
 
@@ -10492,3 +10551,29 @@ def fraud_credito_funcionario(
             "(pode gastar em qualquer posto). Documento = NF-e/NFC-e."
         ),
     }
+
+
+def team_employee_cost_upsert(
+    role: str,
+    id_empresa: int,
+    id_filial: int,
+    id_funcionario: int,
+    ano_mes: int,
+    vales: Any,
+    horas_extras: Any,
+    updated_by: Optional[str] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Persiste Vale e Hora extra manuais do mês (app.employee_cost_manual)."""
+    from app.services.employee_cost_manual import upsert_employee_cost_manual
+
+    return upsert_employee_cost_manual(
+        role,
+        id_empresa,
+        id_filial,
+        id_funcionario,
+        ano_mes,
+        vales,
+        horas_extras,
+        updated_by=updated_by,
+    )
