@@ -14,12 +14,32 @@ def _default_serializer(obj):
     if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, Decimal):
+        if obj == obj.to_integral_value():
+            return int(obj)
         return float(obj)
     return str(obj)
 
 
+def _normalize_row_for_json(row: Dict) -> Dict:
+    """Evita IDs floatish no payload (282384.0), que quebram etl.safe_int/CH joins."""
+    out: Dict = {}
+    for key, value in row.items():
+        if isinstance(value, bool) or value is None:
+            out[key] = value
+        elif isinstance(value, float) and value.is_integer():
+            out[key] = int(value)
+        elif isinstance(value, Decimal) and value == value.to_integral_value():
+            out[key] = int(value)
+        else:
+            out[key] = value
+    return out
+
+
 def to_ndjson_lines(rows: Iterable[Dict]) -> List[str]:
-    return [json.dumps(row, ensure_ascii=False, default=_default_serializer) for row in rows]
+    return [
+        json.dumps(_normalize_row_for_json(row), ensure_ascii=False, default=_default_serializer)
+        for row in rows
+    ]
 
 
 def to_ndjson_bytes(rows: Iterable[Dict]) -> bytes:

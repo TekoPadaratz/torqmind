@@ -227,6 +227,9 @@ class TestExtractorQuery(unittest.TestCase):
         self.assertNotIn("(CAST(c.DTAVCTO AS datetime2))", plan.sql)
         self.assertIn("(CAST(c.DTACONTA AS datetime2))", plan.sql)
         self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
+        # Revisit de abertos: vencidos + janela recente (não DTAPGTO IS NULL solto).
+        self.assertIn("CAST(DTAVCTO AS date) < CAST(GETDATE() AS date)", plan.sql)
+        self.assertNotIn("(DTAPGTO IS NULL) OR", plan.sql)
 
 
 if __name__ == "__main__":

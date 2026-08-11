@@ -1800,7 +1800,7 @@ class MartBuilder:
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
         WITH baixa_receber AS (
             SELECT id_empresa, id_filial, id_db,
-                   toInt32OrZero(JSONExtractString(payload, 'ID_CONTASRECEBER')) AS id_conta,
+                   toInt32(toFloat64OrZero(JSONExtractString(payload, 'ID_CONTASRECEBER'))) AS id_conta,
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contasreceberbaixa FINAL
             WHERE is_deleted = 0 {empresa_filter} {filial_filter}
@@ -1808,7 +1808,7 @@ class MartBuilder:
         ),
         baixa_pagar AS (
             SELECT id_empresa, id_filial, id_db,
-                   toInt32OrZero(JSONExtractString(payload, 'ID_CONTASPAGAR')) AS id_conta,
+                   toInt32(toFloat64OrZero(JSONExtractString(payload, 'ID_CONTASPAGAR'))) AS id_conta,
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contaspagarbaixa FINAL
             WHERE is_deleted = 0 {empresa_filter} {filial_filter}
@@ -1866,7 +1866,8 @@ class MartBuilder:
             sum(greatest(valor - valor_pago, toDecimal64(0, 2))) AS valor_em_aberto,
             now64(6) AS published_at
         FROM src
-        WHERE data_conta IS NULL OR data_conta <= today()
+        -- Xpert Não Pagas/Não Recebidas: DTAPGTO nulo + saldo. NÃO filtrar DTACONTA futura
+        -- (senão some a vencer com lançamento contábil à frente — gap ~99k VR01).
         GROUP BY id_empresa, id_filial, tipo_titulo, faixa
         """
         rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql, id_empresa, id_filial)

@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 import json
 import unittest
 
@@ -17,6 +18,16 @@ class TestNDJSON(unittest.TestCase):
         payload = to_ndjson_bytes([{"A": 1}, {"B": 2}])
         self.assertTrue(payload.endswith(b"\n"))
         self.assertEqual(len(payload.splitlines()), 2)
+
+    def test_integral_float_and_decimal_become_int(self):
+        lines = to_ndjson_lines(
+            [{"ID_CONTASPAGAR": 282384.0, "VALORBAIXA": 103205.84, "N": Decimal("12.0")}]
+        )
+        obj = json.loads(lines[0])
+        self.assertEqual(obj["ID_CONTASPAGAR"], 282384)
+        self.assertIsInstance(obj["ID_CONTASPAGAR"], int)
+        self.assertEqual(obj["N"], 12)
+        self.assertEqual(obj["VALORBAIXA"], 103205.84)
 
 
 if __name__ == "__main__":

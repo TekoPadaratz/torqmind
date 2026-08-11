@@ -21,9 +21,14 @@ def _now() -> datetime:
 def fetch_finance_titles(
     role: str, id_empresa: int, days: int = DEFAULT_DAYS
 ) -> List[Dict[str, Any]]:
-    """Lê títulos abertos e quitados recentemente, considerando baixas parciais."""
+    """Lê títulos alinhados ao Xpert Não Pagas/Não Recebidas (DTAPGTO IS NULL).
+
+    Aberto = DTAPGTO nulo e saldo > 0.01 após baixas. Pagos recentes entram
+    como tombstone (`status=pago`) para curar fantasma no ClickHouse.
+    """
     days = max(7, min(int(days), 366))
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        conn.execute("SET LOCAL statement_timeout = 0")
         rows = conn.execute(
             """
             WITH baixa_receber AS (
@@ -69,6 +74,7 @@ def fetch_finance_titles(
                   - coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
                   - coalesce(bp.total_baixa, 0)
                 )::numeric(18,2) AS valor_aberto,
+                (etl.safe_timestamp(cp.payload->>'DTAPGTO'))::date AS dt_pgto_flag,
                 coalesce(
                   (etl.safe_timestamp(cp.payload->>'DTAPGTO'))::date,
                   bp.dt_ultima_baixa
@@ -109,6 +115,7 @@ def fetch_finance_titles(
                   - coalesce(etl.safe_numeric(cr.payload->>'VLRPAGO'), 0)
                   - coalesce(br.total_baixa, 0)
                 )::numeric(18,2) AS valor_aberto,
+                (etl.safe_timestamp(cr.payload->>'DTAPGTO'))::date AS dt_pgto_flag,
                 coalesce(
                   (etl.safe_timestamp(cr.payload->>'DTAPGTO'))::date,
                   br.dt_ultima_baixa
@@ -130,21 +137,27 @@ def fetch_finance_titles(
               id_entidade, entidade_nome, dt_lancamento, dt_vencimento,
               valor, valor_pago, valor_aberto,
               CASE
-                WHEN valor_aberto <= 0.01 THEN 'pago'
+                -- Xpert "Não Pagas/Não Recebidas" = DTAPGTO IS NULL.
+                WHEN dt_pgto_flag IS NOT NULL OR valor_aberto <= 0.01 THEN 'pago'
                 WHEN dt_vencimento < (now() AT TIME ZONE 'America/Sao_Paulo')::date THEN 'vencido'
                 ELSE 'a_vencer'
               END AS status
             FROM src
             WHERE dt_vencimento IS NOT NULL
               AND (
-                -- Aberto: alinha ao Xpert "Não Pagas" com Data Final = hoje (DTACONTA).
                 (
+                  -- Xpert Não Pagas: DTAPGTO nulo + saldo. DTACONTA futura é válida.
                   valor_aberto > 0.01
-                  AND (dt_lancamento IS NULL OR dt_lancamento <= (now() AT TIME ZONE 'America/Sao_Paulo')::date)
+                  AND dt_pgto_flag IS NULL
                 )
                 OR (
-                  valor_aberto <= 0.01
-                  AND dt_pagamento >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s
+                  -- Tombstone no CH: quitado/marcado pago recentemente.
+                  (
+                    valor_aberto <= 0.01
+                    OR dt_pgto_flag IS NOT NULL
+                  )
+                  AND coalesce(dt_pagamento, dt_pgto_flag)
+                      >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s
                 )
               )
             ORDER BY id_filial ASC, dt_vencimento DESC, entidade_nome ASC, id_titulo ASC

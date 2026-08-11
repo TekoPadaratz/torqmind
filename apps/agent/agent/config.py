@@ -373,11 +373,17 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # normal e pagamento futuro/sujo envenena o incremental (mesmo bug do CR).
         # Baixas/alterações recentes vêm do revisit_open_clause.
         "revisit_open_clause": (
-            # Relê TODOS os abertos (Não Pagas) — DTACONTA antiga que recebe baixa
-            # hoje precisa voltar no ciclo; o corte de 120d deixava fantasma no STG.
-            "(DTAPGTO IS NULL) "
-            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)) "
-            "OR (CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
+            # Não Pagas vencidos (qualquer idade) + abertos recentes/futuros +
+            # pagos recentes. Evita (DTAPGTO IS NULL) sem corte — isso inchava o
+            # ciclo e podia parar o dataset (fantasma no STG).
+            "("
+            "  DTAPGTO IS NULL AND ("
+            "    CAST(DTAVCTO AS date) < CAST(GETDATE() AS date) "
+            "    OR CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-30,GETDATE()) AS date) "
+            "    OR CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)"
+            "  )"
+            ") "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date))"
         ),
         "query": (
             "SELECT c.*, "
