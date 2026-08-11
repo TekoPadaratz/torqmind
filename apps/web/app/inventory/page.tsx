@@ -438,7 +438,7 @@ export default function InventoryPage() {
                                   key={`${filial.id_filial}-${item.id_tanque || item.id_produto}`}
                                 >
                                   <td>
-                                    {item.id_tanque ? `#${item.id_tanque}` : "—"}
+                                    {item.id_tanque ? item.id_tanque : "—"}
                                   </td>
                                   <td>{item.combustivel}</td>
                                   <td>{formatLiters(item.capacidade_l)}</td>

@@ -159,8 +159,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # Colunas SEM alias: o WHERE externo é SELECT * FROM (base) AS src.
         "revisit_open_clause": (
             "(ISNULL(STATUSTURNO, 0) = 0) "
-            "OR (CAST(DATA AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date)) "
-            "OR (DATAFECHAMENTO IS NOT NULL AND CAST(DATAFECHAMENTO AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date))"
+            "OR (CAST(DATA AS date) >= CAST(DATEADD(day,-45,GETDATE()) AS date)) "
+            "OR (DATAFECHAMENTO IS NOT NULL AND CAST(DATAFECHAMENTO AS date) >= CAST(DATEADD(day,-45,GETDATE()) AS date))"
         ),
         "query": (
             "SELECT t.*, "

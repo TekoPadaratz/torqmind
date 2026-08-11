@@ -90,9 +90,15 @@ def test_turno_label_operational_number_not_technical_id():
 
 
 def test_turno_label_zero_is_caixa_geral():
-    label, resolved = _antifraude_turno_label(0, 21731)
+    label, resolved = _antifraude_turno_label(0, 21731, turno_dim_found=True)
     assert label == "Caixa geral"
     assert resolved is True
+
+
+def test_turno_label_zero_without_dim_is_unresolved():
+    label, resolved = _antifraude_turno_label(0, 21731, turno_dim_found=False)
+    assert label == "Turno não resolvido"
+    assert resolved is False
 
 
 def test_turno_label_unresolved_when_no_shift():
@@ -247,6 +253,22 @@ def test_build_event_treats_turno_1_as_unresolved_sentinel():
     ev = _build_antifraude_event(row)
     assert ev["turno_label"] == "Turno não resolvido"
     assert "Turno 1" not in ev["documento_label"]
+
+
+def test_build_event_caixa_geral_only_when_dim_found():
+    row = _rich_row()
+    row["id_turno"] = 39700
+    row["turno_numero"] = 0
+    row["_turno_dim_found"] = True
+    ev = _build_antifraude_event(row)
+    assert ev["turno_label"] == "Caixa geral"
+
+    row2 = _rich_row()
+    row2["id_turno"] = 39700
+    row2["turno_numero"] = 0
+    # Sem dim: nunca inventar "Caixa geral".
+    ev2 = _build_antifraude_event(row2)
+    assert ev2["turno_label"] == "Turno não resolvido"
 
 
 # --------------------------------------------------------------------------- #

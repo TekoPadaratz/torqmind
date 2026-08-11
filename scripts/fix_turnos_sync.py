@@ -98,7 +98,7 @@ def _json_default(obj: Any) -> Any:
 def _missing_pairs(
     pg, id_empresa: int, since_days: int, *, cancelled_only: bool = True
 ) -> list[tuple[int, int]]:
-    """Turnos referenced by recent comprovantes but absent from stg.turnos."""
+    """Turnos referenciados (comprovantes + aferições) ausentes em stg.turnos."""
     cancel_filter = ""
     if cancelled_only:
         cancel_filter = """
@@ -108,37 +108,51 @@ def _missing_pairs(
         )
         """
     sql = f"""
-      SELECT DISTINCT
-        c.id_filial,
-        COALESCE(
-          NULLIF(c.id_turno_shadow, 0),
-          NULLIF((c.payload->>'ID_TURNOS')::int, 0),
-          NULLIF((c.payload->>'ID_TURNO')::int, 0)
-        ) AS id_turno
-      FROM stg.comprovantes c
+      WITH refs AS (
+        SELECT DISTINCT
+          c.id_filial,
+          COALESCE(
+            NULLIF(c.id_turno_shadow, 0),
+            NULLIF((c.payload->>'ID_TURNOS')::int, 0),
+            NULLIF((c.payload->>'ID_TURNO')::int, 0)
+          ) AS id_turno
+        FROM stg.comprovantes c
+        WHERE c.id_empresa = %s
+          AND COALESCE(
+                NULLIF(c.id_turno_shadow, 0),
+                NULLIF((c.payload->>'ID_TURNOS')::int, 0),
+                NULLIF((c.payload->>'ID_TURNO')::int, 0)
+              ) > 0
+          AND COALESCE(c.dt_evento, c.received_at, c.ingested_at)
+                >= now() - (%s || ' days')::interval
+          {cancel_filter}
+        UNION
+        SELECT DISTINCT
+          a.id_filial,
+          NULLIF((a.payload->>'ID_TURNOS')::int, 0) AS id_turno
+        FROM stg.afericoes a
+        WHERE a.id_empresa = %s
+          AND NULLIF((a.payload->>'ID_TURNOS')::int, 0) > 0
+          AND COALESCE(
+                a.dt_evento,
+                etl.safe_timestamp(a.payload->>'DATA'),
+                a.received_at,
+                a.ingested_at
+              ) >= now() - (%s || ' days')::interval
+      )
+      SELECT r.id_filial, r.id_turno
+      FROM refs r
       LEFT JOIN stg.turnos t
-        ON t.id_empresa = c.id_empresa
-       AND t.id_filial = c.id_filial
-       AND t.id_turno = COALESCE(
-             NULLIF(c.id_turno_shadow, 0),
-             NULLIF((c.payload->>'ID_TURNOS')::int, 0),
-             NULLIF((c.payload->>'ID_TURNO')::int, 0)
-           )
-      WHERE c.id_empresa = %s
-        AND COALESCE(
-              NULLIF(c.id_turno_shadow, 0),
-              NULLIF((c.payload->>'ID_TURNOS')::int, 0),
-              NULLIF((c.payload->>'ID_TURNO')::int, 0)
-            ) > 0
+        ON t.id_empresa = %s
+       AND t.id_filial = r.id_filial
+       AND t.id_turno = r.id_turno
+      WHERE r.id_turno IS NOT NULL
         AND t.id_turno IS NULL
-        AND COALESCE(c.dt_evento, c.received_at, c.ingested_at)
-              >= now() - (%s || ' days')::interval
-        {cancel_filter}
       ORDER BY 1, 2
       LIMIT 8000
     """
     with pg.cursor() as cur:
-        cur.execute(sql, (id_empresa, since_days))
+        cur.execute(sql, (id_empresa, since_days, id_empresa, since_days, id_empresa))
         rows = cur.fetchall()
     return [(int(r[0]), int(r[1])) for r in rows if r[1]]
 

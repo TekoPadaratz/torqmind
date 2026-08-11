@@ -2292,11 +2292,21 @@ def fraud_last_events(
                 nfe_map = _load_nfe_numbers(id_empresa, rows)
             except Exception:
                 nfe_map = {}
+            try:
+                turno_map = _resolve_turno_numeros(int(id_empresa), rows)
+            except Exception:
+                turno_map = {}
             out: List[Dict[str, Any]] = []
             for r in rows:
                 r["numero_nfe"] = nfe_map.get(
                     (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
                 )
+                key = (_to_int(r.get("id_filial")), _to_int(r.get("id_turno")))
+                if key in turno_map and _to_int(r.get("turno_numero")) <= 0:
+                    r["turno_numero"] = turno_map[key]
+                    r["_turno_dim_found"] = True
+                elif _to_int(r.get("turno_numero")) >= 1:
+                    r["_turno_dim_found"] = True
                 ev = _build_antifraude_event(r)
                 if not ev.get("data") and not ev.get("data_key"):
                     continue
@@ -4340,18 +4350,63 @@ def _antifraude_event_labels(event_type: str, reasons: str) -> tuple[str, str]:
     return categoria, motivo
 
 
-def _antifraude_turno_label(turno_numero: int, id_turno: int) -> tuple[str, bool]:
-    """Operational shift label. ``turno_numero`` is the REAL operational shift
-    (1..N; 0 = caixa geral). ``id_turno`` (=ID_TURNOS) is the technical id and is
-    NEVER shown as the shift number. Returns (label, resolved).
+def _antifraude_turno_label(
+    turno_numero: int,
+    id_turno: int,
+    *,
+    turno_dim_found: bool = False,
+) -> tuple[str, bool]:
+    """Rótulo do turno operacional.
+
+    ``turno_numero`` = payload TURNO (1..N). ``id_turno`` = ID_TURNOS técnico (nunca exibir).
+    ``turno_dim_found`` = True só quando o cadastro em stg_turnos foi encontrado.
+    Caixa geral = TURNO=0 **com** cadastro encontrado — nunca inventar a partir de id técnico.
     """
     if turno_numero >= 1:
         return f"Turno {turno_numero}", True
-    if id_turno > 1:
-        # bound to a real technical shift, but the operational number is 0 ->
-        # caixa geral / turno geral (not an operational shift 1..N).
+    if turno_dim_found and turno_numero == 0:
         return "Caixa geral", True
     return "Turno não resolvido", False
+
+
+def _resolve_turno_numeros(
+    id_empresa: int, rows: List[Dict[str, Any]]
+) -> Dict[tuple[int, int], int]:
+    """Mapa (id_filial, id_turno) → TURNO operacional a partir de stg_turnos."""
+    pairs = sorted(
+        {
+            (_to_int(r.get("id_filial")), _to_int(r.get("id_turno")))
+            for r in rows
+            if _to_int(r.get("id_filial")) > 0
+            and _to_int(r.get("id_turno")) > 0
+            and _to_int(r.get("turno_numero")) <= 0
+        }
+    )
+    if not pairs:
+        return {}
+    values = ", ".join(f"({f}, {t})" for f, t in pairs)
+    try:
+        found = query_dict(
+            f"""
+            SELECT
+              id_filial,
+              id_turno,
+              toInt32OrZero(JSONExtractString(payload, 'TURNO')) AS turno_numero
+            FROM {CURRENT_DB}.stg_turnos FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND (id_filial, id_turno) IN ({values})
+              AND is_deleted = 0
+            """,
+            parameters={"id_empresa": int(id_empresa)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("resolve_turno_numeros miss: %s", str(exc)[:220])
+        return {}
+    out: Dict[tuple[int, int], int] = {}
+    for r in found:
+        key = (_to_int(r.get("id_filial")), _to_int(r.get("id_turno")))
+        out[key] = _to_int(r.get("turno_numero"))
+    return out
 
 
 def _load_nfe_numbers(id_empresa: int, rows: List[Dict[str, Any]]) -> Dict[tuple[int, int], str]:
@@ -4603,7 +4658,13 @@ def _build_antifraude_event(r: Dict[str, Any]) -> Dict[str, Any]:
 
     id_turno = _to_int(r.get("id_turno"))  # technical ID_TURNOS, traceability only
     turno_numero = _to_int(r.get("turno_numero"))  # operational shift (1..N; 0=caixa geral)
-    turno_label, turno_resolved = _antifraude_turno_label(turno_numero, id_turno)
+    turno_dim_found = bool(r.get("_turno_dim_found"))
+    if turno_numero <= 0 and not turno_dim_found and id_turno > 0:
+        # Sem cadastro resolvido: não rotular como caixa geral.
+        turno_dim_found = False
+    turno_label, turno_resolved = _antifraude_turno_label(
+        turno_numero, id_turno, turno_dim_found=turno_dim_found or turno_numero >= 1
+    )
 
     id_caixa = _to_int(r.get("id_caixa"))
     id_usuario = _to_int(r.get("id_usuario"))
@@ -4719,10 +4780,20 @@ def risk_last_events(
         nfe_map = _load_nfe_numbers(id_empresa, rows)
     except Exception:
         nfe_map = {}
+    try:
+        turno_map = _resolve_turno_numeros(int(id_empresa), rows)
+    except Exception:
+        turno_map = {}
     for r in rows:
         r["numero_nfe"] = nfe_map.get(
             (_to_int(r.get("id_filial")), _to_int(r.get("id_comprovante"))), ""
         )
+        key = (_to_int(r.get("id_filial")), _to_int(r.get("id_turno")))
+        if key in turno_map and _to_int(r.get("turno_numero")) <= 0:
+            r["turno_numero"] = turno_map[key]
+            r["_turno_dim_found"] = True
+        elif _to_int(r.get("turno_numero")) >= 1:
+            r["_turno_dim_found"] = True
     return [_build_antifraude_event(r) for r in rows]
 
 
@@ -6550,6 +6621,21 @@ def inventory_fuel_afericoes_overview(
         },
     )
 
+    # Resolve turno operacional em tempo de leitura quando a mart ficou
+    # com turno_operacional=-1 por gap de sync de stg.turnos.
+    unresolved = [
+        {
+            "id_filial": r.get("id_filial"),
+            "id_turno": r.get("id_turno"),
+            "turno_numero": r.get("turno_operacional")
+            if _to_int(r.get("turno_operacional")) >= 0
+            else 0,
+        }
+        for r in rows
+        if _to_int(r.get("turno_operacional")) < 0 and _to_int(r.get("id_turno")) > 0
+    ]
+    turno_map = _resolve_turno_numeros(int(id_empresa), unresolved) if unresolved else {}
+
     itens: List[Dict[str, Any]] = []
     total_l = 0.0
     for r in rows:
@@ -6557,12 +6643,21 @@ def inventory_fuel_afericoes_overview(
         qtde = _to_float(r.get("qtde_l"), 3)
         total_l = _to_float(total_l + qtde, 3)
         turno_op = _to_int(r.get("turno_operacional"))
+        id_turno = _to_int(r.get("id_turno"))
+        dim_found = False
+        if turno_op < 0 and id_turno > 0:
+            key = (fid, id_turno)
+            if key in turno_map:
+                turno_op = turno_map[key]
+                dim_found = True
+        elif turno_op >= 0:
+            dim_found = True
         if turno_op > 0:
             turno_label = f"Turno {turno_op}"
-        elif turno_op == 0:
+        elif dim_found and turno_op == 0:
             turno_label = "Caixa geral"
         else:
-            turno_label = "Turno não resolvido"
+            turno_label = "—"
         bico = str(r.get("bico_label") or "").strip()
         if not bico:
             id_bico = _to_int(r.get("id_bico"))

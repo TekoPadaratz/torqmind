@@ -23,7 +23,7 @@ def test_inventory_screen_registered():
 def test_fuel_loss_screen_registered():
     assert "fuel_loss" in SCREEN_REGISTRY
     assert SCREEN_REGISTRY["fuel_loss"]["category"] == "Operação"
-    assert SCREEN_REGISTRY["fuel_loss"]["label"] == "Aferição de Combustível"
+    assert SCREEN_REGISTRY["fuel_loss"]["label"] == "Movimentações de Combustível"
 
 
 def test_inventory_fuel_diferenca_formula():

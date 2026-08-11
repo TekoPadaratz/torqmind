@@ -18,7 +18,7 @@ import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
 
-const SCREEN_TITLE = "Aferição de Combustível";
+const SCREEN_TITLE = "Movimentações de Combustível";
 
 type LossItem = {
   id_filial: number;
@@ -140,7 +140,7 @@ export default function FuelLossPage() {
     useBiScopeData<LossPayload>({
       moduleKey: "inventory_fuel_loss",
       scope,
-      errorMessage: "Falha ao carregar aferição de combustível",
+      errorMessage: "Falha ao carregar movimentações de combustível",
       buildRequestUrl: (currentScope) => {
         if (!allowed) return null;
         return `/bi/estoque/perda?${buildScopeParams(currentScope).toString()}`;
@@ -164,8 +164,8 @@ export default function FuelLossPage() {
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
   const transitionCopy = pendingUnavailable
-    ? buildModuleUnavailableCopy("aferição de combustível")
-    : buildModuleLoadingCopy("aferição de combustível");
+    ? buildModuleUnavailableCopy("movimentações de combustível")
+    : buildModuleLoadingCopy("movimentações de combustível");
 
   const kpis = data?.kpis;
   const [lossQuery, setLossQuery] = useState("");
@@ -314,8 +314,8 @@ export default function FuelLossPage() {
                             <th>Dia</th>
                             <th>Tanque</th>
                             <th>Combustível</th>
-                            <th>Leitura D−1</th>
-                            <th>Leitura D</th>
+                            <th>Abertura</th>
+                            <th>Fechamento</th>
                             <th>Dif Leitura</th>
                             <th>Movimentação</th>
                             <th>Diferença</th>
@@ -331,7 +331,7 @@ export default function FuelLossPage() {
                             return (
                               <tr key={`${item.id_filial}-${item.id_tanque}-${item.dia}`}>
                                 <td>{fmtDia(item.dia)}</td>
-                                <td>#{item.id_tanque}</td>
+                                <td>{item.id_tanque || "—"}</td>
                                 <td>{item.combustivel}</td>
                                 <td>{fmtL(item.leitura_anterior_l)}</td>
                                 <td>{fmtL(item.leitura_atual_l)}</td>
