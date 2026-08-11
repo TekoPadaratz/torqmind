@@ -153,6 +153,16 @@ Opção simples (sem NSSM):
 
 ## 7) Build do executável e atualização de versão (seguro)
 
+### 7.0a Regra absoluta de versão
+
+**Sempre que o código do Agent mudar** (`apps/agent/**`, datasets, extractors, watermarks, sink, runtime, `agent_build/**`):
+
+1. Incrementar `apps/agent/agent/__init__.py` → `__version__` (semver) **no mesmo commit**.
+2. Só então gerar o `.exe` e publicar com **essa** versão.
+3. Proibido republicar/sobrescrever um `X.Y.Z` já usado em produção.
+
+Fonte da regra: `.cursor/rules/09-agent-version.mdc`, `AGENTS.md`, `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md`.
+
 ### 7.0 Rede do agent (LAN TorqMind)
 
 Se o Windows do Xpert estiver na mesma rede das VMs TorqMind:
@@ -167,6 +177,9 @@ obrigatório (ver `AGENTS.md`).
 
 ### 7.1 Gerar o .exe (uma vez por versão)
 
+Antes do build: confirmar que `__version__` já foi incrementado para a mudança
+deste release (não gerar `.exe` com versão antiga).
+
 No repositório (Windows, PowerShell):
 
 ```powershell
@@ -177,6 +190,7 @@ O script valida a compilação, roda o PyInstaller e monta a pasta `release/` co
 `torqmind-agent.exe`, `config.example.yaml`, `update-config.bat`, wrapper de
 serviço e o SHA256 + commit do build. **O mapeamento das tabelas já está
 embutido no `.exe`** (via `apps/agent/agent/config.py` → `DEFAULT_DATASETS`).
+Confirme com `.\release\torqmind-agent.exe --version`.
 
 ### 7.2 Config do cliente = criptografado, só segredos (nunca .yaml em texto)
 
@@ -211,11 +225,12 @@ Publicar release na App VM:
 ```bash
 python scripts/publish_agent_release.py \
   --exe release/torqmind-agent.exe \
-  --version 2.0.0 \
+  --version 2.0.3 \
   --release-dir /var/torqmind/agent-releases \
   --public-base-url http://redevr.ddns.me/api
 ```
 
+(Use a mesma string de `apps/agent/agent/__init__.py` — nunca uma versão já publicada.)
 **Manual (ainda válido):**
 
 ```powershell

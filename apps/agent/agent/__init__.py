@@ -1,6 +1,8 @@
 """TorqMind Extractor Agent 2.0 Turbo."""
 
-# Bump when shipping a new Windows .exe so `torqmind-agent.exe --version` proves the build.
-__version__ = "2.0.2"
+# Semver do binário Windows. OBRIGATÓRIO incrementar a cada alteração em apps/agent/
+# (dataset, query, watermark, sink, runtime) antes de gerar/publicar o .exe.
+# Prova: `torqmind-agent.exe --version` deve bater com esta string.
+__version__ = "2.0.3"
 
 __all__ = ["__version__"]

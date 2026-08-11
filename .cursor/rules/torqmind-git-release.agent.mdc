@@ -63,6 +63,8 @@ Conferir testes informados pelo agent de código/SSH. Se não foram rodados, ped
 
 Checklist mínimo: `compileall`, `pytest apps/api`, `pytest apps/cdc_consumer/tests`, `npm test && npm run build`, health/deploy se produção foi alterada.
 
+**Agent Windows:** se o diff tocar `apps/agent/**` / `agent_build/**`, o commit **deve** incluir bump de `apps/agent/agent/__init__.py` `__version__`. Sem bump = commit incompleto (`.cursor/rules/09-agent-version.mdc`).
+
 ## Commit e push
 
 ```bash

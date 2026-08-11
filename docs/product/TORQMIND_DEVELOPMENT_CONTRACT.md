@@ -327,6 +327,24 @@ Antes de declarar pronto / PASS de UI:
 
 ---
 
+# 14. Agent Windows — versionamento (contrato)
+
+O Extractor Agent (`apps/agent/**`) é binário Windows; datasets/queries vão **dentro do `.exe`**.
+
+| Regra | Detalhe |
+|-------|---------|
+| Fonte da versão | `apps/agent/agent/__init__.py` → `__version__` |
+| Quando bumpar | **Toda** alteração no agent (código, dataset, watermark, sink, runtime, build) |
+| Como | Incrementar semver no **mesmo commit** da mudança; depois `agent_build/build.ps1` + `publish_agent_release.py` |
+| Proibido | Gerar/publicar `.exe` reutilizando versão já publicada; esquecer o bump |
+| Prova | `torqmind-agent.exe --version` = `__version__` do commit publicado |
+
+Checklist de feature que mexe no agent: código → bump → commit → build → publish → `--version` no posto.
+
+Rules/runbook: `.cursor/rules/09-agent-version.mdc`, `docs/agent_runbook.md` §7, `AGENTS.md`.
+
+---
+
 ## Hierarquia de verdade (conflito)
 
 1. Este contrato + `TORQMIND_UI_CANONICAL_PATTERNS.md` (UI)  

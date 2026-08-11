@@ -38,6 +38,15 @@ Nunca:
 
 ## Agent / ingest (rede local e recreate da API)
 
+### Versão do Agent (obrigatório)
+
+- Fonte: `apps/agent/agent/__init__.py` → `__version__`.
+- **Qualquer alteração em `apps/agent/**` (dataset, query, watermark, sink, runtime, build) exige incrementar a versão no mesmo commit** e gerar/publicar novo `.exe`.
+- Não reutilizar número de versão já publicado. Prova no posto: `torqmind-agent.exe --version`.
+- Detalhes: `.cursor/rules/09-agent-version.mdc`, `docs/agent_runbook.md` §7, contrato de desenvolvimento (seção Agent).
+
+### Rede e health
+
 - No posto na mesma LAN TorqMind: `api.base_url=http://172.30.0.10` (nginx `:80`). Não usar `172.30.0.10` de fora da LAN; `:14023` público só via NAT do roteador.
 - `GET /ingest/health` (com `X-Ingest-Key`) é **auth-only** e tem que responder em milissegundos. `?stats=true` é o scan pesado (COUNT em STG) só para ops — nunca default do agent.
 - Após `docker compose ... up --force-recreate` / rebuild da API **sem** essa versão do código, o endpoint antigo volta e o agent toma **HTTP 504** no `config test`. Prova pós-recreate:

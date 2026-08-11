@@ -1,0 +1,35 @@
+---
+description: Versionamento obrigatório do TorqMind Agent Windows (.exe)
+globs: apps/agent/**,agent_build/**,scripts/publish_agent_release.py,docs/agent_runbook.md
+alwaysApply: true
+---
+
+# Agent Windows — versão obrigatória
+
+## Regra absoluta
+
+**Sempre que alterar qualquer coisa no Agente** (`apps/agent/**`, datasets em `DEFAULT_DATASETS`, extractors, watermarks, sink/ingest, runtime/update, `agent_build/**`), **incrementar** `apps/agent/agent/__init__.py` → `__version__` (semver `MAJOR.MINOR.PATCH`) **no mesmo PR/commit** da mudança.
+
+Sem bump de versão = entrega incompleta. Não gerar nem publicar `.exe` com a mesma versão de um build anterior.
+
+## Por quê
+
+- O mapeamento de tabelas/datasets vai **embutido no `.exe`**.
+- Auto-update e `torqmind-agent.exe --version` usam essa string para provar o build no posto.
+- Clientes e ops precisam distinguir binários; reutilizar versão mascara regressão/hotfix.
+
+## Checklist (obrigatório)
+
+1. Alterar código do agent
+2. Bump `__version__` (ex.: `2.0.2` → `2.0.3`)
+3. Commit `chore(agent): bump versão para X.Y.Z` (ou incluir o bump no mesmo `feat:`/`fix:`)
+4. Build Windows: `.\agent_build\build.ps1`
+5. Publicar: `python scripts/publish_agent_release.py --exe … --version X.Y.Z …`
+6. Prova no posto: `--version` = X.Y.Z + `check` / `run --once`
+
+## Fonte canônica
+
+- Versão: `apps/agent/agent/__init__.py`
+- Runbook: `docs/agent_runbook.md` §7
+- Operação: `AGENTS.md` (Agent / ingest)
+- Contrato: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` (Agent)

@@ -56,6 +56,10 @@ torqmind/
 - etl: mudança no pipeline de dados
 - chore: manutenção, deps, configs
 
+## Agent Windows — versão
+
+Qualquer mudança em `apps/agent/**` **obriga** bump de `__version__` em `apps/agent/agent/__init__.py` no mesmo commit, antes de gerar/publicar o `.exe`. Ver `.cursor/rules/09-agent-version.mdc`.
+
 ## Fluxo de Entrega
 
 Para cada tarefa, siga esta ordem:

@@ -24,6 +24,7 @@ Checkout de referência: nova-branch-limpa @ a12e281 + ajustes locais desta roda
 ## Fluxo de dados
 
 - Agent Windows -> API ingest -> PostgreSQL STG -> ETL/DW -> Debezium/Redpanda/CDC -> ClickHouse current/slim -> mart_rt -> API/Web.
+- **Versão do Agent:** qualquer mudança em `apps/agent/**` exige bump de `__version__` + novo `.exe` (nunca reutilizar versão publicada). Ver `.cursor/rules/09-agent-version.mdc` e `docs/agent_runbook.md` §7.
 - Posto na LAN `172.30.0.x`: agent usa `http://172.30.0.10` (não IP público / `:14023` interno).
 - `GET /api/ingest/health` = auth-only (`mode=auth`). Nunca COUNT em massa no hot path do agent. Pós-recreate da API, validar com curl + ingest key (ver AGENTS.md).
 - Backfill do Agent deve materializar primeiro em STG; downstream só é reprocessado quando STG estiver completa.
