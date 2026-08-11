@@ -2574,6 +2574,180 @@ def team_commissions_results(
 
 
 # ------------------------
+# Manager commission (LSC) — config + calc + overrides
+# ------------------------
+
+from app import repos_manager_commission  # noqa: E402
+
+
+@router.get("/team/manager-commissions/config")
+def manager_commissions_config(
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.config")),
+):
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    return repos_manager_commission.build_config_response(tenant, id_filial)
+
+
+@router.put("/team/manager-commissions/config")
+def manager_commissions_config_save(
+    body: dict = Body(...),
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.config")),
+):
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem configurar comissão de gerente.")
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+
+    rate = float(body.get("default_rate_pct", 2) or 2)
+    if rate < 0 or rate > 100:
+        raise HTTPException(status_code=422, detail="Taxa deve estar entre 0 e 100.")
+
+    sales_groups = [
+        g for g in (body.get("sales_base_groups") or [])
+        if g.get("selected") or g.get("id_grupo_produto")
+    ]
+    # Accept either full list with selected flags or only selected items
+    if any("selected" in (g or {}) for g in (body.get("sales_base_groups") or [])):
+        sales_groups = [g for g in (body.get("sales_base_groups") or []) if g.get("selected")]
+    stock_groups = body.get("stock_loss_groups") or []
+    if any("selected" in (g or {}) for g in stock_groups):
+        stock_groups = [g for g in stock_groups if g.get("selected")]
+
+    try:
+        repos_manager_commission.save_rule_config(
+            tenant,
+            id_filial,
+            default_rate_pct=rate,
+            sales_groups=sales_groups,
+            stock_loss_groups=stock_groups,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "message": "Configuração de comissão de gerente salva."}
+
+
+@router.get("/team/manager-commissions/calc")
+def manager_commissions_calc(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2020, le=2100),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.comissoes")),
+):
+    tenant, branch_scope, branch_ids = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa,
+        id_filial_q=id_filial,
+        id_filiais_q=id_filiais,
+    )
+    targets: List[int] = []
+    if branch_ids:
+        targets = [int(b) for b in branch_ids if int(b) > 0]
+    elif isinstance(branch_scope, list):
+        targets = [int(b) for b in branch_scope if int(b) > 0]
+    elif branch_scope:
+        targets = [int(branch_scope)]
+    elif id_filial:
+        targets = [int(id_filial)]
+    if not targets:
+        raise HTTPException(status_code=422, detail="Informe ao menos uma filial.")
+
+    # Resolve labels
+    from app.db import get_conn
+
+    labels: Dict[int, str] = {}
+    try:
+        with get_conn(tenant_id=tenant) as conn:
+            rows = conn.execute(
+                """
+                SELECT id_filial,
+                       COALESCE(
+                         NULLIF(TRIM(apelido), ''),
+                         NULLIF(TRIM(nome), ''),
+                         'Filial ' || id_filial::text
+                       ) AS label
+                FROM app.filiais
+                WHERE id_empresa = %s AND id_filial = ANY(%s)
+                """,
+                [tenant, targets],
+            ).fetchall()
+            for r in rows:
+                labels[int(r["id_filial"])] = str(r["label"])
+    except Exception:
+        labels = {}
+
+    rows_out = []
+    for fid in sorted(targets):
+        rows_out.append(
+            repos_manager_commission.calc_branch_row(
+                tenant,
+                fid,
+                year,
+                month,
+                filial_label=labels.get(fid),
+                publish=True,
+            )
+        )
+    # Grid contract: Filial ASC
+    rows_out.sort(key=lambda r: (str(r.get("filial_label") or ""), int(r.get("id_filial") or 0)))
+    return {
+        "year": year,
+        "month": month,
+        "id_empresa": tenant,
+        "rows": rows_out,
+        "cash_source": "unavailable_pending_agent_dataset",
+    }
+
+
+@router.put("/team/manager-commissions/overrides")
+def manager_commissions_overrides_save(
+    body: dict = Body(...),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.comissoes")),
+):
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER", "MANAGER"}:
+        raise HTTPException(status_code=403, detail="Sem permissão para editar overrides.")
+
+    id_empresa = body.get("id_empresa")
+    id_filial = body.get("id_filial")
+    year = body.get("year")
+    month = body.get("month")
+    if not all([id_empresa, id_filial, year, month]):
+        raise HTTPException(status_code=422, detail="id_empresa, id_filial, year e month são obrigatórios.")
+
+    tenant, _, _ = resolve_scope_filters(
+        claims,
+        id_empresa_q=int(id_empresa),
+        id_filial_q=int(id_filial),
+    )
+    fields = body.get("fields") or body
+    allowed = ("rate_pct", "perdas_estoque", "sobras_estoque", "sobras_caixa", "furos_caixa")
+    payload = {k: fields.get(k) for k in allowed if k in fields}
+    updated_by = str(claims.get("email") or claims.get("sub") or "")
+    saved = repos_manager_commission.upsert_period_override(
+        tenant,
+        int(id_filial),
+        int(year),
+        int(month),
+        payload,
+        updated_by=updated_by,
+    )
+    row = repos_manager_commission.calc_branch_row(
+        tenant, int(id_filial), int(year), int(month), publish=False
+    )
+    return {"ok": True, "override": saved, "row": row}
+
+
+# ------------------------
 # Jarvis briefing
 # ------------------------
 

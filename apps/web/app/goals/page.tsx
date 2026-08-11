@@ -21,6 +21,7 @@ import { formatGoalTargetInputFromNumber, normalizeGoalTargetInput, parseGoalTar
 import { startScopeTransition } from '../lib/scope-runtime';
 import CommissionsTab from './CommissionsTab';
 import CommissionConfigTab from './CommissionConfigTab';
+import ManagerCommissionConfigPanel from './ManagerCommissionConfigPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -227,11 +228,18 @@ export default function GoalsPage() {
           />
         )}
         {effectiveTab === 'config' && (
-          <CommissionConfigTab
-            idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
-            idFilial={singleBranchId ? Number(singleBranchId) : null}
-            onSaved={() => setCommissionRefresh((n) => n + 1)}
-          />
+          <>
+            <CommissionConfigTab
+              idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+              idFilial={singleBranchId ? Number(singleBranchId) : null}
+              onSaved={() => setCommissionRefresh((n) => n + 1)}
+            />
+            <ManagerCommissionConfigPanel
+              idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+              idFilial={singleBranchId ? Number(singleBranchId) : null}
+              onSaved={() => setCommissionRefresh((n) => n + 1)}
+            />
+          </>
         )}
 
         {/* Original Metas & Equipe content */}

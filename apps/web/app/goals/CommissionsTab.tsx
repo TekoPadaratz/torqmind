@@ -6,6 +6,7 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
+import ManagerCommissionGrid from "./ManagerCommissionGrid";
 
 // Tier styling
 const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> = {
@@ -181,6 +182,13 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
 
       {error && <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div>}
 
+      <ManagerCommissionGrid
+        idEmpresa={idEmpresa}
+        idFilial={idFilial}
+        month={selectedMonth}
+        year={selectedYear}
+      />
+
       {loading ? (
         <div className="card" style={{ marginTop: 12, textAlign: "center", padding: 32 }}>
           <div className="muted">Calculando comissões...</div>
@@ -195,8 +203,9 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
 
           {!data.message && (
             <>
+              {/* Painel legado de gerente (tiers) mantido abaixo do grid LSC */}
               <div className="card" style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Comissão de gerente</div>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Comissão de gerente (legado / tiers)</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
                   <div>
                     <div className="muted" style={{ fontSize: 11 }}>Venda total (sem combustíveis)</div>
