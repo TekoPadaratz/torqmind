@@ -62,6 +62,7 @@ curl -sS -m 5 -H "X-Ingest-Key: $INGEST_KEY" http://172.30.0.10/api/ingest/healt
 
 - Vendas canônicas vêm de `stg.comprovantes`, `stg.itenscomprovantes`, `stg.formas_pgto_comprovantes`.
 - Não usar `stg.movprodutos` / `stg.itensmovprodutos` como origem principal de venda realtime.
+- `stg.movprodutos` / `stg.itensmovprodutos` **DEVEM** continuar sendo ingeridos (agent `enabled=true`): são a base de entrada/saída de estoque (loja + combustível). Venda canônica ≠ estoque canônico.
 - Join comprovante/item: `id_empresa`, `id_filial`, `id_db`, `id_comprovante`.
 - `id_db` é obrigatório.
 - Faturamento vem dos itens válidos, não dos pagamentos.

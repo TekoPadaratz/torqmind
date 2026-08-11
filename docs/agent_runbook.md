@@ -39,6 +39,7 @@ Campos críticos:
 Datasets mínimos habilitados:
 
 - `comprovantes`, `itenscomprovantes`, `movprodutos`, `itensmovprodutos`, `formas_pgto_comprovantes`
+- **Estoque:** `movprodutos` + `itensmovprodutos` são obrigatórios (entrada/saída de estoque e combustível). Nunca desligar no `config.enc`. Se `stg.movprodutos` estiver vazio/`itens` órfãos, resetar watermark desses dois datasets no posto e `run --once` (a API não aplica mais `sales_history_days` em MOV).
 - `produtos`, `grupoprodutos`, **`entidades`** (não habilitar o alias `clientes` junto), `funcionarios`, `usuarios`
 - `turnos`, `nfe`, `contaspagar`, `contasreceber` (+ baixas), `movlctos`, `movlctoscancelados`
 - Antifraude/crédito: `credito`, `movcreditoentidades`, `controle_troca_pgto`, `saldoclientes`

@@ -6,6 +6,7 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
+import { sortGridRows } from "../lib/grid-sort";
 
 function parseBrCurrency(input: string): number {
   const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
@@ -22,8 +23,7 @@ function formatBrCurrencyInput(raw: string): string {
 }
 
 function formatPctInput(raw: string): string {
-  const normalized = raw.replace(",", ".").replace(/[^\d.]/g, "");
-  return normalized;
+  return raw.replace(",", ".").replace(/[^\d.]/g, "");
 }
 
 function calcLiquida(row: {
@@ -36,6 +36,35 @@ function calcLiquida(row: {
   return Math.round(
     (row.comissao_bruta - row.perdas_estoque + row.sobras_estoque - row.furos_caixa + row.sobras_caixa) * 100,
   ) / 100;
+}
+
+function mapApiRow(r: any): RowState {
+  const rate = Number(r.rate_pct || 0);
+  const venda = Number(r.venda_bruta_total || 0);
+  const bruta = Number(r.comissao_bruta ?? (venda * rate) / 100);
+  const perdas = Number(r.perdas_estoque || 0);
+  const sobrasEst = Number(r.sobras_estoque || 0);
+  const sobrasCx = Number(r.sobras_caixa || 0);
+  const furos = Number(r.furos_caixa || 0);
+  const base = {
+    id_empresa: Number(r.id_empresa),
+    id_filial: Number(r.id_filial),
+    filial_label: String(r.filial_label || `Filial ${r.id_filial}`),
+    venda_bruta_total: venda,
+    rate_pct: rate,
+    comissao_bruta: bruta,
+    perdas_estoque: perdas,
+    sobras_estoque: sobrasEst,
+    sobras_caixa: sobrasCx,
+    furos_caixa: furos,
+    comissao_liquida: 0,
+    rate_text: String(rate),
+    perdas_text: perdas.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    sobras_est_text: sobrasEst.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    sobras_cx_text: sobrasCx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    furos_text: furos.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+  };
+  return { ...base, comissao_liquida: calcLiquida(base) };
 }
 
 type RowState = {
@@ -78,7 +107,8 @@ export default function ManagerCommissionGrid({
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
   const fetchCalc = useCallback(async () => {
-    if (!idFilial && !(idFiliais && idFiliais.length)) return;
+    const multi = (idFiliais || []).map(String).filter(Boolean);
+    if (!idFilial && multi.length === 0) return;
     setLoading(true);
     setError("");
     try {
@@ -86,43 +116,25 @@ export default function ManagerCommissionGrid({
       params.set("month", String(month));
       params.set("year", String(year));
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
-      if (idFiliais && idFiliais.length > 1) {
-        for (const f of idFiliais) params.append("id_filiais", String(f));
+      // Multi (ou "todas"): manda id_filiais[]; single: id_filial
+      if (!idFilial && multi.length > 0) {
+        for (const f of multi) params.append("id_filiais", String(f));
+      } else if (multi.length > 1) {
+        for (const f of multi) params.append("id_filiais", String(f));
       } else if (idFilial) {
         params.set("id_filial", String(idFilial));
-      } else if (idFiliais?.[0]) {
-        params.set("id_filial", String(idFiliais[0]));
+      } else if (multi[0]) {
+        params.set("id_filial", String(multi[0]));
       }
       const resp = await apiGet(`/bi/team/manager-commissions/calc?${params.toString()}`);
-      const mapped: RowState[] = (resp?.rows || []).map((r: any) => {
-        const rate = Number(r.rate_pct || 0);
-        const venda = Number(r.venda_bruta_total || 0);
-        const bruta = Number(r.comissao_bruta ?? (venda * rate) / 100);
-        const perdas = Number(r.perdas_estoque || 0);
-        const sobrasEst = Number(r.sobras_estoque || 0);
-        const sobrasCx = Number(r.sobras_caixa || 0);
-        const furos = Number(r.furos_caixa || 0);
-        const base = {
-          id_empresa: Number(r.id_empresa),
-          id_filial: Number(r.id_filial),
-          filial_label: String(r.filial_label || `Filial ${r.id_filial}`),
-          venda_bruta_total: venda,
-          rate_pct: rate,
-          comissao_bruta: bruta,
-          perdas_estoque: perdas,
-          sobras_estoque: sobrasEst,
-          sobras_caixa: sobrasCx,
-          furos_caixa: furos,
-          comissao_liquida: 0,
-          rate_text: String(rate),
-          perdas_text: perdas.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-          sobras_est_text: sobrasEst.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-          sobras_cx_text: sobrasCx.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-          furos_text: furos.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        };
-        return { ...base, comissao_liquida: calcLiquida(base) };
-      });
-      setRows(mapped);
+      const mapped = (resp?.rows || []).map(mapApiRow) as RowState[];
+      // Contrato grid: Filial ASC (rótulo operacional)
+      setRows(
+        sortGridRows(mapped, (row) => ({
+          filial: row.filial_label || String(row.id_filial),
+          nome: row.filial_label || String(row.id_filial),
+        })),
+      );
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Falha ao calcular comissão de gerentes.");
       setRows([]);
@@ -135,12 +147,24 @@ export default function ManagerCommissionGrid({
     fetchCalc();
   }, [fetchCalc]);
 
-  const { query, setQuery, filteredRows } = useGridSearch(rows as unknown as Record<string, unknown>[]);
+  const sortedRows = useMemo(
+    () =>
+      sortGridRows(rows, (row) => ({
+        filial: row.filial_label || String(row.id_filial),
+        nome: row.filial_label || String(row.id_filial),
+      })),
+    [rows],
+  );
 
-  const updateLocal = (idFilial: number, patch: Partial<RowState>) => {
+  const { query, setQuery, filteredRows } = useGridSearch(
+    sortedRows as unknown as Record<string, unknown>[],
+    { excludeKeys: /^id_/i },
+  );
+
+  const updateLocal = (targetFilial: number, patch: Partial<RowState>) => {
     setRows((prev) =>
       prev.map((row) => {
-        if (row.id_filial !== idFilial) return row;
+        if (row.id_filial !== targetFilial) return row;
         const next = { ...row, ...patch };
         const rate = Number(next.rate_pct) || 0;
         next.comissao_bruta = Math.round(((next.venda_bruta_total * rate) / 100) * 100) / 100;
@@ -153,8 +177,9 @@ export default function ManagerCommissionGrid({
   const persist = async (row: RowState) => {
     const key = `${row.id_filial}`;
     setSavingKey(key);
+    setError("");
     try {
-      await apiPut("/bi/team/manager-commissions/overrides", {
+      const resp = await apiPut("/bi/team/manager-commissions/overrides", {
         id_empresa: row.id_empresa,
         id_filial: row.id_filial,
         year,
@@ -167,6 +192,20 @@ export default function ManagerCommissionGrid({
           furos_caixa: row.furos_caixa,
         },
       });
+      // Recalc only this row from API response
+      if (resp?.row) {
+        const mapped = mapApiRow({
+          ...resp.row,
+          filial_label: resp.row.filial_label || row.filial_label,
+        });
+        setRows((prev) => {
+          const next = prev.map((r) => (r.id_filial === mapped.id_filial ? mapped : r));
+          return sortGridRows(next, (r) => ({
+            filial: r.filial_label || String(r.id_filial),
+            nome: r.filial_label || String(r.id_filial),
+          }));
+        });
+      }
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Falha ao gravar ajuste.");
     } finally {
@@ -177,33 +216,54 @@ export default function ManagerCommissionGrid({
   const inputStyle = {
     width: "100%",
     minWidth: 88,
-    padding: "4px 6px",
-    borderRadius: 6,
+    padding: "6px 8px",
+    borderRadius: 8,
     border: "1px solid var(--border)",
-    background: "var(--card-bg)",
+    background: "var(--surface-1, var(--card-bg))",
     color: "inherit",
     fontSize: 12,
     textAlign: "right" as const,
   };
 
-  if (!idFilial && !(idFiliais && idFiliais.length)) {
+  const multi = (idFiliais || []).filter(Boolean);
+  if (!idFilial && multi.length === 0) {
     return (
       <div className="card" style={{ marginTop: 12 }}>
-        <EmptyState title="Selecione uma filial" detail="Escolha a filial para o cálculo gerencial." />
+        <EmptyState
+          title="Selecione o escopo"
+          detail="Escolha uma ou mais filiais (ou Todas) no painel lateral para o cálculo gerencial."
+        />
       </div>
     );
   }
 
   return (
-    <div className="card" style={{ marginTop: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Cálculo gerencial (loja)</div>
+    <div
+      className="card"
+      style={{
+        marginTop: 12,
+        border: "1px solid var(--border)",
+        borderRadius: 14,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+          marginBottom: 12,
+          paddingBottom: 4,
+        }}
+      >
+        <GridSearchInput value={query} onChange={setQuery} />
+        <div style={{ marginLeft: "auto", textAlign: "right" }}>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Comissão de gerentes</div>
           <div className="muted" style={{ fontSize: 11 }}>
-            Comissão líquida = bruta − perdas + sobras estoque − furos + sobras caixa. Edite e saia do campo para gravar.
+            Edite a linha e saia do campo para gravar — só a filial alterada é recalculada.
           </div>
         </div>
-        <GridSearchInput value={query} onChange={setQuery} />
       </div>
 
       {error ? <div className="errorCard" style={{ marginBottom: 8 }}>{String(error)}</div> : null}
@@ -213,12 +273,12 @@ export default function ManagerCommissionGrid({
       ) : filteredRows.length === 0 ? (
         <EmptyState title="Sem linhas" detail="Nenhum cálculo para o período/filial." />
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table className="dataTable" style={{ width: "100%", fontSize: 12 }}>
+        <div className="tableScroll">
+          <table className="table compact" style={{ width: "100%", minWidth: 980 }}>
             <thead>
               <tr>
-                <th>Filial</th>
-                <th style={{ textAlign: "right" }}>Venda bruta total</th>
+                <th style={{ textAlign: "left" }}>Filial</th>
+                <th style={{ textAlign: "right" }}>Venda bruta</th>
                 <th style={{ textAlign: "right" }}>Taxa %</th>
                 <th style={{ textAlign: "right" }}>Comissão bruta</th>
                 <th style={{ textAlign: "right" }}>Perdas estoque</th>
@@ -231,8 +291,12 @@ export default function ManagerCommissionGrid({
             <tbody>
               {(filteredRows as unknown as RowState[]).map((row) => (
                 <tr key={row.id_filial}>
-                  <td>{row.filial_label}</td>
-                  <td style={{ textAlign: "right" }}>{formatCurrency(row.venda_bruta_total)}</td>
+                  <td style={{ fontWeight: 600, whiteSpace: "nowrap", textAlign: "left" }}>
+                    {row.filial_label}
+                  </td>
+                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {formatCurrency(row.venda_bruta_total)}
+                  </td>
                   <td>
                     <input
                       style={inputStyle}
@@ -248,7 +312,9 @@ export default function ManagerCommissionGrid({
                       }}
                     />
                   </td>
-                  <td style={{ textAlign: "right", fontWeight: 600 }}>{formatCurrency(row.comissao_bruta)}</td>
+                  <td style={{ textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                    {formatCurrency(row.comissao_bruta)}
+                  </td>
                   <td>
                     <input
                       style={inputStyle}
@@ -317,7 +383,7 @@ export default function ManagerCommissionGrid({
                       }}
                     />
                   </td>
-                  <td style={{ textAlign: "right", fontWeight: 700 }}>
+                  <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                     {formatCurrency(row.comissao_liquida)}
                     {savingKey === String(row.id_filial) ? (
                       <span className="muted" style={{ marginLeft: 6, fontWeight: 400 }}>…</span>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import EmptyState from "../components/ui/EmptyState";
 
@@ -11,6 +11,28 @@ interface Props {
 }
 
 type GroupRow = { id_grupo_produto: number; nome: string; selected: boolean };
+
+const groupGridStyle: CSSProperties = {
+  maxHeight: 220,
+  overflow: "auto",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: 8,
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+  gap: "8px 12px",
+  alignItems: "start",
+};
+
+const groupLabelStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: 8,
+  fontSize: 12,
+  cursor: "pointer",
+  minWidth: 0,
+  lineHeight: 1.35,
+};
 
 export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSaved }: Props) {
   const [loading, setLoading] = useState(false);
@@ -102,22 +124,18 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
           {groups.filter((g) => g.selected).length}/{groups.length} selecionados
         </span>
       </div>
-      <div
-        style={{
-          maxHeight: 220,
-          overflow: "auto",
-          border: "1px solid var(--border)",
-          borderRadius: 8,
-          padding: 8,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-          gap: 6,
-        }}
-      >
+      <div style={groupGridStyle}>
         {groups.map((g) => (
-          <label key={`${kind}-${g.id_grupo_produto}`} style={{ display: "flex", gap: 6, fontSize: 12, cursor: "pointer" }}>
-            <input type="checkbox" checked={g.selected} onChange={() => toggle(kind, g.id_grupo_produto)} />
-            <span>{g.nome || `Grupo ${g.id_grupo_produto}`}</span>
+          <label key={`${kind}-${g.id_grupo_produto}`} style={groupLabelStyle}>
+            <input
+              type="checkbox"
+              checked={g.selected}
+              onChange={() => toggle(kind, g.id_grupo_produto)}
+              style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}
+            />
+            <span style={{ minWidth: 0, wordBreak: "break-word" }}>
+              {g.nome || `Grupo ${g.id_grupo_produto}`}
+            </span>
           </label>
         ))}
       </div>

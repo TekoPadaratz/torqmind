@@ -260,8 +260,9 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_order_by": f"{WATERMARK_ALIAS}, ID_MOVPRODUTOS, ID_FILIAL, ID_DB",
         "cursor_pk_columns": ["ID_MOVPRODUTOS", "ID_FILIAL", "ID_DB"],
-        # NAO e fonte canonica de venda (use comprovantes). Necessario para
-        # reconstruir estoque loja as-of na Solvencia (movimentacao + custo NF).
+        # OBRIGATÓRIO: cabeçalho de movimentação de estoque (entrada/saída loja e
+        # combustível). NÃO é fonte canônica de venda (use comprovantes), mas
+        # NUNCA desabilitar — alimenta tela de estoque, movimentações e solvência.
         "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
@@ -278,8 +279,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
         "deprecated": False,
         "deprecation_notice": (
-            "Not canonical for sales (use comprovantes). Enabled for Solvencia "
-            "stock reconstruction (movimentacao de estoque)."
+            "Required for stock in/out and fuel inventory movements. Not canonical "
+            "for sales (use comprovantes)."
         ),
     },
     "itensmovprodutos": {
@@ -288,7 +289,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_order_by": f"{WATERMARK_ALIAS}, ID_ITENSMOVPRODUTOS, ID_FILIAL, ID_DB",
         "cursor_pk_columns": ["ID_ITENSMOVPRODUTOS", "ID_FILIAL", "ID_DB"],
-        # Custo de reposicao = VLRCUSTOCOMICMS da ultima NF de entrada (CFOP 1.xxx/2.xxx).
+        # OBRIGATÓRIO: itens da movimentação de estoque (inclui entradas de
+        # combustível / custo VLRCUSTOCOMICMS). Parear sempre com movprodutos.
         "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
@@ -309,8 +311,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
         "deprecated": False,
         "deprecation_notice": (
-            "Not canonical for sales items (use itenscomprovantes). Enabled for "
-            "Solvencia stock cost (VLRCUSTOCOMICMS)."
+            "Required for stock line items and fuel entries. Not canonical for "
+            "sales items (use itenscomprovantes)."
         ),
     },
     "formas_pgto_comprovantes": {

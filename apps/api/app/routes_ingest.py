@@ -37,7 +37,12 @@ from app.services.alert_preco_fixo import notify_preco_fixo_from_itens
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
 
-SALES_RETENTION_DATASETS = {"comprovantes", "movprodutos"}
+# Janela curta de vendas comerciais. NÃO incluir movprodutos/itensmovprodutos:
+# essas tabelas são movimentação de estoque (entrada/saída loja e combustível)
+# e precisam acompanhar o bootstrap longo do agent (SOLVENCIA_BOOTSTRAP_DAYS).
+# Incluir movprodutos aqui rejeitava cabeçalhos antigos e gerava órfãos em
+# stg.itensmovprodutos (itens sem header) — quebra estoque e entradas de combustível.
+SALES_RETENTION_DATASETS = {"comprovantes"}
 
 
 def _get_any(d: Dict[str, Any], keys: List[str]) -> Any:

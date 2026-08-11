@@ -2447,6 +2447,7 @@ def team_commissions_config(
     groups_selected = repos_commission.get_config_groups(config_id)
     tiers = repos_commission.get_config_tiers(config_id)
     groups_available = repos_commission.get_available_groups(tenant, id_filial)
+    excluded_products = repos_commission.get_config_product_excludes(config_id)
 
     # Mark selected groups
     selected_ids = {g["id_grupo_produto"] for g in groups_selected}
@@ -2460,8 +2461,16 @@ def team_commissions_config(
             "default_payment_mode": config["default_payment_mode"],
             "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
             "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
+            "eligible_cfops": list(repos_commission.COMMISSION_ELIGIBLE_CFOPS),
         },
         "groups": groups_available,
+        "excluded_products": [
+            {
+                "id_produto": int(p["id_produto"]),
+                "nome": p.get("nome_produto_snapshot") or "",
+            }
+            for p in excluded_products
+        ],
         "tiers": [
             {
                 "tier_key": t["tier_key"],
@@ -2493,8 +2502,11 @@ def team_commissions_config_save(
     groups = body.get("groups", [])
     tiers = body.get("tiers", [])
     payment_mode = body.get("default_payment_mode", "team_total")
+    # Manager commission UI moved to ManagerCommissionConfigPanel; keep fields
+    # optional for backward compatibility with older clients.
     manager_commission_mode = body.get("manager_commission_mode", "use_tiers")
     manager_commission_percent = float(body.get("manager_commission_percent", 0) or 0)
+    excluded_products = body.get("excluded_products") or body.get("product_excludes") or []
 
     # Validate payment_mode
     if payment_mode not in ("team_total", "equal_split", "individual_sales"):
@@ -2534,6 +2546,18 @@ def team_commissions_config_save(
             prev_amount = amount
             prev_percent = percent
 
+    cleaned_excludes = []
+    for p in excluded_products:
+        try:
+            pid = int((p or {}).get("id_produto") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            cleaned_excludes.append({
+                "id_produto": pid,
+                "nome": str((p or {}).get("nome") or (p or {}).get("nome_produto_snapshot") or ""),
+            })
+
     repos_commission.save_config(
         tenant,
         id_filial,
@@ -2542,35 +2566,69 @@ def team_commissions_config_save(
         payment_mode,
         manager_commission_mode,
         manager_commission_percent,
+        excluded_products=cleaned_excludes,
     )
     return {"ok": True, "message": "Configuração salva com sucesso."}
 
 
+@router.get("/team/commissions/config/products")
+def team_commissions_config_products(
+    id_filial: int = Query(..., description="Branch ID"),
+    id_grupo_produto: int = Query(..., description="Product group ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.config")),
+):
+    """Products of a group for commission drill-down (employees)."""
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    products = repos_commission.get_group_products(tenant, id_filial, id_grupo_produto)
+    return {
+        "id_empresa": tenant,
+        "id_filial": id_filial,
+        "id_grupo_produto": id_grupo_produto,
+        "products": products,
+    }
+
+
 @router.get("/team/commissions/results")
 def team_commissions_results(
-    id_filial: int = Query(..., description="Branch ID"),
     month: int = Query(..., ge=1, le=12),
     year: int = Query(..., ge=2020, le=2100),
+    id_filial: Optional[int] = Query(None, description="Branch ID (single)"),
+    id_filiais: Optional[List[int]] = Query(None, description="Multi-branch scope"),
     payment_mode: Optional[str] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.comissoes")),
 ):
-    """Get commission calculation results for a specific month/year."""
-    role = claims["role"]
-    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    """Employee commission results — single or multi-branch (config stays 1 filial)."""
+    tenant, branch_scope, branch_ids = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa,
+        id_filial_q=id_filial,
+        id_filiais_q=id_filiais,
+    )
+    targets: List[int] = []
+    if branch_ids:
+        targets = [int(b) for b in branch_ids if int(b) > 0]
+    elif isinstance(branch_scope, list):
+        targets = [int(b) for b in branch_scope if int(b) > 0]
+    elif branch_scope:
+        targets = [int(branch_scope)]
+    elif id_filial:
+        targets = [int(id_filial)]
+    if not targets:
+        raise HTTPException(status_code=422, detail="Informe ao menos uma filial.")
 
-    # Resolve payment mode: explicit valid request wins, else fall back to the
-    # filial's configured default. calculate_commission_results re-validates.
     valid_modes = ("team_total", "equal_split", "individual_sales")
     effective_mode = payment_mode if payment_mode in valid_modes else None
-    if effective_mode is None:
-        config = repos_commission.get_config(tenant, id_filial)
-        effective_mode = str((config or {}).get("default_payment_mode") or "team_total")
-        if effective_mode not in valid_modes:
-            effective_mode = "individual_sales"
-    result = repos_commission.calculate_commission_results(tenant, id_filial, month, year, effective_mode)
-    return result
+    return repos_commission.calculate_commission_results_multi(
+        tenant,
+        targets,
+        month,
+        year,
+        payment_mode=effective_mode,
+    )
 
 
 # ------------------------
@@ -2674,7 +2732,7 @@ def manager_commissions_calc(
                          NULLIF(TRIM(nome), ''),
                          'Filial ' || id_filial::text
                        ) AS label
-                FROM app.filiais
+                FROM auth.filiais
                 WHERE id_empresa = %s AND id_filial = ANY(%s)
                 """,
                 [tenant, targets],
@@ -2741,8 +2799,36 @@ def manager_commissions_overrides_save(
         payload,
         updated_by=updated_by,
     )
+    filial_label = None
+    try:
+        from app.db import get_conn
+
+        with get_conn(tenant_id=tenant) as conn:
+            label_row = conn.execute(
+                """
+                SELECT COALESCE(
+                         NULLIF(TRIM(apelido), ''),
+                         NULLIF(TRIM(nome), ''),
+                         'Filial ' || id_filial::text
+                       ) AS label
+                FROM auth.filiais
+                WHERE id_empresa = %s AND id_filial = %s
+                LIMIT 1
+                """,
+                [tenant, int(id_filial)],
+            ).fetchone()
+            if label_row:
+                filial_label = str(label_row["label"])
+    except Exception:
+        filial_label = None
+
     row = repos_manager_commission.calc_branch_row(
-        tenant, int(id_filial), int(year), int(month), publish=False
+        tenant,
+        int(id_filial),
+        int(year),
+        int(month),
+        filial_label=filial_label,
+        publish=False,
     )
     return {"ok": True, "override": saved, "row": row}
 

@@ -9,8 +9,19 @@ export function readCachedSession(): any | null {
   return sessionCache || getClaims();
 }
 
+function isProductSessionShape(session: any): boolean {
+  // /auth/me e login.session têm sub/email + access. Resposta-raiz da API
+  // ({ok,service}) ou JWT fino sem access NÃO são sessão — cachear isso
+  // faz loadSession achar product/platform=false e loopar sales↔platform.
+  if (!session || typeof session !== 'object') return false;
+  if (session.ok === true && session.service && !session.access) return false;
+  if (!session.access || typeof session.access !== 'object') return false;
+  return Boolean(session.sub || session.email || session.user_role);
+}
+
 export function cacheSession(session: any | null) {
   if (!session) return null;
+  if (!isProductSessionShape(session)) return sessionCache;
   sessionCache = session;
   setClaims(session);
   if (typeof window !== 'undefined') {
@@ -37,6 +48,9 @@ export async function fetchSession(force = false) {
 
   sessionPromise = apiGet('/auth/me')
     .then((me) => {
+      if (!isProductSessionShape(me)) {
+        throw new Error('invalid_session_payload');
+      }
       return cacheSession(me);
     })
     .finally(() => {

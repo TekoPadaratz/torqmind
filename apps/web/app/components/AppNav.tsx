@@ -360,13 +360,30 @@ export default function AppNav({
     }
   }, [initialUnread]);
 
+  const unreadScopeKey = useMemo(() => {
+    if (!activeScope?.id_empresa) return '';
+    return buildScopeSearchParams(activeScope).toString();
+  }, [
+    activeScope?.id_empresa,
+    activeScope?.dt_ini,
+    activeScope?.dt_fim,
+    activeScope?.dt_ref,
+    activeScope?.branch_scope,
+    activeScope?.id_filial,
+    (activeScope?.id_filiais || []).join(','),
+    activeScope?.scope_epoch,
+  ]);
+
   useEffect(() => {
     if (typeof initialUnread === 'number') return;
+    if (!unreadScopeKey) {
+      setUnread(0);
+      return;
+    }
     let active = true;
     const loadUnread = async () => {
       try {
-        const qs = buildScopeSearchParams(activeScope).toString();
-        const response = await apiGet(`/bi/notifications/unread-count${qs ? `?${qs}` : ''}`);
+        const response = await apiGet(`/bi/notifications/unread-count?${unreadScopeKey}`);
         if (active) setUnread(Number(response?.unread || 0));
       } catch {
         if (active) setUnread(0);
@@ -376,7 +393,7 @@ export default function AppNav({
     return () => {
       active = false;
     };
-  }, [activeScope, initialUnread]);
+  }, [unreadScopeKey, initialUnread]);
 
   const loadAlerts = async () => {
     setAlertsLoading(true);

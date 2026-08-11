@@ -34,6 +34,7 @@ def _resolve_session(authorization: Optional[str]) -> dict[str, Any]:
             id_empresa=payload.get("id_empresa"),
             id_filial=payload.get("id_filial"),
             channel_id=payload.get("channel_id"),
+            include_default_scope=True,
         )
     except repos_auth.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())

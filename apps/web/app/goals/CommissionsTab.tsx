@@ -6,6 +6,7 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
+import { sortGridRows } from "../lib/grid-sort";
 import ManagerCommissionGrid from "./ManagerCommissionGrid";
 
 // Tier styling
@@ -21,27 +22,17 @@ const PAYMENT_MODE_LABELS: Record<string, string> = {
   team_total: "Equipe (comissão total)",
   equal_split: "Divisão igual entre vendedores",
   individual_sales: "Individual por vendas",
+  per_branch: "Padrão de cada filial",
 };
-
-function parseBrCurrency(input: string): number {
-  const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "");
-  const value = Number(normalized);
-  return Number.isFinite(value) ? value : 0;
-}
-
-function formatBrCurrencyInput(raw: string): string {
-  const digits = raw.replace(/\D/g, "");
-  const cents = Number(digits || "0");
-  return (cents / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
 interface CommissionsTabProps {
   idEmpresa: number | null;
   idFilial: number | null;
+  idFiliais?: string[];
   referenceDate?: string | null;
 }
 
-export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: CommissionsTabProps) {
+export default function CommissionsTab({ idEmpresa, idFilial, idFiliais, referenceDate }: CommissionsTabProps) {
   const today = useMemo(() => new Date(), []);
   const parsedRef = useMemo(() => {
     if (!referenceDate) return today;
@@ -56,7 +47,13 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [lossInput, setLossInput] = useState("0,00");
+
+  const multiFiliais = useMemo(
+    () => (idFiliais || []).map(String).filter((v) => v && v !== "0"),
+    [idFiliais],
+  );
+  const isMulti = multiFiliais.length > 1 || (!idFilial && multiFiliais.length > 0);
+  const hasScope = Boolean(idFilial) || multiFiliais.length > 0;
 
   useEffect(() => {
     setSelectedMonth(parsedRef.getMonth() + 1);
@@ -64,16 +61,24 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
   }, [parsedRef]);
 
   const fetchResults = useCallback(async () => {
-    if (!idFilial) return;
+    if (!idFilial && multiFiliais.length === 0) {
+      setData(null);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       const params = new URLSearchParams();
-      params.set("id_filial", String(idFilial));
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
       params.set("month", String(selectedMonth));
       params.set("year", String(selectedYear));
-      if (paymentMode) params.set("payment_mode", paymentMode);
+      if (isMulti || (!idFilial && multiFiliais.length > 0)) {
+        for (const f of multiFiliais) params.append("id_filiais", String(f));
+      } else if (idFilial) {
+        params.set("id_filial", String(idFilial));
+      }
+      // Modo de pagamento só aplica override quando há 1 filial selecionada
+      if (idFilial && paymentMode) params.set("payment_mode", paymentMode);
       const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`);
       setData(resp);
     } catch (err: any) {
@@ -81,33 +86,51 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
     } finally {
       setLoading(false);
     }
-  }, [idEmpresa, idFilial, selectedMonth, selectedYear, paymentMode]);
+  }, [idEmpresa, idFilial, multiFiliais, isMulti, selectedMonth, selectedYear, paymentMode]);
 
   useEffect(() => {
     fetchResults();
   }, [fetchResults]);
+
+  const sellersSorted = useMemo(() => {
+    const rows = (data?.vendedores || []) as Record<string, unknown>[];
+    return sortGridRows(rows, (row) => ({
+      filial: String(row.filial_label || row.id_filial || ""),
+      nome: String(row.nome_vendedor || ""),
+    }));
+  }, [data?.vendedores]);
+
+  const groupsSorted = useMemo(() => {
+    const rows = (data?.grupos_configurados || []) as Record<string, unknown>[];
+    return sortGridRows(rows, (row) => ({
+      filial: String(row.filial_label || row.id_filial || ""),
+      nome: String(row.nome || ""),
+    }));
+  }, [data?.grupos_configurados]);
+
   const { query: sellersQ, setQuery: setSellersQ, filteredRows: filteredSellers } = useGridSearch(
-    data?.vendedores as Record<string, unknown>[] | undefined,
+    sellersSorted,
+    { excludeKeys: /^id_/i },
   );
   const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
-    data?.grupos_configurados as Record<string, unknown>[] | undefined,
+    groupsSorted,
+    { excludeKeys: /^id_/i },
   );
 
-  if (!idFilial) {
+  // Filial: exibe quando há mais de uma no escopo (contrato grids BI)
+  const showFilialCol = Boolean(data?.multi_filial) || multiFiliais.length > 1;
+  const numCell = { textAlign: "right" as const, fontVariantNumeric: "tabular-nums" as const };
+
+  if (!hasScope) {
     return (
       <div className="card" style={{ marginTop: 16 }}>
         <EmptyState
-          title="Selecione uma filial"
-          detail="Escolha uma filial no painel lateral para visualizar as comissões."
+          title="Selecione o escopo"
+          detail="Escolha uma ou mais filiais (ou Todas) no painel lateral para visualizar as comissões."
         />
       </div>
     );
   }
-
-  const manager = data?.gerente || {};
-  const managerGross = Number(manager?.comissao_bruta || 0);
-  const managerLoss = parseBrCurrency(lossInput);
-  const managerNet = Math.max(managerGross - managerLoss, 0);
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -120,26 +143,33 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                 · {PAYMENT_MODE_LABELS[data.payment_mode] || data.payment_mode}
               </span>
             ) : null}
+            {showFilialCol ? (
+              <span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>
+                · {multiFiliais.length || data?.id_filiais?.length || 0} filiais
+              </span>
+            ) : null}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <select
-              value={paymentMode}
-              onChange={(e) => setPaymentMode(e.target.value)}
-              title="Modo de cálculo da comissão"
-              style={{
-                padding: "6px 10px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--card-bg)",
-                color: "inherit",
-                fontSize: 12,
-              }}
-            >
-              <option value="">Modo: padrão da config</option>
-              <option value="team_total">Equipe (comissão total)</option>
-              <option value="equal_split">Divisão igual</option>
-              <option value="individual_sales">Individual por vendas</option>
-            </select>
+            {idFilial ? (
+              <select
+                value={paymentMode}
+                onChange={(e) => setPaymentMode(e.target.value)}
+                title="Modo de cálculo da comissão"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--card-bg)",
+                  color: "inherit",
+                  fontSize: 12,
+                }}
+              >
+                <option value="">Modo: padrão da config</option>
+                <option value="team_total">Equipe (comissão total)</option>
+                <option value="equal_split">Divisão igual</option>
+                <option value="individual_sales">Individual por vendas</option>
+              </select>
+            ) : null}
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(Number(e.target.value))}
@@ -185,6 +215,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
       <ManagerCommissionGrid
         idEmpresa={idEmpresa}
         idFilial={idFilial}
+        idFiliais={idFiliais}
         month={selectedMonth}
         year={selectedYear}
       />
@@ -195,85 +226,49 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
         </div>
       ) : data ? (
         <>
-          {data.message && (
+          {data.message && (data.vendedores || []).length === 0 ? (
             <div className="card" style={{ marginTop: 12 }}>
               <EmptyState title="Sem dados" detail={data.message} />
             </div>
-          )}
-
-          {!data.message && (
+          ) : (
             <>
-              {/* Painel legado de gerente (tiers) mantido abaixo do grid LSC */}
               <div className="card" style={{ marginTop: 12 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Comissão de gerente (legado / tiers)</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                  <div>
-                    <div className="muted" style={{ fontSize: 11 }}>Venda total (sem combustíveis)</div>
-                    <div style={{ fontWeight: 700, fontSize: 18 }}>{formatCurrency(manager.venda_total_sem_combustiveis || 0)}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+                  <GridSearchInput value={sellersQ} onChange={setSellersQ} />
+                  <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                    <h2 style={{ margin: 0, fontSize: 15 }}>Vendedores</h2>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {data.vendedores_elegiveis} elegíveis · total {formatCurrency(data.comissao_total || 0)}
+                    </span>
                   </div>
-                  <div>
-                    <div className="muted" style={{ fontSize: 11 }}>Perdas no mês (informado pelo gerente)</div>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      value={lossInput}
-                      onChange={(e) => setLossInput(formatBrCurrencyInput(e.target.value))}
-                      style={{
-                        marginTop: 4,
-                        width: "100%",
-                        maxWidth: 200,
-                        padding: "6px 8px",
-                        borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        background: "var(--card-bg)",
-                        color: "inherit",
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <div className="muted" style={{ fontSize: 11 }}>Comissão líquida gerente</div>
-                    <div style={{ fontWeight: 800, fontSize: 20, color: "#22c55e" }}>{formatCurrency(managerNet)}</div>
-                    <div className="muted" style={{ fontSize: 11 }}>
-                      Bruta {formatCurrency(managerGross)} {manager?.percentual_aplicado ? `(${manager.percentual_aplicado}%)` : ""}
-                    </div>
                 </div>
-                </div>
-              </div>
-
-              {/* Employee Grid */}
-              <div className="card" style={{ marginTop: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <h2 style={{ margin: 0, fontSize: 15 }}>Vendedores</h2>
-                  <span className="muted" style={{ fontSize: 12 }}>
-                    {data.vendedores_elegiveis} elegíveis
-                  </span>
-                </div>
-
-                <div style={{ padding: "8px 12px", background: "rgba(34,197,94,0.08)", borderRadius: 8, marginBottom: 10, fontSize: 13 }}>
-                  Comissão total de vendedores: <strong>{formatCurrency(data.comissao_total || 0)}</strong>
-                </div>
-                <GridSearchInput value={sellersQ} onChange={setSellersQ} />
 
                 {(data.vendedores || []).length === 0 ? (
-                  <EmptyState title="Sem vendedores" detail="Não há vendedores com identificação válida para o mês selecionado." />
+                  <EmptyState title="Sem vendedores" detail="Não há vendedores com identificação válida para o período selecionado." />
                 ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table className="table compact">
+                  <div className="tableScroll">
+                    <table className="table compact" style={{ width: "100%", minWidth: showFilialCol ? 720 : 560 }}>
                       <thead>
                         <tr>
-                          <th>Funcionário</th>
-                          <th>Venda</th>
-                          <th>Nível</th>
-                          <th>%</th>
-                          <th>Comissão</th>
+                          {showFilialCol ? <th style={{ textAlign: "left" }}>Filial</th> : null}
+                          <th style={{ textAlign: "left" }}>Funcionário</th>
+                          <th style={{ textAlign: "right" }}>Venda</th>
+                          <th style={{ textAlign: "left" }}>Nível</th>
+                          <th style={{ textAlign: "right" }}>%</th>
+                          <th style={{ textAlign: "right" }}>Comissão</th>
                         </tr>
                       </thead>
                       <tbody>
                         {filteredSellers.map((emp: any) => (
-                          <tr key={emp.id_funcionario}>
-                            <td style={{ fontWeight: 500 }}>{emp.nome_vendedor}</td>
-                            <td>{formatCurrency(emp.venda_elegivel)}</td>
-                            <td>
+                          <tr key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}>
+                            {showFilialCol ? (
+                              <td style={{ fontWeight: 600, whiteSpace: "nowrap", textAlign: "left" }}>
+                                {emp.filial_label || `Filial ${emp.id_filial || "—"}`}
+                              </td>
+                            ) : null}
+                            <td style={{ fontWeight: 500, textAlign: "left" }}>{emp.nome_vendedor}</td>
+                            <td style={numCell}>{formatCurrency(emp.venda_elegivel)}</td>
+                            <td style={{ textAlign: "left" }}>
                               {emp.nivel_atingido ? (
                                 <span style={{ color: TIER_STYLES[emp.nivel_atingido.tier_key]?.color }}>
                                   {TIER_STYLES[emp.nivel_atingido.tier_key]?.icon} {emp.nivel_atingido.tier_name}
@@ -282,8 +277,10 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                                 <span className="muted">Sem nível</span>
                               )}
                             </td>
-                            <td>{Number(emp.percentual_aplicado || 0).toFixed(2)}%</td>
-                            <td style={{ fontWeight: 700, color: "#22c55e" }}>{formatCurrency(emp.comissao_estimada || 0)}</td>
+                            <td style={numCell}>{Number(emp.percentual_aplicado || 0).toFixed(2)}%</td>
+                            <td style={{ ...numCell, fontWeight: 700, color: "#22c55e" }}>
+                              {formatCurrency(emp.comissao_estimada || 0)}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -292,23 +289,30 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                 )}
               </div>
 
-              {/* Groups breakdown */}
               {(data.grupos_configurados || []).length > 0 && (
                 <div className="card" style={{ marginTop: 12 }}>
-                  <h2 style={{ fontSize: 14, marginBottom: 8 }}>Grupos participantes</h2>
-                  <GridSearchInput value={groupsQ} onChange={setGroupsQ} />
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+                    <GridSearchInput value={groupsQ} onChange={setGroupsQ} />
+                    <h2 style={{ margin: 0, marginLeft: "auto", fontSize: 14 }}>Grupos participantes</h2>
+                  </div>
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Grupo</th>
-                        <th>Venda no mês</th>
+                        {showFilialCol ? <th style={{ textAlign: "left" }}>Filial</th> : null}
+                        <th style={{ textAlign: "left" }}>Grupo</th>
+                        <th style={{ textAlign: "right" }}>Venda no mês</th>
                       </tr>
                     </thead>
                     <tbody>
                       {filteredGroups.map((g: any) => (
-                        <tr key={g.id_grupo_produto}>
-                          <td>{g.nome}</td>
-                          <td>{formatCurrency(g.venda_total)}</td>
+                        <tr key={`${g.id_filial || "x"}-${g.id_grupo_produto}`}>
+                          {showFilialCol ? (
+                            <td style={{ fontWeight: 600, whiteSpace: "nowrap", textAlign: "left" }}>
+                              {g.filial_label || `Filial ${g.id_filial || "—"}`}
+                            </td>
+                          ) : null}
+                          <td style={{ textAlign: "left" }}>{g.nome}</td>
+                          <td style={numCell}>{formatCurrency(g.venda_total)}</td>
                         </tr>
                       ))}
                     </tbody>

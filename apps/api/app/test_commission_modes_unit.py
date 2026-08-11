@@ -88,6 +88,8 @@ def _patched_calc(default_mode: str = "team_total"):
     with patch.object(repos_commission, "get_config", return_value=_config(default_mode)), \
          patch.object(repos_commission, "get_config_groups", return_value=[{"id_grupo_produto": 10}]), \
          patch.object(repos_commission, "get_config_tiers", return_value=list(repos_commission.DEFAULT_TIERS)), \
+         patch.object(repos_commission, "get_config_product_excludes", return_value=[]), \
+         patch.object(repos_commission, "_filial_labels", return_value={14122: "VR 05"}), \
          patch.object(repos_commission, "get_conn", side_effect=_get_conn):
         yield
 

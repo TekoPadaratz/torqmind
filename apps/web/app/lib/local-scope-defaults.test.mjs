@@ -89,3 +89,34 @@ test('browser local default scope derives all accessible branches for company-le
   assert.deepEqual(scope.id_filiais, ['11', '13']);
   assert.equal(scope.branch_scope, 'all');
 });
+
+test('browser local default scope falls back to tenant_ids[0] for platform sessions', () => {
+  const scope = buildBrowserLocalDefaultScope({
+    id_empresa: null,
+    id_filial: null,
+    tenant_ids: [1, 2],
+    accesses: [
+      { id_empresa: 1, id_filial: 14458 },
+      { id_empresa: 1, id_filial: 10169 },
+    ],
+    default_scope: { days: 30 },
+  });
+
+  assert.equal(scope.id_empresa, '1');
+  assert.deepEqual(scope.id_filiais, ['10169', '14458']);
+  assert.equal(scope.branch_scope, 'all');
+});
+
+test('browser local default scope uses branch_scope=all when empresa has no branches yet', () => {
+  const scope = buildBrowserLocalDefaultScope({
+    id_empresa: null,
+    id_filial: null,
+    tenant_ids: [1, 2],
+    accesses: [],
+    default_scope: { days: 30 },
+  });
+
+  assert.equal(scope.id_empresa, '1');
+  assert.deepEqual(scope.id_filiais, []);
+  assert.equal(scope.branch_scope, 'all');
+});

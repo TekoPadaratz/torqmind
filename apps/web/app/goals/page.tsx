@@ -224,21 +224,33 @@ export default function GoalsPage() {
             key={commissionRefresh}
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
+            idFiliais={scope.id_filiais || []}
             referenceDate={scope.dt_ref || scope.dt_fim || null}
           />
         )}
         {effectiveTab === 'config' && (
           <>
-            <CommissionConfigTab
-              idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
-              idFilial={singleBranchId ? Number(singleBranchId) : null}
-              onSaved={() => setCommissionRefresh((n) => n + 1)}
-            />
-            <ManagerCommissionConfigPanel
-              idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
-              idFilial={singleBranchId ? Number(singleBranchId) : null}
-              onSaved={() => setCommissionRefresh((n) => n + 1)}
-            />
+            {!singleBranchId ? (
+              <div className="card" style={{ marginTop: 16 }}>
+                <EmptyState
+                  title="Selecione uma filial"
+                  detail="A configuração de comissão (funcionários e gerentes) exige exatamente uma filial."
+                />
+              </div>
+            ) : (
+              <>
+                <CommissionConfigTab
+                  idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+                  idFilial={Number(singleBranchId)}
+                  onSaved={() => setCommissionRefresh((n) => n + 1)}
+                />
+                <ManagerCommissionConfigPanel
+                  idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+                  idFilial={Number(singleBranchId)}
+                  onSaved={() => setCommissionRefresh((n) => n + 1)}
+                />
+              </>
+            )}
           </>
         )}
 

@@ -126,6 +126,7 @@ class SalesRetentionTest(unittest.TestCase):
         self.assertEqual(comprovantes["retention_policy"]["name"], "sales_history_days")
         self.assertIsNotNone(comprovantes["retention_cutoff"])
 
+        # movprodutos = estoque (entrada/saída); NÃO entra na retenção curta de vendas
         movprodutos = self._post_ndjson(
             "movprodutos",
             ingest_key,
@@ -150,8 +151,9 @@ class SalesRetentionTest(unittest.TestCase):
                 },
             ],
         )
-        self.assertEqual(int(movprodutos["inserted_or_updated"]), 1)
-        self.assertEqual(int(movprodutos["rejected_by_retention"]), 1)
+        self.assertEqual(int(movprodutos["inserted_or_updated"]), 2)
+        self.assertEqual(int(movprodutos["rejected_by_retention"]), 0)
+        self.assertEqual(movprodutos["retention_policy"]["name"], "none")
 
         clientes = self._post_ndjson(
             "clientes",
@@ -212,12 +214,13 @@ class SalesRetentionTest(unittest.TestCase):
             ).fetchone()
 
         self.assertEqual(int(stg_counts["comprovantes"]), 1)
-        self.assertEqual(int(stg_counts["movprodutos"]), 1)
+        self.assertEqual(int(stg_counts["movprodutos"]), 2)
         self.assertEqual(int(stg_counts["clientes"]), 1)
         self.assertEqual(int(stg_counts["contaspagar"]), 1)
         self.assertEqual(int(stg_counts["contasreceber"]), 1)
 
-    def test_ingest_retention_override_accepts_historical_movprodutos_replay(self) -> None:
+    def test_ingest_accepts_historical_movprodutos_without_sales_retention(self) -> None:
+        """movprodutos is stock movement — must accept history beyond sales_history_days."""
         tenant_id, ingest_key = self._create_tenant("Tenant Historical Replay Retention")
         historical_date = date(2025, 1, 1).isoformat()
         historical_row = {
@@ -230,36 +233,13 @@ class SalesRetentionTest(unittest.TestCase):
             "DATA": historical_date,
         }
 
-        rejected = self._post_ndjson("movprodutos", ingest_key, [historical_row])
-        self.assertEqual(int(rejected["inserted_or_updated"]), 0)
-        self.assertEqual(int(rejected["rejected_by_retention"]), 1)
-        self.assertEqual(int(rejected["inserted"]), 0)
-        self.assertEqual(int(rejected["updated"]), 0)
-        self.assertEqual(int(rejected["duplicates_in_batch"]), 0)
-        self.assertEqual(rejected["retention_policy"]["cutoff_source"], "sales_history_days")
-        self.assertFalse(bool(rejected["retention_policy"]["override"]["active"]))
-        self.assertEqual(
-            self._scalar("SELECT COUNT(*) FROM stg.movprodutos WHERE id_empresa = %s", (tenant_id,)),
-            0,
-        )
-
-        with patch.object(routes_ingest.settings, "ingest_retention_override_min_date", date(2025, 1, 1)), patch.object(
-            routes_ingest.settings,
-            "ingest_retention_override_datasets",
-            "movprodutos,comprovantes,itensmovprodutos,formas_pgto_comprovantes,turnos",
-        ):
-            accepted = self._post_ndjson("movprodutos", ingest_key, [historical_row])
-
+        accepted = self._post_ndjson("movprodutos", ingest_key, [historical_row])
         self.assertEqual(int(accepted["inserted_or_updated"]), 1)
         self.assertEqual(int(accepted["inserted"]), 1)
         self.assertEqual(int(accepted["updated"]), 0)
         self.assertEqual(int(accepted["rejected_by_retention"]), 0)
-        self.assertEqual(accepted["retention_cutoff"], historical_date)
-        self.assertEqual(accepted["retention_policy"]["default_cutoff"], rejected["retention_policy"]["cutoff"])
-        self.assertEqual(accepted["retention_policy"]["cutoff_source"], "override_min_date")
-        self.assertTrue(bool(accepted["retention_policy"]["override"]["configured"]))
-        self.assertTrue(bool(accepted["retention_policy"]["override"]["active"]))
-        self.assertEqual(accepted["retention_policy"]["override"]["min_date"], historical_date)
+        self.assertEqual(accepted["retention_policy"]["name"], "none")
+        self.assertEqual(accepted["retention_policy"]["cutoff_source"], "none")
 
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
             inserted_row = conn.execute(
@@ -281,6 +261,38 @@ class SalesRetentionTest(unittest.TestCase):
         self.assertEqual(int(inserted_row["id_movprodutos"]), 1201)
         self.assertAlmostEqual(float(inserted_row["total_venda_shadow"]), 130.75, places=2)
         self.assertEqual(inserted_row["dt_evento"].isoformat(), historical_date)
+
+    def test_ingest_retention_override_accepts_historical_comprovantes_replay(self) -> None:
+        tenant_id, ingest_key = self._create_tenant("Tenant Comprovantes Retention Override")
+        historical_date = date(2025, 1, 1).isoformat()
+        historical_row = {
+            "ID_FILIAL": 1,
+            "ID_DB": 1,
+            "ID_COMPROVANTE": 2201,
+            "ID_USUARIOS": 1,
+            "ID_TURNOS": 1,
+            "ID_ENTIDADE": 10,
+            "VLRTOTAL": 130.75,
+            "REFERENCIA": 8801,
+            "DATA": historical_date,
+        }
+
+        rejected = self._post_ndjson("comprovantes", ingest_key, [historical_row])
+        self.assertEqual(int(rejected["inserted_or_updated"]), 0)
+        self.assertEqual(int(rejected["rejected_by_retention"]), 1)
+        self.assertEqual(rejected["retention_policy"]["cutoff_source"], "sales_history_days")
+
+        with patch.object(routes_ingest.settings, "ingest_retention_override_min_date", date(2025, 1, 1)), patch.object(
+            routes_ingest.settings,
+            "ingest_retention_override_datasets",
+            "comprovantes",
+        ):
+            accepted = self._post_ndjson("comprovantes", ingest_key, [historical_row])
+
+        self.assertEqual(int(accepted["inserted_or_updated"]), 1)
+        self.assertEqual(int(accepted["rejected_by_retention"]), 0)
+        self.assertEqual(accepted["retention_policy"]["cutoff_source"], "override_min_date")
+        self.assertTrue(bool(accepted["retention_policy"]["override"]["active"]))
 
     def test_ingest_populates_typed_shadow_columns_and_reports_updates(self) -> None:
         tenant_id, ingest_key = self._create_tenant("Tenant Typed Shadows")
