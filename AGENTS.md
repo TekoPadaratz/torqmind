@@ -160,8 +160,8 @@ Para endpoints BI: evitar consulta pesada em STG quando Mart/snapshot existe; ev
 
 Todo grid novo ou alterado deve seguir `.cursor/rules/08-grids-colunas-ordenacao.mdc`:
 colunas Filial→Data→Documento, ordenação canônica, **busca geral** via
-`GridSearchInput` + `useGridSearch` (largura fixa 280px; termo varre todos os
-campos da linha), e labels limpos (sem disclaimer/debug/mart/SQL na UI).
+`GridSearchInput` + `useGridSearch` (largura fixa 280px; **sempre alinhada à esquerda**;
+termo varre todos os campos da linha), e labels limpos (sem disclaimer/debug/mart/SQL na UI).
 
 **Copy de produto:** nunca expor fórmula/pipeline/nota de engenharia na tela
 (“custo = …”, “não entra no rateio…”, “publicado da mart…”). Isso é para o

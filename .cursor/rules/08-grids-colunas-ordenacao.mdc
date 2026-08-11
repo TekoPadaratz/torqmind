@@ -59,6 +59,7 @@ Todo grid de produto/platform com linhas em tela deve expor **um** campo de pesq
 - Componente: `apps/web/app/components/ui/GridSearchInput.tsx` + hook `useGridSearch`
 - Largura fixa: **280px** (classe `.gridSearchInput`) — não inventar outro tamanho
 - Placeholder: `Pesquisar…`
+- **Alinhamento: sempre à esquerda** (onde o olho bate primeiro). Proibido ancorar a busca à direita (`justifyContent: flex-end` / empurrar com `margin-left: auto`). KPIs/contadores podem ficar à direita; a pesquisa fica à esquerda.
 - Comportamento: o termo filtra **qualquer** valor da linha (nome, data, valor, documento, operador, etc.), case-insensitive `pt-BR`
 - Excluir só chaves técnicas (`id_*`, tokens, hashes) via `excludeKeys` do hook
 - Substituir buscas antigas “só por nome”

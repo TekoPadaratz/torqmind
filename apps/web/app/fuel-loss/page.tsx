@@ -266,7 +266,7 @@ export default function FuelLossPage() {
 
               <div
                 className="col-12"
-                style={{ display: "flex", justifyContent: "flex-end" }}
+                style={{ display: "flex", justifyContent: "flex-start" }}
               >
                 <GridSearchInput value={lossQuery} onChange={setLossQuery} />
               </div>
@@ -357,28 +357,25 @@ export default function FuelLossPage() {
           ) : null}
 
           <section className="card col-12">
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 12,
-                flexWrap: "wrap",
-                marginBottom: 12,
-                alignItems: "baseline",
-              }}
-            >
-              <div>
-                <div className="sectionEyebrow">Operação</div>
-                <h2 style={{ margin: 0, fontSize: "1.15rem" }}>Aferições de bico</h2>
-              </div>
-              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ marginBottom: 12 }}>
+              <div className="sectionEyebrow">Operação</div>
+              <h2 style={{ margin: "0 0 10px", fontSize: "1.15rem" }}>Aferições de bico</h2>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
+                <GridSearchInput value={afericoesQuery} onChange={setAfericoesQuery} />
                 {afericoesKpis ? (
                   <div className="muted" style={{ fontSize: 13 }}>
                     {afericoesKpis.afericoes} registro(s)
                     {afericoesKpis.litros > 0 ? ` · ${fmtL(afericoesKpis.litros)}` : ""}
                   </div>
                 ) : null}
-                <GridSearchInput value={afericoesQuery} onChange={setAfericoesQuery} />
               </div>
             </div>
 

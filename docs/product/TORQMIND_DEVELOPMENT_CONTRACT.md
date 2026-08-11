@@ -167,10 +167,11 @@ Opcional: `.table.compact` quando a tela já usa.
 |---------|--------|
 | **Empty** | `EmptyState` **antes**/no lugar da tabela — não inventar empty só com CSS |
 | **Loading (escopo)** | `ScopeTransitionState` / `Skeleton` |
+| **Busca geral** | `GridSearchInput` + `useGridSearch`, largura 280px, **sempre à esquerda** (olho bate primeiro); KPIs/contadores podem ficar à direita. Ver `.cursor/rules/08-grids-colunas-ordenacao.mdc` §4 |
 | **Responsivo** | confiar em `.tableScroll` (overflow-x); não esmagar colunas |
 | **Sort** | botões externos (padrão customers / Curva ABC); não inventar sort por `<th>` sem precedente |
 | **ANP** | `.anpTableScroll` / `.anpTable` só no painel ANP (print/min-width) |
-| **Proibido** | `<table style={{ width:"100%", …}}>` novo fora do padrão; copiar só se mantendo dívida existente |
+| **Proibido** | `<table style={{ width:"100%", …}}>` novo fora do padrão; copiar só se mantendo dívida existente; busca ancorada à direita |
 
 Plataforma pode usar `td colSpan` para empty — não importar esse hábito para BI produto.
 
