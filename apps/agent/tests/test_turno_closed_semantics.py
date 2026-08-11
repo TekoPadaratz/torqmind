@@ -57,7 +57,7 @@ class TurnoClosedSemanticsTests(unittest.TestCase):
         cfg = DEFAULT_DATASETS["turnos"]
         clause = str(cfg.get("revisit_open_clause") or "")
         self.assertIn("STATUSTURNO", clause)
-        self.assertIn("DATEADD(day,-14", clause)
+        self.assertIn("DATEADD(day,-45", clause)
         self.assertIn("STATUSTURNO", cfg["preflight_tables"]["dbo.TURNOS"])
 
 

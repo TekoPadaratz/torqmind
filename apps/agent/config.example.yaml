@@ -169,10 +169,11 @@ datasets:
       - ENCERRANTEFECHAMENTO
       - STATUSTURNO
     watermark_overlap_seconds: 240
-    # STATUSTURNO=0 = aberto; janela 14d cobre 1ª entrega perdida (watermark já avançou).
+    # STATUSTURNO=0 = aberto; janela 45d cobre 1ª entrega perdida (watermark já avançou).
     # ENCERRANTEFECHAMENTO é encerrante de bomba, NÃO flag de fechamento.
-    revisit_open_clause: (ISNULL(STATUSTURNO, 0) = 0) OR (CAST(DATA AS date) >= CAST(DATEADD(day,-14,GETDATE())
-      AS date)) OR (DATAFECHAMENTO IS NOT NULL AND CAST(DATAFECHAMENTO AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date))
+    # Rede de segurança server-side: deploy/scripts/prod-reconcile-turnos.sh (cron).
+    revisit_open_clause: (ISNULL(STATUSTURNO, 0) = 0) OR (CAST(DATA AS date) >= CAST(DATEADD(day,-45,GETDATE())
+      AS date)) OR (DATAFECHAMENTO IS NOT NULL AND CAST(DATAFECHAMENTO AS date) >= CAST(DATEADD(day,-45,GETDATE()) AS date))
     query: SELECT t.*, CAST(t.DATA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt)    FROM (VALUES        (CAST(t.DATA
       AS datetime2)),        (CAST(t.DATATURNO AS datetime2)),        (CAST(t.DATAFECHAMENTO AS datetime2))   ) AS v(dt))
       AS TORQMIND_WATERMARK FROM dbo.TURNOS t

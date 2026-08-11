@@ -3,25 +3,30 @@
 
 Root cause
 ----------
-Cancelled receipts in ``stg.comprovantes`` often reference ``ID_TURNOS`` that
-never landed in ``stg.turnos`` (agent watermark gap / open-shift revisit). The
-antifraud mart then joins to an empty turno → ``turno_numero=0`` and the UI used
-to hide those rows while ``fraud_daily`` still counted them.
+The agent watermark for turnos is **temporal** (MAX of DATA/DATATURNO/
+DATAFECHAMENTO). After a successful batch the local cursor advances; any
+``ID_TURNOS`` that failed the first delivery (or never entered pending) and is
+already closed + outside the revisit window disappears from the incremental
+forever. Comprovantes/aferições then reference a turno that never landed in
+``stg.turnos`` → mart joins yield ``turno_numero=0`` / "Turno não resolvido".
 
-This script:
-1. Finds (id_filial, id_turno) present on recent cancelled comprovantes but
-   missing from ``stg.turnos``.
-2. Pulls those rows from Xpert ``dbo.TURNOS``.
-3. Upserts ``stg.turnos`` (payload jsonb).
-4. Optionally upserts ``torqmind_current.stg_turnos`` so mart refresh can run
-   without waiting for Debezium.
+This script is the **server-side safety net** (same role as
+``reconcile_contasreceber_sync``). Cron: ``deploy/scripts/prod-reconcile-turnos.sh``.
+
+What it heals
+-------------
+1. Orphan FK refs: ``(id_filial, id_turno)`` on recent comprovantes + aferições
+   missing from ``stg.turnos`` (default: all comprovantes, not only cancelled).
+2. Xpert window gap: every ``dbo.TURNOS`` row in the last ``--since-days`` whose
+   PK is absent from STG (covers IDs never referenced yet).
+3. Upsert PG ``stg.turnos``; optional direct CH ``stg_turnos`` (don't wait CDC).
 
 Usage
 -----
     set -a; source /etc/torqmind/prod.app.env; set +a
-    python scripts/fix_turnos_sync.py \\
+    python scripts/reconcile_turnos_sync.py \\
         --sqlserver-env-file config/source-explorer.env --id-empresa 1 \\
-        --since-days 45 --also-clickhouse
+        --since-days 60 --also-clickhouse
 """
 from __future__ import annotations
 
@@ -96,7 +101,7 @@ def _json_default(obj: Any) -> Any:
 
 
 def _missing_pairs(
-    pg, id_empresa: int, since_days: int, *, cancelled_only: bool = True
+    pg, id_empresa: int, since_days: int, *, cancelled_only: bool = False
 ) -> list[tuple[int, int]]:
     """Turnos referenciados (comprovantes + aferições) ausentes em stg.turnos."""
     cancel_filter = ""
@@ -155,6 +160,83 @@ def _missing_pairs(
         cur.execute(sql, (id_empresa, since_days, id_empresa, since_days, id_empresa))
         rows = cur.fetchall()
     return [(int(r[0]), int(r[1])) for r in rows if r[1]]
+
+
+def _stg_turno_keys(pg, id_empresa: int, pairs: list[tuple[int, int]]) -> set[tuple[int, int]]:
+    """Subset of ``pairs`` that already exist in stg.turnos."""
+    if not pairs:
+        return set()
+    found: set[tuple[int, int]] = set()
+    chunk = 500
+    with pg.cursor() as cur:
+        for i in range(0, len(pairs), chunk):
+            part = pairs[i : i + chunk]
+            values = ",".join(f"({f},{t})" for f, t in part)
+            cur.execute(
+                f"""
+                SELECT id_filial, id_turno
+                FROM stg.turnos
+                WHERE id_empresa = %s
+                  AND (id_filial, id_turno) IN ({values})
+                """,
+                (id_empresa,),
+            )
+            found.update((int(r[0]), int(r[1])) for r in cur.fetchall())
+    return found
+
+
+def _xpert_recent_keys(mssql, since_days: int, *, limit: int = 20000) -> list[tuple[int, int]]:
+    """All (ID_FILIAL, ID_TURNOS) in Xpert inside the operational window."""
+    import pymssql
+
+    days = max(1, min(int(since_days), 180))
+    lim = max(100, min(int(limit), 50000))
+    conn = pymssql.connect(**mssql, as_dict=True)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT TOP {lim}
+              t.ID_FILIAL AS id_filial,
+              t.ID_TURNOS AS id_turno
+            FROM dbo.TURNOS t
+            WHERE COALESCE(t.DATA, t.DATATURNO, t.DATAFECHAMENTO)
+                    >= DATEADD(day, -%s, GETDATE())
+              AND t.ID_TURNOS IS NOT NULL
+              AND t.ID_FILIAL IS NOT NULL
+            ORDER BY t.ID_TURNOS DESC
+            """,
+            (days,),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        conn.close()
+    out: list[tuple[int, int]] = []
+    for r in rows:
+        try:
+            out.append((int(r["id_filial"]), int(r["id_turno"])))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
+def _missing_from_xpert_window(
+    pg, mssql, id_empresa: int, since_days: int
+) -> list[tuple[int, int]]:
+    """Xpert turnos in window whose PK is absent from STG (independent of refs)."""
+    xpert_keys = _xpert_recent_keys(mssql, since_days)
+    if not xpert_keys:
+        return []
+    existing = _stg_turno_keys(pg, id_empresa, xpert_keys)
+    missing = [k for k in xpert_keys if k not in existing]
+    log.info(
+        "xpert_window_keys=%s stg_hit=%s xpert_gap=%s since_days=%s",
+        len(xpert_keys),
+        len(existing),
+        len(missing),
+        since_days,
+    )
+    return missing[:8000]
 
 
 def _fetch_xpert_turnos(mssql, pairs: list[tuple[int, int]]) -> list[dict[str, Any]]:
@@ -265,12 +347,23 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sqlserver-env-file", default="")
     ap.add_argument("--id-empresa", type=int, default=1)
-    ap.add_argument("--since-days", type=int, default=45)
+    ap.add_argument("--since-days", type=int, default=60)
     ap.add_argument("--also-clickhouse", action="store_true")
     ap.add_argument(
         "--all-comprovantes",
         action="store_true",
-        help="Also heal turnos referenced by non-cancelled recent comprovantes",
+        default=True,
+        help="Heal turnos referenced by any recent comprovante (default: on)",
+    )
+    ap.add_argument(
+        "--cancelled-only",
+        action="store_true",
+        help="Restrict orphan-FK scan to cancelled comprovantes only",
+    )
+    ap.add_argument(
+        "--skip-xpert-window",
+        action="store_true",
+        help="Skip Xpert→STG window gap scan (refs-only)",
     )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -278,15 +371,29 @@ def main() -> int:
     _load_env_file(args.sqlserver_env_file)
     import psycopg
 
+    cancelled_only = bool(args.cancelled_only) or not bool(args.all_comprovantes)
     mssql = _mssql_config()
     with psycopg.connect(**_pg_dsn()) as pg:
-        missing = _missing_pairs(
+        missing_refs = _missing_pairs(
             pg,
             args.id_empresa,
             args.since_days,
-            cancelled_only=not args.all_comprovantes,
+            cancelled_only=cancelled_only,
         )
-        log.info("missing_turnos=%s since_days=%s", len(missing), args.since_days)
+        missing_xpert: list[tuple[int, int]] = []
+        if not args.skip_xpert_window:
+            missing_xpert = _missing_from_xpert_window(
+                pg, mssql, args.id_empresa, args.since_days
+            )
+        missing = sorted(set(missing_refs) | set(missing_xpert))
+        log.info(
+            "missing_turnos=%s (refs=%s xpert_gap=%s) since_days=%s cancelled_only=%s",
+            len(missing),
+            len(missing_refs),
+            len(missing_xpert),
+            args.since_days,
+            cancelled_only,
+        )
         if not missing:
             return 0
         log.info("sample_missing=%s", missing[:15])
@@ -304,9 +411,9 @@ def main() -> int:
             pg,
             args.id_empresa,
             args.since_days,
-            cancelled_only=not args.all_comprovantes,
+            cancelled_only=cancelled_only,
         )
-        log.info("still_missing_after=%s", len(still))
+        log.info("still_missing_refs_after=%s", len(still))
         if still:
             log.warning("still_missing_sample=%s", still[:20])
     return 0
