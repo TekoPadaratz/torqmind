@@ -1798,21 +1798,21 @@ class MartBuilder:
 
         sql = f"""
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
-        WITH baixa_receber AS (
-            SELECT id_empresa, id_filial, id_db,
+        WITH         baixa_receber AS (
+            SELECT id_empresa, id_db,
                    toInt32(toFloat64OrZero(JSONExtractString(payload, 'ID_CONTASRECEBER'))) AS id_conta,
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contasreceberbaixa FINAL
-            WHERE is_deleted = 0 {empresa_filter} {filial_filter}
-            GROUP BY id_empresa, id_filial, id_db, id_conta
+            WHERE is_deleted = 0 {empresa_filter}
+            GROUP BY id_empresa, id_db, id_conta
         ),
         baixa_pagar AS (
-            SELECT id_empresa, id_filial, id_db,
+            SELECT id_empresa, id_db,
                    toInt32(toFloat64OrZero(JSONExtractString(payload, 'ID_CONTASPAGAR'))) AS id_conta,
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contaspagarbaixa FINAL
-            WHERE is_deleted = 0 {empresa_filter} {filial_filter}
-            GROUP BY id_empresa, id_filial, id_db, id_conta
+            WHERE is_deleted = 0 {empresa_filter}
+            GROUP BY id_empresa, id_db, id_conta
         ),
         src AS (
             SELECT id_empresa, id_filial, tipo_titulo,
@@ -1836,7 +1836,7 @@ class MartBuilder:
                 ) AS valor_pago
             FROM {self.current_db}.stg_contaspagar AS cp FINAL
             LEFT JOIN baixa_pagar AS bp
-                ON cp.id_empresa = bp.id_empresa AND cp.id_filial = bp.id_filial
+                ON cp.id_empresa = bp.id_empresa
                 AND cp.id_db = bp.id_db
                 AND cp.id_contaspagar = bp.id_conta
             WHERE cp.is_deleted = 0 {cp_filter}
@@ -1853,7 +1853,7 @@ class MartBuilder:
                 ) AS valor_pago
             FROM {self.current_db}.stg_contasreceber AS cr FINAL
             LEFT JOIN baixa_receber AS br
-                ON cr.id_empresa = br.id_empresa AND cr.id_filial = br.id_filial
+                ON cr.id_empresa = br.id_empresa
                 AND cr.id_db = br.id_db
                 AND cr.id_contasreceber = br.id_conta
             WHERE cr.is_deleted = 0 {cr_filter}

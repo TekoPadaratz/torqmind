@@ -33,23 +33,23 @@ def fetch_finance_titles(
             """
             WITH baixa_receber AS (
               SELECT
-                id_empresa, id_filial, id_db,
+                id_empresa, id_db,
                 etl.safe_int(payload->>'ID_CONTASRECEBER') AS id_titulo,
                 sum(coalesce(etl.safe_numeric(payload->>'VALORBAIXA'), 0)) AS total_baixa,
                 max((etl.safe_timestamp(payload->>'DATABAIXA'))::date) AS dt_ultima_baixa
               FROM stg.contasreceberbaixa
               WHERE id_empresa = %s
-              GROUP BY id_empresa, id_filial, id_db, etl.safe_int(payload->>'ID_CONTASRECEBER')
+              GROUP BY id_empresa, id_db, etl.safe_int(payload->>'ID_CONTASRECEBER')
             ),
             baixa_pagar AS (
               SELECT
-                id_empresa, id_filial, id_db,
+                id_empresa, id_db,
                 etl.safe_int(payload->>'ID_CONTASPAGAR') AS id_titulo,
                 sum(coalesce(etl.safe_numeric(payload->>'VALORBAIXA'), 0)) AS total_baixa,
                 max((etl.safe_timestamp(payload->>'DATABAIXA'))::date) AS dt_ultima_baixa
               FROM stg.contaspagarbaixa
               WHERE id_empresa = %s
-              GROUP BY id_empresa, id_filial, id_db, etl.safe_int(payload->>'ID_CONTASPAGAR')
+              GROUP BY id_empresa, id_db, etl.safe_int(payload->>'ID_CONTASPAGAR')
             ),
             src AS (
               SELECT
@@ -60,6 +60,11 @@ def fetch_finance_titles(
                 cp.id_db,
                 coalesce(etl.safe_int(cp.payload->>'ID_ENTIDADE'), 0)::bigint AS id_entidade,
                 coalesce(nullif(ent.payload->>'NOMEENTIDADE', ''), '') AS entidade_nome,
+                coalesce(
+                  nullif(trim(cp.payload->>'NRODOC'), ''),
+                  nullif(trim(cp.payload->>'DOCUMENTO'), ''),
+                  ''
+                ) AS nro_documento,
                 (etl.safe_timestamp(cp.payload->>'DTACONTA'))::date AS dt_lancamento,
                 (etl.safe_timestamp(cp.payload->>'DTAVCTO'))::date AS dt_vencimento,
                 coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
@@ -82,7 +87,6 @@ def fetch_finance_titles(
               FROM stg.contaspagar cp
               LEFT JOIN baixa_pagar bp
                 ON bp.id_empresa = cp.id_empresa
-               AND bp.id_filial = cp.id_filial
                AND bp.id_db = cp.id_db
                AND bp.id_titulo = cp.id_contaspagar
               LEFT JOIN stg.entidades ent
@@ -101,6 +105,11 @@ def fetch_finance_titles(
                 cr.id_db,
                 coalesce(etl.safe_int(cr.payload->>'ID_ENTIDADE'), 0)::bigint AS id_entidade,
                 coalesce(nullif(ent.payload->>'NOMEENTIDADE', ''), '') AS entidade_nome,
+                coalesce(
+                  nullif(trim(cr.payload->>'NRODOC'), ''),
+                  nullif(trim(cr.payload->>'DOCUMENTO'), ''),
+                  ''
+                ) AS nro_documento,
                 (etl.safe_timestamp(cr.payload->>'DTACONTA'))::date AS dt_lancamento,
                 (etl.safe_timestamp(cr.payload->>'DTAVCTO'))::date AS dt_vencimento,
                 coalesce(etl.safe_numeric(cr.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
@@ -123,7 +132,6 @@ def fetch_finance_titles(
               FROM stg.contasreceber cr
               LEFT JOIN baixa_receber br
                 ON br.id_empresa = cr.id_empresa
-               AND br.id_filial = cr.id_filial
                AND br.id_db = cr.id_db
                AND br.id_titulo = cr.id_contasreceber
               LEFT JOIN stg.entidades ent
@@ -134,7 +142,7 @@ def fetch_finance_titles(
             )
             SELECT
               id_empresa, id_filial, tipo_titulo, id_titulo, id_db,
-              id_entidade, entidade_nome, dt_lancamento, dt_vencimento,
+              id_entidade, entidade_nome, nro_documento, dt_lancamento, dt_vencimento,
               valor, valor_pago, valor_aberto,
               CASE
                 -- Xpert "Não Pagas/Não Recebidas" = DTAPGTO IS NULL.
@@ -182,6 +190,7 @@ def publish_finance_titles(
             "id_db": int(row["id_db"]),
             "id_entidade": int(row.get("id_entidade") or 0),
             "entidade_nome": str(row.get("entidade_nome") or ""),
+            "nro_documento": str(row.get("nro_documento") or ""),
             "dt_lancamento": row.get("dt_lancamento"),
             "dt_vencimento": row["dt_vencimento"],
             "valor": row.get("valor") or 0,

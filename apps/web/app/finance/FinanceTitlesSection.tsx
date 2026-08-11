@@ -18,6 +18,7 @@ type TitleRow = {
   id_filial: number;
   filial_nome?: string;
   id_titulo: number;
+  nro_documento?: string;
   entidade_nome?: string;
   dt_lancamento?: string | null;
   dt_vencimento?: string | null;
@@ -32,8 +33,8 @@ type TitlesPayload = {
   total?: number;
   page?: number;
   page_size?: number;
-  page_totals?: { valor?: number; valor_aberto?: number };
-  totals?: { valor?: number; valor_aberto?: number };
+  page_totals?: { valor?: number; valor_pago?: number; valor_aberto?: number };
+  totals?: { valor?: number; valor_pago?: number; valor_aberto?: number };
 };
 
 const PRESETS = [
@@ -164,8 +165,10 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
                   <th>Filial</th>
                   <th>Lançamento</th>
                   <th>Vencimento</th>
+                  <th>Nro Documento</th>
                   <th>{entidadeLabel}</th>
                   <th>Valor</th>
+                  <th>Pago</th>
                   <th>Aberto</th>
                   <th>Status</th>
                 </tr>
@@ -176,9 +179,13 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
                     <td>{row.filial_nome || `Filial ${row.id_filial}`}</td>
                     <td>{formatDateOnly(row.dt_lancamento)}</td>
                     <td>{formatDateOnly(row.dt_vencimento)}</td>
+                    <td>{row.nro_documento || '—'}</td>
                     <td>{row.entidade_nome || '—'}</td>
                     <td style={{ fontVariantNumeric: 'tabular-nums' }}>
                       {formatCurrency(row.valor)}
+                    </td>
+                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {formatCurrency(row.valor_pago)}
                     </td>
                     <td style={{ fontVariantNumeric: 'tabular-nums' }}>
                       {formatCurrency(row.valor_aberto)}
@@ -189,11 +196,14 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
               </tbody>
               <tfoot className="financeTitlesFoot">
                 <tr>
-                  <td colSpan={4} style={{ fontWeight: 600 }}>
+                  <td colSpan={5} style={{ fontWeight: 600 }}>
                     Total da página
                   </td>
                   <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                     {formatCurrency(pageTotals.valor)}
+                  </td>
+                  <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                    {formatCurrency(pageTotals.valor_pago)}
                   </td>
                   <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                     {formatCurrency(pageTotals.valor_aberto)}
@@ -201,11 +211,14 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
                   <td />
                 </tr>
                 <tr>
-                  <td colSpan={4} className="muted">
+                  <td colSpan={5} className="muted">
                     Total do filtro ({total.toLocaleString('pt-BR')} títulos)
                   </td>
                   <td style={{ fontVariantNumeric: 'tabular-nums' }}>
                     {formatCurrency(grandTotals.valor)}
+                  </td>
+                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {formatCurrency(grandTotals.valor_pago)}
                   </td>
                   <td style={{ fontVariantNumeric: 'tabular-nums' }}>
                     {formatCurrency(grandTotals.valor_aberto)}

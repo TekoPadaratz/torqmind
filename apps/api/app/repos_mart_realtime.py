@@ -2845,6 +2845,7 @@ def _finance_titles_search_variants(raw: str) -> List[str]:
 _FINANCE_TITLES_SEARCH_HAYSTACK = """
 concat(
   entidade_nome, ' ',
+  ifNull(nro_documento, ''), ' ',
   toString(id_titulo), ' ',
   toString(valor), ' ',
   replaceAll(toString(valor), '.', ','), ' ',
@@ -2956,6 +2957,7 @@ def finance_titles_overview(
         f"""
         SELECT
           round(sum(valor), 2) AS total_valor,
+          round(sum(valor_pago), 2) AS total_valor_pago,
           round(sum(valor_aberto), 2) AS total_valor_aberto
         FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
         WHERE {where}
@@ -2967,7 +2969,7 @@ def finance_titles_overview(
     rows = query_dict(f"""
         SELECT
           id_filial, tipo_titulo, id_titulo, id_db, id_entidade, entidade_nome,
-          dt_lancamento, dt_vencimento, valor, valor_pago, valor_aberto, status
+          nro_documento, dt_lancamento, dt_vencimento, valor, valor_pago, valor_aberto, status
         FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
         WHERE {where}
         ORDER BY {filial_sort} ASC, dt_vencimento ASC, id_titulo ASC
@@ -2976,8 +2978,11 @@ def finance_titles_overview(
     for row in rows:
         fid = _to_int(row.get("id_filial"))
         row["filial_nome"] = _filial_label(fid)
+        doc = str(row.get("nro_documento") or "").strip()
+        row["nro_documento"] = doc or "—"
 
     page_valor = round(sum(_to_float(r.get("valor")) for r in rows), 2)
+    page_pago = round(sum(_to_float(r.get("valor_pago")) for r in rows), 2)
     page_aberto = round(sum(_to_float(r.get("valor_aberto")) for r in rows), 2)
 
     return {
@@ -2986,9 +2991,14 @@ def finance_titles_overview(
         "page": page,
         "page_size": page_size,
         "total_pages": (total + page_size - 1) // page_size if page_size else 0,
-        "page_totals": {"valor": page_valor, "valor_aberto": page_aberto},
+        "page_totals": {
+            "valor": page_valor,
+            "valor_pago": page_pago,
+            "valor_aberto": page_aberto,
+        },
         "totals": {
             "valor": _to_float(totals.get("total_valor")),
+            "valor_pago": _to_float(totals.get("total_valor_pago")),
             "valor_aberto": _to_float(totals.get("total_valor_aberto")),
         },
         "source": "realtime",

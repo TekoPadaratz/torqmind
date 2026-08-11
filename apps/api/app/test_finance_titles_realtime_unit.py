@@ -47,3 +47,5 @@ def test_finance_titles_search_variants_br_value_and_date():
     assert "positionCaseInsensitiveUTF8" in sql
     assert "%d/%m/%Y" in sql
     assert "replaceAll(toString(valor), '.', ',')" in sql
+    assert "nro_documento" in repos_mart_realtime._FINANCE_TITLES_SEARCH_HAYSTACK
+    assert "valor_pago" in repos_mart_realtime._FINANCE_TITLES_SEARCH_HAYSTACK
