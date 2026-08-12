@@ -2624,13 +2624,21 @@ def team_commissions_results(
 
     valid_modes = ("team_total", "equal_split", "individual_sales")
     effective_mode = payment_mode if payment_mode in valid_modes else None
-    return repos_commission.calculate_commission_results_multi(
+    payload = repos_commission.calculate_commission_results_multi(
         tenant,
         targets,
         month,
         year,
         payment_mode=effective_mode,
     )
+    payload.pop("gerente", None)
+    cfg = payload.get("config")
+    if isinstance(cfg, dict):
+        cfg = dict(cfg)
+        cfg.pop("manager_commission_mode", None)
+        cfg.pop("manager_commission_percent", None)
+        payload["config"] = cfg
+    return payload
 
 
 # ------------------------
@@ -2700,7 +2708,7 @@ def manager_commissions_calc(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team.comissoes")),
+    _screen=Depends(require_screen("goals_team.gerente")),
 ):
     tenant, branch_scope, branch_ids = resolve_scope_filters(
         claims,
@@ -2771,7 +2779,7 @@ def manager_commissions_calc(
 def manager_commissions_overrides_save(
     body: dict = Body(...),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("goals_team.comissoes")),
+    _screen=Depends(require_screen("goals_team.gerente")),
 ):
     role = claims["role"]
     if role not in {"MASTER", "OWNER", "MANAGER"}:

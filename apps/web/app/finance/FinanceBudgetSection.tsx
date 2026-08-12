@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import MonthYearSelect from "../components/ui/MonthYearSelect";
 import BudgetConfigTab from "../goals/BudgetConfigTab";
 import { formatCurrency } from "../lib/format";
+import { currentAnoMesSP, splitAnoMes } from "../lib/month-year.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
-
-const MONTHS = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-];
 
 const STATUS_STYLE: Record<string, { label: string; color: string }> = {
   ok: { label: "No orçamento", color: "var(--color-positive)" },
@@ -26,8 +23,8 @@ type BudgetTab = "resultado" | "configurar";
 export default function FinanceBudgetSection() {
   const scope = useScopeQuery();
   const [tab, setTab] = useState<BudgetTab>("resultado");
-  const [ano, setAno] = useState<number | null>(null);
-  const [mes, setMes] = useState<number | null>(null);
+  const [anoMes, setAnoMes] = useState(() => currentAnoMesSP());
+  const { year: ano, month: mes } = splitAnoMes(anoMes);
 
   const { data, loading } = useBiScopeData<any>({
     moduleKey: `budget_overview_${ano}_${mes}`,
@@ -35,25 +32,14 @@ export default function FinanceBudgetSection() {
     errorMessage: "Falha ao carregar orçamento",
     buildRequestUrl: (currentScope) => {
       if (tab !== "resultado") return null;
-      let url = `/bi/budget/overview?${buildScopeParams(currentScope).toString()}`;
-      if (ano && mes) url += `&ano=${ano}&mes=${mes}`;
-      return url;
+      return `/bi/budget/overview?${buildScopeParams(currentScope).toString()}&ano=${ano}&mes=${mes}`;
     },
   });
-
-  useEffect(() => {
-    if (data && (ano === null || mes === null)) {
-      setAno(Number(data.ano));
-      setMes(Number(data.mes));
-    }
-  }, [data, ano, mes]);
 
   const contas = useMemo(() => data?.contas || [], [data]);
   const { query, setQuery, filteredRows } = useGridSearch(contas as Record<string, unknown>[]);
   const summary = data?.summary || {};
   const showFilial = true;
-  const currentYear = ano || new Date().getFullYear();
-  const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
   const idEmpresa = scope.id_empresa != null ? Number(scope.id_empresa) : null;
   const idFilial =
     scope.id_filial != null
@@ -94,24 +80,12 @@ export default function FinanceBudgetSection() {
       ) : (
         <>
           <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
-            <select
-              value={mes || 1}
-              onChange={(e) => setMes(parseInt(e.target.value))}
-              style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--filter-bg)", color: "var(--text)" }}
-            >
-              {MONTHS.map((m, i) => (
-                <option key={m} value={i + 1}>{m}</option>
-              ))}
-            </select>
-            <select
-              value={currentYear}
-              onChange={(e) => setAno(parseInt(e.target.value))}
-              style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--filter-bg)", color: "var(--text)" }}
-            >
-              {years.map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
+            <MonthYearSelect
+              value={anoMes}
+              onChange={setAnoMes}
+              title="Mês de competência do orçamento"
+              aria-label="Mês do orçamento"
+            />
             {summary.contas_estouradas > 0 ? (
               <span style={{ color: "var(--color-negative)", fontSize: 12, fontWeight: 600 }}>
                 {summary.contas_estouradas} conta(s) estourada(s)

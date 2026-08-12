@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
 import GridPager from "../components/ui/GridPager";
@@ -9,42 +9,10 @@ import { formatCurrency } from "../lib/format";
 import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
+import MonthYearSelect from "../components/ui/MonthYearSelect";
+import { currentAnoMesSP } from "../lib/month-year.mjs";
 
 const PAGE_SIZE = 50;
-
-function currentAnoMesSP(): number {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-  });
-  const parts = fmt.formatToParts(new Date());
-  const y = Number(parts.find((p) => p.type === "year")?.value || 0);
-  const m = Number(parts.find((p) => p.type === "month")?.value || 0);
-  return y * 100 + m;
-}
-
-function fmtAnoMes(ym: number): string {
-  const y = Math.floor(ym / 100);
-  const m = ym % 100;
-  const nomes = [
-    "", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
-  ];
-  return `${nomes[m] || m}/${y}`;
-}
-
-function buildMesesDisponiveis(selected: number, monthsBack = 18): number[] {
-  const set = new Set<number>([selected]);
-  let cursor = currentAnoMesSP();
-  for (let i = 0; i < monthsBack; i += 1) {
-    set.add(cursor);
-    const y = Math.floor(cursor / 100);
-    const m = cursor % 100;
-    cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
-  }
-  return Array.from(set).sort((a, b) => b - a);
-}
 
 function parseMoneyInput(raw: string): number {
   const cleaned = String(raw || "")
@@ -97,8 +65,6 @@ export default function TeamCostSection() {
   const [data, setData] = useState<any>(null);
   const [drafts, setDrafts] = useState<Record<string, DraftPair>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
-
-  const mesesDisponiveis = useMemo(() => buildMesesDisponiveis(anoMes), [anoMes]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -236,21 +202,12 @@ export default function TeamCostSection() {
       <h2 style={{ marginTop: 4 }}>Custo do funcionário</h2>
 
       <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <label className="profitScopeMonth" title="Mês de referência do custo da equipe">
-          <span className="profitScopeMonthLabel">Mês</span>
-          <select
-            className="profitScopeMonthSelect"
-            value={anoMes}
-            onChange={(e) => setAnoMes(Number(e.target.value))}
-            aria-label="Mês do custo da equipe"
-          >
-            {mesesDisponiveis.map((m) => (
-              <option key={m} value={m}>
-                {fmtAnoMes(m)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <MonthYearSelect
+          value={anoMes}
+          onChange={setAnoMes}
+          title="Mês de referência do custo da equipe"
+          aria-label="Mês do custo da equipe"
+        />
         <GridSearchInput value={q} onChange={setQ} />
       </div>
 

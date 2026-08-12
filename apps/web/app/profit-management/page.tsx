@@ -27,6 +27,8 @@ import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
 import { SolvenciaDetalhada } from "./SolvenciaDetalhada";
 import { AnpCompliancePanel } from "./AnpCompliancePanel";
+import MonthYearSelect from "../components/ui/MonthYearSelect";
+import { currentAnoMesSP, fmtAnoMes } from "../lib/month-year.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -39,32 +41,6 @@ const PROFIT_TAB_SCREENS: Record<ProfitTab, string> = {
   solvencia: "profit_management.solvencia",
   anp: "profit_management.anp",
 };
-
-function currentAnoMesSP(): number {
-  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-  return Number(today.slice(0, 4)) * 100 + Number(today.slice(5, 7));
-}
-
-function fmtAnoMes(am: number): string {
-  const s = String(am);
-  return `${s.slice(4, 6)}/${s.slice(0, 4)}`;
-}
-
-/** Janela local + meses da API, ordem antigo → novo. */
-function buildMesesDisponiveis(extra: number[] = []): number[] {
-  const set = new Set<number>(extra.filter((n) => Number.isFinite(n) && n >= 190001));
-  let y = Math.floor(currentAnoMesSP() / 100);
-  let m = currentAnoMesSP() % 100;
-  for (let i = 0; i < 18; i++) {
-    set.add(y * 100 + m);
-    m -= 1;
-    if (m === 0) {
-      m = 12;
-      y -= 1;
-    }
-  }
-  return Array.from(set).sort((a, b) => a - b);
-}
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -235,14 +211,12 @@ export default function ProfitManagementPage() {
   const solvencia = solvenciaData?.data;
   const anp = anpData?.data;
 
-  const mesesDisponiveis = useMemo(
-    () =>
-      buildMesesDisponiveis([
-        profitMonth,
-        ...(Array.isArray(solvencia?.meses_disponiveis) ? solvencia.meses_disponiveis : []),
-        ...(dre?.ano_mes != null ? [Number(dre.ano_mes)] : []),
-      ]),
-    [profitMonth, solvencia?.meses_disponiveis, dre?.ano_mes],
+  const profitExtraMonths = useMemo(
+    () => [
+      ...(Array.isArray(solvencia?.meses_disponiveis) ? solvencia.meses_disponiveis.map(Number) : []),
+      ...(dre?.ano_mes != null ? [Number(dre.ano_mes)] : []),
+    ],
+    [solvencia?.meses_disponiveis, dre?.ano_mes],
   );
 
   const allowedTabs = useMemo(() => {
@@ -429,21 +403,13 @@ export default function ProfitManagementPage() {
           </div>
           {canViewSensitiveFinancials(claims) ? (
             <div className="profitScopeToggles" role="group" aria-label="Filtros da Gestão de Lucro">
-              <label className="profitScopeMonth" title="Mês fechado da DRE, despesas e Solvência">
-                <span className="profitScopeMonthLabel">Mês</span>
-                <select
-                  className="profitScopeMonthSelect"
-                  value={profitMonth}
-                  onChange={(e) => setProfitMonth(Number(e.target.value))}
-                  aria-label="Mês fechado"
-                >
-                  {mesesDisponiveis.map((m) => (
-                    <option key={m} value={m}>
-                      {fmtAnoMes(m)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <MonthYearSelect
+                value={profitMonth}
+                onChange={setProfitMonth}
+                extraMonths={profitExtraMonths}
+                title="Mês fechado da DRE, despesas e Solvência"
+                aria-label="Mês fechado"
+              />
               <button
                 type="button"
                 className={`profitScopeToggle${regimeCaixa ? " on" : ""}`}

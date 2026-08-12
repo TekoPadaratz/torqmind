@@ -42,30 +42,10 @@ import { sortGridRows } from "../lib/grid-sort";
 import { canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
+import MonthYearSelect from "../components/ui/MonthYearSelect";
+import { currentAnoMesSP } from "../lib/month-year.mjs";
 
 export const dynamic = "force-dynamic";
-
-function currentAnoMesSP(): number {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-  });
-  const parts = fmt.formatToParts(new Date());
-  const y = Number(parts.find((p) => p.type === "year")?.value || 0);
-  const m = Number(parts.find((p) => p.type === "month")?.value || 0);
-  return y * 100 + m;
-}
-
-function fmtAnoMes(ym: number): string {
-  const y = Math.floor(ym / 100);
-  const m = ym % 100;
-  const nomes = [
-    "", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
-  ];
-  return `${nomes[m] || m}/${y}`;
-}
 
 function operationalSourceLabel(source: string) {
   const normalized = String(source || "").toLowerCase();
@@ -229,21 +209,13 @@ export default function FraudPage() {
     : [];
   const credFuncSearch = useGridSearch(credFuncRows);
   const credFuncSummary = credFuncPayload?.summary || {};
-  const credFuncMeses = useMemo(() => {
-    const fromApi = Array.isArray(credFuncPayload?.meses_disponiveis)
-      ? credFuncPayload.meses_disponiveis.map((m: any) => Number(m)).filter((m: number) => Number.isFinite(m) && m > 0)
-      : [];
-    const set = new Set<number>([credFuncMonth, ...fromApi]);
-    // Garante janela recente (padrão DRE/Solvência) mesmo sem mash antigo.
-    let cursor = currentAnoMesSP();
-    for (let i = 0; i < 18; i += 1) {
-      set.add(cursor);
-      const y = Math.floor(cursor / 100);
-      const m = cursor % 100;
-      cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
-    }
-    return Array.from(set).sort((a, b) => b - a);
-  }, [credFuncMonth, credFuncPayload?.meses_disponiveis]);
+  const credFuncExtraMonths = useMemo(
+    () =>
+      Array.isArray(credFuncPayload?.meses_disponiveis)
+        ? credFuncPayload.meses_disponiveis.map((m: any) => Number(m)).filter((m: number) => Number.isFinite(m) && m > 0)
+        : [],
+    [credFuncPayload?.meses_disponiveis],
+  );
   const credFuncTotalPages = Math.max(1, Math.ceil(credFuncSearch.filteredRows.length / pageSize));
   const credFuncPageSafe = Math.min(Math.max(1, credFuncPage), credFuncTotalPages);
   const credFuncPageRows = credFuncSearch.filteredRows.slice(
@@ -1305,21 +1277,13 @@ export default function FraudPage() {
                         </button>
                       );
                     })}
-                    <label className="profitScopeMonth" title="Mês de referência do crédito funcionário">
-                      <span className="profitScopeMonthLabel">Mês</span>
-                      <select
-                        className="profitScopeMonthSelect"
-                        value={credFuncMonth}
-                        onChange={(e) => setCredFuncMonth(Number(e.target.value))}
-                        aria-label="Mês do crédito funcionário"
-                      >
-                        {credFuncMeses.map((m) => (
-                          <option key={m} value={m}>
-                            {fmtAnoMes(m)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <MonthYearSelect
+                      value={credFuncMonth}
+                      onChange={setCredFuncMonth}
+                      extraMonths={credFuncExtraMonths}
+                      title="Mês de referência do crédito funcionário"
+                      aria-label="Mês do crédito funcionário"
+                    />
                     <span className="profitFilterCount">
                       {Number(credFuncSummary.suspeitos || 0)} suspeito(s) ·{" "}
                       {formatCurrency(Number(credFuncSummary.usado_total || 0))} usados

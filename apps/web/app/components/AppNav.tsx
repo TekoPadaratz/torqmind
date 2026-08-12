@@ -44,6 +44,10 @@ function linkIsActive(pathname: string, searchParams: URLSearchParams, itemPath:
     const tab = searchParams.get('tab');
     return !tab || tab === 'metas';
   }
+  if (url.pathname === '/goals' && url.searchParams.get('tab') === 'comissoes') {
+    const tab = searchParams.get('tab');
+    return tab === 'comissoes' || tab === 'gerente' || tab === 'config';
+  }
   // /sales should not stay active on /sales/abc
   if (url.pathname === '/sales' && !itemPath.includes('/abc')) {
     return pathname === '/sales';

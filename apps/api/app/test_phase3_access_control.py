@@ -783,6 +783,18 @@ class TestProfitManagementScreenPermissions(unittest.TestCase):
         self.assertIn("profit_management.overview", expanded)
         self.assertIn("profit_management", expanded)
 
+    def test_seller_commission_panel_does_not_grant_manager(self):
+        expanded = expand_screen_permissions({"goals_team", "goals_team.comissoes"})
+        self.assertIn("goals_team.comissoes", expanded)
+        self.assertNotIn("goals_team.gerente", expanded)
+
+    def test_manager_commission_panel_is_registered(self):
+        from app.permissions import SCREEN_REGISTRY, default_explicit_screen_permissions
+
+        self.assertIn("goals_team.gerente", SCREEN_REGISTRY)
+        self.assertEqual(SCREEN_REGISTRY["goals_team.gerente"].get("parent"), "goals_team")
+        self.assertNotIn("goals_team.gerente", default_explicit_screen_permissions("tenant_manager"))
+
     def test_normalize_orphan_panel_dropped(self):
         saved = normalize_screen_permissions_for_save(["profit_management.overview"])
         self.assertNotIn("profit_management.overview", saved)

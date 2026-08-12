@@ -243,7 +243,6 @@ export default function ManagerCommissionGrid({
     <div
       className="card"
       style={{
-        marginTop: 12,
         border: "1px solid var(--border)",
         borderRadius: 14,
         overflow: "hidden",
@@ -260,11 +259,8 @@ export default function ManagerCommissionGrid({
         }}
       >
         <GridSearchInput value={query} onChange={setQuery} />
-        <div style={{ marginLeft: "auto", textAlign: "right" }}>
-          <div style={{ fontWeight: 700, fontSize: 14 }}>Comissão de gerentes</div>
-          <div className="muted" style={{ fontSize: 11 }}>
-            Edite a linha e saia do campo para gravar — só a filial alterada é recalculada.
-          </div>
+        <div className="muted" style={{ marginLeft: "auto", fontSize: 12, textAlign: "right" }}>
+          Edite a linha e saia do campo para gravar.
         </div>
       </div>
 

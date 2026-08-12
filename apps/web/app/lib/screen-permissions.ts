@@ -53,8 +53,9 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
     category: "Comercial",
     panels: [
       { key: "goals_team.metas", label: "Metas" },
-      { key: "goals_team.comissoes", label: "Comissões" },
-      { key: "goals_team.config", label: "Config. comissões" },
+      { key: "goals_team.comissoes", label: "Vendedor" },
+      { key: "goals_team.gerente", label: "Gerente", requires_sensitive_role: true },
+      { key: "goals_team.config", label: "Configuração" },
     ],
   },
   {

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
 import GridPager from "../components/ui/GridPager";
@@ -10,6 +10,8 @@ import { formatCurrency, formatDateOnly } from "../lib/format";
 import { apiGet } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { buildScopeParams, type ScopeQuery } from "../lib/scope";
+import MonthYearSelect from "../components/ui/MonthYearSelect";
+import { currentAnoMesSP } from "../lib/month-year.mjs";
 
 const DETAIL_PAGE_SIZE = 30;
 
@@ -18,40 +20,6 @@ const STATUS_PRESETS = [
   { id: "pago", label: "Pago" },
   { id: "vencido", label: "Vencido" },
 ];
-
-function currentAnoMesSP(): number {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-  });
-  const parts = fmt.formatToParts(new Date());
-  const y = Number(parts.find((p) => p.type === "year")?.value || 0);
-  const m = Number(parts.find((p) => p.type === "month")?.value || 0);
-  return y * 100 + m;
-}
-
-function fmtAnoMes(ym: number): string {
-  const y = Math.floor(ym / 100);
-  const m = ym % 100;
-  const nomes = [
-    "", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-    "Jul", "Ago", "Set", "Out", "Nov", "Dez",
-  ];
-  return `${nomes[m] || m}/${y}`;
-}
-
-function buildMesesDisponiveis(selected: number, monthsBack = 18): number[] {
-  const set = new Set<number>([selected]);
-  let cursor = currentAnoMesSP();
-  for (let i = 0; i < monthsBack; i += 1) {
-    set.add(cursor);
-    const y = Math.floor(cursor / 100);
-    const m = cursor % 100;
-    cursor = m <= 1 ? (y - 1) * 100 + 12 : y * 100 + (m - 1);
-  }
-  return Array.from(set).sort((a, b) => b - a);
-}
 
 type SummaryRow = {
   id_planodecontas: number;
@@ -98,8 +66,6 @@ export default function FinanceDespesasSection({ scope }: Props) {
   const [error, setError] = useState("");
   const [summary, setSummary] = useState<any>(null);
   const [detailCache, setDetailCache] = useState<Record<number, DetailPayload>>({});
-
-  const mesesDisponiveis = useMemo(() => buildMesesDisponiveis(anoMes), [anoMes]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
@@ -191,21 +157,12 @@ export default function FinanceDespesasSection({ scope }: Props) {
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <label className="profitScopeMonth" title="Mês de referência das despesas">
-          <span className="profitScopeMonthLabel">Mês</span>
-          <select
-            className="profitScopeMonthSelect"
-            value={anoMes}
-            onChange={(e) => setAnoMes(Number(e.target.value))}
-            aria-label="Mês das despesas"
-          >
-            {mesesDisponiveis.map((m) => (
-              <option key={m} value={m}>
-                {fmtAnoMes(m)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <MonthYearSelect
+          value={anoMes}
+          onChange={setAnoMes}
+          title="Mês de referência das despesas"
+          aria-label="Mês das despesas"
+        />
         <PresetFilterChips
           options={STATUS_PRESETS}
           value={status}

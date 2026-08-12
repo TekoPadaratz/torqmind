@@ -22,19 +22,52 @@ import { startScopeTransition } from '../lib/scope-runtime';
 import CommissionsTab from './CommissionsTab';
 import CommissionConfigTab from './CommissionConfigTab';
 import ManagerCommissionConfigPanel from './ManagerCommissionConfigPanel';
+import ManagerCommissionGrid from './ManagerCommissionGrid';
+import MonthYearSelect from '../components/ui/MonthYearSelect';
+import { clampAnoMes, currentAnoMesSP, splitAnoMes } from '../lib/month-year.mjs';
+
+const COMMISSION_MONTH_KEY = 'torqmind.goals.commissionAnoMes';
+
+function readCommissionAnoMes() {
+  if (typeof window === 'undefined') return currentAnoMesSP();
+  try {
+    const raw = sessionStorage.getItem(COMMISSION_MONTH_KEY);
+    if (raw == null || raw === '') return currentAnoMesSP();
+    return clampAnoMes(Number(raw));
+  } catch {
+    return currentAnoMesSP();
+  }
+}
+
+function persistCommissionAnoMes(anoMes: number) {
+  try {
+    sessionStorage.setItem(COMMISSION_MONTH_KEY, String(anoMes));
+  } catch {
+    /* private mode / quota */
+  }
+}
 
 export const dynamic = 'force-dynamic';
 
-type GoalsTab = 'metas' | 'comissoes' | 'config';
+type GoalsTab = 'metas' | 'comissoes' | 'gerente' | 'config';
 
 const GOALS_TAB_SCREENS: Record<GoalsTab, string> = {
   metas: 'goals_team.metas',
   comissoes: 'goals_team.comissoes',
+  gerente: 'goals_team.gerente',
   config: 'goals_team.config',
 };
 
+const COMMISSION_TABS: Array<Exclude<GoalsTab, 'metas'>> = ['comissoes', 'gerente', 'config'];
+
+const COMMISSION_TAB_LABELS: Record<Exclude<GoalsTab, 'metas'>, string> = {
+  comissoes: 'Vendedor',
+  gerente: 'Gerente',
+  config: 'Configuração',
+};
+
 function parseGoalsTab(raw: string | null): GoalsTab | null {
-  if (raw === 'metas' || raw === 'comissoes' || raw === 'config') return raw;
+  if (raw === 'metas' || raw === 'comissoes' || raw === 'gerente' || raw === 'config') return raw;
   return null;
 }
 
@@ -71,7 +104,12 @@ export default function GoalsPage() {
   const [activeTab, setActiveTab] = useState<GoalsTab>(
     () => parseGoalsTab(searchParams.get('tab')) || 'metas',
   );
-  const [commissionRefresh, setCommissionRefresh] = useState(0);
+  const [commissionAnoMes, setCommissionAnoMes] = useState(readCommissionAnoMes);
+  const onCommissionAnoMesChange = (anoMes: number) => {
+    const next = clampAnoMes(anoMes);
+    persistCommissionAnoMes(next);
+    setCommissionAnoMes(next);
+  };
 
   useEffect(() => {
     const fromUrl = parseGoalsTab(searchParams.get('tab'));
@@ -83,12 +121,18 @@ export default function GoalsPage() {
   }, [claims]);
 
   const allowedTabs = useMemo(() => {
-    const all: GoalsTab[] = ['metas', 'comissoes', 'config'];
+    const all: GoalsTab[] = ['metas', 'comissoes', 'gerente', 'config'];
     return all.filter((tab) => canAccessScreenKey(claims, GOALS_TAB_SCREENS[tab]));
   }, [claims]);
+  const commissionTabs = useMemo(
+    () => COMMISSION_TABS.filter((tab) => allowedTabs.includes(tab)),
+    [allowedTabs],
+  );
   const effectiveTab: GoalsTab = allowedTabs.includes(activeTab)
     ? activeTab
     : (allowedTabs[0] || 'metas');
+  const isCommissionArea = effectiveTab !== 'metas';
+  const commissionPeriod = splitAnoMes(commissionAnoMes);
 
   const selectTab = (tab: GoalsTab) => {
     setActiveTab(tab);
@@ -189,44 +233,53 @@ export default function GoalsPage() {
 
   return (
     <div>
-      <AppNav title="Metas" userLabel={userLabel} />
+      <AppNav title={isCommissionArea ? 'Comissões' : 'Metas'} userLabel={userLabel} />
       <div className="container">
-        {effectiveTab !== 'metas' ? (
-          <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 0, marginTop: 8 }}>
-            {([
-              { key: 'comissoes' as const, label: 'Comissões' },
-              { key: 'config' as const, label: 'Configuração' },
-            ] as const).filter((tab) => allowedTabs.includes(tab.key)).map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => selectTab(tab.key)}
-                style={{
-                  padding: '10px 20px',
-                  fontSize: 13,
-                  fontWeight: effectiveTab === tab.key ? 700 : 400,
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: effectiveTab === tab.key ? '2px solid var(--accent-gold)' : '2px solid transparent',
-                  color: effectiveTab === tab.key ? 'var(--text)' : 'var(--text-muted)',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
+        {isCommissionArea ? (
+          <div className="profitTabsRow">
+            <div className="profitTabs" role="tablist" aria-label="Abas de comissões">
+              {commissionTabs.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={effectiveTab === tab}
+                  onClick={() => selectTab(tab)}
+                  className={`profitTab${effectiveTab === tab ? ' active' : ''}`}
+                >
+                  {COMMISSION_TAB_LABELS[tab]}
+                </button>
+              ))}
+            </div>
+            <div className="profitScopeToggles" role="group" aria-label="Mês das comissões">
+              <MonthYearSelect
+                value={commissionAnoMes}
+                onChange={onCommissionAnoMesChange}
+                title="Mês de competência das comissões"
+                aria-label="Mês das comissões"
+              />
+            </div>
           </div>
         ) : null}
 
-        {/* Commission tabs */}
         {effectiveTab === 'comissoes' && (
           <CommissionsTab
-            key={commissionRefresh}
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
             idFiliais={scope.id_filiais || []}
-            referenceDate={scope.dt_ref || scope.dt_fim || null}
+            anoMes={commissionAnoMes}
           />
+        )}
+        {effectiveTab === 'gerente' && (
+          <div style={{ marginTop: 16 }}>
+            <ManagerCommissionGrid
+              idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
+              idFilial={singleBranchId ? Number(singleBranchId) : null}
+              idFiliais={scope.id_filiais || []}
+              month={commissionPeriod.month}
+              year={commissionPeriod.year}
+            />
+          </div>
         )}
         {effectiveTab === 'config' && (
           <>
@@ -242,12 +295,10 @@ export default function GoalsPage() {
                 <CommissionConfigTab
                   idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
                   idFilial={Number(singleBranchId)}
-                  onSaved={() => setCommissionRefresh((n) => n + 1)}
                 />
                 <ManagerCommissionConfigPanel
                   idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
                   idFilial={Number(singleBranchId)}
-                  onSaved={() => setCommissionRefresh((n) => n + 1)}
                 />
               </>
             )}

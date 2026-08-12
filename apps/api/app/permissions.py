@@ -187,13 +187,20 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "has_sensitive": True,
     },
     "goals_team.comissoes": {
-        "label": "Comissões",
+        "label": "Vendedor",
         "category": "Comercial",
         "parent": "goals_team",
         "has_sensitive": True,
     },
+    "goals_team.gerente": {
+        "label": "Gerente",
+        "category": "Comercial",
+        "parent": "goals_team",
+        "has_sensitive": True,
+        "requires_sensitive_role": True,
+    },
     "goals_team.config": {
-        "label": "Config. comissões",
+        "label": "Configuração",
         "category": "Comercial",
         "parent": "goals_team",
         "has_sensitive": True,
@@ -396,7 +403,8 @@ def default_explicit_screen_permissions(role: str) -> List[str]:
     if role == "tenant_kiosk":
         return sorted(_TV_SCREENS)
     if role in {"tenant_manager", "tenant_viewer"}:
-        return sorted(_ALL_PRODUCT_SCREENS)
+        # Comissão de gerente é opt-in: funcionários veem só o relatório de vendedor.
+        return sorted(k for k in _ALL_PRODUCT_SCREENS if k != "goals_team.gerente")
     return []
 
 # ──────────────────────────────────────────────────────────────────────
