@@ -6,27 +6,85 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
-import { sortGridRows } from "../lib/grid-sort";
 import { splitAnoMes } from "../lib/month-year.mjs";
 
-const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> = {
-  bronze: { color: "#cd7f32", bg: "rgba(205,127,50,0.10)", icon: "🥉" },
-  silver: { color: "#a0a0a0", bg: "rgba(160,160,160,0.10)", icon: "🥈" },
-  gold: { color: "#d4a017", bg: "rgba(212,160,23,0.10)", icon: "🥇" },
-  diamond: { color: "#4f9cf7", bg: "rgba(79,156,247,0.12)", icon: "💎" },
+const TIER_STYLES: Record<
+  string,
+  { color: string; bg: string; bgActive: string; label: string }
+> = {
+  diamond: {
+    color: "#5ba4ff",
+    bg: "rgba(79,156,247,0.10)",
+    bgActive: "rgba(79,156,247,0.22)",
+    label: "Diamante",
+  },
+  gold: {
+    color: "#e0b12a",
+    bg: "rgba(212,160,23,0.12)",
+    bgActive: "rgba(212,160,23,0.26)",
+    label: "Ouro",
+  },
+  silver: {
+    color: "#b8c0cc",
+    bg: "rgba(160,160,160,0.12)",
+    bgActive: "rgba(160,160,160,0.26)",
+    label: "Prata",
+  },
+  bronze: {
+    color: "#d08a4a",
+    bg: "rgba(205,127,50,0.12)",
+    bgActive: "rgba(205,127,50,0.26)",
+    label: "Bronze",
+  },
+  none: {
+    color: "var(--muted)",
+    bg: "var(--surface-faint)",
+    bgActive: "var(--surface-soft)",
+    label: "Sem nível",
+  },
 };
 
-/** Ranking do grid: Diamante → Ouro → Prata → Bronze → sem nível (exceção ao contrato Filial→Nome). */
-const TIER_RANK: Record<string, number> = {
-  diamond: 4,
-  gold: 3,
-  silver: 2,
-  bronze: 1,
+const TIER_FILTER_ORDER = ["diamond", "gold", "silver", "bronze", "none"] as const;
+
+type SellerRow = {
+  id_filial?: number | null;
+  filial_label?: string | null;
+  id_funcionario?: number | null;
+  nome_vendedor?: string | null;
+  quantidade_vendas?: number | null;
+  venda_elegivel?: number | null;
+  percentual_aplicado?: number | null;
+  comissao_estimada?: number | null;
+  nivel_atingido?: { tier_key?: string; tier_name?: string } | null;
+  [key: string]: unknown;
 };
 
-function sellerTierRank(nivel: { tier_key?: string } | null | undefined): number {
-  const key = String(nivel?.tier_key || "").trim().toLowerCase();
-  return TIER_RANK[key] ?? 0;
+function sellerTierKey(emp: SellerRow): string {
+  const key = String(emp?.nivel_atingido?.tier_key || "")
+    .trim()
+    .toLowerCase();
+  return key && TIER_STYLES[key] ? key : "none";
+}
+
+function sellerTierLabel(emp: SellerRow): string {
+  const key = sellerTierKey(emp);
+  if (key === "none") return TIER_STYLES.none.label;
+  return String(emp?.nivel_atingido?.tier_name || TIER_STYLES[key]?.label || key);
+}
+
+function sortSellersByCommission(rows: SellerRow[]): SellerRow[] {
+  return [...rows].sort((a, b) => {
+    const ca = Number(a.comissao_estimada || 0);
+    const cb = Number(b.comissao_estimada || 0);
+    if (cb !== ca) return cb - ca;
+    const na = String(a.nome_vendedor || "").localeCompare(
+      String(b.nome_vendedor || ""),
+      "pt-BR",
+      { sensitivity: "base" },
+    );
+    if (na !== 0) return na;
+    return Number(a.id_funcionario || 0) - Number(b.id_funcionario || 0);
+  });
 }
 
 interface CommissionsTabProps {
@@ -44,6 +102,8 @@ export default function CommissionsTab({
 }: CommissionsTabProps) {
   const { year: selectedYear, month: selectedMonth } = splitAnoMes(anoMes);
   const [paymentMode, setPaymentMode] = useState<string>("");
+  /** Vazio = todos os níveis (mesmo padrão de Prioridades de cobrança). */
+  const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set());
 
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -55,7 +115,6 @@ export default function CommissionsTab({
   );
   const isMulti = multiFiliais.length > 1 || (!idFilial && multiFiliais.length > 0);
   const hasScope = Boolean(idFilial) || multiFiliais.length > 0;
-  // Chave estável para deps (evita refetch por nova referência de array).
   const multiFiliaisKey = multiFiliais.join(",");
 
   useEffect(() => {
@@ -84,7 +143,6 @@ export default function CommissionsTab({
 
     (async () => {
       try {
-        // Timeout maior que o default (30s): multi-filial histórico pode ser mais pesado.
         const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`, {
           signal: ac.signal,
           timeout: 90000,
@@ -102,31 +160,92 @@ export default function CommissionsTab({
     })();
 
     return () => ac.abort();
-    // multiFiliaisKey cobre o array; multiFiliais lido do closure estável pelo key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, selectedMonth, selectedYear, paymentMode]);
 
-  // Exceção de ranking: nível DESC; dentro do nível, Filial ASC → Nome ASC (sort estável).
-  const sellersSorted = useMemo(() => {
-    const rows = (data?.vendedores || []) as Record<string, unknown>[];
-    const byFilialNome = sortGridRows(rows, (row) => ({
-      filial: String(row.filial_label || row.id_filial || ""),
-      nome: String(row.nome_vendedor || ""),
-    }));
-    return [...byFilialNome].sort(
-      (a, b) =>
-        sellerTierRank((b as { nivel_atingido?: { tier_key?: string } }).nivel_atingido) -
-        sellerTierRank((a as { nivel_atingido?: { tier_key?: string } }).nivel_atingido),
-    );
-  }, [data?.vendedores]);
+  const sellers = useMemo(
+    () => ((data?.vendedores || []) as SellerRow[]),
+    [data?.vendedores],
+  );
 
-  const { query: sellersQ, setQuery: setSellersQ, filteredRows: filteredSellers } = useGridSearch(
-    sellersSorted,
+  const tierStats = useMemo(() => {
+    const map = new Map<string, { key: string; label: string; count: number; total: number }>();
+    for (const emp of sellers) {
+      const key = sellerTierKey(emp);
+      const cur = map.get(key) || {
+        key,
+        label: key === "none" ? TIER_STYLES.none.label : sellerTierLabel(emp),
+        count: 0,
+        total: 0,
+      };
+      cur.count += 1;
+      cur.total += Number(emp.comissao_estimada || 0);
+      if (key !== "none" && emp.nivel_atingido?.tier_name) {
+        cur.label = String(emp.nivel_atingido.tier_name);
+      }
+      map.set(key, cur);
+    }
+    return TIER_FILTER_ORDER.map((key) => map.get(key)).filter(Boolean) as Array<{
+      key: string;
+      label: string;
+      count: number;
+      total: number;
+    }>;
+  }, [sellers]);
+
+  const tierFiltered = useMemo(() => {
+    if (selectedTiers.size === 0) return sellers;
+    return sellers.filter((emp) => selectedTiers.has(sellerTierKey(emp)));
+  }, [sellers, selectedTiers]);
+
+  const { query: sellersQ, setQuery: setSellersQ, filteredRows: searchedSellers } = useGridSearch(
+    tierFiltered,
     { excludeKeys: /^id_/i },
   );
 
-  const showFilialCol = Boolean(data?.multi_filial) || multiFiliais.length > 1;
+  const filialGroups = useMemo(() => {
+    const byFilial = new Map<
+      string,
+      { id_filial: number; label: string; sellers: SellerRow[]; total: number }
+    >();
+    for (const emp of searchedSellers as SellerRow[]) {
+      const id = Number(emp.id_filial || 0);
+      const label = String(emp.filial_label || (id ? `Filial ${id}` : "Sem filial"));
+      const key = `${id}:${label}`;
+      const cur = byFilial.get(key) || { id_filial: id, label, sellers: [], total: 0 };
+      cur.sellers.push(emp);
+      cur.total += Number(emp.comissao_estimada || 0);
+      byFilial.set(key, cur);
+    }
+    return Array.from(byFilial.values())
+      .map((g) => ({
+        ...g,
+        sellers: sortSellersByCommission(g.sellers),
+      }))
+      .sort((a, b) =>
+        a.label.localeCompare(b.label, "pt-BR", { numeric: true, sensitivity: "base" }),
+      );
+  }, [searchedSellers]);
+
+  const filteredTotal = useMemo(
+    () => filialGroups.reduce((acc, g) => acc + g.total, 0),
+    [filialGroups],
+  );
+  const filteredCount = useMemo(
+    () => filialGroups.reduce((acc, g) => acc + g.sellers.length, 0),
+    [filialGroups],
+  );
+
   const numCell = { textAlign: "right" as const, fontVariantNumeric: "tabular-nums" as const };
+
+  const toggleTier = (key: string) => {
+    setSelectedTiers((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   if (!hasScope) {
     return (
@@ -148,85 +267,176 @@ export default function CommissionsTab({
           <div className="muted">Calculando comissões...</div>
         </div>
       ) : data ? (
-        <div className="card">
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
-            <GridSearchInput value={sellersQ} onChange={setSellersQ} />
-            {idFilial ? (
-              <label className="profitScopeMonth" title="Modo de cálculo da comissão">
-                <span className="profitScopeMonthLabel">Modo</span>
-                <select
-                  className="profitScopeMonthSelect"
-                  value={paymentMode}
-                  onChange={(e) => setPaymentMode(e.target.value)}
-                  aria-label="Modo de cálculo da comissão"
-                >
-                  <option value="">Padrão da config</option>
-                  <option value="individual_sales">Individual por quantidade</option>
-                  <option value="team_total">Equipe (quantidade total)</option>
-                  <option value="equal_split">Divisão igual</option>
-                </select>
-              </label>
-            ) : null}
-            <div style={{ marginLeft: "auto", textAlign: "right" }}>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {data.vendedores_elegiveis} elegíveis · total {formatCurrency(data.comissao_total || 0)}
-              </span>
+        <>
+          <div className="card commissionToolbar">
+            <div className="commissionToolbarRow">
+              <GridSearchInput value={sellersQ} onChange={setSellersQ} />
+              {idFilial ? (
+                <label className="profitScopeMonth" title="Modo de cálculo da comissão">
+                  <span className="profitScopeMonthLabel">Modo</span>
+                  <select
+                    className="profitScopeMonthSelect"
+                    value={paymentMode}
+                    onChange={(e) => setPaymentMode(e.target.value)}
+                    aria-label="Modo de cálculo da comissão"
+                  >
+                    <option value="">Padrão da config</option>
+                    <option value="individual_sales">Individual por quantidade</option>
+                    <option value="team_total">Equipe (quantidade total)</option>
+                    <option value="equal_split">Divisão igual</option>
+                  </select>
+                </label>
+              ) : null}
+              <div className="commissionToolbarMeta">
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {filteredCount} de {data.vendedores_elegiveis || sellers.length} ·{" "}
+                  {formatCurrency(filteredTotal || data.comissao_total || 0)}
+                </span>
+              </div>
             </div>
+
+            {tierStats.length > 0 ? (
+              <div className="commissionTierFilters" role="group" aria-label="Filtrar por nível">
+                <button
+                  type="button"
+                  className={`commissionTierChip${selectedTiers.size === 0 ? " commissionTierChip--active" : ""}`}
+                  aria-pressed={selectedTiers.size === 0}
+                  onClick={() => setSelectedTiers(new Set())}
+                >
+                  <span className="commissionTierChipName">Todos</span>
+                  <span className="commissionTierChipMeta">
+                    {sellers.length} · {formatCurrency(data.comissao_total || 0)}
+                  </span>
+                </button>
+                {tierStats.map((tier) => {
+                  const style = TIER_STYLES[tier.key] || TIER_STYLES.none;
+                  const active = selectedTiers.has(tier.key);
+                  return (
+                    <button
+                      key={tier.key}
+                      type="button"
+                      className={`commissionTierChip${active ? " commissionTierChip--active" : ""}`}
+                      aria-pressed={active}
+                      onClick={() => toggleTier(tier.key)}
+                      style={{
+                        color: style.color,
+                        borderColor: active ? style.color : `${style.color}55`,
+                        background: active ? style.bgActive : style.bg,
+                        boxShadow: active ? `0 0 0 1px ${style.color}` : undefined,
+                      }}
+                    >
+                      <span className="commissionTierChipName">{tier.label}</span>
+                      <span className="commissionTierChipMeta">
+                        {tier.count} · {formatCurrency(tier.total)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
 
-          {data.message && (data.vendedores || []).length === 0 ? (
-            <EmptyState title="Sem dados" detail={data.message} />
-          ) : (data.vendedores || []).length === 0 ? (
-            <EmptyState title="Sem vendedores" detail="Não há vendedores com identificação válida para o período selecionado." />
-          ) : (
-            <div className="tableScroll">
-              <table className="table compact" style={{ width: "100%", minWidth: showFilialCol ? 720 : 560 }}>
-                <thead>
-                  <tr>
-                    {showFilialCol ? <th style={{ textAlign: "left" }}>Filial</th> : null}
-                    <th style={{ textAlign: "left" }}>Funcionário</th>
-                    <th style={{ textAlign: "right" }}>Quantidade</th>
-                    <th style={{ textAlign: "right" }}>Venda</th>
-                    <th style={{ textAlign: "left" }}>Nível</th>
-                    <th style={{ textAlign: "right" }}>%</th>
-                    <th style={{ textAlign: "right" }}>Comissão</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredSellers.map((emp: any) => (
-                    <tr key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}>
-                      {showFilialCol ? (
-                        <td style={{ fontWeight: 600, whiteSpace: "nowrap", textAlign: "left" }}>
-                          {emp.filial_label || `Filial ${emp.id_filial || "—"}`}
-                        </td>
-                      ) : null}
-                      <td style={{ fontWeight: 500, textAlign: "left" }}>{emp.nome_vendedor}</td>
-                      <td style={numCell}>
-                        {Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
-                          maximumFractionDigits: 0,
-                        })}
-                      </td>
-                      <td style={numCell}>{formatCurrency(emp.venda_elegivel)}</td>
-                      <td style={{ textAlign: "left" }}>
-                        {emp.nivel_atingido ? (
-                          <span style={{ color: TIER_STYLES[emp.nivel_atingido.tier_key]?.color }}>
-                            {TIER_STYLES[emp.nivel_atingido.tier_key]?.icon} {emp.nivel_atingido.tier_name}
-                          </span>
-                        ) : (
-                          <span className="muted">Sem nível</span>
-                        )}
-                      </td>
-                      <td style={numCell}>{Number(emp.percentual_aplicado || 0).toFixed(2)}%</td>
-                      <td style={{ ...numCell, fontWeight: 700, color: "var(--color-positive)" }}>
-                        {formatCurrency(emp.comissao_estimada || 0)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {data.message && sellers.length === 0 ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <EmptyState title="Sem dados" detail={data.message} />
             </div>
+          ) : sellers.length === 0 ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <EmptyState
+                title="Sem vendedores"
+                detail="Não há vendedores com identificação válida para o período selecionado."
+              />
+            </div>
+          ) : filialGroups.length === 0 ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <EmptyState
+                title="Nenhum resultado"
+                detail={
+                  sellersQ
+                    ? `Nada encontrado para “${sellersQ}” com os filtros atuais.`
+                    : "Nenhum vendedor nos níveis selecionados."
+                }
+              />
+            </div>
+          ) : (
+            filialGroups.map((group) => (
+              <div
+                key={`${group.id_filial}:${group.label}`}
+                className="solvenciaFilialCard commissionFilialCard"
+                style={{ borderLeft: "4px solid var(--accent-copper, #b8722c)" }}
+              >
+                <div className="commissionFilialHead">
+                  <div>
+                    <div className="sectionEyebrow">Filial</div>
+                    <h2 className="commissionFilialTitle">{group.label}</h2>
+                  </div>
+                  <div className="commissionFilialSummary">
+                    <span>
+                      {group.sellers.length}{" "}
+                      {group.sellers.length === 1 ? "vendedor" : "vendedores"}
+                    </span>
+                    <strong>{formatCurrency(group.total)}</strong>
+                  </div>
+                </div>
+
+                <div className="tableScroll">
+                  <table className="table compact" style={{ width: "100%", minWidth: 560 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left" }}>Funcionário</th>
+                        <th style={{ textAlign: "right" }}>Quantidade</th>
+                        <th style={{ textAlign: "right" }}>Venda</th>
+                        <th style={{ textAlign: "left" }}>Nível</th>
+                        <th style={{ textAlign: "right" }}>%</th>
+                        <th style={{ textAlign: "right" }}>Comissão</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {group.sellers.map((emp) => {
+                        const tierKey = sellerTierKey(emp);
+                        const style = TIER_STYLES[tierKey] || TIER_STYLES.none;
+                        return (
+                          <tr key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}>
+                            <td style={{ fontWeight: 500, textAlign: "left" }}>
+                              {emp.nome_vendedor}
+                            </td>
+                            <td style={numCell}>
+                              {Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
+                                maximumFractionDigits: 0,
+                              })}
+                            </td>
+                            <td style={numCell}>{formatCurrency(emp.venda_elegivel)}</td>
+                            <td style={{ textAlign: "left" }}>
+                              {tierKey === "none" ? (
+                                <span className="muted">Sem nível</span>
+                              ) : (
+                                <span style={{ color: style.color, fontWeight: 650 }}>
+                                  {sellerTierLabel(emp)}
+                                </span>
+                              )}
+                            </td>
+                            <td style={numCell}>
+                              {Number(emp.percentual_aplicado || 0).toFixed(2)}%
+                            </td>
+                            <td
+                              style={{
+                                ...numCell,
+                                fontWeight: 700,
+                                color: "var(--color-positive)",
+                              }}
+                            >
+                              {formatCurrency(emp.comissao_estimada || 0)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))
           )}
-        </div>
+        </>
       ) : null}
     </div>
   );

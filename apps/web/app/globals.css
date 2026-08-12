@@ -3348,6 +3348,88 @@ input.gridSearchInput {
   min-width: 0;
 }
 
+/* Comissões — toolbar + filtros de nível + painel por filial (padrão solvência) */
+.commissionToolbar {
+  padding: 14px 16px;
+}
+.commissionToolbarRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.commissionToolbarMeta {
+  margin-left: auto;
+  text-align: right;
+}
+.commissionTierFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.commissionTierChip {
+  text-align: left;
+  cursor: pointer;
+  flex: 0 0 auto;
+  min-width: 118px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--surface-faint);
+  color: var(--text);
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.commissionTierChip:hover {
+  filter: brightness(1.06);
+}
+.commissionTierChip--active {
+  font-weight: 650;
+}
+.commissionTierChipName {
+  display: block;
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.commissionTierChipMeta {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.commissionFilialCard {
+  margin-top: 14px;
+}
+.commissionFilialHead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.commissionFilialTitle {
+  margin: 2px 0 0;
+  font-size: 1.15rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+.commissionFilialSummary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.commissionFilialSummary strong {
+  color: var(--color-positive);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 1400px) {
   .solvenciaKpiBoard {
     gap: 8px;

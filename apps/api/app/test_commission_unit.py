@@ -123,49 +123,58 @@ class TestCommissionCalculation:
 
 
 class TestSortSellersByTier:
-    """Grid: Diamante → Ouro → Prata → Bronze → sem nível."""
+    """Grid: Filial ASC → comissão DESC → nome ASC."""
 
-    def test_tiers_high_to_low(self):
-        rows = [
-            {"nome_vendedor": "B", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "bronze"}},
-            {"nome_vendedor": "D", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "diamond"}},
-            {"nome_vendedor": "S", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "silver"}},
-            {"nome_vendedor": "G", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "gold"}},
-            {"nome_vendedor": "Z", "venda_elegivel": 10, "nivel_atingido": None},
-        ]
-        sorted_rows = _sort_sellers_by_tier(rows)
-        keys = [
-            (r["nivel_atingido"] or {}).get("tier_key") if r["nivel_atingido"] else None
-            for r in sorted_rows
-        ]
-        assert keys == ["diamond", "gold", "silver", "bronze", None]
-
-    def test_same_tier_filial_then_sales_then_name(self):
+    def test_filial_then_commission_desc(self):
         rows = [
             {
-                "nome_vendedor": "Bruno",
-                "venda_elegivel": 50,
+                "nome_vendedor": "B",
+                "comissao_estimada": 50,
                 "filial_label": "B",
                 "id_filial": 2,
                 "id_funcionario": 1,
-                "nivel_atingido": {"tier_key": "gold"},
             },
             {
-                "nome_vendedor": "Ana",
-                "venda_elegivel": 80,
+                "nome_vendedor": "A2",
+                "comissao_estimada": 80,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 2,
-                "nivel_atingido": {"tier_key": "gold"},
             },
             {
-                "nome_vendedor": "Carlos",
-                "venda_elegivel": 80,
+                "nome_vendedor": "A1",
+                "comissao_estimada": 120,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 3,
-                "nivel_atingido": {"tier_key": "gold"},
+            },
+            {
+                "nome_vendedor": "A0",
+                "comissao_estimada": 80,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 4,
             },
         ]
         sorted_rows = _sort_sellers_by_tier(rows)
-        assert [r["nome_vendedor"] for r in sorted_rows] == ["Ana", "Carlos", "Bruno"]
+        assert [r["nome_vendedor"] for r in sorted_rows] == ["A1", "A0", "A2", "B"]
+
+    def test_same_commission_name_asc(self):
+        rows = [
+            {
+                "nome_vendedor": "Bruno",
+                "comissao_estimada": 100,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 1,
+            },
+            {
+                "nome_vendedor": "Ana",
+                "comissao_estimada": 100,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 2,
+            },
+        ]
+        sorted_rows = _sort_sellers_by_tier(rows)
+        assert [r["nome_vendedor"] for r in sorted_rows] == ["Ana", "Bruno"]
