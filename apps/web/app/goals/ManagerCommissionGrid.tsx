@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet, apiPut } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { apiGet, apiPut, isRequestCanceled } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
@@ -106,46 +106,61 @@ export default function ManagerCommissionGrid({
   const [error, setError] = useState("");
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
-  const fetchCalc = useCallback(async () => {
-    const multi = (idFiliais || []).map(String).filter(Boolean);
-    if (!idFilial && multi.length === 0) return;
-    setLoading(true);
-    setError("");
-    try {
-      const params = new URLSearchParams();
-      params.set("month", String(month));
-      params.set("year", String(year));
-      if (idEmpresa) params.set("id_empresa", String(idEmpresa));
-      // Multi (ou "todas"): manda id_filiais[]; single: id_filial
-      if (!idFilial && multi.length > 0) {
-        for (const f of multi) params.append("id_filiais", String(f));
-      } else if (multi.length > 1) {
-        for (const f of multi) params.append("id_filiais", String(f));
-      } else if (idFilial) {
-        params.set("id_filial", String(idFilial));
-      } else if (multi[0]) {
-        params.set("id_filial", String(multi[0]));
-      }
-      const resp = await apiGet(`/bi/team/manager-commissions/calc?${params.toString()}`);
-      const mapped = (resp?.rows || []).map(mapApiRow) as RowState[];
-      // Contrato grid: Filial ASC (rótulo operacional)
-      setRows(
-        sortGridRows(mapped, (row) => ({
-          filial: row.filial_label || String(row.id_filial),
-          nome: row.filial_label || String(row.id_filial),
-        })),
-      );
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao calcular comissão de gerentes.");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [idEmpresa, idFilial, idFiliais, month, year]);
+  const multiKey = useMemo(
+    () => (idFiliais || []).map(String).filter(Boolean).join(","),
+    [idFiliais],
+  );
 
   useEffect(() => {
-    fetchCalc();
-  }, [fetchCalc]);
+    const multi = multiKey ? multiKey.split(",") : [];
+    if (!idFilial && multi.length === 0) {
+      setRows([]);
+      setError("");
+      setLoading(false);
+      return;
+    }
+    const ac = new AbortController();
+    setLoading(true);
+    setError("");
+    setRows([]);
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("month", String(month));
+        params.set("year", String(year));
+        if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+        if (!idFilial && multi.length > 0) {
+          for (const f of multi) params.append("id_filiais", String(f));
+        } else if (multi.length > 1) {
+          for (const f of multi) params.append("id_filiais", String(f));
+        } else if (idFilial) {
+          params.set("id_filial", String(idFilial));
+        } else if (multi[0]) {
+          params.set("id_filial", String(multi[0]));
+        }
+        const resp = await apiGet(`/bi/team/manager-commissions/calc?${params.toString()}`, {
+          signal: ac.signal,
+          timeout: 60000,
+        });
+        if (ac.signal.aborted) return;
+        const mapped = (resp?.rows || []).map(mapApiRow) as RowState[];
+        setRows(
+          sortGridRows(mapped, (row) => ({
+            filial: row.filial_label || String(row.id_filial),
+            nome: row.filial_label || String(row.id_filial),
+          })),
+        );
+        setError("");
+      } catch (err: any) {
+        if (ac.signal.aborted || isRequestCanceled(err)) return;
+        setError(err?.response?.data?.detail || "Falha ao calcular comissão de gerentes.");
+        setRows([]);
+      } finally {
+        if (!ac.signal.aborted) setLoading(false);
+      }
+    })();
+    return () => ac.abort();
+  }, [idEmpresa, idFilial, multiKey, month, year]);
 
   const sortedRows = useMemo(
     () =>

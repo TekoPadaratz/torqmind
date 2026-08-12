@@ -256,7 +256,60 @@ def get_config_tiers(config_id: int) -> List[Dict[str, Any]]:
 
 
 def get_available_groups(id_empresa: int, id_filial: int) -> List[Dict[str, Any]]:
-    """Get all product groups available for the filial with recent revenue."""
+    """Grupos da filial com faturamento 30d — ClickHouse slim/dim (PG só fallback)."""
+    from datetime import date, timedelta
+
+    dk_fim = int(date.today().strftime("%Y%m%d"))
+    dk_ini = int((date.today() - timedelta(days=30)).strftime("%Y%m%d"))
+    try:
+        rows = query_dict(
+            f"""
+            SELECT
+              g.id_grupo_produto AS id_grupo_produto,
+              argMax(g.nome, g.source_ts_ms) AS nome,
+              round(coalesce(sum(i.total), 0), 2) AS faturamento_30d
+            FROM {CURRENT_DB}.dim_grupo_produto AS g FINAL
+            LEFT JOIN {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+              ON i.id_empresa = g.id_empresa
+             AND i.id_filial = g.id_filial
+             AND i.id_grupo_produto = g.id_grupo_produto
+             AND i.data_key >= {{dk_ini:Int32}}
+             AND i.data_key <= {{dk_fim:Int32}}
+             AND i.is_deleted = 0
+             AND i.cfop IN ({_cfop_in_sql()})
+            LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+              ON c.id_empresa = i.id_empresa
+             AND c.id_filial = i.id_filial
+             AND c.id_db = i.id_db
+             AND c.id_comprovante = i.id_comprovante
+             AND c.is_deleted = 0
+             AND c.cancelado = 0
+            WHERE g.id_empresa = {{id_empresa:Int32}}
+              AND g.id_filial = {{id_filial:Int32}}
+              AND g.is_deleted = 0
+            GROUP BY g.id_grupo_produto
+            ORDER BY nome, id_grupo_produto
+            """,
+            parameters={
+                "id_empresa": int(id_empresa),
+                "id_filial": int(id_filial),
+                "dk_ini": dk_ini,
+                "dk_fim": dk_fim,
+            },
+        )
+        if rows:
+            return [
+                {
+                    "id_grupo_produto": int(r["id_grupo_produto"]),
+                    "nome": str(r.get("nome") or f"Grupo {r['id_grupo_produto']}"),
+                    "faturamento_30d": float(r.get("faturamento_30d") or 0),
+                }
+                for r in rows
+                if r.get("id_grupo_produto") is not None
+            ]
+    except Exception as exc:
+        logger.warning("get_available_groups CH miss: %s", str(exc)[:180])
+
     sql = f"""
       SELECT
         g.id_grupo_produto,
@@ -287,7 +340,40 @@ def get_group_products(
     id_filial: int,
     id_grupo_produto: int,
 ) -> List[Dict[str, Any]]:
-    """List products of a group for commission drill-down."""
+    """List products of a group — CH dim primeiro; PG dw fallback."""
+    try:
+        rows = query_dict(
+            f"""
+            SELECT
+              id_produto,
+              coalesce(nullIf(argMax(nome, source_ts_ms), ''), concat('Produto ', toString(id_produto))) AS nome,
+              id_grupo_produto
+            FROM {CURRENT_DB}.dim_produto FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND id_filial = {{id_filial:Int32}}
+              AND id_grupo_produto = {{id_grupo:Int32}}
+              AND is_deleted = 0
+            GROUP BY id_produto, id_grupo_produto
+            ORDER BY nome, id_produto
+            """,
+            parameters={
+                "id_empresa": int(id_empresa),
+                "id_filial": int(id_filial),
+                "id_grupo": int(id_grupo_produto),
+            },
+        )
+        if rows:
+            return [
+                {
+                    "id_produto": int(r["id_produto"]),
+                    "nome": str(r.get("nome") or f"Produto {r['id_produto']}"),
+                    "id_grupo_produto": int(r.get("id_grupo_produto") or id_grupo_produto),
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        logger.warning("get_group_products CH miss: %s", str(exc)[:180])
+
     sql = """
       SELECT
         p.id_produto,

@@ -87,28 +87,7 @@ def get_rule_groups(config_id: int, rule_kind: Optional[str] = None) -> List[Dic
 
 
 def list_product_groups(id_empresa: int, id_filial: int) -> List[Dict[str, Any]]:
-    """Grupos da filial — prefer dim_grupo_produto; fallback CH."""
-    sql = """
-      SELECT id_grupo_produto, nome
-      FROM dw.dim_grupo_produto
-      WHERE id_empresa = %s AND id_filial = %s
-      ORDER BY nome NULLS LAST, id_grupo_produto
-    """
-    try:
-        with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-            rows = [dict(r) for r in conn.execute(sql, [id_empresa, id_filial]).fetchall()]
-        if rows:
-            return [
-                {
-                    "id_grupo_produto": int(r["id_grupo_produto"]),
-                    "nome": str(r.get("nome") or f"Grupo {r['id_grupo_produto']}"),
-                }
-                for r in rows
-                if r.get("id_grupo_produto") is not None
-            ]
-    except Exception as exc:
-        logger.warning("list_product_groups dim miss: %s", str(exc)[:180])
-
+    """Grupos da filial — ClickHouse dim primeiro; PG dw só fallback."""
     try:
         ch_rows = query_dict(
             f"""
@@ -122,16 +101,37 @@ def list_product_groups(id_empresa: int, id_filial: int) -> List[Dict[str, Any]]
             """,
             parameters={"id_empresa": int(id_empresa), "id_filial": int(id_filial)},
         )
+        if ch_rows:
+            return [
+                {
+                    "id_grupo_produto": int(r["id_grupo_produto"]),
+                    "nome": str(r.get("nome") or f"Grupo {r['id_grupo_produto']}"),
+                }
+                for r in ch_rows
+                if r.get("id_grupo_produto") is not None
+            ]
+    except Exception as exc:
+        logger.warning("list_product_groups CH miss: %s", str(exc)[:180])
+
+    sql = """
+      SELECT id_grupo_produto, nome
+      FROM dw.dim_grupo_produto
+      WHERE id_empresa = %s AND id_filial = %s
+      ORDER BY nome NULLS LAST, id_grupo_produto
+    """
+    try:
+        with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+            rows = [dict(r) for r in conn.execute(sql, [id_empresa, id_filial]).fetchall()]
         return [
             {
                 "id_grupo_produto": int(r["id_grupo_produto"]),
                 "nome": str(r.get("nome") or f"Grupo {r['id_grupo_produto']}"),
             }
-            for r in ch_rows
+            for r in rows
             if r.get("id_grupo_produto") is not None
         ]
     except Exception as exc:
-        logger.warning("list_product_groups CH miss: %s", str(exc)[:180])
+        logger.warning("list_product_groups PG fallback miss: %s", str(exc)[:180])
         return []
 
 
@@ -233,6 +233,15 @@ def save_rule_config(
         conn.commit()
     refreshed = get_rule_config(id_empresa, id_filial)
     assert refreshed
+    # Após mudar grupos, materializa o mês corrente na mart CH (não no GET).
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        publish_manager_commission_month(id_empresa, id_filial, now.year, now.month)
+    except Exception as exc:
+        logger.warning("publish after save_rule_config failed: %s", str(exc)[:180])
     return refreshed
 
 
@@ -477,8 +486,14 @@ def calc_branch_row(
     month: int,
     *,
     filial_label: Optional[str] = None,
-    publish: bool = True,
+    publish: bool = False,
 ) -> Dict[str, Any]:
+    """Calcula comissão de gerente para uma filial.
+
+    Hot path: lê mart CH (``manager_commission_group_month_rt``); slim CH só
+    como fallback. ``publish=True`` materializa a mart (ETL / refresh explícito)
+    — NUNCA default no GET da tela.
+    """
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
     sales_groups = get_rule_groups(config_id, "sales_base")

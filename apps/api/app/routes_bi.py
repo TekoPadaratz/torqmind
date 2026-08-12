@@ -2710,6 +2710,10 @@ def manager_commissions_calc(
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None),
+    refresh: bool = Query(
+        False,
+        description="Se true, republica mart CH a partir do slim antes de calcular (ops; não usar no hot path).",
+    ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.gerente")),
 ):
@@ -2755,6 +2759,7 @@ def manager_commissions_calc(
     except Exception:
         labels = {}
 
+    # Hot path: publish=False (mart/slim CH). refresh=true só para ops/ETL manual.
     rows_out = []
     for fid in sorted(targets):
         rows_out.append(
@@ -2764,7 +2769,7 @@ def manager_commissions_calc(
                 year,
                 month,
                 filial_label=labels.get(fid),
-                publish=True,
+                publish=bool(refresh),
             )
         )
     # Grid contract: Filial ASC
@@ -2775,6 +2780,7 @@ def manager_commissions_calc(
         "id_empresa": tenant,
         "rows": rows_out,
         "cash_source": "unavailable_pending_agent_dataset",
+        "refreshed": bool(refresh),
     }
 
 

@@ -5457,40 +5457,70 @@ def _budget_status(realizado: float, orcado: float, alerta_pct: int) -> tuple[fl
 def budget_config_overview(role: str, id_empresa: int, id_filial: Optional[int], **kwargs: Any) -> Dict[str, Any]:
     """Contas gerenciais + orcamento configurado (tela Metas & Equipe, 1 filial).
 
-    Sincroniza com o Xpert: lista TODAS as contas gerenciais da filial (catalogo
-    mart.plano_contas_gerencial) com o teto/alerta ja definido (app.budget_conta).
-    Exige 1 filial, como as telas de comissao.
+    Catálogo de contas vem do ClickHouse (``mart_plano_contas_gerencial``);
+    tetos/alerta ficam em ``app.budget_conta`` (OLTP).
     """
+    from app.db_clickhouse import query_dict
+
     fid = id_filial if isinstance(id_filial, int) else None
     if fid is None:
         return {"requires_single_filial": True, "id_filial": None, "accounts": []}
-    sql = """
-      SELECT
-        g.id_plano_conta,
-        g.codigo,
-        g.nome_conta,
-        COALESCE(b.valor_max, 0)::numeric(18,2) AS valor_max,
-        COALESCE(b.alerta_pct, 90)::int AS alerta_pct,
-        (b.id_plano_conta IS NOT NULL) AS configurado
-      FROM mart.plano_contas_gerencial g
-      LEFT JOIN app.budget_conta b
-        ON b.id_empresa = g.id_empresa AND b.id_filial = g.id_filial AND b.id_plano_conta = g.id_plano_conta
-      WHERE g.id_empresa = %s AND g.id_filial = %s
-      ORDER BY g.nome_conta
-    """
+
+    catalog: List[Dict[str, Any]] = []
+    try:
+        catalog = query_dict(
+            """
+            SELECT
+              id_plano_conta,
+              any(codigo) AS codigo,
+              any(nome_conta) AS nome_conta
+            FROM torqmind_mart_rt.mart_plano_contas_gerencial FINAL
+            WHERE id_empresa = %(id_empresa)s AND id_filial = %(id_filial)s
+            GROUP BY id_plano_conta
+            ORDER BY nome_conta, id_plano_conta
+            """,
+            {"id_empresa": int(id_empresa), "id_filial": int(fid)},
+        ) or []
+    except Exception as exc:
+        logging.getLogger(__name__).warning("budget_config_overview CH miss: %s", str(exc)[:180])
+        # Fallback PG mash só se CH vazio.
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(fid)) as conn:
+            catalog = [dict(r) for r in conn.execute(
+                """
+                SELECT id_plano_conta, codigo, nome_conta
+                FROM mart.plano_contas_gerencial
+                WHERE id_empresa = %s AND id_filial = %s
+                ORDER BY nome_conta
+                """,
+                [id_empresa, fid],
+            ).fetchall()]
+
+    budget_by_pc: Dict[int, Dict[str, Any]] = {}
     with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(fid)) as conn:
-        rows = [dict(r) for r in conn.execute(sql, [id_empresa, fid]).fetchall()]
-    accounts = [
-        {
-            "id_plano_conta": int(r.get("id_plano_conta") or 0),
-            "codigo": r.get("codigo") or "",
-            "nome_conta": r.get("nome_conta") or "",
-            "valor_max": round(float(r.get("valor_max") or 0), 2),
-            "alerta_pct": int(r.get("alerta_pct") or 90),
-            "configurado": bool(r.get("configurado")),
-        }
-        for r in rows
-    ]
+        for r in conn.execute(
+            """
+            SELECT id_plano_conta, valor_max::numeric(18,2) AS valor_max, alerta_pct::int AS alerta_pct
+            FROM app.budget_conta
+            WHERE id_empresa = %s AND id_filial = %s
+            """,
+            [id_empresa, fid],
+        ).fetchall():
+            budget_by_pc[int(r["id_plano_conta"])] = dict(r)
+
+    accounts = []
+    for r in catalog:
+        idpc = int(r.get("id_plano_conta") or 0)
+        b = budget_by_pc.get(idpc) or {}
+        accounts.append(
+            {
+                "id_plano_conta": idpc,
+                "codigo": r.get("codigo") or "",
+                "nome_conta": r.get("nome_conta") or "",
+                "valor_max": round(float(b.get("valor_max") or 0), 2),
+                "alerta_pct": int(b.get("alerta_pct") or 90),
+                "configurado": idpc in budget_by_pc,
+            }
+        )
     return {"requires_single_filial": False, "id_filial": fid, "accounts": accounts}
 
 
@@ -5535,7 +5565,7 @@ def budget_config_upsert(role: str, id_empresa: int, id_filial: Optional[int], i
 
 
 def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: int, mes: int, **kwargs: Any) -> Dict[str, Any]:
-    """Realizado x orcado — tetos em app.budget_conta (OLTP); realizado no ClickHouse."""
+    """Realizado x orcado — tetos em app.budget_conta (OLTP); labels+realizado no ClickHouse."""
     from app.db_clickhouse import query_dict
 
     where_filial, branch_params = _branch_scope_clause("b.id_filial", id_filial)
@@ -5544,17 +5574,12 @@ def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: i
         budget_rows = [dict(r) for r in conn.execute(
             f"""
             SELECT b.id_filial, b.id_plano_conta, b.valor_max::numeric(18,2) AS valor_max,
-                   b.alerta_pct::int AS alerta_pct,
-                   COALESCE(g.codigo, '') AS codigo,
-                   COALESCE(g.nome_conta, '') AS nome_conta
+                   b.alerta_pct::int AS alerta_pct
             FROM app.budget_conta b
-            LEFT JOIN mart.plano_contas_gerencial g
-              ON g.id_empresa = b.id_empresa AND g.id_filial = b.id_filial
-             AND g.id_plano_conta = b.id_plano_conta
             WHERE b.id_empresa = %s
               {where_filial}
               AND b.valor_max > 0
-            ORDER BY b.id_filial, g.nome_conta
+            ORDER BY b.id_filial, b.id_plano_conta
             """,
             [id_empresa] + branch_params,
         ).fetchall()]
@@ -5563,6 +5588,45 @@ def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: i
             for r in conn.execute("SELECT id_filial, nome FROM auth.filiais WHERE id_empresa = %s", [id_empresa]).fetchall()
             if r.get("id_filial") is not None
         }
+
+    # Labels do plano de contas: CH (não mart.* PG).
+    label_map: Dict[Tuple[int, int], Tuple[str, str]] = {}
+    try:
+        branch_ids = _branch_ids(id_filial)
+        params_lbl: Dict[str, Any] = {"id_empresa": int(id_empresa)}
+        filial_sql_lbl = ""
+        if branch_ids:
+            if len(branch_ids) == 1:
+                filial_sql_lbl = "AND id_filial = %(id_filial)s"
+                params_lbl["id_filial"] = branch_ids[0]
+            else:
+                filial_sql_lbl = "AND id_filial IN (%s)" % ", ".join(str(b) for b in branch_ids)
+        lbl_rows = query_dict(
+            f"""
+            SELECT id_filial, id_plano_conta,
+                   any(codigo) AS codigo,
+                   any(nome_conta) AS nome_conta
+            FROM torqmind_mart_rt.mart_plano_contas_gerencial FINAL
+            WHERE id_empresa = %(id_empresa)s
+              {filial_sql_lbl}
+            GROUP BY id_filial, id_plano_conta
+            """,
+            params_lbl,
+        )
+        for r in lbl_rows or []:
+            label_map[(int(r["id_filial"]), int(r["id_plano_conta"]))] = (
+                str(r.get("codigo") or ""),
+                str(r.get("nome_conta") or ""),
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("budget_overview CH labels miss: %s", str(exc)[:180])
+
+    for r in budget_rows:
+        fidr = int(r.get("id_filial") or 0)
+        idpc = int(r.get("id_plano_conta") or 0)
+        codigo, nome = label_map.get((fidr, idpc), ("", ""))
+        r["codigo"] = codigo
+        r["nome_conta"] = nome
 
     realizado_map: Dict[Tuple[int, int], float] = {}
     try:
@@ -5588,8 +5652,8 @@ def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: i
         for r in ch_rows:
             realizado_map[(int(r["id_filial"]), int(r["id_plano_conta"]))] = float(r.get("valor_realizado") or 0)
         if not ch_rows and budget_rows:
-            # CH vazio: fallback PG realizado
-            source = "postgres"
+            # Fallback PG só se CH vazio (legado).
+            source = "postgres_fallback"
             with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
                 for r in conn.execute(
                     f"""
@@ -5603,7 +5667,7 @@ def budget_overview(role: str, id_empresa: int, id_filial: Optional[int], ano: i
                     realizado_map[(int(r["id_filial"]), int(r["id_plano_conta"]))] = float(r.get("valor_realizado") or 0)
     except Exception as exc:
         logging.getLogger(__name__).warning("budget_overview CH failed: %s", str(exc)[:200])
-        source = "postgres"
+        source = "postgres_fallback"
 
     contas = []
     total_orcado = 0.0

@@ -40,6 +40,13 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         self.assertIn(40, SALES_BASE_EXCLUDED_GROUP_IDS)
         self.assertNotIn(5, SALES_BASE_EXCLUDED_GROUP_IDS)
 
+    def test_calc_branch_row_defaults_publish_false(self):
+        import inspect
+        from app.repos_manager_commission import calc_branch_row
+
+        params = inspect.signature(calc_branch_row).parameters
+        self.assertEqual(params["publish"].default, False)
+
 
 if __name__ == "__main__":
     unittest.main()
