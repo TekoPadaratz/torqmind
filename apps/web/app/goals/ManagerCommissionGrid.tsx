@@ -176,6 +176,36 @@ export default function ManagerCommissionGrid({
     { excludeKeys: /^id_/i },
   );
 
+  const footerTotals = useMemo(() => {
+    const list = filteredRows as unknown as RowState[];
+    const acc = list.reduce(
+      (a, row) => {
+        a.venda_bruta_total += Number(row.venda_bruta_total || 0);
+        a.comissao_bruta += Number(row.comissao_bruta || 0);
+        a.perdas_estoque += Number(row.perdas_estoque || 0);
+        a.sobras_estoque += Number(row.sobras_estoque || 0);
+        a.sobras_caixa += Number(row.sobras_caixa || 0);
+        a.furos_caixa += Number(row.furos_caixa || 0);
+        a.comissao_liquida += Number(row.comissao_liquida || 0);
+        return a;
+      },
+      {
+        venda_bruta_total: 0,
+        comissao_bruta: 0,
+        perdas_estoque: 0,
+        sobras_estoque: 0,
+        sobras_caixa: 0,
+        furos_caixa: 0,
+        comissao_liquida: 0,
+      },
+    );
+    const rate_pct =
+      acc.venda_bruta_total > 0
+        ? Math.round(((acc.comissao_bruta / acc.venda_bruta_total) * 100) * 100) / 100
+        : 0;
+    return { ...acc, rate_pct };
+  }, [filteredRows]);
+
   const updateLocal = (targetFilial: number, patch: Partial<RowState>) => {
     setRows((prev) =>
       prev.map((row) => {
@@ -421,6 +451,42 @@ export default function ManagerCommissionGrid({
                 </tr>
               ))}
             </tbody>
+            <tfoot className="commissionGridFoot">
+              <tr>
+                <td style={{ textAlign: "left", fontWeight: 700 }}>Total</td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {formatCurrency(footerTotals.venda_bruta_total)}
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {footerTotals.rate_pct.toFixed(2)}%
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {formatCurrency(footerTotals.comissao_bruta)}
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {formatCurrency(footerTotals.perdas_estoque)}
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {formatCurrency(footerTotals.sobras_estoque)}
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {formatCurrency(footerTotals.sobras_caixa)}
+                </td>
+                <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                  {formatCurrency(footerTotals.furos_caixa)}
+                </td>
+                <td
+                  style={{
+                    textAlign: "right",
+                    fontWeight: 780,
+                    fontVariantNumeric: "tabular-nums",
+                    color: "var(--color-positive)",
+                  }}
+                >
+                  {formatCurrency(footerTotals.comissao_liquida)}
+                </td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}

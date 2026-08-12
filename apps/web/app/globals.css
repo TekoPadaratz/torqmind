@@ -1577,6 +1577,16 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   z-index: 1;
 }
 
+.commissionGridFoot td {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-1, var(--chrome-face));
+  border-top: 1px solid var(--border);
+  z-index: 1;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 /* Chips de filtro pré-programado */
 .presetFilterChips {
   display: flex;

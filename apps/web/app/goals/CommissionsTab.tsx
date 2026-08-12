@@ -437,6 +437,39 @@ export default function CommissionsTab({
                         );
                       })}
                     </tbody>
+                    <tfoot className="commissionGridFoot">
+                      <tr>
+                        <td style={{ textAlign: "left", fontWeight: 700 }}>Total</td>
+                        <td style={{ ...numCell, fontWeight: 700 }}>
+                          {group.sellers
+                            .reduce((acc, emp) => acc + Number(emp.quantidade_vendas || 0), 0)
+                            .toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+                        </td>
+                        <td style={{ ...numCell, fontWeight: 700 }}>
+                          {formatCurrency(
+                            group.sellers.reduce(
+                              (acc, emp) => acc + Number(emp.venda_elegivel || 0),
+                              0,
+                            ),
+                          )}
+                        </td>
+                        <td style={{ textAlign: "left" }} className="muted">
+                          —
+                        </td>
+                        <td style={numCell} className="muted">
+                          —
+                        </td>
+                        <td
+                          style={{
+                            ...numCell,
+                            fontWeight: 780,
+                            color: "var(--color-positive)",
+                          }}
+                        >
+                          {formatCurrency(group.total)}
+                        </td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
@@ -224,6 +224,54 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
     );
   };
 
+  const setAllGroupsSelected = (nextSelected: boolean) => {
+    setExcludedIds((ex) => {
+      const next = new Set(ex);
+      for (const g of groups) {
+        for (const p of g.products || []) next.delete(p.id_produto);
+      }
+      return next;
+    });
+    setGroups((prev) =>
+      prev.map((g) => ({
+        ...g,
+        selected: nextSelected,
+        products: (g.products || []).map((p) => ({ ...p, selected: nextSelected })),
+      })),
+    );
+  };
+
+  /** Marca/desmarca produtos do grupo (se houver busca, só os visíveis). */
+  const setGroupProductsSelected = (idGrupo: number, nextSelected: boolean) => {
+    const group = groups.find((g) => g.id_grupo_produto === idGrupo);
+    if (!group) return;
+    const query = group.productQuery || "";
+    const targetIds = new Set(
+      (group.products || [])
+        .filter((p) => matchesProductSearch(p.nome, p.id_produto, query))
+        .map((p) => p.id_produto),
+    );
+    if (targetIds.size === 0) return;
+
+    const products = (group.products || []).map((p) =>
+      targetIds.has(p.id_produto) ? { ...p, selected: nextSelected } : p,
+    );
+    const anyOn = products.some((p) => p.selected);
+    setExcludedIds((ex) => {
+      const next = new Set(ex);
+      for (const p of products) {
+        if (p.selected) next.delete(p.id_produto);
+        else next.add(p.id_produto);
+      }
+      return next;
+    });
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id_grupo_produto === idGrupo ? { ...g, selected: anyOn, products } : g,
+      ),
+    );
+  };
+
   const updateTier = (index: number, field: keyof TierDraft, value: any) => {
     setTiers((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
   };
@@ -315,6 +363,18 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
   }
 
   const selectedCount = groups.filter((g) => g.selected).length;
+  const allGroupsSelected = groups.length > 0 && selectedCount === groups.length;
+
+  const bulkBtnStyle: CSSProperties = {
+    fontSize: 12,
+    padding: "4px 10px",
+    borderRadius: 6,
+    border: "1px solid var(--border)",
+    background: "var(--card-bg)",
+    color: "inherit",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -344,11 +404,22 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
       </div>
 
       <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
           <div style={{ fontWeight: 600, fontSize: 13 }}>Grupos e produtos participantes</div>
-          <span className="muted" style={{ fontSize: 12 }}>
-            {selectedCount} grupo(s) · {excludedIds.size} produto(s) excluído(s)
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="btn"
+              style={bulkBtnStyle}
+              onClick={() => setAllGroupsSelected(!allGroupsSelected)}
+              disabled={groups.length === 0}
+            >
+              {allGroupsSelected ? "Desmarcar todos os grupos" : "Marcar todos os grupos"}
+            </button>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {selectedCount} grupo(s) · {excludedIds.size} produto(s) excluído(s)
+            </span>
+          </div>
         </div>
         {selectedCount === 0 && (
           <div style={{ padding: "8px 12px", background: "rgba(234,179,8,0.08)", borderRadius: 6, fontSize: 12, marginBottom: 8, color: "#ca8a04" }}>
@@ -403,13 +474,42 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                     <div className="muted" style={{ fontSize: 12, padding: "6px 0" }}>Nenhum produto neste grupo.</div>
                   ) : (
                     <>
-                      <div style={{ padding: "6px 0 10px", display: "flex", justifyContent: "flex-start" }}>
+                      <div
+                        style={{
+                          padding: "6px 0 10px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          flexWrap: "wrap",
+                          justifyContent: "flex-start",
+                        }}
+                      >
                         <GridSearchInput
                           value={g.productQuery || ""}
                           onChange={(value) => setGroupProductQuery(g.id_grupo_produto, value)}
                           placeholder="Pesquisar produto…"
                           aria-label={`Pesquisar produtos de ${g.nome}`}
                         />
+                        {(() => {
+                          const visible = (g.products || []).filter((p) =>
+                            matchesProductSearch(p.nome, p.id_produto, g.productQuery || ""),
+                          );
+                          const allVisibleOn =
+                            visible.length > 0 && visible.every((p) => p.selected);
+                          return (
+                            <button
+                              type="button"
+                              className="btn"
+                              style={bulkBtnStyle}
+                              disabled={visible.length === 0}
+                              onClick={() =>
+                                setGroupProductsSelected(g.id_grupo_produto, !allVisibleOn)
+                              }
+                            >
+                              {allVisibleOn ? "Desmarcar todos" : "Marcar todos"}
+                            </button>
+                          );
+                        })()}
                       </div>
                       {(() => {
                         const visible = (g.products || []).filter((p) =>
