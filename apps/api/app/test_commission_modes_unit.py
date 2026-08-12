@@ -44,7 +44,7 @@ class _FakeConn:
         return False
 
 
-def _config(default_mode: str = "team_total"):
+def _config(default_mode: str = "individual_sales"):
     return {
         "id": 1,
         "name": "Comissao",
@@ -56,7 +56,7 @@ def _config(default_mode: str = "team_total"):
 
 
 def _sales_rows():
-    # total eligible = 70.000 -> team tier silver (1%)
+    # qtd equipe = 120 → prata (3%); valor 70.000
     return [
         {
             "id_funcionario": 1,
@@ -64,7 +64,7 @@ def _sales_rows():
             "id_grupo_produto": 10,
             "nome_grupo_produto": "LOJA",
             "venda_total": 40000,
-            "quantidade_vendas": 4,
+            "quantidade_vendas": 70,
         },
         {
             "id_funcionario": 2,
@@ -72,7 +72,7 @@ def _sales_rows():
             "id_grupo_produto": 10,
             "nome_grupo_produto": "LOJA",
             "venda_total": 30000,
-            "quantidade_vendas": 3,
+            "quantidade_vendas": 50,
         },
     ]
 
@@ -98,11 +98,11 @@ def test_individual_sales_mode_uses_per_employee_tier():
     with _patched_calc():
         res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "individual_sales")
     assert res["payment_mode"] == "individual_sales"
-    # Each employee below silver -> bronze (0.5%): 40000*0.5% + 30000*0.5% = 200 + 150
-    assert res["comissao_total"] == 350.00
+    # Cada um ≥50 e <110 → bronze 2%: 40000*2% + 30000*2% = 800 + 600
+    assert res["comissao_total"] == 1400.00
     by_id = {e["id_funcionario"]: e for e in res["vendedores"]}
-    assert by_id[1]["comissao_estimada"] == 200.00
-    assert by_id[2]["comissao_estimada"] == 150.00
+    assert by_id[1]["comissao_estimada"] == 800.00
+    assert by_id[2]["comissao_estimada"] == 600.00
     # Team-level tier fields are not used in individual mode
     assert res["nivel_atingido"] is None
     assert res["percentual_aplicado"] is None
@@ -112,25 +112,25 @@ def test_team_total_mode_uses_team_tier_and_proportional_split():
     with _patched_calc():
         res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "team_total")
     assert res["payment_mode"] == "team_total"
-    # total 70000 -> silver (1%) -> 700.00 team commission
-    assert res["comissao_total"] == 700.00
-    assert res["percentual_aplicado"] == 1.0
+    # qtd 120 → prata 3% sobre R$ 70.000 = 2.100
+    assert res["comissao_total"] == 2100.00
+    assert res["percentual_aplicado"] == 3.0
     assert res["nivel_atingido"]["tier_key"] == "silver"
     by_id = {e["id_funcionario"]: e for e in res["vendedores"]}
-    # proportional: 700 * 40000/70000 = 400 ; 700 * 30000/70000 = 300
-    assert by_id[1]["comissao_estimada"] == 400.00
-    assert by_id[2]["comissao_estimada"] == 300.00
+    # proporcional: 2100 * 40000/70000 = 1200 ; 2100 * 30000/70000 = 900
+    assert by_id[1]["comissao_estimada"] == 1200.00
+    assert by_id[2]["comissao_estimada"] == 900.00
 
 
 def test_equal_split_mode_divides_team_commission_equally():
     with _patched_calc():
         res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "equal_split")
     assert res["payment_mode"] == "equal_split"
-    assert res["comissao_total"] == 700.00
+    assert res["comissao_total"] == 2100.00
     by_id = {e["id_funcionario"]: e for e in res["vendedores"]}
-    # 700 / 2 eligible sellers = 350 each
-    assert by_id[1]["comissao_estimada"] == 350.00
-    assert by_id[2]["comissao_estimada"] == 350.00
+    # 2100 / 2 = 1050 cada
+    assert by_id[1]["comissao_estimada"] == 1050.00
+    assert by_id[2]["comissao_estimada"] == 1050.00
 
 
 def test_invalid_payment_mode_falls_back_to_config_default():
@@ -147,7 +147,7 @@ def test_ensure_default_config_creates_when_missing():
         "id_filial": 14122,
         "name": "Comissao padrao",
         "is_active": True,
-        "default_payment_mode": "team_total",
+        "default_payment_mode": "individual_sales",
         "manager_commission_mode": "use_tiers",
         "manager_commission_percent": 0,
         "created_at": None,
@@ -161,7 +161,7 @@ def test_ensure_default_config_creates_when_missing():
          patch.object(repos_commission, "get_conn", side_effect=_get_conn):
         res = repos_commission.ensure_default_config(1, 14122)
     assert res["id"] == 99
-    assert res["default_payment_mode"] == "team_total"
+    assert res["default_payment_mode"] == "individual_sales"
 
 
 def test_ensure_default_config_returns_existing():

@@ -2476,6 +2476,7 @@ def team_commissions_config(
                 "tier_key": t["tier_key"],
                 "tier_name": t["tier_name"],
                 "min_sales_amount": float(t["min_sales_amount"]),
+                "min_qty": float(t["min_sales_amount"]),
                 "commission_percent": float(t["commission_percent"]),
                 "sort_order": t["sort_order"],
                 "is_active": t["is_active"],
@@ -2501,7 +2502,7 @@ def team_commissions_config_save(
 
     groups = body.get("groups", [])
     tiers = body.get("tiers", [])
-    payment_mode = body.get("default_payment_mode", "team_total")
+    payment_mode = body.get("default_payment_mode", "individual_sales")
     # Manager commission UI moved to ManagerCommissionConfigPanel; keep fields
     # optional for backward compatibility with older clients.
     manager_commission_mode = body.get("manager_commission_mode", "use_tiers")
@@ -2528,17 +2529,18 @@ def team_commissions_config_save(
     for t in sorted(tiers, key=lambda x: x.get("sort_order", 0)):
         if t.get("tier_key") not in valid_keys:
             raise HTTPException(status_code=422, detail=f"Chave de nível inválida: {t.get('tier_key')}")
-        amount = float(t.get("min_sales_amount", 0))
+        amount = float(t.get("min_qty", t.get("min_sales_amount", 0)) or 0)
+        t["min_sales_amount"] = amount
         percent = float(t.get("commission_percent", 0))
         active = bool(t.get("is_active", True))
 
         if active and amount <= 0:
-            raise HTTPException(status_code=422, detail=f"Valor mínimo de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
+            raise HTTPException(status_code=422, detail=f"Quantidade mínima de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
         if active and percent <= 0:
             raise HTTPException(status_code=422, detail=f"Percentual de {t.get('tier_name') or t.get('tier_key')} deve ser maior que zero.")
 
         if active and prev_amount is not None and amount <= prev_amount:
-            raise HTTPException(status_code=422, detail="Faixas ativas devem ter valor mínimo crescente.")
+            raise HTTPException(status_code=422, detail="Faixas ativas devem ter quantidade mínima crescente.")
         if active and prev_percent is not None and percent <= prev_percent:
             raise HTTPException(status_code=422, detail="Faixas ativas devem ter percentual crescente.")
 

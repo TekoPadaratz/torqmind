@@ -5,13 +5,12 @@ import { apiGet, apiPut } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 
-/** Format number as BRL display (e.g. 30000 → "30.000") */
-function formatBRL(value: number): string {
-  return value.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+/** Quantidade inteira (ex.: 160) — níveis de premiação não são em R$. */
+function formatQty(value: number): string {
+  return Number(value || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
 }
 
-/** Parse BRL display string back to number (e.g. "30.000" → 30000) */
-function parseBRL(text: string): number {
+function parseQty(text: string): number {
   const clean = text.replace(/[^\d]/g, "");
   return clean ? parseInt(clean, 10) : 0;
 }
@@ -58,7 +57,7 @@ type GroupRow = {
 export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: ConfigTabProps) {
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [tiers, setTiers] = useState<TierDraft[]>([]);
-  const [paymentMode, setPaymentMode] = useState("team_total");
+  const [paymentMode, setPaymentMode] = useState("individual_sales");
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -91,7 +90,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         })),
       );
       setTiers(resp.tiers || []);
-      setPaymentMode(resp.config?.default_payment_mode || "team_total");
+      setPaymentMode(resp.config?.default_payment_mode || "individual_sales");
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Falha ao carregar configuração.");
     } finally {
@@ -217,7 +216,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
     const activeTiers = tiers.filter((t) => t.is_active);
     for (let i = 1; i < activeTiers.length; i++) {
       if (activeTiers[i].min_sales_amount <= activeTiers[i - 1].min_sales_amount) {
-        setError(`O valor mínimo de "${activeTiers[i].tier_name}" deve ser maior que "${activeTiers[i - 1].tier_name}" (R$ ${formatBRL(activeTiers[i - 1].min_sales_amount)}).`);
+        setError(`A quantidade mínima de "${activeTiers[i].tier_name}" deve ser maior que "${activeTiers[i - 1].tier_name}" (${formatQty(activeTiers[i - 1].min_sales_amount)}).`);
         return;
       }
       if (activeTiers[i].commission_percent <= activeTiers[i - 1].commission_percent) {
@@ -227,7 +226,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
     }
     for (const t of tiers) {
       if (t.is_active && t.min_sales_amount <= 0) {
-        setError(`O valor mínimo de "${t.tier_name}" deve ser maior que zero.`);
+        setError(`A quantidade mínima de "${t.tier_name}" deve ser maior que zero.`);
         return;
       }
       if (t.is_active && t.commission_percent <= 0) {
@@ -317,9 +316,9 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
           onChange={(e) => setPaymentMode(e.target.value)}
           style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card-bg)", color: "inherit", width: "100%", maxWidth: 320 }}
         >
-          <option value="team_total">Geral / Equipe</option>
+          <option value="individual_sales">Individual por quantidade</option>
+          <option value="team_total">Equipe (quantidade total)</option>
           <option value="equal_split">Rateio igual por equipe</option>
-          <option value="individual_sales">Individual por vendedor</option>
         </select>
         <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Define o modo padrão ao abrir a aba Comissões.</div>
       </div>
@@ -463,12 +462,12 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                   />
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>R$</span>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Qtd</span>
                   <input
                     type="text"
                     inputMode="numeric"
-                    value={formatBRL(tier.min_sales_amount)}
-                    onChange={(e) => updateTier(i, "min_sales_amount", parseBRL(e.target.value))}
+                    value={formatQty(tier.min_sales_amount)}
+                    onChange={(e) => updateTier(i, "min_sales_amount", parseQty(e.target.value))}
                     style={{
                       width: 100,
                       padding: "4px 6px",

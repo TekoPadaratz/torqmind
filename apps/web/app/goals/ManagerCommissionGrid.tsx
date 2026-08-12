@@ -223,7 +223,9 @@ export default function ManagerCommissionGrid({
     color: "inherit",
     fontSize: 12,
     textAlign: "right" as const,
+    fontVariantNumeric: "tabular-nums" as const,
   };
+  const moneyWrap = { display: "flex", alignItems: "center", gap: 4 };
 
   const multi = (idFiliais || []).filter(Boolean);
   if (!idFilial && multi.length === 0) {
@@ -316,72 +318,88 @@ export default function ManagerCommissionGrid({
                     {formatCurrency(row.comissao_bruta)}
                   </td>
                   <td>
-                    <input
-                      style={inputStyle}
-                      value={row.perdas_text}
-                      onChange={(e) => {
-                        const text = formatBrCurrencyInput(e.target.value);
-                        updateLocal(row.id_filial, {
-                          perdas_text: text,
-                          perdas_estoque: parseBrCurrency(text),
-                        });
-                      }}
-                      onBlur={() => {
-                        const current = rows.find((r) => r.id_filial === row.id_filial);
-                        if (current) void persist(current);
-                      }}
-                    />
+                    <div style={moneyWrap}>
+                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                      <input
+                        style={inputStyle}
+                        inputMode="decimal"
+                        value={row.perdas_text}
+                        onChange={(e) => {
+                          const text = formatBrCurrencyInput(e.target.value);
+                          updateLocal(row.id_filial, {
+                            perdas_text: text,
+                            perdas_estoque: parseBrCurrency(text),
+                          });
+                        }}
+                        onBlur={() => {
+                          const current = rows.find((r) => r.id_filial === row.id_filial);
+                          if (current) void persist(current);
+                        }}
+                      />
+                    </div>
                   </td>
                   <td>
-                    <input
-                      style={inputStyle}
-                      value={row.sobras_est_text}
-                      onChange={(e) => {
-                        const text = formatBrCurrencyInput(e.target.value);
-                        updateLocal(row.id_filial, {
-                          sobras_est_text: text,
-                          sobras_estoque: parseBrCurrency(text),
-                        });
-                      }}
-                      onBlur={() => {
-                        const current = rows.find((r) => r.id_filial === row.id_filial);
-                        if (current) void persist(current);
-                      }}
-                    />
+                    <div style={moneyWrap}>
+                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                      <input
+                        style={inputStyle}
+                        inputMode="decimal"
+                        value={row.sobras_est_text}
+                        onChange={(e) => {
+                          const text = formatBrCurrencyInput(e.target.value);
+                          updateLocal(row.id_filial, {
+                            sobras_est_text: text,
+                            sobras_estoque: parseBrCurrency(text),
+                          });
+                        }}
+                        onBlur={() => {
+                          const current = rows.find((r) => r.id_filial === row.id_filial);
+                          if (current) void persist(current);
+                        }}
+                      />
+                    </div>
                   </td>
                   <td>
-                    <input
-                      style={inputStyle}
-                      value={row.sobras_cx_text}
-                      onChange={(e) => {
-                        const text = formatBrCurrencyInput(e.target.value);
-                        updateLocal(row.id_filial, {
-                          sobras_cx_text: text,
-                          sobras_caixa: parseBrCurrency(text),
-                        });
-                      }}
-                      onBlur={() => {
-                        const current = rows.find((r) => r.id_filial === row.id_filial);
-                        if (current) void persist(current);
-                      }}
-                    />
+                    <div style={moneyWrap}>
+                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                      <input
+                        style={inputStyle}
+                        inputMode="decimal"
+                        value={row.sobras_cx_text}
+                        onChange={(e) => {
+                          const text = formatBrCurrencyInput(e.target.value);
+                          updateLocal(row.id_filial, {
+                            sobras_cx_text: text,
+                            sobras_caixa: parseBrCurrency(text),
+                          });
+                        }}
+                        onBlur={() => {
+                          const current = rows.find((r) => r.id_filial === row.id_filial);
+                          if (current) void persist(current);
+                        }}
+                      />
+                    </div>
                   </td>
                   <td>
-                    <input
-                      style={inputStyle}
-                      value={row.furos_text}
-                      onChange={(e) => {
-                        const text = formatBrCurrencyInput(e.target.value);
-                        updateLocal(row.id_filial, {
-                          furos_text: text,
-                          furos_caixa: parseBrCurrency(text),
-                        });
-                      }}
-                      onBlur={() => {
-                        const current = rows.find((r) => r.id_filial === row.id_filial);
-                        if (current) void persist(current);
-                      }}
-                    />
+                    <div style={moneyWrap}>
+                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                      <input
+                        style={inputStyle}
+                        inputMode="decimal"
+                        value={row.furos_text}
+                        onChange={(e) => {
+                          const text = formatBrCurrencyInput(e.target.value);
+                          updateLocal(row.id_filial, {
+                            furos_text: text,
+                            furos_caixa: parseBrCurrency(text),
+                          });
+                        }}
+                        onBlur={() => {
+                          const current = rows.find((r) => r.id_filial === row.id_filial);
+                          if (current) void persist(current);
+                        }}
+                      />
+                    </div>
                   </td>
                   <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                     {formatCurrency(row.comissao_liquida)}

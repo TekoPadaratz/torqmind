@@ -8,13 +8,17 @@ from app.db import get_conn
 
 logger = logging.getLogger(__name__)
 
-# Default tiers when no configuration exists
+# Default tiers when no configuration exists.
+# min_sales_amount guarda QUANTIDADE mínima de produtos (coluna histórica).
 DEFAULT_TIERS = [
-    {"tier_key": "bronze", "tier_name": "Bronze", "min_sales_amount": 30000, "commission_percent": 0.5, "sort_order": 1, "is_active": True},
-    {"tier_key": "silver", "tier_name": "Prata", "min_sales_amount": 50000, "commission_percent": 1.0, "sort_order": 2, "is_active": True},
-    {"tier_key": "gold", "tier_name": "Ouro", "min_sales_amount": 80000, "commission_percent": 1.5, "sort_order": 3, "is_active": True},
-    {"tier_key": "diamond", "tier_name": "Diamante", "min_sales_amount": 120000, "commission_percent": 2.0, "sort_order": 4, "is_active": True},
+    {"tier_key": "bronze", "tier_name": "Bronze", "min_sales_amount": 50, "commission_percent": 2.0, "sort_order": 1, "is_active": True},
+    {"tier_key": "silver", "tier_name": "Prata", "min_sales_amount": 110, "commission_percent": 3.0, "sort_order": 2, "is_active": True},
+    {"tier_key": "gold", "tier_name": "Ouro", "min_sales_amount": 160, "commission_percent": 5.0, "sort_order": 3, "is_active": True},
+    {"tier_key": "diamond", "tier_name": "Diamante", "min_sales_amount": 300, "commission_percent": 7.0, "sort_order": 4, "is_active": True},
 ]
+
+# Comprovantes fora da base de quantidade: cancelado, situacao=3 (ignorado), 14 (devolução).
+COMMISSION_EXCLUDED_SITUACOES: tuple[int, ...] = (2, 3, 14)
 
 # Power BI / LSC allowlist — saídas comerciais (itenscomprovantes / fact_venda_item)
 COMMISSION_ELIGIBLE_CFOPS: tuple[int, ...] = (5102, 5405, 5656, 5667, 5929)
@@ -26,6 +30,48 @@ def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
 
 def _cfop_in_sql() -> str:
     return ",".join(str(int(c)) for c in COMMISSION_ELIGIBLE_CFOPS)
+
+
+def _situacao_excluidas_sql() -> str:
+    return ",".join(str(int(s)) for s in COMMISSION_EXCLUDED_SITUACOES)
+
+
+def _month_data_key_bounds(year: int, month: int) -> tuple[int, int]:
+    start = int(year) * 10000 + int(month) * 100 + 1
+    if int(month) >= 12:
+        end = (int(year) + 1) * 10000 + 100 + 1
+    else:
+        end = int(year) * 10000 + (int(month) + 1) * 100 + 1
+    return start, end
+
+
+def _active_sale_sql(alias: str = "v") -> str:
+    """Venda ativa: não cancelada, não ignorada (3), não devolução (14)."""
+    return (
+        f" AND COALESCE({alias}.cancelado, false) = false"
+        f" AND COALESCE({alias}.commercial_eligible, true) = true"
+        f" AND COALESCE({alias}.situacao, 0) NOT IN ({_situacao_excluidas_sql()})"
+    )
+
+
+def _tier_min_qty(tier: Dict[str, Any]) -> float:
+    raw = tier.get("min_qty", tier.get("min_sales_amount", 0))
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _tier_public(tier: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not tier:
+        return None
+    qty = _tier_min_qty(tier)
+    return {
+        "tier_key": tier["tier_key"],
+        "tier_name": tier["tier_name"],
+        "min_sales_amount": qty,
+        "min_qty": qty,
+    }
 
 
 def get_config(id_empresa: int, id_filial: int) -> Optional[Dict[str, Any]]:
@@ -145,7 +191,7 @@ def ensure_default_config(id_empresa: int, id_filial: int) -> Dict[str, Any]:
                 manager_commission_mode,
                 manager_commission_percent
             )
-            VALUES (%s, %s, 'Comissao padrao', true, 'team_total', 'use_tiers', 0)
+            VALUES (%s, %s, 'Comissao padrao', true, 'individual_sales', 'use_tiers', 0)
             ON CONFLICT DO NOTHING
             RETURNING id, id_empresa, id_filial, name, is_active, default_payment_mode,
                       manager_commission_mode, manager_commission_percent,
@@ -178,7 +224,7 @@ def save_config(
     id_filial: int,
     groups: List[Dict[str, Any]],
     tiers: List[Dict[str, Any]],
-    default_payment_mode: str = "team_total",
+    default_payment_mode: str = "individual_sales",
     manager_commission_mode: str = "use_tiers",
     manager_commission_percent: float = 0.0,
     excluded_products: Optional[Sequence[Dict[str, Any]]] = None,
@@ -234,33 +280,33 @@ def save_config(
                 (config_id, tier_key, tier_name, min_sales_amount, commission_percent, sort_order, is_active)
               VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, [config_id, tier["tier_key"], tier["tier_name"],
-                                    tier["min_sales_amount"], tier["commission_percent"],
+                                    _tier_min_qty(tier), tier["commission_percent"],
                                     tier["sort_order"], tier.get("is_active", True)])
 
     return get_config(id_empresa, id_filial)
 
 
-def _determine_tier(total_sales: float, tiers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Determine the highest tier achieved by total_sales."""
+def _determine_tier(total_qty: float, tiers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Highest tier achieved by eligible product quantity (not R$)."""
     active_tiers = [t for t in tiers if t.get("is_active", True)]
-    active_tiers.sort(key=lambda t: float(t["min_sales_amount"]), reverse=True)
+    active_tiers.sort(key=lambda t: _tier_min_qty(t), reverse=True)
     for tier in active_tiers:
-        if total_sales >= float(tier["min_sales_amount"]):
+        if float(total_qty or 0) >= _tier_min_qty(tier):
             return tier
     return None
 
 
 def _next_tier(current_tier: Optional[Dict[str, Any]], tiers: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Get the next tier above current."""
+    """Get the next tier above current (by quantity threshold)."""
     active_tiers = sorted(
         [t for t in tiers if t.get("is_active", True)],
-        key=lambda t: float(t["min_sales_amount"])
+        key=lambda t: _tier_min_qty(t),
     )
     if current_tier is None:
         return active_tiers[0] if active_tiers else None
-    current_min = float(current_tier["min_sales_amount"])
+    current_min = _tier_min_qty(current_tier)
     for tier in active_tiers:
-        if float(tier["min_sales_amount"]) > current_min:
+        if _tier_min_qty(tier) > current_min:
             return tier
     return None
 
@@ -319,13 +365,14 @@ def calculate_commission_results_multi(
     all_groups: List[Dict[str, Any]] = []
     comissao_total = 0.0
     venda_elegivel = 0.0
+    quantidade_vendas = 0.0
     branch_results: List[Dict[str, Any]] = []
 
     for fid in targets:
         mode = explicit_mode
         if mode is None:
             cfg = get_config(id_empresa, fid)
-            mode = str((cfg or {}).get("default_payment_mode") or "team_total")
+            mode = str((cfg or {}).get("default_payment_mode") or "individual_sales")
             if mode not in valid_modes:
                 mode = "individual_sales"
         branch = calculate_commission_results(id_empresa, fid, month, year, mode)
@@ -342,6 +389,7 @@ def calculate_commission_results_multi(
             all_groups.append(row)
         comissao_total += float(branch.get("comissao_total") or 0)
         venda_elegivel += float(branch.get("venda_elegivel") or 0)
+        quantidade_vendas += float(branch.get("quantidade_vendas") or 0)
         branch_results.append(branch)
 
     all_sellers.sort(
@@ -371,6 +419,7 @@ def calculate_commission_results_multi(
         "multi_filial": not single,
         "payment_mode": explicit_mode or (primary.get("payment_mode") if single else "per_branch"),
         "venda_elegivel": round(venda_elegivel, 2),
+        "quantidade_vendas": round(quantidade_vendas, 4),
         "nivel_atingido": primary.get("nivel_atingido") if single else None,
         "percentual_aplicado": primary.get("percentual_aplicado") if single else None,
         "comissao_total": round(comissao_total, 2),
@@ -419,7 +468,7 @@ def calculate_commission_results(
     excludes = get_config_product_excludes(config_id)
 
     valid_modes = ("team_total", "equal_split", "individual_sales")
-    config_default_mode = str(config.get("default_payment_mode") or "team_total")
+    config_default_mode = str(config.get("default_payment_mode") or "individual_sales")
     effective_mode = payment_mode if payment_mode in valid_modes else config_default_mode
     if effective_mode not in valid_modes:
         effective_mode = "individual_sales"
@@ -430,8 +479,10 @@ def calculate_commission_results(
     group_ids = [g["id_grupo_produto"] for g in groups]
     exclude_ids = [int(p["id_produto"]) for p in excludes if int(p.get("id_produto") or 0) > 0]
     placeholders = ",".join(["%s"] * len(group_ids))
+    dk_ini, dk_fim = _month_data_key_bounds(year, month)
 
     # Direct fact query so product exclusions apply before aggregation.
+    # Nível = SUM(qtd) de itens elegíveis em comprovantes ativos (não cancel/devolução).
     sql = f"""
       SELECT
         COALESCE(i.id_funcionario, -1) AS id_funcionario,
@@ -439,7 +490,7 @@ def calculate_commission_results(
         COALESCE(i.id_grupo_produto, -1) AS id_grupo_produto,
         COALESCE(g.nome, '(Sem grupo)') AS nome_grupo_produto,
         COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total,
-        COUNT(DISTINCT v.id_comprovante)::integer AS quantidade_vendas
+        COALESCE(SUM(i.qtd), 0)::numeric(18,4) AS quantidade_vendas
       FROM dw.fact_venda v
       JOIN dw.fact_venda_item i
         ON i.id_empresa = v.id_empresa
@@ -456,14 +507,14 @@ def calculate_commission_results(
        AND f.id_funcionario = i.id_funcionario
       WHERE v.id_empresa = %s
         AND v.id_filial = %s
-        AND EXTRACT(YEAR FROM v.data)::integer = %s
-        AND EXTRACT(MONTH FROM v.data)::integer = %s
-        AND COALESCE(v.cancelado, false) = false
+        AND v.data_key >= %s
+        AND v.data_key < %s
+        {_active_sale_sql("v")}
         AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
         AND COALESCE(i.id_funcionario, 0) > 0
         AND i.id_grupo_produto IN ({placeholders})
     """
-    params: List[Any] = [id_empresa, id_filial, year, month] + group_ids
+    params: List[Any] = [id_empresa, id_filial, dk_ini, dk_fim] + group_ids
     if exclude_ids:
         ex_ph = ",".join(["%s"] * len(exclude_ids))
         sql += f" AND COALESCE(i.id_produto, 0) NOT IN ({ex_ph})"
@@ -479,9 +530,11 @@ def calculate_commission_results(
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-    # Manager base legado (tiers): all sales except combustiveis.
+    # Manager base legado (tiers): quantidade ativa sem combustíveis.
     manager_sql = f"""
-      SELECT COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total_sem_combustiveis
+      SELECT
+        COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total_sem_combustiveis,
+        COALESCE(SUM(i.qtd), 0)::numeric(18,4) AS quantidade_sem_combustiveis
       FROM dw.fact_venda v
       JOIN dw.fact_venda_item i
         ON i.id_empresa = v.id_empresa
@@ -494,18 +547,19 @@ def calculate_commission_results(
        AND g.id_grupo_produto = i.id_grupo_produto
       WHERE v.id_empresa = %s
         AND v.id_filial = %s
-        AND EXTRACT(YEAR FROM v.data)::integer = %s
-        AND EXTRACT(MONTH FROM v.data)::integer = %s
-        AND COALESCE(v.cancelado, false) = false
+        AND v.data_key >= %s
+        AND v.data_key < %s
+        {_active_sale_sql("v")}
         AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
         AND COALESCE(UPPER(g.nome), '') NOT LIKE 'COMBUST%%'
     """
 
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        manager_row = conn.execute(manager_sql, [id_empresa, id_filial, year, month]).fetchone()
+        manager_row = conn.execute(manager_sql, [id_empresa, id_filial, dk_ini, dk_fim]).fetchone()
 
     manager_sales = float((manager_row or {}).get("venda_total_sem_combustiveis") or 0)
-    manager_tier = _determine_tier(manager_sales, tiers)
+    manager_qty = float((manager_row or {}).get("quantidade_sem_combustiveis") or 0)
+    manager_tier = _determine_tier(manager_qty, tiers)
     manager_mode = str(config.get("manager_commission_mode") or "use_tiers")
     manager_fixed_percent = float(config.get("manager_commission_percent") or 0)
     if manager_mode == "fixed_percent":
@@ -525,11 +579,7 @@ def calculate_commission_results(
             tiers=tiers,
             manager_data={
                 "venda_total_sem_combustiveis": round(manager_sales, 2),
-                "nivel_atingido": {
-                    "tier_key": manager_tier["tier_key"],
-                    "tier_name": manager_tier["tier_name"],
-                    "min_sales_amount": float(manager_tier["min_sales_amount"]),
-                } if manager_tier else None,
+                "nivel_atingido": _tier_public(manager_tier),
                 "percentual_aplicado": manager_percent,
                 "modo_comissao": manager_mode,
                 "percentual_configurado": manager_fixed_percent,
@@ -548,10 +598,14 @@ def calculate_commission_results(
                 "quantidade_vendas": 0,
             }
         employees[emp_id]["venda_elegivel"] += float(r["venda_total"] or 0)
-        employees[emp_id]["quantidade_vendas"] += int(r["quantidade_vendas"] or 0)
+        employees[emp_id]["quantidade_vendas"] += float(r["quantidade_vendas"] or 0)
+
+    for emp in employees.values():
+        emp["quantidade_vendas"] = round(float(emp["quantidade_vendas"] or 0), 4)
 
     employee_list = sorted(employees.values(), key=lambda e: e["venda_elegivel"], reverse=True)
     total_eligible = sum(float(e["venda_elegivel"] or 0) for e in employee_list)
+    total_qty = sum(float(e["quantidade_vendas"] or 0) for e in employee_list)
     n_eligible = sum(1 for e in employee_list if float(e["venda_elegivel"] or 0) > 0)
 
     team_tier_payload = None
@@ -561,34 +615,28 @@ def calculate_commission_results(
     if effective_mode == "individual_sales":
         commission_total = 0.0
         for emp in employee_list:
-            emp_tier = _determine_tier(float(emp["venda_elegivel"]), tiers)
+            emp_tier = _determine_tier(float(emp["quantidade_vendas"] or 0), tiers)
             emp_percent = float(emp_tier["commission_percent"]) if emp_tier else 0.0
             emp_commission = round(float(emp["venda_elegivel"]) * emp_percent / 100, 2)
             commission_total += emp_commission
-            emp["nivel_atingido"] = {
-                "tier_key": emp_tier["tier_key"],
-                "tier_name": emp_tier["tier_name"],
-                "min_sales_amount": float(emp_tier["min_sales_amount"]),
-            } if emp_tier else None
+            emp["nivel_atingido"] = _tier_public(emp_tier)
             emp["percentual_aplicado"] = emp_percent
             emp["comissao_estimada"] = emp_commission
         commission_total = round(commission_total, 2)
     else:
-        team_tier = _determine_tier(total_eligible, tiers)
+        team_tier = _determine_tier(total_qty, tiers)
         team_percent = float(team_tier["commission_percent"]) if team_tier else 0.0
         commission_total = round(total_eligible * team_percent / 100, 2)
-        team_tier_payload = {
-            "tier_key": team_tier["tier_key"],
-            "tier_name": team_tier["tier_name"],
-            "min_sales_amount": float(team_tier["min_sales_amount"]),
-        } if team_tier else None
+        team_tier_payload = _tier_public(team_tier)
         next_tier_raw = _next_tier(team_tier, tiers)
-        next_tier_payload = {
-            "tier_key": next_tier_raw["tier_key"],
-            "tier_name": next_tier_raw["tier_name"],
-            "min_sales_amount": float(next_tier_raw["min_sales_amount"]),
-            "falta": round(max(0.0, float(next_tier_raw["min_sales_amount"]) - total_eligible), 2),
-        } if next_tier_raw else None
+        next_tier_payload = (
+            {
+                **_tier_public(next_tier_raw),
+                "falta": round(max(0.0, _tier_min_qty(next_tier_raw) - total_qty), 4),
+            }
+            if next_tier_raw
+            else None
+        )
         equal_share = round(commission_total / n_eligible, 2) if n_eligible else 0.0
         for emp in employee_list:
             emp_eligible = float(emp["venda_elegivel"] or 0)
@@ -627,6 +675,7 @@ def calculate_commission_results(
         "filial_label": filial_label,
         "payment_mode": effective_mode,
         "venda_elegivel": round(total_eligible, 2),
+        "quantidade_vendas": round(total_qty, 4),
         "nivel_atingido": team_tier_payload if effective_mode != "individual_sales" else None,
         "percentual_aplicado": team_percent if effective_mode != "individual_sales" else None,
         "comissao_total": round(commission_total, 2),
@@ -641,11 +690,7 @@ def calculate_commission_results(
         "tier_progress": [],
         "gerente": {
             "venda_total_sem_combustiveis": round(manager_sales, 2),
-            "nivel_atingido": {
-                "tier_key": manager_tier["tier_key"],
-                "tier_name": manager_tier["tier_name"],
-                "min_sales_amount": float(manager_tier["min_sales_amount"]),
-            } if manager_tier else None,
+            "nivel_atingido": _tier_public(manager_tier),
             "percentual_aplicado": manager_percent,
             "modo_comissao": manager_mode,
             "percentual_configurado": manager_fixed_percent,
@@ -683,6 +728,7 @@ def _empty_results(
         "id_filial": id_filial,
         "payment_mode": payment_mode,
         "venda_elegivel": 0,
+        "quantidade_vendas": 0,
         "nivel_atingido": None,
         "percentual_aplicado": None,
         "comissao_total": 0,

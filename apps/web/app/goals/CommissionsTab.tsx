@@ -165,9 +165,9 @@ export default function CommissionsTab({ idEmpresa, idFilial, idFiliais, referen
                 }}
               >
                 <option value="">Modo: padrão da config</option>
-                <option value="team_total">Equipe (comissão total)</option>
+                <option value="individual_sales">Individual por quantidade</option>
+                <option value="team_total">Equipe (quantidade total)</option>
                 <option value="equal_split">Divisão igual</option>
-                <option value="individual_sales">Individual por vendas</option>
               </select>
             ) : null}
             <select
@@ -252,6 +252,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, idFiliais, referen
                         <tr>
                           {showFilialCol ? <th style={{ textAlign: "left" }}>Filial</th> : null}
                           <th style={{ textAlign: "left" }}>Funcionário</th>
+                          <th style={{ textAlign: "right" }}>Quantidade</th>
                           <th style={{ textAlign: "right" }}>Venda</th>
                           <th style={{ textAlign: "left" }}>Nível</th>
                           <th style={{ textAlign: "right" }}>%</th>
@@ -267,6 +268,11 @@ export default function CommissionsTab({ idEmpresa, idFilial, idFiliais, referen
                               </td>
                             ) : null}
                             <td style={{ fontWeight: 500, textAlign: "left" }}>{emp.nome_vendedor}</td>
+                            <td style={numCell}>
+                              {Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
+                                maximumFractionDigits: 0,
+                              })}
+                            </td>
                             <td style={numCell}>{formatCurrency(emp.venda_elegivel)}</td>
                             <td style={{ textAlign: "left" }}>
                               {emp.nivel_atingido ? (
