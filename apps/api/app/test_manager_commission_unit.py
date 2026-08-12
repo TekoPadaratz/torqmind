@@ -51,8 +51,9 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
 
     def test_sales_excluded_cfops_include_transfer_intra_and_interstate(self):
         self.assertEqual(SALES_EXCLUDED_CFOPS, (5929, 6929))
-        pred = _cfop_sales_predicate_sql("i")
-        self.assertIn("NOT IN (5929,6929)", pred.replace(" ", ""))
+        pred = _cfop_sales_predicate_sql("i").replace(" ", "").lower()
+        self.assertIn("cfop,0)>5000", pred)
+        self.assertIn("notin(5929,6929)", pred)
 
 
 if __name__ == "__main__":

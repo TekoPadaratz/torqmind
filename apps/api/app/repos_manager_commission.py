@@ -18,6 +18,7 @@ MART_RT_DB = "torqmind_mart_rt"
 SALES_BASE_EXCLUDED_GROUP_IDS: Set[int] = {1, 2, 3, 4, 7, 8, 9, 10, 16, 39, 40}
 
 # Transferência (intra/interestadual) — fora da base de venda do gerente.
+# Base comercial = mesma regra da tela de Vendas (cfop > 5000), menos transferência.
 SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5929, 6929)
 STOCK_LOSS_CFOP = 5927
 
@@ -25,8 +26,19 @@ DEFAULT_RATE_PCT = 2.0
 
 
 def _cfop_sales_predicate_sql(alias: str = "i") -> str:
+    """Vendas comerciais (cfop > 5000), exceto transferência (5929/6929)."""
+    from app.sales_semantics import sales_cfop_filter_sql
+
     excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
-    return f"coalesce({alias}.cfop, 0) NOT IN ({excl})"
+    return f"{sales_cfop_filter_sql(alias)} AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+
+
+def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
+    """Grupo: cadastro do produto primeiro (igual ``sales_groups_rt`` / Top grupos)."""
+    return (
+        f"coalesce(nullIf({prod_alias}.id_grupo_produto, 0), "
+        f"nullIf({item_alias}.id_grupo_produto, 0), 0)"
+    )
 
 
 def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
@@ -332,15 +344,20 @@ def _sum_metric_from_slim(
     if not group_list:
         return 0.0
     if cfop_exclude is not None:
-        excl = ", ".join(str(int(c)) for c in cfop_exclude)
-        if not excl:
+        # Base de venda: espelha tela de Vendas + exclui transferência.
+        if not cfop_exclude:
             return 0.0
-        cfop_pred = f"coalesce(i.cfop, 0) NOT IN ({excl})"
+        cfop_pred = _cfop_sales_predicate_sql("i")
+        group_expr = _sales_group_id_sql("i", "p")
     else:
         include = ", ".join(str(int(c)) for c in (cfops or ()))
         if not include:
             return 0.0
         cfop_pred = f"i.cfop IN ({include})"
+        # Perdas: mantém resolução item→produto (CFOP pontual 5927).
+        group_expr = (
+            "if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))"
+        )
     rows = query_dict(
         f"""
         SELECT sum(i.total) AS valor
@@ -362,7 +379,7 @@ def _sum_metric_from_slim(
           AND c.cancelado = 0
           AND c.situacao != 3
           AND {cfop_pred}
-          AND if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) IN ({group_list})
+          AND {group_expr} IN ({group_list})
         """,
         parameters={
             "id_empresa": int(id_empresa),
@@ -394,17 +411,20 @@ def publish_manager_commission_month(
     inserted = 0
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
-            excl = ", ".join(str(int(c)) for c in cfops_exclude)
-            cfop_pred = f"coalesce(i.cfop, 0) NOT IN ({excl})"
+            cfop_pred = _cfop_sales_predicate_sql("i")
+            group_expr = _sales_group_id_sql("i", "p")
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
+            group_expr = (
+                "if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))"
+            )
         rows = query_dict(
             f"""
             SELECT
               i.id_empresa AS id_empresa,
               i.id_filial AS id_filial,
-              if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) AS id_grupo_produto,
+              {group_expr} AS id_grupo_produto,
               sum(i.total) AS valor,
               count() AS qtd_itens
             FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL

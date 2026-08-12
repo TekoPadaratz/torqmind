@@ -237,7 +237,8 @@ class TestSortSellersByTier:
 
 
 class TestCommissionCfopExclusion:
-    def test_excludes_transfer_intra_and_interstate(self):
+    def test_excludes_transfer_and_requires_sales_cfop_gate(self):
         assert COMMISSION_EXCLUDED_CFOPS == (5929, 6929)
-        pred = _cfop_sales_predicate_sql("i")
-        assert "NOT IN (5929,6929)" in pred.replace(" ", "")
+        pred = _cfop_sales_predicate_sql("i").replace(" ", "").lower()
+        assert "cfop,0)>5000" in pred
+        assert "notin(5929,6929)" in pred
