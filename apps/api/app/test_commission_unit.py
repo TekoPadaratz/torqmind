@@ -123,13 +123,15 @@ class TestCommissionCalculation:
 
 
 class TestSortSellersByTier:
-    """Grid: Filial ASC → comissão DESC → nome ASC."""
+    """Grid: Filial ASC → comissão DESC → qtd DESC → venda DESC → nome ASC."""
 
     def test_filial_then_commission_desc(self):
         rows = [
             {
                 "nome_vendedor": "B",
                 "comissao_estimada": 50,
+                "quantidade_vendas": 1,
+                "venda_elegivel": 10,
                 "filial_label": "B",
                 "id_filial": 2,
                 "id_funcionario": 1,
@@ -137,6 +139,8 @@ class TestSortSellersByTier:
             {
                 "nome_vendedor": "A2",
                 "comissao_estimada": 80,
+                "quantidade_vendas": 1,
+                "venda_elegivel": 10,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 2,
@@ -144,6 +148,8 @@ class TestSortSellersByTier:
             {
                 "nome_vendedor": "A1",
                 "comissao_estimada": 120,
+                "quantidade_vendas": 1,
+                "venda_elegivel": 10,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 3,
@@ -151,6 +157,8 @@ class TestSortSellersByTier:
             {
                 "nome_vendedor": "A0",
                 "comissao_estimada": 80,
+                "quantidade_vendas": 1,
+                "venda_elegivel": 10,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 4,
@@ -159,11 +167,55 @@ class TestSortSellersByTier:
         sorted_rows = _sort_sellers_by_tier(rows)
         assert [r["nome_vendedor"] for r in sorted_rows] == ["A1", "A0", "A2", "B"]
 
-    def test_same_commission_name_asc(self):
+    def test_zero_commission_falls_back_to_qty_then_sales_then_name(self):
+        rows = [
+            {
+                "nome_vendedor": "Bruno",
+                "comissao_estimada": 0,
+                "quantidade_vendas": 40,
+                "venda_elegivel": 900,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 1,
+            },
+            {
+                "nome_vendedor": "Ana",
+                "comissao_estimada": 0,
+                "quantidade_vendas": 80,
+                "venda_elegivel": 500,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 2,
+            },
+            {
+                "nome_vendedor": "Carlos",
+                "comissao_estimada": 0,
+                "quantidade_vendas": 80,
+                "venda_elegivel": 700,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 3,
+            },
+            {
+                "nome_vendedor": "Diana",
+                "comissao_estimada": 0,
+                "quantidade_vendas": 80,
+                "venda_elegivel": 700,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 4,
+            },
+        ]
+        sorted_rows = _sort_sellers_by_tier(rows)
+        assert [r["nome_vendedor"] for r in sorted_rows] == ["Carlos", "Diana", "Ana", "Bruno"]
+
+    def test_same_commission_name_asc_when_qty_and_sales_tie(self):
         rows = [
             {
                 "nome_vendedor": "Bruno",
                 "comissao_estimada": 100,
+                "quantidade_vendas": 10,
+                "venda_elegivel": 1000,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 1,
@@ -171,6 +223,8 @@ class TestSortSellersByTier:
             {
                 "nome_vendedor": "Ana",
                 "comissao_estimada": 100,
+                "quantidade_vendas": 10,
+                "venda_elegivel": 1000,
                 "filial_label": "A",
                 "id_filial": 1,
                 "id_funcionario": 2,

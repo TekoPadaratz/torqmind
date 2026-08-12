@@ -529,9 +529,10 @@ def _next_tier(current_tier: Optional[Dict[str, Any]], tiers: List[Dict[str, Any
 def _sort_sellers_by_tier(employee_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Ordena vendedores para o grid de comissão.
 
-    Exceção ao contrato Filial→Data→Nome: ranking por valor da comissão.
-    Filial ASC → comissão DESC → nome ASC (id técnico como desempate).
-    O frontend ainda agrupa por filial; esta ordem estabiliza a lista plana da API.
+    Exceção ao contrato Filial→Data→Nome: ranking por métrica de comissão.
+    Filial ASC → comissão DESC → quantidade DESC → venda DESC → nome ASC.
+    (Comissão zerada deixa de parecer “bagunçada”: cai para qtd/venda.)
+    O frontend agrupa por filial; esta ordem estabiliza a lista plana da API.
     """
     return sorted(
         employee_list,
@@ -539,6 +540,8 @@ def _sort_sellers_by_tier(employee_list: List[Dict[str, Any]]) -> List[Dict[str,
             str(e.get("filial_label") or "").casefold(),
             int(e.get("id_filial") or 0),
             -float(e.get("comissao_estimada") or 0),
+            -float(e.get("quantidade_vendas") or 0),
+            -float(e.get("venda_elegivel") or 0),
             str(e.get("nome_vendedor") or "").casefold(),
             int(e.get("id_funcionario") or 0),
         ),
@@ -585,7 +588,7 @@ def calculate_commission_results_multi(
     """Calculate employee commissions for one or many branches.
 
     Each seller row keeps its own ``id_filial`` / ``filial_label`` (config is
-    still per-branch). Rows: nível DESC (Diamante→Bronze) → filial → venda → nome.
+    still per-branch). Rows: filial ASC → comissão DESC → qtd DESC → venda DESC → nome.
 
     Sales come from ClickHouse slim in a single batched query (not PG fact_*).
     """

@@ -77,6 +77,12 @@ function sortSellersByCommission(rows: SellerRow[]): SellerRow[] {
     const ca = Number(a.comissao_estimada || 0);
     const cb = Number(b.comissao_estimada || 0);
     if (cb !== ca) return cb - ca;
+    const qa = Number(a.quantidade_vendas || 0);
+    const qb = Number(b.quantidade_vendas || 0);
+    if (qb !== qa) return qb - qa;
+    const va = Number(a.venda_elegivel || 0);
+    const vb = Number(b.venda_elegivel || 0);
+    if (vb !== va) return vb - va;
     const na = String(a.nome_vendedor || "").localeCompare(
       String(b.nome_vendedor || ""),
       "pt-BR",
