@@ -1,5 +1,10 @@
 """Unit tests for commission tier calculation logic (quantity-based)."""
-from app.repos_commission import _determine_tier, _next_tier, DEFAULT_TIERS
+from app.repos_commission import (
+    _determine_tier,
+    _next_tier,
+    _sort_sellers_by_tier,
+    DEFAULT_TIERS,
+)
 
 
 class TestDetermineTier:

@@ -2624,13 +2624,16 @@ def team_commissions_results(
 
     valid_modes = ("team_total", "equal_split", "individual_sales")
     effective_mode = payment_mode if payment_mode in valid_modes else None
-    payload = repos_commission.calculate_commission_results_multi(
-        tenant,
-        targets,
-        month,
-        year,
-        payment_mode=effective_mode,
-    )
+    try:
+        payload = repos_commission.calculate_commission_results_multi(
+            tenant,
+            targets,
+            month,
+            year,
+            payment_mode=effective_mode,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     payload.pop("gerente", None)
     cfg = payload.get("config")
     if isinstance(cfg, dict):

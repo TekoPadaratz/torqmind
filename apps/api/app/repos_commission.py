@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.db import get_conn
+from app.db_clickhouse import query_dict
 
 logger = logging.getLogger(__name__)
+
+CURRENT_DB = "torqmind_current"
 
 # Default tiers when no configuration exists.
 # min_sales_amount guarda QUANTIDADE mínima de produtos (coluna histórica).
@@ -52,6 +56,131 @@ def _active_sale_sql(alias: str = "v") -> str:
         f" AND COALESCE({alias}.commercial_eligible, true) = true"
         f" AND COALESCE({alias}.situacao, 0) NOT IN ({_situacao_excluidas_sql()})"
     )
+
+
+def _query_eligible_sales_ch(
+    id_empresa: int,
+    id_filiais: Sequence[int],
+    year: int,
+    month: int,
+) -> List[Dict[str, Any]]:
+    """Agrega vendas elegíveis no ClickHouse slim (fonte BI canônica).
+
+    Grão: filial + funcionário + grupo + produto (produto permite exclusões
+    por config antes da agregação final).
+    """
+    targets = sorted({int(f) for f in id_filiais if int(f) > 0})
+    if not targets:
+        return []
+    dk_ini, dk_fim = _month_data_key_bounds(year, month)
+    filial_list = ", ".join(str(f) for f in targets)
+    situacao_list = _situacao_excluidas_sql()
+    cfop_list = _cfop_in_sql()
+    sql = f"""
+      SELECT
+        i.id_filial AS id_filial,
+        i.id_funcionario AS id_funcionario,
+        coalesce(nullIf(f.nome, ''), '(Sem vendedor)') AS nome_vendedor,
+        if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) AS id_grupo_produto,
+        coalesce(nullIf(g.nome, ''), '(Sem grupo)') AS nome_grupo_produto,
+        i.id_produto AS id_produto,
+        round(sum(i.total), 2) AS venda_total,
+        round(sum(i.qtd), 4) AS quantidade_vendas
+      FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+      INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+        ON c.id_empresa = i.id_empresa
+       AND c.id_filial = i.id_filial
+       AND c.id_db = i.id_db
+       AND c.id_comprovante = i.id_comprovante
+      LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
+        ON f.id_empresa = i.id_empresa
+       AND f.id_filial = i.id_filial
+       AND f.id_funcionario = i.id_funcionario
+      LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
+        ON p.id_empresa = i.id_empresa
+       AND p.id_filial = i.id_filial
+       AND p.id_produto = i.id_produto
+      LEFT JOIN {CURRENT_DB}.dim_grupo_produto AS g FINAL
+        ON g.id_empresa = i.id_empresa
+       AND g.id_filial = i.id_filial
+       AND g.id_grupo_produto = if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))
+      WHERE i.id_empresa = {{id_empresa:Int32}}
+        AND i.id_filial IN ({filial_list})
+        AND i.data_key >= {{dk_ini:Int32}}
+        AND i.data_key < {{dk_fim:Int32}}
+        AND i.is_deleted = 0
+        AND c.is_deleted = 0
+        AND c.cancelado = 0
+        AND c.situacao NOT IN ({situacao_list})
+        AND coalesce(c.commercial_eligible, 1) = 1
+        AND i.cfop IN ({cfop_list})
+        AND i.id_funcionario > 0
+      GROUP BY
+        id_filial,
+        id_funcionario,
+        nome_vendedor,
+        id_grupo_produto,
+        nome_grupo_produto,
+        id_produto
+    """
+    rows = query_dict(
+        sql,
+        parameters={
+            "id_empresa": int(id_empresa),
+            "dk_ini": int(dk_ini),
+            "dk_fim": int(dk_fim),
+        },
+    )
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        out.append(
+            {
+                "id_filial": int(r.get("id_filial") or 0),
+                "id_funcionario": int(r.get("id_funcionario") or 0),
+                "nome_vendedor": str(r.get("nome_vendedor") or "(Sem vendedor)"),
+                "id_grupo_produto": int(r.get("id_grupo_produto") or 0),
+                "nome_grupo_produto": str(r.get("nome_grupo_produto") or "(Sem grupo)"),
+                "id_produto": int(r.get("id_produto") or 0),
+                "venda_total": float(r.get("venda_total") or 0),
+                "quantidade_vendas": float(r.get("quantidade_vendas") or 0),
+            }
+        )
+    return out
+
+
+def _filter_sales_for_config(
+    raw_rows: Sequence[Dict[str, Any]],
+    group_ids: Sequence[int],
+    exclude_ids: Sequence[int],
+) -> List[Dict[str, Any]]:
+    """Aplica grupos/exclusões da config e reagrupa em funcionário+grupo."""
+    groups = {int(g) for g in group_ids if int(g) > 0}
+    excludes = {int(p) for p in exclude_ids if int(p) > 0}
+    if not groups:
+        return []
+    agg: Dict[tuple, Dict[str, Any]] = {}
+    for r in raw_rows:
+        gid = int(r.get("id_grupo_produto") or 0)
+        if gid not in groups:
+            continue
+        pid = int(r.get("id_produto") or 0)
+        if excludes and pid in excludes:
+            continue
+        key = (int(r.get("id_funcionario") or 0), gid)
+        slot = agg.get(key)
+        if slot is None:
+            slot = {
+                "id_funcionario": int(r.get("id_funcionario") or 0),
+                "nome_vendedor": str(r.get("nome_vendedor") or "(Sem vendedor)"),
+                "id_grupo_produto": gid,
+                "nome_grupo_produto": str(r.get("nome_grupo_produto") or "(Sem grupo)"),
+                "venda_total": 0.0,
+                "quantidade_vendas": 0.0,
+            }
+            agg[key] = slot
+        slot["venda_total"] += float(r.get("venda_total") or 0)
+        slot["quantidade_vendas"] += float(r.get("quantidade_vendas") or 0)
+    return list(agg.values())
 
 
 def _tier_min_qty(tier: Dict[str, Any]) -> float:
@@ -388,6 +517,8 @@ def calculate_commission_results_multi(
 
     Each seller row keeps its own ``id_filial`` / ``filial_label`` (config is
     still per-branch). Rows: nível DESC (Diamante→Bronze) → filial → venda → nome.
+
+    Sales come from ClickHouse slim in a single batched query (not PG fact_*).
     """
     targets = sorted({int(f) for f in id_filiais if int(f) > 0})
     if not targets:
@@ -396,6 +527,16 @@ def calculate_commission_results_multi(
     labels = _filial_labels(id_empresa, targets)
     valid_modes = ("team_total", "equal_split", "individual_sales")
     explicit_mode = payment_mode if payment_mode in valid_modes else None
+
+    # Uma leitura CH para todas as filiais do escopo (evita N× scan em fact_* PG).
+    try:
+        raw_sales = _query_eligible_sales_ch(id_empresa, targets, year, month)
+    except Exception as exc:
+        logger.exception("commission CH sales failed empresa=%s mes=%s/%s", id_empresa, month, year)
+        raise RuntimeError(f"Falha ao consultar vendas elegíveis no analytics: {exc}") from exc
+    sales_by_filial: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for row in raw_sales:
+        sales_by_filial[int(row["id_filial"])].append(row)
 
     all_sellers: List[Dict[str, Any]] = []
     all_groups: List[Dict[str, Any]] = []
@@ -411,7 +552,15 @@ def calculate_commission_results_multi(
             mode = str((cfg or {}).get("default_payment_mode") or "individual_sales")
             if mode not in valid_modes:
                 mode = "individual_sales"
-        branch = calculate_commission_results(id_empresa, fid, month, year, mode)
+        branch = calculate_commission_results(
+            id_empresa,
+            fid,
+            month,
+            year,
+            mode,
+            sales_rows=sales_by_filial.get(fid, []),
+            include_manager=False,
+        )
         label = labels.get(fid, f"Filial {fid}")
         branch["filial_label"] = label
         for emp in branch.get("vendedores") or []:
@@ -485,8 +634,15 @@ def calculate_commission_results(
     month: int,
     year: int,
     payment_mode: str = "individual_sales",
+    *,
+    sales_rows: Optional[Sequence[Dict[str, Any]]] = None,
+    include_manager: bool = False,
 ) -> Dict[str, Any]:
-    """Calculate commission results for a month/year using individual commission rules."""
+    """Calculate commission results for a month/year using individual commission rules.
+
+    ``sales_rows``: pré-leitura CH (grão produto) para reuso no multi-filial.
+    ``include_manager``: legado; endpoint de vendedores não usa gerente (há rota própria).
+    """
     config = get_config(id_empresa, id_filial)
     if not config:
         return _empty_results(month, year, id_filial, reason="no_config")
@@ -507,95 +663,64 @@ def calculate_commission_results(
 
     group_ids = [g["id_grupo_produto"] for g in groups]
     exclude_ids = [int(p["id_produto"]) for p in excludes if int(p.get("id_produto") or 0) > 0]
-    placeholders = ",".join(["%s"] * len(group_ids))
-    dk_ini, dk_fim = _month_data_key_bounds(year, month)
 
-    # Direct fact query so product exclusions apply before aggregation.
-    # Nível = SUM(qtd) de itens elegíveis em comprovantes ativos (não cancel/devolução).
-    sql = f"""
-      SELECT
-        COALESCE(i.id_funcionario, -1) AS id_funcionario,
-        COALESCE(f.nome, '(Sem vendedor)') AS nome_vendedor,
-        COALESCE(i.id_grupo_produto, -1) AS id_grupo_produto,
-        COALESCE(g.nome, '(Sem grupo)') AS nome_grupo_produto,
-        COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total,
-        COALESCE(SUM(i.qtd), 0)::numeric(18,4) AS quantidade_vendas
-      FROM dw.fact_venda v
-      JOIN dw.fact_venda_item i
-        ON i.id_empresa = v.id_empresa
-       AND i.id_filial = v.id_filial
-       AND i.id_db = v.id_db
-       AND i.id_comprovante = v.id_comprovante
-      LEFT JOIN dw.dim_grupo_produto g
-        ON g.id_empresa = i.id_empresa
-       AND g.id_filial = i.id_filial
-       AND g.id_grupo_produto = i.id_grupo_produto
-      LEFT JOIN dw.dim_funcionario f
-        ON f.id_empresa = i.id_empresa
-       AND f.id_filial = i.id_filial
-       AND f.id_funcionario = i.id_funcionario
-      WHERE v.id_empresa = %s
-        AND v.id_filial = %s
-        AND v.data_key >= %s
-        AND v.data_key < %s
-        {_active_sale_sql("v")}
-        AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
-        AND COALESCE(i.id_funcionario, 0) > 0
-        AND i.id_grupo_produto IN ({placeholders})
-    """
-    params: List[Any] = [id_empresa, id_filial, dk_ini, dk_fim] + group_ids
-    if exclude_ids:
-        ex_ph = ",".join(["%s"] * len(exclude_ids))
-        sql += f" AND COALESCE(i.id_produto, 0) NOT IN ({ex_ph})"
-        params.extend(exclude_ids)
-    sql += """
-      GROUP BY
-        COALESCE(i.id_funcionario, -1),
-        COALESCE(f.nome, '(Sem vendedor)'),
-        COALESCE(i.id_grupo_produto, -1),
-        COALESCE(g.nome, '(Sem grupo)')
-    """
+    if sales_rows is None:
+        try:
+            sales_rows = _query_eligible_sales_ch(id_empresa, [id_filial], year, month)
+        except Exception as exc:
+            logger.exception(
+                "commission CH sales failed empresa=%s filial=%s mes=%s/%s",
+                id_empresa,
+                id_filial,
+                month,
+                year,
+            )
+            raise RuntimeError(f"Falha ao consultar vendas elegíveis no analytics: {exc}") from exc
 
-    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = _filter_sales_for_config(sales_rows, group_ids, exclude_ids)
 
-    # Manager base legado (tiers): quantidade ativa sem combustíveis.
-    manager_sql = f"""
-      SELECT
-        COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total_sem_combustiveis,
-        COALESCE(SUM(i.qtd), 0)::numeric(18,4) AS quantidade_sem_combustiveis
-      FROM dw.fact_venda v
-      JOIN dw.fact_venda_item i
-        ON i.id_empresa = v.id_empresa
-       AND i.id_filial = v.id_filial
-       AND i.id_db = v.id_db
-       AND i.id_comprovante = v.id_comprovante
-      LEFT JOIN dw.dim_grupo_produto g
-        ON g.id_empresa = i.id_empresa
-       AND g.id_filial = i.id_filial
-       AND g.id_grupo_produto = i.id_grupo_produto
-      WHERE v.id_empresa = %s
-        AND v.id_filial = %s
-        AND v.data_key >= %s
-        AND v.data_key < %s
-        {_active_sale_sql("v")}
-        AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
-        AND COALESCE(UPPER(g.nome), '') NOT LIKE 'COMBUST%%'
-    """
-
-    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        manager_row = conn.execute(manager_sql, [id_empresa, id_filial, dk_ini, dk_fim]).fetchone()
-
-    manager_sales = float((manager_row or {}).get("venda_total_sem_combustiveis") or 0)
-    manager_qty = float((manager_row or {}).get("quantidade_sem_combustiveis") or 0)
-    manager_tier = _determine_tier(manager_qty, tiers)
+    manager_sales = 0.0
+    manager_qty = 0.0
+    manager_tier = None
     manager_mode = str(config.get("manager_commission_mode") or "use_tiers")
     manager_fixed_percent = float(config.get("manager_commission_percent") or 0)
-    if manager_mode == "fixed_percent":
-        manager_percent = manager_fixed_percent
-    else:
-        manager_percent = float(manager_tier["commission_percent"]) if manager_tier else 0.0
-    manager_commission_gross = round(manager_sales * manager_percent / 100, 2)
+    manager_percent = 0.0
+    manager_commission_gross = 0.0
+
+    if include_manager:
+        dk_ini, dk_fim = _month_data_key_bounds(year, month)
+        manager_sql = f"""
+          SELECT
+            COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total_sem_combustiveis,
+            COALESCE(SUM(i.qtd), 0)::numeric(18,4) AS quantidade_sem_combustiveis
+          FROM dw.fact_venda v
+          JOIN dw.fact_venda_item i
+            ON i.id_empresa = v.id_empresa
+           AND i.id_filial = v.id_filial
+           AND i.id_db = v.id_db
+           AND i.id_comprovante = v.id_comprovante
+          LEFT JOIN dw.dim_grupo_produto g
+            ON g.id_empresa = i.id_empresa
+           AND g.id_filial = i.id_filial
+           AND g.id_grupo_produto = i.id_grupo_produto
+          WHERE v.id_empresa = %s
+            AND v.id_filial = %s
+            AND v.data_key >= %s
+            AND v.data_key < %s
+            {_active_sale_sql("v")}
+            AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
+            AND COALESCE(UPPER(g.nome), '') NOT LIKE 'COMBUST%%'
+        """
+        with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+            manager_row = conn.execute(manager_sql, [id_empresa, id_filial, dk_ini, dk_fim]).fetchone()
+        manager_sales = float((manager_row or {}).get("venda_total_sem_combustiveis") or 0)
+        manager_qty = float((manager_row or {}).get("quantidade_sem_combustiveis") or 0)
+        manager_tier = _determine_tier(manager_qty, tiers)
+        if manager_mode == "fixed_percent":
+            manager_percent = manager_fixed_percent
+        else:
+            manager_percent = float(manager_tier["commission_percent"]) if manager_tier else 0.0
+        manager_commission_gross = round(manager_sales * manager_percent / 100, 2)
 
     if not rows:
         return _empty_results(
@@ -734,6 +859,7 @@ def calculate_commission_results(
             "manager_commission_percent": manager_fixed_percent,
         },
     }
+
 
 
 def _empty_results(

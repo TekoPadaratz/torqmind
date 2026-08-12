@@ -56,21 +56,25 @@ def _config(default_mode: str = "individual_sales"):
 
 
 def _sales_rows():
-    # qtd equipe = 120 → prata (3%); valor 70.000
+    # qtd equipe = 120 → prata (3%); valor 70.000 — grão produto (CH)
     return [
         {
+            "id_filial": 14122,
             "id_funcionario": 1,
             "nome_vendedor": "ANA",
             "id_grupo_produto": 10,
             "nome_grupo_produto": "LOJA",
+            "id_produto": 100,
             "venda_total": 40000,
             "quantidade_vendas": 70,
         },
         {
+            "id_filial": 14122,
             "id_funcionario": 2,
             "nome_vendedor": "BRUNO",
             "id_grupo_produto": 10,
             "nome_grupo_produto": "LOJA",
+            "id_produto": 101,
             "venda_total": 30000,
             "quantidade_vendas": 50,
         },
@@ -80,17 +84,12 @@ def _sales_rows():
 @contextmanager
 def _patched_calc(default_mode: str = "team_total"):
     """Patch the DB-backed helpers used by calculate_commission_results."""
-    manager_row = {"venda_total_sem_combustiveis": 0}
-
-    def _get_conn(*args, **kwargs):
-        return _FakeConn(rows=_sales_rows(), one=manager_row)
-
     with patch.object(repos_commission, "get_config", return_value=_config(default_mode)), \
          patch.object(repos_commission, "get_config_groups", return_value=[{"id_grupo_produto": 10}]), \
          patch.object(repos_commission, "get_config_tiers", return_value=list(repos_commission.DEFAULT_TIERS)), \
          patch.object(repos_commission, "get_config_product_excludes", return_value=[]), \
          patch.object(repos_commission, "_filial_labels", return_value={14122: "VR 05"}), \
-         patch.object(repos_commission, "get_conn", side_effect=_get_conn):
+         patch.object(repos_commission, "_query_eligible_sales_ch", return_value=_sales_rows()):
         yield
 
 

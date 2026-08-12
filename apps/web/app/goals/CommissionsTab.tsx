@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { apiGet } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { apiGet, isRequestCanceled } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
@@ -55,37 +55,56 @@ export default function CommissionsTab({
   );
   const isMulti = multiFiliais.length > 1 || (!idFilial && multiFiliais.length > 0);
   const hasScope = Boolean(idFilial) || multiFiliais.length > 0;
-
-  const fetchResults = useCallback(async () => {
-    if (!idFilial && multiFiliais.length === 0) {
-      setData(null);
-      return;
-    }
-    setLoading(true);
-    setError("");
-    try {
-      const params = new URLSearchParams();
-      if (idEmpresa) params.set("id_empresa", String(idEmpresa));
-      params.set("month", String(selectedMonth));
-      params.set("year", String(selectedYear));
-      if (isMulti || (!idFilial && multiFiliais.length > 0)) {
-        for (const f of multiFiliais) params.append("id_filiais", String(f));
-      } else if (idFilial) {
-        params.set("id_filial", String(idFilial));
-      }
-      if (idFilial && paymentMode) params.set("payment_mode", paymentMode);
-      const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`);
-      setData(resp);
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao carregar comissões.");
-    } finally {
-      setLoading(false);
-    }
-  }, [idEmpresa, idFilial, multiFiliais, isMulti, selectedMonth, selectedYear, paymentMode]);
+  // Chave estável para deps (evita refetch por nova referência de array).
+  const multiFiliaisKey = multiFiliais.join(",");
 
   useEffect(() => {
-    fetchResults();
-  }, [fetchResults]);
+    if (!idFilial && multiFiliais.length === 0) {
+      setData(null);
+      setError("");
+      setLoading(false);
+      return;
+    }
+
+    const ac = new AbortController();
+    setLoading(true);
+    setError("");
+    setData(null);
+
+    const params = new URLSearchParams();
+    if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+    params.set("month", String(selectedMonth));
+    params.set("year", String(selectedYear));
+    if (isMulti || (!idFilial && multiFiliais.length > 0)) {
+      for (const f of multiFiliais) params.append("id_filiais", String(f));
+    } else if (idFilial) {
+      params.set("id_filial", String(idFilial));
+    }
+    if (idFilial && paymentMode) params.set("payment_mode", paymentMode);
+
+    (async () => {
+      try {
+        // Timeout maior que o default (30s): multi-filial histórico pode ser mais pesado.
+        const resp = await apiGet(`/bi/team/commissions/results?${params.toString()}`, {
+          signal: ac.signal,
+          timeout: 90000,
+        });
+        if (ac.signal.aborted) return;
+        setData(resp);
+        setError("");
+      } catch (err: any) {
+        if (ac.signal.aborted || isRequestCanceled(err)) return;
+        setData(null);
+        setError(err?.response?.data?.detail || "Falha ao carregar comissões.");
+      } finally {
+        if (!ac.signal.aborted) setLoading(false);
+      }
+    })();
+
+    return () => ac.abort();
+    // multiFiliaisKey cobre o array; multiFiliais lido do closure estável pelo key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, selectedMonth, selectedYear, paymentMode]);
 
   // Exceção de ranking: nível DESC; dentro do nível, Filial ASC → Nome ASC (sort estável).
   const sellersSorted = useMemo(() => {
