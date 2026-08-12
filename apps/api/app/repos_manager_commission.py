@@ -17,8 +17,8 @@ MART_RT_DB = "torqmind_mart_rt"
 # Grupos excluídos por padrão da base de venda (spec LSC).
 SALES_BASE_EXCLUDED_GROUP_IDS: Set[int] = {1, 2, 3, 4, 7, 8, 9, 10, 16, 39, 40}
 
-# Transferência — fora da base de venda do gerente (demais CFOPs entram).
-SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5929,)
+# Transferência (intra/interestadual) — fora da base de venda do gerente.
+SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5929, 6929)
 STOCK_LOSS_CFOP = 5927
 
 DEFAULT_RATE_PCT = 2.0
@@ -511,9 +511,9 @@ def calc_branch_row(
 ) -> Dict[str, Any]:
     """Calcula comissão de gerente para uma filial.
 
-    Hot path: lê mart CH (``manager_commission_group_month_rt``); slim CH só
-    como fallback. ``publish=True`` materializa a mart (ETL / refresh explícito)
-    — NUNCA default no GET da tela.
+    Hot path: sempre lê ClickHouse slim (mesma fonte viva dos vendedores), para
+    refletir regra de CFOP na hora. ``publish=True`` ainda materializa a mart
+    (ETL / refresh explícito) sem ser a fonte da resposta.
     """
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
@@ -528,41 +528,24 @@ def calc_branch_row(
         except Exception as exc:
             logger.warning("publish_manager_commission_month failed: %s", str(exc)[:200])
 
-    venda = _sum_from_mart(
+    # Sempre slim no GET: evita mart stale após mudança de regra (ex.: CFOP).
+    venda = _sum_metric_from_slim(
         id_empresa=id_empresa,
         id_filial=id_filial,
         year=year,
         month=month,
         group_ids=sales_ids,
-        metric_kind="sales_base",
+        cfop_exclude=SALES_EXCLUDED_CFOPS,
     )
-    if venda is None:
-        venda = _sum_metric_from_slim(
-            id_empresa=id_empresa,
-            id_filial=id_filial,
-            year=year,
-            month=month,
-            group_ids=sales_ids,
-            cfop_exclude=SALES_EXCLUDED_CFOPS,
-        )
 
-    perdas_default = _sum_from_mart(
+    perdas_default = _sum_metric_from_slim(
         id_empresa=id_empresa,
         id_filial=id_filial,
         year=year,
         month=month,
         group_ids=loss_ids,
-        metric_kind="stock_loss",
+        cfops=(STOCK_LOSS_CFOP,),
     )
-    if perdas_default is None:
-        perdas_default = _sum_metric_from_slim(
-            id_empresa=id_empresa,
-            id_filial=id_filial,
-            year=year,
-            month=month,
-            group_ids=loss_ids,
-            cfops=(STOCK_LOSS_CFOP,),
-        )
 
     # Furos/sobras de caixa: sem fonte STG (TURNOS sem campos) — default 0.
     sobras_estoque_default = 0.0

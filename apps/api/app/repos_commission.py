@@ -24,10 +24,9 @@ DEFAULT_TIERS = [
 # Comprovantes fora da base de quantidade: cancelado, situacao=3 (ignorado), 14 (devolução).
 COMMISSION_EXCLUDED_SITUACOES: tuple[int, ...] = (2, 3, 14)
 
-# Transferência entre filiais — não entra na base de comissão.
-# Demais CFOPs (dentro/fora do estado, etc.) entram, desde que o comprovante
-# não esteja cancelado / situação excluída.
-COMMISSION_EXCLUDED_CFOPS: tuple[int, ...] = (5929,)
+# Transferência entre filiais (intra 5929 / interestadual 6929) — fora da base.
+# Demais CFOPs entram, desde que o comprovante não esteja cancelado.
+COMMISSION_EXCLUDED_CFOPS: tuple[int, ...] = (5929, 6929)
 
 
 def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
@@ -35,7 +34,7 @@ def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
 
 
 def _cfop_sales_predicate_sql(alias: str = "i") -> str:
-    """ItensComprovantes: todas as vendas, exceto transferência (CFOP 5929)."""
+    """ItensComprovantes: todas as vendas, exceto transferência (5929/6929)."""
     excl = ",".join(str(int(c)) for c in COMMISSION_EXCLUDED_CFOPS)
     return f"coalesce({alias}.cfop, 0) NOT IN ({excl})"
 

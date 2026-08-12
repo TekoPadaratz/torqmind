@@ -1,5 +1,7 @@
 """Unit tests for commission tier calculation logic (quantity-based)."""
 from app.repos_commission import (
+    COMMISSION_EXCLUDED_CFOPS,
+    _cfop_sales_predicate_sql,
     _determine_tier,
     _next_tier,
     _sort_sellers_by_tier,
@@ -232,3 +234,10 @@ class TestSortSellersByTier:
         ]
         sorted_rows = _sort_sellers_by_tier(rows)
         assert [r["nome_vendedor"] for r in sorted_rows] == ["Ana", "Bruno"]
+
+
+class TestCommissionCfopExclusion:
+    def test_excludes_transfer_intra_and_interstate(self):
+        assert COMMISSION_EXCLUDED_CFOPS == (5929, 6929)
+        pred = _cfop_sales_predicate_sql("i")
+        assert "NOT IN (5929,6929)" in pred.replace(" ", "")

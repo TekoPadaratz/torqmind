@@ -5,6 +5,8 @@ import unittest
 
 from app.repos_manager_commission import (
     SALES_BASE_EXCLUDED_GROUP_IDS,
+    SALES_EXCLUDED_CFOPS,
+    _cfop_sales_predicate_sql,
     net_commission,
 )
 
@@ -46,6 +48,11 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
 
         params = inspect.signature(calc_branch_row).parameters
         self.assertEqual(params["publish"].default, False)
+
+    def test_sales_excluded_cfops_include_transfer_intra_and_interstate(self):
+        self.assertEqual(SALES_EXCLUDED_CFOPS, (5929, 6929))
+        pred = _cfop_sales_predicate_sql("i")
+        self.assertIn("NOT IN (5929,6929)", pred.replace(" ", ""))
 
 
 if __name__ == "__main__":

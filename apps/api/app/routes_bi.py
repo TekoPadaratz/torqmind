@@ -2760,7 +2760,7 @@ def manager_commissions_calc(
     except Exception:
         labels = {}
 
-    # Hot path: publish=False (mart/slim CH). refresh=true só para ops/ETL manual.
+    # Hot path: publish=False (slim CH ao vivo). refresh=true só materializa mart (ops).
     rows_out = []
     for fid in sorted(targets):
         rows_out.append(
