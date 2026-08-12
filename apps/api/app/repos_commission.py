@@ -311,6 +311,42 @@ def _next_tier(current_tier: Optional[Dict[str, Any]], tiers: List[Dict[str, Any
     return None
 
 
+# Ranking explícito do grid de comissão: Diamante → Ouro → Prata → Bronze → sem nível.
+# Exceção documentada ao contrato Filial→Data→Nome (ranking por métrica/nível).
+_TIER_RANK: Dict[str, int] = {
+    "diamond": 4,
+    "gold": 3,
+    "silver": 2,
+    "bronze": 1,
+}
+
+
+def _seller_tier_rank(emp: Dict[str, Any]) -> int:
+    nivel = emp.get("nivel_atingido") or {}
+    key = str(nivel.get("tier_key") or "").strip().lower()
+    if key in _TIER_RANK:
+        return _TIER_RANK[key]
+    try:
+        return int(nivel.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sort_sellers_by_tier(employee_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ordena vendedores: nível DESC → filial ASC → venda DESC → nome ASC."""
+    return sorted(
+        employee_list,
+        key=lambda e: (
+            -_seller_tier_rank(e),
+            str(e.get("filial_label") or "").casefold(),
+            int(e.get("id_filial") or 0),
+            -float(e.get("venda_elegivel") or 0),
+            str(e.get("nome_vendedor") or "").casefold(),
+            int(e.get("id_funcionario") or 0),
+        ),
+    )
+
+
 def _filial_labels(id_empresa: int, id_filiais: Sequence[int]) -> Dict[int, str]:
     """Resolve apelido/nome curto for branch labels (stock/commission grids)."""
     targets = [int(f) for f in id_filiais if int(f) > 0]
@@ -351,7 +387,7 @@ def calculate_commission_results_multi(
     """Calculate employee commissions for one or many branches.
 
     Each seller row keeps its own ``id_filial`` / ``filial_label`` (config is
-    still per-branch). Rows are ordered Filial ASC → Nome ASC.
+    still per-branch). Rows: nível DESC (Diamante→Bronze) → filial → venda → nome.
     """
     targets = sorted({int(f) for f in id_filiais if int(f) > 0})
     if not targets:
@@ -392,14 +428,7 @@ def calculate_commission_results_multi(
         quantidade_vendas += float(branch.get("quantidade_vendas") or 0)
         branch_results.append(branch)
 
-    all_sellers.sort(
-        key=lambda e: (
-            str(e.get("filial_label") or "").casefold(),
-            int(e.get("id_filial") or 0),
-            str(e.get("nome_vendedor") or "").casefold(),
-            int(e.get("id_funcionario") or 0),
-        )
-    )
+    all_sellers = _sort_sellers_by_tier(all_sellers)
     all_groups.sort(
         key=lambda g: (
             str(g.get("filial_label") or "").casefold(),
@@ -661,6 +690,7 @@ def calculate_commission_results(
     for emp in employee_list:
         emp["id_filial"] = id_filial
         emp["filial_label"] = filial_label
+    employee_list = _sort_sellers_by_tier(employee_list)
     groups_out = list(group_totals.values())
     for g in groups_out:
         g["id_filial"] = id_filial

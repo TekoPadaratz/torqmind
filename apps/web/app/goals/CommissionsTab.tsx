@@ -16,6 +16,19 @@ const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> =
   diamond: { color: "#4f9cf7", bg: "rgba(79,156,247,0.12)", icon: "💎" },
 };
 
+/** Ranking do grid: Diamante → Ouro → Prata → Bronze → sem nível (exceção ao contrato Filial→Nome). */
+const TIER_RANK: Record<string, number> = {
+  diamond: 4,
+  gold: 3,
+  silver: 2,
+  bronze: 1,
+};
+
+function sellerTierRank(nivel: { tier_key?: string } | null | undefined): number {
+  const key = String(nivel?.tier_key || "").trim().toLowerCase();
+  return TIER_RANK[key] ?? 0;
+}
+
 interface CommissionsTabProps {
   idEmpresa: number | null;
   idFilial: number | null;
@@ -74,12 +87,18 @@ export default function CommissionsTab({
     fetchResults();
   }, [fetchResults]);
 
+  // Exceção de ranking: nível DESC; dentro do nível, Filial ASC → Nome ASC (sort estável).
   const sellersSorted = useMemo(() => {
     const rows = (data?.vendedores || []) as Record<string, unknown>[];
-    return sortGridRows(rows, (row) => ({
+    const byFilialNome = sortGridRows(rows, (row) => ({
       filial: String(row.filial_label || row.id_filial || ""),
       nome: String(row.nome_vendedor || ""),
     }));
+    return [...byFilialNome].sort(
+      (a, b) =>
+        sellerTierRank((b as { nivel_atingido?: { tier_key?: string } }).nivel_atingido) -
+        sellerTierRank((a as { nivel_atingido?: { tier_key?: string } }).nivel_atingido),
+    );
   }, [data?.vendedores]);
 
   const { query: sellersQ, setQuery: setSellersQ, filteredRows: filteredSellers } = useGridSearch(

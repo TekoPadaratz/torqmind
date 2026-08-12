@@ -115,3 +115,52 @@ class TestCommissionCalculation:
         percent = 0.0
         commission = round(25000 * percent / 100, 2)
         assert commission == 0.00
+
+
+class TestSortSellersByTier:
+    """Grid: Diamante → Ouro → Prata → Bronze → sem nível."""
+
+    def test_tiers_high_to_low(self):
+        rows = [
+            {"nome_vendedor": "B", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "bronze"}},
+            {"nome_vendedor": "D", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "diamond"}},
+            {"nome_vendedor": "S", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "silver"}},
+            {"nome_vendedor": "G", "venda_elegivel": 10, "nivel_atingido": {"tier_key": "gold"}},
+            {"nome_vendedor": "Z", "venda_elegivel": 10, "nivel_atingido": None},
+        ]
+        sorted_rows = _sort_sellers_by_tier(rows)
+        keys = [
+            (r["nivel_atingido"] or {}).get("tier_key") if r["nivel_atingido"] else None
+            for r in sorted_rows
+        ]
+        assert keys == ["diamond", "gold", "silver", "bronze", None]
+
+    def test_same_tier_filial_then_sales_then_name(self):
+        rows = [
+            {
+                "nome_vendedor": "Bruno",
+                "venda_elegivel": 50,
+                "filial_label": "B",
+                "id_filial": 2,
+                "id_funcionario": 1,
+                "nivel_atingido": {"tier_key": "gold"},
+            },
+            {
+                "nome_vendedor": "Ana",
+                "venda_elegivel": 80,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 2,
+                "nivel_atingido": {"tier_key": "gold"},
+            },
+            {
+                "nome_vendedor": "Carlos",
+                "venda_elegivel": 80,
+                "filial_label": "A",
+                "id_filial": 1,
+                "id_funcionario": 3,
+                "nivel_atingido": {"tier_key": "gold"},
+            },
+        ]
+        sorted_rows = _sort_sellers_by_tier(rows)
+        assert [r["nome_vendedor"] for r in sorted_rows] == ["Ana", "Carlos", "Bruno"]
