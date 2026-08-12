@@ -214,6 +214,39 @@ def _next_tier(current_tier: Optional[Dict[str, Any]], tiers: List[Dict[str, Any
     return None
 
 
+# Rank explícito do grid: Diamante → Ouro → Prata → Bronze → sem nível.
+_TIER_RANK: Dict[str, int] = {
+    "diamond": 4,
+    "gold": 3,
+    "silver": 2,
+    "bronze": 1,
+}
+
+
+def _seller_tier_rank(emp: Dict[str, Any]) -> int:
+    nivel = emp.get("nivel_atingido") or {}
+    key = str(nivel.get("tier_key") or "").strip().lower()
+    if key in _TIER_RANK:
+        return _TIER_RANK[key]
+    # Fallback: sort_order do tier (1=bronze … 4=diamante) se vier na payload.
+    try:
+        return int(nivel.get("sort_order") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sort_sellers_by_tier(employee_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ordena vendedores por nível (maior→menor), depois venda DESC, depois nome ASC."""
+    return sorted(
+        employee_list,
+        key=lambda e: (
+            -_seller_tier_rank(e),
+            -float(e.get("venda_elegivel") or 0),
+            str(e.get("nome_vendedor") or "").casefold(),
+        ),
+    )
+
+
 def calculate_commission_results(
     id_empresa: int,
     id_filial: int,
@@ -394,6 +427,9 @@ def calculate_commission_results(
                     round(commission_total * (emp_eligible / total_eligible), 2)
                     if total_eligible > 0 else 0.0
                 )
+
+    # Grid: Diamante → Ouro → Prata → Bronze (sem nível por último).
+    employee_list = _sort_sellers_by_tier(employee_list)
 
     # Group summary
     group_totals = {}

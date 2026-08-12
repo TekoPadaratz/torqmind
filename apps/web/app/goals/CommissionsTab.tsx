@@ -16,6 +16,19 @@ const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> =
   diamond: { color: "#4f9cf7", bg: "rgba(79,156,247,0.12)", icon: "💎" },
 };
 
+/** Rank do grid: Diamante → Ouro → Prata → Bronze → sem nível. */
+const TIER_RANK: Record<string, number> = {
+  diamond: 4,
+  gold: 3,
+  silver: 2,
+  bronze: 1,
+};
+
+function sellerTierRank(nivel: { tier_key?: string } | null | undefined): number {
+  const key = String(nivel?.tier_key || "").trim().toLowerCase();
+  return TIER_RANK[key] ?? 0;
+}
+
 // Commission payment modes (kept in sync with the API contract).
 const PAYMENT_MODE_LABELS: Record<string, string> = {
   team_total: "Equipe (comissão total)",
@@ -89,6 +102,24 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
   const { query: sellersQ, setQuery: setSellersQ, filteredRows: filteredSellers } = useGridSearch(
     data?.vendedores as Record<string, unknown>[] | undefined,
   );
+  // Espelha API: Diamante → Ouro → Prata → Bronze → sem nível; depois venda DESC.
+  const sortedSellers = useMemo(() => {
+    return [...filteredSellers].sort((a, b) => {
+      const tierDelta =
+        sellerTierRank((b as { nivel_atingido?: { tier_key?: string } }).nivel_atingido) -
+        sellerTierRank((a as { nivel_atingido?: { tier_key?: string } }).nivel_atingido);
+      if (tierDelta !== 0) return tierDelta;
+      const saleDelta =
+        Number((b as { venda_elegivel?: number }).venda_elegivel || 0) -
+        Number((a as { venda_elegivel?: number }).venda_elegivel || 0);
+      if (saleDelta !== 0) return saleDelta;
+      return String((a as { nome_vendedor?: string }).nome_vendedor || "").localeCompare(
+        String((b as { nome_vendedor?: string }).nome_vendedor || ""),
+        "pt-BR",
+        { sensitivity: "base" },
+      );
+    });
+  }, [filteredSellers]);
   const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
     data?.grupos_configurados as Record<string, unknown>[] | undefined,
   );
@@ -269,7 +300,7 @@ export default function CommissionsTab({ idEmpresa, idFilial, referenceDate }: C
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredSellers.map((emp: any) => (
+                        {sortedSellers.map((emp: any) => (
                           <tr key={emp.id_funcionario}>
                             <td style={{ fontWeight: 500 }}>{emp.nome_vendedor}</td>
                             <td>{formatCurrency(emp.venda_elegivel)}</td>
