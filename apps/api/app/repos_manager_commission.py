@@ -17,10 +17,16 @@ MART_RT_DB = "torqmind_mart_rt"
 # Grupos excluídos por padrão da base de venda (spec LSC).
 SALES_BASE_EXCLUDED_GROUP_IDS: Set[int] = {1, 2, 3, 4, 7, 8, 9, 10, 16, 39, 40}
 
-SALES_CFOPS = (5102, 5405, 5656, 5667, 5929)
+# Transferência — fora da base de venda do gerente (demais CFOPs entram).
+SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5929,)
 STOCK_LOSS_CFOP = 5927
 
 DEFAULT_RATE_PCT = 2.0
+
+
+def _cfop_sales_predicate_sql(alias: str = "i") -> str:
+    excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
+    return f"coalesce({alias}.cfop, 0) NOT IN ({excl})"
 
 
 def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
@@ -313,7 +319,8 @@ def _sum_metric_from_slim(
     year: int,
     month: int,
     group_ids: Sequence[int],
-    cfops: Sequence[int],
+    cfops: Optional[Sequence[int]] = None,
+    cfop_exclude: Optional[Sequence[int]] = None,
 ) -> float:
     if not group_ids:
         return 0.0
@@ -322,9 +329,18 @@ def _sum_metric_from_slim(
     fim = _date_key(dt_fim)
     # ClickHouse array parameter via string list — keep IDs int-safe
     group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
-    cfop_list = ", ".join(str(int(c)) for c in cfops)
-    if not group_list or not cfop_list:
+    if not group_list:
         return 0.0
+    if cfop_exclude is not None:
+        excl = ", ".join(str(int(c)) for c in cfop_exclude)
+        if not excl:
+            return 0.0
+        cfop_pred = f"coalesce(i.cfop, 0) NOT IN ({excl})"
+    else:
+        include = ", ".join(str(int(c)) for c in (cfops or ()))
+        if not include:
+            return 0.0
+        cfop_pred = f"i.cfop IN ({include})"
     rows = query_dict(
         f"""
         SELECT sum(i.total) AS valor
@@ -345,7 +361,7 @@ def _sum_metric_from_slim(
           AND c.is_deleted = 0
           AND c.cancelado = 0
           AND c.situacao != 3
-          AND i.cfop IN ({cfop_list})
+          AND {cfop_pred}
           AND if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) IN ({group_list})
         """,
         parameters={
@@ -372,12 +388,17 @@ def publish_manager_commission_month(
     ano_mes = _ano_mes(year, month)
 
     specs = (
-        ("sales_base", SALES_CFOPS),
-        ("stock_loss", (STOCK_LOSS_CFOP,)),
+        ("sales_base", None, SALES_EXCLUDED_CFOPS),
+        ("stock_loss", (STOCK_LOSS_CFOP,), None),
     )
     inserted = 0
-    for metric_kind, cfops in specs:
-        cfop_list = ", ".join(str(int(c)) for c in cfops)
+    for metric_kind, cfops_include, cfops_exclude in specs:
+        if cfops_exclude is not None:
+            excl = ", ".join(str(int(c)) for c in cfops_exclude)
+            cfop_pred = f"coalesce(i.cfop, 0) NOT IN ({excl})"
+        else:
+            cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
+            cfop_pred = f"i.cfop IN ({cfop_list})"
         rows = query_dict(
             f"""
             SELECT
@@ -403,7 +424,7 @@ def publish_manager_commission_month(
               AND c.is_deleted = 0
               AND c.cancelado = 0
               AND c.situacao != 3
-              AND i.cfop IN ({cfop_list})
+              AND {cfop_pred}
             GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
             HAVING id_grupo_produto > 0
             """,
@@ -522,7 +543,7 @@ def calc_branch_row(
             year=year,
             month=month,
             group_ids=sales_ids,
-            cfops=SALES_CFOPS,
+            cfop_exclude=SALES_EXCLUDED_CFOPS,
         )
 
     perdas_default = _sum_from_mart(

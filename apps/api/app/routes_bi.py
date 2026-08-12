@@ -2461,7 +2461,8 @@ def team_commissions_config(
             "default_payment_mode": config["default_payment_mode"],
             "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
             "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
-            "eligible_cfops": list(repos_commission.COMMISSION_ELIGIBLE_CFOPS),
+            "eligible_cfops": [],
+            "excluded_cfops": list(repos_commission.COMMISSION_EXCLUDED_CFOPS),
         },
         "groups": groups_available,
         "excluded_products": [

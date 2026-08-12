@@ -382,7 +382,6 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Configuração da Comissão — Funcionários</div>
         <div className="muted" style={{ fontSize: 13 }}>
           Grupos da base do posto. Expanda um grupo para incluir/excluir produtos.
-          CFOP elegíveis: 5.102, 5.405, 5.656, 5.667, 5.929.
         </div>
       </div>
 
@@ -656,7 +655,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
           })}
         </div>
         <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
-          Venda elegível = grupos marcados − produtos desmarcados, nos CFOPs listados.
+          Venda elegível = grupos marcados − produtos desmarcados.
         </div>
       </div>
 

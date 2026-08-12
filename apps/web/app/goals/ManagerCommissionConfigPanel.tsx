@@ -180,7 +180,7 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>A. Vendas base (comissão bruta)</div>
             <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
-              CFOP 5.102, 5.405, 5.656, 5.667, 5.929 · pré-seleção exclui grupos 1–4, 7–10, 16, 39, 40.
+              Pré-seleção exclui grupos 1–4, 7–10, 16, 39, 40.
             </p>
             {renderGroupList("sales", salesGroups)}
           </div>

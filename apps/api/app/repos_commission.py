@@ -24,16 +24,20 @@ DEFAULT_TIERS = [
 # Comprovantes fora da base de quantidade: cancelado, situacao=3 (ignorado), 14 (devolução).
 COMMISSION_EXCLUDED_SITUACOES: tuple[int, ...] = (2, 3, 14)
 
-# Power BI / LSC allowlist — saídas comerciais (itenscomprovantes / fact_venda_item)
-COMMISSION_ELIGIBLE_CFOPS: tuple[int, ...] = (5102, 5405, 5656, 5667, 5929)
+# Transferência entre filiais — não entra na base de comissão.
+# Demais CFOPs (dentro/fora do estado, etc.) entram, desde que o comprovante
+# não esteja cancelado / situação excluída.
+COMMISSION_EXCLUDED_CFOPS: tuple[int, ...] = (5929,)
 
 
 def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
     return id_filial if id_filial and id_filial > 0 else None
 
 
-def _cfop_in_sql() -> str:
-    return ",".join(str(int(c)) for c in COMMISSION_ELIGIBLE_CFOPS)
+def _cfop_sales_predicate_sql(alias: str = "i") -> str:
+    """ItensComprovantes: todas as vendas, exceto transferência (CFOP 5929)."""
+    excl = ",".join(str(int(c)) for c in COMMISSION_EXCLUDED_CFOPS)
+    return f"coalesce({alias}.cfop, 0) NOT IN ({excl})"
 
 
 def _situacao_excluidas_sql() -> str:
@@ -75,7 +79,7 @@ def _query_eligible_sales_ch(
     dk_ini, dk_fim = _month_data_key_bounds(year, month)
     filial_list = ", ".join(str(f) for f in targets)
     situacao_list = _situacao_excluidas_sql()
-    cfop_list = _cfop_in_sql()
+    cfop_pred = _cfop_sales_predicate_sql("i")
     sql = f"""
       SELECT
         i.id_filial AS id_filial,
@@ -113,7 +117,7 @@ def _query_eligible_sales_ch(
         AND c.cancelado = 0
         AND c.situacao NOT IN ({situacao_list})
         AND coalesce(c.commercial_eligible, 1) = 1
-        AND i.cfop IN ({cfop_list})
+        AND {cfop_pred}
         AND i.id_funcionario > 0
       GROUP BY
         id_filial,
@@ -276,7 +280,7 @@ def get_available_groups(id_empresa: int, id_filial: int) -> List[Dict[str, Any]
              AND i.data_key >= {{dk_ini:Int32}}
              AND i.data_key <= {{dk_fim:Int32}}
              AND i.is_deleted = 0
-             AND i.cfop IN ({_cfop_in_sql()})
+             AND {_cfop_sales_predicate_sql("i")}
             LEFT JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
               ON c.id_empresa = i.id_empresa
              AND c.id_filial = i.id_filial
@@ -326,7 +330,7 @@ def get_available_groups(id_empresa: int, id_filial: int) -> List[Dict[str, Any]
           AND i.id_grupo_produto = g.id_grupo_produto
           AND v.data_key >= to_char(CURRENT_DATE - interval '30 days', 'YYYYMMDD')::integer
           AND COALESCE(v.cancelado, false) = false
-          AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
+          AND {_cfop_sales_predicate_sql("i")}
       ) s ON true
       WHERE g.id_empresa = %s AND g.id_filial = %s
       ORDER BY g.nome
@@ -780,7 +784,7 @@ def calculate_commission_results(
             AND v.data_key >= %s
             AND v.data_key < %s
             {_active_sale_sql("v")}
-            AND COALESCE(i.cfop, 0) IN ({_cfop_in_sql()})
+            AND {_cfop_sales_predicate_sql("i")}
             AND COALESCE(UPPER(g.nome), '') NOT LIKE 'COMBUST%%'
         """
         with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
