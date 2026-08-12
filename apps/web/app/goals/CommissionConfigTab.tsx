@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
+import GridSearchInput from "../components/ui/GridSearchInput";
 
 /** Quantidade inteira (ex.: 160) — níveis de premiação não são em R$. */
 function formatQty(value: number): string {
@@ -13,6 +14,15 @@ function formatQty(value: number): string {
 function parseQty(text: string): number {
   const clean = text.replace(/[^\d]/g, "");
   return clean ? parseInt(clean, 10) : 0;
+}
+
+function matchesProductSearch(nome: string, idProduto: number, query: string): boolean {
+  const q = String(query || "")
+    .trim()
+    .toLocaleLowerCase("pt-BR");
+  if (!q) return true;
+  const hay = `${nome} ${idProduto}`.toLocaleLowerCase("pt-BR");
+  return hay.includes(q);
 }
 
 const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> = {
@@ -52,6 +62,8 @@ type GroupRow = {
   productsLoaded?: boolean;
   productsLoading?: boolean;
   products?: ProductRow[];
+  /** Busca local dos produtos ao expandir o grupo. */
+  productQuery?: string;
 };
 
 export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: ConfigTabProps) {
@@ -200,6 +212,14 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
     setGroups((prev) =>
       prev.map((g) =>
         g.id_grupo_produto === idGrupo ? { ...g, selected: anyOn, products } : g,
+      ),
+    );
+  };
+
+  const setGroupProductQuery = (idGrupo: number, query: string) => {
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id_grupo_produto === idGrupo ? { ...g, productQuery: query } : g,
       ),
     );
   };
@@ -382,39 +402,63 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                   ) : (g.products || []).length === 0 ? (
                     <div className="muted" style={{ fontSize: 12, padding: "6px 0" }}>Nenhum produto neste grupo.</div>
                   ) : (
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-                        gap: 6,
-                        alignItems: "start",
-                      }}
-                    >
-                      {(g.products || []).map((p) => (
-                        <label
-                          key={p.id_produto}
-                          style={{
-                            display: "flex",
-                            alignItems: "flex-start",
-                            gap: 8,
-                            fontSize: 12,
-                            cursor: "pointer",
-                            minWidth: 0,
-                            padding: "2px 0",
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!!p.selected}
-                            onChange={() => toggleProduct(g.id_grupo_produto, p.id_produto)}
-                            style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}
-                          />
-                          <span style={{ minWidth: 0, lineHeight: 1.35, wordBreak: "break-word" }}>
-                            {p.nome}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
+                    <>
+                      <div style={{ padding: "6px 0 10px", display: "flex", justifyContent: "flex-start" }}>
+                        <GridSearchInput
+                          value={g.productQuery || ""}
+                          onChange={(value) => setGroupProductQuery(g.id_grupo_produto, value)}
+                          placeholder="Pesquisar produto…"
+                          aria-label={`Pesquisar produtos de ${g.nome}`}
+                        />
+                      </div>
+                      {(() => {
+                        const visible = (g.products || []).filter((p) =>
+                          matchesProductSearch(p.nome, p.id_produto, g.productQuery || ""),
+                        );
+                        if (visible.length === 0) {
+                          return (
+                            <div className="muted" style={{ fontSize: 12, padding: "4px 0 6px" }}>
+                              Nenhum produto para “{g.productQuery}”.
+                            </div>
+                          );
+                        }
+                        return (
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+                              gap: 6,
+                              alignItems: "start",
+                            }}
+                          >
+                            {visible.map((p) => (
+                              <label
+                                key={p.id_produto}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "flex-start",
+                                  gap: 8,
+                                  fontSize: 12,
+                                  cursor: "pointer",
+                                  minWidth: 0,
+                                  padding: "2px 0",
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={!!p.selected}
+                                  onChange={() => toggleProduct(g.id_grupo_produto, p.id_produto)}
+                                  style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}
+                                />
+                                <span style={{ minWidth: 0, lineHeight: 1.35, wordBreak: "break-word" }}>
+                                  {p.nome}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </>
                   )}
                 </div>
               ) : null}
