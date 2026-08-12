@@ -74,11 +74,12 @@ export default function TVSalesHourlyPage() {
   }
 
   const totals = data?.totals || {};
+  const logoUrl = session?.branding?.logo_url || null;
 
   return (
     <SalesFloorBoard
-      title="Vendas por hora — Hoje"
-      subtitle="Totalizadores do dia e distribuição horária"
+      title="Vendas por hora"
+      logoUrl={logoUrl}
       lastUpdated={lastUpdated}
       totals={{
         vendas: Number(totals.vendas || 0),

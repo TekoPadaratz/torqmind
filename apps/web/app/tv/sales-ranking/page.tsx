@@ -50,52 +50,71 @@ export default function TVSalesRankingPage() {
   }
 
   const sellers = data?.sellers || data?.sellers_ranking || data?.top_sellers || [];
+  const logoUrl =
+    typeof session?.branding?.logo_url === "string" && session.branding.logo_url.trim()
+      ? session.branding.logo_url.trim()
+      : null;
 
   return (
-    <div style={{ padding: "24px 32px", background: "var(--bg)", minHeight: "100vh", color: "var(--text)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 700 }}>🏆 Ranking de Vendas — Hoje</h1>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <span style={{ color: "var(--muted)", fontSize: 14 }}>
-            {lastUpdated ? `Última atualização: ${lastUpdated}` : "Atualização automática a cada 5 min"}
+    <div className="tvSalesRanking">
+      <div className="tvSalesRankingHeader">
+        <div className="tvSalesRankingBrand">
+          {logoUrl ? (
+            <img
+              className="tvSalesRankingLogo"
+              src={logoUrl}
+              alt="Logo da empresa"
+              loading="lazy"
+              decoding="async"
+            />
+          ) : null}
+          <h1 className="tvSalesRankingTitle">Ranking de vendas</h1>
+        </div>
+        <div className="tvSalesRankingActions">
+          <span className="tvSalesRankingUpdated">
+            {lastUpdated ? `Atualizado às ${lastUpdated}` : "Atualização automática"}
           </span>
           <button
-            onClick={() => { clearAuth(); router.push("/"); }}
-            style={{ padding: "6px 16px", background: "var(--color-negative)", color: "var(--on-accent)", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+            type="button"
+            className="tvSalesRankingLogout"
+            onClick={() => {
+              clearAuth();
+              router.push("/");
+            }}
           >
             Sair
           </button>
         </div>
       </div>
 
-      {error && <div style={{ color: "var(--color-negative)", marginBottom: 16 }}>{error}</div>}
+      {error ? <div className="tvSalesRankingError">{error}</div> : null}
 
-      <div style={{ display: "grid", gap: 8 }}>
-        {sellers.length === 0 && (
-          <div style={{ color: "var(--muted)", textAlign: "center", padding: 40 }}>
-            Nenhum dado disponível ainda.
-          </div>
-        )}
+      <div className="tvSalesRankingList">
+        {sellers.length === 0 ? (
+          <div className="tvSalesRankingEmpty">Nenhum dado disponível ainda.</div>
+        ) : null}
         {sellers.map((seller: any, idx: number) => (
           <div
             key={seller.id_vendedor || idx}
+            className={`tvSalesRankingRow${idx < 3 ? " tvSalesRankingRow--podium" : ""}`}
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 16,
-              padding: "16px 20px",
-              background: idx < 3 ? "var(--surface-soft)" : "var(--bg)",
-              borderRadius: 8,
-              borderLeft: idx === 0 ? "4px solid #fbbf24" : idx === 1 ? "4px solid #94a3b8" : idx === 2 ? "4px solid #b45309" : "4px solid transparent",
+              borderLeftColor:
+                idx === 0 ? "#fbbf24" : idx === 1 ? "#94a3b8" : idx === 2 ? "#b45309" : "transparent",
             }}
           >
-            <div style={{ fontSize: 28, fontWeight: 800, width: 48, textAlign: "center", color: idx === 0 ? "#fbbf24" : idx === 1 ? "#94a3b8" : idx === 2 ? "#b45309" : "var(--muted)" }}>
+            <div
+              className="tvSalesRankingPos"
+              style={{
+                color:
+                  idx === 0 ? "#fbbf24" : idx === 1 ? "#94a3b8" : idx === 2 ? "#b45309" : "var(--muted)",
+              }}
+            >
               {idx + 1}º
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 18, fontWeight: 600 }}>{seller.vendedor || seller.nome || `Vendedor ${idx + 1}`}</div>
+            <div className="tvSalesRankingName">
+              {seller.vendedor || seller.nome || `Vendedor ${idx + 1}`}
             </div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: "#22d3ee" }}>
+            <div className="tvSalesRankingValue">
               {typeof seller.total === "number"
                 ? seller.total.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
                 : seller.total ?? "—"}

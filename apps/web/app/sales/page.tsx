@@ -181,8 +181,8 @@ export default function SalesPage() {
           ) : (
             <SalesFloorBoard
               embedded
-              title="Vendas do dia"
-              subtitle="Totalizadores e distribuição por hora"
+              title="Vendas"
+              logoUrl={claims?.branding?.logo_url || null}
               totals={{
                 vendas: Number(commercial?.saidas || 0),
                 qtd_vendas: Number(commercial?.qtd_saidas || 0),

@@ -3573,13 +3573,29 @@ html, body {
   margin-bottom: 28px;
   flex-wrap: wrap;
 }
-.salesFloorEyebrow {
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent-copper);
-  font-weight: 700;
-  margin-bottom: 6px;
+.salesFloorHeaderBrand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.salesFloorLogo {
+  height: 40px;
+  width: auto;
+  max-width: 128px;
+  object-fit: contain;
+  object-position: left center;
+  flex-shrink: 0;
+  display: block;
+}
+.salesFloorBrandStrip {
+  display: flex;
+  align-items: center;
+  margin: 0 0 14px;
+}
+.salesFloorBrandStrip .salesFloorLogo {
+  height: 36px;
+  max-width: 112px;
 }
 .salesFloorTitle {
   margin: 0;
@@ -3699,4 +3715,100 @@ html, body {
   .salesFloor { padding: 20px 16px 28px; }
   .salesFloorMetrics { grid-template-columns: 1fr; }
   .salesFloorChartWrap { height: 280px; min-height: 240px; }
+}
+
+/* TV ranking — header limpo + logo discreta */
+.tvSalesRanking {
+  padding: 24px 32px;
+  background: var(--bg);
+  min-height: 100vh;
+  color: var(--text);
+}
+.tvSalesRankingHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.tvSalesRankingBrand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.tvSalesRankingLogo {
+  height: 40px;
+  width: auto;
+  max-width: 128px;
+  object-fit: contain;
+  object-position: left center;
+  flex-shrink: 0;
+  display: block;
+}
+.tvSalesRankingTitle {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+}
+.tvSalesRankingActions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.tvSalesRankingUpdated {
+  color: var(--muted);
+  font-size: 14px;
+}
+.tvSalesRankingLogout {
+  padding: 6px 16px;
+  background: var(--color-negative);
+  color: var(--on-accent);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+.tvSalesRankingError {
+  color: var(--color-negative);
+  margin-bottom: 16px;
+}
+.tvSalesRankingList {
+  display: grid;
+  gap: 8px;
+}
+.tvSalesRankingEmpty {
+  color: var(--muted);
+  text-align: center;
+  padding: 40px;
+}
+.tvSalesRankingRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--bg);
+  border-radius: 8px;
+  border-left: 4px solid transparent;
+}
+.tvSalesRankingRow--podium {
+  background: var(--surface-soft);
+}
+.tvSalesRankingPos {
+  font-size: 28px;
+  font-weight: 800;
+  width: 48px;
+  text-align: center;
+}
+.tvSalesRankingName {
+  flex: 1;
+  font-size: 18px;
+  font-weight: 600;
+}
+.tvSalesRankingValue {
+  font-size: 22px;
+  font-weight: 700;
+  color: #22d3ee;
 }

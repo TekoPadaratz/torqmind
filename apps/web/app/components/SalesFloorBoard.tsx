@@ -29,7 +29,8 @@ export type SalesFloorHourPoint = {
 
 type SalesFloorBoardProps = {
   title?: string;
-  subtitle?: string;
+  /** Omitido = sem subtítulo (TV/monitor não precisa anunciar “hoje”). */
+  subtitle?: string | null;
   lastUpdated?: string | null;
   totals: SalesFloorTotals;
   hours: SalesFloorHourPoint[];
@@ -39,6 +40,8 @@ type SalesFloorBoardProps = {
   showLogout?: boolean;
   /** Quando true, omite o header (útil com AppNav em /sales). */
   embedded?: boolean;
+  /** Logo pública da empresa (`session.branding.logo_url`), se configurada. */
+  logoUrl?: string | null;
 };
 
 function MetricCard({
@@ -61,9 +64,21 @@ function MetricCard({
   );
 }
 
+function CompanyLogo({ url }: { url: string }) {
+  return (
+    <img
+      className="salesFloorLogo"
+      src={url}
+      alt="Logo da empresa"
+      loading="lazy"
+      decoding="async"
+    />
+  );
+}
+
 export default function SalesFloorBoard({
-  title = "Vendas do dia",
-  subtitle = "Acompanhamento operacional por hora",
+  title = "Vendas",
+  subtitle = null,
   lastUpdated = null,
   totals,
   hours,
@@ -72,20 +87,24 @@ export default function SalesFloorBoard({
   onLogout,
   showLogout = false,
   embedded = false,
+  logoUrl = null,
 }: SalesFloorBoardProps) {
   const hasHourValues = hours.some((row) => Number(row.saidas || 0) > 0);
   const vendas = Number(totals.vendas || 0);
   const cancelamentos = Number(totals.cancelamentos || 0);
   const devolucoes = Number(totals.devolucoes || 0);
+  const logo = typeof logoUrl === "string" && logoUrl.trim() ? logoUrl.trim() : null;
 
   return (
     <div className={`salesFloor ${embedded ? "salesFloor--embedded" : ""}`}>
       {!embedded ? (
         <header className="salesFloorHeader">
-          <div>
-            <div className="salesFloorEyebrow">TorqMind · Piso de loja</div>
-            <h1 className="salesFloorTitle">{title}</h1>
-            <p className="salesFloorSubtitle">{subtitle}</p>
+          <div className="salesFloorHeaderBrand">
+            {logo ? <CompanyLogo url={logo} /> : null}
+            <div>
+              <h1 className="salesFloorTitle">{title}</h1>
+              {subtitle ? <p className="salesFloorSubtitle">{subtitle}</p> : null}
+            </div>
           </div>
           <div className="salesFloorHeaderActions">
             <span className="salesFloorUpdated">
@@ -100,6 +119,10 @@ export default function SalesFloorBoard({
             ) : null}
           </div>
         </header>
+      ) : logo ? (
+        <div className="salesFloorBrandStrip">
+          <CompanyLogo url={logo} />
+        </div>
       ) : null}
 
       {error ? <div className="salesFloorError">{error}</div> : null}
@@ -128,7 +151,6 @@ export default function SalesFloorBoard({
       <section className="salesFloorChartCard">
         <div className="salesFloorChartHead">
           <h2>Vendas por hora</h2>
-          <span className="muted">Distribuição do faturamento ao longo do dia</span>
         </div>
         {!loading && !hasHourValues ? (
           <div className="salesFloorEmpty">Sem vendas por hora neste período ainda.</div>
