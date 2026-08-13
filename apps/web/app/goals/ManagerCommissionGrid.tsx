@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPut, isRequestCanceled } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
 import { sortGridRows } from "../lib/grid-sort";
+import ManagerCommissionDrilldown, {
+  type DrilldownPayload,
+} from "./ManagerCommissionDrilldown";
 
 function parseBrCurrency(input: string): number {
   const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
@@ -105,6 +108,9 @@ export default function ManagerCommissionGrid({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [expandedFilial, setExpandedFilial] = useState<number | null>(null);
+  const [drilldownByFilial, setDrilldownByFilial] = useState<Record<number, DrilldownPayload>>({});
+  const [drilldownLoading, setDrilldownLoading] = useState<number | null>(null);
 
   const multiKey = useMemo(
     () => (idFiliais || []).map(String).filter(Boolean).join(","),
@@ -151,10 +157,14 @@ export default function ManagerCommissionGrid({
           })),
         );
         setError("");
+        setExpandedFilial(null);
+        setDrilldownByFilial({});
       } catch (err: any) {
         if (ac.signal.aborted || isRequestCanceled(err)) return;
         setError(err?.response?.data?.detail || "Falha ao calcular comissão de gerentes.");
         setRows([]);
+        setExpandedFilial(null);
+        setDrilldownByFilial({});
       } finally {
         if (!ac.signal.aborted) setLoading(false);
       }
@@ -219,6 +229,33 @@ export default function ManagerCommissionGrid({
     );
   };
 
+  const toggleExpand = async (row: RowState) => {
+    const fid = row.id_filial;
+    if (expandedFilial === fid) {
+      setExpandedFilial(null);
+      return;
+    }
+    setExpandedFilial(fid);
+    if (drilldownByFilial[fid]) return;
+    setDrilldownLoading(fid);
+    try {
+      const params = new URLSearchParams();
+      params.set("month", String(month));
+      params.set("year", String(year));
+      params.set("id_filial", String(fid));
+      if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+      const resp = await apiGet(`/bi/team/manager-commissions/drilldown?${params.toString()}`, {
+        timeout: 60000,
+      });
+      setDrilldownByFilial((prev) => ({ ...prev, [fid]: resp }));
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Falha ao carregar o detalhe.");
+      setExpandedFilial(null);
+    } finally {
+      setDrilldownLoading(null);
+    }
+  };
+
   const persist = async (row: RowState) => {
     const key = `${row.id_filial}`;
     setSavingKey(key);
@@ -250,6 +287,32 @@ export default function ManagerCommissionGrid({
             nome: r.filial_label || String(r.id_filial),
           }));
         });
+        setDrilldownByFilial((prev) => {
+          const next = { ...prev };
+          delete next[mapped.id_filial];
+          return next;
+        });
+        if (expandedFilial === mapped.id_filial) {
+          void (async () => {
+            setDrilldownLoading(mapped.id_filial);
+            try {
+              const params = new URLSearchParams();
+              params.set("month", String(month));
+              params.set("year", String(year));
+              params.set("id_filial", String(mapped.id_filial));
+              if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+              const detail = await apiGet(
+                `/bi/team/manager-commissions/drilldown?${params.toString()}`,
+                { timeout: 60000 },
+              );
+              setDrilldownByFilial((prev) => ({ ...prev, [mapped.id_filial]: detail }));
+            } catch {
+              /* detalhe volta no próximo clique */
+            } finally {
+              setDrilldownLoading(null);
+            }
+          })();
+        }
       }
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Falha ao gravar ajuste.");
@@ -320,6 +383,7 @@ export default function ManagerCommissionGrid({
           <table className="table compact" style={{ width: "100%", minWidth: 980 }}>
             <thead>
               <tr>
+                <th style={{ width: 28 }} />
                 <th style={{ textAlign: "left" }}>Filial</th>
                 <th style={{ textAlign: "right" }}>Venda bruta</th>
                 <th style={{ textAlign: "right" }}>Taxa %</th>
@@ -332,127 +396,151 @@ export default function ManagerCommissionGrid({
               </tr>
             </thead>
             <tbody>
-              {(filteredRows as unknown as RowState[]).map((row) => (
-                <tr key={row.id_filial}>
-                  <td style={{ fontWeight: 600, whiteSpace: "nowrap", textAlign: "left" }}>
-                    {row.filial_label}
-                  </td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                    {formatCurrency(row.venda_bruta_total)}
-                  </td>
-                  <td>
-                    <input
-                      style={inputStyle}
-                      value={row.rate_text}
-                      onChange={(e) => {
-                        const text = formatPctInput(e.target.value);
-                        const rate = Number(text.replace(",", ".")) || 0;
-                        updateLocal(row.id_filial, { rate_text: text, rate_pct: rate });
-                      }}
-                      onBlur={() => {
-                        const current = rows.find((r) => r.id_filial === row.id_filial);
-                        if (current) void persist(current);
-                      }}
-                    />
-                  </td>
-                  <td style={{ textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-                    {formatCurrency(row.comissao_bruta)}
-                  </td>
-                  <td>
-                    <div style={moneyWrap}>
-                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
-                      <input
-                        style={inputStyle}
-                        inputMode="decimal"
-                        value={row.perdas_text}
-                        onChange={(e) => {
-                          const text = formatBrCurrencyInput(e.target.value);
-                          updateLocal(row.id_filial, {
-                            perdas_text: text,
-                            perdas_estoque: parseBrCurrency(text),
-                          });
-                        }}
-                        onBlur={() => {
-                          const current = rows.find((r) => r.id_filial === row.id_filial);
-                          if (current) void persist(current);
-                        }}
-                      />
-                    </div>
-                  </td>
-                  <td>
-                    <div style={moneyWrap}>
-                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
-                      <input
-                        style={inputStyle}
-                        inputMode="decimal"
-                        value={row.sobras_est_text}
-                        onChange={(e) => {
-                          const text = formatBrCurrencyInput(e.target.value);
-                          updateLocal(row.id_filial, {
-                            sobras_est_text: text,
-                            sobras_estoque: parseBrCurrency(text),
-                          });
-                        }}
-                        onBlur={() => {
-                          const current = rows.find((r) => r.id_filial === row.id_filial);
-                          if (current) void persist(current);
-                        }}
-                      />
-                    </div>
-                  </td>
-                  <td>
-                    <div style={moneyWrap}>
-                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
-                      <input
-                        style={inputStyle}
-                        inputMode="decimal"
-                        value={row.sobras_cx_text}
-                        onChange={(e) => {
-                          const text = formatBrCurrencyInput(e.target.value);
-                          updateLocal(row.id_filial, {
-                            sobras_cx_text: text,
-                            sobras_caixa: parseBrCurrency(text),
-                          });
-                        }}
-                        onBlur={() => {
-                          const current = rows.find((r) => r.id_filial === row.id_filial);
-                          if (current) void persist(current);
-                        }}
-                      />
-                    </div>
-                  </td>
-                  <td>
-                    <div style={moneyWrap}>
-                      <span className="muted" style={{ fontSize: 11 }}>R$</span>
-                      <input
-                        style={inputStyle}
-                        inputMode="decimal"
-                        value={row.furos_text}
-                        onChange={(e) => {
-                          const text = formatBrCurrencyInput(e.target.value);
-                          updateLocal(row.id_filial, {
-                            furos_text: text,
-                            furos_caixa: parseBrCurrency(text),
-                          });
-                        }}
-                        onBlur={() => {
-                          const current = rows.find((r) => r.id_filial === row.id_filial);
-                          if (current) void persist(current);
-                        }}
-                      />
-                    </div>
-                  </td>
-                  <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                    {formatCurrency(row.comissao_liquida)}
-                    {savingKey === String(row.id_filial) ? (
-                      <span className="muted" style={{ marginLeft: 6, fontWeight: 400 }}>…</span>
+              {(filteredRows as unknown as RowState[]).map((row) => {
+                const expanded = expandedFilial === row.id_filial;
+                return (
+                  <Fragment key={row.id_filial}>
+                    <tr
+                      onClick={() => void toggleExpand(row)}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <td style={{ width: 28 }}>{expanded ? "▾" : "▸"}</td>
+                      <td style={{ fontWeight: 600, whiteSpace: "nowrap", textAlign: "left" }}>
+                        {row.filial_label}
+                      </td>
+                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        {formatCurrency(row.venda_bruta_total)}
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          style={inputStyle}
+                          value={row.rate_text}
+                          onChange={(e) => {
+                            const text = formatPctInput(e.target.value);
+                            const rate = Number(text.replace(",", ".")) || 0;
+                            updateLocal(row.id_filial, { rate_text: text, rate_pct: rate });
+                          }}
+                          onBlur={() => {
+                            const current = rows.find((r) => r.id_filial === row.id_filial);
+                            if (current) void persist(current);
+                          }}
+                        />
+                      </td>
+                      <td style={{ textAlign: "right", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                        {formatCurrency(row.comissao_bruta)}
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div style={moneyWrap}>
+                          <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                          <input
+                            style={inputStyle}
+                            inputMode="decimal"
+                            value={row.perdas_text}
+                            onChange={(e) => {
+                              const text = formatBrCurrencyInput(e.target.value);
+                              updateLocal(row.id_filial, {
+                                perdas_text: text,
+                                perdas_estoque: parseBrCurrency(text),
+                              });
+                            }}
+                            onBlur={() => {
+                              const current = rows.find((r) => r.id_filial === row.id_filial);
+                              if (current) void persist(current);
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div style={moneyWrap}>
+                          <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                          <input
+                            style={inputStyle}
+                            inputMode="decimal"
+                            value={row.sobras_est_text}
+                            onChange={(e) => {
+                              const text = formatBrCurrencyInput(e.target.value);
+                              updateLocal(row.id_filial, {
+                                sobras_est_text: text,
+                                sobras_estoque: parseBrCurrency(text),
+                              });
+                            }}
+                            onBlur={() => {
+                              const current = rows.find((r) => r.id_filial === row.id_filial);
+                              if (current) void persist(current);
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div style={moneyWrap}>
+                          <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                          <input
+                            style={inputStyle}
+                            inputMode="decimal"
+                            value={row.sobras_cx_text}
+                            onChange={(e) => {
+                              const text = formatBrCurrencyInput(e.target.value);
+                              updateLocal(row.id_filial, {
+                                sobras_cx_text: text,
+                                sobras_caixa: parseBrCurrency(text),
+                              });
+                            }}
+                            onBlur={() => {
+                              const current = rows.find((r) => r.id_filial === row.id_filial);
+                              if (current) void persist(current);
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div style={moneyWrap}>
+                          <span className="muted" style={{ fontSize: 11 }}>R$</span>
+                          <input
+                            style={inputStyle}
+                            inputMode="decimal"
+                            value={row.furos_text}
+                            onChange={(e) => {
+                              const text = formatBrCurrencyInput(e.target.value);
+                              updateLocal(row.id_filial, {
+                                furos_text: text,
+                                furos_caixa: parseBrCurrency(text),
+                              });
+                            }}
+                            onBlur={() => {
+                              const current = rows.find((r) => r.id_filial === row.id_filial);
+                              if (current) void persist(current);
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                        {formatCurrency(row.comissao_liquida)}
+                        {savingKey === String(row.id_filial) ? (
+                          <span className="muted" style={{ marginLeft: 6, fontWeight: 400 }}>…</span>
+                        ) : null}
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr>
+                        <td
+                          colSpan={10}
+                          style={{ padding: "10px 12px 14px", background: "var(--surface-faint, var(--surface-1))" }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <ManagerCommissionDrilldown
+                            payload={drilldownByFilial[row.id_filial] || null}
+                            loading={drilldownLoading === row.id_filial}
+                          />
+                        </td>
+                      </tr>
                     ) : null}
-                  </td>
-                </tr>
-              ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
             <tfoot className="commissionGridFoot">
               <tr>
+                <td />
                 <td style={{ textAlign: "left", fontWeight: 700 }}>Total</td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
                   {formatCurrency(footerTotals.venda_bruta_total)}

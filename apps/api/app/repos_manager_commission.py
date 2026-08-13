@@ -41,6 +41,43 @@ def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
     )
 
 
+def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
+    """Perdas (CFOP 5927): grupo do item primeiro, cadastro como fallback."""
+    return (
+        f"if({item_alias}.id_grupo_produto > 0, {item_alias}.id_grupo_produto, "
+        f"coalesce({prod_alias}.id_grupo_produto, 0))"
+    )
+
+
+def _nfe_documento(numero: Any) -> str:
+    raw = str(numero or "").strip()
+    if not raw or raw in {"0", "None"}:
+        return "—"
+    return raw
+
+
+def _date_key_iso(data_key: Any) -> str:
+    digits = str(int(data_key or 0)).zfill(8)
+    if len(digits) != 8 or digits == "00000000":
+        return ""
+    return f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}"
+
+
+def _slim_item_from_sql() -> str:
+    return f"""
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+          ON c.id_empresa = i.id_empresa
+         AND c.id_filial = i.id_filial
+         AND c.id_db = i.id_db
+         AND c.id_comprovante = i.id_comprovante
+        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
+          ON p.id_empresa = i.id_empresa
+         AND p.id_filial = i.id_filial
+         AND p.id_produto = i.id_produto
+    """
+
+
 def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
     return id_filial if id_filial and id_filial > 0 else None
 
@@ -354,10 +391,7 @@ def _sum_metric_from_slim(
         if not include:
             return 0.0
         cfop_pred = f"i.cfop IN ({include})"
-        # Perdas: mantém resolução item→produto (CFOP pontual 5927).
-        group_expr = (
-            "if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))"
-        )
+        group_expr = _loss_group_id_sql("i", "p")
     rows = query_dict(
         f"""
         SELECT sum(i.total) AS valor
@@ -393,6 +427,209 @@ def _sum_metric_from_slim(
     return round(float(rows[0].get("valor") or 0), 2)
 
 
+def _sales_groups_breakdown(
+    *,
+    id_empresa: int,
+    id_filial: int,
+    year: int,
+    month: int,
+    sales_groups: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Totais por grupo da base de venda (mesmos filtros do KPI)."""
+    configured = []
+    seen: Set[int] = set()
+    for g in sales_groups:
+        gid = int(g.get("id_grupo_produto") or 0)
+        if gid <= 0 or gid in seen:
+            continue
+        seen.add(gid)
+        configured.append(
+            {
+                "id_grupo_produto": gid,
+                "nome": str(g.get("nome_grupo") or g.get("nome") or f"Grupo {gid}"),
+                "valor": 0.0,
+            }
+        )
+    if not configured:
+        return []
+    group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
+    group_expr = _sales_group_id_sql("i", "p")
+    dt_ini, dt_fim = _month_bounds(year, month)
+    rows = query_dict(
+        f"""
+        SELECT
+          {group_expr} AS id_grupo_produto,
+          round(sum(i.total), 2) AS valor
+        {_slim_item_from_sql()}
+        WHERE i.id_empresa = {{id_empresa:Int32}}
+          AND i.id_filial = {{id_filial:Int32}}
+          AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND i.is_deleted = 0
+          AND c.is_deleted = 0
+          AND c.cancelado = 0
+          AND c.situacao != 3
+          AND {_cfop_sales_predicate_sql("i")}
+          AND {group_expr} IN ({group_list})
+        GROUP BY id_grupo_produto
+        """,
+        parameters={
+            "id_empresa": int(id_empresa),
+            "id_filial": int(id_filial),
+            "ini": _date_key(dt_ini),
+            "fim": _date_key(dt_fim),
+        },
+    )
+    by_id = {int(r["id_grupo_produto"]): round(float(r.get("valor") or 0), 2) for r in rows}
+    for item in configured:
+        item["valor"] = by_id.get(item["id_grupo_produto"], 0.0)
+    configured.sort(key=lambda r: (str(r["nome"] or "").casefold(), int(r["id_grupo_produto"])))
+    return configured
+
+
+def _loss_notes_breakdown(
+    *,
+    id_empresa: int,
+    id_filial: int,
+    year: int,
+    month: int,
+    loss_groups: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Notas de perda (CFOP 5927) nos grupos configurados — DOCUMENTO = NF."""
+    group_ids = sorted(
+        {
+            int(g.get("id_grupo_produto") or 0)
+            for g in loss_groups
+            if int(g.get("id_grupo_produto") or 0) > 0
+        }
+    )
+    if not group_ids:
+        return []
+    group_list = ", ".join(str(g) for g in group_ids)
+    group_expr = _loss_group_id_sql("i", "p")
+    dt_ini, dt_fim = _month_bounds(year, month)
+    rows = query_dict(
+        f"""
+        SELECT
+          i.id_filial AS id_filial,
+          i.id_db AS id_db,
+          i.id_comprovante AS id_comprovante,
+          min(i.data_key) AS data_key,
+          round(sum(i.total), 2) AS valor,
+          any(n.numero_nfe) AS numero_nfe,
+          any(n.data_emissao) AS data_emissao
+        {_slim_item_from_sql()}
+        LEFT JOIN (
+          SELECT
+            id_empresa, id_filial, id_db, id_comprovante,
+            argMax(numero_nfe, source_ts_ms) AS numero_nfe,
+            argMax(data_emissao, source_ts_ms) AS data_emissao
+          FROM {CURRENT_DB}.stg_nfe_slim
+          WHERE id_empresa = {{id_empresa:Int32}}
+            AND id_filial = {{id_filial:Int32}}
+            AND is_deleted = 0
+            AND status != 5
+            AND numero_nfe != ''
+            AND numero_nfe != '0'
+          GROUP BY id_empresa, id_filial, id_db, id_comprovante
+        ) AS n
+          ON n.id_empresa = i.id_empresa
+         AND n.id_filial = i.id_filial
+         AND n.id_db = i.id_db
+         AND n.id_comprovante = i.id_comprovante
+        WHERE i.id_empresa = {{id_empresa:Int32}}
+          AND i.id_filial = {{id_filial:Int32}}
+          AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND i.is_deleted = 0
+          AND c.is_deleted = 0
+          AND c.cancelado = 0
+          AND c.situacao != 3
+          AND i.cfop = {int(STOCK_LOSS_CFOP)}
+          AND {group_expr} IN ({group_list})
+        GROUP BY i.id_filial, i.id_db, i.id_comprovante
+        ORDER BY data_key DESC, numero_nfe ASC, i.id_comprovante ASC
+        LIMIT 500
+        """,
+        parameters={
+            "id_empresa": int(id_empresa),
+            "id_filial": int(id_filial),
+            "ini": _date_key(dt_ini),
+            "fim": _date_key(dt_fim),
+        },
+    )
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        data_key = int(r.get("data_key") or 0)
+        emissao = r.get("data_emissao")
+        data_iso = ""
+        if emissao is not None:
+            try:
+                data_iso = emissao.date().isoformat() if hasattr(emissao, "date") else str(emissao)[:10]
+            except Exception:
+                data_iso = ""
+        if not data_iso:
+            data_iso = _date_key_iso(data_key)
+        out.append(
+            {
+                "id_filial": int(r.get("id_filial") or id_filial),
+                "id_comprovante": int(r.get("id_comprovante") or 0),
+                "data": data_iso,
+                "data_key": data_key,
+                "documento": _nfe_documento(r.get("numero_nfe")),
+                "valor": round(float(r.get("valor") or 0), 2),
+            }
+        )
+    return out
+
+
+def calc_branch_drilldown(
+    id_empresa: int,
+    id_filial: int,
+    year: int,
+    month: int,
+    *,
+    filial_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Detalhe operacional da linha de comissão de gerente (grupos + notas de perda)."""
+    summary = calc_branch_row(
+        id_empresa, id_filial, year, month, filial_label=filial_label, publish=False
+    )
+    config = ensure_rule_config(id_empresa, id_filial)
+    config_id = int(config["id"])
+    sales_groups = get_rule_groups(config_id, "sales_base")
+    loss_groups = get_rule_groups(config_id, "stock_loss")
+    groups = _sales_groups_breakdown(
+        id_empresa=id_empresa,
+        id_filial=id_filial,
+        year=year,
+        month=month,
+        sales_groups=sales_groups,
+    )
+    notes = _loss_notes_breakdown(
+        id_empresa=id_empresa,
+        id_filial=id_filial,
+        year=year,
+        month=month,
+        loss_groups=loss_groups,
+    )
+    grupos_total = round(sum(float(g["valor"]) for g in groups), 2)
+    notas_total = round(sum(float(n["valor"]) for n in notes), 2)
+    perdas_tela = round(float(summary.get("perdas_estoque") or 0), 2)
+    return {
+        "id_empresa": id_empresa,
+        "id_filial": id_filial,
+        "filial_label": summary.get("filial_label") or filial_label or f"Filial {id_filial}",
+        "year": year,
+        "month": month,
+        "venda_bruta_total": round(float(summary.get("venda_bruta_total") or 0), 2),
+        "grupos": groups,
+        "grupos_total": grupos_total,
+        "perdas_notas": notes,
+        "perdas_notas_total": notas_total,
+        "perdas_estoque": perdas_tela,
+        "perdas_divergente": abs(perdas_tela - notas_total) > 0.009,
+    }
+
+
 def publish_manager_commission_month(
     id_empresa: int, id_filial: int, year: int, month: int
 ) -> Dict[str, Any]:
@@ -416,9 +653,7 @@ def publish_manager_commission_month(
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
-            group_expr = (
-                "if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))"
-            )
+            group_expr = _loss_group_id_sql("i", "p")
         rows = query_dict(
             f"""
             SELECT

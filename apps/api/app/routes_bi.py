@@ -2785,6 +2785,52 @@ def manager_commissions_calc(
     }
 
 
+@router.get("/team/manager-commissions/drilldown")
+def manager_commissions_drilldown(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2020, le=2100),
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.gerente")),
+):
+    """Grupos da venda bruta + notas de perda (NF) da filial/mês."""
+    tenant, _, _ = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa,
+        id_filial_q=id_filial,
+    )
+    filial_label = None
+    try:
+        from app.db import get_conn
+
+        with get_conn(tenant_id=tenant) as conn:
+            label_row = conn.execute(
+                """
+                SELECT COALESCE(
+                         NULLIF(TRIM(apelido), ''),
+                         NULLIF(TRIM(nome), ''),
+                         'Filial ' || id_filial::text
+                       ) AS label
+                FROM auth.filiais
+                WHERE id_empresa = %s AND id_filial = %s
+                LIMIT 1
+                """,
+                [tenant, int(id_filial)],
+            ).fetchone()
+            if label_row:
+                filial_label = str(label_row["label"])
+    except Exception:
+        filial_label = None
+    return repos_manager_commission.calc_branch_drilldown(
+        tenant,
+        int(id_filial),
+        year,
+        month,
+        filial_label=filial_label,
+    )
+
+
 @router.put("/team/manager-commissions/overrides")
 def manager_commissions_overrides_save(
     body: dict = Body(...),

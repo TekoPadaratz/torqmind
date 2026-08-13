@@ -7,6 +7,8 @@ from app.repos_manager_commission import (
     SALES_BASE_EXCLUDED_GROUP_IDS,
     SALES_EXCLUDED_CFOPS,
     _cfop_sales_predicate_sql,
+    _nfe_documento,
+    _date_key_iso,
     net_commission,
 )
 
@@ -54,6 +56,27 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         pred = _cfop_sales_predicate_sql("i").replace(" ", "").lower()
         self.assertIn("cfop,0)>5000", pred)
         self.assertIn("notin(5929,6929)", pred)
+
+
+    def test_nfe_documento_empty_is_honest_dash(self):
+        self.assertEqual(_nfe_documento(""), "—")
+        self.assertEqual(_nfe_documento("0"), "—")
+        self.assertEqual(_nfe_documento(None), "—")
+        self.assertEqual(_nfe_documento("114657"), "114657")
+
+    def test_date_key_iso(self):
+        self.assertEqual(_date_key_iso(20260715), "2026-07-15")
+        self.assertEqual(_date_key_iso(0), "")
+
+    def test_drilldown_function_exists(self):
+        import inspect
+        from app.repos_manager_commission import calc_branch_drilldown
+
+        params = inspect.signature(calc_branch_drilldown).parameters
+        self.assertIn("id_empresa", params)
+        self.assertIn("id_filial", params)
+        self.assertIn("year", params)
+        self.assertIn("month", params)
 
 
 if __name__ == "__main__":
