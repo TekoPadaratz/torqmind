@@ -55,6 +55,14 @@ _QUERY_SETTINGS = _build_query_settings()
 # Backfill batch size: number of data_keys processed per iteration.
 _BACKFILL_BATCH_SIZE = _DEFAULT_BATCH_SIZE
 
+# Vendas comerciais: saída (cfop > 5000) sem perda/baixa (5927) nem transferência (5929/6929).
+SALES_EXCLUDED_CFOPS = (5927, 5929, 6929)
+
+
+def _sales_cfop_pred(alias: str = "i") -> str:
+    excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
+    return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+
 
 @dataclass
 class MartRefreshResult:
@@ -414,7 +422,7 @@ class MartBuilder:
                     f"  AND c.commercial_eligible = 1 "
                     f"  AND c.is_deleted = 0 "
                     f"  AND i.is_deleted = 0 "
-                    f"  AND i.cfop > 5000 "
+                    f"  AND {_sales_cfop_pred('i')} "
                     f"  {filial_filter_c} "
                     f"ORDER BY c.data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
@@ -1073,7 +1081,7 @@ class MartBuilder:
         """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
 
         Canonical rules:
-        - faturamento = sum of item totals for valid items (cfop > 5000)
+        - faturamento = sum of item totals for valid sales items (cfop > 5000, excl. 5927/5929/6929)
         - qtd_vendas = distinct comprovantes with at least one valid item
         - qtd_itens = count of valid item rows
         - cancelados = comprovantes with cancelado=1 EXCLUDING NFE status=5 (inutilized)
@@ -1123,7 +1131,7 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-                            AND c.commercial_eligible = 1 AND i.cfop > 5000
+                            AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                             AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
@@ -1170,7 +1178,7 @@ class MartBuilder:
             ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                     AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
@@ -1221,7 +1229,7 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                     AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
@@ -1267,7 +1275,7 @@ class MartBuilder:
             GROUP BY id_empresa, id_grupoprodutos
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
-                    AND c.commercial_eligible = 1 AND i.cfop > 5000
+                    AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                     AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
@@ -1976,7 +1984,7 @@ class MartBuilder:
                 ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
-                            AND c.commercial_eligible = 1 AND i.cfop > 5000
+                            AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                             AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
@@ -2466,7 +2474,7 @@ class MartBuilder:
                 f"  AND c.commercial_eligible = 1 "
                 f"  AND c.is_deleted = 0 "
                 f"  AND i.is_deleted = 0 "
-                f"  AND i.cfop > 5000 "
+                f"  AND {_sales_cfop_pred('i')} "
                 f"ORDER BY c.data_key",
                 parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                 settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},

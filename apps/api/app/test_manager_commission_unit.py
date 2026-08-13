@@ -51,11 +51,11 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         params = inspect.signature(calc_branch_row).parameters
         self.assertEqual(params["publish"].default, False)
 
-    def test_sales_excluded_cfops_include_transfer_intra_and_interstate(self):
-        self.assertEqual(SALES_EXCLUDED_CFOPS, (5929, 6929))
+    def test_sales_excluded_cfops_include_loss_and_transfers(self):
+        self.assertEqual(SALES_EXCLUDED_CFOPS, (5927, 5929, 6929))
         pred = _cfop_sales_predicate_sql("i").replace(" ", "").lower()
         self.assertIn("cfop,0)>5000", pred)
-        self.assertIn("notin(5929,6929)", pred)
+        self.assertIn("notin(5927,5929,6929)", pred)
 
 
     def test_nfe_documento_empty_is_honest_dash(self):

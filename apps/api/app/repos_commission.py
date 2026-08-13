@@ -24,9 +24,9 @@ DEFAULT_TIERS = [
 # Comprovantes fora da base de quantidade: cancelado, situacao=3 (ignorado), 14 (devolução).
 COMMISSION_EXCLUDED_SITUACOES: tuple[int, ...] = (2, 3, 14)
 
-# Transferência entre filiais (intra 5929 / interestadual 6929) — fora da base.
-# Base comercial = mesma regra da tela de Vendas (cfop > 5000), menos transferência.
-COMMISSION_EXCLUDED_CFOPS: tuple[int, ...] = (5929, 6929)
+# Fora da base de comissão (= mesma regra comercial de Vendas).
+# 5927 perda/baixa; 5929/6929 transferência.
+COMMISSION_EXCLUDED_CFOPS: tuple[int, ...] = (5927, 5929, 6929)
 
 
 def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
@@ -34,15 +34,10 @@ def _conn_branch_id(id_filial: Optional[int]) -> Optional[int]:
 
 
 def _cfop_sales_predicate_sql(alias: str = "i") -> str:
-    """Vendas comerciais (cfop > 5000), exceto transferência (5929/6929).
-
-    Alinha com ``sales_semantics.sales_cfop_filter_sql`` / Top grupos — evita
-    entradas/devoluções (CFOP 1xxx) incharem a base de comissão.
-    """
+    """Vendas comerciais: cfop > 5000, sem 5927/5929/6929."""
     from app.sales_semantics import sales_cfop_filter_sql
 
-    excl = ",".join(str(int(c)) for c in COMMISSION_EXCLUDED_CFOPS)
-    return f"{sales_cfop_filter_sql(alias)} AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+    return sales_cfop_filter_sql(alias)
 
 
 def _situacao_excluidas_sql() -> str:

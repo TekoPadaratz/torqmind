@@ -70,9 +70,12 @@ class TestBackfillDataKeyCoverage:
         assert "commercial_eligible = 1" in method_body, (
             "backfill must only publish commercially eligible comprovantes"
         )
-        # Must filter cfop > 5000
+        # Must filter commercial sales CFOP ( > 5000, excl. 5927/5929/6929 )
         assert "cfop > 5000" in method_body, (
             "backfill must only publish valid sales items (cfop > 5000)"
+        )
+        assert "5927" in method_body and "5929" in method_body, (
+            "backfill must exclude stock-loss/transfer CFOPs"
         )
 
     def test_batch_boundary_includes_all_keys(self):

@@ -21,6 +21,7 @@ from app.repos_mart import _cash_operator_label, _filial_label, _turno_label
 from app.repos_mart import (
     customers_delinquency_overview as _pg_customers_delinquency_overview,
 )
+from app.sales_semantics import sales_cfop_filter_sql
 
 logger = logging.getLogger(__name__)
 
@@ -1942,7 +1943,7 @@ def cash_overview(
                       AND c.is_deleted = 0
                       AND c.commercial_eligible = 1
                       AND c.referencia > 0
-                      AND i.cfop > 5000
+                      AND {sales_cfop_filter_sql("i")}
                                         GROUP BY ref_key
                 ) AS s
                                     ON s.ref_key = p.ref_key
@@ -3292,7 +3293,7 @@ def team_employee_cost_overview(
             WHERE i.id_empresa = {{id_empresa:Int32}}
               AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
               AND i.is_deleted = 0
-              AND i.cfop > 5000
+              AND {sales_cfop_filter_sql("i")}
               AND i.id_funcionario > 0
               {_branch_clause('i.id_filial', id_filial)}
             GROUP BY id_filial, id_funcionario
@@ -3623,7 +3624,7 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
         WHERE i.id_empresa = {{id_empresa:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           AND i.is_deleted = 0
-          AND i.cfop > 5000 AND i.id_funcionario > 0
+          AND {sales_cfop_filter_sql("i")} AND i.id_funcionario > 0
           {branch_i}
         GROUP BY id_funcionario
         ORDER BY faturamento DESC
@@ -3806,7 +3807,8 @@ def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_f
             FROM {CURRENT_DB}.stg_itenscomprovantes_slim FINAL
             WHERE id_empresa = {{id_empresa:Int32}}
               AND is_deleted = 0
-              AND cfop > 5000
+              AND COALESCE(cfop, 0) > 5000
+              AND COALESCE(cfop, 0) NOT IN (5927, 5929, 6929)
               AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
             GROUP BY id_empresa, id_filial, id_db, id_comprovante
         ) AS i

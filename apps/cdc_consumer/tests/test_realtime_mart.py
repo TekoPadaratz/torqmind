@@ -635,7 +635,10 @@ class TestMartBuilderDedupSemantics:
             idx = self.code.index(f"def {method}")
             next_def = self.code.index("\n    def ", idx + 10)
             body = self.code[idx:next_def]
-            assert "i.cfop > 5000" in body, f"{method} must use i.cfop > 5000"
+            assert "_sales_cfop_pred" in body or "NOT IN (5927" in body.replace(" ", ""), (
+                f"{method} must exclude non-sale CFOPs (5927/5929/6929)"
+            )
+            assert "cfop > 5000" in body, f"{method} must keep cfop > 5000 gate"
             assert "i.cfop >= 5000" not in body, f"{method} must not use >= 5000"
 
     def test_sales_item_joins_include_id_db(self):

@@ -16,6 +16,10 @@ RETURN_STATUS = IGNORED_BUSINESS_STATUS
 # Statuses that are commercially valid (for queries that need an allow-list).
 COMMERCIAL_STATUSES = (SALE_STATUS, CANCELLATION_STATUS)
 
+# Fora da base comercial de vendas (mesmo com cfop > 5000):
+# 5927 = baixa/perda de estoque; 5929/6929 = transferência entre filiais.
+SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5927, 5929, 6929)
+
 
 def sales_status_sql(alias: str) -> str:
     return f"COALESCE({alias}.situacao, 0)"
@@ -31,7 +35,12 @@ def commercial_eligible_sql(alias: str) -> str:
 
 
 def sales_cfop_filter_sql(alias: str) -> str:
-    return f"COALESCE({alias}.cfop, 0) > 5000"
+    """Saída comercial: cfop > 5000, sem perda (5927) nem transferência (5929/6929)."""
+    excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
+    return (
+        f"COALESCE({alias}.cfop, 0) > 5000 "
+        f"AND COALESCE({alias}.cfop, 0) NOT IN ({excl})"
+    )
 
 
 def comercial_cfop_numeric_sql(alias: str) -> str:

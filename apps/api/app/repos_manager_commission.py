@@ -17,20 +17,18 @@ MART_RT_DB = "torqmind_mart_rt"
 # Grupos excluídos por padrão da base de venda (spec LSC).
 SALES_BASE_EXCLUDED_GROUP_IDS: Set[int] = {1, 2, 3, 4, 7, 8, 9, 10, 16, 39, 40}
 
-# Transferência (intra/interestadual) — fora da base de venda do gerente.
-# Base comercial = mesma regra da tela de Vendas (cfop > 5000), menos transferência.
-SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5929, 6929)
+# Fora da base de venda do gerente (= Vendas): perda 5927 + transferências.
+SALES_EXCLUDED_CFOPS: tuple[int, ...] = (5927, 5929, 6929)
 STOCK_LOSS_CFOP = 5927
 
 DEFAULT_RATE_PCT = 2.0
 
 
 def _cfop_sales_predicate_sql(alias: str = "i") -> str:
-    """Vendas comerciais (cfop > 5000), exceto transferência (5929/6929)."""
+    """Vendas comerciais: cfop > 5000, sem 5927/5929/6929."""
     from app.sales_semantics import sales_cfop_filter_sql
 
-    excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
-    return f"{sales_cfop_filter_sql(alias)} AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+    return sales_cfop_filter_sql(alias)
 
 
 def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
