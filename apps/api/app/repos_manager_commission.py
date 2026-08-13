@@ -515,14 +515,14 @@ def _loss_notes_breakdown(
           i.id_comprovante AS id_comprovante,
           min(i.data_key) AS data_key,
           round(sum(i.total), 2) AS valor,
-          any(n.numero_nfe) AS numero_nfe,
-          any(n.data_emissao) AS data_emissao
+          any(n.numero_nfe_res) AS numero_nfe,
+          any(n.data_emissao_res) AS data_emissao
         {_slim_item_from_sql()}
         LEFT JOIN (
           SELECT
             id_empresa, id_filial, id_db, id_comprovante,
-            argMax(numero_nfe, source_ts_ms) AS numero_nfe,
-            argMax(data_emissao, source_ts_ms) AS data_emissao
+            argMax(numero_nfe, source_ts_ms) AS numero_nfe_res,
+            argMax(data_emissao, source_ts_ms) AS data_emissao_res
           FROM {CURRENT_DB}.stg_nfe_slim
           WHERE id_empresa = {{id_empresa:Int32}}
             AND id_filial = {{id_filial:Int32}}
