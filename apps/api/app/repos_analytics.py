@@ -9,7 +9,9 @@ PostgreSQL remains the legacy fallback when ``USE_CLICKHOUSE=false``.
 
 from functools import wraps
 import inspect
+import json
 import logging
+from pathlib import Path
 from typing import Any, Callable
 
 from app import repos_mart as _postgres
@@ -49,18 +51,30 @@ _POSTGRES_OWNED_FUNCTIONS = {
     "notifications_list",
     "notifications_unread_count",
     "notification_mark_read",
+    "notifications_mark_all_read",
     "budget_config_overview",
     "budget_config_upsert",
     "solvencia_manual_upsert",
     "get_filial_params",
     "upsert_filial_params",
     "team_employee_cost_upsert",
+    "refresh_fraud_credito_funcionario",
+    "mash_fraud_credito_funcionario_ch",
+    "publish_fraud_credito_funcionario_to_ch",
 }
 
-# Analytical functions that remain on the legacy path until a mart exists with
-# the same grain/contract. The warning is emitted only when USE_CLICKHOUSE=true.
+# Analytical screen reads still on PostgreSQL. Must stay in sync with
+# analytics_pg_exceptions.json (class=analytical_debt). Do not add silently.
 _CLICKHOUSE_DEBT_FUNCTIONS = {
+    "fraud_lancamentos_creditos": "antifraude créditos — unificar com mart RT",
+    "cheques_pendentes_overview": "financeiro cheques — mart CH pendente",
+    "budget_overview": "orçamento — mart CH pendente",
+    "budget_alerts": "orçamento alertas — mart CH pendente",
+    "solvencia_detalhada": "solvência detalhe — wiring CH pendente",
+    "solvencia_overview": "solvência overview — wiring CH pendente",
 }
+
+PG_EXCEPTIONS_PATH = Path(__file__).with_name("analytics_pg_exceptions.json")
 
 # When realtime is enabled, some analytical functions still need PostgreSQL as
 # the compatibility source because this deployment no longer serves the legacy
@@ -136,6 +150,11 @@ def _dispatch(name: str) -> Callable[..., Any]:
                     name,
                     _CLICKHOUSE_DEBT_FUNCTIONS[name],
                 )
+            elif use_clickhouse and name not in _POSTGRES_OWNED_FUNCTIONS:
+                logger.error(
+                    "Unregistered PostgreSQL analytics read for %s with USE_CLICKHOUSE=true",
+                    name,
+                )
             return legacy(*args, **kwargs)
 
         if dual_read:
@@ -201,7 +220,7 @@ def analytics_backend_inventory() -> dict[str, Any]:
     for name in sorted(_PUBLIC_POSTGRES_FUNCTIONS):
         if name in _POSTGRES_OWNED_FUNCTIONS:
             source = "postgres_app"
-        elif name in _CLICKHOUSE_FUNCTIONS:
+        elif name in _CLICKHOUSE_FUNCTIONS or name in getattr(_realtime, "REALTIME_FUNCTIONS", set()):
             source = "clickhouse"
         elif name in _CLICKHOUSE_DEBT_FUNCTIONS:
             source = "postgres_debt"

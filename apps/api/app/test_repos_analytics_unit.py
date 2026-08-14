@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 import unittest
 from datetime import date, datetime, timezone
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 
@@ -112,11 +114,18 @@ class AnalyticsFacadeUnitTest(unittest.TestCase):
         rt_call.assert_called_once()
         pg_call.assert_not_called()
 
-    def test_inventory_has_no_analytical_clickhouse_debt(self) -> None:
+    def test_inventory_analytical_debt_matches_registry(self) -> None:
         inventory = repos_analytics.analytics_backend_inventory()
-        debts = [item for item in inventory["functions"] if item["source"] == "postgres_debt"]
-
-        self.assertEqual(debts, [])
+        debts = {item["function"] for item in inventory["functions"] if item["source"] == "postgres_debt"}
+        payload = json.loads(Path(repos_analytics.PG_EXCEPTIONS_PATH).read_text(encoding="utf-8"))
+        registered = {
+            item["function"]
+            for item in payload["exceptions"]
+            if item["class"] == "analytical_debt"
+        }
+        self.assertEqual(debts, registered)
+        legacy = [item["function"] for item in inventory["functions"] if item["source"] == "postgres_legacy"]
+        self.assertEqual(legacy, [])
 
     def test_inventory_marks_customers_delinquency_as_clickhouse(self) -> None:
         inventory = repos_analytics.analytics_backend_inventory()
