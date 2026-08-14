@@ -3,7 +3,7 @@ Sem secrets. Host de trabalho: torqmind-app-stream (172.30.0.10).
 Checkout bind-mount: /home/tm/torqmind (master @ 944f9cc).
 Worktree: /home/tm/worktrees/torqmind-hardening-2026-08
 Branch: cursor/torqmind-hardening-2026-08-3837
-HEAD codigo: b1a671b (CDC prod image 848a309)
+HEAD codigo: 7d87415 (merge PR #25). Closeout Agent 2.0.5 publicado.
 PR: https://github.com/TekoPadaratz/torqmind/pull/25
 
 NENHUM banco resetado. Nenhuma migration aplicada em prod/homolog.
@@ -99,11 +99,11 @@ prod-multivm-proof: PASS /tmp/hardening-proof-2026-08-14.json
 Health publico 200: www e hom web/api ~0.10-0.13s
 
 Agent codigo/testes: PASS
-Agent executavel 2.0.5: PENDENTE POS-MERGE — responsabilidade do usuario
+Agent executavel 2.0.5: PASS (publicado 2026-08-14T16:53:02Z)
 
 12) Isolamento Hom analytics
 ADR docs/adr/2026-08-14-homolog-analytics-isolation.md
-Recomendacao: Opcao B (VM exclusiva). NAO EXECUTADO.
+Recomendacao: Opcao B (VM exclusiva). NAO EXECUTADO nesta fase.
 
 13) CI validate (continuacao)
 Causa original exit 3: docker-compose.yml montava sql/migrations em initdb.
@@ -112,19 +112,34 @@ rate limit 429, suites DB com MOVPRODUTOS).
 Correcao: job validate usa services.postgres:16 (torqmind_ci @ 127.0.0.1),
 APP_ENV=test, migrate no runner, pytest -m "not integration_db",
 smoke login/health, agent tests. Sem 172.30.0.8. Sem compose de prod.
-docker-compose.ci.yml permanece para uso local opcional.
+docker-compose.ci.yml permanece para uso local opcional. CI validate: PASS.
 
-14) Pos-merge Agent Windows (usuario)
-git pull master; gerar torqmind-agent.exe; torqmind-agent.exe --version;
-SHA-256; publicar de forma controlada. Nao bloqueia o merge.
+14) Closeout pos-merge (2026-08-14)
+- PR #25 merge: 7d87415. origin/master alinhada.
+- Checkout operacional /home/tm/torqmind: ff-only 944f9cc -> 7d87415.
+  Bind mounts: API migrations = worktree; nginx = checkout. Sem rebuild
+  (pos-848a309 so CI/docs/validator SLA).
+- Agent 2.0.5 publicado (sem --mandatory):
+  SHA-256 261b930ef09f96ff4230f65df689434416a3011e012ff998a43311eb1ae3119c
+  size 11390800; Drive ID 1krkq6V0LHc4KmmVvsBr-CBKV2TelvAtS
+  Backup anterior: /var/torqmind/agent-release-backups/20260814T165302Z
+  Manifest API 200; download API SHA igual; sem chave = 401.
+- HTTPS: HTTP www/hom 301 -> HTTPS; HTTPS web+api 200.
+- Debezium RUNNING / task RUNNING. TOTAL-LAG=0. Membro 1.
+  NUMBER_OF_COLUMNS ausente (6h). sales_daily_rt pub 16:53:33Z data_key 20260814.
+- Reconciliacao PG=CH FINAL: planodecontas 20414, filiais 22, localvendas 132,
+  dim_funcionario 22975, dim_grupo_produto 858.
+- Smoke PASS. validate 19/19 PASS. proof PASS
+  (tmp/prod-multivm-proof-20260814_165930.json).
+- TorqMind-Ops: Id/StartedAt/Image identicos ao baseline. Intocado.
+- Nenhum reset, migration prod/homolog, offset admin, compose down,
+  --remove-orphans, prune.
 
-15) Riscos restantes
-- 1 high npm Next 14.2.35 (risco formal, prazo 2026-09-15)
-- Agent exe 2.0.5 nao gerado no Linux; usuario gera no Windows apos merge
-- HTTP nao redireciona para HTTPS
-- Hom e Prod compartilham analytics .9
-- Dividas PG analiticas ate 2026-09-15
-- Bind mount sql/migrations: checkout operacional /home/tm/torqmind permanece em 944f9cc ate alinhamento controlado
+15) Riscos aceitos (proxima fase)
+- 1 high npm Next 14.2.35 (prazo 2026-09-15) — sem migrar Next 15/16 agora
+- Dividas PG analiticas formalizadas (prazo 2026-09-15)
+- Hom e Prod compartilham analytics .9 (ADR Opcao B, nao executado)
 - Compose -p torqmind -f app.yml avisa orphans; NUNCA --remove-orphans
 - fact_caixa_turno SLA 8h: se STG turnos avancar e DW nao, e stall real
-- Suites DB antigas (MOVPRODUTOS / make test na imagem API) ficam fora do job validate; nao sao o gate hermetico
+- Suites DB antigas (MOVPRODUTOS / make test na imagem API) fora do gate hermetico
+- Download path com versao regex-valida mas inexistente cai no latest (contrato atual)

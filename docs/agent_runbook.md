@@ -226,12 +226,15 @@ Publicar release na App VM:
 ```bash
 python scripts/publish_agent_release.py \
   --exe release/torqmind-agent.exe \
-  --version 2.0.3 \
+  --version 2.0.5 \
   --release-dir /var/torqmind/agent-releases \
-  --public-base-url http://redevr.ddns.me/api
+  --public-base-url https://www.torqmind.com.br/api \
+  --min-version 2.0.0
 ```
 
-(Use a mesma string de `apps/agent/agent/__init__.py` — nunca uma versão já publicada.)
+(Use a mesma string de `apps/agent/agent/__init__.py` — nunca uma versão já publicada com bytes diferentes. Não usar `--mandatory` sem autorização.)
+
+Canal publicado em 2026-08-14: versão `2.0.5`, SHA-256 `261b930ef09f96ff4230f65df689434416a3011e012ff998a43311eb1ae3119c`, tamanho `11390800`, URL `https://www.torqmind.com.br/api/agent/update/download/2.0.5`.
 **Manual (ainda válido):**
 
 ```powershell
