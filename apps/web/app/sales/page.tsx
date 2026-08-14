@@ -104,8 +104,17 @@ export default function SalesPage() {
     if (annualRows.length) {
       return annualRows.map((row: any, index: number) => ({
         mes: MONTH_LABELS[index] || MONTH_LABELS[Number(row?.mes || 1) - 1],
-        atual: Number(row?.saidas_atual || 0),
-        anterior: Number(row?.saidas_anterior || 0),
+        // null = mês ausente na mart (não fabricar zero); Number(null)→0 só no chart
+        atual:
+          row?.coverage_atual === "missing" || row?.saidas_atual == null
+            ? null
+            : Number(row?.saidas_atual || 0),
+        anterior:
+          row?.coverage_anterior === "missing" || row?.saidas_anterior == null
+            ? null
+            : Number(row?.saidas_anterior || 0),
+        coverageAtual: row?.coverage_atual || "ok",
+        coverageAnterior: row?.coverage_anterior || "ok",
       }));
     }
 
@@ -127,20 +136,24 @@ export default function SalesPage() {
       );
       return {
         mes: label,
-        atual: Number(current?.saidas || 0),
-        anterior: Number(previous?.saidas || 0),
+        atual: current ? Number(current?.saidas || 0) : null,
+        anterior: previous ? Number(previous?.saidas || 0) : null,
+        coverageAtual: current ? "ok" : "missing",
+        coverageAnterior: previous ? "ok" : "missing",
       };
     });
   }, [annualComparison, data]);
 
+  const hasEvolution = evolutionSeries.some(
+    (row) =>
+      (row.atual != null && Number(row.atual) > 0) ||
+      (row.anterior != null && Number(row.anterior) > 0),
+  );
   const hasCommercialData =
     Number(commercial?.saidas || 0) > 0 ||
     Number(commercial?.entradas || 0) > 0 ||
     Number(commercial?.cancelamentos || 0) > 0;
   const hasHourValues = hourAgg.some((row) => Number(row.saidas || 0) > 0);
-  const hasEvolution = evolutionSeries.some(
-    (row) => Number(row.atual || 0) > 0 || Number(row.anterior || 0) > 0,
-  );
 
   const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
     data?.top_groups as Record<string, unknown>[] | undefined,

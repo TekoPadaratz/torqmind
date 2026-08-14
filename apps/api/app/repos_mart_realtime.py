@@ -835,27 +835,54 @@ def sales_overview_bundle(
         for r in monthly_rows
     ]
 
-    # Comparativo anual: sempre Jan–Dez dos 2 anos (atual e anterior),
-    # preenchendo zeros para meses sem movimento (ex.: Jan–Abr/2025).
+    # Comparativo anual: Jan–Dez dos 2 anos (atual e anterior).
+    # coverage: "ok" = mês presente na mart; "missing" = mês civil já iniciado
+    # sem linha na mart (falha de ingestão); "future" = mês ainda não iniciado.
+    # Zeros só quando coverage=ok e faturamento=0 (mês realmente sem venda).
     current_year = max(date.today().year, 2026)
     prev_year = current_year - 1
     if prev_year < 2025:
         prev_year = 2025
         current_year = 2026
+    today = date.today()
+    current_month_start = date(today.year, today.month, 1)
     annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
     annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
+
+    def _coverage(ano: int, mes: int, bucket: dict) -> str:
+        month_start = date(ano, mes, 1)
+        if month_start > current_month_start:
+            return "future"
+        if mes in bucket:
+            return "ok"
+        return "missing"
+
+    def _saidas(bucket: dict, ano: int, mes: int):
+        cov = _coverage(ano, mes, bucket)
+        if cov == "ok":
+            return bucket[mes].get("saidas", 0)
+        if cov == "missing":
+            return None
+        return 0
+
     annual_comparison = {
         "current_year": current_year,
         "previous_year": prev_year,
         "months": [
             {
                 "mes": mes,
-                "saidas_atual": annual_current.get(mes, {}).get("saidas", 0),
-                "saidas_anterior": annual_prev.get(mes, {}).get("saidas", 0),
+                "saidas_atual": _saidas(annual_current, current_year, mes),
+                "saidas_anterior": _saidas(annual_prev, prev_year, mes),
+                "coverage_atual": _coverage(current_year, mes, annual_current),
+                "coverage_anterior": _coverage(prev_year, mes, annual_prev),
                 "entradas_atual": 0,
                 "entradas_anterior": 0,
-                "cancelamentos_atual": annual_current.get(mes, {}).get("cancelamentos", 0),
-                "cancelamentos_anterior": annual_prev.get(mes, {}).get("cancelamentos", 0),
+                "cancelamentos_atual": annual_current.get(mes, {}).get("cancelamentos", 0)
+                if _coverage(current_year, mes, annual_current) == "ok"
+                else 0,
+                "cancelamentos_anterior": annual_prev.get(mes, {}).get("cancelamentos", 0)
+                if _coverage(prev_year, mes, annual_prev) == "ok"
+                else 0,
                 "month_ref_atual": f"{current_year}-{mes:02d}-01",
                 "month_ref_anterior": f"{prev_year}-{mes:02d}-01",
             }

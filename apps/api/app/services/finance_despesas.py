@@ -9,12 +9,16 @@ Semântica Xpert (Entradas/Saídas do Razão):
 - TIPO 1 = crédito → Saída
 - ESTORNO=1 entra no DRE (não filtrar)
 - Texto da linha = ``DOCUMENTO`` (não há coluna HISTORICO em MOVLCTOS)
+
+Publish CH: incremental por mês (idempotente/reentrante), evitando
+``statement_timeout`` ao republicar ~400 dias de uma vez.
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from app.db import get_conn
 from app.db_clickhouse import execute_command, insert_batch
@@ -24,20 +28,63 @@ logger = logging.getLogger(__name__)
 DESPESAS_TABLE = "torqmind_mart_rt.mart_finance_despesas_rt"
 EMPLOYEES_TABLE = "torqmind_mart_rt.mart_team_employees_rt"
 DEFAULT_DAYS = 400
+_SP = ZoneInfo("America/Sao_Paulo")
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _sp_today() -> date:
+    return datetime.now(_SP).date()
+
+
+def _month_windows(days: int) -> List[Tuple[date, date]]:
+    """Janelas half-open [start, end) cobrindo os últimos ``days`` até hoje SP."""
+    end = _sp_today() + timedelta(days=1)
+    start = end - timedelta(days=max(30, min(int(days), 800)))
+    windows: List[Tuple[date, date]] = []
+    cur = date(start.year, start.month, 1)
+    while cur < end:
+        if cur.month == 12:
+            nxt = date(cur.year + 1, 1, 1)
+        else:
+            nxt = date(cur.year, cur.month + 1, 1)
+        w_start = max(cur, start)
+        w_end = min(nxt, end)
+        if w_start < w_end:
+            windows.append((w_start, w_end))
+        cur = nxt
+    return windows
+
+
 def fetch_finance_despesas(
-    role: str, id_empresa: int, days: int = DEFAULT_DAYS
+    role: str,
+    id_empresa: int,
+    days: int = DEFAULT_DAYS,
+    *,
+    dt_from: Optional[date] = None,
+    dt_to: Optional[date] = None,
 ) -> List[Dict[str, Any]]:
-    """Lançamentos MOVLCTOS em contas DRE (entra_dre), por competência DTACONTA."""
+    """Lançamentos MOVLCTOS em contas DRE (entra_dre), por competência DTACONTA.
+
+    Sem ``dt_from``/``dt_to``: últimos ``days`` dias (compat).
+    Com janela explícita: ``dt_from`` inclusivo, ``dt_to`` exclusivo.
+    """
     days = max(30, min(int(days), 800))
+    params: List[Any] = [id_empresa]
+    if dt_from is not None and dt_to is not None:
+        date_pred = "dt_competencia >= %s AND dt_competencia < %s"
+        params.extend([dt_from, dt_to])
+    else:
+        date_pred = (
+            "dt_competencia >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s"
+        )
+        params.append(days)
+
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH src AS (
               SELECT
                 m.id_empresa,
@@ -93,20 +140,16 @@ def fetch_finance_despesas(
               (EXTRACT(YEAR FROM dt_competencia)::int * 100
                 + EXTRACT(MONTH FROM dt_competencia)::int) AS ano_mes_vencimento
             FROM src
-            WHERE dt_competencia >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s
+            WHERE {date_pred}
             ORDER BY id_filial, nome_plano, dt_competencia DESC, documento, id_titulo
             """,
-            [id_empresa, days],
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def publish_finance_despesas(
-    role: str, id_empresa: int, days: int = DEFAULT_DAYS
-) -> int:
-    rows = fetch_finance_despesas(role, id_empresa, days=days)
-    published_at = _now()
-    payload = [
+def _rows_to_payload(rows: List[Dict[str, Any]], published_at: datetime) -> List[Dict[str, Any]]:
+    return [
         {
             "id_empresa": int(row["id_empresa"]),
             "id_filial": int(row["id_filial"]),
@@ -131,29 +174,73 @@ def publish_finance_despesas(
         }
         for row in rows
     ]
-    # Remove legado CAP (pago/a_vencer/vencido) e republicação anterior da empresa
-    # para evitar misturar grãos CONTASPAGAR × MOVLCTOS no ReplacingMergeTree.
+
+
+def publish_finance_despesas(
+    role: str, id_empresa: int, days: int = DEFAULT_DAYS
+) -> int:
+    """Publica despesas no CH em chunks mensais (idempotente / reentrante).
+
+    Para cada mês: DELETE por ``id_empresa`` + ``ano_mes_vencimento`` e INSERT
+    do lote. Evita republicar 400 dias numa única operação (statement_timeout).
+    """
+    published_at = _now()
+    total_inserted = 0
+    windows = _month_windows(days)
+    # Limpa legado CAP (status pago/a_vencer/vencido) uma vez — escopo pequeno.
     try:
         execute_command(
-            f"ALTER TABLE {DESPESAS_TABLE} DELETE WHERE id_empresa = {{id_empresa:Int32}}",
+            f"ALTER TABLE {DESPESAS_TABLE} DELETE WHERE id_empresa = {{id_empresa:Int32}} "
+            f"AND status IN ('pago','a_vencer','vencido')",
             parameters={"id_empresa": int(id_empresa)},
         )
-    except Exception as exc:  # noqa: BLE001 — publish deve seguir; leitura filtra status
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "finance despesas CH delete empresa=%s failed: %s", id_empresa, exc
+            "finance despesas CH legacy CAP delete empresa=%s failed: %s",
+            id_empresa,
+            exc,
         )
-    inserted = insert_batch(
-        DESPESAS_TABLE,
-        payload,
-        order_by=["id_empresa", "id_filial", "id_db", "id_titulo"],
-    )
-    logger.info(
-        "finance despesas publish empresa=%s rows=%s inserted=%s source=movlctos",
-        id_empresa,
-        len(payload),
-        inserted,
-    )
-    return inserted
+
+    for w_start, w_end in windows:
+        rows = fetch_finance_despesas(
+            role, id_empresa, days=days, dt_from=w_start, dt_to=w_end
+        )
+        ano_mes = w_start.year * 100 + w_start.month
+        try:
+            execute_command(
+                f"ALTER TABLE {DESPESAS_TABLE} DELETE WHERE id_empresa = {{id_empresa:Int32}} "
+                f"AND ano_mes_vencimento = {{ano_mes:Int32}}",
+                parameters={"id_empresa": int(id_empresa), "ano_mes": int(ano_mes)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "finance despesas CH delete empresa=%s ano_mes=%s failed: %s",
+                id_empresa,
+                ano_mes,
+                exc,
+            )
+        if not rows:
+            logger.info(
+                "finance despesas publish empresa=%s ano_mes=%s rows=0 (empty month)",
+                id_empresa,
+                ano_mes,
+            )
+            continue
+        payload = _rows_to_payload(rows, published_at)
+        inserted = insert_batch(
+            DESPESAS_TABLE,
+            payload,
+            order_by=["id_empresa", "id_filial", "id_db", "id_titulo"],
+        )
+        total_inserted += int(inserted or 0)
+        logger.info(
+            "finance despesas publish empresa=%s ano_mes=%s rows=%s inserted=%s source=movlctos",
+            id_empresa,
+            ano_mes,
+            len(payload),
+            inserted,
+        )
+    return total_inserted
 
 
 def fetch_team_employees(role: str, id_empresa: int) -> List[Dict[str, Any]]:
