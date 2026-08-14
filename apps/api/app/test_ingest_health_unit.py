@@ -37,5 +37,6 @@ def test_ingest_health_auth_only_no_stg_scan():
 
 def test_ingest_health_requires_key_when_configured():
     client = _client()
-    resp = client.get("/ingest/health")
+    with patch("app.routes_ingest.settings.ingest_require_key", True):
+        resp = client.get("/ingest/health")
     assert resp.status_code in {401, 400}

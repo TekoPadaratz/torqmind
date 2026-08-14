@@ -706,8 +706,10 @@ class SnapshotCacheTests(unittest.TestCase):
                 dt_ref=date(2026, 3, 10),
                 id_filial=None,
                 id_filiais=None,
+                id_grupos=None,
                 id_empresa=1,
                 claims=claims,
+                _screen=None,
             )
 
         self.assertEqual(result, expected)
