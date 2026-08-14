@@ -3156,17 +3156,20 @@ def finance_despesas_overview(
           any(codigo_plano) AS codigo_plano,
           any(nome_plano) AS nome_plano,
           any(classificacao_gerencial) AS classificacao_gerencial,
-          round(sum(valor_pago) - sum(valor_aberto), 2) AS valor_total,
+          round(sum(valor_entrada) - sum(valor_saida), 2) AS valor_total,
           toUInt32(count()) AS qtd,
-          round(sum(valor_pago), 2) AS valor_pago,
-          round(sum(valor_aberto), 2) AS valor_aberto,
+          round(sum(valor_entrada), 2) AS valor_pago,
+          round(sum(valor_saida), 2) AS valor_aberto,
           toFloat64(0) AS valor_vencido,
-          round(sum(valor_pago), 2) AS valor_entradas,
-          round(sum(valor_aberto), 2) AS valor_saidas
+          round(sum(valor_entrada), 2) AS valor_entradas,
+          round(sum(valor_saida), 2) AS valor_saidas
         FROM (
           SELECT
             id_planodecontas, codigo_plano, nome_plano, classificacao_gerencial,
-            valor, valor_pago, valor_aberto, status
+            valor,
+            valor_pago AS valor_entrada,
+            valor_aberto AS valor_saida,
+            status
           FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
           WHERE {where}
         )
