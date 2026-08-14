@@ -51,6 +51,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unixodbc unixodbc-dev
+          python -m pip install -e "../api"
       - name: compileall
         run: python -m compileall -q torqmind_cdc_consumer tests
       - name: Tests
@@ -64,6 +67,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/agent/requirements.txt
+      - name: Install Agent test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml requests
       - name: Agent tests
         run: PYTHONPATH=apps/agent python -m unittest discover -s apps/agent/tests -q
 
@@ -100,6 +109,16 @@ jobs:
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Materialize ephemeral .env for GHA only
+        run: |
+          cp .env.e2e.local .env
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unixodbc unixodbc-dev
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml requests
+          python -m pip install -e "apps/cdc_consumer[dev]"
+          python -m pip install -e apps/api
 
       - name: Build and start ephemeral CI stack
         run: |
