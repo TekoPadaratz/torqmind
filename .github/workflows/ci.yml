@@ -33,6 +33,7 @@ jobs:
             app.test_migration_guard_unit \
             app.test_pg_analytical_exceptions_registry \
             app.test_repos_analytics_unit \
+            app.test_ci_ephemeral_stack_contract \
             -q
 
   cdc-consumer:
@@ -97,7 +98,12 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      APP_ENV: test
+      COMPOSE_PROJECT_NAME: torqmind-ci
+      ENV_FILE: .env.ci
+      COMPOSE: docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,9 +116,8 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Materialize ephemeral .env for GHA only
+      - name: Install hermetic runner deps
         run: |
-          cp .env.e2e.local .env
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unixodbc unixodbc-dev
           python -m pip install --upgrade pip
@@ -120,13 +125,35 @@ jobs:
           python -m pip install -e "apps/cdc_consumer[dev]"
           python -m pip install -e apps/api
 
+      - name: Assert ephemeral CI database
+        run: bash deploy/scripts/ci-assert-ephemeral-env.sh .env.ci
+
       - name: Build and start ephemeral CI stack
         run: |
-          docker compose up -d --build
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci up -d --build
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci ps
+
+      - name: Wait for Postgres readiness
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci exec -T postgres \
+              pg_isready -U torqmind_ci -d torqmind_ci; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres did not become ready" >&2
+          exit 1
+
+      - name: Bootstrap test schema via migrate
+        run: |
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci \
+            exec -T api python -m app.cli.migrate
 
       - name: Seed users
         run: |
-          docker compose exec -T api python -m app.cli.seed
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci \
+            exec -T api python -m app.cli.seed
 
       - name: API smoke tests
         run: |
@@ -144,8 +171,14 @@ jobs:
         run: |
           make lint
 
+      - name: Collect ephemeral CI logs
+        if: failure()
+        run: |
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci ps -a || true
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci logs --no-color --tail=400 postgres api web clickhouse || true
+
       - name: Teardown ephemeral CI volumes only
         if: always()
         run: |
           # GHA runner only. Never copy this command to production or homolog hosts.
-          docker compose down -v
+          docker compose -p torqmind-ci -f docker-compose.ci.yml --env-file .env.ci down -v

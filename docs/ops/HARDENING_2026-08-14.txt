@@ -43,8 +43,11 @@ FastAPI 0.115.0 / Starlette 0.38.x inalterados
 Agent codigo 2.0.5; exe publicado 2.0.4 (Windows pendente)
 
 5) Vulnerabilidades
-npm audit runtime: 2 high residuais (Next 14 / postcss). Sem critical.
-Nao usar npm audit fix --force. Next 15 e breaking.
+npm audit runtime: 1 high residual (Next 14.2.35). PostCSS subiu para 8.5.26 via override (CVE-2026-41305 e GHSA-6g55/fxqj/r28c fechados).
+Next 14.2.35 e a ultima patch da linha; npm audit pede Next 16 (breaking App Router/standalone). Nao migrar neste PR.
+Risco formal Next: advisory agrupado GHSA-9g9p-9gw9-jx7f e correlatos (DoS image optimizer, RSC, rewrites).
+Controles: sem `images.remotePatterns` aberto; rewrite `/api` so para `API_INTERNAL_URL`; auth nas rotas; CSP/nginx na frente.
+Responsavel: plataforma. Prazo: 2026-09-15. Fechamento: Next 15/16 com testes+build Hom antes de Prod.
 python-jose 3.5.0 cobre CVEs da 3.3.0.
 
 6) Testes locais (worktree)
@@ -56,8 +59,11 @@ compileall: PASS
 
 7) CI
 Jobs: api-static, cdc-consumer, agent, web, validate.
-GHA inicial FAIL (PyYAML, psycopg, .env ausente no validate).
-Correcao: deps hermeticas + cp .env.e2e.local .env so no runner.
+Causa do validate FAIL: `docker-compose.yml` monta `sql/migrations` em `/docker-entrypoint-initdb.d`;
+Postgres oficial executa os 140 `.sql` no init (incluindo 003 destrutivo) e sai com codigo 3.
+Correcao: `docker-compose.ci.yml` + `.env.ci` (APP_ENV=test, db torqmind_ci, sem portas host, sem initdb).
+Bootstrap so via `python -m app.cli.migrate` no banco efemero. Guard `ci-assert-ephemeral-env.sh`.
+Nao aponta para 172.30.0.8/9/10. `down -v` so no runner GHA.
 
 8) Migrations
 MANIFEST.json 140 arquivos; checksum v1 raw + v2 utf8; duplicatas 012/013/135 congeladas.

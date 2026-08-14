@@ -344,7 +344,8 @@ Hardening 2026-08-14 (`cursor/torqmind-hardening-2026-08-3837`):
 | CDC Consumer pytest | 163 passed no worktree | **confirmado em teste** |
 | Agent unittest | 41 passed no worktree | **confirmado em teste** |
 | Web tests + build | 121 testes; Next 14.2.35 standalone | **confirmado em teste** |
-| npm audit runtime | 2 high residuais Next 14 / postcss; sem critical | **risco documentado** (Next 15 é breaking) |
+| npm audit runtime | PostCSS 8.5.26 (override); 1 high residual Next 14.2.35 | **PASS COM RISCO FORMAL** |
+| CI validate | job hermético `docker-compose.ci.yml` + Postgres `torqmind_ci` | **em prova no GHA** |
 | Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 | **confirmado em homologação** |
 | Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS | **confirmado em produção** |
 | `prod-multivm-validate.sh` | 19 checks, 2 falhas: lag e freshness | **FAIL** (pré-existente; §11.1) |
