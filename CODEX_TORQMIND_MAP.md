@@ -174,7 +174,11 @@ Inventário rastreado na revisão:
 
 - Código: `apps/agent`.
 - Versão canônica: `apps/agent/agent/__init__.py`.
-- Versão no código: `2.0.5` (teste de janela de turnos alinhado a 45 dias). Binário publicado em `/var/torqmind/agent-releases` permanece `2.0.4` até build Windows (`agent_build/build.ps1`).
+- Versão no código e no canal de releases: `2.0.5`.
+- Publicado em `/var/torqmind/agent-releases` em 2026-08-14T16:53:02Z.
+- SHA-256: `261b930ef09f96ff4230f65df689434416a3011e012ff998a43311eb1ae3119c`.
+- Tamanho: `11390800` bytes. URL: `https://www.torqmind.com.br/api/agent/update/download/2.0.5`.
+- `mandatory=false`, `min_version=2.0.0`. Prova: manifest + download autenticado com mesmo SHA.
 - 44 datasets configurados: 40 habilitados e 4 desabilitados por padrão.
 - Desabilitados: `filiais`, `clientes`, `localvendas`, `financeiro`.
 - `movprodutos` e `itensmovprodutos` permanecem habilitados para estoque.
@@ -345,20 +349,21 @@ Hardening 2026-08-14 (`cursor/torqmind-hardening-2026-08-3837`):
 | Agent unittest | 41 passed no worktree | **confirmado em teste** |
 | Web tests + build | 121 testes; Next 14.2.35 standalone | **confirmado em teste** |
 | npm audit runtime | PostCSS 8.5.26 (override); 1 high residual Next 14.2.35 | **PASS COM RISCO FORMAL** |
-| CI validate | GHA `services.postgres:16` `torqmind_ci@127.0.0.1` + migrate + pytest unit + smoke login | **em prova no GHA** |
-| Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 | **confirmado em homologação** |
-| Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS | **confirmado em produção** |
-| `prod-multivm-validate.sh` | 19/19 OK (retry SSH PG) | **confirmado em produção** |
-| `prod-multivm-proof.sh` | result=PASS | **confirmado em produção** |
+| CI validate | GHA `services.postgres:16` + migrate + pytest unit + smoke login | **PASS (GHA)** |
+| Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 + HTTPS 301→200 | **confirmado em homologação** |
+| Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS + HTTPS | **confirmado em produção** |
+| `prod-multivm-validate.sh` | 19/19 OK (closeout 2026-08-14 16:57Z) | **confirmado em produção** |
+| `prod-multivm-proof.sh` | result=PASS (`tmp/prod-multivm-proof-20260814_165930.json`) | **confirmado em produção** |
 | Debezium `.9` | `torqmind-postgres-cdc` RUNNING, task 0 RUNNING | **confirmado em produção** |
 | CDC member | `torqmind-cdc-consumer-live` Stable, 1 membro | **confirmado em produção** |
-| rpk TOTAL-LAG | 295 530 851 → 0 (commit log-start em partições vazias) | **confirmado em produção** |
-| `NUMBER_OF_COLUMNS` | 0 | **confirmado em produção** |
+| rpk TOTAL-LAG | 295 530 851 → 0 (commit log-start); reconfirmado 0 no closeout | **confirmado em produção** |
+| `NUMBER_OF_COLUMNS` | 0 (6h de logs) | **confirmado em produção** |
 | Performance BI | dash hot p50 1.45s p95 1.53s; frio 4.78s; fallback=realtime | **confirmado em produção** |
 | Reset/migrations | nenhuma aplicada em prod/homolog | **confirmado em produção** |
-| TorqMind-Ops | StartedAt desta sessão inalterado (15:25Z backend) | **confirmado em produção** |
-| Agent `.exe` 2.0.5 | código/testes PASS; exe Windows pós-merge | **pendente usuário** |
-| Isolamento analytics Hom | ADR; não executado | **planejado** |
+| TorqMind-Ops | StartedAt closeout idêntico ao baseline | **confirmado em produção** |
+| Agent `.exe` 2.0.5 | publicado; SHA-256 comprovado Drive=disco=API | **PASS** |
+| Checkout operacional | `/home/tm/torqmind` @ `7d87415` (ff-only; sem rebuild) | **PASS** |
+| Isolamento analytics Hom | ADR; não executado | **planejado (próxima fase)** |
 
 ### 11.1 Lag e freshness
 
