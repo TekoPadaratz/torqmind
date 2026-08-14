@@ -173,6 +173,10 @@ def recover_assignment_offsets(
             )
             committed_offset = committed[0].offset if committed else -1
             seek_to = plan_log_start_seek(committed_offset, log_start)
+            if seek_to is None and log_start == _log_end and log_start > 0:
+                # Empty retained partition: the client may already be at log-start
+                # while the broker group still reports CURRENT-OFFSET 0.
+                seek_to = log_start
             if seek_to is not None:
                 logger.warning(
                     "offset_below_log_start",

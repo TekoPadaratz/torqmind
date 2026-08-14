@@ -34,27 +34,21 @@ class TestPlanLogStartSeek(unittest.TestCase):
 
 
 class TestRecoverAssignmentOffsets(unittest.TestCase):
-    def test_on_assign_repairs_stale_offset_and_keeps_live_partition(self) -> None:
+    def test_repairs_stale_offset_and_keeps_live_partition(self) -> None:
         consumer = Mock()
         consumer.get_watermark_offsets.side_effect = [
             (291_320_428, 291_320_428),
             (10, 80),
         ]
-        stale = Mock(offset=0)
-        live = Mock(offset=40)
-        consumer.committed.side_effect = [[stale], [live]]
-
+        consumer.committed.side_effect = [[Mock(offset=0)], [Mock(offset=40)]]
         partitions = [
             TopicPartition("torqmind.stg.planodecontas", 0, 291_320_428),
             TopicPartition("torqmind.stg.comprovantes", 0, 40),
         ]
         recovered = recover_assignment_offsets(consumer, partitions, reassign=True)
-
         self.assertEqual(len(recovered), 1)
         self.assertEqual(recovered[0].topic, "torqmind.stg.planodecontas")
         self.assertEqual(recovered[0].offset, 291_320_428)
-        self.assertEqual(consumer.committed.call_count, 2)
-        consumer.assign.assert_called_once()
         assigned = consumer.assign.call_args[0][0]
         self.assertEqual(assigned[0].offset, 291_320_428)
         self.assertEqual(assigned[1].offset, 40)
@@ -71,6 +65,19 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         )
         self.assertEqual(recovered[0].offset, 50)
         consumer.assign.assert_not_called()
+        consumer.seek.assert_called_once()
+        consumer.commit.assert_called_once()
+
+    def test_empty_partition_commits_log_start_even_if_client_is_caught_up(self) -> None:
+        consumer = Mock()
+        consumer.get_watermark_offsets.return_value = (291_320_428, 291_320_428)
+        consumer.committed.return_value = [Mock(offset=291_320_428)]
+        recovered = recover_assignment_offsets(
+            consumer,
+            [TopicPartition("torqmind.stg.planodecontas", 0, 291_320_428)],
+            reassign=False,
+        )
+        self.assertEqual(recovered[0].offset, 291_320_428)
         consumer.seek.assert_called_once()
         consumer.commit.assert_called_once()
 
