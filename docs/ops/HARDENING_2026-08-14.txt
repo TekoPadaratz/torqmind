@@ -1,0 +1,114 @@
+TorqMind hardening 2026-08-14
+Sem secrets. Host de trabalho: torqmind-app-stream (172.30.0.10).
+Checkout bind-mount: /home/tm/torqmind (master @ 944f9cc).
+Worktree: /home/tm/worktrees/torqmind-hardening-2026-08
+Branch: cursor/torqmind-hardening-2026-08-3837
+HEAD codigo deployado: e574e75
+PR: https://github.com/TekoPadaratz/torqmind/pull/25
+
+NENHUM banco resetado. Nenhuma migration aplicada.
+Nenhum docker compose down. TorqMind-Ops nao tocado.
+
+1) Containers TorqMind
+- Prod projeto torqmind: api, web, nginx + (analytics no mesmo project name no App: debezium/redpanda locais VAZIOS)
+- Hom projeto torqmind-homolog: api, web, nginx
+- Analytics real 172.30.0.9: clickhouse, cdc-consumer, debezium, redpanda
+- PG 172.30.0.8: postgres
+
+2) Preservados (IDs apos deploy Hom+Prod API/Web)
+- torqmind-ops-saas-backend-1  ec85f909... StartedAt 2026-08-14T05:53:03Z
+- torqmind-ops-saas-frontend-1 817a32348c78... 05:53:03Z
+- torqmind-ops-saas-nginx-1    4c2a7e944712... 05:53:03Z
+- torqmind-ops-saas-postgres-1 3d3d4d8ea106... 05:53:03Z
+- torqmind-nginx (prod)        13dd21fd2ce0... 05:53:03Z
+- torqmind-nginx-homolog       568473e3dc63... 05:53:03Z
+- torqmind-debezium App-local  d24b1e8af61c... 05:53:03Z (connectors=[])
+- Analytics .9 containers Up 9h (nao rebuild)
+
+3) Deploy
+Hom (primeiro):
+- api sha256:edb9d662... jose 3.5.0 healthy
+- web sha256:a2f90ce9... Next 14.2.35 healthy
+Prod (depois, um servico por vez, --no-deps):
+- api sha256:3d577670... jose 3.5.0 APP_ENV=prod homolog_in_db=False
+- web sha256:eef08a6f... Next 14.2.35
+Rollback tags:
+- torqmind-api:prod-rollback-2026-08-14-pre-hardening = sha256:6a61d524...
+- torqmind-web:prod-rollback-2026-08-14-pre-hardening = sha256:bfd6ab2c...
+
+4) Versoes
+Web: Next 14.2.18? previa (imagem bfd6ab2c) -> 14.2.35; Axios 1.19.0
+API: python-jose 3.3.0 -> 3.5.0 + cryptography extra
+FastAPI 0.115.0 / Starlette 0.38.x inalterados
+Agent codigo 2.0.5; exe publicado 2.0.4 (Windows pendente)
+
+5) Vulnerabilidades
+npm audit runtime: 2 high residuais (Next 14 / postcss). Sem critical.
+Nao usar npm audit fix --force. Next 15 e breaking.
+python-jose 3.5.0 cobre CVEs da 3.3.0.
+
+6) Testes locais (worktree)
+API static: PASS
+CDC: 163 passed
+Agent: 41 passed
+Web tests+build: PASS
+compileall: PASS
+
+7) CI
+Jobs: api-static, cdc-consumer, agent, web, validate.
+GHA inicial FAIL (PyYAML, psycopg, .env ausente no validate).
+Correcao: deps hermeticas + cp .env.e2e.local .env so no runner.
+
+8) Migrations
+MANIFEST.json 140 arquivos; checksum v1 raw + v2 utf8; duplicatas 012/013/135 congeladas.
+Reset recusado fora de RESET_ENV=dev + TM_EPHEMERAL_LOCAL=1.
+Ledger prod (read-only): 140 aplicadas, latest 138_commission_individual_qty_mode.sql.
+Nao executar reset. Nao alterar checksum no banco.
+
+9) Excecoes PG analiticas
+Registry apps/api/app/analytics_pg_exceptions.json
+Dividas com prazo 2026-09-15: fraud_lancamentos_creditos, cheques_pendentes_overview,
+budget_overview, budget_alerts, solvencia_detalhada, solvencia_overview.
+Sem DDL ClickHouse nesta rodada.
+
+10) Performance BI prod (30d, id_empresa=1)
+ANTES (api antiga):
+dash cold 7.557s / hot 1.406s size 12083
+sales cold 1.779s / hot 1.564s size 24353
+cash cold 1.587s / hot 1.476s size 108150
+DEPOIS (api nova):
+dash cold 9.058s / hot 1.512s size 12083
+sales cold 1.613s / hot 1.673s size 24353
+cash cold 1.642s / hot 1.572s size 108150
+Health publico ~0.10s. Hot <2s. Cold dashboard continua >2s (cache miss, pre-existente).
+fallback=None nos dois.
+
+11) Prova pipeline
+Debezium .9: RUNNING / task RUNNING. PASS
+CDC member: 1, group torqmind-cdc-consumer-live Stable. PASS
+rpk TOTAL-LAG: 295530851 FAIL (planodecontas/filiais/localvendas/dims)
+Vendas STG/DW/NFE: LAG 0
+NUMBER_OF_COLUMNS: 0 / 2h. PASS
+sales_daily_rt data_key 20260814; mart_publication_log 2026-08-14 14:47:35 UTC. PASS
+Smoke produto: PASS
+prod-multivm-validate: FAIL (cdc.lag.not_stuck + freshness.ok)
+prod-multivm-proof coleta: PASS
+Health:
+https://www.torqmind.com.br/ 200
+https://www.torqmind.com.br/api/health 200
+https://hom.torqmind.com.br/ 200
+https://hom.torqmind.com.br/api/health 200
+
+12) Isolamento Hom analytics
+ADR docs/adr/2026-08-14-homolog-analytics-isolation.md
+Recomendacao: Opcao B (VM exclusiva). NAO EXECUTADO.
+
+13) Riscos restantes
+- TOTAL-LAG grupo e freshness financeiro/caixa
+- 2 high npm Next 14
+- Agent exe 2.0.5 nao publicado
+- HTTP nao redireciona para HTTPS
+- Hom e Prod compartilham analytics .9
+- Dividas PG analiticas ate 2026-09-15
+- Bind mount sql/migrations: prod API agora aponta worktree (tem MANIFEST)
+- Compose -p torqmind -f app.yml avisa orphans debezium/redpanda no App; NUNCA --remove-orphans

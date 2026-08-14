@@ -6,7 +6,7 @@ Revisão de código usada: **branch `cursor/torqmind-hardening-2026-08-3837` sob
 
 Estado do documento: **fonte canônica de contexto técnico e operacional**
 
-Hardening 2026-08-14: rules/migrador/CI/exceções PG formalizadas. SSH externo em `redevr.ddns.me:14022` **respondeu** neste ciclo (host `torqmind-app-stream`, checkout `/home/tm/torqmind`). Prova interna Debezium/lag/publicação: ver relatório da branch (não inferir PASS).
+Hardening 2026-08-14: rules/migrador/CI/exceções PG formalizadas. Deploy Hom→Prod de API/Web a partir do worktree `/home/tm/worktrees/torqmind-hardening-2026-08`. Prova: Debezium RUNNING, consumer com 1 membro, publicação `sales_daily_rt` no dia; TOTAL-LAG do grupo ≠ 0 (dívida em tópicos não-venda). Relatório: `docs/ops/HARDENING_2026-08-14.txt`.
 
 Este arquivo substitui as descrições históricas acumuladas neste mapa. Ele registra o que existe no repositório atual, o que foi comprovado e o que ainda precisa de validação.
 
@@ -335,17 +335,33 @@ Após recreate da API, validar que `/api/ingest/health` continua auth-only e rá
 
 ## 11. Qualidade observada nesta revisão
 
-Resultados executados durante a auditoria de 2026-08-14:
+Hardening 2026-08-14 (`cursor/torqmind-hardening-2026-08-3837`):
 
-- `python -m compileall apps/api apps/cdc_consumer`: PASS.
-- build do Web: PASS.
-- testes Web: 120 passaram, 1 falhou.
-- testes CDC Consumer: 160 passaram, 3 falharam.
-- testes Agent: 44 passaram, 1 falhou.
-- conjunto crítico direcionado da API: 87 passaram.
-- suíte completa da API não ficou verde como gate hermético; há testes dependentes de banco/ambiente e falhas que precisam ser isoladas.
+| Gate | Evidência | Resultado |
+|------|-----------|-----------|
+| compileall API/CDC | worktree remoto | **confirmado em teste** |
+| API static (migrador + registry PG) | unittest local + job `api-static` GHA | **confirmado em teste** |
+| CDC Consumer pytest | 163 passed no worktree | **confirmado em teste** |
+| Agent unittest | 41 passed no worktree | **confirmado em teste** |
+| Web tests + build | 121 testes; Next 14.2.35 standalone | **confirmado em teste** |
+| npm audit runtime | 2 high residuais Next 14 / postcss; sem critical | **risco documentado** (Next 15 é breaking) |
+| Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 | **confirmado em homologação** |
+| Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS | **confirmado em produção** |
+| `prod-multivm-validate.sh` | 19 checks, 2 falhas: lag e freshness | **FAIL** (pré-existente; §11.1) |
+| `prod-multivm-proof.sh` | coleta PASS | **confirmado em produção** (pacote) |
+| Debezium `.9` | `torqmind-postgres-cdc` RUNNING, task 0 RUNNING | **confirmado em produção** |
+| CDC member | `torqmind-cdc-consumer-live` Stable, 1 membro | **confirmado em produção** |
+| rpk TOTAL-LAG | 295 530 851; fatos de venda LAG=0 | **FAIL** no critério TOTAL-LAG=0 |
+| `NUMBER_OF_COLUMNS` | 0 nas últimas 2 h | **confirmado em produção** |
+| `sales_daily_rt` | data_key 20260814; log 14:47:35 UTC | **confirmado em produção** |
+| Reset/migrations | nenhuma aplicada; ledger 140 / `138_commission_individual_qty_mode.sql` | **confirmado em produção** |
+| TorqMind-Ops | IDs inalterados desde 05:53 UTC | **confirmado em produção** |
+| Agent `.exe` 2.0.5 | código 2.0.5; publicado 2.0.4 | **pendente** |
+| Isolamento analytics Hom | ADR; não executado | **planejado** |
 
-Conclusão: o projeto compila e o Web gera build, mas a branch atual não possui gate integral verde. Não declarar release totalmente aprovado até zerar ou justificar formalmente essas falhas.
+### 11.1 Lag e freshness (não causados por este deploy)
+
+Consumer vivo. TOTAL-LAG infla por tópicos sem catch-up (`stg.planodecontas` ~291M, `stg.localvendas`, `stg.filiais`, dims). Comprovantes/itens/vendas/NFE em LAG 0. Sem rebuild de CDC nesta rodada (sem mudança de slim).
 
 Gate obrigatório de código:
 
@@ -371,9 +387,9 @@ ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./depl
 ### P0 — corrigir primeiro
 
 1. **HTTPS incompleto na borda:** HTTP não redireciona; `www.hom` falha em TLS; HSTS aparece na API, mas não de forma consistente no Web; CSP não foi observado.
-2. **Blast radius homolog/prod:** analytics e CDC compartilhados tornam DDL/rebuild de homolog uma mudança de produção.
-3. **Gate de testes não verde:** há falhas em Web, CDC e Agent; suíte API completa ainda não é hermética.
-4. **Leituras analíticas PG ativas:** alguns caminhos continuam lendo `stg`, `dw` ou `mart` PG diretamente ou por fallback.
+2. **Blast radius homolog/prod:** analytics e CDC compartilhados tornam DDL/rebuild de homolog uma mudança de produção. ADR: `docs/adr/2026-08-14-homolog-analytics-isolation.md` (Opção B preferencial; **não executar** sem aprovação).
+3. **TOTAL-LAG do grupo CDC ≠ 0** e freshness stale em financeiro/caixa/planodecontas — consumer membro ativo; vendas canônicas em LAG 0.
+4. **Dívidas analíticas PG formalizadas** em `apps/api/app/analytics_pg_exceptions.json` (prazo 2026-09-15): fraude créditos, cheques, budget, solvência. CI impede nova exceção não registrada.
 
 ### P1 — tratar na sequência
 
@@ -430,13 +446,12 @@ Ao retomar o projeto:
 
 ## 16. Registro desta atualização
 
-Atualização de 2026-08-14:
+Atualização de 2026-08-14 (hardening):
 
-- removidas afirmações antigas de fase como se fossem estado atual;
-- corrigida a semântica de `USE_REALTIME_MARTS`;
-- registradas as URLs canônicas novas;
-- documentado o compartilhamento perigoso de analytics entre homolog e produção;
-- consolidada a arquitetura Agent → PG → CDC → ClickHouse → API/Web;
-- incluído o estado real dos testes e riscos encontrados;
-- incluída a decisão de HTTPS na borda Cloudflare com origin HTTP pelo Tunnel;
-- separada claramente evidência pública de estado interno ainda não comprovado.
+- rules, migrador/MANIFEST, registry de exceções PG e jobs CI (API/CDC/Agent/Web);
+- Next 14.2.35, Axios 1.19.0, python-jose 3.5.0;
+- deploy específico Hom depois Prod (`--no-deps`), TorqMind-Ops intocado;
+- prova interna: Debezium RUNNING, publicação `sales_daily_rt` no dia, smoke produto PASS;
+- validate oficial FAIL em lag/freshness pré-existentes;
+- Agent `.exe` 2.0.5 não publicado;
+- nenhum reset, nenhuma migration aplicada, nenhum `docker compose down`.
