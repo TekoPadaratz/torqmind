@@ -75,7 +75,7 @@ def test_bootstrap_sales_tool_uses_id_db_and_itens():
     assert "ITENSCOMPROVANTE" in body
     assert "id_db" in body
     assert "ON CONFLICT (id_empresa, id_filial, id_db, id_comprovante)" in body
-    assert "não MOVPRODUTOS" in body.lower() or "nao movprodutos" in body.lower()
+    assert "não movprodutos" in body.lower() or "nao movprodutos" in body.lower()
     assert "VLRTOTALITEM" in body
     assert "_month_windows" in body
 
