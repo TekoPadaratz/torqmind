@@ -19,7 +19,7 @@ from .state import ConsumerState
 logger = get_logger("main")
 
 _shutdown = False
-_pending_offset_recovery: list[TopicPartition] = []
+_recovered_assignment_keys: set[tuple[str, int]] = set()
 
 
 class MartRefreshWorker:
@@ -204,23 +204,27 @@ def recover_assignment_offsets(
         return []
 
 
-def _on_assign(consumer: Consumer, partitions: list[TopicPartition]) -> None:
-    """Assign immediately. Recover below-retention offsets on the main thread.
+def recover_stale_assignment(consumer: Consumer) -> list[TopicPartition]:
+    """Main-thread repair for committed offsets below broker retention.
 
-    librdkafka can deadlock if committed()/watermarks run inside this callback.
+    Uses the librdkafka default assignor (no on_assign callback). Checking
+    assignment() after poll avoids callback deadlocks and still seeks only
+    empty retained partitions to log-start.
     """
-    logger.info("partitions_assigned", count=len(partitions))
-    consumer.assign(partitions)
-    _pending_offset_recovery.extend(partitions)
-
-
-def _drain_pending_offset_recovery(consumer: Consumer) -> None:
-    global _pending_offset_recovery
-    if not _pending_offset_recovery:
-        return
-    partitions = list(_pending_offset_recovery)
-    _pending_offset_recovery = []
-    recover_assignment_offsets(consumer, partitions, reassign=False)
+    assigned = consumer.assignment() or []
+    pending = [
+        partition
+        for partition in assigned
+        if (partition.topic, partition.partition) not in _recovered_assignment_keys
+    ]
+    if not pending:
+        return []
+    recovered = recover_assignment_offsets(consumer, pending, reassign=False)
+    for partition in pending:
+        _recovered_assignment_keys.add((partition.topic, partition.partition))
+    if pending:
+        logger.info("assignment_offsets_checked", count=len(pending), recovered=len(recovered))
+    return recovered
 
 
 def run() -> None:
@@ -256,17 +260,16 @@ def run() -> None:
     # Subscribe
     topics = get_topics()
     if topics:
-        consumer.subscribe(topics, on_assign=_on_assign)
+        consumer.subscribe(topics)
         logger.info("subscribed_topics", topics=topics)
     else:
-        # Use pattern subscription
-        consumer.subscribe([settings.cdc_topic_pattern], on_assign=_on_assign)
+        consumer.subscribe([settings.cdc_topic_pattern])
         logger.info("subscribed_pattern", pattern=settings.cdc_topic_pattern)
 
     try:
         while not _shutdown:
             msg = consumer.poll(timeout=settings.cdc_poll_timeout_seconds)
-            _drain_pending_offset_recovery(consumer)
+            recover_stale_assignment(consumer)
 
             if msg is None:
                 # No message; check if we should flush

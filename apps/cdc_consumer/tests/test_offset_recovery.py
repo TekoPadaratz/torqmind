@@ -7,7 +7,11 @@ from unittest.mock import Mock
 
 from confluent_kafka import TopicPartition
 
-from torqmind_cdc_consumer.main import plan_log_start_seek, recover_assignment_offsets
+from torqmind_cdc_consumer.main import (
+    plan_log_start_seek,
+    recover_assignment_offsets,
+    recover_stale_assignment,
+)
 
 
 class TestPlanLogStartSeek(unittest.TestCase):
@@ -69,6 +73,21 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         consumer.assign.assert_not_called()
         consumer.seek.assert_called_once()
         consumer.commit.assert_called_once()
+
+
+class TestRecoverStaleAssignment(unittest.TestCase):
+    def test_checks_each_assigned_partition_once(self) -> None:
+        import torqmind_cdc_consumer.main as main_mod
+
+        main_mod._recovered_assignment_keys.clear()
+        consumer = Mock()
+        consumer.assignment.return_value = [TopicPartition("torqmind.stg.planodecontas", 0, 0)]
+        consumer.get_watermark_offsets.return_value = (291_320_428, 291_320_428)
+        first = recover_stale_assignment(consumer)
+        second = recover_stale_assignment(consumer)
+        self.assertEqual(first[0].offset, 291_320_428)
+        self.assertEqual(second, [])
+        self.assertEqual(consumer.get_watermark_offsets.call_count, 1)
 
 
 if __name__ == "__main__":
