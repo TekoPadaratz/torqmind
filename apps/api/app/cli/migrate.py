@@ -494,6 +494,22 @@ def _apply_sql_file(conn: psycopg.Connection, spec: MigrationSpec) -> None:
     _apply_nontransactional_sql_file(spec.path)
 
 
+def _apply_ephemeral_schema_gaps(conn: psycopg.Connection, migrations_dir: Path) -> None:
+    """Create relations missing from the historical chain on disposable test DBs only."""
+    if current_app_env() != "test":
+        return
+    if os.environ.get("TM_EPHEMERAL_LOCAL", "").strip() != "1":
+        return
+    if is_protected_environment():
+        raise RuntimeError("Refusing ephemeral schema gaps on a protected environment")
+    path = migrations_dir.parent / "ci" / "ephemeral_schema_gaps.sql"
+    if not path.is_file():
+        return
+    print(f"Applying ephemeral schema gaps from {path}")
+    conn.execute(_read_sql_file(path))
+    conn.commit()
+
+
 def _apply_all_from_scratch(conn: psycopg.Connection, files: list[Path]) -> MigrationRunResult:
     assert_not_protected_bootstrap()
     specs = [_load_migration_spec(path) for path in files]
@@ -504,6 +520,8 @@ def _apply_all_from_scratch(conn: psycopg.Connection, files: list[Path]) -> Migr
             pass
         _apply_sql_file(conn, spec)
         applied.append(spec.path)
+        if spec.path.name == "003_mart_demo.sql":
+            _apply_ephemeral_schema_gaps(conn, spec.path.parent)
 
     _ensure_tracking_table(conn)
     for spec in specs:

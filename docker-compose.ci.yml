@@ -46,6 +46,7 @@ services:
       - ./.env.ci
     environment:
       APP_ENV: test
+      TM_EPHEMERAL_LOCAL: "1"
       PG_HOST: postgres
       PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-torqmind_ci}
@@ -64,6 +65,7 @@ services:
       REALTIME_MARTS_FALLBACK: "false"
     volumes:
       - ./sql/migrations:/app/sql/migrations:ro
+      - ./sql/ci:/app/sql/ci:ro
     depends_on:
       postgres:
         condition: service_healthy

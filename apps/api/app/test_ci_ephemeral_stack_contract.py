@@ -18,6 +18,7 @@ class CiEphemeralStackContractTest(unittest.TestCase):
         self.assertIn("name: torqmind-ci", source)
         self.assertIn("APP_ENV: test", source)
         self.assertIn("torqmind_ci", source)
+        self.assertIn("sql/ci:/app/sql/ci:ro", source)
         self.assertNotIn("/docker-entrypoint-initdb.d", source)
         self.assertNotIn("172.30.0.8", source)
         self.assertNotIn("172.30.0.9", source)
