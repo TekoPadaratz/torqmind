@@ -204,7 +204,7 @@ class TestExtractorQuery(unittest.TestCase):
             watermark_style=None,
         )
         self.assertIn("ISNULL(STATUSTURNO, 0) = 0", plan.sql)
-        self.assertIn("DATEADD(day,-14,GETDATE())", plan.sql)
+        self.assertIn("DATEADD(day,-45,GETDATE())", plan.sql)
         # must not require table alias on revisit columns
         self.assertNotIn("t.STATUSTURNO", plan.sql)
 
