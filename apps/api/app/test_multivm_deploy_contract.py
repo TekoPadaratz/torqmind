@@ -105,6 +105,8 @@ class MultiVmDeployContractTest(unittest.TestCase):
         self.assertIn("any(state != 'RUNNING' for state in tasks)", source)
         self.assertIn("CDC_LAG_MAX_MESSAGES", source)
         self.assertIn("cdc.lag.not_stuck", source)
+        self.assertIn("FRESHNESS_CAIXA_TURNO_MAX_SECONDS", source)
+        self.assertIn("fact_caixa_turno", source)
         self.assertIn("data_key=0", source)
         self.assertIn("CRITICAL_DATA_KEY", source)
 

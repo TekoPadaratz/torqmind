@@ -7,6 +7,11 @@ DRY_RUN=false
 ID_EMPRESA="${ID_EMPRESA:-1}"
 CRITICAL_DATA_KEY="${CRITICAL_DATA_KEY:-}"
 FRESHNESS_MAX_SECONDS="${FRESHNESS_MAX_SECONDS:-3600}"
+# fact_caixa_turno only moves on turn close (typically 6-12h). STG turnos and
+# dw.fact_caixa_turno share the same last source_ts when CDC is healthy; a 1h
+# clock SLA false-fails quiet afternoons. Do not use this to hide CDC stall:
+# compare STG vs DW max(source_ts) before raising.
+FRESHNESS_CAIXA_TURNO_MAX_SECONDS="${FRESHNESS_CAIXA_TURNO_MAX_SECONDS:-28800}"
 CDC_LAG_MAX_MESSAGES="${CDC_LAG_MAX_MESSAGES:-1000}"
 CDC_CONSUMER_GROUP="${CDC_CONSUMER_GROUP:-}"
 FRESHNESS_DOMAIN_FILTER_SQL="${FRESHNESS_DOMAIN_FILTER_SQL:-domain IN ('comprovantes','itenscomprovantes','formas_pgto_comprovantes','fact_comprovante','fact_venda','fact_venda_item','fact_pagamento_comprovante','fact_financeiro','fact_caixa_turno')}"
@@ -159,7 +164,7 @@ run_check "cdc.lag.not_stuck" analytics "
   awk \"BEGIN { exit ((\$total + 0) <= $CDC_LAG_MAX_MESSAGES ? 0 : 1) }\"
 "
 run_check "freshness.ok" analytics "
-  freshness=\$($(ch_cmd "SELECT count() AS rows, countIf(lag_seconds > $FRESHNESS_MAX_SECONDS) AS stale_rows FROM torqmind_mart_rt.source_freshness FINAL WHERE id_empresa = $ID_EMPRESA AND $FRESHNESS_DOMAIN_FILTER_SQL;"))
+  freshness=\$($(ch_cmd "SELECT count() AS rows, countIf(if(domain = 'fact_caixa_turno', lag_seconds > $FRESHNESS_CAIXA_TURNO_MAX_SECONDS, lag_seconds > $FRESHNESS_MAX_SECONDS)) AS stale_rows FROM torqmind_mart_rt.source_freshness FINAL WHERE id_empresa = $ID_EMPRESA AND $FRESHNESS_DOMAIN_FILTER_SQL;"))
   rows=\"\$(printf '%s' \"\$freshness\" | cut -f1 | tr -d '[:space:]')\"
   stale=\"\$(printf '%s' \"\$freshness\" | cut -f2 | tr -d '[:space:]')\"
   [[ \"\$rows\" -gt 0 && \"\$stale\" == \"0\" ]]
