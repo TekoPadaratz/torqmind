@@ -735,7 +735,7 @@ export default function CommissionsTab({
             ) : !filteredDiscounts.length ? (
               <EmptyState
                 title="Sem descontos no período"
-                detail="Não há desconto na venda (VLRDESCONTO) nem preço fixo econômico neste recorte."
+                detail="Não há desconto na venda nem preço fixo econômico neste período."
               />
             ) : (
               <div className="tableScroll" style={{ marginTop: 10 }}>

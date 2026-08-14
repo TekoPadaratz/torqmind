@@ -779,7 +779,7 @@ export default function CustomersPage() {
                 </div>
                 {!inativosLoading && !(inativosData?.items || []).length ? (
                   <EmptyState
-                    title="Nenhum alerta neste recorte."
+                    title="Nenhum alerta neste período."
                     detail="Clientes com preço fixo ativo e abastecimento recente não aparecem aqui."
                   />
                 ) : (
