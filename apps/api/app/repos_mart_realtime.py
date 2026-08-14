@@ -2676,6 +2676,10 @@ def fraud_troca_forma_pgto(
         r["documento_raw"] = raw_doc
         r["documento"] = doc_num
         r["documento_numero"] = doc_num
+        fid = _to_int(r.get("id_filial"))
+        label = _filial_label(fid, str(r.get("filial_nome") or ""))
+        r["filial_nome"] = label
+        r["filial_label"] = label
         out.append(r)
         if len(out) >= lim:
             break
@@ -3020,7 +3024,11 @@ def finance_despesas_overview(
     page_size: int = 50,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Despesas por plano de contas (mês) + drill de títulos CAP — ClickHouse."""
+    """Despesas por plano (Razão MOVLCTOS/DTACONTA) + drill — ClickHouse.
+
+    Status: ``entrada`` (débito TIPO 0/2) | ``saida`` (crédito TIPO 1).
+    Não confundir Saída com baixa de CAP — semântica do Razão Xpert.
+    """
     ano = int(ano)
     mes = int(mes)
     if mes < 1 or mes > 12:
@@ -3035,14 +3043,18 @@ def finance_despesas_overview(
     }
     where = (
         "id_empresa = {id_empresa:Int32} "
-        "AND ano_mes_vencimento = {ano_mes:Int32}"
+        "AND ano_mes_vencimento = {ano_mes:Int32} "
+        "AND status IN ('entrada', 'saida')"
         f"{filial}"
     )
     status_key = (status or "").strip().lower()
-    if status_key in {"pago", "vencido"}:
-        where += f" AND status = '{status_key}'"
-    elif status_key in {"aberto", "a_vencer"}:
-        where += " AND status = 'a_vencer'"
+    if status_key in {"entrada", "entradas", "debito", "débito"}:
+        where += " AND status = 'entrada'"
+    elif status_key in {"saida", "saidas", "saída", "saídas", "credito", "crédito"}:
+        where += " AND status = 'saida'"
+    elif status_key in {"pago", "vencido", "aberto", "a_vencer"}:
+        # Legado CAP: sem equivalência honesta no Razão — ignora (mostra todos).
+        pass
     elif status_key and status_key not in {"todos", "all"}:
         raise ValueError("status inválido")
 
@@ -3077,10 +3089,12 @@ def finance_despesas_overview(
         totals_rows = query_dict(
             f"""
             SELECT
-              round(sum(valor), 2) AS total_valor,
-              round(sum(if(status = 'pago', valor, 0)), 2) AS total_pago,
-              round(sum(if(status = 'a_vencer', valor, 0)), 2) AS total_aberto,
-              round(sum(if(status = 'vencido', valor, 0)), 2) AS total_vencido
+              round(sum(valor_pago) - sum(valor_aberto), 2) AS total_valor,
+              round(sum(valor_pago), 2) AS total_entradas,
+              round(sum(valor_aberto), 2) AS total_saidas,
+              round(sum(valor_pago), 2) AS total_pago,
+              round(sum(valor_aberto), 2) AS total_aberto,
+              toFloat64(0) AS total_vencido
             FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
             WHERE {where}
             """,
@@ -3096,7 +3110,7 @@ def finance_despesas_overview(
               dt_vencimento, dt_pagamento, valor, valor_pago, valor_aberto, status
             FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
             WHERE {where}
-            ORDER BY filial_nome ASC, nome_plano ASC, dt_vencimento ASC, valor ASC, id_titulo ASC
+            ORDER BY filial_nome ASC, dt_vencimento DESC, documento ASC, id_titulo ASC
             LIMIT {page_size} OFFSET {offset}
             """,
             parameters=params,
@@ -3106,8 +3120,9 @@ def finance_despesas_overview(
             row["filial_nome"] = _filial_label(fid, str(row.get("filial_nome") or ""))
             st = str(row.get("status") or "")
             row["status_label"] = (
-                "Pago" if st == "pago" else "Vencido" if st == "vencido" else "Aberto"
+                "Entrada" if st == "entrada" else "Saída" if st == "saida" else st or "—"
             )
+            row["data_competencia"] = row.get("dt_vencimento")
         return {
             "mode": "detail",
             "ano": ano,
@@ -3121,11 +3136,14 @@ def finance_despesas_overview(
             "total_pages": (total + page_size - 1) // page_size if page_size else 0,
             "totals": {
                 "valor": _to_float(totals.get("total_valor")),
+                "entradas": _to_float(totals.get("total_entradas")),
+                "saidas": _to_float(totals.get("total_saidas")),
                 "pago": _to_float(totals.get("total_pago")),
                 "aberto": _to_float(totals.get("total_aberto")),
                 "vencido": _to_float(totals.get("total_vencido")),
             },
             "source": "realtime",
+            "source_table": "movlctos",
         }
 
     # Grid principal: agregação por conta.
@@ -3138,30 +3156,39 @@ def finance_despesas_overview(
           any(codigo_plano) AS codigo_plano,
           any(nome_plano) AS nome_plano,
           any(classificacao_gerencial) AS classificacao_gerencial,
-          round(sum(valor), 2) AS valor_total,
+          round(sum(valor_entrada) - sum(valor_saida), 2) AS valor_total,
           toUInt32(count()) AS qtd,
-          round(sum(if(status = 'pago', valor, 0)), 2) AS valor_pago,
-          round(sum(if(status = 'a_vencer', valor, 0)), 2) AS valor_aberto,
-          round(sum(if(status = 'vencido', valor, 0)), 2) AS valor_vencido
+          round(sum(valor_entrada), 2) AS valor_pago,
+          round(sum(valor_saida), 2) AS valor_aberto,
+          toFloat64(0) AS valor_vencido,
+          round(sum(valor_entrada), 2) AS valor_entradas,
+          round(sum(valor_saida), 2) AS valor_saidas
         FROM (
           SELECT
             id_planodecontas, codigo_plano, nome_plano, classificacao_gerencial,
-            valor, status
+            valor,
+            valor_pago AS valor_entrada,
+            valor_aberto AS valor_saida,
+            status
           FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
           WHERE {where}
         )
         GROUP BY id_planodecontas
         ORDER BY nome_plano ASC, codigo_plano ASC, id_planodecontas ASC
         """,
-        parameters=params,
+            parameters=params,
     )
     for row in agg_rows:
         row["valor"] = _to_float(row.pop("valor_total", 0))
+        row["entradas"] = _to_float(row.get("valor_entradas"))
+        row["saidas"] = _to_float(row.get("valor_saidas"))
     totals = {
         "valor": round(sum(_to_float(r.get("valor")) for r in agg_rows), 2),
+        "entradas": round(sum(_to_float(r.get("entradas")) for r in agg_rows), 2),
+        "saidas": round(sum(_to_float(r.get("saidas")) for r in agg_rows), 2),
         "pago": round(sum(_to_float(r.get("valor_pago")) for r in agg_rows), 2),
         "aberto": round(sum(_to_float(r.get("valor_aberto")) for r in agg_rows), 2),
-        "vencido": round(sum(_to_float(r.get("valor_vencido")) for r in agg_rows), 2),
+        "vencido": 0.0,
         "qtd_contas": len(agg_rows),
     }
     return {
@@ -3172,6 +3199,7 @@ def finance_despesas_overview(
         "items": agg_rows,
         "totals": totals,
         "source": "realtime",
+        "source_table": "movlctos",
     }
 
 
@@ -3220,16 +3248,23 @@ def team_employee_cost_overview(
     rateio_rows = query_dict(
         f"""
         SELECT
-          round(sum(if(classificacao_gerencial = 'pessoal', valor, 0)), 2) AS total_pessoal,
+          round(sum(if(status = 'entrada' AND classificacao_gerencial = 'pessoal', valor, 0))
+            - sum(if(status = 'saida' AND classificacao_gerencial = 'pessoal', valor, 0)), 2) AS total_pessoal,
           round(sum(if(
-            entra_custo_operacional = 1
+            status = 'entrada'
+            AND entra_custo_operacional = 1
             AND classificacao_gerencial NOT IN ('pessoal', 'financeiro', 'excepcional', 'tributos'),
-            valor,
-            0
+            valor, 0
+          )) - sum(if(
+            status = 'saida'
+            AND entra_custo_operacional = 1
+            AND classificacao_gerencial NOT IN ('pessoal', 'financeiro', 'excepcional', 'tributos'),
+            valor, 0
           )), 2) AS total_overhead
         FROM {MART_RT_DB}.mart_finance_despesas_rt FINAL
         WHERE id_empresa = {{id_empresa:Int32}}
           AND ano_mes_vencimento = {{ano_mes:Int32}}
+          AND status IN ('entrada', 'saida')
           {filial}
         """,
         parameters=params,

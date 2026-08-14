@@ -15,10 +15,10 @@ import { currentAnoMesSP } from "../lib/month-year.mjs";
 
 const DETAIL_PAGE_SIZE = 30;
 
+/** Entrada/Saída = débito/crédito do Razão Xpert (MOVLCTOS), não baixa de CAP. */
 const STATUS_PRESETS = [
-  { id: "aberto", label: "Aberto" },
-  { id: "pago", label: "Pago" },
-  { id: "vencido", label: "Vencido" },
+  { id: "entrada", label: "Entradas" },
+  { id: "saida", label: "Saídas" },
 ];
 
 type SummaryRow = {
@@ -33,10 +33,11 @@ type SummaryRow = {
 type DetailRow = {
   id_filial?: number;
   filial_nome?: string;
-  nome_plano?: string;
+  historico?: string;
+  documento?: string;
   dt_vencimento?: string | null;
+  data_competencia?: string | null;
   valor?: number;
-  dt_pagamento?: string | null;
   status?: string;
   status_label?: string;
 };
@@ -46,9 +47,10 @@ type DetailPayload = {
   total?: number;
   totals?: {
     valor?: number;
+    entradas?: number;
+    saidas?: number;
     pago?: number;
     aberto?: number;
-    vencido?: number;
   };
 };
 
@@ -139,6 +141,8 @@ export default function FinanceDespesasSection({ scope }: Props) {
   const detailTotals = expandedDetail?.totals || {};
   const detailTotal = Number(expandedDetail?.total || 0);
   const detailTotalPages = Math.max(1, Math.ceil(detailTotal / DETAIL_PAGE_SIZE) || 1);
+  const kpiEntradas = totals.entradas ?? totals.pago;
+  const kpiSaidas = totals.saidas ?? totals.aberto;
 
   const toggleExpand = (id: number) => {
     setExpandedId((prev) => {
@@ -152,9 +156,6 @@ export default function FinanceDespesasSection({ scope }: Props) {
     <div className="card col-12" style={{ marginTop: 12 }}>
       <div className="sectionEyebrow">Financeiro</div>
       <h2 style={{ marginTop: 4 }}>Despesas</h2>
-      <div className="muted" style={{ marginTop: 6, fontSize: 13 }}>
-        Clique na linha para ver filial, vencimento, pagamento e status.
-      </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
         <MonthYearSelect
@@ -187,21 +188,15 @@ export default function FinanceDespesasSection({ scope }: Props) {
           </div>
         </div>
         <div className="card">
-          <div className="muted" style={{ fontSize: 12 }}>Pago</div>
+          <div className="muted" style={{ fontSize: 12 }}>Entradas</div>
           <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-positive)" }}>
-            {loading ? "…" : formatCurrency(totals.pago)}
+            {loading ? "…" : formatCurrency(kpiEntradas)}
           </div>
         </div>
         <div className="card">
-          <div className="muted" style={{ fontSize: 12 }}>Aberto</div>
+          <div className="muted" style={{ fontSize: 12 }}>Saídas</div>
           <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-warning)" }}>
-            {loading ? "…" : formatCurrency(totals.aberto)}
-          </div>
-        </div>
-        <div className="card">
-          <div className="muted" style={{ fontSize: 12 }}>Vencido</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: "var(--color-negative)" }}>
-            {loading ? "…" : formatCurrency(totals.vencido)}
+            {loading ? "…" : formatCurrency(kpiSaidas)}
           </div>
         </div>
       </div>
@@ -236,7 +231,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
                       <td>
                         <strong>{row.nome_plano || "—"}</strong>
                         <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
-                          {[row.codigo_plano, row.classificacao_gerencial, row.qtd ? `${row.qtd} título(s)` : ""]
+                          {[row.codigo_plano, row.classificacao_gerencial, row.qtd ? `${row.qtd} lançamento(s)` : ""]
                             .filter(Boolean)
                             .join(" · ")}
                         </span>
@@ -262,13 +257,16 @@ export default function FinanceDespesasSection({ scope }: Props) {
                             }}
                           >
                             <span>
-                              Pago <strong style={{ color: "var(--color-positive)" }}>{formatCurrency(detailTotals.pago)}</strong>
+                              Entradas{" "}
+                              <strong style={{ color: "var(--color-positive)" }}>
+                                {formatCurrency(detailTotals.entradas ?? detailTotals.pago)}
+                              </strong>
                             </span>
                             <span>
-                              Aberto <strong style={{ color: "var(--color-warning)" }}>{formatCurrency(detailTotals.aberto)}</strong>
-                            </span>
-                            <span>
-                              Vencido <strong style={{ color: "var(--color-negative)" }}>{formatCurrency(detailTotals.vencido)}</strong>
+                              Saídas{" "}
+                              <strong style={{ color: "var(--color-warning)" }}>
+                                {formatCurrency(detailTotals.saidas ?? detailTotals.aberto)}
+                              </strong>
                             </span>
                           </div>
                           {detailLoading && !expandedDetail ? (
@@ -283,25 +281,21 @@ export default function FinanceDespesasSection({ scope }: Props) {
                                 <thead>
                                   <tr>
                                     <th>Filial</th>
-                                    <th>Vencimento</th>
-                                    <th>Despesa</th>
+                                    <th>Data</th>
+                                    <th>Documento</th>
                                     <th style={{ textAlign: "right" }}>Valor</th>
-                                    <th>Pagamento</th>
-                                    <th>Status</th>
+                                    <th>Tipo</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {detailItems.map((d, idx) => (
-                                    <tr key={`${d.id_filial}-${d.dt_vencimento}-${idx}`}>
+                                    <tr key={`${d.id_filial}-${d.dt_vencimento}-${d.documento}-${idx}`}>
                                       <td>{d.filial_nome || "—"}</td>
                                       <td style={{ whiteSpace: "nowrap" }}>
-                                        {formatDateOnly(d.dt_vencimento) || "—"}
+                                        {formatDateOnly(d.data_competencia || d.dt_vencimento) || "—"}
                                       </td>
-                                      <td>{d.nome_plano || "—"}</td>
+                                      <td>{d.documento || d.historico || "—"}</td>
                                       <td style={{ textAlign: "right" }}>{formatCurrency(d.valor)}</td>
-                                      <td style={{ whiteSpace: "nowrap" }}>
-                                        {formatDateOnly(d.dt_pagamento) || "—"}
-                                      </td>
                                       <td>{d.status_label || d.status || "—"}</td>
                                     </tr>
                                   ))}

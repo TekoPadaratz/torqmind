@@ -73,6 +73,7 @@ class TestFinanceDespesasSearchSql(unittest.TestCase):
         where_idx = sql.find("WHERE")
         group_idx = sql.find("GROUP BY")
         self.assertTrue(0 <= where_idx < group_idx)
+        self.assertIn("status IN ('entrada', 'saida')", sql)
 
 
 if __name__ == "__main__":

@@ -463,3 +463,12 @@ Atualização de 2026-08-14 (hardening):
 - validate oficial FAIL em lag/freshness pré-existentes;
 - Agent `.exe` 2.0.5 não publicado;
 - nenhum reset, nenhuma migration aplicada, nenhum `docker compose down`.
+
+## Financeiro / Despesas (Razão)
+
+- Fonte canônica Xpert: `dbo.MOVLCTOS` + `DTACONTA` (não `CONTASPAGAR`/`DTAVCTO`).
+- Semântica Entradas/Saídas = TIPO débito(0/2)/crédito(1); Saída ≠ baixa.
+- Pipeline: STG `movlctos` → publish `mart_finance_despesas_rt` → `finance_despesas_overview`.
+- Texto da linha = `DOCUMENTO` do MOVLCTOS.
+- Prova ouro VR01 jul/2026 conta `3.2.02.23` = R$ 3.688,64 (101 lançamentos).
+

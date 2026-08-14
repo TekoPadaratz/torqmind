@@ -1,7 +1,10 @@
 -- 060_mart_finance_despesas.sql
--- Despesas operacionais (contas a pagar × plano de contas DRE).
--- Grão: empresa / filial / db / título CAP.
--- Status operacional: pago | a_vencer | vencido (mesma lógica de títulos).
+-- Despesas operacionais (Razão): MOVLCTOS × plano de contas DRE (entra_dre).
+-- Grão: empresa / filial / db / id_movlctos (armazenado em id_titulo).
+-- Competência: DTACONTA → dt_vencimento / ano_mes_vencimento (nome legado de coluna).
+-- Status Razão: entrada (TIPO 0/2 débito) | saida (TIPO 1 crédito).
+-- Texto da linha: DOCUMENTO → historico/documento (MOVLCTOS não tem HISTORICO).
+-- NÃO usar CONTASPAGAR/DTAVCTO (docs/product/XPERT_DRE_DESPESAS_MAP.md).
 -- Sem PARTITION BY mês: janela ampla atravessa vários YYYYMM.
 
 CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_finance_despesas_rt (
