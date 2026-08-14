@@ -41,7 +41,7 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         consumer.committed.side_effect = [[stale], [live]]
 
         partitions = [
-            TopicPartition("torqmind.stg.planodecontas", 0),
+            TopicPartition("torqmind.stg.planodecontas", 0, 0),
             TopicPartition("torqmind.stg.comprovantes", 0, 40),
         ]
         recovered = recover_assignment_offsets(consumer, partitions, reassign=True)
@@ -49,6 +49,7 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         self.assertEqual(len(recovered), 1)
         self.assertEqual(recovered[0].topic, "torqmind.stg.planodecontas")
         self.assertEqual(recovered[0].offset, 291_320_428)
+        consumer.committed.assert_not_called()
         consumer.assign.assert_called_once()
         assigned = consumer.assign.call_args[0][0]
         self.assertEqual(assigned[0].offset, 291_320_428)
@@ -61,7 +62,7 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         consumer.committed.return_value = [Mock(offset=0)]
         recovered = recover_assignment_offsets(
             consumer,
-            [TopicPartition("torqmind.stg.filiais", 0)],
+            [TopicPartition("torqmind.stg.filiais", 0, 0)],
             reassign=False,
         )
         self.assertEqual(recovered[0].offset, 50)

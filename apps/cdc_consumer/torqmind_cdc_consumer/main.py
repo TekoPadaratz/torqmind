@@ -19,6 +19,7 @@ from .state import ConsumerState
 logger = get_logger("main")
 
 _shutdown = False
+_pending_offset_recovery: list[TopicPartition] = []
 
 
 class MartRefreshWorker:
@@ -166,11 +167,13 @@ def recover_assignment_offsets(
                 timeout=10,
             )
             log_start, _log_end = watermarks
-            committed = consumer.committed(
-                [TopicPartition(partition.topic, partition.partition)],
-                timeout=10,
-            )
-            committed_offset = committed[0].offset if committed else -1
+            committed_offset = partition.offset
+            if committed_offset < 0:
+                committed = consumer.committed(
+                    [TopicPartition(partition.topic, partition.partition)],
+                    timeout=10,
+                )
+                committed_offset = committed[0].offset if committed else -1
             seek_to = plan_log_start_seek(committed_offset, log_start)
             if seek_to is not None:
                 logger.warning(
@@ -202,7 +205,22 @@ def recover_assignment_offsets(
 
 
 def _on_assign(consumer: Consumer, partitions: list[TopicPartition]) -> None:
-    recover_assignment_offsets(consumer, partitions)
+    """Assign immediately. Recover below-retention offsets on the main thread.
+
+    librdkafka can deadlock if committed()/watermarks run inside this callback.
+    """
+    logger.info("partitions_assigned", count=len(partitions))
+    consumer.assign(partitions)
+    _pending_offset_recovery.extend(partitions)
+
+
+def _drain_pending_offset_recovery(consumer: Consumer) -> None:
+    global _pending_offset_recovery
+    if not _pending_offset_recovery:
+        return
+    partitions = list(_pending_offset_recovery)
+    _pending_offset_recovery = []
+    recover_assignment_offsets(consumer, partitions, reassign=False)
 
 
 def run() -> None:
@@ -248,6 +266,7 @@ def run() -> None:
     try:
         while not _shutdown:
             msg = consumer.poll(timeout=settings.cdc_poll_timeout_seconds)
+            _drain_pending_offset_recovery(consumer)
 
             if msg is None:
                 # No message; check if we should flush
