@@ -70,78 +70,88 @@ def fetch_finance_despesas(
 
     Sem ``dt_from``/``dt_to``: últimos ``days`` dias (compat).
     Com janela explícita: ``dt_from`` inclusivo, ``dt_to`` exclusivo.
+    Filtro de data no CTE (antes do SELECT externo) para não materializar 400d.
     """
     days = max(30, min(int(days), 800))
-    params: List[Any] = [id_empresa]
     if dt_from is not None and dt_to is not None:
-        date_pred = "dt_competencia >= %s AND dt_competencia < %s"
-        params.extend([dt_from, dt_to])
-    else:
-        date_pred = (
-            "dt_competencia >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s"
+        date_sql = (
+            "AND (etl.safe_timestamp(m.payload->>'DTACONTA'))::date >= %s "
+            "AND (etl.safe_timestamp(m.payload->>'DTACONTA'))::date < %s"
         )
-        params.append(days)
+        params: List[Any] = [id_empresa, dt_from, dt_to]
+    else:
+        date_sql = (
+            "AND (etl.safe_timestamp(m.payload->>'DTACONTA'))::date >= "
+            "(now() AT TIME ZONE 'America/Sao_Paulo')::date - %s"
+        )
+        params = [id_empresa, days]
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        # Publish mensal pode varrer milhares de MOVLCTOS; evita statement_timeout do pool.
+        try:
+            conn.execute("SET LOCAL statement_timeout = 0")
+        except Exception:  # noqa: BLE001
+            pass
         rows = conn.execute(
             f"""
-            WITH src AS (
-              SELECT
-                m.id_empresa,
-                m.id_filial,
-                coalesce(
-                  nullif(f.payload->>'APELIDO', ''),
-                  nullif(f.payload->>'NOMEFILIAL', ''),
-                  ''
-                ) AS filial_nome,
-                coalesce(
-                  etl.safe_int(m.payload->>'ID_MOVLCTOS'),
-                  m.id_movlctos
-                )::bigint AS id_titulo,
-                m.id_db,
-                d.id_planodecontas,
-                coalesce(d.codigo_plano, '') AS codigo_plano,
-                coalesce(d.nome_plano, '') AS nome_plano,
-                coalesce(d.classificacao_gerencial, '') AS classificacao_gerencial,
-                CASE WHEN coalesce(d.entra_custo_operacional, false) THEN 1 ELSE 0 END
-                  AS entra_custo_operacional,
-                coalesce(nullif(trim(m.payload->>'DOCUMENTO'), ''), '') AS documento,
-                (etl.safe_timestamp(m.payload->>'DTACONTA'))::date AS dt_competencia,
-                coalesce(etl.safe_int(m.payload->>'TIPO'), 0) AS tipo,
-                coalesce(etl.safe_numeric(m.payload->>'VALOR'), 0)::numeric(18,2) AS valor
-              FROM stg.movlctos m
-              JOIN dw.dim_plano_contas_gerencial d
-                ON d.id_empresa = m.id_empresa
-               AND d.id_filial = m.id_filial
-               AND d.id_planodecontas = etl.safe_int(m.payload->>'ID_PLANODECONTAS')
-              LEFT JOIN stg.filiais f
-                ON f.id_empresa = m.id_empresa
-               AND f.id_filial = m.id_filial
-              WHERE m.id_empresa = %s
-                AND coalesce(d.entra_dre, false) IS TRUE
-                AND (etl.safe_timestamp(m.payload->>'DTACONTA'))::date IS NOT NULL
-            )
             SELECT
-              id_empresa, id_filial, filial_nome, id_titulo, id_db,
-              id_planodecontas, codigo_plano, nome_plano, classificacao_gerencial,
-              entra_custo_operacional,
-              documento AS historico,
-              documento,
-              dt_competencia AS dt_vencimento,
+              m.id_empresa,
+              m.id_filial,
+              coalesce(
+                nullif(f.payload->>'APELIDO', ''),
+                nullif(f.payload->>'NOMEFILIAL', ''),
+                ''
+              ) AS filial_nome,
+              coalesce(
+                etl.safe_int(m.payload->>'ID_MOVLCTOS'),
+                m.id_movlctos
+              )::bigint AS id_titulo,
+              m.id_db,
+              d.id_planodecontas,
+              coalesce(d.codigo_plano, '') AS codigo_plano,
+              coalesce(d.nome_plano, '') AS nome_plano,
+              coalesce(d.classificacao_gerencial, '') AS classificacao_gerencial,
+              CASE WHEN coalesce(d.entra_custo_operacional, false) THEN 1 ELSE 0 END
+                AS entra_custo_operacional,
+              coalesce(nullif(trim(m.payload->>'DOCUMENTO'), ''), '') AS documento,
+              (etl.safe_timestamp(m.payload->>'DTACONTA'))::date AS dt_vencimento,
               NULL::date AS dt_pagamento,
-              valor,
-              CASE WHEN tipo IN (0, 2) THEN valor ELSE 0 END::numeric(18,2) AS valor_pago,
-              CASE WHEN tipo = 1 THEN valor ELSE 0 END::numeric(18,2) AS valor_aberto,
+              coalesce(etl.safe_numeric(m.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
               CASE
-                WHEN tipo IN (0, 2) THEN 'entrada'
-                WHEN tipo = 1 THEN 'saida'
+                WHEN coalesce(etl.safe_int(m.payload->>'TIPO'), 0) IN (0, 2)
+                THEN coalesce(etl.safe_numeric(m.payload->>'VALOR'), 0)
+                ELSE 0
+              END::numeric(18,2) AS valor_pago,
+              CASE
+                WHEN coalesce(etl.safe_int(m.payload->>'TIPO'), 0) = 1
+                THEN coalesce(etl.safe_numeric(m.payload->>'VALOR'), 0)
+                ELSE 0
+              END::numeric(18,2) AS valor_aberto,
+              CASE
+                WHEN coalesce(etl.safe_int(m.payload->>'TIPO'), 0) IN (0, 2) THEN 'entrada'
+                WHEN coalesce(etl.safe_int(m.payload->>'TIPO'), 0) = 1 THEN 'saida'
                 ELSE 'outro'
               END AS status,
-              (EXTRACT(YEAR FROM dt_competencia)::int * 100
-                + EXTRACT(MONTH FROM dt_competencia)::int) AS ano_mes_vencimento
-            FROM src
-            WHERE {date_pred}
-            ORDER BY id_filial, nome_plano, dt_competencia DESC, documento, id_titulo
+              (
+                EXTRACT(YEAR FROM (etl.safe_timestamp(m.payload->>'DTACONTA'))::date)::int * 100
+                + EXTRACT(MONTH FROM (etl.safe_timestamp(m.payload->>'DTACONTA'))::date)::int
+              ) AS ano_mes_vencimento,
+              coalesce(nullif(trim(m.payload->>'DOCUMENTO'), ''), '') AS historico
+            FROM stg.movlctos m
+            JOIN dw.dim_plano_contas_gerencial d
+              ON d.id_empresa = m.id_empresa
+             AND d.id_filial = m.id_filial
+             AND d.id_planodecontas = etl.safe_int(m.payload->>'ID_PLANODECONTAS')
+            LEFT JOIN stg.filiais f
+              ON f.id_empresa = m.id_empresa
+             AND f.id_filial = m.id_filial
+            WHERE m.id_empresa = %s
+              AND coalesce(d.entra_dre, false) IS TRUE
+              AND (etl.safe_timestamp(m.payload->>'DTACONTA'))::date IS NOT NULL
+              {date_sql}
+            ORDER BY m.id_filial, d.nome_plano,
+              (etl.safe_timestamp(m.payload->>'DTACONTA'))::date DESC,
+              m.payload->>'DOCUMENTO', m.id_movlctos
             """,
             params,
         ).fetchall()
