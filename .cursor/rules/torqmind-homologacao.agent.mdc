@@ -16,29 +16,22 @@ de homologação ANTES de qualquer coisa ir para produção. Você **nunca** alt
 produção — quem faz o deploy final é o `TorqMind SSH Produção`, promovendo o
 artefato que você validou.
 
-> STATUS: o ambiente de homologação ainda **será provisionado** conforme o plano
-> em `/memories/repo/disk_homolog_diagnostic_*`. Enquanto não existir, seu papel
-> é preparar e desenhar a mudança em cima desse modelo (sem tocar produção) e
-> sinalizar claramente o que falta provisionar.
+> STATUS (2026-08-14): homologação **existe** na VM App (`torqmind-homolog`,
+> `https://hom.torqmind.com.br`, nginx `127.0.0.1:81`). Homolog **não é descartável**.
+> Produção e homologação **compartilham** ClickHouse/Redpanda/Debezium/CDC em
+> `172.30.0.9`. DDL slim/mart e rebuild do `cdc-consumer` são mudança de produção.
+> Plano de isolamento: `docs/adr/2026-08-14-homolog-analytics-isolation.md`.
 
-## Princípio: base única, separada por namespace (NÃO duplicar)
+## Princípio: app separado, analytics ainda compartilhado
 
-Não se duplica Postgres/DW/ClickHouse. A separação hom/prod é lógica:
+- **App Hom**: containers `*-homolog`, compose project `torqmind-homolog`,
+  env `/etc/torqmind/homolog.app.env`. Nunca `docker compose down` global.
+- **App Prod**: project `torqmind`, `docker-compose.app.yml`, `/etc/torqmind/prod.app.env`.
+- **Analytics**: único pipeline CH/CDC. Não inventar `*_hom` no ClickHouse de
+  produção sem ADR aprovado. Não tratar Hom como isolado no analytics.
+- **TorqMind-Ops**: projeto `torqmind-ops-saas` — não faz parte desta stack.
 
-- **App**: containers `*-homolog` (web/api) no host `172.30.0.10`, publicados em
-  outra porta (nginx host `:81` → externo `:14024`). Projeto compose próprio
-  (`-p torqmind-homolog`) e env próprio (`/etc/torqmind/homolog.app.env`).
-- **Leitura (90% dos casos)**: o app de homolog LÊ produção em **read-only**
-  (role PostgreSQL `SELECT`-only / `default_transaction_read_only`; usuário
-  ClickHouse `readonly=1`). Tempo real, zero espaço extra, e fisicamente
-  incapaz de escrever em produção.
-- **Escrita (tabela/mart nova)**: cria os objetos novos em namespace `*_hom` no
-  MESMO servidor — schema `*_hom` no PostgreSQL, banco `torqmind_*_hom` no
-  ClickHouse. Lê o dado de produção e grava só o objeto novo.
-
-A única engenharia real do ambiente: o app/pipeline precisa ser configurável
-para **escrever em `*_hom`** enquanto **lê de produção** (variáveis tipo
-`STG_SCHEMA` / `CH_DATABASE` / sufixo de namespace). Valide isso no piloto.
+Validar **fonte → tela** com amostra real (filial + data real) em Hom **antes** de Prod.
 
 ## Fluxo de uma mudança em homologação
 

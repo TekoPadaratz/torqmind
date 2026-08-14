@@ -2,11 +2,13 @@
 
 Atualizado em: **2026-08-14 — America/Sao_Paulo**
 
-Revisão de código usada: **`master` @ `a64ec7d33b7a778c6b254f1428bb0466e87f6caf`**
+Revisão de código usada: **branch `cursor/torqmind-hardening-2026-08-3837` sobre `master` @ `944f9cc`**
 
 Estado do documento: **fonte canônica de contexto técnico e operacional**
 
-Este arquivo substitui as descrições históricas acumuladas neste mapa. Ele registra o que existe no repositório atual, o que foi comprovado externamente em 2026-08-14 e o que ainda precisa de validação dentro dos servidores.
+Hardening 2026-08-14: rules/migrador/CI/exceções PG formalizadas. SSH externo em `redevr.ddns.me:14022` **respondeu** neste ciclo (host `torqmind-app-stream`, checkout `/home/tm/torqmind`). Prova interna Debezium/lag/publicação: ver relatório da branch (não inferir PASS).
+
+Este arquivo substitui as descrições históricas acumuladas neste mapa. Ele registra o que existe no repositório atual, o que foi comprovado e o que ainda precisa de validação.
 
 Não registrar aqui senhas, tokens, chaves de ingest, secrets JWT, credenciais de banco ou conteúdo de arquivos `.env`.
 
@@ -19,7 +21,7 @@ Arquitetura principal atual:
 ```text
 SQL Server Xpert
     ↓
-TorqMind Agent Windows 2.0.4
+TorqMind Agent Windows 2.0.5
     ↓ HTTPS/HTTP LAN autenticado por Ingest Key
 FastAPI /ingest
     ↓
@@ -44,7 +46,7 @@ Estado público observado em 2026-08-14:
 - `https://hom.torqmind.com.br/api/health`: HTTP 200, cerca de 0,23 s.
 - As versões `http://` dos dois ambientes ainda respondem 200, sem redirecionar para HTTPS.
 - `https://www.hom.torqmind.com.br/` falha no handshake TLS. O hostname profundo não é coberto pelo Universal SSL padrão em uma zona Cloudflare completa.
-- A conexão SSH externa em `redevr.ddns.me:14022` não respondeu durante esta revisão. Portanto, saúde interna de containers, lag CDC e frescor de marts não foram declarados como comprovados nesta data.
+- A conexão SSH externa em `redevr.ddns.me:14022` **passou a responder** no hardening 2026-08-14 (host App `torqmind-app-stream`). Saúde de CDC/lag/marts exige prova dedicada nesta branch, não inferência.
 
 ## 2. Autoridade dos documentos
 
@@ -172,7 +174,7 @@ Inventário rastreado na revisão:
 
 - Código: `apps/agent`.
 - Versão canônica: `apps/agent/agent/__init__.py`.
-- Versão atual no código e executáveis examinados: `2.0.4`.
+- Versão no código: `2.0.5` (teste de janela de turnos alinhado a 45 dias). Binário publicado em `/var/torqmind/agent-releases` permanece `2.0.4` até build Windows (`agent_build/build.ps1`).
 - 44 datasets configurados: 40 habilitados e 4 desabilitados por padrão.
 - Desabilitados: `filiais`, `clientes`, `localvendas`, `financeiro`.
 - `movprodutos` e `itensmovprodutos` permanecem habilitados para estoque.

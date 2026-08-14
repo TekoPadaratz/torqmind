@@ -1,0 +1,55 @@
+---
+description: Isolamento Docker — projetos, serviços e proibição de comandos globais
+alwaysApply: true
+---
+
+# Isolamento de containers TorqMind
+
+O host pode ter TorqMind produção, TorqMind homologação, analytics compartilhado, **TorqMind-Ops** e outros projetos.
+
+## Proibido
+
+```bash
+docker stop $(docker ps -q)
+docker restart $(docker ps -q)
+docker rm -f $(docker ps -aq)
+docker compose down
+docker compose up -d --build
+docker system prune
+docker volume prune
+docker network prune
+systemctl restart docker
+```
+
+`docker compose down -v` é crime em qualquer host com dados reais.
+
+## Obrigatório antes de qualquer mutação
+
+```bash
+docker ps --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Labels}}'
+docker compose ls
+```
+
+Use labels `com.docker.compose.project`, `service`, `working_dir`, `config_files`.
+
+Classifique e **nunca** mute as categorias TorqMind-Ops e outros projetos.
+
+## Projetos conhecidos (VM App `172.30.0.10`)
+
+| Projeto | Compose | Env | Papel |
+|---------|---------|-----|--------|
+| `torqmind` | `docker-compose.app.yml` (+ analytics.yml residual) | `/etc/torqmind/prod.app.env` | Prod api/web/nginx |
+| `torqmind-homolog` | `docker-compose.homolog.yml` | `/etc/torqmind/homolog.app.env` | Hom api/web/nginx |
+| `torqmind-ops-saas` | `/home/tm/torqmind-ops-saas/docker-compose.yml` | — | **NÃO TOCAR** |
+
+Analytics (`172.30.0.9`): projeto `torqmind` + `docker-compose.analytics.yml` + `/etc/torqmind/prod.analytics.env`. Rebuild de `cdc-consumer` é mudança de **produção**.
+
+## Forma canônica
+
+```bash
+docker compose -p NOME_EXATO -f ARQUIVO_EXATO --env-file ENV_EXATO build SERVICO_EXATO
+docker compose -p NOME_EXATO -f ARQUIVO_EXATO --env-file ENV_EXATO up -d --no-deps SERVICO_EXATO
+```
+
+Homologação primeiro, um serviço por vez. Nunca derrubar Hom e Prod juntos.
+Nunca `--remove-orphans`. Bind mounts ativos: `sql/migrations` e `deploy/nginx/*.conf` — editar no checkout `/home/tm/torqmind` afeta containers imediatamente; use worktree para hardening.

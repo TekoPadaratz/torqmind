@@ -4,7 +4,7 @@ Este repositório entrega um **BI multi-tenant** com:
 - `apps/api`  : **FastAPI** (Auth JWT, ingest NDJSON, ETL STG→DW→MART, endpoints BI)
 - `apps/web`  : **Next.js** (dashboards: geral, vendas, anti-fraude, clientes, financeiro, metas)
 - `sql/migrations`: scripts de inicialização do Postgres (schemas, tabelas, ETL SQL e materialized views)
-- `sql/torqmind_reset_db_v2.sql`: script único de reset completo (para dev / homolog)
+- `sql/torqmind_reset_db_v2.sql`: **aposentado** para Hom/Prod. Só Postgres local efêmero (`TM_EPHEMERAL_LOCAL=1`, `RESET_ENV=dev`). Homologação não é descartável.
 
 ---
 
@@ -281,7 +281,7 @@ Comandos úteis:
 ```bash
 make logs   # acompanha logs
 make migrate   # aplica a cadeia oficial sql/migrations e valida o runtime
-make resetdb   # recria o banco via cadeia oficial de migrations (DEV/HOMOLOG)
+make resetdb   # APENAS Postgres local efêmero (RESET_ENV=dev TM_EPHEMERAL_LOCAL=1). Proibido em Hom/Prod.
 make etl-incremental   # roda o incremental canônico para tenants ativos
 make analyze-hot-tables   # ANALYZE targeted nas tabelas quentes após carga inicial ou manutenção
 make purge-sales-history   # expurga histórico comercial curto antigo e refresca marts dependentes
@@ -761,28 +761,17 @@ Notas:
 
 ---
 
-## Reset do banco (dev/homolog)
+## Reset do banco (somente Postgres local efêmero)
 
-Você pode rodar o alvo:
-
-```bash
-make resetdb
-```
-
-Ou executar diretamente o script:
+Homologação e produção **não** são descartáveis. O reset mestre é ferramenta de laboratório.
 
 ```bash
-psql -v ON_ERROR_STOP=1 -U postgres -d TORQMIND -f sql/torqmind_reset_db_v2.sql
+RESET_CONFIRM=1 RESET_ENV=dev TM_EPHEMERAL_LOCAL=1 make resetdb
 ```
 
-O reset agora derruba os schemas e reexecuta a cadeia oficial `001..030`, mantendo o banco alinhado com as migrations de runtime.
-Depois do reset, rode o bootstrap:
+O script `sql/torqmind_reset_db_v2.sql` recusa Hom/Prod (`TM_RESET_ENV=dev` + `TM_EPHEMERAL_LOCAL=1`). A cadeia `\ir` está incompleta (para ~071) e **não** deve ser “completada” em servidor real. Inventário: `sql/migrations/MANIFEST.json`.
 
-```bash
-docker compose exec api python -m app.cli.seed
-```
-
-> **Atenção:** ele faz `DROP SCHEMA ... CASCADE` (não use em produção).
+> **Atenção:** `DROP SCHEMA ... CASCADE`. Nunca use em produção, homologação ou volume com dados de cliente.
 
 ---
 

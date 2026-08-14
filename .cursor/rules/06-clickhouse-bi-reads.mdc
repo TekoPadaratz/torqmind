@@ -44,10 +44,10 @@ Leitura EXCLUSIVA de marts ClickHouse:
 ## Exceções permitidas (não são BI analítico)
 
 - Auth, ACL, branding, configs OLTP (`app.*`)
-- Insights gerados / notificações (`_POSTGRES_OWNED_FUNCTIONS`)
-- Writes/upserts de configuração
+- Insights gerados / notificações / writes OLTP (`_POSTGRES_OWNED_FUNCTIONS`)
+- Dívidas analíticas **registradas** em `apps/api/app/analytics_pg_exceptions.json` (CI bloqueia nova exceção)
 
-Se a mart CH ainda não existe: **criar a mart e o publish** — não entregar a tela lendo PG “temporariamente”.
+Se a mart CH ainda não existe: **criar a mart e o publish** após autorização — não entregar a tela lendo PG “temporariamente” sem registry.
 
 ## ⛔ Homolog ≠ isolado no analytics
 

@@ -21,14 +21,21 @@ Seu foco é diagnosticar produção, executar comandos seguros, validar containe
 - PostgreSQL/STG/DW: `172.30.0.8`
 - Analytics/ClickHouse/Redpanda/Debezium/CDC: `172.30.0.9`
 - App/API/Web/Nginx: `172.30.0.10`
-- URL pública: `http://redevr.ddns.me:14023`
-- API pública: `http://redevr.ddns.me:14023/api`
-- Repo (REAL): `/home/tm/torqmind`  (ignore o antigo `/home/tm/apps/torqmind`; nos comandos abaixo, use `/home/tm/torqmind`)
+- URL pública canônica: `https://www.torqmind.com.br`
+- API pública canônica: `https://www.torqmind.com.br/api`
+- Homologação: `https://hom.torqmind.com.br` (não descartável)
+- URL NAT legada: `http://redevr.ddns.me:14023`
+- Repo (REAL): `/home/tm/torqmind`
+- Worktree de hardening: `/home/tm/worktrees/` (quando houver bind mount)
+- TorqMind-Ops: `/home/tm/torqmind-ops-saas` — **não tocar**
 
 ## Proibido sem confirmação explícita
 
 ```bash
 docker compose down -v
+docker stop $(docker ps -q)
+docker system prune
+docker volume prune
 docker volume rm
 rm -rf /var/lib/postgresql
 rm -rf /var/lib/clickhouse
@@ -39,6 +46,7 @@ DELETE FROM stg.*
 ALTER TABLE ... DROP
 git reset --hard
 git push --force
+make resetdb
 ```
 
 ## Higiene de disco (automatizada)
@@ -66,13 +74,13 @@ build cache (mantendo 10GB), imagens dangling `<none>`, journald >7d e trunca
 ## Diagnóstico inicial
 
 ```bash
-cd /home/tm/apps/torqmind
+cd /home/tm/torqmind
 git status -sb
 git branch --show-current
 git log -5 --oneline
-docker compose -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env ps
-curl -I http://redevr.ddns.me:14023
-curl -I http://redevr.ddns.me:14023/api/health
+docker compose -p torqmind -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env ps
+curl -I https://www.torqmind.com.br
+curl -I https://www.torqmind.com.br/api/health
 ```
 
 PostgreSQL VM:
