@@ -1719,6 +1719,38 @@ def customers_preco_fixo_detail(
         }
 
 
+@router.get("/customers/preco-fixo/inativos")
+def customers_preco_fixo_inativos(
+    days_without: int = Query(30, description="15 | 30 | 60"),
+    id_empresa: Optional[int] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("customers")),
+):
+    """Clientes com preço fixo ativo sem abastecimento recente."""
+    from app.services import cliente_preco_fixo as preco_fixo
+
+    tenant, _, branch_ids = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa,
+        id_filial_q=id_filial,
+        id_filiais_q=id_filiais,
+    )
+    try:
+        return preco_fixo.inactive_fixed_price_clients(
+            tenant,
+            id_filial=id_filial,
+            id_filiais=branch_ids or id_filiais,
+            days_without=days_without,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("customers_preco_fixo_inativos unavailable: %s", exc)
+        return {"days_without": days_without, "items": [], "total": 0, "source": "unavailable"}
+
+
 @router.get("/clients/churn")
 def clients_churn(
     dt_ini: date,
@@ -2643,6 +2675,45 @@ def team_commissions_results(
         cfg.pop("manager_commission_percent", None)
         payload["config"] = cfg
     return payload
+
+
+@router.get("/team/commissions/discounts")
+def team_commissions_discounts(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2020, le=2100),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.comissoes")),
+):
+    """Descontos na venda (VLRDESCONTO) e preço fixo — não altera comissão."""
+    from app.services.commission_discounts import commission_discounts_overview
+
+    tenant, branch_scope, branch_ids = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa,
+        id_filial_q=id_filial,
+        id_filiais_q=id_filiais,
+    )
+    targets: List[int] = []
+    if branch_ids:
+        targets = [int(b) for b in branch_ids if int(b) > 0]
+    elif isinstance(branch_scope, list):
+        targets = [int(b) for b in branch_scope if int(b) > 0]
+    elif branch_scope:
+        targets = [int(branch_scope)]
+    elif id_filial:
+        targets = [int(id_filial)]
+    if not targets:
+        raise HTTPException(status_code=422, detail="Informe ao menos uma filial.")
+    return commission_discounts_overview(
+        tenant,
+        year,
+        month,
+        id_filiais=targets,
+        limit=300,
+    )
 
 
 # ------------------------

@@ -703,3 +703,108 @@ def detail(
         "dt_fim": dt_fim.isoformat(),
         "source": "clickhouse_mart",
     }
+
+
+def inactive_fixed_price_clients(
+    id_empresa: int,
+    *,
+    id_filial: Optional[int] = None,
+    id_filiais: Optional[Sequence[int]] = None,
+    days_without: int = 30,
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """Clientes com preço fixo ativo sem abastecimento de combustível há N dias."""
+    days_without = int(days_without)
+    if days_without not in (15, 30, 60):
+        raise ValueError("days_without deve ser 15, 30 ou 60")
+    limit = max(1, min(int(limit), 200))
+    branch_sql, branch_params = _branch_clause(id_filial, id_filiais, col="c.id_filial")
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "days": days_without,
+        "limit": limit,
+        **branch_params,
+    }
+    rows = query_dict(
+        f"""
+        SELECT
+          c.id_filial AS id_filial,
+          c.id_entidade AS id_entidade,
+          c.id_produto AS id_produto,
+          c.valor_fixo AS valor_fixo,
+          last_fuel.ultima_compra AS ultima_compra,
+          if(
+            last_fuel.ultima_compra IS NULL,
+            toInt32({{days:Int32}}) + 1,
+            dateDiff('day', last_fuel.ultima_compra, today())
+          ) AS dias_sem,
+          ifNull(
+            nullIf(trimBoth(JSONExtractString(e.payload, 'NOMEENTIDADE')), ''),
+            nullIf(trimBoth(JSONExtractString(e.payload, 'RAZAOSOCIALENTIDADE')), '')
+          ) AS cliente_nome,
+          ifNull(
+            nullIf(trimBoth(JSONExtractString(p.payload, 'DESCRICAO')), ''),
+            nullIf(trimBoth(JSONExtractString(p.payload, 'NOMEPRODUTO')), '')
+          ) AS produto_nome
+        FROM {MART_DB}.mart_cliente_preco_fixo_cadastro AS c FINAL
+        LEFT JOIN (
+          SELECT id_filial, id_entidade, max(dt_venda) AS ultima_compra
+          FROM {MART_DB}.mart_cliente_preco_fixo_item FINAL
+          WHERE id_empresa = {{id_empresa:Int32}}
+          GROUP BY id_filial, id_entidade
+        ) AS last_fuel
+          ON last_fuel.id_filial = c.id_filial
+         AND last_fuel.id_entidade = c.id_entidade
+        LEFT JOIN {CURRENT_DB}.stg_entidades AS e FINAL
+          ON e.id_empresa = c.id_empresa
+         AND e.id_filial = c.id_filial
+         AND e.id_entidade = c.id_entidade
+         AND e.is_deleted = 0
+        LEFT JOIN {CURRENT_DB}.stg_produtos AS p FINAL
+          ON p.id_empresa = c.id_empresa
+         AND p.id_filial = c.id_filial
+         AND p.id_produto = c.id_produto
+         AND p.is_deleted = 0
+        WHERE c.id_empresa = {{id_empresa:Int32}}
+          AND c.ativo = 1
+          {branch_sql}
+          AND (
+            last_fuel.ultima_compra IS NULL
+            OR dateDiff('day', last_fuel.ultima_compra, today()) >= {{days:Int32}}
+          )
+          AND (
+            e.id_entidade = 0
+            OR lowerUTF8(ifNull(JSONExtractString(e.payload, 'ATIVO'), 'true'))
+               IN ('true', '1', 't', '')
+          )
+        ORDER BY dias_sem DESC, c.id_filial ASC, c.id_entidade ASC
+        LIMIT {{limit:UInt32}}
+        """,
+        parameters=params,
+        tenant_id=id_empresa,
+    )
+    items = []
+    for r in rows:
+        fid = int(r["id_filial"])
+        eid = int(r["id_entidade"])
+        items.append(
+            {
+                "id_filial": fid,
+                "filial_label": apelido_for(fid) or str(fid),
+                "id_entidade": eid,
+                "cliente_nome": unescape(
+                    str(r.get("cliente_nome") or f"Cliente {eid}")
+                ),
+                "id_produto": int(r.get("id_produto") or 0),
+                "produto_nome": unescape(str(r.get("produto_nome") or "—")),
+                "valor_fixo": float(r.get("valor_fixo") or 0),
+                "ultima_compra": str(r["ultima_compra"]) if r.get("ultima_compra") else None,
+                "dias_sem": int(r.get("dias_sem") or 0),
+            }
+        )
+    return {
+        "days_without": days_without,
+        "items": items,
+        "total": len(items),
+        "source": "clickhouse_mart",
+    }

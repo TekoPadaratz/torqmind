@@ -1,4 +1,15 @@
-"""Publicação de despesas (CAP × plano de contas) e funcionários para ClickHouse."""
+"""Publicação de despesas (MOVLCTOS × plano DRE) e funcionários para ClickHouse.
+
+Fonte canônica do Razão / DRE Xpert: ``dbo.MOVLCTOS`` + ``DTACONTA``
+(docs/product/XPERT_DRE_DESPESAS_MAP.md). ``CONTASPAGAR``/``DTAVCTO`` NÃO
+sustentam o relatório de despesas por plano de contas.
+
+Semântica Xpert (Entradas/Saídas do Razão):
+- TIPO 0 ou 2 = débito → Entrada
+- TIPO 1 = crédito → Saída
+- ESTORNO=1 entra no DRE (não filtrar)
+- Texto da linha = ``DOCUMENTO`` (não há coluna HISTORICO em MOVLCTOS)
+"""
 from __future__ import annotations
 
 import logging
@@ -6,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.db import get_conn
-from app.db_clickhouse import insert_batch
+from app.db_clickhouse import execute_command, insert_batch
 
 logger = logging.getLogger(__name__)
 
@@ -22,91 +33,70 @@ def _now() -> datetime:
 def fetch_finance_despesas(
     role: str, id_empresa: int, days: int = DEFAULT_DAYS
 ) -> List[Dict[str, Any]]:
-    """CAP com plano DRE (entra_dre), status pago/aberto/vencido."""
+    """Lançamentos MOVLCTOS em contas DRE (entra_dre), por competência DTACONTA."""
     days = max(30, min(int(days), 800))
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         rows = conn.execute(
             """
-            WITH baixa_pagar AS (
+            WITH src AS (
               SELECT
-                id_empresa, id_filial, id_db,
-                etl.safe_int(payload->>'ID_CONTASPAGAR') AS id_titulo,
-                sum(coalesce(etl.safe_numeric(payload->>'VALORBAIXA'), 0)) AS total_baixa,
-                max((etl.safe_timestamp(payload->>'DATABAIXA'))::date) AS dt_ultima_baixa
-              FROM stg.contaspagarbaixa
-              WHERE id_empresa = %s
-              GROUP BY id_empresa, id_filial, id_db, etl.safe_int(payload->>'ID_CONTASPAGAR')
-            ),
-            src AS (
-              SELECT
-                cp.id_empresa,
-                cp.id_filial,
+                m.id_empresa,
+                m.id_filial,
                 coalesce(
                   nullif(f.payload->>'APELIDO', ''),
                   nullif(f.payload->>'NOMEFILIAL', ''),
                   ''
                 ) AS filial_nome,
-                cp.id_contaspagar::bigint AS id_titulo,
-                cp.id_db,
+                coalesce(
+                  etl.safe_int(m.payload->>'ID_MOVLCTOS'),
+                  m.id_movlctos
+                )::bigint AS id_titulo,
+                m.id_db,
                 d.id_planodecontas,
                 coalesce(d.codigo_plano, '') AS codigo_plano,
                 coalesce(d.nome_plano, '') AS nome_plano,
                 coalesce(d.classificacao_gerencial, '') AS classificacao_gerencial,
-                CASE WHEN coalesce(d.entra_custo_operacional, false) THEN 1 ELSE 0 END AS entra_custo_operacional,
-                coalesce(nullif(cp.payload->>'HISTORICO', ''), '') AS historico,
-                coalesce(nullif(cp.payload->>'DOCUMENTO', ''), '') AS documento,
-                (etl.safe_timestamp(cp.payload->>'DTAVCTO'))::date AS dt_vencimento,
-                coalesce(
-                  (etl.safe_timestamp(cp.payload->>'DTAPGTO'))::date,
-                  bp.dt_ultima_baixa
-                ) AS dt_pagamento,
-                coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)::numeric(18,2) AS valor,
-                least(
-                  coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0),
-                  coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
-                  + coalesce(bp.total_baixa, 0)
-                )::numeric(18,2) AS valor_pago,
-                greatest(
-                  0,
-                  coalesce(etl.safe_numeric(cp.payload->>'VALOR'), 0)
-                  - coalesce(etl.safe_numeric(cp.payload->>'VLRPAGO'), 0)
-                  - coalesce(bp.total_baixa, 0)
-                )::numeric(18,2) AS valor_aberto
-              FROM stg.contaspagar cp
+                CASE WHEN coalesce(d.entra_custo_operacional, false) THEN 1 ELSE 0 END
+                  AS entra_custo_operacional,
+                coalesce(nullif(trim(m.payload->>'DOCUMENTO'), ''), '') AS documento,
+                (etl.safe_timestamp(m.payload->>'DTACONTA'))::date AS dt_competencia,
+                coalesce(etl.safe_int(m.payload->>'TIPO'), 0) AS tipo,
+                coalesce(etl.safe_numeric(m.payload->>'VALOR'), 0)::numeric(18,2) AS valor
+              FROM stg.movlctos m
               JOIN dw.dim_plano_contas_gerencial d
-                ON d.id_empresa = cp.id_empresa
-               AND d.id_filial = cp.id_filial
-               AND d.id_planodecontas = etl.safe_int(cp.payload->>'ID_PLANODECONTAS')
-              LEFT JOIN baixa_pagar bp
-                ON bp.id_empresa = cp.id_empresa
-               AND bp.id_filial = cp.id_filial
-               AND bp.id_db = cp.id_db
-               AND bp.id_titulo = cp.id_contaspagar
+                ON d.id_empresa = m.id_empresa
+               AND d.id_filial = m.id_filial
+               AND d.id_planodecontas = etl.safe_int(m.payload->>'ID_PLANODECONTAS')
               LEFT JOIN stg.filiais f
-                ON f.id_empresa = cp.id_empresa
-               AND f.id_filial = cp.id_filial
-              WHERE cp.id_empresa = %s
+                ON f.id_empresa = m.id_empresa
+               AND f.id_filial = m.id_filial
+              WHERE m.id_empresa = %s
                 AND coalesce(d.entra_dre, false) IS TRUE
-                AND (etl.safe_timestamp(cp.payload->>'DTAVCTO'))::date IS NOT NULL
+                AND (etl.safe_timestamp(m.payload->>'DTACONTA'))::date IS NOT NULL
             )
             SELECT
               id_empresa, id_filial, filial_nome, id_titulo, id_db,
               id_planodecontas, codigo_plano, nome_plano, classificacao_gerencial,
-              entra_custo_operacional, historico, documento,
-              dt_vencimento, dt_pagamento, valor, valor_pago, valor_aberto,
+              entra_custo_operacional,
+              documento AS historico,
+              documento,
+              dt_competencia AS dt_vencimento,
+              NULL::date AS dt_pagamento,
+              valor,
+              CASE WHEN tipo IN (0, 2) THEN valor ELSE 0 END::numeric(18,2) AS valor_pago,
+              CASE WHEN tipo = 1 THEN valor ELSE 0 END::numeric(18,2) AS valor_aberto,
               CASE
-                WHEN valor_aberto <= 0.01 THEN 'pago'
-                WHEN dt_vencimento < (now() AT TIME ZONE 'America/Sao_Paulo')::date THEN 'vencido'
-                ELSE 'a_vencer'
+                WHEN tipo IN (0, 2) THEN 'entrada'
+                WHEN tipo = 1 THEN 'saida'
+                ELSE 'outro'
               END AS status,
-              (EXTRACT(YEAR FROM dt_vencimento)::int * 100
-                + EXTRACT(MONTH FROM dt_vencimento)::int) AS ano_mes_vencimento
+              (EXTRACT(YEAR FROM dt_competencia)::int * 100
+                + EXTRACT(MONTH FROM dt_competencia)::int) AS ano_mes_vencimento
             FROM src
-            WHERE dt_vencimento >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s
-               OR valor_aberto > 0.01
-            ORDER BY id_filial, nome_plano, dt_vencimento, id_titulo
+            WHERE dt_competencia >= (now() AT TIME ZONE 'America/Sao_Paulo')::date - %s
+            ORDER BY id_filial, nome_plano, dt_competencia DESC, documento, id_titulo
             """,
-            [id_empresa, id_empresa, days],
+            [id_empresa, days],
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -135,19 +125,30 @@ def publish_finance_despesas(
             "valor": row.get("valor") or 0,
             "valor_pago": row.get("valor_pago") or 0,
             "valor_aberto": row.get("valor_aberto") or 0,
-            "status": str(row.get("status") or "a_vencer"),
+            "status": str(row.get("status") or "entrada"),
             "ano_mes_vencimento": int(row.get("ano_mes_vencimento") or 0),
             "published_at": published_at,
         }
         for row in rows
     ]
+    # Remove legado CAP (pago/a_vencer/vencido) e republicação anterior da empresa
+    # para evitar misturar grãos CONTASPAGAR × MOVLCTOS no ReplacingMergeTree.
+    try:
+        execute_command(
+            f"ALTER TABLE {DESPESAS_TABLE} DELETE WHERE id_empresa = {{id_empresa:Int32}}",
+            parameters={"id_empresa": int(id_empresa)},
+        )
+    except Exception as exc:  # noqa: BLE001 — publish deve seguir; leitura filtra status
+        logger.warning(
+            "finance despesas CH delete empresa=%s failed: %s", id_empresa, exc
+        )
     inserted = insert_batch(
         DESPESAS_TABLE,
         payload,
         order_by=["id_empresa", "id_filial", "id_db", "id_titulo"],
     )
     logger.info(
-        "finance despesas publish empresa=%s rows=%s inserted=%s",
+        "finance despesas publish empresa=%s rows=%s inserted=%s source=movlctos",
         id_empresa,
         len(payload),
         inserted,
@@ -218,11 +219,5 @@ def publish_team_employees(role: str, id_empresa: int) -> int:
         EMPLOYEES_TABLE,
         payload,
         order_by=["id_empresa", "id_filial", "id_funcionario"],
-    )
-    logger.info(
-        "team employees publish empresa=%s rows=%s inserted=%s",
-        id_empresa,
-        len(payload),
-        inserted,
     )
     return inserted

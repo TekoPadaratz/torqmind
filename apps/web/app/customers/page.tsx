@@ -79,6 +79,9 @@ export default function CustomersPage() {
   const [precoFixoDetail, setPrecoFixoDetail] = useState<any>(null);
   const [precoFixoDetailLoading, setPrecoFixoDetailLoading] = useState(false);
   const [precoFixoDetailQ, setPrecoFixoDetailQ] = useState("");
+  const [inativosDays, setInativosDays] = useState<15 | 30 | 60>(30);
+  const [inativosLoading, setInativosLoading] = useState(false);
+  const [inativosData, setInativosData] = useState<any>(null);
   const { claims, data, error, loading, pendingUnavailable } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
@@ -198,6 +201,27 @@ export default function CustomersPage() {
       cancelled = true;
     };
   }, [scope, precoFixoPage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setInativosLoading(true);
+      try {
+        const params = buildScopeParams(scope);
+        params.set("days_without", String(inativosDays));
+        const res = await apiGet(`/bi/customers/preco-fixo/inativos?${params.toString()}`);
+        if (!cancelled) setInativosData(res);
+      } catch {
+        if (!cancelled) setInativosData({ items: [], total: 0, days_without: inativosDays });
+      } finally {
+        if (!cancelled) setInativosLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, inativosDays]);
 
   const openPrecoFixoDetail = async (row: any) => {
     const key = `${row.id_filial}-${row.id_entidade}`;
@@ -723,6 +747,72 @@ export default function CustomersPage() {
                     ) : null}
                   </>
                 ) : null}
+              </div>
+
+              <div className="card col-12" style={{ marginTop: 12 }}>
+                <div className="panelHead">
+                  <div>
+                    <h2>Clientes com preço fixo sem abastecimento</h2>
+                  </div>
+                </div>
+                <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {([15, 30, 60] as const).map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      className="btn"
+                      aria-pressed={inativosDays === d}
+                      onClick={() => setInativosDays(d)}
+                      style={{
+                        opacity: inativosDays === d ? 1 : 0.7,
+                        borderColor: inativosDays === d ? "var(--accent-copper, #b8722c)" : undefined,
+                      }}
+                    >
+                      {d} dias
+                    </button>
+                  ))}
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {inativosLoading
+                      ? "Carregando…"
+                      : `${Number(inativosData?.total || 0)} cliente(s)`}
+                  </span>
+                </div>
+                {!inativosLoading && !(inativosData?.items || []).length ? (
+                  <EmptyState
+                    title="Nenhum alerta neste recorte."
+                    detail="Clientes com preço fixo ativo e abastecimento recente não aparecem aqui."
+                  />
+                ) : (
+                  <div className="tableScroll" style={{ marginTop: 10 }}>
+                    <table className="table compact">
+                      <thead>
+                        <tr>
+                          <th>Filial</th>
+                          <th>Cliente</th>
+                          <th>Última compra</th>
+                          <th>Dias sem comprar</th>
+                          <th>Produto / regra</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(inativosData?.items || []).map((row: any) => (
+                          <tr key={`${row.id_filial}-${row.id_entidade}-${row.id_produto}`}>
+                            <td>{row.filial_label || "—"}</td>
+                            <td>{row.cliente_nome || "—"}</td>
+                            <td>{row.ultima_compra ? formatDateOnly(row.ultima_compra) : "—"}</td>
+                            <td>{row.dias_sem ?? "—"}</td>
+                            <td>
+                              {row.produto_nome || "—"}
+                              {row.valor_fixo
+                                ? ` · ${formatCurrency(Number(row.valor_fixo))}`
+                                : ""}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
 <div className="card col-12">

@@ -10162,6 +10162,15 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
             if float(i["valor"]) >= thr:
                 i["atipico"] = 1
 
+    # Inativo (max ATIVO=0 em todas as filiais) sem uso no mês: fora da lista.
+    # Inativo com uso: preserva histórico e marca ativo=0 (UI: Inativo).
+    base_rows = [
+        r
+        for r in base_rows
+        if int(r.get("ativo") or 0) == 1
+        or bool(usos_by.get(int(r["id_entidade"])))
+    ]
+
     resumo_ch: List[Dict[str, Any]] = []
     for r in base_rows:
         eid = int(r["id_entidade"])

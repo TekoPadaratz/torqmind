@@ -100,6 +100,127 @@ interface CommissionsTabProps {
   anoMes: number;
 }
 
+function escapeHtml(value: string | number | null | undefined): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildCommissionsReportHtml(opts: {
+  empresaLabel: string;
+  filiaisLabel: string;
+  periodoLabel: string;
+  modoLabel: string;
+  niveisLabel: string;
+  groups: Array<{
+    label: string;
+    sellers: SellerRow[];
+    total: number;
+  }>;
+  totalGeral: number;
+}): string {
+  const printedAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const sections = opts.groups
+    .map((g) => {
+      const rows = g.sellers
+        .map((emp) => {
+          const qty = Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
+            maximumFractionDigits: 0,
+          });
+          return `<tr>
+            <td>${escapeHtml(emp.nome_vendedor || "—")}</td>
+            <td>${escapeHtml(sellerTierLabel(emp))}</td>
+            <td class="num">${escapeHtml(qty)}</td>
+            <td class="num">${escapeHtml(formatCurrency(emp.venda_elegivel))}</td>
+            <td class="num">${escapeHtml(Number(emp.percentual_aplicado || 0).toFixed(2))}%</td>
+            <td class="num">${escapeHtml(formatCurrency(emp.comissao_estimada || 0))}</td>
+          </tr>`;
+        })
+        .join("\n");
+      const qtyTot = g.sellers
+        .reduce((acc, emp) => acc + Number(emp.quantidade_vendas || 0), 0)
+        .toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+      const vendaTot = formatCurrency(
+        g.sellers.reduce((acc, emp) => acc + Number(emp.venda_elegivel || 0), 0),
+      );
+      return `<section class="filial">
+        <h2>${escapeHtml(g.label)}</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Vendedor</th>
+              <th>Nível</th>
+              <th class="num">Quantidade</th>
+              <th class="num">Venda elegível</th>
+              <th class="num">Percentual</th>
+              <th class="num">Comissão</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="2"><strong>Total filial</strong></td>
+              <td class="num"><strong>${escapeHtml(qtyTot)}</strong></td>
+              <td class="num"><strong>${escapeHtml(vendaTot)}</strong></td>
+              <td class="num">—</td>
+              <td class="num"><strong>${escapeHtml(formatCurrency(g.total))}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>`;
+    })
+    .join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Comissões — TorqMind</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm 10mm; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; background: #fff; color: #111;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    body { padding: 8px 10px 16px; }
+    .brand { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #444; }
+    h1 { margin: 2px 0 8px; font-size: 16px; }
+    .meta {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px 16px;
+      font-size: 10px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px solid #111;
+    }
+    h2 { margin: 14px 0 6px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 10px; }
+    thead { display: table-header-group; }
+    th, td { border-bottom: 1px solid #ddd; padding: 4px 6px; text-align: left; }
+    th { background: #f3f3f3; font-weight: 700; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tfoot td { border-top: 2px solid #111; }
+    .filial { break-inside: avoid; page-break-inside: avoid; }
+    .total-geral { margin-top: 12px; font-size: 12px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="brand">TorqMind</div>
+  <h1>Comissões de vendedores</h1>
+  <div class="meta">
+    <div><strong>Empresa:</strong> ${escapeHtml(opts.empresaLabel)}</div>
+    <div><strong>Filiais:</strong> ${escapeHtml(opts.filiaisLabel)}</div>
+    <div><strong>Competência:</strong> ${escapeHtml(opts.periodoLabel)}</div>
+    <div><strong>Modo:</strong> ${escapeHtml(opts.modoLabel)}</div>
+    <div><strong>Níveis:</strong> ${escapeHtml(opts.niveisLabel)}</div>
+    <div><strong>Gerado em:</strong> ${escapeHtml(printedAt)}</div>
+  </div>
+  ${sections}
+  <div class="total-geral">Total geral: ${escapeHtml(formatCurrency(opts.totalGeral))}</div>
+</body>
+</html>`;
+}
+
 export default function CommissionsTab({
   idEmpresa,
   idFilial,
@@ -114,6 +235,9 @@ export default function CommissionsTab({
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [discountData, setDiscountData] = useState<any>(null);
+  const [discountLoading, setDiscountLoading] = useState(false);
+  const [discountError, setDiscountError] = useState("");
 
   const multiFiliais = useMemo(
     () => (idFiliais || []).map(String).filter((v) => v && v !== "0"),
@@ -168,6 +292,43 @@ export default function CommissionsTab({
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, selectedMonth, selectedYear, paymentMode]);
+
+  useEffect(() => {
+    if (!idFilial && multiFiliais.length === 0) {
+      setDiscountData(null);
+      return;
+    }
+    const ac = new AbortController();
+    setDiscountLoading(true);
+    setDiscountError("");
+    const params = new URLSearchParams();
+    if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+    params.set("month", String(selectedMonth));
+    params.set("year", String(selectedYear));
+    if (isMulti || (!idFilial && multiFiliais.length > 0)) {
+      for (const f of multiFiliais) params.append("id_filiais", String(f));
+    } else if (idFilial) {
+      params.set("id_filial", String(idFilial));
+    }
+    (async () => {
+      try {
+        const resp = await apiGet(`/bi/team/commissions/discounts?${params.toString()}`, {
+          signal: ac.signal,
+          timeout: 60000,
+        });
+        if (ac.signal.aborted) return;
+        setDiscountData(resp);
+      } catch (err: any) {
+        if (ac.signal.aborted || isRequestCanceled(err)) return;
+        setDiscountData(null);
+        setDiscountError(err?.response?.data?.detail || "Falha ao carregar descontos.");
+      } finally {
+        if (!ac.signal.aborted) setDiscountLoading(false);
+      }
+    })();
+    return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, selectedMonth, selectedYear]);
 
   const sellers = useMemo(
     () => ((data?.vendedores || []) as SellerRow[]),
@@ -253,6 +414,82 @@ export default function CommissionsTab({
     });
   };
 
+  const modoLabel =
+    paymentMode === "individual_sales"
+      ? "Individual por quantidade"
+      : paymentMode === "team_total"
+        ? "Equipe (quantidade total)"
+        : paymentMode === "equal_split"
+          ? "Divisão igual"
+          : "Padrão da config";
+  const niveisLabel =
+    selectedTiers.size === 0
+      ? "Todos"
+      : Array.from(selectedTiers)
+          .map((k) => TIER_STYLES[k]?.label || k)
+          .join(", ");
+
+  function printPdf() {
+    if (filialGroups.length === 0) return;
+    const html = buildCommissionsReportHtml({
+      empresaLabel: idEmpresa ? `Empresa ${idEmpresa}` : "—",
+      filiaisLabel: filialGroups.map((g) => g.label).join(", ") || "—",
+      periodoLabel: `${String(selectedMonth).padStart(2, "0")}/${selectedYear}`,
+      modoLabel,
+      niveisLabel,
+      groups: filialGroups.map((g) => ({
+        label: g.label,
+        sellers: g.sellers,
+        total: g.total,
+      })),
+      totalGeral: filteredTotal,
+    });
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+    const win = iframe.contentWindow;
+    const doc = iframe.contentDocument || win?.document;
+    if (!win || !doc) {
+      iframe.remove();
+      return;
+    }
+    doc.open();
+    doc.write(html);
+    doc.close();
+    const cleanup = () => {
+      try {
+        iframe.remove();
+      } catch {
+        /* ignore */
+      }
+    };
+    const triggerPrint = () => {
+      const onAfter = () => {
+        win.removeEventListener("afterprint", onAfter);
+        cleanup();
+      };
+      win.addEventListener("afterprint", onAfter);
+      window.setTimeout(cleanup, 120_000);
+      try {
+        win.focus();
+        win.print();
+      } catch {
+        cleanup();
+      }
+    };
+    window.setTimeout(triggerPrint, 300);
+  }
+
+  const discountItems = (discountData?.items || []) as Array<Record<string, unknown>>;
+  const { query: discountsSearch, setQuery: setDiscountsSearch, filteredRows: filteredDiscounts } =
+    useGridSearch(discountItems, { excludeKeys: /^id_/i });
+
   if (!hasScope) {
     return (
       <div className="card" style={{ marginTop: 16 }}>
@@ -294,6 +531,14 @@ export default function CommissionsTab({
                 </label>
               ) : null}
               <div className="commissionToolbarMeta">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={printPdf}
+                  disabled={filialGroups.length === 0}
+                >
+                  Imprimir / PDF
+                </button>
                 <span className="muted" style={{ fontSize: 12 }}>
                   {filteredCount} de {data.vendedores_elegiveis || sellers.length} ·{" "}
                   {formatCurrency(filteredTotal || data.comissao_total || 0)}
@@ -475,6 +720,68 @@ export default function CommissionsTab({
               </div>
             ))
           )}
+
+          <div className="card" style={{ marginTop: 20 }}>
+            <div className="sectionEyebrow">Comissões</div>
+            <h2 style={{ marginTop: 4 }}>Descontos e preços negociados</h2>
+            <div style={{ marginTop: 10 }}>
+              <GridSearchInput value={discountsSearch} onChange={setDiscountsSearch} />
+            </div>
+            {discountError ? (
+              <div className="errorCard" style={{ marginTop: 10 }}>{discountError}</div>
+            ) : null}
+            {discountLoading ? (
+              <div className="muted" style={{ marginTop: 12 }}>Carregando descontos…</div>
+            ) : !filteredDiscounts.length ? (
+              <EmptyState
+                title="Sem descontos no período"
+                detail="Não há desconto na venda (VLRDESCONTO) nem preço fixo econômico neste recorte."
+              />
+            ) : (
+              <div className="tableScroll" style={{ marginTop: 10 }}>
+                <table className="table compact" style={{ width: "100%", minWidth: 720 }}>
+                  <thead>
+                    <tr>
+                      <th>Filial</th>
+                      <th>Data</th>
+                      <th>Documento</th>
+                      <th>Cliente</th>
+                      <th>Vendedor</th>
+                      <th>Produto</th>
+                      <th style={{ textAlign: "right" }}>Preço ref.</th>
+                      <th style={{ textAlign: "right" }}>Preço aplicado</th>
+                      <th style={{ textAlign: "right" }}>Desconto R$</th>
+                      <th style={{ textAlign: "right" }}>Desconto %</th>
+                      <th>Tipo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(filteredDiscounts as Array<Record<string, any>>).map((row, idx) => (
+                      <tr key={`${row.tipo}-${row.id_filial}-${row.documento}-${idx}`}>
+                        <td>{row.filial_label || "—"}</td>
+                        <td style={{ whiteSpace: "nowrap" }}>
+                          {String(row.dt_venda || "").slice(0, 10) || "—"}
+                        </td>
+                        <td>{row.documento || "—"}</td>
+                        <td>{row.cliente || "—"}</td>
+                        <td>{row.vendedor || "—"}</td>
+                        <td>{row.produto || "—"}</td>
+                        <td style={numCell}>
+                          {row.preco_referencia == null
+                            ? "—"
+                            : formatCurrency(Number(row.preco_referencia))}
+                        </td>
+                        <td style={numCell}>{formatCurrency(Number(row.preco_aplicado || 0))}</td>
+                        <td style={numCell}>{formatCurrency(Number(row.desconto_rs || 0))}</td>
+                        <td style={numCell}>{Number(row.desconto_pct || 0).toFixed(2)}%</td>
+                        <td>{row.tipo_label || row.tipo || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </>
       ) : null}
     </div>
