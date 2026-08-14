@@ -56,19 +56,24 @@ hard-resetdb:
 		echo "Destructive reset requires RESET_CONFIRM=1"; \
 		exit 1; \
 	fi
-	@if [ "$${RESET_ENV:-}" != "dev" ] && [ "$${RESET_ENV:-}" != "homolog" ]; then \
-		echo "Destructive reset requires RESET_ENV=dev or RESET_ENV=homolog"; \
+	@if [ "$${TM_EPHEMERAL_LOCAL:-}" != "1" ]; then \
+		echo "Destructive reset requires TM_EPHEMERAL_LOCAL=1 (local disposable Postgres only)"; \
 		exit 1; \
 	fi
-	@if [ "$${APP_ENV:-}" = "prod" ] || [ "$${APP_ENV:-}" = "production" ]; then \
+	@if [ "$${RESET_ENV:-}" != "dev" ]; then \
+		echo "Destructive reset requires RESET_ENV=dev. Homolog and production are forbidden."; \
+		exit 1; \
+	fi
+	@if [ "$${APP_ENV:-}" = "prod" ] || [ "$${APP_ENV:-}" = "production" ] || [ "$${APP_ENV:-}" = "homolog" ] || [ "$${APP_ENV:-}" = "homologacao" ]; then \
 		echo "Refusing destructive reset with APP_ENV=$${APP_ENV}"; \
 		exit 1; \
 	fi
+	@echo "$${COMPOSE_PROJECT_NAME:-}" | grep -Eq '^(torqmind|torqmind-homolog)$$' && { echo "Refusing reset against compose project $${COMPOSE_PROJECT_NAME}"; exit 1; } || true
 	@$(COMPOSE) exec -T postgres sh -lc 'until pg_isready -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" >/dev/null 2>&1; do sleep 1; done'
 	@$(COMPOSE) exec -T postgres sh -lc 'rm -rf "$(RESET_TMP_DIR)" && mkdir -p "$(RESET_TMP_DIR)/migrations"'
 	@$(COMPOSE) cp sql/torqmind_reset_db_v2.sql postgres:$(RESET_TMP_DIR)/torqmind_reset_db_v2.sql
 	@$(COMPOSE) cp sql/migrations/. postgres:$(RESET_TMP_DIR)/migrations/
-	@$(COMPOSE) exec -T postgres sh -lc 'db_name="$(DB_NAME)"; if [ -z "$$db_name" ]; then db_name="$${POSTGRES_DB:-torqmind}"; fi; cd "$(RESET_TMP_DIR)" && psql -v ON_ERROR_STOP=1 -v TM_ALLOW_RESET=1 -v TM_RESET_ENV="$(RESET_ENV)" -U "$${POSTGRES_USER:-postgres}" -d "$$db_name" -f torqmind_reset_db_v2.sql'
+	@$(COMPOSE) exec -T postgres sh -lc 'db_name="$(DB_NAME)"; if [ -z "$$db_name" ]; then db_name="$${POSTGRES_DB:-torqmind}"; fi; cd "$(RESET_TMP_DIR)" && psql -v ON_ERROR_STOP=1 -v TM_ALLOW_RESET=1 -v TM_RESET_ENV=dev -v TM_EPHEMERAL_LOCAL=1 -U "$${POSTGRES_USER:-postgres}" -d "$$db_name" -f torqmind_reset_db_v2.sql'
 
 backfill-snapshots:
 	@$(COMPOSE) exec -T postgres sh -lc 'psql -v ON_ERROR_STOP=1 -U "$${POSTGRES_USER:-postgres}" -d "$${POSTGRES_DB:-torqmind}" -c "CALL etl.run_operational_snapshot_backfill($${ID_EMPRESA:-1}::int, '\''$${START_DT:?missing START_DT}'\''::date, '\''$${END_DT:?missing END_DT}'\''::date, $${STEP_DAYS:-7}::int, false, false);"'

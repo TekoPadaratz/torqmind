@@ -361,10 +361,13 @@ class ReleaseHardeningTest(unittest.TestCase):
         makefile_text = makefile_path.read_text(encoding="utf-8")
 
         self.assertIn("TM_ALLOW_RESET=1 is required", reset_sql_text)
-        self.assertIn("TM_RESET_ENV must be dev or homolog", reset_sql_text)
+        self.assertIn("TM_RESET_ENV must be dev", reset_sql_text)
+        self.assertIn("TM_EPHEMERAL_LOCAL", reset_sql_text)
         self.assertIn('RESET_CONFIRM=1', makefile_text)
-        self.assertIn('RESET_ENV=dev or RESET_ENV=homolog', makefile_text)
+        self.assertIn("RESET_ENV=dev", makefile_text)
+        self.assertIn("TM_EPHEMERAL_LOCAL=1", makefile_text)
         self.assertIn('TM_ALLOW_RESET=1', makefile_text)
+        self.assertNotIn("RESET_ENV=homolog", makefile_text)
 
     def test_hard_reset_script_replays_latest_business_date_fix_migrations(self) -> None:
         reset_sql = Path(__file__).resolve().parents[1] / "sql" / "torqmind_reset_db_v2.sql"
