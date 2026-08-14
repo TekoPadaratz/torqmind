@@ -45,7 +45,7 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         consumer.committed.side_effect = [[stale], [live]]
 
         partitions = [
-            TopicPartition("torqmind.stg.planodecontas", 0, 0),
+            TopicPartition("torqmind.stg.planodecontas", 0, 291_320_428),
             TopicPartition("torqmind.stg.comprovantes", 0, 40),
         ]
         recovered = recover_assignment_offsets(consumer, partitions, reassign=True)
@@ -53,7 +53,7 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         self.assertEqual(len(recovered), 1)
         self.assertEqual(recovered[0].topic, "torqmind.stg.planodecontas")
         self.assertEqual(recovered[0].offset, 291_320_428)
-        consumer.committed.assert_not_called()
+        self.assertEqual(consumer.committed.call_count, 2)
         consumer.assign.assert_called_once()
         assigned = consumer.assign.call_args[0][0]
         self.assertEqual(assigned[0].offset, 291_320_428)
@@ -66,7 +66,7 @@ class TestRecoverAssignmentOffsets(unittest.TestCase):
         consumer.committed.return_value = [Mock(offset=0)]
         recovered = recover_assignment_offsets(
             consumer,
-            [TopicPartition("torqmind.stg.filiais", 0, 0)],
+            [TopicPartition("torqmind.stg.filiais", 0, 50)],
             reassign=False,
         )
         self.assertEqual(recovered[0].offset, 50)
@@ -81,8 +81,9 @@ class TestRecoverStaleAssignment(unittest.TestCase):
 
         main_mod._recovered_assignment_keys.clear()
         consumer = Mock()
-        consumer.assignment.return_value = [TopicPartition("torqmind.stg.planodecontas", 0, 0)]
+        consumer.assignment.return_value = [TopicPartition("torqmind.stg.planodecontas", 0, 291_320_428)]
         consumer.get_watermark_offsets.return_value = (291_320_428, 291_320_428)
+        consumer.committed.return_value = [Mock(offset=0)]
         first = recover_stale_assignment(consumer)
         second = recover_stale_assignment(consumer)
         self.assertEqual(first[0].offset, 291_320_428)

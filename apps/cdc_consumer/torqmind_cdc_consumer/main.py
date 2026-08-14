@@ -167,13 +167,11 @@ def recover_assignment_offsets(
                 timeout=10,
             )
             log_start, _log_end = watermarks
-            committed_offset = partition.offset
-            if committed_offset < 0:
-                committed = consumer.committed(
-                    [TopicPartition(partition.topic, partition.partition)],
-                    timeout=10,
-                )
-                committed_offset = committed[0].offset if committed else -1
+            committed = consumer.committed(
+                [TopicPartition(partition.topic, partition.partition)],
+                timeout=10,
+            )
+            committed_offset = committed[0].offset if committed else -1
             seek_to = plan_log_start_seek(committed_offset, log_start)
             if seek_to is not None:
                 logger.warning(
