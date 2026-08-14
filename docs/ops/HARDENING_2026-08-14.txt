@@ -3,11 +3,12 @@ Sem secrets. Host de trabalho: torqmind-app-stream (172.30.0.10).
 Checkout bind-mount: /home/tm/torqmind (master @ 944f9cc).
 Worktree: /home/tm/worktrees/torqmind-hardening-2026-08
 Branch: cursor/torqmind-hardening-2026-08-3837
-HEAD codigo deployado: e574e75
+HEAD codigo: b1a671b (CDC prod image 848a309)
 PR: https://github.com/TekoPadaratz/torqmind/pull/25
 
-NENHUM banco resetado. Nenhuma migration aplicada.
-Nenhum docker compose down. TorqMind-Ops nao tocado.
+NENHUM banco resetado. Nenhuma migration aplicada em prod/homolog.
+Nenhum offset redefinido via admin. Nenhum docker compose down.
+Offsets de particao vazia: seek+commit de log-start pelo proprio consumer (grupo preservado).
 
 1) Containers TorqMind
 - Prod projeto torqmind: api, web, nginx + (analytics no mesmo project name no App: debezium/redpanda locais VAZIOS)
@@ -15,15 +16,15 @@ Nenhum docker compose down. TorqMind-Ops nao tocado.
 - Analytics real 172.30.0.9: clickhouse, cdc-consumer, debezium, redpanda
 - PG 172.30.0.8: postgres
 
-2) Preservados (IDs apos deploy Hom+Prod API/Web)
-- torqmind-ops-saas-backend-1  ec85f909... StartedAt 2026-08-14T05:53:03Z
-- torqmind-ops-saas-frontend-1 817a32348c78... 05:53:03Z
-- torqmind-ops-saas-nginx-1    4c2a7e944712... 05:53:03Z
-- torqmind-ops-saas-postgres-1 3d3d4d8ea106... 05:53:03Z
-- torqmind-nginx (prod)        13dd21fd2ce0... 05:53:03Z
-- torqmind-nginx-homolog       568473e3dc63... 05:53:03Z
-- torqmind-debezium App-local  d24b1e8af61c... 05:53:03Z (connectors=[])
-- Analytics .9 containers Up 9h (nao rebuild)
+2) Preservados
+TorqMind-Ops (esta sessao, apos CDC): StartedAt inalterado
+- backend 2b35b3ad... 2026-08-14T15:25:27Z
+- frontend 4931dfe2... 2026-08-14T15:17:09Z
+- nginx 8643e96d... 2026-08-14T15:25:28Z
+- postgres 3d3d4d8ea106... 2026-08-14T05:53:03Z
+Nota: Ops backend/frontend/nginx foram recriados FORA desta sessao (~15:17-15:25 UTC; postgres Ops intacto desde 05:53). Esta continuacao nao os tocou.
+Analytics .9 clickhouse/redpanda/debezium StartedAt 2026-08-14T05:52:30Z intactos.
+CDC consumer recriado --no-deps imagem 848a309 StartedAt 15:43:00Z.
 
 3) Deploy
 Hom (primeiro):
@@ -77,44 +78,39 @@ Dividas com prazo 2026-09-15: fraud_lancamentos_creditos, cheques_pendentes_over
 budget_overview, budget_alerts, solvencia_detalhada, solvencia_overview.
 Sem DDL ClickHouse nesta rodada.
 
-10) Performance BI prod (30d, id_empresa=1)
-ANTES (api antiga):
-dash cold 7.557s / hot 1.406s size 12083
-sales cold 1.779s / hot 1.564s size 24353
-cash cold 1.587s / hot 1.476s size 108150
-DEPOIS (api nova):
-dash cold 9.058s / hot 1.512s size 12083
-sales cold 1.613s / hot 1.673s size 24353
-cash cold 1.642s / hot 1.572s size 108150
-Health publico ~0.10s. Hot <2s. Cold dashboard continua >2s (cache miss, pre-existente).
-fallback=None nos dois.
+10) Performance BI prod (30d, id_empresa=1, 2026-07-16..2026-08-14)
+Amostra estatistica (1 fria + 11 quentes) via 127.0.0.1/api, fallback=realtime:
+dash cold 4.776s / hot p50 1.447 p95 1.529 max 1.529 size ~12019-12083
+sales cold 1.644s / hot p50 1.588 p95 1.719 max 1.719 size ~24345
+cash cold 1.477s / hot p50 1.471 p95 1.533 max 1.533 size 108145
+Quentes <2s. Sem fallback PG. Payload materialmente igual a prova anterior.
 
-11) Prova pipeline
+11) Prova pipeline (continuacao)
 Debezium .9: RUNNING / task RUNNING. PASS
 CDC member: 1, group torqmind-cdc-consumer-live Stable. PASS
-rpk TOTAL-LAG: 295530851 FAIL (planodecontas/filiais/localvendas/dims)
-Vendas STG/DW/NFE: LAG 0
-NUMBER_OF_COLUMNS: 0 / 2h. PASS
-sales_daily_rt data_key 20260814; mart_publication_log 2026-08-14 14:47:35 UTC. PASS
+TOTAL-LAG antes: 295530851 (CURRENT-OFFSET 0 vs LOG-START=HIGH em particoes vazias; committed broker -1001)
+TOTAL-LAG depois: 0 (consumer commitou log-start; 9 particoes; vendas nunca tiveram backlog)
+NUMBER_OF_COLUMNS: 0. PASS
+fact_caixa_turno last_event=2026-08-14 13:15Z = stg_turnos max source_ts (sem turno novo). SLA 8h documentada no validator.
+formas/pagamentos last_event 15:05Z < 3600s.
 Smoke produto: PASS
-prod-multivm-validate: FAIL (cdc.lag.not_stuck + freshness.ok)
-prod-multivm-proof coleta: PASS
-Health:
-https://www.torqmind.com.br/ 200
-https://www.torqmind.com.br/api/health 200
-https://hom.torqmind.com.br/ 200
-https://hom.torqmind.com.br/api/health 200
+prod-multivm-validate: PASS (19/19; 1a tentativa pg.health SSH timeout em .8, retry PASS)
+prod-multivm-proof: PASS /tmp/hardening-proof-2026-08-14.json
+Health publico 200: www e hom web/api ~0.10-0.13s
+
+Agent codigo/testes: PASS
+Agent executavel 2.0.5: PENDENTE POS-MERGE — responsabilidade do usuario
 
 12) Isolamento Hom analytics
 ADR docs/adr/2026-08-14-homolog-analytics-isolation.md
 Recomendacao: Opcao B (VM exclusiva). NAO EXECUTADO.
 
 13) Riscos restantes
-- TOTAL-LAG grupo e freshness financeiro/caixa
-- 2 high npm Next 14
-- Agent exe 2.0.5 nao publicado
+- 1 high npm Next 14.2.35 (risco formal, prazo 2026-09-15)
+- Agent exe 2.0.5 nao gerado no Linux; usuario gera no Windows apos merge
 - HTTP nao redireciona para HTTPS
 - Hom e Prod compartilham analytics .9
 - Dividas PG analiticas ate 2026-09-15
-- Bind mount sql/migrations: prod API agora aponta worktree (tem MANIFEST)
-- Compose -p torqmind -f app.yml avisa orphans debezium/redpanda no App; NUNCA --remove-orphans
+- Bind mount sql/migrations: checkout operacional /home/tm/torqmind permanece em 944f9cc ate alinhamento controlado
+- Compose -p torqmind -f app.yml avisa orphans; NUNCA --remove-orphans
+- fact_caixa_turno SLA 8h: se STG turnos avancar e DW nao, e stall real

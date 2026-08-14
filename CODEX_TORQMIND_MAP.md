@@ -6,7 +6,7 @@ Revisão de código usada: **branch `cursor/torqmind-hardening-2026-08-3837` sob
 
 Estado do documento: **fonte canônica de contexto técnico e operacional**
 
-Hardening 2026-08-14: rules/migrador/CI/exceções PG formalizadas. Deploy Hom→Prod de API/Web a partir do worktree `/home/tm/worktrees/torqmind-hardening-2026-08`. Prova: Debezium RUNNING, consumer com 1 membro, publicação `sales_daily_rt` no dia; TOTAL-LAG do grupo ≠ 0 (dívida em tópicos não-venda). Relatório: `docs/ops/HARDENING_2026-08-14.txt`.
+Hardening 2026-08-14: rules/migrador/CI/exceções PG formalizadas. CDC recover de offset abaixo da retenção zerou TOTAL-LAG. Relatório: `docs/ops/HARDENING_2026-08-14.txt`.
 
 Este arquivo substitui as descrições históricas acumuladas neste mapa. Ele registra o que existe no repositório atual, o que foi comprovado e o que ainda precisa de validação.
 
@@ -341,28 +341,30 @@ Hardening 2026-08-14 (`cursor/torqmind-hardening-2026-08-3837`):
 |------|-----------|-----------|
 | compileall API/CDC | worktree remoto | **confirmado em teste** |
 | API static (migrador + registry PG) | unittest local + job `api-static` GHA | **confirmado em teste** |
-| CDC Consumer pytest | 163 passed no worktree | **confirmado em teste** |
+| CDC Consumer pytest | offset recovery + suite no worktree | **confirmado em teste** |
 | Agent unittest | 41 passed no worktree | **confirmado em teste** |
 | Web tests + build | 121 testes; Next 14.2.35 standalone | **confirmado em teste** |
 | npm audit runtime | PostCSS 8.5.26 (override); 1 high residual Next 14.2.35 | **PASS COM RISCO FORMAL** |
 | CI validate | job hermético `docker-compose.ci.yml` + Postgres `torqmind_ci` | **em prova no GHA** |
 | Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 | **confirmado em homologação** |
 | Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS | **confirmado em produção** |
-| `prod-multivm-validate.sh` | 19 checks, 2 falhas: lag e freshness | **FAIL** (pré-existente; §11.1) |
-| `prod-multivm-proof.sh` | coleta PASS | **confirmado em produção** (pacote) |
+| `prod-multivm-validate.sh` | 19/19 OK (retry SSH PG) | **confirmado em produção** |
+| `prod-multivm-proof.sh` | result=PASS | **confirmado em produção** |
 | Debezium `.9` | `torqmind-postgres-cdc` RUNNING, task 0 RUNNING | **confirmado em produção** |
 | CDC member | `torqmind-cdc-consumer-live` Stable, 1 membro | **confirmado em produção** |
-| rpk TOTAL-LAG | 295 530 851; fatos de venda LAG=0 | **FAIL** no critério TOTAL-LAG=0 |
-| `NUMBER_OF_COLUMNS` | 0 nas últimas 2 h | **confirmado em produção** |
-| `sales_daily_rt` | data_key 20260814; log 14:47:35 UTC | **confirmado em produção** |
-| Reset/migrations | nenhuma aplicada; ledger 140 / `138_commission_individual_qty_mode.sql` | **confirmado em produção** |
-| TorqMind-Ops | IDs inalterados desde 05:53 UTC | **confirmado em produção** |
-| Agent `.exe` 2.0.5 | código 2.0.5; publicado 2.0.4 | **pendente** |
+| rpk TOTAL-LAG | 295 530 851 → 0 (commit log-start em partições vazias) | **confirmado em produção** |
+| `NUMBER_OF_COLUMNS` | 0 | **confirmado em produção** |
+| Performance BI | dash hot p50 1.45s p95 1.53s; frio 4.78s; fallback=realtime | **confirmado em produção** |
+| Reset/migrations | nenhuma aplicada em prod/homolog | **confirmado em produção** |
+| TorqMind-Ops | StartedAt desta sessão inalterado (15:25Z backend) | **confirmado em produção** |
+| Agent `.exe` 2.0.5 | código/testes PASS; exe Windows pós-merge | **pendente usuário** |
 | Isolamento analytics Hom | ADR; não executado | **planejado** |
 
-### 11.1 Lag e freshness (não causados por este deploy)
+### 11.1 Lag e freshness
 
-Consumer vivo. TOTAL-LAG infla por tópicos sem catch-up (`stg.planodecontas` ~291M, `stg.localvendas`, `stg.filiais`, dims). Comprovantes/itens/vendas/NFE em LAG 0. Sem rebuild de CDC nesta rodada (sem mudança de slim).
+TOTAL-LAG era fantasma: LOG-START-OFFSET = HIGH-WATERMARK e o grupo ainda reportava CURRENT-OFFSET 0 (broker committed -1001). Vendas sempre em LAG 0. O consumer 848a309 comita log-start nessas partições vazias. TOTAL-LAG=0.
+
+`fact_caixa_turno` só muda no fechamento de turno. STG turnos e DW têm o mesmo `max(source_ts)` (2026-08-14 13:15Z). Validator usa SLA de 8h só nesse domínio; demais críticos permanecem em 3600s.
 
 Gate obrigatório de código:
 
@@ -389,7 +391,7 @@ ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./depl
 
 1. **HTTPS incompleto na borda:** HTTP não redireciona; `www.hom` falha em TLS; HSTS aparece na API, mas não de forma consistente no Web; CSP não foi observado.
 2. **Blast radius homolog/prod:** analytics e CDC compartilhados tornam DDL/rebuild de homolog uma mudança de produção. ADR: `docs/adr/2026-08-14-homolog-analytics-isolation.md` (Opção B preferencial; **não executar** sem aprovação).
-3. **TOTAL-LAG do grupo CDC ≠ 0** e freshness stale em financeiro/caixa/planodecontas — consumer membro ativo; vendas canônicas em LAG 0.
+3. **Freshness de `fact_caixa_turno`:** só atualiza no fechamento de turno; SLA do validator é 8h. Se STG turnos avançar e DW não, é stall.
 4. **Dívidas analíticas PG formalizadas** em `apps/api/app/analytics_pg_exceptions.json` (prazo 2026-09-15): fraude créditos, cheques, budget, solvência. CI impede nova exceção não registrada.
 
 ### P1 — tratar na sequência
