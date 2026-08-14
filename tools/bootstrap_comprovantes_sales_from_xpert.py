@@ -136,6 +136,20 @@ def _to_int(v: Any) -> Optional[int]:
             return None
 
 
+def _cfop_to_int(v: Any) -> Optional[int]:
+    """Xpert grava CFOP como '5.656' (=5656). Nunca usar float→int (vira 5)."""
+    if v is None or v == "":
+        return None
+    s = str(v).strip().replace(".", "").replace(",", "")
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def _to_num(v: Any) -> Optional[float]:
     if v is None or v == "":
         return None
@@ -245,7 +259,7 @@ def upsert_itens(cur, id_empresa: int, rows: Iterable[Dict[str, Any]]) -> int:
         payload = _jsonable(r)
         payload["ID_ITEMCOMPROVANTE"] = iid
         dt = r.get("TORQMIND_DT_EVENTO") or r.get("DATA")
-        cfop = _to_int(r.get("CFOP"))
+        cfop = _cfop_to_int(r.get("CFOP"))
         batch.append(
             (
                 id_empresa,

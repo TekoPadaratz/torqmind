@@ -768,7 +768,12 @@ class MartBuilder:
             "ifNull(i.id_funcionario_shadow, "
             "toInt32OrZero(JSONExtractString(i.payload, 'ID_FUNCIONARIOS')))"
         )
-        cfop = f"ifNull(i.cfop_shadow, toInt32OrZero(replaceAll(JSONExtractString(i.payload, 'CFOP'), '.', '')))"
+        # CFOP no Xpert vem como '5.656' (=5656). Shadow int(float) vira 5 e
+        # envenena ifNull(shadow, payload). Preferir shadow só se >= 100.
+        cfop = (
+            "if(ifNull(i.cfop_shadow, 0) >= 100, i.cfop_shadow, "
+            "toInt32OrZero(replaceAll(JSONExtractString(i.payload, 'CFOP'), '.', '')))"
+        )
         qtd = f"ifNull(i.qtd_shadow, toDecimal64OrZero(JSONExtractString(i.payload, 'QTDE'), 3))"
         total = self._stg_item_total_expr("i")
         desconto = f"ifNull(i.desconto_shadow, toDecimal64OrZero(JSONExtractString(i.payload, 'VLRDESCONTO'), 2))"
