@@ -394,7 +394,7 @@ ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./depl
 
 ### P0 — corrigir primeiro
 
-1. **HTTPS incompleto na borda:** HTTP não redireciona; `www.hom` falha em TLS; HSTS aparece na API, mas não de forma consistente no Web; CSP não foi observado.
+1. **HTTPS na borda:** Cloudflare corrigido em 2026-08-14 (HTTP 301→HTTPS; www/hom HTTPS 200). Revisar HSTS/CSP e `www.hom` residual se ainda aparecer.
 2. **Blast radius homolog/prod:** analytics e CDC compartilhados tornam DDL/rebuild de homolog uma mudança de produção. ADR: `docs/adr/2026-08-14-homolog-analytics-isolation.md` (Opção B preferencial; **não executar** sem aprovação).
 3. **Freshness de `fact_caixa_turno`:** só atualiza no fechamento de turno; SLA do validator é 8h. Se STG turnos avançar e DW não, é stall.
 4. **Dívidas analíticas PG formalizadas** em `apps/api/app/analytics_pg_exceptions.json` (prazo 2026-09-15): fraude créditos, cheques, budget, solvência. CI impede nova exceção não registrada.
