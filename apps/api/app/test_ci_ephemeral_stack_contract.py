@@ -40,11 +40,22 @@ class CiEphemeralStackContractTest(unittest.TestCase):
         self.assertNotIn("prod.app.env", assignments)
         self.assertNotIn("homolog", assignments.lower())
 
-    def test_validate_workflow_uses_ci_compose_project(self) -> None:
+    def test_validate_workflow_uses_gha_postgres_service(self) -> None:
         source = (repo_root() / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn("docker-compose.ci.yml", source)
-        self.assertIn("-p torqmind-ci", source)
+        self.assertIn("postgres:16", source)
+        self.assertIn("PG_HOST: 127.0.0.1", source)
+        self.assertIn("PG_DATABASE: torqmind_ci", source)
+        self.assertIn("APP_ENV: test", source)
+        self.assertIn("TM_EPHEMERAL_LOCAL: \"1\"", source)
         self.assertIn("ci-assert-ephemeral-env.sh", source)
         self.assertIn("python -m app.cli.migrate", source)
+        self.assertIn("app.test_ci_ephemeral_smoke", source)
+        self.assertNotIn("172.30.0.8", source)
         self.assertNotIn("cp .env.e2e.local .env", source)
         self.assertNotIn("docker compose up -d --build\n", source)
+        self.assertNotIn("--remove-orphans", source)
+
+    def test_login_rate_limit_is_skipped_in_test_env(self) -> None:
+        source = (repo_root() / "apps" / "api" / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertIn('str(settings.app_env or "").strip().lower() == "test"', source)
+        self.assertIn('status_code=429', source)

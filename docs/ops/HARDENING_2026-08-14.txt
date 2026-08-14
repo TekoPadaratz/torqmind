@@ -105,7 +105,20 @@ Agent executavel 2.0.5: PENDENTE POS-MERGE — responsabilidade do usuario
 ADR docs/adr/2026-08-14-homolog-analytics-isolation.md
 Recomendacao: Opcao B (VM exclusiva). NAO EXECUTADO.
 
-13) Riscos restantes
+13) CI validate (continuacao)
+Causa original exit 3: docker-compose.yml montava sql/migrations em initdb.
+Causa seguinte: make test dentro da imagem API (pytest ausente, layout /app,
+rate limit 429, suites DB com MOVPRODUTOS).
+Correcao: job validate usa services.postgres:16 (torqmind_ci @ 127.0.0.1),
+APP_ENV=test, migrate no runner, pytest -m "not integration_db",
+smoke login/health, agent tests. Sem 172.30.0.8. Sem compose de prod.
+docker-compose.ci.yml permanece para uso local opcional.
+
+14) Pos-merge Agent Windows (usuario)
+git pull master; gerar torqmind-agent.exe; torqmind-agent.exe --version;
+SHA-256; publicar de forma controlada. Nao bloqueia o merge.
+
+15) Riscos restantes
 - 1 high npm Next 14.2.35 (risco formal, prazo 2026-09-15)
 - Agent exe 2.0.5 nao gerado no Linux; usuario gera no Windows apos merge
 - HTTP nao redireciona para HTTPS
@@ -114,3 +127,4 @@ Recomendacao: Opcao B (VM exclusiva). NAO EXECUTADO.
 - Bind mount sql/migrations: checkout operacional /home/tm/torqmind permanece em 944f9cc ate alinhamento controlado
 - Compose -p torqmind -f app.yml avisa orphans; NUNCA --remove-orphans
 - fact_caixa_turno SLA 8h: se STG turnos avancar e DW nao, e stall real
+- Suites DB antigas (MOVPRODUTOS / make test na imagem API) ficam fora do job validate; nao sao o gate hermetico

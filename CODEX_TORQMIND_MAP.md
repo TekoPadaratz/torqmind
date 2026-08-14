@@ -345,7 +345,7 @@ Hardening 2026-08-14 (`cursor/torqmind-hardening-2026-08-3837`):
 | Agent unittest | 41 passed no worktree | **confirmado em teste** |
 | Web tests + build | 121 testes; Next 14.2.35 standalone | **confirmado em teste** |
 | npm audit runtime | PostCSS 8.5.26 (override); 1 high residual Next 14.2.35 | **PASS COM RISCO FORMAL** |
-| CI validate | job hermético `docker-compose.ci.yml` + Postgres `torqmind_ci` | **em prova no GHA** |
+| CI validate | GHA `services.postgres:16` `torqmind_ci@127.0.0.1` + migrate + pytest unit + smoke login | **em prova no GHA** |
 | Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 | **confirmado em homologação** |
 | Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS | **confirmado em produção** |
 | `prod-multivm-validate.sh` | 19/19 OK (retry SSH PG) | **confirmado em produção** |
@@ -396,7 +396,7 @@ ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./depl
 
 ### P1 — tratar na sequência
 
-5. **Dependências vulneráveis:** auditoria encontrou vulnerabilidades runtime em pacotes npm e Python; atualizar com teste de regressão, sem upgrade cego.
+5. **Dependências Web:** 1 high residual Next 14.2.35; PostCSS 8.5.26 ok. Next 15/16 é breaking (prazo 2026-09-15).
 6. **Migrações com drift:** existem 140 arquivos, prefixos duplicados `012`, `013` e `135`; o reset referencia dois arquivos inexistentes e não acompanha toda a cadeia atual.
 7. **Encoding/checksum:** há migrações legadas fora de UTF-8 e estratégia de checksum que pode divergir entre baseline e aplicação gerenciada.
 8. **Módulos excessivamente grandes:** `repos_mart.py`, `repos_mart_realtime.py` e rotas centrais concentram muita lógica e aumentam risco de regressão.

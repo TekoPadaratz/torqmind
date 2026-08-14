@@ -1,5 +1,5 @@
-# Ephemeral GitHub Actions stack. Never use on production or homolog hosts.
-# No host ports. No initdb mount. Named volumes are project-prefixed and removed by `down -v` on the runner.
+# Optional local hermetic stack. GitHub Actions `validate` uses services.postgres.
+# Never use on production or homolog hosts. No host ports. No initdb mount.
 name: torqmind-ci
 
 services:

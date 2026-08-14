@@ -17,6 +17,8 @@ DB_INTEGRATION_FILES = {
     "test_release_hardening.py",
     "test_sales_retention.py",
     "test_smoke_api.py",
+    "test_ingest_noop_upsert.py",
+    "test_ci_ephemeral_smoke.py",
 }
 
 DB_INTEGRATION_PREFIXES = {
