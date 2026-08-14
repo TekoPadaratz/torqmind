@@ -1,13 +1,22 @@
--- TorqMind - Full Reset (DEV/HOMOLOG ONLY)
--- Rebuilds the database by replaying the official migration chain.
+-- TorqMind - Full Reset (EPHEMERAL LOCAL DEV ONLY)
+-- Rebuilds a disposable local database by replaying historical migrations.
 --
--- Usage:
---   psql -v ON_ERROR_STOP=1 -U postgres -d TORQMIND -f sql/torqmind_reset_db_v2.sql
+-- RETIRED for production and homologation. Homolog is not disposable.
+-- The hardcoded \ir list below is incomplete (stops around 071 and references
+-- files that no longer exist). Do not "fix" it by running in Hom/Prod.
+-- Deterministic inventory: sql/migrations/MANIFEST.json
 --
--- Notes:
--- - This script is destructive and must never be used in production.
--- - After reset, run the application seed to bootstrap master/tenant users:
---     docker compose exec api python -m app.cli.seed
+-- Usage (local ephemeral Postgres only):
+--   TM_ALLOW_RESET=1 TM_RESET_ENV=dev TM_EPHEMERAL_LOCAL=1 \
+--     psql -v ON_ERROR_STOP=1 -v TM_ALLOW_RESET=1 -v TM_RESET_ENV=dev \
+--          -v TM_EPHEMERAL_LOCAL=1 -U postgres -d TORQMIND \
+--          -f sql/torqmind_reset_db_v2.sql
+--
+-- Never:
+-- - production
+-- - homologation
+-- - shared analytics
+-- - customer data
 
 \set ON_ERROR_STOP on
 
@@ -15,12 +24,16 @@ DO $reset_guard$
 DECLARE
   v_allow_reset text := :'TM_ALLOW_RESET';
   v_reset_env text := lower(COALESCE(:'TM_RESET_ENV', ''));
+  v_ephemeral text := COALESCE(:'TM_EPHEMERAL_LOCAL', '0');
 BEGIN
   IF v_allow_reset <> '1' THEN
     RAISE EXCEPTION 'Hard reset refused: TM_ALLOW_RESET=1 is required.';
   END IF;
-  IF v_reset_env NOT IN ('dev', 'homolog') THEN
-    RAISE EXCEPTION 'Hard reset refused: TM_RESET_ENV must be dev or homolog.';
+  IF v_ephemeral <> '1' THEN
+    RAISE EXCEPTION 'Hard reset refused: TM_EPHEMERAL_LOCAL=1 is required. Homolog and production are not disposable.';
+  END IF;
+  IF v_reset_env <> 'dev' THEN
+    RAISE EXCEPTION 'Hard reset refused: TM_RESET_ENV must be dev. Homolog and production resets are forbidden.';
   END IF;
 END;
 $reset_guard$;

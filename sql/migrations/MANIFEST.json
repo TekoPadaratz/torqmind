@@ -1,0 +1,1300 @@
+{
+  "version": 1,
+  "checksum_algorithms": {
+    "v1": "sha256 of raw file bytes (legacy baseline/ledger)",
+    "v2": "sha256 of decoded SQL re-encoded as UTF-8 (managed apply)"
+  },
+  "historical_duplicate_prefixes": {
+    "012": [
+      "012_contasreceberbaixa_contaspagarbaixa.sql",
+      "012_phase1_telegram_critical.sql"
+    ],
+    "013": [
+      "013_etl_fix_valor_pago_baixas.sql",
+      "013_phase3_anonymous_retention.sql"
+    ],
+    "135": [
+      "135_etl_safe_int_float_payload.sql",
+      "135_manager_commission_calc.sql"
+    ]
+  },
+  "bootstrap_destructive_files": [
+    "003_mart_demo.sql"
+  ],
+  "retired_reset": {
+    "script": "sql/torqmind_reset_db_v2.sql",
+    "allowed_env": [
+      "dev"
+    ],
+    "forbidden_env": [
+      "prod",
+      "production",
+      "homolog",
+      "homologacao",
+      "homologation"
+    ],
+    "notes": "Incomplete hardcoded chain (stops ~071, missing files). Local ephemeral only. Homolog is not disposable."
+  },
+  "files": [
+    {
+      "filename": "001_auth.sql",
+      "prefix": "001",
+      "encoding": "utf-8",
+      "sha256_raw": "cb31cadf6f3f596c1d7d4ebbc762b4f2cc2791647cd38705e44dde06d08a0505",
+      "sha256_utf8_normalized": "cb31cadf6f3f596c1d7d4ebbc762b4f2cc2791647cd38705e44dde06d08a0505",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "002_app_rls.sql",
+      "prefix": "002",
+      "encoding": "utf-8",
+      "sha256_raw": "a952662d9eafa312670c6cfeeb7250e4f9aac56160eafb391386ce71977747bf",
+      "sha256_utf8_normalized": "a952662d9eafa312670c6cfeeb7250e4f9aac56160eafb391386ce71977747bf",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "003_mart_demo.sql",
+      "prefix": "003",
+      "encoding": "utf-8",
+      "sha256_raw": "0311a42e4fad5f2a828294661a83ccb3adfde342f2eb897c4ac314d7a83b6515",
+      "sha256_utf8_normalized": "0311a42e4fad5f2a828294661a83ccb3adfde342f2eb897c4ac314d7a83b6515",
+      "kind": "bootstrap_destructive",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "004_risk_insights.sql",
+      "prefix": "004",
+      "encoding": "utf-8",
+      "sha256_raw": "7e329b86bf6a764c4abfa24689d838010b8165c93f2283976a7c40fa8b5bc92c",
+      "sha256_utf8_normalized": "7e329b86bf6a764c4abfa24689d838010b8165c93f2283976a7c40fa8b5bc92c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "005_etl_incremental_scalable.sql",
+      "prefix": "005",
+      "encoding": "utf-8",
+      "sha256_raw": "d3aef518a1a08afbf29490c76a12252d8d20788c1790629abe15a6078c722656",
+      "sha256_utf8_normalized": "d3aef518a1a08afbf29490c76a12252d8d20788c1790629abe15a6078c722656",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "006_ingest_shadow_columns.sql",
+      "prefix": "006",
+      "encoding": "utf-8",
+      "sha256_raw": "a4aff3db4a16f99868f924dca77058a5e998525d3e8a24b61762ef92bb12045a",
+      "sha256_utf8_normalized": "a4aff3db4a16f99868f924dca77058a5e998525d3e8a24b61762ef92bb12045a",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "007_etl_incremental_hot_received.sql",
+      "prefix": "007",
+      "encoding": "utf-8",
+      "sha256_raw": "46e238699428545e5b3e3deb72402618f24f3c192f9ca18c68791d0f70475106",
+      "sha256_utf8_normalized": "46e238699428545e5b3e3deb72402618f24f3c192f9ca18c68791d0f70475106",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "008_run_all_skip_risk_when_no_changes.sql",
+      "prefix": "008",
+      "encoding": "utf-8",
+      "sha256_raw": "0b41828270a31b33358326dd0de9797c50f3e09dbe8afd326f97a6e403e24561",
+      "sha256_utf8_normalized": "0b41828270a31b33358326dd0de9797c50f3e09dbe8afd326f97a6e403e24561",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "009_phase4_moneyleak_health.sql",
+      "prefix": "009",
+      "encoding": "utf-8",
+      "sha256_raw": "1ec6ee9f35fdfd1e14e7802edcf43c50d28f9e5ce52ef3de90e813b1affe3f9d",
+      "sha256_utf8_normalized": "1ec6ee9f35fdfd1e14e7802edcf43c50d28f9e5ce52ef3de90e813b1affe3f9d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "010_phase5_ai_engine.sql",
+      "prefix": "010",
+      "encoding": "utf-8",
+      "sha256_raw": "fd792d644219a256f614e501b89ad6d413d215d06bf5122dea6c83f2a00ecdbd",
+      "sha256_utf8_normalized": "fd792d644219a256f614e501b89ad6d413d215d06bf5122dea6c83f2a00ecdbd",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "011_phase7_notifications.sql",
+      "prefix": "011",
+      "encoding": "utf-8",
+      "sha256_raw": "97d929d766e2a43dce826830b037247fd6b5aaf2e0006dcc48049d438655ee4f",
+      "sha256_utf8_normalized": "97d929d766e2a43dce826830b037247fd6b5aaf2e0006dcc48049d438655ee4f",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "012_contasreceberbaixa_contaspagarbaixa.sql",
+      "prefix": "012",
+      "encoding": "utf-8",
+      "sha256_raw": "4890dbb39a0be396213a22b86834f9a17e0c413a57be9f913a259454921985ea",
+      "sha256_utf8_normalized": "4890dbb39a0be396213a22b86834f9a17e0c413a57be9f913a259454921985ea",
+      "kind": "incremental",
+      "historical_duplicate": true
+    },
+    {
+      "filename": "012_phase1_telegram_critical.sql",
+      "prefix": "012",
+      "encoding": "utf-8",
+      "sha256_raw": "ec0794bf957bddbfdfe22450064263537a8514e72d8e9f2907ff51e4780d9241",
+      "sha256_utf8_normalized": "ec0794bf957bddbfdfe22450064263537a8514e72d8e9f2907ff51e4780d9241",
+      "kind": "incremental",
+      "historical_duplicate": true
+    },
+    {
+      "filename": "013_etl_fix_valor_pago_baixas.sql",
+      "prefix": "013",
+      "encoding": "utf-8",
+      "sha256_raw": "bbfbccf149225e236a7497098c02e94eb9fc35d78dc7a97f67c4182458e4dd49",
+      "sha256_utf8_normalized": "bbfbccf149225e236a7497098c02e94eb9fc35d78dc7a97f67c4182458e4dd49",
+      "kind": "incremental",
+      "historical_duplicate": true
+    },
+    {
+      "filename": "013_phase3_anonymous_retention.sql",
+      "prefix": "013",
+      "encoding": "utf-8",
+      "sha256_raw": "61275b9205f43ee76dcd52b2b36cd98cbef27160a3dc1134469a6169ddd59ee3",
+      "sha256_utf8_normalized": "61275b9205f43ee76dcd52b2b36cd98cbef27160a3dc1134469a6169ddd59ee3",
+      "kind": "incremental",
+      "historical_duplicate": true
+    },
+    {
+      "filename": "014_phase8_competitor_pricing.sql",
+      "prefix": "014",
+      "encoding": "utf-8",
+      "sha256_raw": "900fc791ed95141fe0cebc9581ce2a376ad20ab6ecac79afc43bcd64dd991e99",
+      "sha256_utf8_normalized": "900fc791ed95141fe0cebc9581ce2a376ad20ab6ecac79afc43bcd64dd991e99",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "015_payments_by_comprovante.sql",
+      "prefix": "015",
+      "encoding": "utf-8",
+      "sha256_raw": "959c539210b9faadc3c00cacc380f7052bc1e214bc8faab0277306c6bf7f3c8d",
+      "sha256_utf8_normalized": "959c539210b9faadc3c00cacc380f7052bc1e214bc8faab0277306c6bf7f3c8d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "016_historical_risk_backfill.sql",
+      "prefix": "016",
+      "encoding": "utf-8",
+      "sha256_raw": "2c81932eacce49dfe64b151c923f70728afcf884ca4317e07b89cef0b0b2c7a1",
+      "sha256_utf8_normalized": "2c81932eacce49dfe64b151c923f70728afcf884ca4317e07b89cef0b0b2c7a1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "017_fix_payment_values.sql",
+      "prefix": "017",
+      "encoding": "utf-8",
+      "sha256_raw": "06c73b8edad84fd3c5d92c448cfaabbc297560854cc11952170cd74acc1b72d1",
+      "sha256_utf8_normalized": "06c73b8edad84fd3c5d92c448cfaabbc297560854cc11952170cd74acc1b72d1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "018_cash_module.sql",
+      "prefix": "018",
+      "encoding": "utf-8",
+      "sha256_raw": "a56df60ba33f5b9d5ed3cb3e54422928b1c8cfc1e5ea696fe2f75772e2d134a2",
+      "sha256_utf8_normalized": "a56df60ba33f5b9d5ed3cb3e54422928b1c8cfc1e5ea696fe2f75772e2d134a2",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "019_operational_truth_alignment.sql",
+      "prefix": "019",
+      "encoding": "utf-8",
+      "sha256_raw": "c36a30078c3016ec9f3d53f5494b6107f77952cae3f3dfd660797a9282efc6d1",
+      "sha256_utf8_normalized": "c36a30078c3016ec9f3d53f5494b6107f77952cae3f3dfd660797a9282efc6d1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "020_snapshot_backfill_and_perf.sql",
+      "prefix": "020",
+      "encoding": "utf-8",
+      "sha256_raw": "ef79e39837d654feb13802d158e199096adfb4ebd45753a9e30ed6cb96be25b8",
+      "sha256_utf8_normalized": "ef79e39837d654feb13802d158e199096adfb4ebd45753a9e30ed6cb96be25b8",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "021_platform_backoffice.sql",
+      "prefix": "021",
+      "encoding": "utf-8",
+      "sha256_raw": "33a1bde3a2e0c3e94a55d8cdb64112bd589107dd1107f760559e2c1ef1b41084",
+      "sha256_utf8_normalized": "33a1bde3a2e0c3e94a55d8cdb64112bd589107dd1107f760559e2c1ef1b41084",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "022_etl_incremental_notification_hardening.sql",
+      "prefix": "022",
+      "encoding": "utf-8",
+      "sha256_raw": "a14fe028ad413998fbf2d384b21f208b03e4fbbb3ed2db06057db1f56aef0489",
+      "sha256_utf8_normalized": "a14fe028ad413998fbf2d384b21f208b03e4fbbb3ed2db06057db1f56aef0489",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "023_etl_cycle_orchestration_and_branch_admin.sql",
+      "prefix": "023",
+      "encoding": "utf-8",
+      "sha256_raw": "572131dad9be9a061d6b1ee71e33cc7f085cbb0d3f9a9faacc467e7696a66afd",
+      "sha256_utf8_normalized": "572131dad9be9a061d6b1ee71e33cc7f085cbb0d3f9a9faacc467e7696a66afd",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "024_etl_clock_driven_rollover.sql",
+      "prefix": "024",
+      "encoding": "utf-8",
+      "sha256_raw": "c6d2586bbb5a60818421f7a365d14b466796a17ac931534bb2fc890a161a295d",
+      "sha256_utf8_normalized": "c6d2586bbb5a60818421f7a365d14b466796a17ac931534bb2fc890a161a295d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "025_sales_retention_scope_defaults.sql",
+      "prefix": "025",
+      "encoding": "utf-8",
+      "sha256_raw": "a2576ebed6102764e9a9b7eb81a39786a3e3cfa5406c9c4653c0a93911ffb6bb",
+      "sha256_utf8_normalized": "a2576ebed6102764e9a9b7eb81a39786a3e3cfa5406c9c4653c0a93911ffb6bb",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "026_sales_retention_hotfixes.sql",
+      "prefix": "026",
+      "encoding": "utf-8",
+      "sha256_raw": "4255fe0a0c96eb6eaab585003b669249766871c0f74256b0ec3bc0e9798d984e",
+      "sha256_utf8_normalized": "4255fe0a0c96eb6eaab585003b669249766871c0f74256b0ec3bc0e9798d984e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "027_sales_retention_date_key_hotfix.sql",
+      "prefix": "027",
+      "encoding": "utf-8",
+      "sha256_raw": "951a2e77be0b3283f5bc079e10c31948408f30a92a34d3f852045336c43e618e",
+      "sha256_utf8_normalized": "951a2e77be0b3283f5bc079e10c31948408f30a92a34d3f852045336c43e618e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "028_prod_ready_hotpaths.sql",
+      "prefix": "028",
+      "encoding": "utf-8",
+      "sha256_raw": "4e5be05ad43b2d20ba697f0d48b104246f3a8bd4ff4938fda60976173132968f",
+      "sha256_utf8_normalized": "4e5be05ad43b2d20ba697f0d48b104246f3a8bd4ff4938fda60976173132968f",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "029_product_global_role_constraints.sql",
+      "prefix": "029",
+      "encoding": "utf-8",
+      "sha256_raw": "28902afc5f3a459455cd47e8ba62fb6e8081ab07d401de93f98c2d13d5d49a26",
+      "sha256_utf8_normalized": "28902afc5f3a459455cd47e8ba62fb6e8081ab07d401de93f98c2d13d5d49a26",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "030_user_validity_nullable.sql",
+      "prefix": "030",
+      "encoding": "utf-8",
+      "sha256_raw": "cea03cf1909afee6fcb7032d3fe570fe5fdfb49dd3f994c7cc33d05161c38e07",
+      "sha256_utf8_normalized": "cea03cf1909afee6fcb7032d3fe570fe5fdfb49dd3f994c7cc33d05161c38e07",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "031_risk_events_window_perf.sql",
+      "prefix": "031",
+      "encoding": "utf-8",
+      "sha256_raw": "af3d0a469ba98ef5658dc3f2b5542ded0ae0ef25b9d6273b017f853e0579ad1c",
+      "sha256_utf8_normalized": "af3d0a469ba98ef5658dc3f2b5542ded0ae0ef25b9d6273b017f853e0579ad1c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "032_etl_track_domains.sql",
+      "prefix": "032",
+      "encoding": "utf-8",
+      "sha256_raw": "9e4119fed944771d3b3df91f29d6e5bc6a3fe854595369f35d9e523ec00836f8",
+      "sha256_utf8_normalized": "9e4119fed944771d3b3df91f29d6e5bc6a3fe854595369f35d9e523ec00836f8",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "033_cash_fraud_operational_truth.sql",
+      "prefix": "033",
+      "encoding": "utf-8",
+      "sha256_raw": "fa2a4efe62c771addd6f1b3b6d99b2d238c9ad622863c7d54839ded16ece69ea",
+      "sha256_utf8_normalized": "fa2a4efe62c771addd6f1b3b6d99b2d238c9ad622863c7d54839ded16ece69ea",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "034_snapshot_cache_table.sql",
+      "prefix": "034",
+      "encoding": "utf-8",
+      "sha256_raw": "3f8448820b45ff633e73e994f4ed5ab11c4e3b0b4acb43c6650cd1fac7e86116",
+      "sha256_utf8_normalized": "3f8448820b45ff633e73e994f4ed5ab11c4e3b0b4acb43c6650cd1fac7e86116",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "035_cash_operational_truth_schema_alignment.sql",
+      "prefix": "035",
+      "encoding": "utf-8",
+      "sha256_raw": "b7047f9930e00454a78a752cf160c30e1912deb459a56c749d64d1af4515bd69",
+      "sha256_utf8_normalized": "b7047f9930e00454a78a752cf160c30e1912deb459a56c749d64d1af4515bd69",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "036_operational_publication_overlay_indexes.sql",
+      "prefix": "036",
+      "encoding": "utf-8",
+      "sha256_raw": "e3950dcdf4f6a78a4c10697946fa8ac75bbe09ffff2fdac3bb18d62ace53e622",
+      "sha256_utf8_normalized": "e3950dcdf4f6a78a4c10697946fa8ac75bbe09ffff2fdac3bb18d62ace53e622",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "037_risk_publication_refresh.sql",
+      "prefix": "037",
+      "encoding": "utf-8",
+      "sha256_raw": "61efb6c31f3f12f44fcb7062e384701e7724587fc8f155c8604c86209badf7a0",
+      "sha256_utf8_normalized": "61efb6c31f3f12f44fcb7062e384701e7724587fc8f155c8604c86209badf7a0",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "038_auth_usernames.sql",
+      "prefix": "038",
+      "encoding": "utf-8",
+      "sha256_raw": "966c88433a6655033e00e8004a2f65853549dce994f31f68bb8d457cfd5d9e68",
+      "sha256_utf8_normalized": "966c88433a6655033e00e8004a2f65853549dce994f31f68bb8d457cfd5d9e68",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "039_fact_venda_cancel_sync.sql",
+      "prefix": "039",
+      "encoding": "utf-8",
+      "sha256_raw": "d99a6e13b7052d92f964da9f49bb9d234e51a3c27fe188522baeaed92256f07e",
+      "sha256_utf8_normalized": "d99a6e13b7052d92f964da9f49bb9d234e51a3c27fe188522baeaed92256f07e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "040_business_date_semantics_fix.sql",
+      "prefix": "040",
+      "encoding": "utf-8",
+      "sha256_raw": "0aff27a1ff28d384dc817305cad2ccca641270fcfc335b0a937c5efe29f25c6b",
+      "sha256_utf8_normalized": "0aff27a1ff28d384dc817305cad2ccca641270fcfc335b0a937c5efe29f25c6b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "041_financial_semantics_operational_dashboards.sql",
+      "prefix": "041",
+      "encoding": "utf-8",
+      "sha256_raw": "8c113ecd5cefb25e368beb30c4196a06504e4fe669d0c7a0340f695dc124af11",
+      "sha256_utf8_normalized": "8c113ecd5cefb25e368beb30c4196a06504e4fe669d0c7a0340f695dc124af11",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "042_operational_incremental_fastpath.sql",
+      "prefix": "042",
+      "encoding": "utf-8",
+      "sha256_raw": "0be111212674fbe450a6c55a5d82cd774a22483df4366e5ccfcb9ea98827ca35",
+      "sha256_utf8_normalized": "0be111212674fbe450a6c55a5d82cd774a22483df4366e5ccfcb9ea98827ca35",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "043_operational_incremental_semantics_fix.sql",
+      "prefix": "043",
+      "encoding": "utf-8",
+      "sha256_raw": "0e353b70fb9202a92e32edef9c9d116515f81430f2c0dfef2c4202ceb26987c9",
+      "sha256_utf8_normalized": "0e353b70fb9202a92e32edef9c9d116515f81430f2c0dfef2c4202ceb26987c9",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "044_payment_comprovante_hotpath_refactor.sql",
+      "prefix": "044",
+      "encoding": "utf-8",
+      "sha256_raw": "9e0654ad7648fd5d673bde0c26b3b962392c8ef52cf72b8e7d5d4ef5fefd32cc",
+      "sha256_utf8_normalized": "9e0654ad7648fd5d673bde0c26b3b962392c8ef52cf72b8e7d5d4ef5fefd32cc",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "045_default_scope_today.sql",
+      "prefix": "045",
+      "encoding": "utf-8",
+      "sha256_raw": "e740b5d4bb0793d45bc109d205879f82ca0461dda57e82fe228f8d2bee44af28",
+      "sha256_utf8_normalized": "e740b5d4bb0793d45bc109d205879f82ca0461dda57e82fe228f8d2bee44af28",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "046_risk_events_delta_fine.sql",
+      "prefix": "046",
+      "encoding": "utf-8",
+      "sha256_raw": "7dfe707b3e51928f4e4820d51a44a7139f7831a0963da45c78c29b5be97c11c6",
+      "sha256_utf8_normalized": "7dfe707b3e51928f4e4820d51a44a7139f7831a0963da45c78c29b5be97c11c6",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "047_sales_status_semantics_fix.sql",
+      "prefix": "047",
+      "encoding": "utf-8",
+      "sha256_raw": "ffb1d44eee4234d937cb433f8ba78de2e1aa982091e175f31e1bb90bf1f8fe9c",
+      "sha256_utf8_normalized": "ffb1d44eee4234d937cb433f8ba78de2e1aa982091e175f31e1bb90bf1f8fe9c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "048_active_product_status_dimension.sql",
+      "prefix": "048",
+      "encoding": "utf-8",
+      "sha256_raw": "42559f58f5ff96060f5cad0e62b8e6504b529d33c24263b1c3e7d85e6b19dbe0",
+      "sha256_utf8_normalized": "42559f58f5ff96060f5cad0e62b8e6504b529d33c24263b1c3e7d85e6b19dbe0",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "049_canonical_comprovante_sales_backbone.sql",
+      "prefix": "049",
+      "encoding": "utf-8",
+      "sha256_raw": "c582c13458245e0584889e75dbb75b984bd96d1692a88971a181b041d659a785",
+      "sha256_utf8_normalized": "c582c13458245e0584889e75dbb75b984bd96d1692a88971a181b041d659a785",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "050_canonical_etl_hotpath_perf_fix.sql",
+      "prefix": "050",
+      "encoding": "utf-8",
+      "sha256_raw": "bb338030023542ba50b0fde107705f015c8d8b7a75f7c63a8ed4d317c3ba111a",
+      "sha256_utf8_normalized": "bb338030023542ba50b0fde107705f015c8d8b7a75f7c63a8ed4d317c3ba111a",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "051_canonical_sales_dw_decoupling.sql",
+      "prefix": "051",
+      "encoding": "utf-8",
+      "sha256_raw": "cb75018d4428838b4770ed862ba8281bb43e20fe7a3310250121f3ccc533ba85",
+      "sha256_utf8_normalized": "cb75018d4428838b4770ed862ba8281bb43e20fe7a3310250121f3ccc533ba85",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "052_canonical_sales_bulk_chunking.sql",
+      "prefix": "052",
+      "encoding": "utf-8",
+      "sha256_raw": "1f76cd91388d7f8d4a0645f5e2a78c7b1b3d50465ecec0aeb234f54c1a54b2cb",
+      "sha256_utf8_normalized": "1f76cd91388d7f8d4a0645f5e2a78c7b1b3d50465ecec0aeb234f54c1a54b2cb",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "053_canonical_sales_bulk_maintenance_indexes.sql",
+      "prefix": "053",
+      "encoding": "utf-8",
+      "sha256_raw": "6fc56efaf0046626d24ec2177f0130b7d7e40d8f92b790726152fec18f195fa5",
+      "sha256_utf8_normalized": "6fc56efaf0046626d24ec2177f0130b7d7e40d8f92b790726152fec18f195fa5",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "054_canonical_sales_marts_cleanup.sql",
+      "prefix": "054",
+      "encoding": "utf-8",
+      "sha256_raw": "b81eb386da6260b6431d5f3304005aa6cea8cecfe52fbaba68b337b12979f00e",
+      "sha256_utf8_normalized": "b81eb386da6260b6431d5f3304005aa6cea8cecfe52fbaba68b337b12979f00e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "056_canonical_sales_item_total_repair.sql",
+      "prefix": "056",
+      "encoding": "utf-8",
+      "sha256_raw": "b103c955ebfdd0a7b8b0796749a8d4a4e3dda1c8a167488bdc1c35d07fb78027",
+      "sha256_utf8_normalized": "b103c955ebfdd0a7b8b0796749a8d4a4e3dda1c8a167488bdc1c35d07fb78027",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "057_canonical_item_total_shadow_trigger.sql",
+      "prefix": "057",
+      "encoding": "utf-8",
+      "sha256_raw": "1cd8ae43d0619cbb1e2d4414c9b322f1a50834b85f59317b445588e2854ad18b",
+      "sha256_utf8_normalized": "1cd8ae43d0619cbb1e2d4414c9b322f1a50834b85f59317b445588e2854ad18b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "058_hot_route_snapshot_and_finance_indexes.sql",
+      "prefix": "058",
+      "encoding": "utf-8",
+      "sha256_raw": "2a61a041d043aa560ba69a3f0c4844b07e45e6a3ed4f559042d844f0e93668a7",
+      "sha256_utf8_normalized": "2a61a041d043aa560ba69a3f0c4844b07e45e6a3ed4f559042d844f0e93668a7",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "059_canonical_sales_group_backfill.sql",
+      "prefix": "059",
+      "encoding": "utf-8",
+      "sha256_raw": "bb60f84d9445cdb375f0d8edccf1c29a2e6ba57a8d257dca51a0e641bd0ae978",
+      "sha256_utf8_normalized": "bb60f84d9445cdb375f0d8edccf1c29a2e6ba57a8d257dca51a0e641bd0ae978",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "060_enable_rls_tenant_isolation.sql",
+      "prefix": "060",
+      "encoding": "utf-8",
+      "sha256_raw": "4605c40b4c4baf18be160f7ffeee4164a21e254d3275bbce03ca43feef51a090",
+      "sha256_utf8_normalized": "4605c40b4c4baf18be160f7ffeee4164a21e254d3275bbce03ca43feef51a090",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "061_performance_indexes_and_etl_fixes.sql",
+      "prefix": "061",
+      "encoding": "utf-8",
+      "sha256_raw": "312c84656bbf9078999115cc54580ee47b275260541294b99a6a2f143b5431e5",
+      "sha256_utf8_normalized": "312c84656bbf9078999115cc54580ee47b275260541294b99a6a2f143b5431e5",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "062_fix_risk_engine.sql",
+      "prefix": "062",
+      "encoding": "utf-8",
+      "sha256_raw": "53d76eb949a139cbc948caf26dfad83dfba1be09f26bfecd3c95cbc3cc4e379a",
+      "sha256_utf8_normalized": "53d76eb949a139cbc948caf26dfad83dfba1be09f26bfecd3c95cbc3cc4e379a",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "063_clickhouse_dw_replica_identity.sql",
+      "prefix": "063",
+      "encoding": "utf-8",
+      "sha256_raw": "aabca68bea0dd3623d36c816b0fa8e55e6a528d747dcb8b8a99bb2f42f8b1314",
+      "sha256_utf8_normalized": "aabca68bea0dd3623d36c816b0fa8e55e6a528d747dcb8b8a99bb2f42f8b1314",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "064_core_identity_constraints.sql",
+      "prefix": "064",
+      "encoding": "utf-8",
+      "sha256_raw": "f6dc7e6070a83eff099f19d6fea882793a102b300fa54f19f2b46f1bc4d47835",
+      "sha256_utf8_normalized": "f6dc7e6070a83eff099f19d6fea882793a102b300fa54f19f2b46f1bc4d47835",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "065_upsert_target_constraints.sql",
+      "prefix": "065",
+      "encoding": "utf-8",
+      "sha256_raw": "d9da2492a575b4b84d4259f28f6f782e5089a3d9d181eadc0e9577bc4bb87bde",
+      "sha256_utf8_normalized": "d9da2492a575b4b84d4259f28f6f782e5089a3d9d181eadc0e9577bc4bb87bde",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "066_operational_upsert_constraints.sql",
+      "prefix": "066",
+      "encoding": "utf-8",
+      "sha256_raw": "29dd786419fe9a1ccecdcabf53edfce87d18c7feba7365a4175103611e15d8f0",
+      "sha256_utf8_normalized": "29dd786419fe9a1ccecdcabf53edfce87d18c7feba7365a4175103611e15d8f0",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "067_dw_canonical_sales_trigger_repair.sql",
+      "prefix": "067",
+      "encoding": "utf-8",
+      "sha256_raw": "9b131520fce9a9a9858418fdecb39c9ea45069121f3966b2ae00cb52439fbe4f",
+      "sha256_utf8_normalized": "9b131520fce9a9a9858418fdecb39c9ea45069121f3966b2ae00cb52439fbe4f",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "068_operational_compatibility_repair.sql",
+      "prefix": "068",
+      "encoding": "utf-8",
+      "sha256_raw": "e4c60967af86af395c0c02937b2eab381db2d1e53cee3a221db6a20b64ad1f8b",
+      "sha256_utf8_normalized": "e4c60967af86af395c0c02937b2eab381db2d1e53cee3a221db6a20b64ad1f8b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "069_remaining_operational_indexes.sql",
+      "prefix": "069",
+      "encoding": "utf-8",
+      "sha256_raw": "2a9e46fce5be0fd9c030743c38c2418470e497d1612f81045374717b7920c22e",
+      "sha256_utf8_normalized": "2a9e46fce5be0fd9c030743c38c2418470e497d1612f81045374717b7920c22e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "070_payment_notification_hash_repair.sql",
+      "prefix": "070",
+      "encoding": "utf-8",
+      "sha256_raw": "5e71dbbf01211f4bec05fb41d553a3e61003e2149458a89e016ac260feb6b315",
+      "sha256_utf8_normalized": "5e71dbbf01211f4bec05fb41d553a3e61003e2149458a89e016ac260feb6b315",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "071_payment_notification_hash_schema_compat.sql",
+      "prefix": "071",
+      "encoding": "utf-8",
+      "sha256_raw": "ca408983efb38db8c61a6312f523e7329ab4489c9e02e40f6c76d3caff23dc32",
+      "sha256_utf8_normalized": "ca408983efb38db8c61a6312f523e7329ab4489c9e02e40f6c76d3caff23dc32",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "072_derived_rebuild_runtime_scope.sql",
+      "prefix": "072",
+      "encoding": "utf-8",
+      "sha256_raw": "cb5ba86a83ff20a6f88058060da4d7a5007791e786e845eda5e57c6258f433dc",
+      "sha256_utf8_normalized": "cb5ba86a83ff20a6f88058060da4d7a5007791e786e845eda5e57c6258f433dc",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "073_dim_cliente_watermark_snapshot_fix.sql",
+      "prefix": "073",
+      "encoding": "utf-8",
+      "sha256_raw": "1c0a584552adc5545d15ba979e847ddc2c345c5ee52408a38cdbcf528f7bde95",
+      "sha256_utf8_normalized": "1c0a584552adc5545d15ba979e847ddc2c345c5ee52408a38cdbcf528f7bde95",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "074_stg_nfe.sql",
+      "prefix": "074",
+      "encoding": "utf-8",
+      "sha256_raw": "085d9704155d8430474be82744f740974754899c3ca4a68ec381cb0089a5937a",
+      "sha256_utf8_normalized": "085d9704155d8430474be82744f740974754899c3ca4a68ec381cb0089a5937a",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "075_comprovante_situacao3_business_ignore.sql",
+      "prefix": "075",
+      "encoding": "utf-8",
+      "sha256_raw": "100b05e1faffc74eb7fb83cb5186ac76913537cd184113a29470eb5d837e95a1",
+      "sha256_utf8_normalized": "100b05e1faffc74eb7fb83cb5186ac76913537cd184113a29470eb5d837e95a1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "076_competitor_pricing_full_schema.sql",
+      "prefix": "076",
+      "encoding": "utf-8",
+      "sha256_raw": "9805d35adfcdff5cd4f3ae12ae4d0628d7c863d87c69513a0b47453349845cf1",
+      "sha256_utf8_normalized": "9805d35adfcdff5cd4f3ae12ae4d0628d7c863d87c69513a0b47453349845cf1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "077_competitor_pricing_rebuild.sql",
+      "prefix": "077",
+      "encoding": "utf-8",
+      "sha256_raw": "531e5c9578a2ddd7c5f7185427aa58f7a983da8db912b0130984099136bef7b5",
+      "sha256_utf8_normalized": "531e5c9578a2ddd7c5f7185427aa58f7a983da8db912b0130984099136bef7b5",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "078_competitor_price_items_updated_at.sql",
+      "prefix": "078",
+      "encoding": "utf-8",
+      "sha256_raw": "7199199967f8cad16057bf06889a70644b67d4d9522b4be4bd4a38cdd04993e5",
+      "sha256_utf8_normalized": "7199199967f8cad16057bf06889a70644b67d4d9522b4be4bd4a38cdd04993e5",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "079_screen_permissions_and_kiosk_role.sql",
+      "prefix": "079",
+      "encoding": "utf-8",
+      "sha256_raw": "f6d0ee185556a5cff79ec9395b097bfd22b0c8668abf1c98c7d7c98419726894",
+      "sha256_utf8_normalized": "f6d0ee185556a5cff79ec9395b097bfd22b0c8668abf1c98c7d7c98419726894",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "080_customer_screen_mart.sql",
+      "prefix": "080",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "e7ee34c057e29a50cd6ee50bd71832c9c8d7f64c361b45a86f617427a3bed56e",
+      "sha256_utf8_normalized": "3afc2e3916a2c8918168f5b19349596bde8204479fb4bea6c5941189f2b79fc4",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "081_customer_delinquency_mart.sql",
+      "prefix": "081",
+      "encoding": "utf-8",
+      "sha256_raw": "832be45e6a2689cced36b3f68e57426eb0de5504c1685b06577c35af0025a3c9",
+      "sha256_utf8_normalized": "832be45e6a2689cced36b3f68e57426eb0de5504c1685b06577c35af0025a3c9",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "082_filial_params.sql",
+      "prefix": "082",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "ce25676ed67ca3b27c314d31bfedc3387ac962d82fb5f909abbacea4f741d0cc",
+      "sha256_utf8_normalized": "24b16c105b7fa2686b9f7f7ba32aa1244c3f03ce381ef6770d4f9dcfd1d7c70d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "083_profit_management.sql",
+      "prefix": "083",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "2b03f94d16ced9a1ecb4216370e0a0b0617cde34eb2d537a75318f3a3b9d8c26",
+      "sha256_utf8_normalized": "da821e1947249a6ad2864874dbad0026f2c4c2515d34f9e8a3a08649b1d0e1f6",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "084_delinquency_purchase_columns.sql",
+      "prefix": "084",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "a52b76e5ed91922b5658e189aadb88761fba0ca532769c1c241014af84c08fb3",
+      "sha256_utf8_normalized": "c8541769dac88e68f85b567d4945777a02a3e1be53aca9f25daeb1d8e817a400",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "085_commission_config.sql",
+      "prefix": "085",
+      "encoding": "utf-8",
+      "sha256_raw": "325ade5ec5d2a5a2bf715c2868eb3bb4bc0bbac2fb6df61edc382bc6f29fc371",
+      "sha256_utf8_normalized": "325ade5ec5d2a5a2bf715c2868eb3bb4bc0bbac2fb6df61edc382bc6f29fc371",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "086_commission_manager_config.sql",
+      "prefix": "086",
+      "encoding": "utf-8",
+      "sha256_raw": "d8661033fcd99b75774a39409ada1f8193bd78e5bed237a73efbc13892c5d98a",
+      "sha256_utf8_normalized": "d8661033fcd99b75774a39409ada1f8193bd78e5bed237a73efbc13892c5d98a",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "087_financeiro_statement_timeout.sql",
+      "prefix": "087",
+      "encoding": "utf-8",
+      "sha256_raw": "9ea4f3405af6ec821a4d4270f16a939fa8672a81e39bfdd3241adc40cab56c01",
+      "sha256_utf8_normalized": "9ea4f3405af6ec821a4d4270f16a939fa8672a81e39bfdd3241adc40cab56c01",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "088_stg_troca_forma_pgto.sql",
+      "prefix": "088",
+      "encoding": "utf-8",
+      "sha256_raw": "00051dc3a13a4402e9bc704f3cfd392601af40549db88e07ce0bebe1a8442e2c",
+      "sha256_utf8_normalized": "00051dc3a13a4402e9bc704f3cfd392601af40549db88e07ce0bebe1a8442e2c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "089_password_reset_tokens_secure.sql",
+      "prefix": "089",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "9ce61a20d6c4daa790cd5bff4612f09c9c232d3d313827b424457be7a8022f8e",
+      "sha256_utf8_normalized": "d09489c2be45268a7c5d2a014e7f9393563636a976f3c43f03b94305c4463d96",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "090_cash_open_notifications_refresh_marts.sql",
+      "prefix": "090",
+      "encoding": "utf-8",
+      "sha256_raw": "3b7ee34f98210172c4c9fe15ccb57a11d083c2e158034617902d8d5982eb6780",
+      "sha256_utf8_normalized": "3b7ee34f98210172c4c9fe15ccb57a11d083c2e158034617902d8d5982eb6780",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "091_totp_two_factor_auth.sql",
+      "prefix": "091",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "35e0acdf35cd446fc8a271976733e4c0dc25798cc195390b28972351df768586",
+      "sha256_utf8_normalized": "aadda75654e2e1f78c253d54eb01534003e1b8fc1c3a66c088081af07efcb678",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "092_company_branding.sql",
+      "prefix": "092",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "5ce5fc2f7ab89221fa54885ca4ba71f6e01c8ffa3ef26f4447c3860358737a83",
+      "sha256_utf8_normalized": "f427dea054c6e1cbee8ee730398f4c51696ebb70b31578c121a3a667cf44601b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "093_delinquency_refresh_advisory_lock.sql",
+      "prefix": "093",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "ba6edd51ca523c2d94b3b94f69b9a2091b4861b572bca2c0a68f3545231b9eb6",
+      "sha256_utf8_normalized": "acf34b6d4eb4c5e92444a2da3fa3eb52826129b8b45c76f8fd335a8b6566d27c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "094_delinquency_exclude_phantom_titles.sql",
+      "prefix": "094",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "8400026ae4ea90d7a65bb5e967aec47f8bfd17e69b652520161b1ad8ea10439a",
+      "sha256_utf8_normalized": "402b093cc21acf1cf3ce01e196a41f8be50dddef43ab7851757b5b9adacc20a2",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "095_branch_apelido.sql",
+      "prefix": "095",
+      "encoding": "utf-8",
+      "sha256_raw": "ebff9a14c7f22ab2e17ec37260cb883200f71f02e205a9dbc9961b15a03e091e",
+      "sha256_utf8_normalized": "ebff9a14c7f22ab2e17ec37260cb883200f71f02e205a9dbc9961b15a03e091e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "096_cheques_pendentes.sql",
+      "prefix": "096",
+      "encoding": "utf-8",
+      "sha256_raw": "8ccc7645d910f892cd70e893a46f411c2932b44b8f6103b0fb73865182e1b69c",
+      "sha256_utf8_normalized": "8ccc7645d910f892cd70e893a46f411c2932b44b8f6103b0fb73865182e1b69c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "097_gestao_orcamentaria.sql",
+      "prefix": "097",
+      "encoding": "utf-8",
+      "sha256_raw": "7e79ecc8d7370a17d31a8d9f102001e533f18a58156700a0a123a760293bdce4",
+      "sha256_utf8_normalized": "7e79ecc8d7370a17d31a8d9f102001e533f18a58156700a0a123a760293bdce4",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "098_liquidez_solvencia.sql",
+      "prefix": "098",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "49dd3b095a529d6f4c62cdf08d262c3d95b710e1f3e98e7cfc53ddc77b01ea24",
+      "sha256_utf8_normalized": "3737241900ae18cca2dde57b6858df31c0a3b418374f922b685ea599302c30be",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "099_liquidez_estoque.sql",
+      "prefix": "099",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "3bbaac64fd8a5a4e3c110770916a698c3d1ae0b64d8a7d765bdd9a159ba4996b",
+      "sha256_utf8_normalized": "0cf705b5f73d3d4d211b674fa061e1c6a7ead10eb26d79972e283962f027ba5c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "100_liquidez_estoque_sensor.sql",
+      "prefix": "100",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "f5cedcb7148d85fdc66c6522d3b2f2490919cdf78b0ca439918f0d5e79cc1726",
+      "sha256_utf8_normalized": "ccfc0f5074a08811514f71513fcb39e8094f613398667f57d96117931588a8f8",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "101_estoque_ingest_align.sql",
+      "prefix": "101",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "d19443d7a669092052184b760cdd0f83d2a68968192b54b43844cd48b48b6d72",
+      "sha256_utf8_normalized": "039aee6cab3e284e55d5928f2304ad5ec09fb53d5893fe2ae4650d8d1c90a2e9",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "102_cheques_rework.sql",
+      "prefix": "102",
+      "encoding": "legacy-cp1252",
+      "sha256_raw": "b281a89d8062a2d0aa299fa52fe0a68fbca68467ce5078040d33eabde833f7ae",
+      "sha256_utf8_normalized": "d83e6cdd8311b4131327a3bd2946e130c01d23dc7ce0df843506f9f0d47d333d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "103_creditos_antifraude.sql",
+      "prefix": "103",
+      "encoding": "utf-8",
+      "sha256_raw": "c1b6a2fb9cc4a1a97ce8c476eab030109606e187ef0f865486d7bc0a115f76a3",
+      "sha256_utf8_normalized": "c1b6a2fb9cc4a1a97ce8c476eab030109606e187ef0f865486d7bc0a115f76a3",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "104_ticket_combustivel.sql",
+      "prefix": "104",
+      "encoding": "utf-8",
+      "sha256_raw": "f0cdbc19df7d0eea53e35e0bcb9717905ff7a31e28980b774a9ed895027a9dd6",
+      "sha256_utf8_normalized": "f0cdbc19df7d0eea53e35e0bcb9717905ff7a31e28980b774a9ed895027a9dd6",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "105_gestao_orcamentaria_refresh.sql",
+      "prefix": "105",
+      "encoding": "utf-8",
+      "sha256_raw": "b9860fe49d36b65da222aca7182d5f4aa5989dc3faf2293fec178e5e8bd6a546",
+      "sha256_utf8_normalized": "b9860fe49d36b65da222aca7182d5f4aa5989dc3faf2293fec178e5e8bd6a546",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "106_solvencia_itens.sql",
+      "prefix": "106",
+      "encoding": "utf-8",
+      "sha256_raw": "20e78c2066bd4bcb84e161fc378885f6f06700608a2a31c2fcf6df7f7c00d817",
+      "sha256_utf8_normalized": "20e78c2066bd4bcb84e161fc378885f6f06700608a2a31c2fcf6df7f7c00d817",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "107_solvencia_manual_mensal.sql",
+      "prefix": "107",
+      "encoding": "utf-8",
+      "sha256_raw": "471c61aebef56a532e6546a882acfecc032dcfdce025033a47e1397fb843012b",
+      "sha256_utf8_normalized": "471c61aebef56a532e6546a882acfecc032dcfdce025033a47e1397fb843012b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "108_solvencia_asof_ativos.sql",
+      "prefix": "108",
+      "encoding": "utf-8",
+      "sha256_raw": "55dd9cb22925018e07445c1fb4d715b57c3365f5fd8072e3245dde5998b8be31",
+      "sha256_utf8_normalized": "55dd9cb22925018e07445c1fb4d715b57c3365f5fd8072e3245dde5998b8be31",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "109_solvencia_asof_ancorado.sql",
+      "prefix": "109",
+      "encoding": "utf-8",
+      "sha256_raw": "cd1ec51219dffd563efa514b78b83f7a1caa51fb68924ed1cdd5d66e034e048b",
+      "sha256_utf8_normalized": "cd1ec51219dffd563efa514b78b83f7a1caa51fb68924ed1cdd5d66e034e048b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "110_solvencia_cartoes_split.sql",
+      "prefix": "110",
+      "encoding": "utf-8",
+      "sha256_raw": "9133dbe34f28789c3533b3141b514c7bc0c2dbecc865107828b4c27954a079c4",
+      "sha256_utf8_normalized": "9133dbe34f28789c3533b3141b514c7bc0c2dbecc865107828b4c27954a079c4",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "111_anp_compliance.sql",
+      "prefix": "111",
+      "encoding": "utf-8",
+      "sha256_raw": "ebf81aff388c28c8c290dcad70bf24fd6d47020002647126702dc3301483e612",
+      "sha256_utf8_normalized": "ebf81aff388c28c8c290dcad70bf24fd6d47020002647126702dc3301483e612",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "112_solvencia_dinheiro_editavel.sql",
+      "prefix": "112",
+      "encoding": "utf-8",
+      "sha256_raw": "6e93c859f56761e906ec00643aa9107d4bbd915172430f3588e1dd51ccf350c1",
+      "sha256_utf8_normalized": "6e93c859f56761e906ec00643aa9107d4bbd915172430f3588e1dd51ccf350c1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "113_solvencia_bancos_contas.sql",
+      "prefix": "113",
+      "encoding": "utf-8",
+      "sha256_raw": "b2f0af05a0a5f9a506c88ed1bb1f66482e6b6a514fdfc4e363ca3df8675c61be",
+      "sha256_utf8_normalized": "b2f0af05a0a5f9a506c88ed1bb1f66482e6b6a514fdfc4e363ca3df8675c61be",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "114_dre_despesas_plano_contas.sql",
+      "prefix": "114",
+      "encoding": "utf-8",
+      "sha256_raw": "7ed62186d75cc1fc8d56c0c0682bded9cb5d15299b1a1a2967ea7aeaa82ce119",
+      "sha256_utf8_normalized": "7ed62186d75cc1fc8d56c0c0682bded9cb5d15299b1a1a2967ea7aeaa82ce119",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "115_dre_despesas_movlctos.sql",
+      "prefix": "115",
+      "encoding": "utf-8",
+      "sha256_raw": "80d328e2cb707daad6ec0c86646a05fc80e4933c46a5dbd6d82699bfdca822e1",
+      "sha256_utf8_normalized": "80d328e2cb707daad6ec0c86646a05fc80e4933c46a5dbd6d82699bfdca822e1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "116_screen_panel_permissions_backfill.sql",
+      "prefix": "116",
+      "encoding": "utf-8",
+      "sha256_raw": "64d5223d0bded134cb195cee25c4015f5dab93302df23d621dfdea4826655f0a",
+      "sha256_utf8_normalized": "64d5223d0bded134cb195cee25c4015f5dab93302df23d621dfdea4826655f0a",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "117_default_full_product_screens.sql",
+      "prefix": "117",
+      "encoding": "utf-8",
+      "sha256_raw": "9c93744e31567913d9ac649e0115db425869d6ac6bcf7c1f86b34b4bde99b96c",
+      "sha256_utf8_normalized": "9c93744e31567913d9ac649e0115db425869d6ac6bcf7c1f86b34b4bde99b96c",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "118_fraud_credito_funcionario.sql",
+      "prefix": "118",
+      "encoding": "utf-8",
+      "sha256_raw": "57b28451feca8b81f76bb77d8c13b7b3fa486b43192637df759643ef83862bdb",
+      "sha256_utf8_normalized": "57b28451feca8b81f76bb77d8c13b7b3fa486b43192637df759643ef83862bdb",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "119_cliente_preco_fixo.sql",
+      "prefix": "119",
+      "encoding": "utf-8",
+      "sha256_raw": "e6931ab66462dbaa9253aac76473dd0495de5d4644ecba0a21f9b3ebd7bb9e58",
+      "sha256_utf8_normalized": "e6931ab66462dbaa9253aac76473dd0495de5d4644ecba0a21f9b3ebd7bb9e58",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "120_fraud_credito_funcionario_limites_entidade.sql",
+      "prefix": "120",
+      "encoding": "utf-8",
+      "sha256_raw": "f480083fb52ee4bb2a3fd39d9cf55470f9a112ce383be555ab86fe76c845e126",
+      "sha256_utf8_normalized": "f480083fb52ee4bb2a3fd39d9cf55470f9a112ce383be555ab86fe76c845e126",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "121_fraud_credito_funcionario_operador_via_nfe.sql",
+      "prefix": "121",
+      "encoding": "utf-8",
+      "sha256_raw": "aa14e95967ac6ac80388c1f2023adea5074853ccbf9757281d2f4cac99e4c530",
+      "sha256_utf8_normalized": "aa14e95967ac6ac80388c1f2023adea5074853ccbf9757281d2f4cac99e4c530",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "122_fraud_credito_funcionario_cr_filter_fixo.sql",
+      "prefix": "122",
+      "encoding": "utf-8",
+      "sha256_raw": "a0dd3e4a80a7ebf069319664fcc0ad62ee97a21f0857f3be4274614609c8ea32",
+      "sha256_utf8_normalized": "a0dd3e4a80a7ebf069319664fcc0ad62ee97a21f0857f3be4274614609c8ea32",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "123_fraud_credito_funcionario_grupo_entidade.sql",
+      "prefix": "123",
+      "encoding": "utf-8",
+      "sha256_raw": "e54e6ddeb92fa20de4a39f8cf2c586f9955f0a9852e9d81d7a887dd14460332b",
+      "sha256_utf8_normalized": "e54e6ddeb92fa20de4a39f8cf2c586f9955f0a9852e9d81d7a887dd14460332b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "124_fraud_credito_funcionario_cr_dt_evento.sql",
+      "prefix": "124",
+      "encoding": "utf-8",
+      "sha256_raw": "7552de7f7af6306d5fa1386734280cdaf67e8f417562f645f773b77700930eed",
+      "sha256_utf8_normalized": "7552de7f7af6306d5fa1386734280cdaf67e8f417562f645f773b77700930eed",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "125_preco_fixo_alertas_config.sql",
+      "prefix": "125",
+      "encoding": "utf-8",
+      "sha256_raw": "b0437266852923f3e2d8943f005554a127b2e7df61641ea1ff96588d2693a9df",
+      "sha256_utf8_normalized": "b0437266852923f3e2d8943f005554a127b2e7df61641ea1ff96588d2693a9df",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "126_solvencia_movbancos_ajuste_plano.sql",
+      "prefix": "126",
+      "encoding": "utf-8",
+      "sha256_raw": "abe60526b0f479a8bb455a7f29c65681a857b078b9c56e5bfc099ec26dd4d220",
+      "sha256_utf8_normalized": "abe60526b0f479a8bb455a7f29c65681a857b078b9c56e5bfc099ec26dd4d220",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "127_solvencia_movbancos_ajuste_plano_expand.sql",
+      "prefix": "127",
+      "encoding": "utf-8",
+      "sha256_raw": "d869b09d706b127aef3cf8b45f6625346177e84a1454d4ef12c6aee00538bb89",
+      "sha256_utf8_normalized": "d869b09d706b127aef3cf8b45f6625346177e84a1454d4ef12c6aee00538bb89",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "128_platform_email_profile.sql",
+      "prefix": "128",
+      "encoding": "utf-8",
+      "sha256_raw": "34a11e7073270dbdd76d76f7334af85e55a4a6cbd2444f22fcf3e62d346b73d7",
+      "sha256_utf8_normalized": "34a11e7073270dbdd76d76f7334af85e55a4a6cbd2444f22fcf3e62d346b73d7",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "129_platform_email_smtp_config.sql",
+      "prefix": "129",
+      "encoding": "utf-8",
+      "sha256_raw": "779ee6d90715e45860adbd6f8d5cc848fe49f7fe456014d6bb75da68da2d71ac",
+      "sha256_utf8_normalized": "779ee6d90715e45860adbd6f8d5cc848fe49f7fe456014d6bb75da68da2d71ac",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "130_stg_afericoes_bicos.sql",
+      "prefix": "130",
+      "encoding": "utf-8",
+      "sha256_raw": "8cdeb0e5b5c5ed1d267e58b89f880a2de6b104200002f13df722efbf7bcfbe31",
+      "sha256_utf8_normalized": "8cdeb0e5b5c5ed1d267e58b89f880a2de6b104200002f13df722efbf7bcfbe31",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "131_stg_afericoes_bicos_shadow.sql",
+      "prefix": "131",
+      "encoding": "utf-8",
+      "sha256_raw": "9af5b302da0bd7ac75b57740e0b4e3eedbe0646ec8c3981ab6088b3c8acab3b1",
+      "sha256_utf8_normalized": "9af5b302da0bd7ac75b57740e0b4e3eedbe0646ec8c3981ab6088b3c8acab3b1",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "132_screen_finance_despesas_team.sql",
+      "prefix": "132",
+      "encoding": "utf-8",
+      "sha256_raw": "b6cc933232776771630b6b1735d07672fd588537e62621a1ca2efd4c0f7ab80d",
+      "sha256_utf8_normalized": "b6cc933232776771630b6b1735d07672fd588537e62621a1ca2efd4c0f7ab80d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "133_ticket_combustivel_include_zero_valor.sql",
+      "prefix": "133",
+      "encoding": "utf-8",
+      "sha256_raw": "028cbfd45be76aa35355517790a646ad868d32385bfa1882655dc4906044642b",
+      "sha256_utf8_normalized": "028cbfd45be76aa35355517790a646ad868d32385bfa1882655dc4906044642b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "134_employee_cost_manual.sql",
+      "prefix": "134",
+      "encoding": "utf-8",
+      "sha256_raw": "028d1bc467459025cec19e9248a567d549cafa66c48bd5234b508f17f3ebcb5e",
+      "sha256_utf8_normalized": "028d1bc467459025cec19e9248a567d549cafa66c48bd5234b508f17f3ebcb5e",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "135_etl_safe_int_float_payload.sql",
+      "prefix": "135",
+      "encoding": "utf-8",
+      "sha256_raw": "6b36151856f288195e93d56bb7f90eb308b94079c02c2a590c41fddfcad6a23e",
+      "sha256_utf8_normalized": "6b36151856f288195e93d56bb7f90eb308b94079c02c2a590c41fddfcad6a23e",
+      "kind": "incremental",
+      "historical_duplicate": true
+    },
+    {
+      "filename": "135_manager_commission_calc.sql",
+      "prefix": "135",
+      "encoding": "utf-8",
+      "sha256_raw": "4d8a0b63d5aca968bcf8c151719ccf5ee15d2c0473d358f5d201a5edbb85b1c1",
+      "sha256_utf8_normalized": "4d8a0b63d5aca968bcf8c151719ccf5ee15d2c0473d358f5d201a5edbb85b1c1",
+      "kind": "incremental",
+      "historical_duplicate": true
+    },
+    {
+      "filename": "136_commission_product_exclude.sql",
+      "prefix": "136",
+      "encoding": "utf-8",
+      "sha256_raw": "1ffdb8ede9f1d9be241a61519403a88fbbd23fa10cba3f143b7a76cd72a1ec2d",
+      "sha256_utf8_normalized": "1ffdb8ede9f1d9be241a61519403a88fbbd23fa10cba3f143b7a76cd72a1ec2d",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "137_commission_tier_qty.sql",
+      "prefix": "137",
+      "encoding": "utf-8",
+      "sha256_raw": "411f5723364b7e8b727716a8001f2a1d581661926685b934c69e5872dfbcbd5b",
+      "sha256_utf8_normalized": "411f5723364b7e8b727716a8001f2a1d581661926685b934c69e5872dfbcbd5b",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "138_commission_individual_qty_mode.sql",
+      "prefix": "138",
+      "encoding": "utf-8",
+      "sha256_raw": "9e7dbbd861260b0739f94b189b7f4ba69c3b7b3b826e4b43c8d02fd7bb6fd4e4",
+      "sha256_utf8_normalized": "9e7dbbd861260b0739f94b189b7f4ba69c3b7b3b826e4b43c8d02fd7bb6fd4e4",
+      "kind": "incremental",
+      "historical_duplicate": false
+    }
+  ]
+}

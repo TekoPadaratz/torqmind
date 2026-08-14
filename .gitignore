@@ -54,6 +54,7 @@ arquivo.dump
 *.sql
 !sql/clickhouse/streaming/*.sql
 !sql/migrations/*.sql
+!sql/ci/*.sql
 *.tar.gz
 apps/cdc_consumer/torqmind_cdc_consumer.egg-info/
 tmp/

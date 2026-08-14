@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 
-from confluent_kafka import Consumer, KafkaError, KafkaException
+from confluent_kafka import Consumer, KafkaError, KafkaException, TopicPartition
 
 from .clickhouse_writer import ClickHouseWriter
 from .config import settings
@@ -19,6 +19,7 @@ from .state import ConsumerState
 logger = get_logger("main")
 
 _shutdown = False
+_recovered_assignment_keys: set[tuple[str, int]] = set()
 
 
 class MartRefreshWorker:
@@ -130,6 +131,104 @@ def get_topics() -> list[str]:
     return []
 
 
+def plan_log_start_seek(committed_offset: int, log_start: int) -> int | None:
+    """Seek target when a committed offset sits below broker retention.
+
+    Retention can raise LOG-START-OFFSET until it equals the high watermark.
+    rpk then reports TOTAL-LAG = high - 0 even though the partition is empty.
+    Seeking to log_start does not skip live messages: nothing remains below it.
+    Never seek to log_end independently of log_start.
+    """
+    if committed_offset < 0:
+        return None
+    if committed_offset >= log_start:
+        return None
+    return log_start
+
+
+def recover_assignment_offsets(
+    consumer: Consumer,
+    partitions: list[TopicPartition],
+    *,
+    reassign: bool = True,
+) -> list[TopicPartition]:
+    """Move committed offsets that sit below broker retention up to log-start.
+
+    Does not seek to log-end independently and does not drop live messages.
+    When reassign is false (poll-time OFFSET_OUT_OF_RANGE), only seek the
+    recovered partitions so the rest of the assignment stays intact.
+    """
+    assigned: list[TopicPartition] = []
+    recovered: list[TopicPartition] = []
+    try:
+        for partition in partitions:
+            watermarks = consumer.get_watermark_offsets(
+                TopicPartition(partition.topic, partition.partition),
+                timeout=10,
+            )
+            log_start, _log_end = watermarks
+            committed = consumer.committed(
+                [TopicPartition(partition.topic, partition.partition)],
+                timeout=10,
+            )
+            committed_offset = committed[0].offset if committed else -1
+            seek_to = plan_log_start_seek(committed_offset, log_start)
+            if seek_to is None and log_start == _log_end and log_start > 0:
+                # Empty retained partition: the client may already be at log-start
+                # while the broker group still reports CURRENT-OFFSET 0.
+                seek_to = log_start
+            if seek_to is not None:
+                logger.warning(
+                    "offset_below_log_start",
+                    topic=partition.topic,
+                    partition=partition.partition,
+                    committed_offset=committed_offset,
+                    log_start=log_start,
+                )
+                repaired = TopicPartition(partition.topic, partition.partition, seek_to)
+                assigned.append(repaired)
+                recovered.append(repaired)
+            else:
+                assigned.append(partition)
+        if reassign:
+            consumer.assign(assigned)
+        else:
+            for repaired in recovered:
+                consumer.seek(repaired)
+        if recovered:
+            consumer.commit(offsets=recovered, asynchronous=False)
+            logger.info("recovered_stale_offsets", count=len(recovered))
+        return recovered
+    except Exception:
+        logger.exception("offset_recovery_failed")
+        if reassign:
+            consumer.assign(partitions)
+        return []
+
+
+def recover_stale_assignment(consumer: Consumer) -> list[TopicPartition]:
+    """Main-thread repair for committed offsets below broker retention.
+
+    Uses the librdkafka default assignor (no on_assign callback). Checking
+    assignment() after poll avoids callback deadlocks and still seeks only
+    empty retained partitions to log-start.
+    """
+    assigned = consumer.assignment() or []
+    pending = [
+        partition
+        for partition in assigned
+        if (partition.topic, partition.partition) not in _recovered_assignment_keys
+    ]
+    if not pending:
+        return []
+    recovered = recover_assignment_offsets(consumer, pending, reassign=False)
+    for partition in pending:
+        _recovered_assignment_keys.add((partition.topic, partition.partition))
+    if pending:
+        logger.info("assignment_offsets_checked", count=len(pending), recovered=len(recovered))
+    return recovered
+
+
 def run() -> None:
     """Main consumer loop."""
     global _shutdown
@@ -166,13 +265,13 @@ def run() -> None:
         consumer.subscribe(topics)
         logger.info("subscribed_topics", topics=topics)
     else:
-        # Use pattern subscription
         consumer.subscribe([settings.cdc_topic_pattern])
         logger.info("subscribed_pattern", pattern=settings.cdc_topic_pattern)
 
     try:
         while not _shutdown:
             msg = consumer.poll(timeout=settings.cdc_poll_timeout_seconds)
+            recover_stale_assignment(consumer)
 
             if msg is None:
                 # No message; check if we should flush
@@ -183,6 +282,13 @@ def run() -> None:
             error = msg.error()
             if error:
                 if error.code() == KafkaError._PARTITION_EOF:
+                    continue
+                if error.code() == KafkaError._OFFSET_OUT_OF_RANGE:
+                    recover_assignment_offsets(
+                        consumer,
+                        [TopicPartition(msg.topic(), msg.partition())],
+                        reassign=False,
+                    )
                     continue
                 logger.error("kafka_error", error=str(error))
                 if error.code() in (KafkaError._ALL_BROKERS_DOWN, KafkaError._FATAL):

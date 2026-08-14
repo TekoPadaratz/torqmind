@@ -13,10 +13,10 @@
     "test:currency-format": "node --test app/lib/currency-format.test.mjs"
   },
   "dependencies": {
-    "next": "14.2.5",
+    "next": "14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "axios": "1.7.2",
+    "axios": "1.19.0",
     "jwt-decode": "4.0.0",
     "recharts": "2.12.7"
   },
@@ -25,5 +25,10 @@
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
     "typescript": "5.5.4"
+  },
+  "overrides": {
+    "lodash": "4.18.1",
+    "nanoid": "3.3.18",
+    "postcss": "8.5.26"
   }
 }

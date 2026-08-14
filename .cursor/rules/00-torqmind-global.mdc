@@ -46,7 +46,15 @@ torqmind/
 - Reporte arquivo por arquivo o que mudou
 - Aponte riscos remanescentes com honestidade
 
-## Convenções de Commit
+## Proteções absolutas
+
+- Nunca zerar produção **nem homologação**
+- Nunca rodar migrations históricas destrutivas (`003_mart_demo.sql`, reset mestre)
+- Nunca tocar TorqMind-Ops
+- Nunca Docker global; sempre compose project + serviço exatos
+- Homologação antes de produção
+- Analytics compartilhado = mudança de produção
+- `sql/migrations/MANIFEST.json` é o inventário; não renumerar aplicado
 
 - feat: nova funcionalidade
 - fix: correção de bug

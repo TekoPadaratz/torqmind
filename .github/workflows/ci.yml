@@ -4,11 +4,135 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  api-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install API
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest
+      - name: compileall
+        run: python -m compileall -q app
+      - name: Static unit tests
+        run: |
+          PYTHONPATH=. python -m unittest \
+            app.test_migration_guard_unit \
+            app.test_pg_analytical_exceptions_registry \
+            app.test_repos_analytics_unit \
+            app.test_ci_ephemeral_stack_contract \
+            -q
+
+  cdc-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/cdc_consumer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install CDC consumer
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unixodbc unixodbc-dev
+          python -m pip install -e "../api"
+      - name: compileall
+        run: python -m compileall -q torqmind_cdc_consumer tests
+      - name: Tests
+        run: python -m pytest tests -q --tb=short
+
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/agent/requirements.txt
+      - name: Install Agent test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml requests
+      - name: Agent tests
+        run: PYTHONPATH=apps/agent python -m unittest discover -s apps/agent/tests -q
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: npm audit runtime (critical)
+        run: npm audit --omit=dev --audit-level=critical
+
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 60
+    env:
+      APP_ENV: test
+      TM_EPHEMERAL_LOCAL: "1"
+      USE_CLICKHOUSE: "false"
+      DUAL_READ_MODE: "false"
+      USE_REALTIME_MARTS: "false"
+      REALTIME_MARTS_FALLBACK: "false"
+      PG_HOST: 127.0.0.1
+      PG_PORT: "5432"
+      PG_DATABASE: torqmind_ci
+      PG_USER: torqmind_ci
+      PG_PASSWORD: CiEphemeralDb_20260814
+      POSTGRES_DB: torqmind_ci
+      POSTGRES_USER: torqmind_ci
+      POSTGRES_PASSWORD: CiEphemeralDb_20260814
+      DATABASE_URL: postgresql+asyncpg://torqmind_ci:CiEphemeralDb_20260814@127.0.0.1:5432/torqmind_ci
+      API_JWT_SECRET: CiEphemeralJwtSecret_20260814_32chars
+      API_JWT_ISSUER: torqmind-api-ci
+      INGEST_REQUIRE_KEY: "false"
+      SEED_MODE: demo
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: torqmind_ci
+          POSTGRES_USER: torqmind_ci
+          POSTGRES_PASSWORD: CiEphemeralDb_20260814
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U torqmind_ci -d torqmind_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,31 +141,59 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: apps/api/pyproject.toml
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and start stack
+      - name: Install hermetic runner deps
         run: |
-          docker compose up -d --build
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unixodbc unixodbc-dev
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyyaml requests
+          python -m pip install -e apps/api
 
-      - name: Seed users
-        run: |
-          docker compose exec -T api python -m app.cli.seed
+      - name: Assert ephemeral CI database
+        run: bash deploy/scripts/ci-assert-ephemeral-env.sh
 
-      - name: API smoke tests
+      - name: Wait for Postgres readiness
         run: |
-          make test
+          python - <<'PY'
+          import os, time, sys
+          import psycopg
+          dsn = (
+              f"host={os.environ['PG_HOST']} port={os.environ['PG_PORT']} "
+              f"dbname={os.environ['PG_DATABASE']} user={os.environ['PG_USER']} "
+              f"password={os.environ['PG_PASSWORD']}"
+          )
+          last = None
+          for _ in range(60):
+              try:
+                  with psycopg.connect(dsn) as conn:
+                      conn.execute("SELECT 1")
+                  print("Postgres ready")
+                  sys.exit(0)
+              except Exception as exc:  # noqa: BLE001
+                  last = exc
+                  time.sleep(2)
+          print(f"Postgres did not become ready: {last}", file=sys.stderr)
+          sys.exit(1)
+          PY
+
+      - name: Bootstrap test schema via migrate
+        working-directory: apps/api
+        run: PYTHONPATH=. python -m app.cli.migrate
+
+      - name: API unit tests excluding live-DB suites
+        working-directory: apps/api
+        run: PYTHONPATH=. python -m pytest -q --tb=short -m "not integration_db"
+
+      - name: API ephemeral login/health smoke
+        working-directory: apps/api
+        run: PYTHONPATH=. python -m unittest app.test_ci_ephemeral_smoke -v
 
       - name: Agent tests
-        run: |
-          make test-agent
+        run: PYTHONPATH=apps/agent python -m unittest discover -s apps/agent/tests -q
 
-      - name: Web/API lint-build gate
-        run: |
-          make lint
-
-      - name: Teardown
-        if: always()
-        run: |
-          docker compose down -v
+      - name: API compileall
+        working-directory: apps/api
+        run: python -m compileall -q app

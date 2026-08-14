@@ -157,6 +157,8 @@ class LoginRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path.rstrip("/")
         if request.method == "POST" and path == "/auth/login":
+            if str(settings.app_env or "").strip().lower() == "test":
+                return await call_next(request)
             client_ip = request.client.host if request.client else "unknown"
             now = time.time()
             with _login_lock:
@@ -169,6 +171,8 @@ class LoginRateLimitMiddleware(BaseHTTPMiddleware):
                     )
                 _login_attempts[client_ip].append(now)
         elif request.method == "POST" and path in _AUTH_MAIL_PATHS:
+            if str(settings.app_env or "").strip().lower() == "test":
+                return await call_next(request)
             client_ip = request.client.host if request.client else "unknown"
             now = time.time()
             with _auth_mail_lock:

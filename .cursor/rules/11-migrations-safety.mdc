@@ -1,0 +1,30 @@
+---
+description: Segurança do migrador PostgreSQL — sem reset, sem replay destrutivo
+globs: ["sql/migrations/**", "sql/torqmind_reset_db_v2.sql", "apps/api/app/cli/migrate.py", "Makefile"]
+---
+
+# Migrations PostgreSQL
+
+## Proibido
+
+- Zerar, recriar ou truncar banco de produção ou homologação
+- `make resetdb` / `sql/torqmind_reset_db_v2.sql` fora de Postgres **local efêmero**
+- Renumerar arquivo já aplicado
+- Editar bytes de migration aplicada
+- Alterar checksum no ledger
+- Rodar a cadeia histórica (inclui `003_mart_demo.sql`) em Hom/Prod
+- Tratar `RESET_CONFIRM=1` como autorização do usuário
+
+## Trilho incremental
+
+Fonte: `sql/migrations/*.sql` + `sql/migrations/MANIFEST.json`.
+Checksums: v1 raw bytes (ledger legado) e v2 UTF-8 normalizado (novos). Ambos aceitos; o ledger **não** é reescrito.
+Prefixos duplicados `012`, `013`, `135` são históricos congelados. Qualquer duplicata nova falha a validação.
+Arquivos novos: UTF-8 obrigatório.
+
+## Reset mestre
+
+Aposentado para Hom/Prod. Guardas: `TM_ALLOW_RESET=1`, `TM_RESET_ENV=dev`, `TM_EPHEMERAL_LOCAL=1`.
+A lista `\ir` do reset está incompleta de propósito operacional — não execute para “completar”.
+
+Aplicar migration em Hom/Prod exige: SQL identificado, prova aditiva, diff com ledger, impacto, backup/rollback e **autorização explícita do usuário**.

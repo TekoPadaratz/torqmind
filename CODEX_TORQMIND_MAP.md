@@ -2,11 +2,13 @@
 
 Atualizado em: **2026-08-14 — America/Sao_Paulo**
 
-Revisão de código usada: **`master` @ `a64ec7d33b7a778c6b254f1428bb0466e87f6caf`**
+Revisão de código usada: **branch `cursor/torqmind-hardening-2026-08-3837` sobre `master` @ `944f9cc`**
 
 Estado do documento: **fonte canônica de contexto técnico e operacional**
 
-Este arquivo substitui as descrições históricas acumuladas neste mapa. Ele registra o que existe no repositório atual, o que foi comprovado externamente em 2026-08-14 e o que ainda precisa de validação dentro dos servidores.
+Hardening 2026-08-14: rules/migrador/CI/exceções PG formalizadas. CDC recover de offset abaixo da retenção zerou TOTAL-LAG. Relatório: `docs/ops/HARDENING_2026-08-14.txt`.
+
+Este arquivo substitui as descrições históricas acumuladas neste mapa. Ele registra o que existe no repositório atual, o que foi comprovado e o que ainda precisa de validação.
 
 Não registrar aqui senhas, tokens, chaves de ingest, secrets JWT, credenciais de banco ou conteúdo de arquivos `.env`.
 
@@ -19,7 +21,7 @@ Arquitetura principal atual:
 ```text
 SQL Server Xpert
     ↓
-TorqMind Agent Windows 2.0.4
+TorqMind Agent Windows 2.0.5
     ↓ HTTPS/HTTP LAN autenticado por Ingest Key
 FastAPI /ingest
     ↓
@@ -44,7 +46,7 @@ Estado público observado em 2026-08-14:
 - `https://hom.torqmind.com.br/api/health`: HTTP 200, cerca de 0,23 s.
 - As versões `http://` dos dois ambientes ainda respondem 200, sem redirecionar para HTTPS.
 - `https://www.hom.torqmind.com.br/` falha no handshake TLS. O hostname profundo não é coberto pelo Universal SSL padrão em uma zona Cloudflare completa.
-- A conexão SSH externa em `redevr.ddns.me:14022` não respondeu durante esta revisão. Portanto, saúde interna de containers, lag CDC e frescor de marts não foram declarados como comprovados nesta data.
+- A conexão SSH externa em `redevr.ddns.me:14022` **passou a responder** no hardening 2026-08-14 (host App `torqmind-app-stream`). Saúde de CDC/lag/marts exige prova dedicada nesta branch, não inferência.
 
 ## 2. Autoridade dos documentos
 
@@ -172,7 +174,7 @@ Inventário rastreado na revisão:
 
 - Código: `apps/agent`.
 - Versão canônica: `apps/agent/agent/__init__.py`.
-- Versão atual no código e executáveis examinados: `2.0.4`.
+- Versão no código: `2.0.5` (teste de janela de turnos alinhado a 45 dias). Binário publicado em `/var/torqmind/agent-releases` permanece `2.0.4` até build Windows (`agent_build/build.ps1`).
 - 44 datasets configurados: 40 habilitados e 4 desabilitados por padrão.
 - Desabilitados: `filiais`, `clientes`, `localvendas`, `financeiro`.
 - `movprodutos` e `itensmovprodutos` permanecem habilitados para estoque.
@@ -333,17 +335,36 @@ Após recreate da API, validar que `/api/ingest/health` continua auth-only e rá
 
 ## 11. Qualidade observada nesta revisão
 
-Resultados executados durante a auditoria de 2026-08-14:
+Hardening 2026-08-14 (`cursor/torqmind-hardening-2026-08-3837`):
 
-- `python -m compileall apps/api apps/cdc_consumer`: PASS.
-- build do Web: PASS.
-- testes Web: 120 passaram, 1 falhou.
-- testes CDC Consumer: 160 passaram, 3 falharam.
-- testes Agent: 44 passaram, 1 falhou.
-- conjunto crítico direcionado da API: 87 passaram.
-- suíte completa da API não ficou verde como gate hermético; há testes dependentes de banco/ambiente e falhas que precisam ser isoladas.
+| Gate | Evidência | Resultado |
+|------|-----------|-----------|
+| compileall API/CDC | worktree remoto | **confirmado em teste** |
+| API static (migrador + registry PG) | unittest local + job `api-static` GHA | **confirmado em teste** |
+| CDC Consumer pytest | offset recovery + suite no worktree | **confirmado em teste** |
+| Agent unittest | 41 passed no worktree | **confirmado em teste** |
+| Web tests + build | 121 testes; Next 14.2.35 standalone | **confirmado em teste** |
+| npm audit runtime | PostCSS 8.5.26 (override); 1 high residual Next 14.2.35 | **PASS COM RISCO FORMAL** |
+| CI validate | GHA `services.postgres:16` `torqmind_ci@127.0.0.1` + migrate + pytest unit + smoke login | **em prova no GHA** |
+| Homolog API/Web | jose 3.5.0 / Next 14.2.35; health 200 | **confirmado em homologação** |
+| Prod API/Web | recreate `--no-deps`; jose 3.5.0; smoke PASS | **confirmado em produção** |
+| `prod-multivm-validate.sh` | 19/19 OK (retry SSH PG) | **confirmado em produção** |
+| `prod-multivm-proof.sh` | result=PASS | **confirmado em produção** |
+| Debezium `.9` | `torqmind-postgres-cdc` RUNNING, task 0 RUNNING | **confirmado em produção** |
+| CDC member | `torqmind-cdc-consumer-live` Stable, 1 membro | **confirmado em produção** |
+| rpk TOTAL-LAG | 295 530 851 → 0 (commit log-start em partições vazias) | **confirmado em produção** |
+| `NUMBER_OF_COLUMNS` | 0 | **confirmado em produção** |
+| Performance BI | dash hot p50 1.45s p95 1.53s; frio 4.78s; fallback=realtime | **confirmado em produção** |
+| Reset/migrations | nenhuma aplicada em prod/homolog | **confirmado em produção** |
+| TorqMind-Ops | StartedAt desta sessão inalterado (15:25Z backend) | **confirmado em produção** |
+| Agent `.exe` 2.0.5 | código/testes PASS; exe Windows pós-merge | **pendente usuário** |
+| Isolamento analytics Hom | ADR; não executado | **planejado** |
 
-Conclusão: o projeto compila e o Web gera build, mas a branch atual não possui gate integral verde. Não declarar release totalmente aprovado até zerar ou justificar formalmente essas falhas.
+### 11.1 Lag e freshness
+
+TOTAL-LAG era fantasma: LOG-START-OFFSET = HIGH-WATERMARK e o grupo ainda reportava CURRENT-OFFSET 0 (broker committed -1001). Vendas sempre em LAG 0. O consumer 848a309 comita log-start nessas partições vazias. TOTAL-LAG=0.
+
+`fact_caixa_turno` só muda no fechamento de turno. STG turnos e DW têm o mesmo `max(source_ts)` (2026-08-14 13:15Z). Validator usa SLA de 8h só nesse domínio; demais críticos permanecem em 3600s.
 
 Gate obrigatório de código:
 
@@ -369,13 +390,13 @@ ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./depl
 ### P0 — corrigir primeiro
 
 1. **HTTPS incompleto na borda:** HTTP não redireciona; `www.hom` falha em TLS; HSTS aparece na API, mas não de forma consistente no Web; CSP não foi observado.
-2. **Blast radius homolog/prod:** analytics e CDC compartilhados tornam DDL/rebuild de homolog uma mudança de produção.
-3. **Gate de testes não verde:** há falhas em Web, CDC e Agent; suíte API completa ainda não é hermética.
-4. **Leituras analíticas PG ativas:** alguns caminhos continuam lendo `stg`, `dw` ou `mart` PG diretamente ou por fallback.
+2. **Blast radius homolog/prod:** analytics e CDC compartilhados tornam DDL/rebuild de homolog uma mudança de produção. ADR: `docs/adr/2026-08-14-homolog-analytics-isolation.md` (Opção B preferencial; **não executar** sem aprovação).
+3. **Freshness de `fact_caixa_turno`:** só atualiza no fechamento de turno; SLA do validator é 8h. Se STG turnos avançar e DW não, é stall.
+4. **Dívidas analíticas PG formalizadas** em `apps/api/app/analytics_pg_exceptions.json` (prazo 2026-09-15): fraude créditos, cheques, budget, solvência. CI impede nova exceção não registrada.
 
 ### P1 — tratar na sequência
 
-5. **Dependências vulneráveis:** auditoria encontrou vulnerabilidades runtime em pacotes npm e Python; atualizar com teste de regressão, sem upgrade cego.
+5. **Dependências Web:** 1 high residual Next 14.2.35; PostCSS 8.5.26 ok. Next 15/16 é breaking (prazo 2026-09-15).
 6. **Migrações com drift:** existem 140 arquivos, prefixos duplicados `012`, `013` e `135`; o reset referencia dois arquivos inexistentes e não acompanha toda a cadeia atual.
 7. **Encoding/checksum:** há migrações legadas fora de UTF-8 e estratégia de checksum que pode divergir entre baseline e aplicação gerenciada.
 8. **Módulos excessivamente grandes:** `repos_mart.py`, `repos_mart_realtime.py` e rotas centrais concentram muita lógica e aumentam risco de regressão.
@@ -428,13 +449,12 @@ Ao retomar o projeto:
 
 ## 16. Registro desta atualização
 
-Atualização de 2026-08-14:
+Atualização de 2026-08-14 (hardening):
 
-- removidas afirmações antigas de fase como se fossem estado atual;
-- corrigida a semântica de `USE_REALTIME_MARTS`;
-- registradas as URLs canônicas novas;
-- documentado o compartilhamento perigoso de analytics entre homolog e produção;
-- consolidada a arquitetura Agent → PG → CDC → ClickHouse → API/Web;
-- incluído o estado real dos testes e riscos encontrados;
-- incluída a decisão de HTTPS na borda Cloudflare com origin HTTP pelo Tunnel;
-- separada claramente evidência pública de estado interno ainda não comprovado.
+- rules, migrador/MANIFEST, registry de exceções PG e jobs CI (API/CDC/Agent/Web);
+- Next 14.2.35, Axios 1.19.0, python-jose 3.5.0;
+- deploy específico Hom depois Prod (`--no-deps`), TorqMind-Ops intocado;
+- prova interna: Debezium RUNNING, publicação `sales_daily_rt` no dia, smoke produto PASS;
+- validate oficial FAIL em lag/freshness pré-existentes;
+- Agent `.exe` 2.0.5 não publicado;
+- nenhum reset, nenhuma migration aplicada, nenhum `docker compose down`.

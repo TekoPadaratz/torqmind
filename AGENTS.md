@@ -20,9 +20,11 @@ O produto precisa ser confiável em dados, rápido em produção, seguro por rol
   - PostgreSQL/STG/DW: `172.30.0.8`
   - Analytics/ClickHouse/Redpanda/Debezium/CDC: `172.30.0.9`
   - App/API/Web/Nginx: `172.30.0.10`
-  - SSH externo: `ssh -p 14022 tm@redevr.ddns.me`
-  - URL pública: `http://redevr.ddns.me:14023`
-  - API pública: `http://redevr.ddns.me:14023/api`
+- URL pública canônica: `https://www.torqmind.com.br`
+- API pública canônica: `https://www.torqmind.com.br/api`
+- Homologação: `https://hom.torqmind.com.br` (não é descartável)
+- SSH externo: `ssh -p 14022 tm@redevr.ddns.me`
+- URL NAT legada (diagnóstico): `http://redevr.ddns.me:14023`
 
 ## Regras absolutas de segurança
 
@@ -32,9 +34,19 @@ Nunca:
 - regenerar Ingest_Key;
 - expor segredos em logs/commit;
 - executar `docker compose down -v`;
+- comandos Docker globais (`docker stop $(docker ps -q)`, `system prune`, `volume prune`);
+- tocar no projeto **TorqMind-Ops** (`torqmind-ops-saas`);
+- zerar, recriar, truncar ou resetar banco de **produção ou homologação** (homolog não é descartável);
+- rodar `make resetdb` / `sql/torqmind_reset_db_v2.sql` fora de Postgres local efêmero;
 - rodar DROP/TRUNCATE em produção sem plano, backup e confirmação explícita;
 - fazer deploy sem teste e health check;
 - declarar PASS sem prova.
+
+Compose mutável somente com `-p` (projeto), `-f` (arquivo) e `--env-file` reais, serviço por serviço. Homologação antes de produção. Inventário `docker ps` / `docker compose ls` antes de qualquer recreate.
+
+URLs canônicas: `https://www.torqmind.com.br` e `https://hom.torqmind.com.br`. `http://redevr.ddns.me:14023` é NAT legado de diagnóstico, não a URL de produto.
+
+Checkout operacional: `/home/tm/torqmind`. Bind mounts ativos em `sql/migrations` e `deploy/nginx/*.conf` — hardening em worktree `/home/tm/worktrees/...`, nunca `git reset --hard` / `git clean -fdx` / force push.
 
 ## Agent / ingest (rede local e recreate da API)
 
@@ -136,20 +148,22 @@ Nunca expor margem, lucro, CMV, custo ou rentabilidade para gerente/vendedor.
 python -m compileall apps/api apps/cdc_consumer
 PATH="$PWD/.venv/bin:$PATH" pytest apps/api -q
 PATH="$PWD/.venv/bin:$PATH" pytest apps/cdc_consumer/tests -q
+PATH="$PWD/.venv/bin:$PATH" python -m unittest discover -s apps/agent/tests -q
 cd apps/web && npm test && npm run build
 ```
 
-Se mexer em produção:
+Se mexer em produção (URLs canônicas):
 
 ```bash
-curl -I http://redevr.ddns.me:14023
-curl -I http://redevr.ddns.me:14023/api/health
+curl -I https://www.torqmind.com.br
+curl -I https://www.torqmind.com.br/api/health
+curl -I https://hom.torqmind.com.br/api/health
 ```
 
 Se mexer em realtime/marts:
 
 ```bash
-ENV_FILE=/etc/torqmind/prod.app.env PUBLIC_URL=http://redevr.ddns.me:14023 ./deploy/scripts/realtime-product-screen-smoke.sh
+ENV_FILE=/etc/torqmind/prod.app.env PUBLIC_URL=https://www.torqmind.com.br ./deploy/scripts/realtime-product-screen-smoke.sh
 ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./deploy/scripts/prod-multivm-validate.sh
 ENV_FILE=/etc/torqmind/prod.app.env CLUSTER_ENV=/etc/torqmind/cluster.env ./deploy/scripts/prod-multivm-proof.sh
 ```

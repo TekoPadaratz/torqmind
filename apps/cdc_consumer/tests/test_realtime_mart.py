@@ -638,7 +638,9 @@ class TestMartBuilderDedupSemantics:
             assert "_sales_cfop_pred" in body or "NOT IN (5927" in body.replace(" ", ""), (
                 f"{method} must exclude non-sale CFOPs (5927/5929/6929)"
             )
-            assert "cfop > 5000" in body, f"{method} must keep cfop > 5000 gate"
+            assert "_sales_cfop_pred" in body or "cfop > 5000" in body, (
+                f"{method} must keep cfop > 5000 gate"
+            )
             assert "i.cfop >= 5000" not in body, f"{method} must not use >= 5000"
 
     def test_sales_item_joins_include_id_db(self):

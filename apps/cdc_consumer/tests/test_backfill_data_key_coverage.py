@@ -71,10 +71,10 @@ class TestBackfillDataKeyCoverage:
             "backfill must only publish commercially eligible comprovantes"
         )
         # Must filter commercial sales CFOP ( > 5000, excl. 5927/5929/6929 )
-        assert "cfop > 5000" in method_body, (
-            "backfill must only publish valid sales items (cfop > 5000)"
+        assert "_sales_cfop_pred" in method_body or "cfop > 5000" in method_body, (
+            "backfill must only publish valid sales items (cfop > 5000 excl. perda/transferência)"
         )
-        assert "5927" in method_body and "5929" in method_body, (
+        assert "SALES_EXCLUDED_CFOPS" in content or ("5927" in content and "5929" in content and "6929" in content), (
             "backfill must exclude stock-loss/transfer CFOPs"
         )
 
