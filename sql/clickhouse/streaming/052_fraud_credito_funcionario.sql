@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS torqmind_mart_rt.mart_fraud_credito_funcionario_uso (
     id_usuario_caixa     Int32 DEFAULT 0,
     operador_caixa       String DEFAULT '',
     historico            String DEFAULT '',
+    observacao           String DEFAULT '',
     atipico              UInt8 DEFAULT 0,
     published_at         DateTime64(3, 'UTC') DEFAULT now64(3)
 ) ENGINE = ReplacingMergeTree(published_at)

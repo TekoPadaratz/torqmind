@@ -41,7 +41,16 @@ class TestFraudCreditoUsoHistorico(unittest.TestCase):
         chunk = text[idx : idx + 12000]
         self.assertIn("<th>Histórico</th>", chunk)
         self.assertNotIn("<th>Cliente</th>", chunk)
-        self.assertIn("u.historico", chunk)
+        # Contas a Receber Xpert: OBS (Observações) com fallback HISTORICO
+        self.assertIn("u.observacao || u.historico", chunk)
+
+        api = Path(__file__).resolve().parent / "repos_mart_realtime.py"
+        api_text = api.read_text(encoding="utf-8")
+        fn = api_text.find("def fraud_credito_funcionario(")
+        self.assertGreater(fn, 0)
+        api_chunk = api_text[fn : fn + 12000]
+        self.assertIn("observacao", api_chunk)
+        self.assertIn("historico_exibicao = obs_cr or hist_cr", api_chunk)
     def test_troca_applies_filial_label(self):
         src = Path(__file__).resolve().parent / "repos_mart_realtime.py"
         text = src.read_text(encoding="utf-8")
