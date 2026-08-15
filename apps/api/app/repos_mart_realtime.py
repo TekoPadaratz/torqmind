@@ -5472,6 +5472,18 @@ def fraud_credito_funcionario(
                 id_empresa, ym, str(exc)[:240],
             )
 
+    # Garante coluna OBS no CH (Hom/Prod compartilham analytics).
+    try:
+        from app.db_clickhouse import execute_command as _ch_exec
+        _ch_exec(
+            """
+            ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
+            ADD COLUMN IF NOT EXISTS observacao String DEFAULT ''
+            """
+        )
+    except Exception as exc:
+        logger.warning("CH observacao ensure skipped: %s", str(exc)[:200])
+
     status_key = str(status or "todos").strip().lower()
     status_sql = ""
     if status_key in ("suspeito", "suspeitos", "suspeitas"):
