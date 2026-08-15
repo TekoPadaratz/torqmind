@@ -193,14 +193,21 @@ function buildCommissionsReportHtml(opts: {
       display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px 16px;
       font-size: 10px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 2px solid #111;
     }
-    h2 { margin: 14px 0 6px; font-size: 13px; }
+    /* Cabeçalho + 1ª filial na mesma folha: NÃO usar page-break-inside:avoid na
+       seção inteira (navegadores empurram o bloco para a página 2). */
+    .filial { break-inside: auto; page-break-inside: auto; margin: 0; }
+    h2 {
+      margin: 10px 0 6px; font-size: 13px;
+      break-after: avoid-page; page-break-after: avoid;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 10px; }
     thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr { break-inside: avoid; page-break-inside: avoid; }
     th, td { border-bottom: 1px solid #ddd; padding: 4px 6px; text-align: left; }
     th { background: #f3f3f3; font-weight: 700; }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     tfoot td { border-top: 2px solid #111; }
-    .filial { break-inside: avoid; page-break-inside: avoid; }
     .total-geral { margin-top: 12px; font-size: 12px; font-weight: 700; }
   </style>
 </head>

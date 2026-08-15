@@ -20,9 +20,28 @@ class TestCommissionsPrintContract(unittest.TestCase):
         self.assertIn("A4 landscape", text)
         self.assertIn("buildCommissionsReportHtml", text)
         self.assertIn("Descontos e preços negociados", text)
+        # Página 1 não pode ficar só com cabeçalho: evitar page-break na seção inteira.
+        self.assertIn(".filial { break-inside: auto; page-break-inside: auto;", text)
+        self.assertNotIn(".filial { break-inside: avoid; page-break-inside: avoid; }", text)
 
 
-class TestTrocaFilialLabel(unittest.TestCase):
+class TestFraudCreditoUsoHistorico(unittest.TestCase):
+    def test_credito_usos_grid_shows_historico_not_cliente(self):
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "web"
+            / "app"
+            / "fraud"
+            / "page.tsx"
+        )
+        text = src.read_text(encoding="utf-8")
+        # Bloco expandido de usos do vale/a prazo
+        idx = text.find("Vale / a prazo de colaboradores")
+        self.assertGreater(idx, 0)
+        chunk = text[idx : idx + 12000]
+        self.assertIn("<th>Histórico</th>", chunk)
+        self.assertNotIn("<th>Cliente</th>", chunk)
+        self.assertIn("u.historico", chunk)
     def test_troca_applies_filial_label(self):
         src = Path(__file__).resolve().parent / "repos_mart_realtime.py"
         text = src.read_text(encoding="utf-8")
