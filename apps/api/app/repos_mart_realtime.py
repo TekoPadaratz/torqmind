@@ -5600,6 +5600,7 @@ def fraud_credito_funcionario(
                 id_usuario_caixa,
                 operador_caixa,
                 historico,
+                observacao,
                 atipico
             FROM {MART_RT_DB}.mart_fraud_credito_funcionario_uso FINAL
             WHERE id_empresa = %(id_empresa)s
@@ -5623,9 +5624,13 @@ def fraud_credito_funcionario(
             id_filial = int(u.get("id_filial") or 0)
             id_comp = int(u.get("id_comprovante") or 0)
             nfe_join = nfe_map.get((id_filial, id_comp), "")
+            hist_cr = str(u.get("historico") or "").strip()
+            obs_cr = str(u.get("observacao") or "").strip()
+            # Xpert Contas a Receber: Observações (OBS) quando houver; senão Histórico.
+            historico_exibicao = obs_cr or hist_cr
             nfe_hist = _extract_nfce_number(
                 str(u.get("nro_documento") or ""),
-                str(u.get("historico") or ""),
+                hist_cr,
             )
             documento_venda, documento_label, documento_source, documento_fiscal = _antifraude_documento(
                 nfe_join or nfe_hist,
@@ -5650,7 +5655,9 @@ def fraud_credito_funcionario(
                 "operador_caixa": u.get("operador_caixa") or "—",
                 "id_cliente": u.get("id_cliente") or None,
                 "cliente_nome": u.get("cliente_nome") or "—",
-                "historico": u.get("historico") or "",
+                "historico": historico_exibicao,
+                "observacao": obs_cr,
+                "historico_cr": hist_cr,
                 "atipico": bool(int(u.get("atipico") or 0)),
             })
         for fid in usos_by:

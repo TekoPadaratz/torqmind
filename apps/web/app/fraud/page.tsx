@@ -1399,7 +1399,8 @@ export default function FraudPage() {
                                             {sortGridRows(row.usos || [], (u: any) => ({
                                               filial: u.filial_label ?? u.id_filial,
                                               data: u.dt_evento,
-                                              nome: u.historico || u.operador_caixa,
+                                              // Xpert CR: OBS (Observações) ou HISTORICO
+                                              nome: String(u.observacao || u.historico || u.operador_caixa || "").trim(),
                                             })).filter((u: any) => rowMatchesGridSearch(u, credFuncUsoQuery)).map((u: any, idx: number) => (
                                               <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
                                                 <td>
@@ -1420,7 +1421,7 @@ export default function FraudPage() {
                                                   ) : null}
                                                 </td>
                                                 <td style={{ minWidth: 180, maxWidth: 360, whiteSpace: "normal" }}>
-                                                  {String(u.historico || "").trim() || "—"}
+                                                  {String(u.observacao || u.historico || "").trim() || "—"}
                                                 </td>
                                                 <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
                                                 <td>{u.operador_caixa || "—"}</td>
