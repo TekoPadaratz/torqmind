@@ -48,9 +48,15 @@ class TestFraudCreditoUsoHistorico(unittest.TestCase):
         api_text = api.read_text(encoding="utf-8")
         fn = api_text.find("def fraud_credito_funcionario(")
         self.assertGreater(fn, 0)
-        api_chunk = api_text[fn : fn + 12000]
+        # Até o próximo def no mesmo nível (hot path do GET).
+        nxt = api_text.find("\ndef ", fn + 1)
+        api_chunk = api_text[fn:nxt if nxt > 0 else fn + 16000]
         self.assertIn("observacao", api_chunk)
         self.assertIn("historico_exibicao = obs_cr or hist_cr", api_chunk)
+        # GET não pode join/enrich STG (timeout/OOM no CH).
+        self.assertNotIn("_enrich_credito_usos_operador_via_nfe", api_chunk)
+        self.assertNotIn("_load_nfe_numbers", api_chunk)
+        self.assertNotIn("ADD COLUMN IF NOT EXISTS observacao", api_chunk)
     def test_troca_applies_filial_label(self):
         src = Path(__file__).resolve().parent / "repos_mart_realtime.py"
         text = src.read_text(encoding="utf-8")
