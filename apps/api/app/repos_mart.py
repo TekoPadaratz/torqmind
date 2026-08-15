@@ -10333,19 +10333,8 @@ def publish_fraud_credito_funcionario_to_ch(
             [id_empresa, ym],
         ).fetchall()
 
-    # Homolog/prod: PG mash pode não resolver operador se HISTORICO só tem NFC-e
-    # (sem Cupom:) e stg.nfe local está incompleto — completa via CH.
-    try:
-        from app.repos_mart_realtime import _enrich_credito_usos_operador_via_nfe
-
-        uso_list = [dict(u) for u in uso_rows]
-        _enrich_credito_usos_operador_via_nfe(int(id_empresa), uso_list)
-        uso_rows = uso_list
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "publish credito enrich operador skipped empresa=%s: %s",
-            id_empresa, str(exc)[:200],
-        )
+    # Publish: sem enrich NFE/STG (join pesado → OOM/timeout no CH compartilhado).
+    # Operador/documento vêm do mash; GET lê só mart_rt.
 
     resumo_ch = []
     for r in resumo_rows:

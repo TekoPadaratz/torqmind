@@ -5486,10 +5486,11 @@ def fraud_credito_funcionario(
     limit: int = 500,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Antifraude crédito funcionário — lê ClickHouse mart_rt (não PG/STG).
+    """Antifraude crédito funcionário — GET lê só ClickHouse mart_rt.
 
-    Mash/refresh continua no PG via ``repos_mart.refresh_fraud_credito_funcionario``
-    (que também publica no CH). GET padrão só consulta CH.
+    Sem join STG/NFE no hot path (enrich causava timeout/OOM). Documento vem de
+    nro_documento/HISTORICO já mashados; OBS||HISTORICO na exibição.
+    Mash/refresh: ``repos_mart.refresh_fraud_credito_funcionario`` / mash CH.
     """
     import json
     from datetime import datetime
@@ -5509,17 +5510,7 @@ def fraud_credito_funcionario(
                 id_empresa, ym, str(exc)[:240],
             )
 
-    # Garante coluna OBS no CH (Hom/Prod compartilham analytics).
-    try:
-        from app.db_clickhouse import execute_command as _ch_exec
-        _ch_exec(
-            """
-            ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
-            ADD COLUMN IF NOT EXISTS observacao String DEFAULT ''
-            """
-        )
-    except Exception as exc:
-        logger.warning("CH observacao ensure skipped: %s", str(exc)[:200])
+    # GET hot path: só mart_rt. Proibido ALTER/enrich STG aqui (timeout/OOM).
 
     status_key = str(status or "todos").strip().lower()
     status_sql = ""
@@ -5622,10 +5613,8 @@ def fraud_credito_funcionario(
             """,
             {"id_empresa": int(id_empresa), "ano_mes": ym},
         )
-        # Operador: NFC-e → comprovante (HISTORICO sem Cupom: não casa direto).
-        _enrich_credito_usos_operador_via_nfe(int(id_empresa), uso_rows)
-        # NF/NFC-e canônico via stg_nfe_slim (DOCUMENTO = nota fiscal).
-        nfe_map = _load_nfe_numbers(int(id_empresa), uso_rows)
+        # Documento = NFC-e já no mash (nro_documento / HISTORICO). Sem join STG no GET.
+        # Operador/comprovante: só o que a mart já trouxe (enrich NFE no GET estoura CH).
         for u in uso_rows:
             fid = int(u["id_funcionario"])
             dt = u.get("dt_evento")
@@ -5635,7 +5624,6 @@ def fraud_credito_funcionario(
                 dt_s = str(dt) if dt else None
             id_filial = int(u.get("id_filial") or 0)
             id_comp = int(u.get("id_comprovante") or 0)
-            nfe_join = nfe_map.get((id_filial, id_comp), "")
             hist_cr = str(u.get("historico") or "").strip()
             obs_cr = str(u.get("observacao") or "").strip()
             # Xpert Contas a Receber: Observações (OBS) quando houver; senão Histórico.
@@ -5645,7 +5633,7 @@ def fraud_credito_funcionario(
                 hist_cr,
             )
             documento_venda, documento_label, documento_source, documento_fiscal = _antifraude_documento(
-                nfe_join or nfe_hist,
+                nfe_hist,
                 0,
                 0,
             )
