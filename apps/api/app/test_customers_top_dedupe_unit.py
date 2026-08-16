@@ -13,6 +13,7 @@ class TestCustomersTopCentralDedupe(unittest.TestCase):
         end = text.find("\ndef customers_rfm_snapshot(", idx)
         chunk = text[idx:end]
         self.assertIn("s.id_db = s.id_filial", chunk)
+        self.assertIn("s.id_cliente AS id_cliente", chunk)
         self.assertIn("espelho da Central", chunk)
         self.assertIn("s.cancelado = 0", chunk)
         self.assertIn("s.situacao != 3", chunk)

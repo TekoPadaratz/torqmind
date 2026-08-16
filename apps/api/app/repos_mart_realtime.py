@@ -3829,7 +3829,7 @@ def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_f
     filial = _branch_clause("s.id_filial", id_filial)
     rows = query_dict(f"""
         SELECT
-            s.id_cliente,
+            s.id_cliente AS id_cliente,
             coalesce(nullIf(c.nome, ''), concat('#ID ', toString(s.id_cliente))) AS cliente_nome,
             sum(i.item_total) AS faturamento,
             toUInt32(uniqExact(s.id_filial, s.id_db, s.id_comprovante)) AS compras,
