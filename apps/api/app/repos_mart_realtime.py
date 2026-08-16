@@ -3817,54 +3817,77 @@ def monthly_goal_projection(role: str, id_empresa: int, id_filial: Any, as_of: O
 # ================================================================
 
 def customers_top(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 15) -> List[Dict[str, Any]]:
-    """Top customers by revenue in the period (somente saídas CFOP > 5000)."""
+    """Top customers by revenue in the period (somente saídas CFOP > 5000).
+
+    Deduplica espelho da Central: a mesma venda do posto também chega com
+    ``id_db`` da matriz (ex.: 14126) e outro ``id_comprovante``. Contar os dois
+    infla ``compras``/faturamento (Barthcar VR05: 270 vs ~226 no Xpert).
+
+    Chave: filial + cliente + data_key + valor_total; preferir ``id_db = id_filial``.
+    """
     filial = _branch_clause("s.id_filial", id_filial)
     rows = query_dict(f"""
+        WITH docs AS (
+            SELECT
+                s.id_empresa,
+                s.id_filial,
+                s.id_db,
+                s.id_comprovante,
+                s.id_cliente,
+                s.data_key,
+                i.item_total,
+                row_number() OVER (
+                    PARTITION BY s.id_filial, s.id_cliente, s.data_key, s.valor_total
+                    ORDER BY if(s.id_db = s.id_filial, 0, 1), s.id_db, s.id_comprovante
+                ) AS rn
+            FROM {CURRENT_DB}.stg_comprovantes_slim AS s
+            INNER JOIN (
+                SELECT
+                    id_empresa, id_filial, id_db, id_comprovante,
+                    sum(total) AS item_total
+                FROM {CURRENT_DB}.stg_itenscomprovantes_slim FINAL
+                WHERE id_empresa = {{id_empresa:Int32}}
+                  AND is_deleted = 0
+                  AND COALESCE(cfop, 0) > 5000
+                  AND COALESCE(cfop, 0) NOT IN (5927, 5929, 6929)
+                  AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                GROUP BY id_empresa, id_filial, id_db, id_comprovante
+            ) AS i
+              ON i.id_empresa = s.id_empresa
+             AND i.id_filial = s.id_filial
+             AND i.id_db = s.id_db
+             AND i.id_comprovante = s.id_comprovante
+            WHERE s.id_empresa = {{id_empresa:Int32}}
+              AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+              AND s.cancelado = 0 AND s.is_deleted = 0
+              AND s.situacao != 3
+              AND s.commercial_eligible = 1
+              AND s.id_cliente > 0
+              {filial}
+        )
         SELECT
-            s.id_cliente,
-            coalesce(nullIf(c.nome, ''), concat('#ID ', toString(s.id_cliente))) AS cliente_nome,
-            sum(i.item_total) AS faturamento,
-            toUInt32(uniqExact(s.id_filial, s.id_db, s.id_comprovante)) AS compras,
-            max(s.data_key) AS ultima_compra,
+            d.id_cliente,
+            coalesce(nullIf(c.nome, ''), concat('#ID ', toString(d.id_cliente))) AS cliente_nome,
+            sum(d.item_total) AS faturamento,
+            toUInt32(uniqExact(d.id_filial, d.id_db, d.id_comprovante)) AS compras,
+            max(d.data_key) AS ultima_compra,
             if(
-              uniqExact(s.id_filial, s.id_db, s.id_comprovante) = 0,
+              uniqExact(d.id_filial, d.id_db, d.id_comprovante) = 0,
               toDecimal64(0, 2),
               toDecimal64(
-                sum(i.item_total) / uniqExact(s.id_filial, s.id_db, s.id_comprovante),
+                sum(d.item_total) / uniqExact(d.id_filial, d.id_db, d.id_comprovante),
                 2
               )
             ) AS ticket_medio
-        FROM {CURRENT_DB}.stg_comprovantes_slim AS s
-        INNER JOIN (
-            SELECT
-                id_empresa, id_filial, id_db, id_comprovante,
-                sum(total) AS item_total
-            FROM {CURRENT_DB}.stg_itenscomprovantes_slim FINAL
-            WHERE id_empresa = {{id_empresa:Int32}}
-              AND is_deleted = 0
-              AND COALESCE(cfop, 0) > 5000
-              AND COALESCE(cfop, 0) NOT IN (5927, 5929, 6929)
-              AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-            GROUP BY id_empresa, id_filial, id_db, id_comprovante
-        ) AS i
-          ON i.id_empresa = s.id_empresa
-         AND i.id_filial = s.id_filial
-         AND i.id_db = s.id_db
-         AND i.id_comprovante = s.id_comprovante
+        FROM docs AS d
         LEFT JOIN (
             SELECT id_empresa, id_cliente, argMax(nome, source_ts_ms) AS nome
             FROM {CURRENT_DB}.dim_cliente FINAL
             WHERE id_empresa = {{id_empresa:Int32}} AND is_deleted = 0
             GROUP BY id_empresa, id_cliente
-        ) AS c ON s.id_empresa = c.id_empresa AND s.id_cliente = c.id_cliente
-        WHERE s.id_empresa = {{id_empresa:Int32}}
-          AND s.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND s.cancelado = 0 AND s.is_deleted = 0
-          AND s.situacao != 3
-          AND s.commercial_eligible = 1
-          AND s.id_cliente > 0
-          {filial}
-        GROUP BY s.id_cliente, c.nome
+        ) AS c ON d.id_empresa = c.id_empresa AND d.id_cliente = c.id_cliente
+        WHERE d.rn = 1
+        GROUP BY d.id_cliente, c.nome
         ORDER BY faturamento DESC, compras DESC
         LIMIT {{limit:UInt32}}
     """, parameters={
