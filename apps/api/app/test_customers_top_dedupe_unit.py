@@ -6,21 +6,19 @@ from pathlib import Path
 
 
 class TestCustomersTopCentralDedupe(unittest.TestCase):
-    def test_sql_dedupes_central_mirror_by_cliente_dia_valor(self):
+    def test_sql_prefers_local_posto_db(self):
         src = Path(__file__).resolve().parent / "repos_mart_realtime.py"
         text = src.read_text(encoding="utf-8")
         idx = text.find("def customers_top(")
         end = text.find("\ndef customers_rfm_snapshot(", idx)
         chunk = text[idx:end]
-        self.assertIn("row_number() OVER (", chunk)
-        self.assertIn("PARTITION BY s.id_filial, s.id_cliente, s.data_key, s.valor_total", chunk)
-        self.assertIn("if(s.id_db = s.id_filial, 0, 1)", chunk)
-        self.assertIn("WHERE d.rn = 1", chunk)
+        self.assertIn("s.id_db = s.id_filial", chunk)
         self.assertIn("espelho da Central", chunk)
-        # Ainda só efetuados / elegíveis comerciais (não cancelados).
         self.assertIn("s.cancelado = 0", chunk)
         self.assertIn("s.situacao != 3", chunk)
         self.assertIn("s.commercial_eligible = 1", chunk)
+        # Não usar dedupe por valor (colapsa vendas reais no mesmo dia).
+        self.assertNotIn("row_number() OVER (", chunk)
 
 
 class TestCfopShadowPoisonGuard(unittest.TestCase):
