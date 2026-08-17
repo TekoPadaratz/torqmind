@@ -6,6 +6,7 @@ import { formatCurrency } from "../lib/format";
 import { apiPut } from "../lib/api";
 import { buildScopeParams } from "../lib/scope";
 import PortalDropdown from "../components/ui/PortalDropdown";
+import { copyTextToClipboard } from "../lib/copy-to-clipboard";
 
 type Contadores = {
   OK?: number;
@@ -245,6 +246,25 @@ export function AnpCompliancePanel({
   const [saveMsg, setSaveMsg] = useState("");
   const [draftIni, setDraftIni] = useState(dtIni);
   const [draftFim, setDraftFim] = useState(dtFim);
+  const [copiedToast, setCopiedToast] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    };
+  }, []);
+
+  async function copyChaveNfe(chave: string) {
+    const copied = await copyTextToClipboard(chave);
+    if (!copied) {
+      setSaveMsg("Não foi possível copiar a chave.");
+      return;
+    }
+    setCopiedToast(true);
+    if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopiedToast(false), 1800);
+  }
 
   useEffect(() => {
     setDraftIni(dtIni);
@@ -677,8 +697,20 @@ export function AnpCompliancePanel({
                         </span>
                       </td>
                       <td>{e.numero_nota_nova || "—"}</td>
-                      <td className="anpColChave" title={chave || undefined}>
-                        {chave || "—"}
+                      <td className="anpColChave">
+                        {chave ? (
+                          <button
+                            type="button"
+                            className="anpChaveCopy"
+                            title="Copiar chave NFe"
+                            aria-label={`Copiar chave NFe ${chave}`}
+                            onClick={() => void copyChaveNfe(chave)}
+                          >
+                            {chave}
+                          </button>
+                        ) : (
+                          "—"
+                        )}
                       </td>
                     </tr>
                   );
@@ -688,6 +720,11 @@ export function AnpCompliancePanel({
           </div>
         )}
       </div>
+      {copiedToast ? (
+        <div className="anpCopyToast" role="status" aria-live="polite">
+          Chave copiada
+        </div>
+      ) : null}
     </div>
   );
 }
