@@ -24,6 +24,10 @@ ORIGEM_LMC = "lmc_asof_entrada"
 ORIGEM_LMC_SEM_NFE = "lmc_sem_nfe"
 ORIGEM_VENDAS_DIA = "sales_products_rt"
 ORIGEM_NFE = "nfe_asof"
+# Mash mensal antigo sem lastro NFe — não serve o grid (Doc. entrada / Chave).
+ORIGEM_MASH_MENSAL = "profit_produto_mensal"
+ANP_MART_ORIGENS = (ORIGEM_LMC, ORIGEM_LMC_SEM_NFE, ORIGEM_NFE)
+_ANP_MART_ORIGENS_SQL = ", ".join(f"'{o}'" for o in ANP_MART_ORIGENS)
 EPS_MARGEM = 1e-6
 PRECO_DELTA_MIN = 0.03
 DEFAULT_ALERTA = 50.0
@@ -59,6 +63,24 @@ def compute_variacao(
         return margem_ant, margem_nova, None, True
     variacao = ((margem_nova - margem_ant) / margem_ant) * 100.0
     return margem_ant, margem_nova, variacao, False
+
+
+def mart_events_usable(events: Sequence[Dict[str, Any]]) -> bool:
+    """Mart só alimenta o grid se trouxer número e/ou chave de NFe de entrada.
+
+    `profit_produto_mensal` (mash antigo) nunca tem lastro fiscal; servir isso
+    esconde Doc. entrada / Chave NFe. Eventos LMC/NFe sem chave também forçam
+    recálculo live — a STG pode já ter a nota que a mart mash não publicou.
+    """
+    if not events:
+        return False
+    origens = {str(e.get("origem") or "") for e in events}
+    if origens and origens <= {ORIGEM_MASH_MENSAL, ORIGEM_VENDAS_DIA}:
+        return False
+    return any(
+        str(e.get("chave_nfe_nova") or e.get("numero_nota_nova") or "").strip()
+        for e in events
+    )
 
 
 def load_config(id_empresa: int, id_filial: Optional[int] = None) -> Dict[str, Any]:
@@ -516,8 +538,11 @@ def overview_payload(
 
     if prefer_mart:
         events = _events_from_ch_mart(id_empresa, branch_ids, dt_ini, dt_fim)
-        if events:
+        if events and mart_events_usable(events):
             source = str(events[0].get("origem") or "clickhouse_mart")
+        else:
+            events = []
+            source = ORIGEM_LMC
 
     if not events:
         if _stg_has_lmc(id_empresa, branch_ids):
@@ -592,6 +617,7 @@ def _events_from_ch_mart(
             FROM torqmind_mart_rt.mart_anp_compliance FINAL
             WHERE id_empresa = %(id_empresa)s
               {branch_sql}
+              AND origem IN ({_ANP_MART_ORIGENS_SQL})
               AND dt_alteracao_preco >= toDateTime64(%(dt_ini)s, 3, 'America/Sao_Paulo')
               AND dt_alteracao_preco < toDateTime64(%(dt_fim)s, 3, 'America/Sao_Paulo')
             ORDER BY dt_alteracao_preco DESC, id_filial, id_produto

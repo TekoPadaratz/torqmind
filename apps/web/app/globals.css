@@ -3182,6 +3182,42 @@ input.gridSearchInput {
   user-select: text;
 }
 
+button.anpChaveCopy {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: copy;
+  word-break: break-all;
+}
+
+button.anpChaveCopy:hover,
+button.anpChaveCopy:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.anpCopyToast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 80;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--chrome-elevated, rgba(20, 20, 22, 0.92));
+  color: var(--text, #f4f4f5);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
 @media (max-width: 900px) {
   .anpFilterRight {
     margin-left: 0;
