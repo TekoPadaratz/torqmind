@@ -69,5 +69,6 @@ test("grid ANP copia chave com cursor copy e toast discreto", () => {
   assert.match(panel, /Chave copiada/);
   assert.match(panel, /copyTextToClipboard/);
   assert.match(panel, /className="anpChaveCopy"/);
+  assert.match(panel, /const \[draftIni, setDraftIni\]/);
   assert.match(css, /button\.anpChaveCopy[\s\S]*cursor:\s*copy/);
 });

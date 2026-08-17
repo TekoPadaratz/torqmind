@@ -244,6 +244,8 @@ export function AnpCompliancePanel({
   const [abusivo, setAbusivo] = useState(70);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+  const [draftIni, setDraftIni] = useState(dtIni);
+  const [draftFim, setDraftFim] = useState(dtFim);
   const [copiedToast, setCopiedToast] = useState(false);
   const copiedTimer = useRef<number | null>(null);
 
