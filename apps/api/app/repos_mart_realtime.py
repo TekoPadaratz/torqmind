@@ -63,6 +63,65 @@ def _date_range_filter(dt_ini: date, dt_fim: date, col: str = "data_key") -> str
     return f" AND {col} >= {from_key} AND {col} <= {to_key}"
 
 
+def _month_coverage(ano: int, mes: int, bucket: Dict[int, Dict[str, Any]], today: date) -> str:
+    """ok = linha na mart; missing = mês civil já iniciado sem linha; future = ainda não começou."""
+    month_start = date(ano, mes, 1)
+    current_month_start = date(today.year, today.month, 1)
+    if month_start > current_month_start:
+        return "future"
+    if mes in bucket:
+        return "ok"
+    return "missing"
+
+
+def _build_annual_comparison(
+    monthly_evolution: List[Dict[str, Any]],
+    *,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Jan–Dez atual vs anterior. missing → saidas None (não fabricar zero)."""
+    today = today or date.today()
+    current_year = max(today.year, 2026)
+    prev_year = current_year - 1
+    if prev_year < 2025:
+        prev_year = 2025
+        current_year = 2026
+    annual_current = {int(m["mes"]): m for m in monthly_evolution if int(m["ano"]) == current_year}
+    annual_prev = {int(m["mes"]): m for m in monthly_evolution if int(m["ano"]) == prev_year}
+
+    def _saidas(bucket: Dict[int, Dict[str, Any]], ano: int, mes: int):
+        cov = _month_coverage(ano, mes, bucket, today)
+        if cov == "ok":
+            return bucket[mes].get("saidas", 0)
+        return None
+
+    def _cancel(bucket: Dict[int, Dict[str, Any]], ano: int, mes: int):
+        if _month_coverage(ano, mes, bucket, today) == "ok":
+            return bucket[mes].get("cancelamentos", 0)
+        return 0
+
+    return {
+        "current_year": current_year,
+        "previous_year": prev_year,
+        "months": [
+            {
+                "mes": mes,
+                "saidas_atual": _saidas(annual_current, current_year, mes),
+                "saidas_anterior": _saidas(annual_prev, prev_year, mes),
+                "coverage_atual": _month_coverage(current_year, mes, annual_current, today),
+                "coverage_anterior": _month_coverage(prev_year, mes, annual_prev, today),
+                "entradas_atual": 0,
+                "entradas_anterior": 0,
+                "cancelamentos_atual": _cancel(annual_current, current_year, mes),
+                "cancelamentos_anterior": _cancel(annual_prev, prev_year, mes),
+                "month_ref_atual": f"{current_year}-{mes:02d}-01",
+                "month_ref_anterior": f"{prev_year}-{mes:02d}-01",
+            }
+            for mes in range(1, 13)
+        ],
+    }
+
+
 def _date_key(d: date) -> int:
     return int(d.strftime("%Y%m%d"))
 
@@ -807,17 +866,21 @@ def sales_overview_bundle(
         ) ORDER BY faturamento DESC LIMIT 20
     """, parameters=params)
 
-    # --- Monthly evolution (histórico completo desde Jan/2025) ---
+    # --- Monthly evolution (histórico completo desde Jan/2025, por data_key) ---
+    # data_key (YYYYMMDD) é a data de negócio; ano/mês extraídos de dt legado
+    # podem divergir. Nunca agregar por join id_db↔id_filial.
     monthly_rows = query_dict(f"""
         SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas,
                s_val_cancel AS valor_cancelado
         FROM (
-            SELECT toYear(dt) AS ano, toMonth(dt) AS mes,
+            SELECT intDiv(data_key, 10000) AS ano,
+                   modulo(intDiv(data_key, 100), 100) AS mes,
                    sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas,
                    sum(valor_cancelado) AS s_val_cancel
             FROM {MART_RT_DB}.sales_daily_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial}
-              AND dt >= toDate('2025-01-01')
+              AND data_key >= 20250101
+              AND data_key > 0
             GROUP BY ano, mes
         ) ORDER BY ano, mes
     """, parameters=params)
@@ -835,33 +898,7 @@ def sales_overview_bundle(
         for r in monthly_rows
     ]
 
-    # Comparativo anual: sempre Jan–Dez dos 2 anos (atual e anterior),
-    # preenchendo zeros para meses sem movimento (ex.: Jan–Abr/2025).
-    current_year = max(date.today().year, 2026)
-    prev_year = current_year - 1
-    if prev_year < 2025:
-        prev_year = 2025
-        current_year = 2026
-    annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
-    annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
-    annual_comparison = {
-        "current_year": current_year,
-        "previous_year": prev_year,
-        "months": [
-            {
-                "mes": mes,
-                "saidas_atual": annual_current.get(mes, {}).get("saidas", 0),
-                "saidas_anterior": annual_prev.get(mes, {}).get("saidas", 0),
-                "entradas_atual": 0,
-                "entradas_anterior": 0,
-                "cancelamentos_atual": annual_current.get(mes, {}).get("cancelamentos", 0),
-                "cancelamentos_anterior": annual_prev.get(mes, {}).get("cancelamentos", 0),
-                "month_ref_atual": f"{current_year}-{mes:02d}-01",
-                "month_ref_anterior": f"{prev_year}-{mes:02d}-01",
-            }
-            for mes in range(1, 13)
-        ],
-    }
+    annual_comparison = _build_annual_comparison(monthly_evolution)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     freshness_meta = {"mode": "realtime", "source": source, "last_refresh": now_iso}

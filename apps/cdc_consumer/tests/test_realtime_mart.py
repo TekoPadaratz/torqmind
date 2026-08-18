@@ -659,6 +659,45 @@ class TestMartBuilderDedupSemantics:
             body = self.code[idx:next_def]
             assert "c.id_db = i.id_db" in body, f"{method} must join comprovantes/items with id_db"
 
+    def test_sales_never_equate_id_db_with_id_filial(self):
+        """id_db is Xpert origin; id_filial is the post. Never join/filter one as the other."""
+        import re
+        from torqmind_cdc_consumer.mart_builder import _exclude_central_mirror_pred
+
+        pred = _exclude_central_mirror_pred("torqmind_current", "c")
+        compact = pred.replace(" ", "")
+        assert "id_db=id_filial" not in compact
+        assert "id_filial=id_db" not in compact
+        assert "(c.id_empresa,c.id_db)IN" in compact
+        assert "CENTRAL" in pred
+
+        forbidden = re.compile(
+            r"id_db\s*=\s*[\w.]*id_filial|id_filial\s*=\s*[\w.]*id_db",
+            re.IGNORECASE,
+        )
+        sales_methods = [
+            "_refresh_sales_daily_stg",
+            "_refresh_sales_hourly_stg",
+            "_refresh_sales_products_stg",
+            "_refresh_sales_groups_stg",
+            "_refresh_dashboard_home_stg",
+        ]
+        for method in sales_methods:
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            assert "_exclude_central_mirror" in body, f"{method} must drop Central mirror"
+            matches = forbidden.findall(body)
+            assert not matches, f"{method} equates id_db with id_filial: {matches}"
+
+    def test_exclude_central_mirror_keeps_central_own_filial(self):
+        from torqmind_cdc_consumer.mart_builder import _exclude_central_mirror_pred
+
+        pred = _exclude_central_mirror_pred("torqmind_current", "c")
+        assert "NOT (" in pred
+        assert "c.id_filial) NOT IN" in pred
+        assert "stg_filiais" in pred
+
     def test_cancelados_counted_by_unique_comprovante(self):
         """Cancelled counts must use uniqExact on full natural key."""
         idx = self.code.index("def _refresh_fraud_daily_stg")
