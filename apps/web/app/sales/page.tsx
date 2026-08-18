@@ -104,8 +104,16 @@ export default function SalesPage() {
     if (annualRows.length) {
       return annualRows.map((row: any, index: number) => ({
         mes: MONTH_LABELS[index] || MONTH_LABELS[Number(row?.mes || 1) - 1],
-        atual: Number(row?.saidas_atual || 0),
-        anterior: Number(row?.saidas_anterior || 0),
+        atual:
+          row?.coverage_atual === "ok" && row?.saidas_atual != null
+            ? Number(row.saidas_atual || 0)
+            : null,
+        anterior:
+          row?.coverage_anterior === "ok" && row?.saidas_anterior != null
+            ? Number(row.saidas_anterior || 0)
+            : null,
+        coverageAtual: row?.coverage_atual || "ok",
+        coverageAnterior: row?.coverage_anterior || "ok",
       }));
     }
 
@@ -127,8 +135,10 @@ export default function SalesPage() {
       );
       return {
         mes: label,
-        atual: Number(current?.saidas || 0),
-        anterior: Number(previous?.saidas || 0),
+        atual: current ? Number(current?.saidas || 0) : null,
+        anterior: previous ? Number(previous?.saidas || 0) : null,
+        coverageAtual: current ? "ok" : "missing",
+        coverageAnterior: previous ? "ok" : "missing",
       };
     });
   }, [annualComparison, data]);
@@ -139,7 +149,9 @@ export default function SalesPage() {
     Number(commercial?.cancelamentos || 0) > 0;
   const hasHourValues = hourAgg.some((row) => Number(row.saidas || 0) > 0);
   const hasEvolution = evolutionSeries.some(
-    (row) => Number(row.atual || 0) > 0 || Number(row.anterior || 0) > 0,
+    (row) =>
+      (row.atual != null && Number(row.atual) > 0) ||
+      (row.anterior != null && Number(row.anterior) > 0),
   );
 
   const { query: groupsQ, setQuery: setGroupsQ, filteredRows: filteredGroups } = useGridSearch(
@@ -276,7 +288,31 @@ export default function SalesPage() {
                         width={112}
                       />
                       <Tooltip
-                        content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
+                        content={
+                          <ChartTooltip
+                            valueFormatter={(value, name, item) => {
+                              const payload = item?.payload as
+                                | {
+                                    coverageAtual?: string;
+                                    coverageAnterior?: string;
+                                  }
+                                | undefined;
+                              const coverage =
+                                String(name) === String(currentYear)
+                                  ? payload?.coverageAtual
+                                  : payload?.coverageAnterior;
+                              if (
+                                coverage === "missing" ||
+                                coverage === "future" ||
+                                value == null ||
+                                value === ""
+                              ) {
+                                return "—";
+                              }
+                              return formatCurrency(value);
+                            }}
+                          />
+                        }
                       />
                       <Legend />
                       <Bar

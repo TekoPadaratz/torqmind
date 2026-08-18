@@ -413,6 +413,7 @@ class TestQueryContracts:
             next_def = self.code.index("\n    def ", idx + 10)
             body = self.code[idx:next_def]
             assert "id_db" in body, f"{method} must include id_db in joins"
+            assert "_exclude_central_mirror" in body, f"{method} must exclude Central mirror"
 
     def test_configurable_query_settings(self):
         """MartBuilder must accept batch_size, max_threads, max_memory_usage."""
