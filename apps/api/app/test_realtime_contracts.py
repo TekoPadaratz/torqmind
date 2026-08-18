@@ -56,13 +56,13 @@ def _make_query_dict_side_effect(fn_name: str):
     """Return appropriate fake data based on the SQL query content."""
     def side_effect(query: str, parameters=None):
         q = query.lower()
-        if "sales_daily_rt" in q and "group by" not in q and "toYear" not in q and "s_cancel" in q:
+        if "sales_daily_rt" in q and "group by" not in q and "intdiv(data_key" not in q and "s_cancel" in q:
             return _FAKE_CANCEL_KPIS
-        if "sales_daily_rt" in q and "group by" not in q and "toYear" not in q:
+        if "sales_daily_rt" in q and "group by" not in q and "intdiv(data_key" not in q:
             if fn_name == "sales":
                 return _FAKE_SALES_DAILY_KPI_FULL
             return _FAKE_SALES_DAILY_KPI
-        if "sales_daily_rt" in q and "toyear" in q:
+        if "sales_daily_rt" in q and "intdiv(data_key" in q:
             return _FAKE_MONTHLY
         if "sales_daily_rt" in q and "group by" in q:
             return _FAKE_SALES_BY_DAY
@@ -258,6 +258,17 @@ class TestSalesOverviewBundleContract(unittest.TestCase):
         self.assertIn("cancelamentos_anterior", months[0])
         self.assertIn("month_ref_atual", months[0])
         self.assertIn("month_ref_anterior", months[0])
+        self.assertIn("coverage_atual", months[0])
+        self.assertIn("coverage_anterior", months[0])
+        jan = months[0]
+        self.assertEqual(jan["saidas_atual"], 90000.0)
+        self.assertEqual(jan["saidas_anterior"], 80000.0)
+        self.assertEqual(jan["coverage_atual"], "ok")
+        self.assertEqual(jan["coverage_anterior"], "ok")
+        # Mar/2026 está no fake monthly? só jan — missing, não zero
+        mar = months[2]
+        self.assertIsNone(mar["saidas_atual"])
+        self.assertEqual(mar["coverage_atual"], "missing")
 
 
 class TestFraudRealtimeContract(unittest.TestCase):
