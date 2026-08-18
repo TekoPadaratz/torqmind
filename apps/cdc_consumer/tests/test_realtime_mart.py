@@ -669,7 +669,8 @@ class TestMartBuilderDedupSemantics:
         assert "id_db=id_filial" not in compact
         assert "id_filial=id_db" not in compact
         assert "(c.id_empresa,c.id_db)IN" in compact
-        assert "CENTRAL" in pred
+        # Central identificada pela assinatura (id_db multi-filial), nao por nome.
+        assert "uniqExact(id_filial)" in pred
 
         forbidden = re.compile(
             r"id_db\s*=\s*[\w.]*id_filial|id_filial\s*=\s*[\w.]*id_db",
@@ -695,8 +696,19 @@ class TestMartBuilderDedupSemantics:
 
         pred = _exclude_central_mirror_pred("torqmind_current", "c")
         assert "NOT (" in pred
-        assert "c.id_filial) NOT IN" in pred
-        assert "stg_filiais" in pred
+        # Filial dona do banco (id_filial == id_db) permanece; so o espelho sai.
+        assert "c.id_filial != c.id_db" in pred
+        assert "stg_comprovantes_slim" in pred
+
+    def test_exclude_denegada_removes_only_denegada_without_valid(self):
+        from torqmind_cdc_consumer.mart_builder import _exclude_denegada_pred
+
+        pred = _exclude_denegada_pred("torqmind_current", "c")
+        # NF-e denegada (8) sem NF-e valida (1 pendente / 3 autorizada) nao e venda.
+        assert "stg_nfe_slim" in pred
+        assert "max(status = 8) = 1" in pred
+        assert "max(status IN (1, 3)) = 0" in pred
+        assert "NOT IN" in pred
 
     def test_cancelados_counted_by_unique_comprovante(self):
         """Cancelled counts must use uniqExact on full natural key."""

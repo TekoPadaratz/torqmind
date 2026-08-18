@@ -83,6 +83,6 @@ def test_mart_builder_sales_join_is_four_key_and_excludes_central():
     assert "c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial" in body
     assert "c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante" in body
     assert "_exclude_central_mirror" in body
-    assert "CENTRAL" in body
+    assert "_exclude_denegada" in body
     assert "({alias}.id_empresa, {alias}.id_db) IN" in body
-    assert "({alias}.id_empresa, {alias}.id_filial) NOT IN" in body
+    assert "{alias}.id_filial != {alias}.id_db" in body

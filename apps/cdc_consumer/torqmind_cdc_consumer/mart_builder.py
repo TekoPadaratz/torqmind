@@ -64,42 +64,50 @@ def _sales_cfop_pred(alias: str = "i") -> str:
     return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
 
 
-def _central_filiais_subquery(current_db: str) -> str:
-    """Filiais administrativas CENTRAL (espelho Xpert), identificadas pelo nome.
+def _central_dbs_subquery(current_db: str) -> str:
+    """id_db \"matriz/Central\" = banco que emite comprovantes para várias filiais.
 
-    Nunca igualar id_db com id_filial: posto nativo pode ter id_db=1 ('Filial 1').
+    Assinatura robusta e independente de nome/idioma: um banco de posto nativo
+    emite só para a própria filial; a Central replica para várias. Evita falso
+    positivo com posto que tenha \"CENTRAL\" no nome e não assume id_db == id_filial.
     """
-    nome = (
-        "positionCaseInsensitiveUTF8("
-        "ifNull(JSONExtractString(payload, 'NOMEFILIAL'), ''), 'CENTRAL') > 0"
-    )
-    apelido = (
-        "positionCaseInsensitiveUTF8("
-        "ifNull(JSONExtractString(payload, 'APELIDO'), ''), 'CENTRAL') > 0"
-    )
-    nome_alt = (
-        "positionCaseInsensitiveUTF8("
-        "ifNull(JSONExtractString(payload, 'NOME'), ''), 'CENTRAL') > 0"
-    )
     return (
-        f"SELECT id_empresa, id_filial FROM {current_db}.stg_filiais FINAL "
-        f"WHERE is_deleted = 0 AND ({nome} OR {apelido} OR {nome_alt})"
+        f"SELECT id_empresa, id_db FROM {current_db}.stg_comprovantes_slim "
+        f"WHERE is_deleted = 0 "
+        f"GROUP BY id_empresa, id_db HAVING uniqExact(id_filial) > 1"
     )
 
 
 def _exclude_central_mirror_pred(current_db: str, alias: str = "c") -> str:
-    """Exclui vendas da Central espelhadas no posto operacional.
+    """Exclui a cópia-espelho da Central replicada no posto operacional.
 
-    Join canônico permanece (id_empresa, id_filial, id_db, id_comprovante).
-    A Central replica comprovantes nos postos com o id_filial do posto e o
-    id_db da Central. Essas linhas NÃO podem somar no faturamento do posto.
-    A própria filial Central (id_filial da Central) continua incluída.
+    A Central (id_db que emite para várias filiais) replica o comprovante com o
+    id_filial do posto; essa linha duplica a venda nativa e não pode somar no
+    faturamento. A filial dona do banco (id_filial == id_db) continua incluída.
     """
-    central = _central_filiais_subquery(current_db)
+    central = _central_dbs_subquery(current_db)
     return (
         f"NOT ("
         f"({alias}.id_empresa, {alias}.id_db) IN ({central}) "
-        f"AND ({alias}.id_empresa, {alias}.id_filial) NOT IN ({central})"
+        f"AND {alias}.id_filial != {alias}.id_db"
+        f")"
+    )
+
+
+def _exclude_denegada_pred(current_db: str, alias: str = "c") -> str:
+    """Exclui do faturamento comprovante cuja NF-e foi DENEGADA sem reemissão.
+
+    NF-e denegada (status 8) não é documento fiscal válido. O Xpert não marca o
+    comprovante como cancelado, então sem este filtro a venda entraria no
+    faturamento. Só exclui quando o comprovante não tem NF-e válida (status 1
+    pendente ou 3 autorizada): se houve reemissão autorizada, a venda conta.
+    """
+    return (
+        f"({alias}.id_empresa, {alias}.id_filial, {alias}.id_db, {alias}.id_comprovante) NOT IN ("
+        f"SELECT id_empresa, id_filial, id_db, id_comprovante "
+        f"FROM {current_db}.stg_nfe_slim FINAL WHERE is_deleted = 0 "
+        f"GROUP BY id_empresa, id_filial, id_db, id_comprovante "
+        f"HAVING max(status = 8) = 1 AND max(status IN (1, 3)) = 0"
         f")"
     )
 
@@ -1031,6 +1039,9 @@ class MartBuilder:
     def _exclude_central_mirror(self, alias: str = "c") -> str:
         return _exclude_central_mirror_pred(self.current_db, alias)
 
+    def _exclude_denegada(self, alias: str = "c") -> str:
+        return _exclude_denegada_pred(self.current_db, alias)
+
     def _json_decimal_or_null(self, alias: str, key: str, scale: int) -> str:
         return (
             f"if(JSONHas({alias}.payload, '{key}'), "
@@ -1182,6 +1193,7 @@ class MartBuilder:
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                             AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                             AND {self._exclude_central_mirror("c")}
+                            AND {self._exclude_denegada("c")}
                             AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
@@ -1231,6 +1243,7 @@ class MartBuilder:
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                     AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                     AND {self._exclude_central_mirror("c")}
+                    AND {self._exclude_denegada("c")}
                     AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
@@ -1283,6 +1296,7 @@ class MartBuilder:
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
                     AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                     AND {self._exclude_central_mirror("c")}
+                    AND {self._exclude_denegada("c")}
                     AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
@@ -1330,6 +1344,7 @@ class MartBuilder:
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
                     AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                     AND {self._exclude_central_mirror("c")}
+                    AND {self._exclude_denegada("c")}
                     AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
@@ -2040,6 +2055,7 @@ class MartBuilder:
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                             AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
                             AND {self._exclude_central_mirror("c")}
+                            AND {self._exclude_denegada("c")}
                             AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
