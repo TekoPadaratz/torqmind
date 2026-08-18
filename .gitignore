@@ -71,3 +71,6 @@ imports/source_explorer/
 # Build artifacts & backups
 tsconfig.tsbuildinfo
 *.env.bak
+
+# Runtime/scratch dir (temp scripts, local agent releases — never commit)
+var/
