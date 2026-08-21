@@ -373,7 +373,8 @@ datasets:
     event_date_column: TORQMIND_DT_EVENTO
     watermark_overlap_seconds: 240
     bootstrap_days: 365
-    query: SELECT c.*, CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK
+    query: SELECT c.*, CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, (SELECT MAX(v.dt) FROM (VALUES (CAST(c.DATABAIXA
+      AS datetime2)), (NULLIF(CAST(c.DATAREPL AS datetime2), CAST('1900-01-01T00:00:00' AS datetime2)))) AS v(dt)) AS TORQMIND_WATERMARK
       FROM dbo.CONTASPAGARBAIXA c
   movlctos:
     enabled: true

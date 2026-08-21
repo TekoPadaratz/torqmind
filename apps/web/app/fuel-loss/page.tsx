@@ -49,6 +49,10 @@ type LossPayload = {
     dias_entrada?: number;
     dias_reposicao?: number;
   };
+  ultima_leitura_disponivel?: string | null;
+  leitura_fallback_hoje?: boolean;
+  dt_ini?: string;
+  dt_fim?: string;
   filiais?: {
     id_filial: number;
     filial_nome: string;
@@ -232,6 +236,15 @@ export default function FuelLossPage() {
           </header>
 
           {error ? <div className="card errorCard col-12">{error}</div> : null}
+
+          {data?.leitura_fallback_hoje && data?.ultima_leitura_disponivel ? (
+            <div className="card col-12" style={{ marginTop: 0 }}>
+              <div className="muted">
+                Última leitura disponível {fmtDia(data.ultima_leitura_disponivel)}
+                {" — "}hoje ainda sem leitura do sensor.
+              </div>
+            </div>
+          ) : null}
 
           {(loading || pendingUnavailable) && !data ? (
             <div className="col-12">

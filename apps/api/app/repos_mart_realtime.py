@@ -63,6 +63,65 @@ def _date_range_filter(dt_ini: date, dt_fim: date, col: str = "data_key") -> str
     return f" AND {col} >= {from_key} AND {col} <= {to_key}"
 
 
+def _month_coverage(ano: int, mes: int, bucket: Dict[int, Dict[str, Any]], today: date) -> str:
+    """ok = linha na mart; missing = mês civil já iniciado sem linha; future = ainda não começou."""
+    month_start = date(ano, mes, 1)
+    current_month_start = date(today.year, today.month, 1)
+    if month_start > current_month_start:
+        return "future"
+    if mes in bucket:
+        return "ok"
+    return "missing"
+
+
+def _build_annual_comparison(
+    monthly_evolution: List[Dict[str, Any]],
+    *,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    """Jan–Dez atual vs anterior. missing → saidas None (não fabricar zero)."""
+    today = today or date.today()
+    current_year = max(today.year, 2026)
+    prev_year = current_year - 1
+    if prev_year < 2025:
+        prev_year = 2025
+        current_year = 2026
+    annual_current = {int(m["mes"]): m for m in monthly_evolution if int(m["ano"]) == current_year}
+    annual_prev = {int(m["mes"]): m for m in monthly_evolution if int(m["ano"]) == prev_year}
+
+    def _saidas(bucket: Dict[int, Dict[str, Any]], ano: int, mes: int):
+        cov = _month_coverage(ano, mes, bucket, today)
+        if cov == "ok":
+            return bucket[mes].get("saidas", 0)
+        return None
+
+    def _cancel(bucket: Dict[int, Dict[str, Any]], ano: int, mes: int):
+        if _month_coverage(ano, mes, bucket, today) == "ok":
+            return bucket[mes].get("cancelamentos", 0)
+        return 0
+
+    return {
+        "current_year": current_year,
+        "previous_year": prev_year,
+        "months": [
+            {
+                "mes": mes,
+                "saidas_atual": _saidas(annual_current, current_year, mes),
+                "saidas_anterior": _saidas(annual_prev, prev_year, mes),
+                "coverage_atual": _month_coverage(current_year, mes, annual_current, today),
+                "coverage_anterior": _month_coverage(prev_year, mes, annual_prev, today),
+                "entradas_atual": 0,
+                "entradas_anterior": 0,
+                "cancelamentos_atual": _cancel(annual_current, current_year, mes),
+                "cancelamentos_anterior": _cancel(annual_prev, prev_year, mes),
+                "month_ref_atual": f"{current_year}-{mes:02d}-01",
+                "month_ref_anterior": f"{prev_year}-{mes:02d}-01",
+            }
+            for mes in range(1, 13)
+        ],
+    }
+
+
 def _date_key(d: date) -> int:
     return int(d.strftime("%Y%m%d"))
 
@@ -807,17 +866,21 @@ def sales_overview_bundle(
         ) ORDER BY faturamento DESC LIMIT 20
     """, parameters=params)
 
-    # --- Monthly evolution (histórico completo desde Jan/2025) ---
+    # --- Monthly evolution (histórico completo desde Jan/2025, por data_key) ---
+    # data_key (YYYYMMDD) é a data de negócio; ano/mês extraídos de dt legado
+    # podem divergir. Nunca agregar por join id_db↔id_filial.
     monthly_rows = query_dict(f"""
         SELECT ano, mes, s_fat AS faturamento, s_vendas AS qtd_vendas,
                s_val_cancel AS valor_cancelado
         FROM (
-            SELECT toYear(dt) AS ano, toMonth(dt) AS mes,
+            SELECT intDiv(data_key, 10000) AS ano,
+                   modulo(intDiv(data_key, 100), 100) AS mes,
                    sum(faturamento) AS s_fat, sum(qtd_vendas) AS s_vendas,
                    sum(valor_cancelado) AS s_val_cancel
             FROM {MART_RT_DB}.sales_daily_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}} {filial}
-              AND dt >= toDate('2025-01-01')
+              AND data_key >= 20250101
+              AND data_key > 0
             GROUP BY ano, mes
         ) ORDER BY ano, mes
     """, parameters=params)
@@ -835,33 +898,7 @@ def sales_overview_bundle(
         for r in monthly_rows
     ]
 
-    # Comparativo anual: sempre Jan–Dez dos 2 anos (atual e anterior),
-    # preenchendo zeros para meses sem movimento (ex.: Jan–Abr/2025).
-    current_year = max(date.today().year, 2026)
-    prev_year = current_year - 1
-    if prev_year < 2025:
-        prev_year = 2025
-        current_year = 2026
-    annual_current = {m["mes"]: m for m in monthly_evolution if m["ano"] == current_year}
-    annual_prev = {m["mes"]: m for m in monthly_evolution if m["ano"] == prev_year}
-    annual_comparison = {
-        "current_year": current_year,
-        "previous_year": prev_year,
-        "months": [
-            {
-                "mes": mes,
-                "saidas_atual": annual_current.get(mes, {}).get("saidas", 0),
-                "saidas_anterior": annual_prev.get(mes, {}).get("saidas", 0),
-                "entradas_atual": 0,
-                "entradas_anterior": 0,
-                "cancelamentos_atual": annual_current.get(mes, {}).get("cancelamentos", 0),
-                "cancelamentos_anterior": annual_prev.get(mes, {}).get("cancelamentos", 0),
-                "month_ref_atual": f"{current_year}-{mes:02d}-01",
-                "month_ref_anterior": f"{prev_year}-{mes:02d}-01",
-            }
-            for mes in range(1, 13)
-        ],
-    }
+    annual_comparison = _build_annual_comparison(monthly_evolution)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     freshness_meta = {"mode": "realtime", "source": source, "last_refresh": now_iso}
@@ -5449,10 +5486,11 @@ def fraud_credito_funcionario(
     limit: int = 500,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-    """Antifraude crédito funcionário — lê ClickHouse mart_rt (não PG/STG).
+    """Antifraude crédito funcionário — GET lê só ClickHouse mart_rt.
 
-    Mash/refresh continua no PG via ``repos_mart.refresh_fraud_credito_funcionario``
-    (que também publica no CH). GET padrão só consulta CH.
+    Sem join STG/NFE no hot path (enrich causava timeout/OOM). Documento vem de
+    nro_documento/HISTORICO já mashados; OBS||HISTORICO na exibição.
+    Mash/refresh: ``repos_mart.refresh_fraud_credito_funcionario`` / mash CH.
     """
     import json
     from datetime import datetime
@@ -5471,6 +5509,8 @@ def fraud_credito_funcionario(
                 "fraud_credito_funcionario refresh/publish failed empresa=%s mes=%s: %s",
                 id_empresa, ym, str(exc)[:240],
             )
+
+    # GET hot path: só mart_rt. Proibido ALTER/enrich STG aqui (timeout/OOM).
 
     status_key = str(status or "todos").strip().lower()
     status_sql = ""
@@ -5563,6 +5603,7 @@ def fraud_credito_funcionario(
                 id_usuario_caixa,
                 operador_caixa,
                 historico,
+                observacao,
                 atipico
             FROM {MART_RT_DB}.mart_fraud_credito_funcionario_uso FINAL
             WHERE id_empresa = %(id_empresa)s
@@ -5572,10 +5613,8 @@ def fraud_credito_funcionario(
             """,
             {"id_empresa": int(id_empresa), "ano_mes": ym},
         )
-        # Operador: NFC-e → comprovante (HISTORICO sem Cupom: não casa direto).
-        _enrich_credito_usos_operador_via_nfe(int(id_empresa), uso_rows)
-        # NF/NFC-e canônico via stg_nfe_slim (DOCUMENTO = nota fiscal).
-        nfe_map = _load_nfe_numbers(int(id_empresa), uso_rows)
+        # Documento = NFC-e já no mash (nro_documento / HISTORICO). Sem join STG no GET.
+        # Operador/comprovante: só o que a mart já trouxe (enrich NFE no GET estoura CH).
         for u in uso_rows:
             fid = int(u["id_funcionario"])
             dt = u.get("dt_evento")
@@ -5585,13 +5624,16 @@ def fraud_credito_funcionario(
                 dt_s = str(dt) if dt else None
             id_filial = int(u.get("id_filial") or 0)
             id_comp = int(u.get("id_comprovante") or 0)
-            nfe_join = nfe_map.get((id_filial, id_comp), "")
+            hist_cr = str(u.get("historico") or "").strip()
+            obs_cr = str(u.get("observacao") or "").strip()
+            # Xpert Contas a Receber: Observações (OBS) quando houver; senão Histórico.
+            historico_exibicao = obs_cr or hist_cr
             nfe_hist = _extract_nfce_number(
                 str(u.get("nro_documento") or ""),
-                str(u.get("historico") or ""),
+                hist_cr,
             )
             documento_venda, documento_label, documento_source, documento_fiscal = _antifraude_documento(
-                nfe_join or nfe_hist,
+                nfe_hist,
                 0,
                 0,
             )
@@ -5613,7 +5655,9 @@ def fraud_credito_funcionario(
                 "operador_caixa": u.get("operador_caixa") or "—",
                 "id_cliente": u.get("id_cliente") or None,
                 "cliente_nome": u.get("cliente_nome") or "—",
-                "historico": u.get("historico") or "",
+                "historico": historico_exibicao,
+                "observacao": obs_cr,
+                "historico_cr": hist_cr,
                 "atipico": bool(int(u.get("atipico") or 0)),
             })
         for fid in usos_by:
@@ -6389,11 +6433,48 @@ def inventory_fuel_loss_overview(
             )
 
     today = business_today(id_empresa)
+    requested_dt_ini = dt_ini
+    requested_dt_fim = dt_fim
     if dt_ini is None or dt_fim is None:
         dt_fim = today
         dt_ini = today - timedelta(days=13)
     if dt_fim < dt_ini:
         dt_ini, dt_fim = dt_fim, dt_ini
+
+    # Subfiltro oculto: se o escopo pede o dia de negócio atual e ainda não há
+    # leitura de sensor hoje, usa a última leitura disponível (hoje−1 típico).
+    ultima_leitura_disponivel: Optional[date] = None
+    leitura_fallback_hoje = False
+    single_day_today = dt_ini == dt_fim == today
+    range_ends_today = dt_fim == today
+    if single_day_today or range_ends_today:
+        max_rows = query_dict(
+            f"""
+            SELECT max(dia) AS max_dia
+            FROM {MART_RT_DB}.mart_inventory_tank_readings_rt FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND ativo = 1
+              AND capacidade_l > 0
+              {_branch_clause("id_filial", id_filial)}
+            """,
+            {"id_empresa": int(id_empresa)},
+        )
+        max_dia = max_rows[0].get("max_dia") if max_rows else None
+        if max_dia is not None:
+            if hasattr(max_dia, "date"):
+                max_dia = max_dia.date()
+            elif isinstance(max_dia, str):
+                max_dia = date.fromisoformat(str(max_dia)[:10])
+            ultima_leitura_disponivel = max_dia
+            if max_dia < today:
+                leitura_fallback_hoje = True
+                if single_day_today:
+                    dt_ini = max_dia
+                    dt_fim = max_dia
+                else:
+                    dt_fim = max_dia
+                    if dt_ini > dt_fim:
+                        dt_ini = dt_fim
 
     # Precisa do dia anterior à janela para formar o primeiro par
     read_ini = dt_ini - timedelta(days=1)
@@ -6580,6 +6661,12 @@ def inventory_fuel_loss_overview(
         "source": "clickhouse",
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
+        "requested_dt_ini": (requested_dt_ini or dt_ini).isoformat() if requested_dt_ini or dt_ini else None,
+        "requested_dt_fim": (requested_dt_fim or dt_fim).isoformat() if requested_dt_fim or dt_fim else None,
+        "ultima_leitura_disponivel": (
+            ultima_leitura_disponivel.isoformat() if ultima_leitura_disponivel else None
+        ),
+        "leitura_fallback_hoje": bool(leitura_fallback_hoje),
         "kpis": {
             "filiais": len(by_filial),
             "pares": len(rows_out),
@@ -6590,11 +6677,6 @@ def inventory_fuel_loss_overview(
         },
         "filiais": [by_filial[k] for k in sorted(by_filial)],
         "itens": rows_out,
-        "disclaimer": (
-            "Dif Leitura = leitura D − leitura D−1. "
-            "Movimentação = entradas (NFe) − saídas (bomba) no intervalo. "
-            "Diferença = Dif Leitura − Movimentação."
-        ),
     }
 
 

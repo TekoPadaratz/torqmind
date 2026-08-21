@@ -1389,7 +1389,7 @@ export default function FraudPage() {
                                               <th>Filial</th>
                                               <th>Data</th>
                                               <th>NF-e / NFC-e</th>
-                                              <th>Cliente</th>
+                                              <th>Histórico</th>
                                               <th>Tipo</th>
                                               <th>Operador de caixa</th>
                                               <th style={{ textAlign: "right" }}>Valor</th>
@@ -1399,7 +1399,8 @@ export default function FraudPage() {
                                             {sortGridRows(row.usos || [], (u: any) => ({
                                               filial: u.filial_label ?? u.id_filial,
                                               data: u.dt_evento,
-                                              nome: u.cliente_nome || u.operador_caixa,
+                                              // Xpert CR: OBS (Observações) ou HISTORICO
+                                              nome: String(u.observacao || u.historico || u.operador_caixa || "").trim(),
                                             })).filter((u: any) => rowMatchesGridSearch(u, credFuncUsoQuery)).map((u: any, idx: number) => (
                                               <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
                                                 <td>
@@ -1419,7 +1420,9 @@ export default function FraudPage() {
                                                     </span>
                                                   ) : null}
                                                 </td>
-                                                <td>{u.cliente_nome || "—"}</td>
+                                                <td style={{ minWidth: 180, maxWidth: 360, whiteSpace: "normal" }}>
+                                                  {String(u.observacao || u.historico || "").trim() || "—"}
+                                                </td>
                                                 <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
                                                 <td>{u.operador_caixa || "—"}</td>
                                                 <td style={{ textAlign: "right" }}>

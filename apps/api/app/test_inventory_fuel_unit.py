@@ -18,6 +18,7 @@ def test_inventory_screen_registered():
     assert "inventory" in SCREEN_REGISTRY
     assert SCREEN_REGISTRY["inventory"]["category"] == "Comercial"
     assert SCREEN_REGISTRY["inventory"]["has_sensitive"] is True
+    assert SCREEN_REGISTRY["inventory"]["label"] == "Estoque de combustível"
 
 
 def test_fuel_loss_screen_registered():
@@ -89,12 +90,15 @@ def test_fetch_fuel_sales_sql_filters_active_and_nfe():
     assert "_comprovante_ativo_sql" in src
     assert "_item_cfop_sql" in src
     assert "stg.comprovantes" in src
+    assert "DTACONTA" in src
+    assert "5202" in src  # devolução saída excluída
 
 
 def test_fetch_fuel_entries_sql_requires_active_comprovante():
     src = inspect.getsource(inv.fetch_fuel_entries_daily)
     assert "stg.comprovantes" in src
     assert "_comprovante_ativo_sql" in src
+    assert "DTACONTA" in src  # dia de negócio alinhado à leitura/saída
 
 
 def test_inventory_fuel_in_realtime_functions():

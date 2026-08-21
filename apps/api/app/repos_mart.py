@@ -10021,6 +10021,19 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
     if m < 1 or m > 12:
         raise ValueError(f"ano_mes inválido: {ym}")
 
+    # OBS do Xpert (CONTASRECEBER.payload.OBS) — coluna idempotente no CH compartilhado.
+    try:
+        execute_command(
+            """
+            ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
+            ADD COLUMN IF NOT EXISTS observacao String DEFAULT ''
+            """
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "CH add observacao skipped: %s", str(exc)[:200]
+        )
+
     # Limpa mês (evita órfãos de mash antigo / homolog)
     execute_command(
         """
@@ -10093,6 +10106,7 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
             toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) AS id_entidade,
             toFloat64OrZero(JSONExtractString(payload, 'VALOR')) AS valor,
             ifNull(JSONExtractString(payload, 'HISTORICO'), '') AS historico,
+            ifNull(nullIf(trimBoth(JSONExtractString(payload, 'OBS')), ''), '') AS observacao,
             coalesce(
                 dt_evento,
                 parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTACONTA'), 3, 'America/Sao_Paulo'),
@@ -10125,6 +10139,7 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
         if not eid:
             continue
         hist = str(u.get("historico") or "")
+        obs = str(u.get("observacao") or "").strip()
         tipo = "vale" if "vale" in hist.lower() else "prazo"
         m = nf_re.search(hist)
         nro_doc = m.group(1) if m else ""
@@ -10145,6 +10160,7 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
             "id_usuario_caixa": 0,
             "operador_caixa": "",
             "historico": hist,
+            "observacao": obs,
             "atipico": 0,
             "published_at": published_at,
         })
@@ -10257,6 +10273,18 @@ def publish_fraud_credito_funcionario_to_ch(
     ym = int(ano_mes)
     published_at = datetime.now(timezone.utc)
 
+    try:
+        execute_command(
+            """
+            ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
+            ADD COLUMN IF NOT EXISTS observacao String DEFAULT ''
+            """
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "CH add observacao skipped: %s", str(exc)[:200]
+        )
+
     # Limpa o mês antes de republicar: id_funcionario mudou (FUNCIONARIOS → ID_ENTIDADE);
     # sem DELETE, ReplacingMergeTree acumula linhas órfãs com chaves antigas.
     execute_command(
@@ -10296,26 +10324,17 @@ def publish_fraud_credito_funcionario_to_ch(
               id_empresa, id_funcionario, ano_mes, id_filial, id_entidade,
               id_contasreceber, id_comprovante, nro_cupom, nro_documento,
               COALESCE(tipo_uso, 'prazo') AS tipo_uso,
-              dt_evento, valor, id_usuario_caixa, operador_caixa, historico, atipico
+              dt_evento, valor, id_usuario_caixa, operador_caixa, historico,
+              COALESCE(observacao, '') AS observacao,
+              atipico
             FROM mart.fraud_credito_funcionario_uso
             WHERE id_empresa = %s AND ano_mes = %s
             """,
             [id_empresa, ym],
         ).fetchall()
 
-    # Homolog/prod: PG mash pode não resolver operador se HISTORICO só tem NFC-e
-    # (sem Cupom:) e stg.nfe local está incompleto — completa via CH.
-    try:
-        from app.repos_mart_realtime import _enrich_credito_usos_operador_via_nfe
-
-        uso_list = [dict(u) for u in uso_rows]
-        _enrich_credito_usos_operador_via_nfe(int(id_empresa), uso_list)
-        uso_rows = uso_list
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "publish credito enrich operador skipped empresa=%s: %s",
-            id_empresa, str(exc)[:200],
-        )
+    # Publish: sem enrich NFE/STG (join pesado → OOM/timeout no CH compartilhado).
+    # Operador/documento vêm do mash; GET lê só mart_rt.
 
     resumo_ch = []
     for r in resumo_rows:
@@ -10372,6 +10391,7 @@ def publish_fraud_credito_funcionario_to_ch(
             "id_usuario_caixa": int(u.get("id_usuario_caixa") or 0),
             "operador_caixa": str(u.get("operador_caixa") or ""),
             "historico": str(u.get("historico") or ""),
+            "observacao": str(u.get("observacao") or "").strip(),
             "atipico": 1 if u.get("atipico") else 0,
             "published_at": published_at,
         })
@@ -10498,6 +10518,7 @@ def fraud_credito_funcionario(
                 u.id_usuario_caixa,
                 u.operador_caixa,
                 u.historico,
+                COALESCE(u.observacao, '') AS observacao,
                 u.atipico
               FROM mart.fraud_credito_funcionario_uso u
               WHERE u.id_empresa = %s
@@ -10510,9 +10531,11 @@ def fraud_credito_funcionario(
                 fid = int(d["id_funcionario"])
                 from app.repos_mart_realtime import _antifraude_documento, _extract_nfce_number
 
+                hist_cr = str(d.get("historico") or "").strip()
+                obs_cr = str(d.get("observacao") or "").strip()
                 nfe_hist = _extract_nfce_number(
                     str(d.get("nro_documento") or ""),
-                    str(d.get("historico") or ""),
+                    hist_cr,
                 )
                 # Documento = só NF; nunca NROCOMPROVANTE / id_comprovante.
                 _, documento_label, documento_source, documento_fiscal = _antifraude_documento(
@@ -10534,7 +10557,9 @@ def fraud_credito_funcionario(
                     "valor": float(d.get("valor") or 0),
                     "id_usuario_caixa": d.get("id_usuario_caixa"),
                     "operador_caixa": d.get("operador_caixa") or "—",
-                    "historico": d.get("historico") or "",
+                    "historico": obs_cr or hist_cr,
+                    "observacao": obs_cr,
+                    "historico_cr": hist_cr,
                     "atipico": bool(d.get("atipico")),
                 })
             for fid in usos_by:

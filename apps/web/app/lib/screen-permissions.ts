@@ -33,7 +33,7 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
   },
   {
     key: "inventory",
-    label: "Estoque",
+    label: "Estoque de combustível",
     category: "Comercial",
     panels: [],
   },

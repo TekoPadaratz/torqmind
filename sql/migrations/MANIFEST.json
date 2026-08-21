@@ -1295,6 +1295,15 @@
       "sha256_utf8_normalized": "9e7dbbd861260b0739f94b189b7f4ba69c3b7b3b826e4b43c8d02fd7bb6fd4e4",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "139_fraud_credito_funcionario_cr_observacao.sql",
+      "prefix": "139",
+      "encoding": "utf-8",
+      "sha256_raw": "0307e8eaed8c030b27116461eb3c6650f9d8a9d57e7c4935ddfe486a1b0e92dc",
+      "sha256_utf8_normalized": "0307e8eaed8c030b27116461eb3c6650f9d8a9d57e7c4935ddfe486a1b0e92dc",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

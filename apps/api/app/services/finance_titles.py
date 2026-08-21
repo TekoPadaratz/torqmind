@@ -6,12 +6,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from app.db import get_conn
-from app.db_clickhouse import insert_batch
+from app.db_clickhouse import execute_command, insert_batch
 
 logger = logging.getLogger(__name__)
 
 MART_TABLE = "torqmind_mart_rt.mart_finance_titles_rt"
 DEFAULT_DAYS = 180
+
+# Xpert: DELETAR=1 remove o título; não pode aparecer como aberto.
+_NOT_DELETED = (
+    "coalesce(nullif(trim(payload->>'DELETAR'), ''), '0') "
+    "NOT IN ('1', 'true', 'True', 't', 'T', 'S', 's', 'Y', 'y')"
+)
 
 
 def _now() -> datetime:
@@ -23,14 +29,17 @@ def fetch_finance_titles(
 ) -> List[Dict[str, Any]]:
     """Lê títulos alinhados ao Xpert Não Pagas/Não Recebidas (DTAPGTO IS NULL).
 
-    Aberto = DTAPGTO nulo e saldo > 0.01 após baixas. Pagos recentes entram
-    como tombstone (`status=pago`) para curar fantasma no ClickHouse.
+    Aberto = DTAPGTO nulo e saldo > 0.01 após baixas.
+    Saldo canônico Xpert (docs/solvencia): VALOR = VLRPAGO + Σ VALORBAIXA.
+    Baixas parciais vivem em CONTASPAGARBAIXA / CONTASRECEBERBAIXA (não há
+    tabela CONTASPAGARBAIXAPARCIAL separada no Xpert — o parcial é a própria BAIXA).
+    Pagos recentes entram como tombstone (`status=pago`) para curar fantasma no CH.
     """
     days = max(7, min(int(days), 366))
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         conn.execute("SET LOCAL statement_timeout = 0")
         rows = conn.execute(
-            """
+            f"""
             WITH baixa_receber AS (
               SELECT
                 id_empresa, id_db,
@@ -39,6 +48,7 @@ def fetch_finance_titles(
                 max((etl.safe_timestamp(payload->>'DATABAIXA'))::date) AS dt_ultima_baixa
               FROM stg.contasreceberbaixa
               WHERE id_empresa = %s
+                AND {_NOT_DELETED}
               GROUP BY id_empresa, id_db, etl.safe_int(payload->>'ID_CONTASRECEBER')
             ),
             baixa_pagar AS (
@@ -49,6 +59,7 @@ def fetch_finance_titles(
                 max((etl.safe_timestamp(payload->>'DATABAIXA'))::date) AS dt_ultima_baixa
               FROM stg.contaspagarbaixa
               WHERE id_empresa = %s
+                AND {_NOT_DELETED}
               GROUP BY id_empresa, id_db, etl.safe_int(payload->>'ID_CONTASPAGAR')
             ),
             src AS (
@@ -94,6 +105,7 @@ def fetch_finance_titles(
                AND ent.id_filial = cp.id_filial
                AND ent.id_entidade = coalesce(etl.safe_int(cp.payload->>'ID_ENTIDADE'), 0)
               WHERE cp.id_empresa = %s
+                AND {_NOT_DELETED.replace("payload->>", "cp.payload->>")}
 
               UNION ALL
 
@@ -139,6 +151,7 @@ def fetch_finance_titles(
                AND ent.id_filial = cr.id_filial
                AND ent.id_entidade = coalesce(etl.safe_int(cr.payload->>'ID_ENTIDADE'), 0)
               WHERE cr.id_empresa = %s
+                AND {_NOT_DELETED.replace("payload->>", "cr.payload->>")}
             )
             SELECT
               id_empresa, id_filial, tipo_titulo, id_titulo, id_db,
@@ -178,8 +191,20 @@ def fetch_finance_titles(
 def publish_finance_titles(
     role: str, id_empresa: int, days: int = DEFAULT_DAYS
 ) -> int:
-    """Publica títulos financeiros elegíveis no ClickHouse."""
+    """Republica títulos financeiros no ClickHouse (replace por empresa).
+
+    DELETE + INSERT evita fantasma aberto quando o título sumiu/foi pago no STG
+    e a ReplacingMergeTree ainda servia a versão antiga.
+    """
     rows = fetch_finance_titles(role, id_empresa, days=days)
+    execute_command(
+        f"""
+        ALTER TABLE {MART_TABLE}
+        DELETE WHERE id_empresa = {{id_empresa:Int32}}
+        SETTINGS mutations_sync = 1
+        """,
+        {"id_empresa": int(id_empresa)},
+    )
     published_at = _now()
     payload = [
         {

@@ -57,11 +57,75 @@ _BACKFILL_BATCH_SIZE = _DEFAULT_BATCH_SIZE
 
 # Vendas comerciais: saída (cfop > 5000) sem perda/baixa (5927) nem transferência (5929/6929).
 SALES_EXCLUDED_CFOPS = (5927, 5929, 6929)
+# Devolução no lado saída (etl.cfop_commercial_class = devolucao_entrada):
+# NÃO conta como cancelamento de venda no Antifraude.
+SALES_RETURN_CFOPS = (5202, 5411, 6202, 6411)
 
 
 def _sales_cfop_pred(alias: str = "i") -> str:
     excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
     return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+
+
+def _sales_exit_cancel_cfop_pred(alias: str = "i") -> str:
+    """Cancelamento antifraude: só item de saída/venda (não entrada, não devolução)."""
+    excl = ",".join(str(int(c)) for c in (*SALES_EXCLUDED_CFOPS, *SALES_RETURN_CFOPS))
+    return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+
+
+def _has_sales_exit_item_pred(current_db: str, alias: str = "c") -> str:
+    """Comprovante cancelado só entra no antifraude se tiver item de venda/saída."""
+    return (
+        f"EXISTS ("
+        f"SELECT 1 FROM {current_db}.stg_itenscomprovantes_slim AS i FINAL "
+        f"WHERE i.id_empresa = {alias}.id_empresa "
+        f"AND i.id_filial = {alias}.id_filial "
+        f"AND i.id_db = {alias}.id_db "
+        f"AND i.id_comprovante = {alias}.id_comprovante "
+        f"AND i.is_deleted = 0 "
+        f"AND {_sales_exit_cancel_cfop_pred('i')}"
+        f")"
+    )
+
+
+def _central_filiais_subquery(current_db: str) -> str:
+    """Filiais administrativas CENTRAL (espelho Xpert), identificadas pelo nome.
+
+    Nunca igualar id_db com id_filial: posto nativo pode ter id_db=1 ('Filial 1').
+    """
+    nome = (
+        "positionCaseInsensitiveUTF8("
+        "ifNull(JSONExtractString(payload, 'NOMEFILIAL'), ''), 'CENTRAL') > 0"
+    )
+    apelido = (
+        "positionCaseInsensitiveUTF8("
+        "ifNull(JSONExtractString(payload, 'APELIDO'), ''), 'CENTRAL') > 0"
+    )
+    nome_alt = (
+        "positionCaseInsensitiveUTF8("
+        "ifNull(JSONExtractString(payload, 'NOME'), ''), 'CENTRAL') > 0"
+    )
+    return (
+        f"SELECT id_empresa, id_filial FROM {current_db}.stg_filiais FINAL "
+        f"WHERE is_deleted = 0 AND ({nome} OR {apelido} OR {nome_alt})"
+    )
+
+
+def _exclude_central_mirror_pred(current_db: str, alias: str = "c") -> str:
+    """Exclui vendas da Central espelhadas no posto operacional.
+
+    Join canônico permanece (id_empresa, id_filial, id_db, id_comprovante).
+    A Central replica comprovantes nos postos com o id_filial do posto e o
+    id_db da Central. Essas linhas NÃO podem somar no faturamento do posto.
+    A própria filial Central (id_filial da Central) continua incluída.
+    """
+    central = _central_filiais_subquery(current_db)
+    return (
+        f"NOT ("
+        f"({alias}.id_empresa, {alias}.id_db) IN ({central}) "
+        f"AND ({alias}.id_empresa, {alias}.id_filial) NOT IN ({central})"
+        f")"
+    )
 
 
 @dataclass
@@ -423,6 +487,7 @@ class MartBuilder:
                     f"  AND c.is_deleted = 0 "
                     f"  AND i.is_deleted = 0 "
                     f"  AND {_sales_cfop_pred('i')} "
+                    f"  AND {self._exclude_central_mirror('c')} "
                     f"  {filial_filter_c} "
                     f"ORDER BY c.data_key",
                     parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
@@ -982,6 +1047,12 @@ class MartBuilder:
             return "1 = 1"
         return f"{expr} IN ({keys})"
 
+    def _exclude_central_mirror(self, alias: str = "c") -> str:
+        return _exclude_central_mirror_pred(self.current_db, alias)
+
+    def _has_sales_exit_item(self, alias: str = "c") -> str:
+        return _has_sales_exit_item_pred(self.current_db, alias)
+
     def _json_decimal_or_null(self, alias: str, key: str, scale: int) -> str:
         return (
             f"if(JSONHas({alias}.payload, '{key}'), "
@@ -1132,6 +1203,7 @@ class MartBuilder:
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                             AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
+                            AND {self._exclude_central_mirror("c")}
                             AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
@@ -1144,6 +1216,7 @@ class MartBuilder:
             {nfe_join_cancel}
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
               {nfe_filter_cancel}
+              AND {self._exclude_central_mirror("c")}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
@@ -1179,6 +1252,7 @@ class MartBuilder:
             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                     AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
+                    AND {self._exclude_central_mirror("c")}
                     AND {kf_i}
           {empresa_filter_c} {filial_filter_c}
         GROUP BY c.id_empresa, c.id_filial, c.data_key, c.hora
@@ -1230,6 +1304,7 @@ class MartBuilder:
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
                     AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
+                    AND {self._exclude_central_mirror("c")}
                     AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_produto, nome_produto, id_grupo_produto, nome_grupo
@@ -1276,6 +1351,7 @@ class MartBuilder:
         ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
         WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
                     AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
+                    AND {self._exclude_central_mirror("c")}
                     AND {kf_i}
           {empresa_filter_i} {filial_filter_i}
         GROUP BY i.id_empresa, i.id_filial, i.data_key, id_grupo_produto, nome_grupo
@@ -1447,10 +1523,10 @@ class MartBuilder:
         return MartRefreshResult("cash_overview_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
-        """Fraud daily: count unique cancelled comprovantes per day.
+        """Fraud daily: count unique cancelled sales/exit comprovantes per day.
 
         Excludes NFE status=5 (voided/inutilized) — those are NOT real cancellations.
-        Only counts: cancelado=1 AND (no NFE or NFE.status != 5).
+        Only sales/exit (CFOP > 5000, not transfer/loss/return): cancelado=1 AND has sale item.
         """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
@@ -1482,6 +1558,7 @@ class MartBuilder:
                 AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
               AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)
+              AND {self._has_sales_exit_item("c")}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
             """
@@ -1499,6 +1576,7 @@ class MartBuilder:
                 now64(6) AS published_at
             FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+              AND {self._has_sales_exit_item("c")}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
             """
@@ -1509,6 +1587,7 @@ class MartBuilder:
         """Risk events from slim comprovantes + usuarios (small dim).
 
         Excludes NFE status=5 (voided/inutilized) from risk events.
+        Only sales/exit cancellations (CFOP saída/venda), not entrada/devolução.
         """
         t0 = time.time()
         empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
@@ -1544,6 +1623,7 @@ class MartBuilder:
         {nfe_join}
         WHERE c.is_deleted = 0 AND c.cancelado = 1
           {nfe_filter}
+          AND {self._has_sales_exit_item("c")}
           {empresa_filter_c} {filial_filter_c}
         ORDER BY c.data_key DESC, id DESC
         """
@@ -1554,6 +1634,7 @@ class MartBuilder:
         """Enriched fraud events with operador, turno, caixa, filial_nome.
 
         Writes to mart_antifraude_eventos. Excludes NFE status=5.
+        Only sales/exit cancellations (not entrada/devolução).
         """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
@@ -1623,6 +1704,7 @@ class MartBuilder:
         {nfe_join}
         WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
           {nfe_filter}
+          AND {self._has_sales_exit_item("c")}
           {empresa_filter_c} {filial_filter_c}
         """
         rows = self._insert_and_count(client, "mart_antifraude_eventos", sql, data_keys, id_empresa, id_filial)
@@ -1985,6 +2067,7 @@ class MartBuilder:
                 AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
             WHERE {kf_c} AND c.is_deleted = 0 AND i.is_deleted = 0
                             AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
+                            AND {self._exclude_central_mirror("c")}
                             AND {kf_i}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
@@ -1997,6 +2080,7 @@ class MartBuilder:
             {nfe_join_cancel}
             WHERE {kf_c} AND c.is_deleted = 0 AND c.cancelado = 1
               {nfe_filter_cancel}
+              AND {self._exclude_central_mirror("c")}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
         ) AS cancel_agg
@@ -2138,7 +2222,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
+                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000 AND {self._exclude_central_mirror("v")}
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -2170,7 +2254,7 @@ class MartBuilder:
             ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
             AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
         WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-                    AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
+                    AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000 AND {self._exclude_central_mirror("v")}
         GROUP BY v.id_empresa, v.id_filial, v.data_key, hora
         """
         client.command(sql, settings=self._query_settings)
@@ -2197,7 +2281,7 @@ class MartBuilder:
         LEFT JOIN {self.current_db}.dim_grupo_produto AS g FINAL
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial AND vi.id_grupo_produto = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
+                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000 AND {self._exclude_central_mirror("v")}
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_produto, p.nome, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=self._query_settings)
@@ -2223,7 +2307,7 @@ class MartBuilder:
             ON vi.id_empresa = g.id_empresa AND vi.id_filial = g.id_filial
             AND coalesce(vi.id_grupo_produto, 0) = g.id_grupo_produto
         WHERE vi.data_key IN ({keys_str}) AND vi.is_deleted = 0
-                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
+                    AND v.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000 AND {self._exclude_central_mirror("v")}
         GROUP BY vi.id_empresa, vi.id_filial, vi.data_key, vi.id_grupo_produto, g.nome
         """
         client.command(sql, settings=self._query_settings)
@@ -2346,7 +2430,7 @@ class MartBuilder:
                 ON v.id_empresa = vi.id_empresa AND v.id_filial = vi.id_filial
                 AND v.id_db = vi.id_db AND v.id_movprodutos = vi.id_movprodutos
             WHERE v.data_key IN ({keys_str}) AND v.is_deleted = 0
-                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000
+                            AND vi.is_deleted = 0 AND v.commercial_eligible = 1 AND coalesce(vi.cfop, 0) > 5000 AND {self._exclude_central_mirror("v")}
             GROUP BY v.id_empresa, v.id_filial, v.data_key
         ) AS base
         LEFT JOIN (
@@ -2475,6 +2559,7 @@ class MartBuilder:
                 f"  AND c.is_deleted = 0 "
                 f"  AND i.is_deleted = 0 "
                 f"  AND {_sales_cfop_pred('i')} "
+                f"  AND {self._exclude_central_mirror('c')} "
                 f"ORDER BY c.data_key",
                 parameters={"id_empresa": id_empresa, "from_key": from_key, "to_key": to_key},
                 settings={"max_memory_usage": 2_000_000_000, "max_threads": 2},
