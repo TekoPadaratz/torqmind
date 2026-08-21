@@ -179,8 +179,10 @@ class TestExtractorQuery(unittest.TestCase):
             watermark_type_detected="datetime",
             watermark_style=None,
         )
-        # still-open titles (existing safety net)
-        self.assertIn("DTAPGTO IS NULL AND CAST(DTACONTA AS date) >=", plan.sql)
+        # still-open: vencidos OU janela DTACONTA (revisit reforçado CAP/CAR)
+        self.assertIn("DTAPGTO IS NULL AND (", plan.sql)
+        self.assertIn("CAST(DTAVCTO AS date) < CAST(GETDATE() AS date)", plan.sql)
+        self.assertIn("CAST(DTACONTA AS date) >=", plan.sql)
         # recently-paid titles (the fix) — no table alias prefix on columns
         self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
         self.assertNotIn("c.DTAPGTO", plan.sql)
