@@ -281,10 +281,10 @@ export default function InventoryPage() {
   if (!allowed && session) {
     return (
       <div>
-        <AppNav title="Estoque" userLabel={userLabel} />
+        <AppNav title="Estoque de combustível" userLabel={userLabel} />
         <div className="container">
           <div className="bi-grid">
-            <div className="card col-12">Sem permissão para Estoque.</div>
+            <div className="card col-12">Sem permissão para Estoque de combustível.</div>
           </div>
         </div>
       </div>
@@ -293,13 +293,13 @@ export default function InventoryPage() {
 
   return (
     <div>
-      <AppNav title="Estoque" userLabel={userLabel} />
+      <AppNav title="Estoque de combustível" userLabel={userLabel} />
       <div className="container">
         <div className="bi-grid">
           <header className="pageHeader col-12">
             <div>
               <div className="sectionEyebrow">Comercial</div>
-              <h1>Estoque de Combustíveis</h1>
+              <h1>Estoque de combustível</h1>
               <p className="muted" style={{ marginTop: 4 }}>
                 Média diária: de {mediaIniLabel} a {mediaFimLabel}
                 {diasPeriodo > 0 ? ` (${diasPeriodo} dias)` : ""}.

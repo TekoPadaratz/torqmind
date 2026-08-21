@@ -57,11 +57,35 @@ _BACKFILL_BATCH_SIZE = _DEFAULT_BATCH_SIZE
 
 # Vendas comerciais: saída (cfop > 5000) sem perda/baixa (5927) nem transferência (5929/6929).
 SALES_EXCLUDED_CFOPS = (5927, 5929, 6929)
+# Devolução no lado saída (etl.cfop_commercial_class = devolucao_entrada):
+# NÃO conta como cancelamento de venda no Antifraude.
+SALES_RETURN_CFOPS = (5202, 5411, 6202, 6411)
 
 
 def _sales_cfop_pred(alias: str = "i") -> str:
     excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
     return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+
+
+def _sales_exit_cancel_cfop_pred(alias: str = "i") -> str:
+    """Cancelamento antifraude: só item de saída/venda (não entrada, não devolução)."""
+    excl = ",".join(str(int(c)) for c in (*SALES_EXCLUDED_CFOPS, *SALES_RETURN_CFOPS))
+    return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
+
+
+def _has_sales_exit_item_pred(current_db: str, alias: str = "c") -> str:
+    """Comprovante cancelado só entra no antifraude se tiver item de venda/saída."""
+    return (
+        f"EXISTS ("
+        f"SELECT 1 FROM {current_db}.stg_itenscomprovantes_slim AS i FINAL "
+        f"WHERE i.id_empresa = {alias}.id_empresa "
+        f"AND i.id_filial = {alias}.id_filial "
+        f"AND i.id_db = {alias}.id_db "
+        f"AND i.id_comprovante = {alias}.id_comprovante "
+        f"AND i.is_deleted = 0 "
+        f"AND {_sales_exit_cancel_cfop_pred('i')}"
+        f")"
+    )
 
 
 def _central_filiais_subquery(current_db: str) -> str:
@@ -1026,6 +1050,9 @@ class MartBuilder:
     def _exclude_central_mirror(self, alias: str = "c") -> str:
         return _exclude_central_mirror_pred(self.current_db, alias)
 
+    def _has_sales_exit_item(self, alias: str = "c") -> str:
+        return _has_sales_exit_item_pred(self.current_db, alias)
+
     def _json_decimal_or_null(self, alias: str, key: str, scale: int) -> str:
         return (
             f"if(JSONHas({alias}.payload, '{key}'), "
@@ -1496,10 +1523,10 @@ class MartBuilder:
         return MartRefreshResult("cash_overview_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_fraud_daily_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
-        """Fraud daily: count unique cancelled comprovantes per day.
+        """Fraud daily: count unique cancelled sales/exit comprovantes per day.
 
         Excludes NFE status=5 (voided/inutilized) — those are NOT real cancellations.
-        Only counts: cancelado=1 AND (no NFE or NFE.status != 5).
+        Only sales/exit (CFOP > 5000, not transfer/loss/return): cancelado=1 AND has sale item.
         """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
@@ -1531,6 +1558,7 @@ class MartBuilder:
                 AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
               AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)
+              AND {self._has_sales_exit_item("c")}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
             """
@@ -1548,6 +1576,7 @@ class MartBuilder:
                 now64(6) AS published_at
             FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
+              AND {self._has_sales_exit_item("c")}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
             """
@@ -1558,6 +1587,7 @@ class MartBuilder:
         """Risk events from slim comprovantes + usuarios (small dim).
 
         Excludes NFE status=5 (voided/inutilized) from risk events.
+        Only sales/exit cancellations (CFOP saída/venda), not entrada/devolução.
         """
         t0 = time.time()
         empresa_filter_c = f"AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
@@ -1593,6 +1623,7 @@ class MartBuilder:
         {nfe_join}
         WHERE c.is_deleted = 0 AND c.cancelado = 1
           {nfe_filter}
+          AND {self._has_sales_exit_item("c")}
           {empresa_filter_c} {filial_filter_c}
         ORDER BY c.data_key DESC, id DESC
         """
@@ -1603,6 +1634,7 @@ class MartBuilder:
         """Enriched fraud events with operador, turno, caixa, filial_nome.
 
         Writes to mart_antifraude_eventos. Excludes NFE status=5.
+        Only sales/exit cancellations (not entrada/devolução).
         """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
@@ -1672,6 +1704,7 @@ class MartBuilder:
         {nfe_join}
         WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
           {nfe_filter}
+          AND {self._has_sales_exit_item("c")}
           {empresa_filter_c} {filial_filter_c}
         """
         rows = self._insert_and_count(client, "mart_antifraude_eventos", sql, data_keys, id_empresa, id_filial)

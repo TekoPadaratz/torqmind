@@ -360,16 +360,22 @@ def fetch_fuel_sales_daily(
                 continue
             try:
                 cfop = _item_cfop_sql("i")
-                # Ativo = cancelado≠true + situacao=1. NFe 4/5 sem cancelamento
-                # no comprovante é residual raro; EXISTS em stg.nfe estoura timeout
-                # em filiais grandes (ex.: 17337).
+                # Dia de negócio = DTACONTA do comprovante (igual leitura do tanque /
+                # sales_daily_rt). dt_evento UTC deslocava litros para o dia errado.
+                dia_expr = (
+                    "coalesce("
+                    "(etl.safe_timestamp(c.payload->>'DTACONTA'))::date, "
+                    "(c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date"
+                    ")"
+                )
+                # Ativo = cancelado≠true + situacao=1. Exclui perda/transf/devolução.
                 rows = conn.execute(
                     f"""
                     SELECT
                       i.id_empresa,
                       i.id_filial,
                       i.id_produto_shadow AS id_produto,
-                      (c.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
+                      {dia_expr} AS dia,
                       sum(i.qtd_shadow)::numeric AS litros
                     FROM stg.itenscomprovantes i
                     JOIN stg.comprovantes c
@@ -382,8 +388,8 @@ def fetch_fuel_sales_daily(
                       AND i.id_produto_shadow = ANY(%s)
                       AND i.qtd_shadow > 0
                       AND {cfop} > 5000
-                      AND {cfop} <> 1652
-                      AND c.dt_evento >= %s
+                      AND {cfop} NOT IN (1652, 5202, 5411, 5927, 5929, 6202, 6411, 6929)
+                      AND {dia_expr} >= %s
                       AND {_comprovante_ativo_sql("c")}
                     GROUP BY 1, 2, 3, 4
                     """,
@@ -474,8 +480,13 @@ def fetch_fuel_entries_daily(
               i.id_empresa,
               i.id_filial,
               i.id_produto_shadow AS id_produto,
-              (coalesce(n.dt_entrada_shadow, i.dt_evento)
-                 AT TIME ZONE 'America/Sao_Paulo')::date AS dia,
+              -- Dia de negócio alinhado à leitura do tanque (DTACONTA) /
+              -- saídas bomba. DATAENTRADA/UTC sozinho deslocava litros.
+              coalesce(
+                (etl.safe_timestamp(c.payload->>'DTACONTA'))::date,
+                (n.dt_entrada_shadow AT TIME ZONE 'America/Sao_Paulo')::date,
+                (i.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date
+              ) AS dia,
               sum(coalesce(i.qtd_shadow, 0))::numeric AS litros
             FROM stg.itens_nfe_entrada i
             JOIN stg.nfe_entrada n
@@ -494,9 +505,16 @@ def fetch_fuel_entries_daily(
             WHERE i.id_empresa = %s
               AND coalesce(i.qtd_shadow, 0) > 0
               AND i.id_produto_shadow IS NOT NULL
-              AND coalesce(n.dt_entrada_shadow, i.dt_evento) IS NOT NULL
-              AND (coalesce(n.dt_entrada_shadow, i.dt_evento)
-                     AT TIME ZONE 'America/Sao_Paulo')::date >= %s
+              AND coalesce(
+                etl.safe_timestamp(c.payload->>'DTACONTA'),
+                n.dt_entrada_shadow,
+                i.dt_evento
+              ) IS NOT NULL
+              AND coalesce(
+                (etl.safe_timestamp(c.payload->>'DTACONTA'))::date,
+                (n.dt_entrada_shadow AT TIME ZONE 'America/Sao_Paulo')::date,
+                (i.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date
+              ) >= %s
               AND (
                 coalesce(i.eh_combustivel_shadow, false) = true
                 OR i.id_produto_shadow IN (SELECT id_produto FROM tanque_prods)

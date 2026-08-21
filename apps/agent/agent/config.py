@@ -375,13 +375,12 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # normal e pagamento futuro/sujo envenena o incremental (mesmo bug do CR).
         # Baixas/alterações recentes vêm do revisit_open_clause.
         "revisit_open_clause": (
-            # Não Pagas vencidos (qualquer idade) + abertos recentes/futuros +
-            # pagos recentes. Evita (DTAPGTO IS NULL) sem corte — isso inchava o
-            # ciclo e podia parar o dataset (fantasma no STG).
+            # Abertos (qualquer idade por DTAVCTO vencido + janela recente) +
+            # pagos recentes. Sem prefixo de alias (WHERE externo do agent).
             "("
             "  DTAPGTO IS NULL AND ("
             "    CAST(DTAVCTO AS date) < CAST(GETDATE() AS date) "
-            "    OR CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-30,GETDATE()) AS date) "
+            "    OR CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-60,GETDATE()) AS date) "
             "    OR CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)"
             "  )"
             ") "
@@ -409,15 +408,20 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # devem ser referenciadas SEM prefixo (senao "multi-part identifier could not be bound").
         #
         # Pagamento direto: DTAPGTO/VLRPAGO mudam SEM bump de DATAREPL. Por isso o
-        # revisit relê abertos (90d) + recém-pagos (120d por DTAPGTO).
+        # revisit relê abertos (180d) + recém-pagos (180d por DTAPGTO) + vencidos.
         #
         # DEFINITIVO: DTAPGTO NÃO entra no TORQMIND_WATERMARK do cursor. Se entrar,
         # uma data futura (suja ou agendada) empurra o watermark (ex.: 2033) e o
         # incremental congela até alguém resetar. Baixa é responsabilidade do
         # revisit_open_clause, não do avanço do cursor.
         "revisit_open_clause": (
-            "(DTAPGTO IS NULL AND CAST(DTACONTA AS date) >= CAST(DATEADD(day,-90,GETDATE()) AS date)) "
-            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-120,GETDATE()) AS date))"
+            "("
+            "  DTAPGTO IS NULL AND ("
+            "    CAST(DTAVCTO AS date) < CAST(GETDATE() AS date) "
+            "    OR CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)"
+            "  )"
+            ") "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date))"
         ),
         "query": (
             "SELECT c.*, "
@@ -453,10 +457,15 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
+        # Espelha contasreceberbaixa: DATAREPL sozinho atrasa baixas parciais
+        # (Xpert CONTASPAGARBAIXA / parcial sem bump de DATAREPL).
         "query": (
             "SELECT c.*, "
             "CAST(c.DATABAIXA AS datetime2) AS TORQMIND_DT_EVENTO, "
-            "CAST(c.DATAREPL AS datetime2) AS TORQMIND_WATERMARK "
+            "(SELECT MAX(v.dt) FROM (VALUES "
+            "(CAST(c.DATABAIXA AS datetime2)), "
+            f"(NULLIF(CAST(c.DATAREPL AS datetime2), CAST('{LEGACY_SENTINEL_DATETIME_SQL}' AS datetime2)))"
+            ") AS v(dt)) AS TORQMIND_WATERMARK "
             "FROM dbo.CONTASPAGARBAIXA c"
         ),
         "enabled": True,

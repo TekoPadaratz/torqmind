@@ -705,6 +705,34 @@ class TestMartBuilderDedupSemantics:
         body = self.code[idx:next_def]
         assert "uniqExact" in body, "Fraud daily must count unique cancelled comprovantes"
 
+    def test_fraud_cancel_only_sales_exit_cfop(self):
+        """Antifraude: cancelamento só saída/venda — exclui entrada e devolução."""
+        from torqmind_cdc_consumer.mart_builder import (
+            SALES_RETURN_CFOPS,
+            _has_sales_exit_item_pred,
+            _sales_exit_cancel_cfop_pred,
+        )
+
+        pred = _sales_exit_cancel_cfop_pred("i")
+        assert "cfop, 0) > 5000" in pred
+        for cfop in (5202, 5411, 6202, 6411, 5927, 5929, 6929):
+            assert str(cfop) in pred
+        assert SALES_RETURN_CFOPS == (5202, 5411, 6202, 6411)
+
+        exists = _has_sales_exit_item_pred("torqmind_current", "c")
+        assert "stg_itenscomprovantes_slim" in exists
+        assert "EXISTS" in exists
+
+        for method in (
+            "_refresh_fraud_daily_stg",
+            "_refresh_risk_recent_events_stg",
+            "_refresh_antifraude_eventos_stg",
+        ):
+            idx = self.code.index(f"def {method}")
+            next_def = self.code.index("\n    def ", idx + 10)
+            body = self.code[idx:next_def]
+            assert "_has_sales_exit_item" in body, f"{method} must filter sales-exit cancels"
+
 
 class TestRealtimeValidateCutoverSemantics:
     """Static contract for the blocking cutover validator."""

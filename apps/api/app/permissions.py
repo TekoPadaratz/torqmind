@@ -143,7 +143,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "has_sensitive": False,
     },
     "inventory": {
-        "label": "Estoque",
+        "label": "Estoque de combustível",
         "category": "Comercial",
         "has_sensitive": True,
     },

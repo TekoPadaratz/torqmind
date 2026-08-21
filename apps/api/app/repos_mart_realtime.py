@@ -6433,11 +6433,48 @@ def inventory_fuel_loss_overview(
             )
 
     today = business_today(id_empresa)
+    requested_dt_ini = dt_ini
+    requested_dt_fim = dt_fim
     if dt_ini is None or dt_fim is None:
         dt_fim = today
         dt_ini = today - timedelta(days=13)
     if dt_fim < dt_ini:
         dt_ini, dt_fim = dt_fim, dt_ini
+
+    # Subfiltro oculto: se o escopo pede o dia de negócio atual e ainda não há
+    # leitura de sensor hoje, usa a última leitura disponível (hoje−1 típico).
+    ultima_leitura_disponivel: Optional[date] = None
+    leitura_fallback_hoje = False
+    single_day_today = dt_ini == dt_fim == today
+    range_ends_today = dt_fim == today
+    if single_day_today or range_ends_today:
+        max_rows = query_dict(
+            f"""
+            SELECT max(dia) AS max_dia
+            FROM {MART_RT_DB}.mart_inventory_tank_readings_rt FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND ativo = 1
+              AND capacidade_l > 0
+              {_branch_clause("id_filial", id_filial)}
+            """,
+            {"id_empresa": int(id_empresa)},
+        )
+        max_dia = max_rows[0].get("max_dia") if max_rows else None
+        if max_dia is not None:
+            if hasattr(max_dia, "date"):
+                max_dia = max_dia.date()
+            elif isinstance(max_dia, str):
+                max_dia = date.fromisoformat(str(max_dia)[:10])
+            ultima_leitura_disponivel = max_dia
+            if max_dia < today:
+                leitura_fallback_hoje = True
+                if single_day_today:
+                    dt_ini = max_dia
+                    dt_fim = max_dia
+                else:
+                    dt_fim = max_dia
+                    if dt_ini > dt_fim:
+                        dt_ini = dt_fim
 
     # Precisa do dia anterior à janela para formar o primeiro par
     read_ini = dt_ini - timedelta(days=1)
@@ -6624,6 +6661,12 @@ def inventory_fuel_loss_overview(
         "source": "clickhouse",
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
+        "requested_dt_ini": (requested_dt_ini or dt_ini).isoformat() if requested_dt_ini or dt_ini else None,
+        "requested_dt_fim": (requested_dt_fim or dt_fim).isoformat() if requested_dt_fim or dt_fim else None,
+        "ultima_leitura_disponivel": (
+            ultima_leitura_disponivel.isoformat() if ultima_leitura_disponivel else None
+        ),
+        "leitura_fallback_hoje": bool(leitura_fallback_hoje),
         "kpis": {
             "filiais": len(by_filial),
             "pares": len(rows_out),
@@ -6634,11 +6677,6 @@ def inventory_fuel_loss_overview(
         },
         "filiais": [by_filial[k] for k in sorted(by_filial)],
         "itens": rows_out,
-        "disclaimer": (
-            "Dif Leitura = leitura D − leitura D−1. "
-            "Movimentação = entradas (NFe) − saídas (bomba) no intervalo. "
-            "Diferença = Dif Leitura − Movimentação."
-        ),
     }
 
 
