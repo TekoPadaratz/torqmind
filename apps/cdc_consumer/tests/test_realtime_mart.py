@@ -721,7 +721,8 @@ class TestMartBuilderDedupSemantics:
 
         exists = _has_sales_exit_item_pred("torqmind_current", "c")
         assert "stg_itenscomprovantes_slim" in exists
-        assert "EXISTS" in exists
+        assert " IN (" in exists
+        assert "EXISTS" not in exists
 
         for method in (
             "_refresh_fraud_daily_stg",

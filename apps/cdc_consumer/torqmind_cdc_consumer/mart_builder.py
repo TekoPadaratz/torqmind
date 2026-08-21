@@ -74,15 +74,16 @@ def _sales_exit_cancel_cfop_pred(alias: str = "i") -> str:
 
 
 def _has_sales_exit_item_pred(current_db: str, alias: str = "c") -> str:
-    """Comprovante cancelado só entra no antifraude se tiver item de venda/saída."""
+    """Comprovante cancelado só entra no antifraude se tiver item de venda/saída.
+
+    ClickHouse não aceita EXISTS correlacionado com coluna do escopo pai
+    (UNSUPPORTED_METHOD). Usar IN por tupla natural key.
+    """
     return (
-        f"EXISTS ("
-        f"SELECT 1 FROM {current_db}.stg_itenscomprovantes_slim AS i FINAL "
-        f"WHERE i.id_empresa = {alias}.id_empresa "
-        f"AND i.id_filial = {alias}.id_filial "
-        f"AND i.id_db = {alias}.id_db "
-        f"AND i.id_comprovante = {alias}.id_comprovante "
-        f"AND i.is_deleted = 0 "
+        f"({alias}.id_empresa, {alias}.id_filial, {alias}.id_db, {alias}.id_comprovante) IN ("
+        f"SELECT i.id_empresa, i.id_filial, i.id_db, i.id_comprovante "
+        f"FROM {current_db}.stg_itenscomprovantes_slim AS i FINAL "
+        f"WHERE i.is_deleted = 0 "
         f"AND {_sales_exit_cancel_cfop_pred('i')}"
         f")"
     )
