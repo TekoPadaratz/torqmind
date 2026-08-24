@@ -34,6 +34,7 @@ services:
       APP_ENV: homolog
       TORQMIND_STACK: homolog
       TORQMIND_CONTAINER_NAME: torqmind-api-homolog
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
     expose:
       - "8000"
     volumes:

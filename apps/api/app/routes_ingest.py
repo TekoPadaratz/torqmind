@@ -17,6 +17,7 @@ Why NDJSON?
 - Simple to generate from SQL Server
 """
 
+import asyncio
 import json
 import logging
 import zlib
@@ -1283,7 +1284,7 @@ async def ingest_dataset(
 
     id_empresa = _resolve_id_empresa(x_ingest_key=x_ingest_key, x_empresa_id=x_empresa_id)
     spec = DATASETS[dataset_key]
-    tenant_policy = _load_tenant_ingest_policy(id_empresa)
+    tenant_policy = await asyncio.to_thread(_load_tenant_ingest_policy, id_empresa)
     retention_policy = _retention_policy_response(dataset_key, tenant_policy)
     retention_cutoff = (
         date.fromisoformat(retention_policy["cutoff"])
@@ -1398,9 +1399,9 @@ async def ingest_dataset(
         batch_values.append(tuple(tuple_values))
 
         if len(batch_values) >= batch_size:
-            flush_batch()
+            await asyncio.to_thread(flush_batch)
 
-    flush_batch()
+    await asyncio.to_thread(flush_batch)
 
     logger.info(
         "Ingest summary tenant=%s dataset=%s inserted=%s updated=%s unchanged=%s duplicates_in_batch=%s rejected_invalid=%s rejected_by_retention=%s cutoff=%s cutoff_source=%s override_active=%s",
@@ -1461,7 +1462,8 @@ async def ingest_dataset(
     etl_result = None
     if run_etl:
         try:
-            summary = run_incremental_cycle(
+            summary = await asyncio.to_thread(
+                run_incremental_cycle,
                 [id_empresa],
                 ref_date=business_today(id_empresa),
                 refresh_mart=refresh_mart,

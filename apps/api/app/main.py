@@ -153,13 +153,21 @@ _AUTH_MAIL_PATHS = {
 }
 
 
+def _client_ip(request: Request) -> str:
+    """Client IP for rate limits. Prefer X-Forwarded-For (nginx) over the Docker gateway."""
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    return request.client.host if request.client else "unknown"
+
+
 class LoginRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path.rstrip("/")
         if request.method == "POST" and path == "/auth/login":
             if str(settings.app_env or "").strip().lower() == "test":
                 return await call_next(request)
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = _client_ip(request)
             now = time.time()
             with _login_lock:
                 attempts = _login_attempts[client_ip]
@@ -173,7 +181,7 @@ class LoginRateLimitMiddleware(BaseHTTPMiddleware):
         elif request.method == "POST" and path in _AUTH_MAIL_PATHS:
             if str(settings.app_env or "").strip().lower() == "test":
                 return await call_next(request)
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = _client_ip(request)
             now = time.time()
             with _auth_mail_lock:
                 attempts = _auth_mail_attempts[client_ip]

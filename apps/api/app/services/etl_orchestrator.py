@@ -200,9 +200,18 @@ def _legacy_pg_marts_enabled() -> bool:
     return bool(getattr(settings, "refresh_legacy_pg_marts", False))
 
 
+# Tenants de laboratório (Noop Upsert) não entram no cron operacional.
+# Processá-los a cada 5 min inflava o ETL para ~7 min e saturava o pool da API.
+ETL_PLACEHOLDER_TENANT_NAME_LIKE = "%Noop Upsert%"
+
+
 def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
-    where = "WHERE id_empresa = %s" if tenant_id is not None else "WHERE is_active = true"
-    params: list[Any] = [tenant_id] if tenant_id is not None else []
+    if tenant_id is not None:
+        where = "WHERE id_empresa = %s"
+        params: list[Any] = [tenant_id]
+    else:
+        where = "WHERE is_active = true AND nome NOT ILIKE %s"
+        params = [ETL_PLACEHOLDER_TENANT_NAME_LIKE]
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         rows = conn.execute(
             f"""

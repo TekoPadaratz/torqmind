@@ -19,4 +19,6 @@ COPY app /app/app
 RUN pip install --no-cache-dir .
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host=0.0.0.0", "--port=8000"]
+# 2 workers: ingest/ETL síncrono não pode monopolizar o event loop do login.
+# proxy-headers: rate-limit de login usa o IP real (X-Forwarded-For), não o gateway Docker.
+CMD ["sh", "-c", "uvicorn app.main:app --host=0.0.0.0 --port=8000 --workers ${UVICORN_WORKERS:-2} --proxy-headers --forwarded-allow-ips='*'"]

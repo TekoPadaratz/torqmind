@@ -1249,5 +1249,57 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertTrue(summary["items"][0]["result"]["meta"]["publication_executed"])
 
 
+class ListTargetTenantsFilterTest(unittest.TestCase):
+    def test_cron_listing_skips_noop_upsert_placeholders(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Conn:
+            def execute(self, query, params=None):
+                captured["query"] = str(query)
+                captured["params"] = params
+
+                class _Result:
+                    def fetchall(self):
+                        return []
+
+                return _Result()
+
+        @contextmanager
+        def _conn_ctx(**_kwargs):
+            yield _Conn()
+
+        with patch("app.services.etl_orchestrator.get_conn", side_effect=_conn_ctx):
+            rows = etl_orchestrator.list_target_tenants()
+
+        self.assertEqual(rows, [])
+        self.assertIn("NOT ILIKE", str(captured["query"]))
+        self.assertEqual(captured["params"], [etl_orchestrator.ETL_PLACEHOLDER_TENANT_NAME_LIKE])
+
+    def test_explicit_tenant_id_is_not_filtered_by_placeholder_name(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Conn:
+            def execute(self, query, params=None):
+                captured["query"] = str(query)
+                captured["params"] = params
+
+                class _Result:
+                    def fetchall(self):
+                        return [{"id_empresa": 2, "nome": "Tenant Noop Upsert", "status": "active", "is_active": True}]
+
+                return _Result()
+
+        @contextmanager
+        def _conn_ctx(**_kwargs):
+            yield _Conn()
+
+        with patch("app.services.etl_orchestrator.get_conn", side_effect=_conn_ctx):
+            rows = etl_orchestrator.list_target_tenants(2)
+
+        self.assertEqual(rows[0]["id_empresa"], 2)
+        self.assertNotIn("NOT ILIKE", str(captured["query"]))
+        self.assertEqual(captured["params"], [2])
+
+
 if __name__ == "__main__":
     unittest.main()

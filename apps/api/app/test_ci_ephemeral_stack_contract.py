@@ -59,3 +59,19 @@ class CiEphemeralStackContractTest(unittest.TestCase):
         source = (repo_root() / "apps" / "api" / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn('str(settings.app_env or "").strip().lower() == "test"', source)
         self.assertIn('status_code=429', source)
+        self.assertIn("def _client_ip", source)
+        self.assertIn("x-forwarded-for", source)
+
+    def test_etl_skips_placeholder_tenants_and_api_uses_workers(self) -> None:
+        orchestrator = (repo_root() / "apps" / "api" / "app" / "services" / "etl_orchestrator.py").read_text(
+            encoding="utf-8"
+        )
+        dockerfile = (repo_root() / "apps" / "api" / "Dockerfile").read_text(encoding="utf-8")
+        ingest = (repo_root() / "apps" / "api" / "app" / "routes_ingest.py").read_text(encoding="utf-8")
+        self.assertIn("ETL_PLACEHOLDER_TENANT_NAME_LIKE", orchestrator)
+        self.assertIn("%Noop Upsert%", orchestrator)
+        self.assertIn("nome NOT ILIKE %s", orchestrator)
+        self.assertIn("--workers ${UVICORN_WORKERS:-2}", dockerfile)
+        self.assertIn("--proxy-headers", dockerfile)
+        self.assertIn("asyncio.to_thread(_load_tenant_ingest_policy", ingest)
+        self.assertIn("asyncio.to_thread(flush_batch)", ingest)
