@@ -437,7 +437,7 @@ def refresh_dw_and_mart(pg, id_empresa: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Reconcile CONTASRECEBER Xpert->TorqMind (hot window).")
     ap.add_argument("--id-empresa", type=int, default=int(os.getenv("RECON_ID_EMPRESA", "1")))
-    ap.add_argument("--paid-days", type=int, default=120, help="Re-read titles paid in the last N days.")
+    ap.add_argument("--paid-days", type=int, default=180, help="Re-read titles paid in the last N days.")
     ap.add_argument("--sqlserver-env-file", default=None, help="Optional KEY=VALUE file with SQLSERVER_* vars.")
     ap.add_argument("--dry-run", action="store_true", help="Preview changes; do not write.")
     ap.add_argument("--no-refresh", action="store_true", help="Skip DW/mart refresh.")

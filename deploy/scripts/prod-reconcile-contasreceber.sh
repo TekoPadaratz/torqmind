@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# Reconcile CONTASRECEBER (Xpert -> STG -> DW -> mart) on the App VM.
+# Reconcile CONTASRECEBER (Xpert -> STG -> DW -> CH titles/overview) on the App VM.
 #
 # Heals the "title paid directly in CONTASRECEBER still shown as overdue" class
 # of bug: a direct payment sets DTAPGTO/VLRPAGO without bumping DATAREPL, the
-# agent watermark can be poisoned, and the agent's open-only revisit window does
-# not re-read paid titles. This server-side safety net re-reads open + recently
-# paid titles from Xpert and refreshes the delinquency mart via the canonical
-# ETL functions. Idempotent; safe to run on a schedule.
+# agent watermark can miss the payment, and phantoms stay open in finance KPIs
+# until STG is healed AND finance_overview_rt is rebuilt.
 #
-# Requires the App VM to reach the Xpert SQL Server (same host that runs the
-# xpert_source_explorer tool). NO secrets here — they come from env files.
+# Mirrors prod-reconcile-contaspagar.sh: heal + publish titles + refresh overview.
 #
 # Usage:
 #   ENV_FILE=/etc/torqmind/prod.app.env \
@@ -17,8 +14,8 @@
 #   ID_EMPRESA=1 ./deploy/scripts/prod-reconcile-contasreceber.sh
 #   # preview only: add DRY_RUN=1
 #
-# Suggested cron (App VM, e.g. twice a day, with a lock to avoid overlap):
-#   0 7,19 * * * cd /home/tm/torqmind && flock -n /tmp/torqmind-reconcile-cr.lock \
+# Suggested cron (App VM, several times/day — baixas do dia não podem esperar 19h):
+#   20 6,10,14,18 * * * cd /home/tm/torqmind && flock -n /tmp/torqmind-reconcile-cr.lock \
 #     env ENV_FILE=/etc/torqmind/prod.app.env SQLSERVER_ENV_FILE=config/source-explorer.env \
 #     ID_EMPRESA=1 ./deploy/scripts/prod-reconcile-contasreceber.sh \
 #     >> /home/tm/logs/reconcile-contasreceber-cron.log 2>&1
@@ -28,8 +25,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-/etc/torqmind/prod.app.env}"
 SQLSERVER_ENV_FILE="${SQLSERVER_ENV_FILE:-config/source-explorer.env}"
 ID_EMPRESA="${ID_EMPRESA:-1}"
-PAID_DAYS="${PAID_DAYS:-120}"
+PAID_DAYS="${PAID_DAYS:-180}"
 DRY_RUN="${DRY_RUN:-0}"
+SKIP_PUBLISH="${SKIP_PUBLISH:-0}"
 
 cd "$ROOT_DIR"
 
@@ -46,7 +44,6 @@ if [[ ! -f "$SQLSERVER_ENV_FILE" ]]; then
   exit 2
 fi
 
-# Load PostgreSQL connection from the prod env (POSTGRES_*/PG_*).
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -66,4 +63,42 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 echo "[reconcile-contasreceber] $(date -Is) id_empresa=$ID_EMPRESA paid_days=$PAID_DAYS dry_run=$DRY_RUN"
-exec "$PYBIN" "${ARGS[@]}"
+"$PYBIN" "${ARGS[@]}"
+
+if [[ "$DRY_RUN" == "1" || "$SKIP_PUBLISH" == "1" ]]; then
+  echo "[reconcile-contasreceber] skip publish (dry_run=$DRY_RUN skip_publish=$SKIP_PUBLISH)"
+  exit 0
+fi
+
+echo "[reconcile-contasreceber] publish mart_finance_titles_rt"
+ENV_FILE="$ENV_FILE" ID_EMPRESA="$ID_EMPRESA" DAYS="$PAID_DAYS" \
+  ./deploy/scripts/publish-finance-titles.sh
+
+echo "[reconcile-contasreceber] wait CDC STG→CH then refresh finance_overview_rt"
+sleep 12
+_REFRESH_PY='import os
+from torqmind_cdc_consumer.mart_builder import MartBuilder
+mb = MartBuilder(
+    clickhouse_host=os.environ.get("CLICKHOUSE_HOST", "clickhouse"),
+    clickhouse_port=int(os.environ.get("CLICKHOUSE_PORT", "8123")),
+    clickhouse_user=os.environ.get("CLICKHOUSE_USER", "torqmind"),
+    clickhouse_password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
+)
+client = mb._get_client()
+try:
+    res = mb._refresh_finance_overview_stg(client, id_empresa=1, id_filial=None)
+    print({"ok": True, "result": str(res)})
+finally:
+    client.close()
+'
+if docker ps --format '{{.Names}}' | grep -qx torqmind-cdc-consumer; then
+  docker exec torqmind-cdc-consumer python -c "$_REFRESH_PY"
+elif ssh -o BatchMode=yes -o ConnectTimeout=8 tm@172.30.0.9 \
+    'docker ps --format "{{.Names}}" | grep -qx torqmind-cdc-consumer'; then
+  ssh -o BatchMode=yes -o ConnectTimeout=60 tm@172.30.0.9 \
+    "docker exec torqmind-cdc-consumer python -c $(printf '%q' "$_REFRESH_PY")"
+else
+  echo "WARN: cdc-consumer unreachable — overview sobe no próximo CDC tick."
+fi
+
+echo "[reconcile-contasreceber] DONE $(date -Is)"
