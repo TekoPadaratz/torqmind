@@ -106,6 +106,7 @@ def fetch_finance_titles(
                AND ent.id_entidade = coalesce(etl.safe_int(cp.payload->>'ID_ENTIDADE'), 0)
               WHERE cp.id_empresa = %s
                 AND {_NOT_DELETED.replace("payload->>", "cp.payload->>")}
+                AND NOT (cp.payload ? 'TORQMIND_RECONCILED_ABSENT')
 
               UNION ALL
 
@@ -152,6 +153,7 @@ def fetch_finance_titles(
                AND ent.id_entidade = coalesce(etl.safe_int(cr.payload->>'ID_ENTIDADE'), 0)
               WHERE cr.id_empresa = %s
                 AND {_NOT_DELETED.replace("payload->>", "cr.payload->>")}
+                AND NOT (cr.payload ? 'TORQMIND_RECONCILED_ABSENT')
             )
             SELECT
               id_empresa, id_filial, tipo_titulo, id_titulo, id_db,
@@ -167,9 +169,13 @@ def fetch_finance_titles(
             WHERE dt_vencimento IS NOT NULL
               AND (
                 (
-                  -- Xpert Não Pagas: DTAPGTO nulo + saldo. DTACONTA futura é válida.
+                  -- Xpert Não Pagas + Data Final=hoje (Data de=Conta): DTACONTA <= hoje.
                   valor_aberto > 0.01
                   AND dt_pgto_flag IS NULL
+                  AND (
+                    dt_lancamento IS NULL
+                    OR dt_lancamento <= (now() AT TIME ZONE 'America/Sao_Paulo')::date
+                  )
                 )
                 OR (
                   -- Tombstone no CH: quitado/marcado pago recentemente.

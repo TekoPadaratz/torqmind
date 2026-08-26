@@ -368,24 +368,15 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "event_date_column": EVENT_DATE_ALIAS,
         "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
-        # DATAREPL do CP muitas vezes não acompanha baixa/vencimento (mesmo padrão
-        # de CONTASRECEBER). Sem revisit, DRE perde títulos do mês (VR01 jun/2026).
-        #
-        # Watermark do cursor NÃO inclui DTAPGTO nem DTAVCTO: vencimento futuro é
-        # normal e pagamento futuro/sujo envenena o incremental (mesmo bug do CR).
-        # Baixas/alterações recentes vêm do revisit_open_clause.
+        # Pagamento integral: DTAPGTO/VLRPAGO mudam SEM bump de DATAREPL. Revisit
+        # cobre TODOS os abertos (sem janela de vencimento) + pagos dos últimos 365d.
+        # Watermark do cursor NÃO inclui DTAPGTO (data futura envenena o incremental).
+        # Baixas parciais entram via dataset contaspagarbaixa (MAX(DATABAIXA,DATAREPL)).
         "revisit_open_clause": (
-            # Abertos (qualquer idade por DTAVCTO vencido + janela recente) +
-            # pagos recentes. Sem prefixo de alias (WHERE externo do agent).
-            "("
-            "  DTAPGTO IS NULL AND ("
-            "    CAST(DTAVCTO AS date) < CAST(GETDATE() AS date) "
-            "    OR CAST(DTAVCTO AS date) >= CAST(DATEADD(day,-60,GETDATE()) AS date) "
-            "    OR CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)"
-            "  )"
-            ") "
-            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date))"
+            "DTAPGTO IS NULL "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-365,GETDATE()) AS date))"
         ),
+        "tier": "hot",
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
@@ -408,21 +399,17 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # devem ser referenciadas SEM prefixo (senao "multi-part identifier could not be bound").
         #
         # Pagamento direto: DTAPGTO/VLRPAGO mudam SEM bump de DATAREPL. Por isso o
-        # revisit relê abertos (180d) + recém-pagos (180d por DTAPGTO) + vencidos.
+        # revisit relê TODOS os abertos + recém-pagos (365d por DTAPGTO).
         #
         # DEFINITIVO: DTAPGTO NÃO entra no TORQMIND_WATERMARK do cursor. Se entrar,
         # uma data futura (suja ou agendada) empurra o watermark (ex.: 2033) e o
         # incremental congela até alguém resetar. Baixa é responsabilidade do
         # revisit_open_clause, não do avanço do cursor.
         "revisit_open_clause": (
-            "("
-            "  DTAPGTO IS NULL AND ("
-            "    CAST(DTAVCTO AS date) < CAST(GETDATE() AS date) "
-            "    OR CAST(DTACONTA AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date)"
-            "  )"
-            ") "
-            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-180,GETDATE()) AS date))"
+            "DTAPGTO IS NULL "
+            "OR (DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >= CAST(DATEADD(day,-365,GETDATE()) AS date))"
         ),
+        "tier": "hot",
         "query": (
             "SELECT c.*, "
             "CAST(c.DTACONTA AS datetime2) AS TORQMIND_DT_EVENTO, "
