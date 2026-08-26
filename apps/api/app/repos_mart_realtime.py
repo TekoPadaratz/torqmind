@@ -4311,9 +4311,17 @@ def finance_aging_overview(
         GROUP BY tipo_titulo, faixa
     """, parameters={"id_empresa": int(id_empresa)})
 
-    receber_total = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 1)
+    receber_total = sum(
+        _to_float(r.get("valor_em_aberto"))
+        for r in rows
+        if _to_int(r.get("tipo_titulo")) == 1 and str(r.get("faixa") or "") != "pago"
+    )
     receber_vencido = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 1 and str(r.get("faixa", "")).startswith("venc"))
-    pagar_total = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 0)
+    pagar_total = sum(
+        _to_float(r.get("valor_em_aberto"))
+        for r in rows
+        if _to_int(r.get("tipo_titulo")) == 0 and str(r.get("faixa") or "") != "pago"
+    )
     pagar_vencido = sum(_to_float(r.get("valor_em_aberto")) for r in rows if _to_int(r.get("tipo_titulo")) == 0 and str(r.get("faixa", "")).startswith("venc"))
 
     return {
