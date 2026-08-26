@@ -179,12 +179,11 @@ class TestExtractorQuery(unittest.TestCase):
             watermark_type_detected="datetime",
             watermark_style=None,
         )
-        # still-open: vencidos OU janela DTACONTA (revisit reforçado CAP/CAR)
-        self.assertIn("DTAPGTO IS NULL AND (", plan.sql)
-        self.assertIn("CAST(DTAVCTO AS date) < CAST(GETDATE() AS date)", plan.sql)
-        self.assertIn("CAST(DTACONTA AS date) >=", plan.sql)
-        # recently-paid titles (the fix) — no table alias prefix on columns
+        # still-open (DTAPGTO NULL) + recently-paid (365d) — covers direct payment
+        # without DATAREPL bump. No table alias on revisit columns.
+        self.assertIn("DTAPGTO IS NULL", plan.sql)
         self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
+        self.assertIn("DATEADD(day,-365,GETDATE())", plan.sql)
         self.assertNotIn("c.DTAPGTO", plan.sql)
         # DEFINITIVO: DTAPGTO não pode entrar no watermark do cursor (data futura envenena).
         self.assertNotIn("(CAST(c.DTAPGTO AS datetime2))", plan.sql)
@@ -229,9 +228,9 @@ class TestExtractorQuery(unittest.TestCase):
         self.assertNotIn("(CAST(c.DTAVCTO AS datetime2))", plan.sql)
         self.assertIn("(CAST(c.DTACONTA AS datetime2))", plan.sql)
         self.assertIn("DTAPGTO IS NOT NULL AND CAST(DTAPGTO AS date) >=", plan.sql)
-        # Revisit de abertos: vencidos + janela recente (não DTAPGTO IS NULL solto).
-        self.assertIn("CAST(DTAVCTO AS date) < CAST(GETDATE() AS date)", plan.sql)
-        self.assertNotIn("(DTAPGTO IS NULL) OR", plan.sql)
+        # Revisit: todos os abertos + pagos dos últimos 365d (pagamento integral sem DATAREPL).
+        self.assertIn("DTAPGTO IS NULL", plan.sql)
+        self.assertIn("DATEADD(day,-365,GETDATE())", plan.sql)
 
 
 if __name__ == "__main__":

@@ -1887,6 +1887,21 @@ class MartBuilder:
         cp_filter = _af("cp")
         cr_filter = _af("cr")
 
+        # ReplacingMergeTree só troca a mesma chave; faixa/filial que some
+        # (ex.: fantasma fechado) deixa linha antiga viva no FINAL. Delete scoped.
+        delete_where = "1=1"
+        if id_empresa:
+            delete_where = f"id_empresa = {int(id_empresa)}"
+        if id_filial:
+            delete_where += f" AND id_filial = {int(id_filial)}"
+        try:
+            client.command(
+                f"ALTER TABLE {self.mart_rt_db}.finance_overview_rt DELETE WHERE {delete_where}",
+                settings={**self._query_settings, "mutations_sync": 1},
+            )
+        except Exception as exc:
+            logger.warning("finance_overview_rt pre-delete failed: %s", exc)
+
         sql = f"""
         INSERT INTO {self.mart_rt_db}.finance_overview_rt
         WITH         baixa_receber AS (
@@ -1895,6 +1910,7 @@ class MartBuilder:
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contasreceberbaixa FINAL
             WHERE is_deleted = 0 {empresa_filter}
+              AND coalesce(nullIf(JSONExtractString(payload, 'DELETAR'), ''), '0') NOT IN ('1','true','True','S','Y')
             GROUP BY id_empresa, id_db, id_conta
         ),
         baixa_pagar AS (
@@ -1903,6 +1919,7 @@ class MartBuilder:
                    sum(toDecimal64OrZero(JSONExtractString(payload, 'VALORBAIXA'), 2)) AS total_baixa
             FROM {self.current_db}.stg_contaspagarbaixa FINAL
             WHERE is_deleted = 0 {empresa_filter}
+              AND coalesce(nullIf(JSONExtractString(payload, 'DELETAR'), ''), '0') NOT IN ('1','true','True','S','Y')
             GROUP BY id_empresa, id_db, id_conta
         ),
         src AS (
@@ -1931,6 +1948,8 @@ class MartBuilder:
                 AND cp.id_db = bp.id_db
                 AND cp.id_contaspagar = bp.id_conta
             WHERE cp.is_deleted = 0 {cp_filter}
+              AND JSONHas(cp.payload, 'TORQMIND_RECONCILED_ABSENT') = 0
+              AND coalesce(nullIf(JSONExtractString(cp.payload, 'DELETAR'), ''), '0') NOT IN ('1','true','True','S','Y')
             UNION ALL
             SELECT cr.id_empresa, cr.id_filial, 1 AS tipo_titulo,
                 toDate(parseDateTime64BestEffortOrNull(JSONExtractString(cr.payload, 'DTAVCTO'))) AS vencimento,
@@ -1948,17 +1967,23 @@ class MartBuilder:
                 AND cr.id_db = br.id_db
                 AND cr.id_contasreceber = br.id_conta
             WHERE cr.is_deleted = 0 {cr_filter}
+              AND JSONHas(cr.payload, 'TORQMIND_RECONCILED_ABSENT') = 0
+              AND coalesce(nullIf(JSONExtractString(cr.payload, 'DELETAR'), ''), '0') NOT IN ('1','true','True','S','Y')
         )
         SELECT id_empresa, id_filial, tipo_titulo,
             multiIf(data_pagamento IS NOT NULL, 'pago', vencimento < today(), 'vencido',
                     vencimento <= today() + 7, 'vence_7d', vencimento <= today() + 30, 'vence_30d', 'futuro') AS faixa,
             toUInt32(count()) AS qtd_titulos,
             sum(valor) AS valor_total, sum(valor_pago) AS valor_pago_total,
-            sum(greatest(valor - valor_pago, toDecimal64(0, 2))) AS valor_em_aberto,
+            -- Aberto só conta título sem DTAPGTO (paridade Xpert "Não Pagas/Não Recebidas").
+            sum(if(data_pagamento IS NOT NULL, toDecimal64(0, 2),
+                   greatest(valor - valor_pago, toDecimal64(0, 2)))) AS valor_em_aberto,
             now64(6) AS published_at
         FROM src
-        -- Xpert Não Pagas/Não Recebidas: DTAPGTO nulo + saldo. NÃO filtrar DTACONTA futura
-        -- (senão some a vencer com lançamento contábil à frente — gap ~99k VR01).
+        -- Xpert Não Pagas/Não Recebidas com Data Final = hoje (Data de = Conta):
+        -- DTAPGTO nulo + saldo + DTACONTA <= hoje. Lançamentos contábeis futuros
+        -- ficam de fora do KPI até a data da conta (bate o filtro do Xpert).
+        WHERE data_conta IS NULL OR data_conta <= today()
         GROUP BY id_empresa, id_filial, tipo_titulo, faixa
         """
         rows = self._insert_and_count_nokey(client, "finance_overview_rt", sql, id_empresa, id_filial)

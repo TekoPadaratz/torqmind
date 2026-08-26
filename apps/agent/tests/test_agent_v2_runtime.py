@@ -25,10 +25,17 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(should_run_dataset("comprovantes", 1))
         self.assertTrue(should_run_dataset("comprovantes", 17))
 
-    def test_warm_every_5(self):
+    def test_finance_titles_are_hot_every_cycle(self):
+        # CAP/CAR/baixas: hot — pagamento direto sem DATAREPL precisa de revisit frequente.
+        self.assertTrue(should_run_dataset("contasreceber", 1))
         self.assertTrue(should_run_dataset("contasreceber", 5))
-        self.assertFalse(should_run_dataset("contasreceber", 1))
-        self.assertFalse(should_run_dataset("contasreceber", 4))
+        self.assertTrue(should_run_dataset("contaspagar", 1))
+        self.assertTrue(should_run_dataset("contaspagarbaixa", 3))
+
+    def test_warm_every_5(self):
+        self.assertTrue(should_run_dataset("movbancos", 5))
+        self.assertFalse(should_run_dataset("movbancos", 1))
+        self.assertFalse(should_run_dataset("movbancos", 4))
 
     def test_cold_every_15(self):
         self.assertTrue(should_run_dataset("produtos", 15))
