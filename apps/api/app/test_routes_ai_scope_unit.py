@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.deps import get_current_claims
 from app.main import app
 
@@ -26,6 +27,8 @@ PLATFORM_CLAIMS = {
 def test_ai_post_message_platform_master_without_claim_empresa_does_not_500():
     app.dependency_overrides[get_current_claims] = lambda: dict(PLATFORM_CLAIMS)
     client = TestClient(app)
+    previous = bool(getattr(settings, "ai_chat_enabled", False))
+    settings.ai_chat_enabled = True
     try:
         with patch("app.routes_ai.repos_ai.create_conversation") as create_conv, patch(
             "app.routes_ai.repos_ai.get_conversation"
@@ -79,4 +82,5 @@ def test_ai_post_message_platform_master_without_claim_empresa_does_not_500():
             scoped_arg = get_conv.call_args.args[0]
             assert scoped_arg.get("id_empresa") == 1
     finally:
+        settings.ai_chat_enabled = previous
         app.dependency_overrides.pop(get_current_claims, None)
