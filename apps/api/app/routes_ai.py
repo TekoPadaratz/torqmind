@@ -84,6 +84,25 @@ def _resolve_ai_scope(claims: dict[str, Any], id_empresa_q: int | None, id_filia
     return {"id_empresa": int(id_empresa), "id_filial": id_filial}
 
 
+def _scoped_claims(claims: dict[str, Any], scope: dict[str, Any]) -> dict[str, Any]:
+    """Cópia dos claims com id_empresa efetivo (platform_master pode vir sem empresa)."""
+    out = dict(claims)
+    out["id_empresa"] = int(scope["id_empresa"])
+    if scope.get("id_filial") is not None:
+        out["id_filial"] = scope.get("id_filial")
+    return out
+
+
+def _scope_required() -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "error": "scope_required",
+            "message": "Selecione a empresa no topo da tela para usar o assistente.",
+        },
+    )
+
+
 @router.get("/capabilities")
 def ai_capabilities(
     claims=Depends(get_current_claims),
@@ -161,26 +180,52 @@ def ai_create_conversation(
 
 @router.get("/conversations")
 def ai_list_conversations(
+    id_empresa: Optional[int] = None,
+    id_filial: Optional[int] = None,
     claims=Depends(get_current_claims),
     _kiosk=Depends(require_not_kiosk()),
     _screen=Depends(require_screen("assistant")),
 ):
     _ensure_enabled()
-    return {"items": repos_ai.list_conversations(claims)}
+    try:
+        scope = _resolve_ai_scope(claims, id_empresa, id_filial)
+    except HTTPException:
+        raise
+    except Exception:
+        raise _scope_required()
+    try:
+        return {"items": repos_ai.list_conversations(claims, id_empresa=int(scope["id_empresa"]))}
+    except ValueError as exc:
+        if str(exc) in {"missing_id_empresa", "missing_user_id"}:
+            raise _scope_required()
+        raise
 
 
 @router.get("/conversations/{conversation_id}/messages")
 def ai_list_messages(
     conversation_id: str,
+    id_empresa: Optional[int] = None,
+    id_filial: Optional[int] = None,
     claims=Depends(get_current_claims),
     _kiosk=Depends(require_not_kiosk()),
     _screen=Depends(require_screen("assistant")),
 ):
     _ensure_enabled()
-    conv = repos_ai.get_conversation(claims, conversation_id)
+    try:
+        scope = _resolve_ai_scope(claims, id_empresa, id_filial)
+    except HTTPException:
+        raise
+    except Exception:
+        raise _scope_required()
+    try:
+        conv = repos_ai.get_conversation(claims, conversation_id, id_empresa=int(scope["id_empresa"]))
+    except ValueError as exc:
+        if str(exc) in {"missing_id_empresa", "missing_user_id"}:
+            raise _scope_required()
+        raise
     if not conv:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Conversa não encontrada."})
-    return {"items": repos_ai.list_messages(claims, conversation_id)}
+    return {"items": repos_ai.list_messages(claims, conversation_id, id_empresa=int(scope["id_empresa"]))}
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -195,10 +240,6 @@ async def ai_post_message(
     _ensure_enabled()
     _rate_limit(claims)
 
-    conv = repos_ai.get_conversation(claims, conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Conversa não encontrada."})
-
     try:
         payload = await request.json()
     except Exception:
@@ -211,7 +252,23 @@ async def ai_post_message(
             detail={"error": "message_too_long", "message": f"Mensagem excede {limits.max_message_chars} caracteres."},
         )
 
-    scope = _resolve_ai_scope(claims, body.id_empresa, body.id_filial)
+    try:
+        scope = _resolve_ai_scope(claims, body.id_empresa, body.id_filial)
+    except HTTPException:
+        raise
+    except Exception:
+        raise _scope_required()
+
+    scoped = _scoped_claims(claims, scope)
+    try:
+        conv = repos_ai.get_conversation(scoped, conversation_id, id_empresa=int(scope["id_empresa"]))
+    except ValueError as exc:
+        if str(exc) in {"missing_id_empresa", "missing_user_id"}:
+            raise _scope_required()
+        raise
+    if not conv:
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Conversa não encontrada."})
+
     context = conv.get("context_opaque") or {}
     if isinstance(context, str):
         try:
@@ -219,33 +276,33 @@ async def ai_post_message(
         except Exception:
             context = {}
 
-    result = process_message(claims, body.text, conversation_context=context, scope=scope)
+    result = process_message(scoped, body.text, conversation_context=context, scope=scope)
 
     if result.get("status") == "unknown":
         try:
-            repos_ai.enqueue_unknown_question(claims, body.text, permission_hash=permission_hash(claims))
+            repos_ai.enqueue_unknown_question(
+                scoped,
+                body.text,
+                permission_hash=permission_hash(scoped),
+                id_empresa=int(scope["id_empresa"]),
+            )
         except Exception:
             pass
 
     try:
         saved = repos_ai.add_message_pair(
-            {**claims, "id_empresa": scope["id_empresa"]},
+            scoped,
             conversation_id,
             user_text=body.text,
             assistant=result,
             tool_calls_meta=result.get("tool_calls_meta") or [],
+            id_empresa=int(scope["id_empresa"]),
         )
     except ValueError as exc:
         if str(exc) == "max_messages_per_conversation":
             raise HTTPException(status_code=409, detail={"error": "limit", "message": "Limite de mensagens da conversa."})
         if str(exc) in {"missing_id_empresa", "missing_user_id"}:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "scope_required",
-                    "message": "Selecione a empresa no topo da tela para usar o assistente.",
-                },
-            )
+            raise _scope_required()
         raise HTTPException(
             status_code=400,
             detail={"error": "validation_failed", "message": "Não foi possível gravar a mensagem."},
