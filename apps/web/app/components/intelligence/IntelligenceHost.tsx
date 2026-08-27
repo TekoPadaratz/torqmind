@@ -2,10 +2,11 @@
 
 import Image from 'next/image';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 
 import { apiGet, apiPost } from '../../lib/api';
 import { getClaims, getToken, requireAuth } from '../../lib/auth';
+import { useScopeQuery } from '../../lib/scope';
 
 type Capability = { intent_id?: string; label?: string; examples?: string[] };
 
@@ -14,15 +15,15 @@ function isKioskClaims(claims: any): boolean {
   return role === 'tenant_kiosk';
 }
 
-function parseOptionalInt(value: string | null): number | undefined {
-  if (!value) return undefined;
+function parseOptionalInt(value: string | null | undefined): number | undefined {
+  if (value == null || value === '') return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }
 
 export default function IntelligenceHost() {
   const pathname = usePathname() || '';
-  const searchParams = useSearchParams();
+  const scope = useScopeQuery();
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -39,18 +40,18 @@ export default function IntelligenceHost() {
 
   const scopePayload = useMemo(() => {
     const idEmpresa =
-      parseOptionalInt(searchParams?.get('id_empresa') || null) ??
+      parseOptionalInt(scope.id_empresa) ??
       parseOptionalInt(String(getClaims()?.id_empresa ?? '')) ??
       undefined;
     const idFilial =
-      parseOptionalInt(searchParams?.get('id_filial') || null) ??
-      parseOptionalInt((searchParams?.get('id_filiais') || '').split(',')[0] || null);
+      parseOptionalInt(scope.id_filial) ??
+      parseOptionalInt(scope.id_filiais?.[0]) ??
+      undefined;
     const body: { id_empresa?: number; id_filial?: number } = {};
     if (idEmpresa != null) body.id_empresa = idEmpresa;
     if (idFilial != null) body.id_filial = idFilial;
     return body;
-  }, [searchParams]);
-
+  }, [scope.id_empresa, scope.id_filial, scope.id_filiais]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (pathname === '/' || pathname.startsWith('/tv') || pathname.startsWith('/login')) {

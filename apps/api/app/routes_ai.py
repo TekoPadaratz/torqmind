@@ -217,15 +217,16 @@ def ai_list_messages(
         raise
     except Exception:
         raise _scope_required()
+    scoped = _scoped_claims(claims, scope)
     try:
-        conv = repos_ai.get_conversation(claims, conversation_id, id_empresa=int(scope["id_empresa"]))
+        conv = repos_ai.get_conversation(scoped, conversation_id, id_empresa=int(scope["id_empresa"]))
     except ValueError as exc:
         if str(exc) in {"missing_id_empresa", "missing_user_id"}:
             raise _scope_required()
         raise
     if not conv:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Conversa não encontrada."})
-    return {"items": repos_ai.list_messages(claims, conversation_id, id_empresa=int(scope["id_empresa"]))}
+    return {"items": repos_ai.list_messages(scoped, conversation_id, id_empresa=int(scope["id_empresa"]))}
 
 
 @router.post("/conversations/{conversation_id}/messages")
