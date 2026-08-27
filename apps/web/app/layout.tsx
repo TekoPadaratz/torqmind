@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import BrandingApplier from "./components/BrandingApplier";
 import EnvBanner from "./components/EnvBanner";
+import IntelligenceHost from "./components/intelligence/IntelligenceHost";
 import { ThemeProvider } from "./lib/theme";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <EnvBanner />
           <BrandingApplier />
           {children}
+          <IntelligenceHost />
         </ThemeProvider>
       </body>
     </html>
