@@ -16,13 +16,23 @@ def _hash_text(value: str | None) -> str:
 
 
 def _user_id(claims: dict[str, Any]) -> str:
-    return str(claims.get("sub") or claims.get("user_id") or "").strip()
+    uid = str(claims.get("sub") or claims.get("user_id") or "").strip()
+    if not uid:
+        raise ValueError("missing_user_id")
+    return uid
 
 
 def _empresa(claims: dict[str, Any], scope: dict[str, Any] | None = None) -> int:
+    """Resolve id_empresa from explicit scope, claims or accesses — never assume None."""
     if scope and scope.get("id_empresa") is not None:
         return int(scope["id_empresa"])
-    return int(claims["id_empresa"])
+    raw = claims.get("id_empresa")
+    if raw is not None and str(raw).strip() != "":
+        return int(raw)
+    for row in claims.get("accesses") or []:
+        if row.get("id_empresa") is not None:
+            return int(row["id_empresa"])
+    raise ValueError("missing_id_empresa")
 
 
 def create_conversation(
@@ -32,9 +42,10 @@ def create_conversation(
     permission_hash: str = "",
     branch_scope: list[Any] | None = None,
     context_opaque: dict[str, Any] | None = None,
+    id_empresa: int | None = None,
 ) -> dict[str, Any]:
     limits = get_limits()
-    id_empresa = _empresa(claims)
+    id_empresa = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
     user_id = _user_id(claims)
     with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa) as conn:
         active = conn.execute(
