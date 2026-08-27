@@ -269,6 +269,12 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "category": "Administração",
         "platform_only": True,
     },
+    "assistant": {
+        "label": "Assistente TorqMind",
+        "category": "Produto",
+        "has_sensitive": False,
+        "nav_hidden": True,
+    },
     "tv_sales_hourly": {
         "label": "TV – Vendas por Hora",
         "category": "TV",
@@ -324,6 +330,17 @@ def expand_screen_permissions(raw: Set[str]) -> Set[str]:
             result.update(children)
         elif has_child and not has_parent:
             result.add(parent)
+    # Assistente: disponível a quem já tem qualquer tela de produto (não TV).
+    # nav_hidden — não aparece no menu; evita 403 em managers com ACL antiga.
+    product_keys = {
+        k for k in result
+        if k in SCREEN_REGISTRY
+        and not (SCREEN_REGISTRY[k] or {}).get("kiosk_only")
+        and not (SCREEN_REGISTRY[k] or {}).get("platform_only")
+        and k != "assistant"
+    }
+    if product_keys:
+        result.add("assistant")
     return result
 
 

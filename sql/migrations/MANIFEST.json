@@ -1304,6 +1304,15 @@
       "sha256_utf8_normalized": "0307e8eaed8c030b27116461eb3c6650f9d8a9d57e7c4935ddfe486a1b0e92dc",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "140_torqmind_intelligence.sql",
+      "prefix": "140",
+      "encoding": "utf-8",
+      "sha256_raw": "08d27be270ce821116d7fda2a8052db0956dc0fd063062aa3f5513356e597fa2",
+      "sha256_utf8_normalized": "08d27be270ce821116d7fda2a8052db0956dc0fd063062aa3f5513356e597fa2",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }
