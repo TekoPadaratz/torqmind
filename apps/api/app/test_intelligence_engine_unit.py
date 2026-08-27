@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from app.intelligence.service import process_message
+from app.repos_ai import _empresa
 
 
 def _owner_claims(**extra):
@@ -46,6 +47,16 @@ def _manager_claims():
 
 
 class IntelligenceEngineGoldTests(unittest.TestCase):
+    def test_empresa_resolves_from_accesses_when_claim_null(self):
+        claims = {
+            "id_empresa": None,
+            "accesses": [{"id_empresa": 7, "id_filial": 2}],
+        }
+        self.assertEqual(_empresa(claims), 7)
+        self.assertEqual(_empresa(claims, {"id_empresa": 9}), 9)
+        with self.assertRaises(ValueError):
+            _empresa({"id_empresa": None, "accesses": []})
+
     def test_faturamento_agosto_sales_overview(self):
         claims = _owner_claims()
         with patch("app.intelligence.tools.executor._call_analytics") as mock_fn:

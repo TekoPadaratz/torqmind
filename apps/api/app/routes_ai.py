@@ -22,6 +22,7 @@ from app.scope import resolve_scope
 from app import repos_ai
 
 
+
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 _rate_lock = Lock()
@@ -30,6 +31,8 @@ _rate_buckets: dict[str, list[float]] = defaultdict(list)
 
 class CreateConversationBody(BaseModel):
     title: Optional[str] = None
+    id_empresa: Optional[int] = None
+    id_filial: Optional[int] = None
 
 
 class PostMessageBody(BaseModel):
@@ -112,16 +115,47 @@ def ai_create_conversation(
     _ensure_enabled()
     body = body or CreateConversationBody()
     try:
+        scope = _resolve_ai_scope(claims, body.id_empresa, body.id_filial)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "scope_required",
+                "message": "Selecione a empresa no topo da tela para usar o assistente.",
+            },
+        )
+    branch_scope: list[Any] = []
+    if scope.get("id_filial") is not None:
+        branch_scope = [scope.get("id_filial")]
+    try:
         row = repos_ai.create_conversation(
             claims,
             title=body.title,
             permission_hash=permission_hash(claims),
-            branch_scope=[claims.get("id_filial")] if claims.get("id_filial") is not None else [],
+            branch_scope=branch_scope,
+            id_empresa=int(scope["id_empresa"]),
         )
     except ValueError as exc:
-        if str(exc) == "max_active_conversations":
-            raise HTTPException(status_code=409, detail={"error": "limit", "message": "Limite de conversas ativas atingido."})
-        raise
+        code = str(exc)
+        if code == "max_active_conversations":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "limit", "message": "Limite de conversas ativas atingido."},
+            )
+        if code in {"missing_id_empresa", "missing_user_id"}:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "scope_required",
+                    "message": "Selecione a empresa no topo da tela para usar o assistente.",
+                },
+            )
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_failed", "message": "Não foi possível abrir a conversa."},
+        )
     return row
 
 
@@ -195,7 +229,7 @@ async def ai_post_message(
 
     try:
         saved = repos_ai.add_message_pair(
-            claims,
+            {**claims, "id_empresa": scope["id_empresa"]},
             conversation_id,
             user_text=body.text,
             assistant=result,
@@ -204,7 +238,18 @@ async def ai_post_message(
     except ValueError as exc:
         if str(exc) == "max_messages_per_conversation":
             raise HTTPException(status_code=409, detail={"error": "limit", "message": "Limite de mensagens da conversa."})
-        raise
+        if str(exc) in {"missing_id_empresa", "missing_user_id"}:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "scope_required",
+                    "message": "Selecione a empresa no topo da tela para usar o assistente.",
+                },
+            )
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_failed", "message": "Não foi possível gravar a mensagem."},
+        )
     except LookupError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Conversa não encontrada."})
 

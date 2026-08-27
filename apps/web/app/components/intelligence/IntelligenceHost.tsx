@@ -1,23 +1,28 @@
 'use client';
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { usePathname } from 'next/navigation';
+import Image from 'next/image';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
 
 import { apiGet, apiPost } from '../../lib/api';
 import { getClaims, getToken, requireAuth } from '../../lib/auth';
 
 type Capability = { intent_id?: string; label?: string; examples?: string[] };
 
-const DISCLAIMER =
-  'Respostas baseadas nos dados do TorqMind. O assistente não altera informações.';
-
 function isKioskClaims(claims: any): boolean {
   const role = String(claims?.user_role || claims?.role || '').toLowerCase();
   return role === 'tenant_kiosk';
 }
 
+function parseOptionalInt(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
 export default function IntelligenceHost() {
   const pathname = usePathname() || '';
+  const searchParams = useSearchParams();
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -31,6 +36,20 @@ export default function IntelligenceHost() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(true);
+
+  const scopePayload = useMemo(() => {
+    const idEmpresa =
+      parseOptionalInt(searchParams?.get('id_empresa') || null) ??
+      parseOptionalInt(String(getClaims()?.id_empresa ?? '')) ??
+      undefined;
+    const idFilial =
+      parseOptionalInt(searchParams?.get('id_filial') || null) ??
+      parseOptionalInt((searchParams?.get('id_filiais') || '').split(',')[0] || null);
+    const body: { id_empresa?: number; id_filial?: number } = {};
+    if (idEmpresa != null) body.id_empresa = idEmpresa;
+    if (idFilial != null) body.id_filial = idFilial;
+    return body;
+  }, [searchParams]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -50,13 +69,23 @@ export default function IntelligenceHost() {
     setReady(true);
   }, [pathname]);
 
+  // Troca de empresa invalida a conversa em memória
+  useEffect(() => {
+    setConversationId(null);
+    setMessages([]);
+  }, [scopePayload.id_empresa]);
+
   const ensureConversation = useCallback(async () => {
     if (conversationId) return conversationId;
-    const created = await apiPost('/ai/conversations', { title: 'Assistente' });
+    const created = await apiPost('/ai/conversations', {
+      title: 'Assistente',
+      ...scopePayload,
+    });
     const id = String(created?.id || '');
+    if (!id) throw new Error('conversation_create_failed');
     setConversationId(id);
     return id;
-  }, [conversationId]);
+  }, [conversationId, scopePayload]);
 
   useEffect(() => {
     if (!ready || !open) return;
@@ -72,9 +101,9 @@ export default function IntelligenceHost() {
         const status = err?.response?.status;
         if (status === 503) {
           setEnabled(false);
-          setError('Assistente desligado neste ambiente.');
+          setError('Assistente indisponível no momento.');
         } else {
-          setError('Não foi possível carregar o assistente.');
+          setError('Não foi possível abrir o assistente.');
         }
       }
     })();
@@ -124,16 +153,20 @@ export default function IntelligenceHost() {
     setDraft('');
     try {
       const id = await ensureConversation();
-      const resp = await apiPost(`/ai/conversations/${id}/messages`, { text: cleaned });
+      const resp = await apiPost(`/ai/conversations/${id}/messages`, {
+        text: cleaned,
+        ...scopePayload,
+      });
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', text: String(resp?.answer_text || 'Sem resposta.') },
       ]);
     } catch (err: any) {
+      const detail = err?.response?.data?.detail;
       const msg =
-        err?.response?.data?.detail?.message ||
+        (typeof detail === 'object' && detail?.message) ||
         err?.response?.data?.message ||
-        'Falha ao enviar a mensagem.';
+        'Não foi possível enviar a mensagem.';
       setError(String(msg));
     } finally {
       setBusy(false);
@@ -145,7 +178,7 @@ export default function IntelligenceHost() {
   const suggestionChips = (caps || [])
     .map((c) => c.label || (c.examples && c.examples[0]) || '')
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, 4);
 
   return (
     <>
@@ -155,26 +188,26 @@ export default function IntelligenceHost() {
         aria-label="Abrir Assistente TorqMind"
         onClick={() => setOpen(true)}
       >
-        ?
+        <Image src="/brand/Logo_Icone.png" alt="" width={28} height={28} priority={false} />
       </button>
 
       {open ? (
         <div className="tmIntelOverlay" role="presentation" onClick={() => setOpen(false)}>
           <div
             ref={panelRef}
-            className="tmIntelDrawer"
+            className="tmIntelPanel"
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
             onClick={(e) => e.stopPropagation()}
           >
             <header className="tmIntelHeader">
-              <div>
+              <div className="tmIntelTitleRow">
+                <Image src="/brand/Logo_Icone.png" alt="" width={22} height={22} />
                 <h2 id={titleId}>Assistente TorqMind</h2>
-                <p className="tmIntelDisclaimer">{DISCLAIMER}</p>
               </div>
               <button type="button" className="tmIntelClose" onClick={() => setOpen(false)} aria-label="Fechar">
-                Esc
+                ×
               </button>
             </header>
 
@@ -191,7 +224,7 @@ export default function IntelligenceHost() {
 
             <div className="tmIntelMessages" aria-live="polite">
               {messages.length === 0 ? (
-                <p className="tmIntelEmpty">Pergunte sobre vendas, clientes, caixa, metas…</p>
+                <p className="tmIntelEmpty">Pergunte sobre vendas, clientes, caixa ou metas.</p>
               ) : (
                 messages.map((m, idx) => (
                   <div key={`${m.role}-${idx}`} className={m.role === 'user' ? 'tmIntelMsgUser' : 'tmIntelMsgAsst'}>
@@ -214,7 +247,7 @@ export default function IntelligenceHost() {
                 ref={inputRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Pergunte aos dados…"
+                placeholder="Escreva sua pergunta…"
                 disabled={busy || !enabled}
                 maxLength={2000}
               />
@@ -232,72 +265,96 @@ export default function IntelligenceHost() {
           right: 20px;
           bottom: 20px;
           z-index: 60;
-          width: 48px;
-          height: 48px;
+          width: 52px;
+          height: 52px;
           border-radius: 999px;
           border: 1px solid var(--chrome-border, #3a3228);
-          background: var(--surface-elevated, #1c1814);
+          background: var(--chrome-face, #1c1814);
           color: var(--chrome-fg, #f3e8d8);
-          font-size: 1.25rem;
-          font-weight: 700;
           cursor: pointer;
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+          box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+          display: grid;
+          place-items: center;
+          padding: 0;
+        }
+        .tmIntelFab:hover {
+          filter: brightness(1.08);
+        }
+        @media (prefers-reduced-motion: no-preference) {
+          .tmIntelFab {
+            transition: transform 0.15s ease, filter 0.15s ease;
+          }
+          .tmIntelFab:hover {
+            transform: translateY(-1px);
+          }
         }
         .tmIntelOverlay {
           position: fixed;
           inset: 0;
           z-index: 70;
-          background: rgba(0, 0, 0, 0.45);
-          display: flex;
-          justify-content: flex-end;
+          background: transparent;
+          pointer-events: none;
         }
-        .tmIntelDrawer {
-          width: min(420px, 100vw);
-          height: 100%;
-          background: var(--surface-base, #12100e);
+        .tmIntelPanel {
+          pointer-events: auto;
+          position: fixed;
+          right: 20px;
+          bottom: 84px;
+          width: min(380px, calc(100vw - 24px));
+          height: min(520px, calc(100vh - 120px));
+          background: var(--surface-panel, var(--surface-base, #161310));
           color: var(--chrome-fg, #f3e8d8);
-          border-left: 1px solid var(--chrome-border, #3a3228);
+          border: 1px solid var(--chrome-border, #3a3228);
+          border-radius: 16px;
+          box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
           display: flex;
           flex-direction: column;
-          padding: 16px;
-          gap: 12px;
+          padding: 12px;
+          gap: 10px;
         }
         .tmIntelHeader {
           display: flex;
           justify-content: space-between;
           gap: 12px;
-          align-items: flex-start;
+          align-items: center;
+        }
+        .tmIntelTitleRow {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
         }
         .tmIntelHeader h2 {
           margin: 0;
-          font-size: 1.1rem;
-        }
-        .tmIntelDisclaimer {
-          margin: 6px 0 0;
-          font-size: 0.8rem;
-          opacity: 0.8;
-          line-height: 1.35;
+          font-size: 0.98rem;
+          font-weight: 650;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .tmIntelClose {
           border: 1px solid var(--chrome-border, #3a3228);
           background: transparent;
           color: inherit;
           border-radius: 8px;
-          padding: 6px 10px;
+          width: 32px;
+          height: 32px;
+          line-height: 1;
+          font-size: 1.2rem;
           cursor: pointer;
         }
         .tmIntelChips {
           display: flex;
           flex-wrap: wrap;
-          gap: 8px;
+          gap: 6px;
         }
         .tmIntelChip {
           border: 1px solid var(--chrome-border, #3a3228);
           background: var(--surface-elevated, #1c1814);
           color: inherit;
           border-radius: 999px;
-          padding: 6px 10px;
-          font-size: 0.8rem;
+          padding: 5px 9px;
+          font-size: 0.75rem;
           cursor: pointer;
         }
         .tmIntelMessages {
@@ -305,21 +362,23 @@ export default function IntelligenceHost() {
           overflow: auto;
           display: flex;
           flex-direction: column;
-          gap: 10px;
-          padding-right: 4px;
+          gap: 8px;
+          padding-right: 2px;
+          min-height: 0;
         }
         .tmIntelEmpty {
-          opacity: 0.7;
-          font-size: 0.9rem;
+          opacity: 0.72;
+          font-size: 0.86rem;
+          margin: 8px 2px;
         }
         .tmIntelMsgUser,
         .tmIntelMsgAsst {
           max-width: 92%;
-          padding: 10px 12px;
+          padding: 9px 11px;
           border-radius: 12px;
           white-space: pre-wrap;
           line-height: 1.4;
-          font-size: 0.92rem;
+          font-size: 0.88rem;
         }
         .tmIntelMsgUser {
           align-self: flex-end;
@@ -332,7 +391,7 @@ export default function IntelligenceHost() {
         }
         .tmIntelError {
           color: #f2b8b5;
-          font-size: 0.85rem;
+          font-size: 0.82rem;
         }
         .tmIntelComposer {
           display: flex;
@@ -357,6 +416,19 @@ export default function IntelligenceHost() {
         .tmIntelComposer button:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+        }
+        @media (max-width: 640px) {
+          .tmIntelPanel {
+            right: 12px;
+            left: 12px;
+            width: auto;
+            bottom: 76px;
+            height: min(68vh, 520px);
+          }
+          .tmIntelFab {
+            right: 14px;
+            bottom: 14px;
+          }
         }
       `}</style>
     </>

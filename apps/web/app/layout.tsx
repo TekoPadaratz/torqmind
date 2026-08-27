@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "./globals.css";
 import BrandingApplier from "./components/BrandingApplier";
 import EnvBanner from "./components/EnvBanner";
@@ -46,7 +47,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <EnvBanner />
           <BrandingApplier />
           {children}
-          <IntelligenceHost />
+          <Suspense fallback={null}>
+            <IntelligenceHost />
+          </Suspense>
         </ThemeProvider>
       </body>
     </html>
