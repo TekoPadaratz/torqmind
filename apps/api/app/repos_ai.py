@@ -82,8 +82,34 @@ def create_conversation(
     return dict(row)
 
 
-def list_conversations(claims: dict[str, Any], *, limit: int = 30) -> list[dict[str, Any]]:
-    id_empresa = _empresa(claims)
+def get_conversation(
+    claims: dict[str, Any],
+    conversation_id: str,
+    *,
+    id_empresa: int | None = None,
+) -> dict[str, Any] | None:
+    user_id = _user_id(claims)
+    id_empresa = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
+    with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa) as conn:
+        row = conn.execute(
+            """
+            SELECT id, id_empresa, user_id, status, title, permission_hash, branch_scope,
+                   context_opaque, message_count, created_at, updated_at, last_message_at
+            FROM app.ai_conversations
+            WHERE id = %s::uuid AND id_empresa = %s AND user_id = %s::uuid
+            """,
+            (conversation_id, id_empresa, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_conversations(
+    claims: dict[str, Any],
+    *,
+    limit: int = 30,
+    id_empresa: int | None = None,
+) -> list[dict[str, Any]]:
+    id_empresa = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
     user_id = _user_id(claims)
     with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa) as conn:
         rows = conn.execute(
@@ -99,20 +125,31 @@ def list_conversations(claims: dict[str, Any], *, limit: int = 30) -> list[dict[
     return [dict(r) for r in rows]
 
 
-def get_conversation(claims: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
-    id_empresa = _empresa(claims)
+def list_messages(
+    claims: dict[str, Any],
+    conversation_id: str,
+    *,
+    limit: int = 100,
+    id_empresa: int | None = None,
+) -> list[dict[str, Any]]:
+    id_empresa_resolved = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
     user_id = _user_id(claims)
-    with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa) as conn:
-        row = conn.execute(
+    # ownership check
+    if not get_conversation(claims, conversation_id, id_empresa=id_empresa_resolved):
+        return []
+    with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa_resolved) as conn:
+        rows = conn.execute(
             """
-            SELECT id, id_empresa, user_id, status, title, permission_hash, branch_scope,
-                   context_opaque, message_count, created_at, updated_at, last_message_at
-            FROM app.ai_conversations
-            WHERE id = %s::uuid AND id_empresa = %s AND user_id = %s::uuid
+            SELECT id, role, status, content_text, intent_id, confidence, evidence_ids,
+                   deep_link_key, answer_id, request_id, created_at
+            FROM app.ai_messages
+            WHERE conversation_id = %s::uuid AND id_empresa = %s AND user_id = %s::uuid
+            ORDER BY created_at ASC
+            LIMIT %s
             """,
-            (conversation_id, id_empresa, user_id),
-        ).fetchone()
-    return dict(row) if row else None
+            (conversation_id, id_empresa_resolved, user_id, max(1, min(200, int(limit)))),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def update_conversation_context(
@@ -121,8 +158,9 @@ def update_conversation_context(
     context_opaque: dict[str, Any],
     *,
     permission_hash: str | None = None,
+    id_empresa: int | None = None,
 ) -> None:
-    id_empresa = _empresa(claims)
+    id_empresa = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
     user_id = _user_id(claims)
     with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa) as conn:
         conn.execute(
@@ -138,27 +176,6 @@ def update_conversation_context(
         conn.commit()
 
 
-def list_messages(claims: dict[str, Any], conversation_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
-    id_empresa = _empresa(claims)
-    user_id = _user_id(claims)
-    # ownership check
-    if not get_conversation(claims, conversation_id):
-        return []
-    with get_conn(role=str(claims.get("user_role") or "tenant_viewer"), tenant_id=id_empresa) as conn:
-        rows = conn.execute(
-            """
-            SELECT id, role, status, content_text, intent_id, confidence, evidence_ids,
-                   deep_link_key, answer_id, request_id, created_at
-            FROM app.ai_messages
-            WHERE conversation_id = %s::uuid AND id_empresa = %s AND user_id = %s::uuid
-            ORDER BY created_at ASC
-            LIMIT %s
-            """,
-            (conversation_id, id_empresa, user_id, max(1, min(200, int(limit)))),
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def add_message_pair(
     claims: dict[str, Any],
     conversation_id: str,
@@ -166,12 +183,13 @@ def add_message_pair(
     user_text: str,
     assistant: dict[str, Any],
     tool_calls_meta: list[dict[str, Any]] | None = None,
+    id_empresa: int | None = None,
 ) -> dict[str, Any]:
     """Persiste user+assistant. Não grava resultados brutos de tools."""
     limits = get_limits()
-    id_empresa = _empresa(claims)
+    id_empresa = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
     user_id = _user_id(claims)
-    conv = get_conversation(claims, conversation_id)
+    conv = get_conversation(claims, conversation_id, id_empresa=id_empresa)
     if not conv:
         raise LookupError("conversation_not_found")
     if int(conv.get("message_count") or 0) >= limits.max_messages_per_conversation:
@@ -323,8 +341,14 @@ def add_feedback(
     return dict(row)
 
 
-def enqueue_unknown_question(claims: dict[str, Any], question: str, permission_hash: str | None = None) -> None:
-    id_empresa = _empresa(claims)
+def enqueue_unknown_question(
+    claims: dict[str, Any],
+    question: str,
+    permission_hash: str | None = None,
+    *,
+    id_empresa: int | None = None,
+) -> None:
+    id_empresa = _empresa(claims, {"id_empresa": id_empresa} if id_empresa is not None else None)
     user_id = _user_id(claims)
     from app.intelligence.normalize import fold_key
 
