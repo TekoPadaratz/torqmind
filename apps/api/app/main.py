@@ -32,6 +32,7 @@ from app.routes_tv import router as tv_router
 from app.routes_profit import router as profit_router
 from app.routes_branding import public_router as branding_public_router, manage_router as branding_manage_router
 from app.routes_agent_update import router as agent_update_router
+from app.routes_ai import router as ai_router
 
 logger = logging.getLogger(__name__)
 _startup_status: dict[str, str | bool | None] = {"ok": True, "message": None}
@@ -213,6 +214,7 @@ app.include_router(etl_router)
 app.include_router(ingest_router)
 app.include_router(agent_update_router)
 app.include_router(profit_router)
+app.include_router(ai_router)
 app.include_router(branding_public_router)
 app.include_router(branding_manage_router)
 

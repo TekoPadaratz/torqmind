@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     jarvis_ai_input_cost_per_1m: float = 0.4
     jarvis_ai_output_cost_per_1m: float = 1.6
 
+    # TorqMind Intelligence (chat determinístico somente-leitura). Default off até homolog.
+    ai_chat_enabled: bool = False
+    ai_chat_max_message_chars: int = 2000
+    ai_chat_rate_limit_per_minute: int = 30
+
     # Micro risk (2-minute loop friendly)
     micro_risk_critical_min_score: int = 85
     micro_risk_critical_min_impact: float = 150.0
