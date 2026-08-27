@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import defaultdict
 from threading import Lock
@@ -18,12 +19,13 @@ from app.intelligence import list_capabilities, process_message
 from app.intelligence.authz import permission_hash
 from app.intelligence.limits import get_limits
 from app.permissions import require_not_kiosk, require_screen
-from app.scope import resolve_scope
+from app.scope import resolve_scope_filters
 from app import repos_ai
 
 
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+logger = logging.getLogger(__name__)
 
 _rate_lock = Lock()
 _rate_buckets: dict[str, list[float]] = defaultdict(list)
@@ -33,12 +35,16 @@ class CreateConversationBody(BaseModel):
     title: Optional[str] = None
     id_empresa: Optional[int] = None
     id_filial: Optional[int] = None
+    id_filiais: Optional[list[int]] = None
+    branch_scope: Optional[str] = None
 
 
 class PostMessageBody(BaseModel):
     text: str = Field(..., min_length=1)
     id_empresa: Optional[int] = None
     id_filial: Optional[int] = None
+    id_filiais: Optional[list[int]] = None
+    branch_scope: Optional[str] = None
 
 
 class FeedbackBody(BaseModel):
@@ -78,18 +84,47 @@ def _is_admin(claims: dict[str, Any]) -> bool:
     return role in {"platform_master", "platform_admin", "tenant_admin", "product_global"}
 
 
-def _resolve_ai_scope(claims: dict[str, Any], id_empresa_q: int | None, id_filial_q: int | None) -> dict[str, Any]:
-    # resolve_scope valida tenant a partir dos claims — nunca confiar só no texto
-    id_empresa, id_filial = resolve_scope(claims, id_empresa_q, id_filial_q)
-    return {"id_empresa": int(id_empresa), "id_filial": id_filial}
+def _resolve_ai_scope(
+    claims: dict[str, Any],
+    id_empresa_q: int | None,
+    id_filial_q: int | None,
+    id_filiais_q: list[int] | None = None,
+    branch_scope_q: str | None = None,
+) -> dict[str, Any]:
+    """Resolve tenant + filiais efetivas (lista = IN no ClickHouse; vazio = sem filtro útil)."""
+    requested_filiais = list(id_filiais_q or [])
+    scope_mode = str(branch_scope_q or "").strip().lower()
+    if scope_mode == "all" and not requested_filiais:
+        tenant_id, branch_filter, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa_q, id_filial_q=None)
+        return {
+            "id_empresa": int(tenant_id),
+            "id_filial": branch_filter,
+            "id_filiais": branch_filter if isinstance(branch_filter, list) else None,
+            "branch_scope": "all",
+        }
+    tenant_id, branch_filter, requested_ids = resolve_scope_filters(
+        claims,
+        id_empresa_q=id_empresa_q,
+        id_filial_q=id_filial_q,
+        id_filiais_q=requested_filiais or None,
+    )
+    return {
+        "id_empresa": int(tenant_id),
+        "id_filial": branch_filter,
+        "id_filiais": requested_ids,
+        "branch_scope": scope_mode or ("all" if isinstance(branch_filter, list) and len(branch_filter or []) > 1 else "selected"),
+    }
 
 
 def _scoped_claims(claims: dict[str, Any], scope: dict[str, Any]) -> dict[str, Any]:
     """Cópia dos claims com id_empresa efetivo (platform_master pode vir sem empresa)."""
     out = dict(claims)
     out["id_empresa"] = int(scope["id_empresa"])
-    if scope.get("id_filial") is not None:
-        out["id_filial"] = scope.get("id_filial")
+    branch = scope.get("id_filial")
+    if isinstance(branch, int):
+        out["id_filial"] = branch
+    elif isinstance(branch, list) and len(branch) == 1:
+        out["id_filial"] = int(branch[0])
     return out
 
 
@@ -134,7 +169,13 @@ def ai_create_conversation(
     _ensure_enabled()
     body = body or CreateConversationBody()
     try:
-        scope = _resolve_ai_scope(claims, body.id_empresa, body.id_filial)
+        scope = _resolve_ai_scope(
+            claims,
+            body.id_empresa,
+            body.id_filial,
+            body.id_filiais,
+            body.branch_scope,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -146,8 +187,12 @@ def ai_create_conversation(
             },
         )
     branch_scope: list[Any] = []
-    if scope.get("id_filial") is not None:
-        branch_scope = [scope.get("id_filial")]
+    if scope.get("id_filiais"):
+        branch_scope = [int(v) for v in scope["id_filiais"] if v is not None]
+    elif isinstance(scope.get("id_filial"), list):
+        branch_scope = [int(v) for v in scope["id_filial"] if v is not None]
+    elif scope.get("id_filial") is not None:
+        branch_scope = [int(scope["id_filial"])]
     try:
         row = repos_ai.create_conversation(
             claims,
@@ -254,7 +299,13 @@ async def ai_post_message(
         )
 
     try:
-        scope = _resolve_ai_scope(claims, body.id_empresa, body.id_filial)
+        scope = _resolve_ai_scope(
+            claims,
+            body.id_empresa,
+            body.id_filial,
+            body.id_filiais,
+            body.branch_scope,
+        )
     except HTTPException:
         raise
     except Exception:
@@ -277,7 +328,22 @@ async def ai_post_message(
         except Exception:
             context = {}
 
-    result = process_message(scoped, body.text, conversation_context=context, scope=scope)
+    try:
+        result = process_message(scoped, body.text, conversation_context=context, scope=scope)
+    except Exception:
+        logger.exception("ai process_message failed conv=%s", conversation_id)
+        result = {
+            "status": "validation_failed",
+            "answer_text": (
+                "Tive um problema ao consultar os dados agora. "
+                "Tente reformular a pergunta ou abra a tela correspondente no menu."
+            ),
+            "intent_id": None,
+            "confidence": 0.0,
+            "tool_calls_meta": [],
+            "evidence_ids": [],
+            "conversation_context": context,
+        }
 
     if result.get("status") == "unknown":
         try:
@@ -290,6 +356,7 @@ async def ai_post_message(
         except Exception:
             pass
 
+    saved: dict[str, Any] = {"user_message_id": "", "assistant_message": {}}
     try:
         saved = repos_ai.add_message_pair(
             scoped,
@@ -310,6 +377,8 @@ async def ai_post_message(
         )
     except LookupError:
         raise HTTPException(status_code=404, detail={"error": "not_found", "message": "Conversa não encontrada."})
+    except Exception:
+        logger.exception("ai add_message_pair failed conv=%s", conversation_id)
 
     response_body = {
         **result,

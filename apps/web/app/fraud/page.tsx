@@ -1317,10 +1317,11 @@ export default function FraudPage() {
                             <th style={{ textAlign: "right" }}>Limite a prazo</th>
                             <th style={{ textAlign: "right" }}>Limite vale</th>
                             <th style={{ textAlign: "right" }}>Limite total</th>
-                            <th style={{ textAlign: "right" }}>Usado a prazo</th>
-                            <th style={{ textAlign: "right" }}>Usado vale</th>
-                            <th style={{ textAlign: "right" }}>Usado total</th>
-                            <th style={{ textAlign: "right" }}>Saldo</th>
+                            <th style={{ textAlign: "right" }}>Usado mês</th>
+                            <th style={{ textAlign: "right" }}>Usado geral</th>
+                            <th style={{ textAlign: "right" }}>Pago mês</th>
+                            <th style={{ textAlign: "right" }}>Saldo aberto</th>
+                            <th style={{ textAlign: "right" }}>Saldo mês</th>
                             <th style={{ textAlign: "right" }}>Usos</th>
                             <th>Status</th>
                           </tr>
@@ -1354,12 +1355,15 @@ export default function FraudPage() {
                                   <td style={{ textAlign: "right", fontWeight: 700 }}>
                                     {formatCurrency(row.limite_total ?? row.limite)}
                                   </td>
-                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_prazo)}</td>
-                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_vale)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_mes)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_geral)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.pago_mes)}</td>
                                   <td style={{ textAlign: "right", fontWeight: 700 }}>
-                                    {formatCurrency(row.usado_mes)}
+                                    {formatCurrency(row.saldo_aberto_geral ?? row.saldo_restante)}
                                   </td>
-                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.saldo_restante)}</td>
+                                  <td style={{ textAlign: "right" }}>
+                                    {formatCurrency(row.saldo_aberto_mes)}
+                                  </td>
                                   <td style={{ textAlign: "right" }}>{Number(row.qtd_usos_mes || 0)}</td>
                                   <td>
                                     {suspeito ? (
@@ -1375,63 +1379,77 @@ export default function FraudPage() {
                                 </tr>
                                 {expanded ? (
                                   <tr>
-                                    <td colSpan={11} style={{ padding: "8px 12px 14px", background: "var(--surface-faint)" }}>
-                                      {!row.usos?.length ? (
+                                    <td colSpan={13} style={{ padding: "8px 12px 14px", background: "var(--surface-faint)" }}>
+                                      {!(row.usos_abertos_mes?.length || row.usos_pagos_mes?.length || row.usos?.length) ? (
                                         <div className="muted" style={{ fontSize: 12 }}>
-                                          Sem usos resolvidos no mês para este colaborador.
+                                          Sem lançamentos em aberto ou pagos no mês para este colaborador.
                                         </div>
                                       ) : (
                                         <>
                                         <GridSearchInput value={credFuncUsoQuery} onChange={setCredFuncUsoQuery} aria-label="Pesquisar usos de crédito de funcionário" />
-                                        <table className="table compact">
-                                          <thead>
-                                            <tr>
-                                              <th>Filial</th>
-                                              <th>Data</th>
-                                              <th>NF-e / NFC-e</th>
-                                              <th>Histórico</th>
-                                              <th>Tipo</th>
-                                              <th>Operador de caixa</th>
-                                              <th style={{ textAlign: "right" }}>Valor</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {sortGridRows(row.usos || [], (u: any) => ({
+                                        {(() => {
+                                          const abertos = row.usos_abertos_mes?.length
+                                            ? row.usos_abertos_mes
+                                            : (row.usos || []).filter((u: any) => u.grupo_lista === "aberto_mes");
+                                          const pagos = row.usos_pagos_mes?.length
+                                            ? row.usos_pagos_mes
+                                            : (row.usos || []).filter((u: any) => u.grupo_lista === "pago_mes");
+                                          const totAberto = Number(row.totalizadores?.abertos_mes ?? abertos.reduce((s: number, u: any) => s + Number(u.saldo_aberto || 0), 0));
+                                          const totPago = Number(row.totalizadores?.pagos_mes ?? pagos.reduce((s: number, u: any) => s + Number(u.vlr_pago || 0), 0));
+                                          const renderUsoTable = (title: string, items: any[], totalLabel: string, totalValue: number) => {
+                                            const filtered = sortGridRows(items, (u: any) => ({
                                               filial: u.filial_label ?? u.id_filial,
                                               data: u.dt_evento,
-                                              // Xpert CR: OBS (Observações) ou HISTORICO
                                               nome: String(u.observacao || u.historico || u.operador_caixa || "").trim(),
-                                            })).filter((u: any) => rowMatchesGridSearch(u, credFuncUsoQuery)).map((u: any, idx: number) => (
-                                              <tr key={`${row.id_funcionario}-${u.id_contasreceber || idx}`}>
-                                                <td>
-                                                  {u.filial_label ||
-                                                    formatFilialLabel(u.id_filial, u.filial_nome)}
-                                                </td>
-                                                <td>
-                                                  {u.dt_evento
-                                                    ? formatDateOnly(u.dt_evento)
-                                                    : "—"}
-                                                </td>
-                                                <td>
-                                                  {u.documento_label || u.documento_fiscal || "—"}
-                                                  {u.atipico ? (
-                                                    <span style={{ color: "var(--color-negative)", marginLeft: 6, fontWeight: 600 }}>
-                                                      atípico
-                                                    </span>
-                                                  ) : null}
-                                                </td>
-                                                <td style={{ minWidth: 180, maxWidth: 360, whiteSpace: "normal" }}>
-                                                  {String(u.observacao || u.historico || "").trim() || "—"}
-                                                </td>
-                                                <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
-                                                <td>{u.operador_caixa || "—"}</td>
-                                                <td style={{ textAlign: "right" }}>
-                                                  {formatCurrency(u.valor)}
-                                                </td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
+                                            })).filter((u: any) => rowMatchesGridSearch(u, credFuncUsoQuery));
+                                            if (!filtered.length) return null;
+                                            return (
+                                              <div style={{ marginTop: 12 }}>
+                                                <div style={{ fontWeight: 650, marginBottom: 6 }}>
+                                                  {title} · {formatCurrency(totalValue)}
+                                                </div>
+                                                <table className="table compact">
+                                                  <thead>
+                                                    <tr>
+                                                      <th>Filial</th>
+                                                      <th>Data</th>
+                                                      <th>NF-e / NFC-e</th>
+                                                      <th>Histórico</th>
+                                                      <th>Tipo</th>
+                                                      <th>Situação</th>
+                                                      <th style={{ textAlign: "right" }}>Valor</th>
+                                                      <th style={{ textAlign: "right" }}>Pago</th>
+                                                      <th style={{ textAlign: "right" }}>Saldo</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody>
+                                                    {filtered.map((u: any, idx: number) => (
+                                                      <tr key={`${title}-${row.id_funcionario}-${u.id_contasreceber || idx}`}>
+                                                        <td>{u.filial_label || formatFilialLabel(u.id_filial, u.filial_nome)}</td>
+                                                        <td>{u.dt_evento ? formatDateOnly(u.dt_evento) : "—"}</td>
+                                                        <td>{u.documento_label || u.documento_fiscal || "—"}</td>
+                                                        <td style={{ minWidth: 160, maxWidth: 360, whiteSpace: "normal" }}>
+                                                          {String(u.observacao || u.historico || "").trim() || "—"}
+                                                        </td>
+                                                        <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
+                                                        <td>{u.situacao === "pago" ? "Pago" : "Em aberto"}</td>
+                                                        <td style={{ textAlign: "right" }}>{formatCurrency(u.valor)}</td>
+                                                        <td style={{ textAlign: "right" }}>{formatCurrency(u.vlr_pago)}</td>
+                                                        <td style={{ textAlign: "right" }}>{formatCurrency(u.saldo_aberto)}</td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                              </div>
+                                            );
+                                          };
+                                          return (
+                                            <>
+                                              {renderUsoTable("Em aberto neste mês", abertos, "Total em aberto", totAberto)}
+                                              {renderUsoTable("Pagos neste mês", pagos, "Total pago", totPago)}
+                                            </>
+                                          );
+                                        })()}
                                         </>
                                       )}
                                     </td>

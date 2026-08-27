@@ -10021,18 +10021,26 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
     if m < 1 or m > 12:
         raise ValueError(f"ano_mes inválido: {ym}")
 
-    # OBS do Xpert (CONTASRECEBER.payload.OBS) — coluna idempotente no CH compartilhado.
-    try:
-        execute_command(
-            """
-            ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso
-            ADD COLUMN IF NOT EXISTS observacao String DEFAULT ''
-            """
-        )
-    except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "CH add observacao skipped: %s", str(exc)[:200]
-        )
+    # Colunas idempotentes no CH compartilhado (homolog/prod analytics).
+    for alter_sql in (
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS observacao String DEFAULT ''",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo ADD COLUMN IF NOT EXISTS usado_geral Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo ADD COLUMN IF NOT EXISTS pago_mes Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo ADD COLUMN IF NOT EXISTS saldo_aberto_geral Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo ADD COLUMN IF NOT EXISTS saldo_aberto_mes Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo ADD COLUMN IF NOT EXISTS saldo_aberto_prazo Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_resumo ADD COLUMN IF NOT EXISTS qtd_aberto_vencido Int32 DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS vlr_pago Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS saldo_aberto Decimal(18, 2) DEFAULT 0",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS dt_vencimento Nullable(DateTime64(3, 'America/Sao_Paulo'))",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS dt_pagamento Nullable(DateTime64(3, 'America/Sao_Paulo'))",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS situacao LowCardinality(String) DEFAULT 'aberto'",
+        "ALTER TABLE torqmind_mart_rt.mart_fraud_credito_funcionario_uso ADD COLUMN IF NOT EXISTS grupo_lista LowCardinality(String) DEFAULT ''",
+    ):
+        try:
+            execute_command(alter_sql)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("CH alter skipped: %s", str(exc)[:160])
 
     # Limpa mês (evita órfãos de mash antigo / homolog)
     execute_command(
@@ -10098,65 +10106,147 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
 
     ents_csv = ", ".join(str(int(r["id_entidade"])) for r in base_rows)
 
-    uso_raw = query_dict(
+    cr_rows = query_dict(
         f"""
         SELECT
             id_filial,
             id_contasreceber,
             toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) AS id_entidade,
             toFloat64OrZero(JSONExtractString(payload, 'VALOR')) AS valor,
+            toFloat64OrZero(JSONExtractString(payload, 'VLRPAGO')) AS vlr_pago,
+            ifNull(JSONExtractString(payload, 'DTAPGTO'), '') AS dtapgto_raw,
             ifNull(JSONExtractString(payload, 'HISTORICO'), '') AS historico,
             ifNull(nullIf(trimBoth(JSONExtractString(payload, 'OBS')), ''), '') AS observacao,
             coalesce(
                 dt_evento,
                 parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTACONTA'), 3, 'America/Sao_Paulo'),
-                parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'), 3, 'America/Sao_Paulo'),
                 parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATAREPL'), 3, 'America/Sao_Paulo')
-            ) AS dt_evento
+            ) AS dt_evento,
+            parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAVCTO'), 3, 'America/Sao_Paulo') AS dt_vencimento,
+            parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTAPGTO'), 3, 'America/Sao_Paulo') AS dt_pagamento
         FROM torqmind_current.stg_contasreceber FINAL
         WHERE id_empresa = %(id_empresa)s
           AND is_deleted = 0
           AND toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) IN ({ents_csv})
-          AND toYYYYMM(
-                toTimeZone(
-                    coalesce(
-                        dt_evento,
-                        parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DTACONTA'), 3, 'America/Sao_Paulo'),
-                        parseDateTime64BestEffortOrNull(JSONExtractString(payload, 'DATAREPL'), 3, 'America/Sao_Paulo')
-                    ),
-                    'America/Sao_Paulo'
-                )
-              ) = %(ano_mes)s
           AND toFloat64OrZero(JSONExtractString(payload, 'VALOR')) > 0
         """,
-        {"id_empresa": id_empresa, "ano_mes": ym},
+        {"id_empresa": id_empresa},
     )
 
     nf_re = re.compile(r"NFC?-?[eE]\s*[#:]?\s*([0-9]+)", re.I)
-    usos_by: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
-    for u in uso_raw:
-        eid = int(u.get("id_entidade") or 0)
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Sao_Paulo")
+    today_local = datetime.now(tz).date()
+
+    def _ym(dt_val: Any) -> int | None:
+        if dt_val is None:
+            return None
+        if isinstance(dt_val, datetime):
+            local = dt_val.astimezone(tz) if dt_val.tzinfo else dt_val.replace(tzinfo=tz)
+            return local.year * 100 + local.month
+        text = str(dt_val).strip()
+        if len(text) >= 7 and text[4] == "-":
+            try:
+                return int(text[:4]) * 100 + int(text[5:7])
+            except ValueError:
+                return None
+        return None
+
+    agg: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {
+            "usado_geral": 0.0,
+            "usado_mes": 0.0,
+            "usado_prazo": 0.0,
+            "usado_vale": 0.0,
+            "pago_mes": 0.0,
+            "saldo_aberto_geral": 0.0,
+            "saldo_aberto_mes": 0.0,
+            "saldo_aberto_prazo": 0.0,
+            "qtd_aberto_vencido": 0,
+            "qtd_usos_mes": 0,
+            "items": [],
+        }
+    )
+
+    for row in cr_rows:
+        eid = int(row.get("id_entidade") or 0)
         if not eid:
             continue
-        hist = str(u.get("historico") or "")
-        obs = str(u.get("observacao") or "").strip()
+        valor = float(row.get("valor") or 0)
+        if valor <= 0:
+            continue
+        vlr_pago = float(row.get("vlr_pago") or 0)
+        dtapgto_raw = str(row.get("dtapgto_raw") or "").strip()
+        aberto = not dtapgto_raw
+        saldo_aberto = max(valor - vlr_pago, 0.0) if aberto else 0.0
+        hist = str(row.get("historico") or "")
+        obs = str(row.get("observacao") or "").strip()
         tipo = "vale" if "vale" in hist.lower() else "prazo"
+        dt_evento = row.get("dt_evento")
+        dt_venc = row.get("dt_vencimento")
+        dt_pag = row.get("dt_pagamento")
+        lanc_ym = _ym(dt_evento)
+        pag_ym = _ym(dt_pag) if dt_pag is not None else (_ym(dtapgto_raw) if dtapgto_raw else None)
+
+        bucket = agg[eid]
+        bucket["usado_geral"] += valor
+        if lanc_ym == ym:
+            bucket["usado_mes"] += valor
+            bucket["qtd_usos_mes"] += 1
+            if tipo == "vale":
+                bucket["usado_vale"] += valor
+            else:
+                bucket["usado_prazo"] += valor
+        if pag_ym == ym and vlr_pago > 0:
+            bucket["pago_mes"] += vlr_pago
+        if saldo_aberto > 0.01:
+            bucket["saldo_aberto_geral"] += saldo_aberto
+            if tipo == "prazo":
+                bucket["saldo_aberto_prazo"] += saldo_aberto
+            if lanc_ym == ym:
+                bucket["saldo_aberto_mes"] += saldo_aberto
+            venc_date = None
+            if isinstance(dt_venc, datetime):
+                venc_date = dt_venc.astimezone(tz).date()
+            elif dt_venc is not None:
+                try:
+                    venc_date = datetime.fromisoformat(str(dt_venc)[:10]).date()
+                except ValueError:
+                    venc_date = None
+            if venc_date is not None and venc_date < today_local:
+                bucket["qtd_aberto_vencido"] += 1
+
+        grupo_lista = ""
+        if pag_ym == ym and vlr_pago > 0:
+            grupo_lista = "pago_mes"
+        elif lanc_ym == ym and saldo_aberto > 0.01:
+            grupo_lista = "aberto_mes"
+        if not grupo_lista:
+            continue
+
         m = nf_re.search(hist)
         nro_doc = m.group(1) if m else ""
-        dt = u.get("dt_evento")
-        usos_by[eid].append({
+        situacao = "aberto" if saldo_aberto > 0.01 else "pago"
+        bucket["items"].append({
             "id_empresa": id_empresa,
             "id_funcionario": eid,
             "ano_mes": ym,
-            "id_filial": int(u.get("id_filial") or 0),
+            "id_filial": int(row.get("id_filial") or 0),
             "id_entidade": eid,
-            "id_contasreceber": int(u.get("id_contasreceber") or 0),
+            "id_contasreceber": int(row.get("id_contasreceber") or 0),
             "id_comprovante": 0,
             "nro_cupom": "",
             "nro_documento": nro_doc,
             "tipo_uso": tipo,
-            "dt_evento": dt,
-            "valor": float(u.get("valor") or 0),
+            "dt_evento": dt_evento,
+            "valor": valor,
+            "vlr_pago": vlr_pago,
+            "saldo_aberto": saldo_aberto,
+            "dt_vencimento": dt_venc,
+            "dt_pagamento": dt_pag,
+            "situacao": situacao,
+            "grupo_lista": grupo_lista,
             "id_usuario_caixa": 0,
             "operador_caixa": "",
             "historico": hist,
@@ -10165,59 +10255,46 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
             "published_at": published_at,
         })
 
-    # Atípico simples: valor >= 2.5× mediana do mês (por funcionário)
-    for eid, items in usos_by.items():
-        vals = sorted(float(i["valor"]) for i in items if float(i.get("valor") or 0) > 0)
-        if not vals:
-            continue
-        mid = vals[len(vals) // 2]
-        if mid <= 0:
-            continue
-        thr = mid * 2.5
-        for i in items:
-            if float(i["valor"]) >= thr:
-                i["atipico"] = 1
-
-    # Inativo (max ATIVO=0 em todas as filiais) sem uso no mês: fora da lista.
-    # Inativo com uso: preserva histórico e marca ativo=0 (UI: Inativo).
+    # Inativo sem movimento no mês e sem saldo aberto: fora da lista.
     base_rows = [
         r
         for r in base_rows
         if int(r.get("ativo") or 0) == 1
-        or bool(usos_by.get(int(r["id_entidade"])))
+        or agg.get(int(r["id_entidade"]), {}).get("qtd_usos_mes", 0) > 0
+        or agg.get(int(r["id_entidade"]), {}).get("saldo_aberto_geral", 0) > 0.01
     ]
 
     resumo_ch: List[Dict[str, Any]] = []
+    uso_ch: List[Dict[str, Any]] = []
     for r in base_rows:
         eid = int(r["id_entidade"])
-        items = usos_by.get(eid, [])
+        metrics = agg.get(eid) or {}
+        items = list(metrics.get("items") or [])
         limite_prazo = float(r.get("limite_prazo") or 0)
         limite_vale = float(r.get("limite_vale") or 0)
         limite_total = limite_prazo + limite_vale
-        usado_prazo = sum(float(i["valor"]) for i in items if i["tipo_uso"] == "prazo")
-        usado_vale = sum(float(i["valor"]) for i in items if i["tipo_uso"] == "vale")
-        usado_mes = usado_prazo + usado_vale
-        day_counts: Dict[str, int] = defaultdict(int)
-        for i in items:
-            dt = i.get("dt_evento")
-            if dt is None:
-                continue
-            if isinstance(dt, datetime):
-                day_counts[dt.strftime("%Y-%m-%d")] += 1
-            else:
-                day_counts[str(dt)[:10]] += 1
-        max_dia = max(day_counts.values()) if day_counts else 0
-        motivos = []
+        usado_prazo = float(metrics.get("usado_prazo") or 0)
+        usado_vale = float(metrics.get("usado_vale") or 0)
+        usado_mes = float(metrics.get("usado_mes") or 0)
+        usado_geral = float(metrics.get("usado_geral") or 0)
+        pago_mes = float(metrics.get("pago_mes") or 0)
+        saldo_aberto_geral = float(metrics.get("saldo_aberto_geral") or 0)
+        saldo_aberto_mes = float(metrics.get("saldo_aberto_mes") or 0)
+        saldo_aberto_prazo = float(metrics.get("saldo_aberto_prazo") or 0)
+        qtd_vencido = int(metrics.get("qtd_aberto_vencido") or 0)
+
+        motivos: list[str] = []
+        if limite_prazo > 0 and saldo_aberto_prazo > limite_prazo:
+            motivos.append("Saldo a prazo em aberto extrapola limite")
+        if limite_total > 0 and saldo_aberto_geral > limite_total:
+            motivos.append("Saldo em aberto extrapola limite total")
         if limite_prazo > 0 and usado_prazo > limite_prazo:
-            motivos.append("Limite a prazo extrapolado")
-        if limite_vale > 0 and usado_vale > limite_vale:
-            motivos.append("Limite de vale extrapolado")
+            motivos.append("Uso a prazo do mês extrapola limite")
         if limite_total > 0 and usado_mes > limite_total:
-            motivos.append("Limite total extrapolado")
-        if max_dia >= 2:
-            motivos.append("Frequência Anômala")
-        if any(int(i.get("atipico") or 0) for i in items):
-            motivos.append("Valor Atípico")
+            motivos.append("Uso do mês extrapola limite total")
+        if qtd_vencido > 0:
+            motivos.append("Título em aberto vencido")
+
         resumo_ch.append({
             "id_empresa": id_empresa,
             "id_funcionario": eid,
@@ -10234,17 +10311,22 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
             "usado_prazo": usado_prazo,
             "usado_vale": usado_vale,
             "usado_mes": usado_mes,
+            "usado_geral": usado_geral,
+            "pago_mes": pago_mes,
+            "saldo_aberto_geral": saldo_aberto_geral,
+            "saldo_aberto_mes": saldo_aberto_mes,
+            "saldo_aberto_prazo": saldo_aberto_prazo,
             "saldo_prazo": max(limite_prazo - usado_prazo, 0),
             "saldo_vale": max(limite_vale - usado_vale, 0),
-            "saldo_restante": max(limite_total - usado_mes, 0),
-            "qtd_usos_mes": len(items),
-            "max_usos_mesmo_dia": int(max_dia),
+            "saldo_restante": saldo_aberto_geral,
+            "qtd_usos_mes": int(metrics.get("qtd_usos_mes") or 0),
+            "max_usos_mesmo_dia": 0,
+            "qtd_aberto_vencido": qtd_vencido,
             "status": "Suspeito" if motivos else "Normal",
             "motivos": json.dumps(motivos, ensure_ascii=False),
             "published_at": published_at,
         })
-
-    uso_ch = [u for items in usos_by.values() for u in items if u.get("id_contasreceber")]
+        uso_ch.extend(items)
 
     n_r = insert_batch(
         "torqmind_mart_rt.mart_fraud_credito_funcionario_resumo",

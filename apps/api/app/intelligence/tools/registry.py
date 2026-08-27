@@ -71,7 +71,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         screens=["finance.receivable", "customers", "finance"],
     ),
     "finance.overview": _spec(analytics_fn="finance_kpis", screens=["finance", "finance.overview"]),
-    "finance.titles": _spec(analytics_fn="finance_titles_overview", screens=["finance"]),
+    "finance.titles": _spec(analytics_fn="finance_titles_overview", handler="finance_titles", screens=["finance"]),
     "finance.expenses": _spec(analytics_fn="finance_despesas_overview", screens=["finance.despesas", "finance"]),
     "finance.payments": _spec(analytics_fn="payments_overview", screens=["finance", "sales"]),
     "finance.cheques": _spec(

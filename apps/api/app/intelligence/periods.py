@@ -87,7 +87,7 @@ def parse_period(text: str | None, *, as_of: date | None = None) -> Optional[Per
         d = today - timedelta(days=2)
         return PeriodResult(d, d, "anteontem")
 
-    if re.search(r"\besta semana\b|\bsemana atual\b", key):
+    if re.search(r"\b(esta semana|essa semana|semana atual)\b", key):
         start = today - timedelta(days=today.weekday())
         return PeriodResult(start, today, "esta semana")
 

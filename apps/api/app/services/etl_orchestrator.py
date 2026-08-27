@@ -1078,6 +1078,13 @@ def _publish_finance_despesas_marts(tenant_id: int) -> int:
     return int(despesas) + int(employees)
 
 
+def _publish_finance_titles_mart(tenant_id: int) -> int:
+    """Republica grid CAP/CAR (mart_finance_titles_rt) após mudança financeira."""
+    from app.services.finance_titles import publish_finance_titles
+
+    return int(publish_finance_titles("platform_master", int(tenant_id), days=120) or 0)
+
+
 # Janela curta no ciclo (30 min): purge+reinsert só dos últimos N dias — cobre a
 # tela (14d) e cancelamentos retroativos recentes sem repetir o scan de 120 dias.
 INVENTORY_FUEL_PUBLISH_DAYS = 21
@@ -2466,6 +2473,23 @@ def _run_tenant_post_refresh(
             post_meta["customer_delinquency_refreshed"] = True
             post_meta["customer_delinquency_rows"] = rows
             post_meta["customer_delinquency_ms"] = step_ms
+            if finance_changed:
+                try:
+                    rows_ft, step_ms_ft = _run_logged_count_step(
+                        conn,
+                        tenant_id,
+                        "finance_titles_publish",
+                        stage="post_refresh",
+                        ref_date=ref_date,
+                        operation=lambda: _publish_finance_titles_mart(tenant_id),
+                        meta={},
+                        progress_callback=progress_callback,
+                    )
+                    post_meta["finance_titles_published"] = True
+                    post_meta["finance_titles_rows"] = rows_ft
+                    post_meta["finance_titles_ms"] = step_ms_ft
+                except Exception as exc:
+                    post_meta["finance_titles_error"] = str(exc)[:200]
         else:
             post_meta["customer_delinquency_skipped"] = True
 

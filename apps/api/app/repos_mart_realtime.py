@@ -5572,11 +5572,17 @@ def fraud_credito_funcionario(
             usado_prazo,
             usado_vale,
             usado_mes,
+            usado_geral,
+            pago_mes,
+            saldo_aberto_geral,
+            saldo_aberto_mes,
+            saldo_aberto_prazo,
             saldo_prazo,
             saldo_vale,
             saldo_restante,
             qtd_usos_mes,
             max_usos_mesmo_dia,
+            qtd_aberto_vencido,
             status,
             motivos,
             published_at
@@ -5608,6 +5614,12 @@ def fraud_credito_funcionario(
                 tipo_uso,
                 dt_evento,
                 valor,
+                vlr_pago,
+                saldo_aberto,
+                dt_vencimento,
+                dt_pagamento,
+                situacao,
+                grupo_lista,
                 id_usuario_caixa,
                 operador_caixa,
                 historico,
@@ -5630,11 +5642,15 @@ def fraud_credito_funcionario(
                 dt_s = dt.isoformat()
             else:
                 dt_s = str(dt) if dt else None
+            dt_pag = u.get("dt_pagamento")
+            if isinstance(dt_pag, datetime):
+                dt_pag_s = dt_pag.isoformat()
+            else:
+                dt_pag_s = str(dt_pag) if dt_pag else None
             id_filial = int(u.get("id_filial") or 0)
             id_comp = int(u.get("id_comprovante") or 0)
             hist_cr = str(u.get("historico") or "").strip()
             obs_cr = str(u.get("observacao") or "").strip()
-            # Xpert Contas a Receber: Observações (OBS) quando houver; senão Histórico.
             historico_exibicao = obs_cr or hist_cr
             nfe_hist = _extract_nfce_number(
                 str(u.get("nro_documento") or ""),
@@ -5645,7 +5661,9 @@ def fraud_credito_funcionario(
                 0,
                 0,
             )
-            usos_by.setdefault(fid, []).append({
+            situacao = str(u.get("situacao") or ("aberto" if float(u.get("saldo_aberto") or 0) > 0.01 else "pago"))
+            grupo = str(u.get("grupo_lista") or "")
+            row_item = {
                 "id_filial": id_filial or None,
                 "filial_label": _filial_label(id_filial, "") if id_filial else "—",
                 "id_entidade": u.get("id_entidade"),
@@ -5658,7 +5676,12 @@ def fraud_credito_funcionario(
                 "documento_source": documento_source,
                 "documento_fiscal": documento_fiscal,
                 "dt_evento": dt_s,
+                "dt_pagamento": dt_pag_s,
                 "valor": float(u.get("valor") or 0),
+                "vlr_pago": float(u.get("vlr_pago") or 0),
+                "saldo_aberto": float(u.get("saldo_aberto") or 0),
+                "situacao": situacao,
+                "grupo_lista": grupo,
                 "id_usuario_caixa": u.get("id_usuario_caixa") or None,
                 "operador_caixa": u.get("operador_caixa") or "—",
                 "id_cliente": u.get("id_cliente") or None,
@@ -5666,8 +5689,9 @@ def fraud_credito_funcionario(
                 "historico": historico_exibicao,
                 "observacao": obs_cr,
                 "historico_cr": hist_cr,
-                "atipico": bool(int(u.get("atipico") or 0)),
-            })
+                "atipico": False,
+            }
+            usos_by.setdefault(fid, []).append(row_item)
         for fid in usos_by:
             def _uso_sort_key(x: Dict[str, Any]) -> tuple:
                 dt = str(x.get("dt_evento") or "")
@@ -5731,6 +5755,13 @@ def fraud_credito_funcionario(
         usado_prazo = float(r.get("usado_prazo") or 0)
         usado_vale = float(r.get("usado_vale") or 0)
         usado_mes = float(r.get("usado_mes") or (usado_prazo + usado_vale))
+        usado_geral = float(r.get("usado_geral") or 0)
+        pago_mes = float(r.get("pago_mes") or 0)
+        saldo_aberto_geral = float(r.get("saldo_aberto_geral") or r.get("saldo_restante") or 0)
+        saldo_aberto_mes = float(r.get("saldo_aberto_mes") or 0)
+        all_usos = usos_by.get(fid, [])
+        abertos_mes = [u for u in all_usos if u.get("grupo_lista") == "aberto_mes"]
+        pagos_mes = [u for u in all_usos if u.get("grupo_lista") == "pago_mes"]
         funcionarios.append({
             "id_funcionario": fid,
             "id_filial": r.get("id_filial_ref"),
@@ -5746,14 +5777,25 @@ def fraud_credito_funcionario(
             "usado_prazo": usado_prazo,
             "usado_vale": usado_vale,
             "usado_mes": usado_mes,
+            "usado_geral": usado_geral,
+            "pago_mes": pago_mes,
+            "saldo_aberto_geral": saldo_aberto_geral,
+            "saldo_aberto_mes": saldo_aberto_mes,
             "saldo_prazo": float(r.get("saldo_prazo") or max(limite_prazo - usado_prazo, 0)),
             "saldo_vale": float(r.get("saldo_vale") or max(limite_vale - usado_vale, 0)),
-            "saldo_restante": float(r.get("saldo_restante") or max(limite_total - usado_mes, 0)),
+            "saldo_restante": saldo_aberto_geral,
             "qtd_usos_mes": int(r.get("qtd_usos_mes") or 0),
             "max_usos_mesmo_dia": int(r.get("max_usos_mesmo_dia") or 0),
+            "qtd_aberto_vencido": int(r.get("qtd_aberto_vencido") or 0),
             "status": r.get("status") or "Normal",
             "motivos": motivos,
-            "usos": usos_by.get(fid, []),
+            "usos": all_usos,
+            "usos_abertos_mes": abertos_mes,
+            "usos_pagos_mes": pagos_mes,
+            "totalizadores": {
+                "abertos_mes": sum(float(u.get("saldo_aberto") or 0) for u in abertos_mes),
+                "pagos_mes": sum(float(u.get("vlr_pago") or 0) for u in pagos_mes),
+            },
             "refreshed_at": pub.isoformat() if isinstance(pub, datetime) else (str(pub) if pub else None),
         })
 

@@ -10,6 +10,10 @@ from typing import Any
 
 
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d{1,3}(?:\.\d{3})*(?:,\d+)?|-?\d+(?:[.,]\d+)?")
+_MONEY_ANSWER_RE = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)")
+_COUNT_ANSWER_RE = re.compile(
+    r"(?:com\s+(\d{1,3}(?:\.\d{3})*)\s+vendas|\((\d+)\s+título)"
+)
 
 
 def _canon_number(token: str) -> str:
@@ -75,6 +79,23 @@ class EvidenceStore:
         walk(payload)
         return found
 
+    @staticmethod
+    def extract_answer_numbers(answer: str) -> list[str]:
+        """Números citados na resposta — evita falso positivo (ex.: 1437 → 143 + 7)."""
+        text = answer or ""
+        tokens: list[str] = []
+        for m in _MONEY_ANSWER_RE.finditer(text):
+            tokens.append(_canon_number(m.group(1)))
+        for m in _COUNT_ANSWER_RE.finditer(text):
+            raw = m.group(1) or m.group(2)
+            if raw:
+                tokens.append(raw.replace(".", ""))
+        stripped = _MONEY_ANSWER_RE.sub("", text)
+        stripped = _COUNT_ANSWER_RE.sub("", stripped)
+        for m in re.finditer(r"\b(\d{3,})\b", stripped):
+            tokens.append(m.group(1))
+        return tokens
+
     def validate_numbers(self, answer: str, evidence_ids: list[str] | None = None) -> bool:
         """True se todo número 'forte' da resposta aparece em alguma evidência.
 
@@ -87,20 +108,42 @@ class EvidenceStore:
             if not item:
                 continue
             pool.update(self.extract_numbers(item.get("payload")))
+        float_pool: list[float] = []
+        for p in pool:
+            try:
+                float_pool.append(float(p))
+            except ValueError:
+                pass
 
-        for m in _NUMBER_RE.finditer(answer or ""):
-            token = m.group(0)
+        tokens = self.extract_answer_numbers(answer)
+        if not tokens:
+            for m in _NUMBER_RE.finditer(answer or ""):
+                token = m.group(0)
+                digits = re.sub(r"\D", "", token)
+                if len(digits) <= 2:
+                    continue
+                if re.fullmatch(r"20\d{2}", digits):
+                    continue
+                tokens.append(_canon_number(token))
+
+        for token in tokens:
             digits = re.sub(r"\D", "", token)
             if len(digits) <= 2:
                 continue
             if re.fullmatch(r"20\d{2}", digits):
                 continue
             canon = _canon_number(token)
-            if canon not in pool and digits not in {re.sub(r"\D", "", p) for p in pool}:
-                # soft-fail: não bloqueia resposta em produção se evidência vazia
-                if not pool:
-                    return True
-                return False
+            if canon in pool or digits in {re.sub(r"\D", "", p) for p in pool}:
+                continue
+            try:
+                fv = float(canon)
+                if any(abs(fv - pv) < 0.02 for pv in float_pool):
+                    continue
+            except ValueError:
+                pass
+            if not pool:
+                return True
+            return False
         return True
 
     def summary(self) -> list[dict[str, Any]]:

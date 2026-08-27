@@ -16,7 +16,7 @@ from app.intelligence.limits import get_limits
 from app.intelligence.normalize import normalize_text
 from app.intelligence.parser import ensure_period, parse_intent
 from app.intelligence.deep_links import deep_link_for_intent
-from app.intelligence.templates.responses import build_answer
+from app.intelligence.templates.responses import build_answer, uncertain_answer
 from app.intelligence.tools.executor import execute_tool
 from app.intelligence.tools.registry import get_tool
 from app.permissions import can_view_sensitive_financials, is_kiosk_user
@@ -86,6 +86,15 @@ def list_capabilities(claims: dict[str, Any]) -> list[dict[str, Any]]:
 def _scope_label(scope: dict[str, Any]) -> str:
     emp = scope.get("id_empresa")
     fil = scope.get("id_filial")
+    if scope.get("branch_scope") == "all" or (
+        isinstance(fil, list) and len(fil) > 1
+    ):
+        count = len(fil) if isinstance(fil, list) else len(scope.get("id_filiais") or [])
+        if count > 1:
+            return f"empresa {emp}, todas as filiais ({count})"
+        return f"empresa {emp} (todas as filiais do escopo)"
+    if isinstance(fil, list) and len(fil) == 1:
+        fil = fil[0]
     if fil is None:
         return f"empresa {emp} (todas as filiais do escopo)"
     return f"empresa {emp}, filial {fil}"
@@ -133,7 +142,10 @@ def process_message(
 
     branch_scope = scope.get("branch_scope") or scope.get("filiais") or []
     if scope.get("id_filial") is not None and not branch_scope:
-        branch_scope = [scope.get("id_filial")]
+        raw = scope.get("id_filial")
+        branch_scope = raw if isinstance(raw, list) else [raw]
+    if scope.get("id_filiais") and not branch_scope:
+        branch_scope = scope.get("id_filiais")
     ctx = invalidate_if_scope_changed(conversation_context, claims, list(branch_scope))
 
     norm = normalize_text(text)
@@ -274,6 +286,54 @@ def process_message(
         )
         return result.to_dict()
 
+    # Cliente com devedor: resolver nome completo quando há um candidato claro
+    if parsed.intent_id == "customer.open_titles" and parsed.slots.get("customer_name"):
+        search_meta = search_customers(claims, scope, str(parsed.slots["customer_name"]), evidence=evidence)
+        tool_meta.append(
+            {k: search_meta.get(k) for k in ("tool_name", "status", "latency_ms", "evidence_id", "result_hash")}
+        )
+        candidates = ((search_meta.get("result") or {}).get("candidates")) or []
+        unique: dict[str, dict[str, Any]] = {}
+        for c in candidates:
+            label = str(c.get("nome") or "").strip()
+            if label:
+                unique.setdefault(label, c)
+        if len(unique) == 1:
+            parsed.slots["customer_name"] = next(iter(unique.keys()))
+        elif len(unique) > 1:
+            options = [
+                {"label": nome, "value": c.get("ref"), "documento_masked": c.get("documento_masked")}
+                for nome, c in list(unique.items())[:5]
+            ]
+            answer = build_answer(
+                status="clarification_required",
+                intent_id=parsed.intent_id,
+                tool_result=search_meta.get("result"),
+                deep_link=deep_link,
+                custom_lead="Encontrei mais de um cliente com esse nome. Qual deles?",
+            )
+            result = EngineResult(
+                status="clarification_required",
+                answer_text=answer,
+                intent_id=parsed.intent_id,
+                confidence=parsed.confidence,
+                clarification_options=options,
+                deep_link=deep_link,
+                evidence_ids=[eid for eid in [search_meta.get("evidence_id")] if eid],
+                tool_calls_meta=tool_meta,
+                request_id=request_id,
+                answer_id=answer_id,
+                conversation_context=update_after_turn(
+                    ctx,
+                    intent_id=parsed.intent_id,
+                    slots=parsed.slots,
+                    period=None,
+                    entities=list(unique.values()),
+                    pending={"kind": "customer", "options": options},
+                ),
+            )
+            return result.to_dict()
+
     # Cliente: sempre desambiguar se múltiplos
     if parsed.intent_id in {"customer.search", "customer.overview"} and parsed.slots.get("customer_name"):
         search_meta = search_customers(claims, scope, str(parsed.slots["customer_name"]), evidence=evidence)
@@ -285,7 +345,6 @@ def process_message(
                 intent_id=parsed.intent_id,
                 tool_result=search_meta.get("result"),
                 deep_link=deep_link,
-                scope_label=_scope_label(scope),
             )
             options = [
                 {"label": c.get("nome"), "value": c.get("ref"), "documento_masked": c.get("documento_masked")}
@@ -372,24 +431,13 @@ def process_message(
         period_label=period.label,
         scope_label=_scope_label(scope),
         tool_result=payload,
-        evidence_summary=evidence.summary(),
         deep_link=deep_link,
         suggestions=_default_suggestions(claims) if status in {"unknown", "unsupported"} else None,
+        slots=parsed.slots,
     )
 
-    if not evidence.validate_numbers(answer, evidence.ids()):
-        # remove números não evidenciados — reescreve lead seguro
-        answer = build_answer(
-            status="validation_failed" if status == "ok" else status,
-            intent_id=parsed.intent_id,
-            period_label=period.label,
-            scope_label=_scope_label(scope),
-            custom_lead="Consultei os dados, mas prefiro não citar números sem evidência fechada. Abra a tela para o detalhe.",
-            deep_link=deep_link,
-            evidence_summary=evidence.summary(),
-        )
-        if status == "ok":
-            status = "ok"  # mantém ok com resposta prudente
+    if status == "ok" and not evidence.validate_numbers(answer, evidence.ids()):
+        answer = uncertain_answer(deep_link)
 
     ctx2 = update_after_turn(
         ctx,

@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Any
 
 from app.intelligence.authz import permission_hash
+from app.intelligence.json_util import json_ready
 
 
 OPAQUE_KEYS = (
@@ -71,8 +72,8 @@ def update_after_turn(
 ) -> dict[str, Any]:
     ctx = normalize_context(context)
     ctx["last_intent"] = intent_id
-    ctx["last_slots"] = dict(slots or {})
-    ctx["last_period"] = period
-    ctx["last_entities"] = list(entities or [])
-    ctx["pending_disambiguation"] = pending
+    ctx["last_slots"] = json_ready(dict(slots or {}))
+    ctx["last_period"] = json_ready(period)
+    ctx["last_entities"] = json_ready(list(entities or []))
+    ctx["pending_disambiguation"] = json_ready(pending)
     return ctx

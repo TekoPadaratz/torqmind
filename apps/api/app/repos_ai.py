@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Optional
 
 from app.db import get_conn
+from app.intelligence.json_util import dumps_json
 from app.intelligence.limits import get_limits
 
 
@@ -74,8 +75,8 @@ def create_conversation(
                 user_id,
                 (title or "")[:120] or None,
                 permission_hash or "",
-                json.dumps(branch_scope or []),
-                json.dumps(context_opaque or {}),
+                dumps_json(branch_scope or []),
+                dumps_json(context_opaque or {}),
             ),
         ).fetchone()
         conn.commit()
@@ -171,7 +172,7 @@ def update_conversation_context(
                 updated_at = now()
             WHERE id = %s::uuid AND id_empresa = %s AND user_id = %s::uuid
             """,
-            (json.dumps(context_opaque or {}), permission_hash, conversation_id, id_empresa, user_id),
+            (dumps_json(context_opaque or {}), permission_hash, conversation_id, id_empresa, user_id),
         )
         conn.commit()
 
@@ -236,11 +237,11 @@ def add_message_pair(
                 _hash_text(assistant.get("answer_text")),
                 assistant.get("intent_id"),
                 assistant.get("confidence"),
-                json.dumps(assistant.get("evidence_ids") or []),
+                dumps_json(assistant.get("evidence_ids") or []),
                 assistant.get("deep_link"),
                 assistant.get("answer_id") or str(uuid.uuid4()),
                 assistant.get("request_id") or str(uuid.uuid4()),
-                json.dumps({}),  # slots opacos mínimos — sem PII extra
+                dumps_json({}),  # slots opacos mínimos — sem PII extra
             ),
         ).fetchone()
 
@@ -264,7 +265,7 @@ def add_message_pair(
                     user_id,
                     meta.get("tool_name") or "unknown",
                     str(meta.get("tool_version") or "1"),
-                    json.dumps({"minimized": True}),
+                    dumps_json({"minimized": True}),
                     meta.get("result_hash"),
                     meta.get("row_count"),
                     meta.get("latency_ms"),
@@ -282,7 +283,7 @@ def add_message_pair(
             WHERE id = %s::uuid AND id_empresa = %s AND user_id = %s::uuid
             """,
             (
-                json.dumps(assistant.get("conversation_context"))
+                dumps_json(assistant.get("conversation_context"))
                 if assistant.get("conversation_context") is not None
                 else None,
                 conversation_id,
