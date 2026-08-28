@@ -44,6 +44,17 @@ Nunca:
 
 Compose mutável somente com `-p` (projeto), `-f` (arquivo) e `--env-file` reais, serviço por serviço. Homologação antes de produção. Inventário `docker ps` / `docker compose ls` antes de qualquer recreate.
 
+### Deploy app produção — nginx obrigatório (incidente 28/08/2026)
+
+Após `--force-recreate` de `api` ou `web`, nginx pode ficar com IP antigo dos upstreams → **502** com api/web healthy.
+
+- Script canônico: `ENV_FILE=/etc/torqmind/prod.app.env ./deploy/scripts/prod-app-up.sh` (refresh nginx + health gate).
+- Nunca `docker compose up` sem `-p torqmind -f docker-compose.app.yml --env-file prod.app.env --no-deps`.
+- Prova obrigatória antes de declarar OK:
+  - `curl -fsS http://127.0.0.1/api/health`
+  - `curl -fsS -o /dev/null -w '%{http_code}' https://www.torqmind.com.br` → 200
+- `deploy/nginx/default.conf` usa DNS Docker dinâmico (igual homolog). Detalhe: `.cursor/rules/10-docker-isolation.mdc`.
+
 URLs canônicas: `https://www.torqmind.com.br` e `https://hom.torqmind.com.br`. `http://redevr.ddns.me:14023` é NAT legado de diagnóstico, não a URL de produto.
 
 Checkout operacional: `/home/tm/torqmind`. Bind mounts ativos em `sql/migrations` e `deploy/nginx/*.conf` — hardening em worktree `/home/tm/worktrees/...`, nunca `git reset --hard` / `git clean -fdx` / force push.

@@ -3476,6 +3476,83 @@ button.anpChaveCopy:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.commissionConfigSection {
+  margin-top: 14px;
+}
+.commissionConfigSectionHead {
+  margin-bottom: 12px;
+}
+.commissionConfigTree {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-panel, var(--card-bg));
+}
+.commissionConfigTreeRow {
+  display: grid;
+  grid-template-columns: 28px 18px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--table-row-border);
+}
+.commissionConfigTreeRow:last-child {
+  border-bottom: none;
+}
+.commissionConfigTreeExpand {
+  padding: 0 12px 12px 48px;
+  background: var(--surface-faint);
+  border-bottom: 1px solid var(--table-row-border);
+}
+.commissionConfigExpandBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.commissionConfigTreeMeta {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.commissionConfigToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.commissionConfigHint {
+  padding: 8px 12px;
+  background: rgba(234, 179, 8, 0.08);
+  border-radius: 8px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  color: #ca8a04;
+}
+.commissionConfigEmployeeGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 6px;
+  align-items: start;
+}
+.commissionConfigEmployeeLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+  padding: 2px 0;
+  line-height: 1.35;
+}
+
 @media (max-width: 1400px) {
   .solvenciaKpiBoard {
     gap: 8px;

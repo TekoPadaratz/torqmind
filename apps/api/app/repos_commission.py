@@ -251,6 +251,16 @@ def get_config_product_excludes(config_id: int) -> List[Dict[str, Any]]:
         return [dict(r) for r in conn.execute(sql, [config_id]).fetchall()]
 
 
+def _employee_nome_ch_sql() -> str:
+    return (
+        "coalesce("
+        "nullIf(trimBoth(JSONExtractString(payload, 'NOMEFUNCIONARIO')), ''), "
+        "nullIf(trimBoth(JSONExtractString(payload, 'NOME')), ''), "
+        "''"
+        ")"
+    )
+
+
 def _employee_funcao_ch_sql() -> str:
     return (
         "coalesce("
@@ -265,11 +275,12 @@ def _employee_funcao_ch_sql() -> str:
 def list_branch_employees_ch(id_empresa: int, id_filial: int) -> List[Dict[str, Any]]:
     """Funcionários ativos da filial com função do Xpert (stg_funcionarios)."""
     funcao_expr = _employee_funcao_ch_sql()
+    nome_expr = _employee_nome_ch_sql()
     rows = query_dict(
         f"""
         SELECT
           id_funcionario,
-          argMax(nullIf(trimBoth(JSONExtractString(payload, 'NOME')), ''), source_ts_ms) AS nome,
+          argMax({nome_expr}, source_ts_ms) AS nome,
           argMax({funcao_expr}, source_ts_ms) AS funcao,
           argMax(
             if(lowerUTF8(JSONExtractString(payload, 'ATIVO')) IN ('true', '1', 't', 's'), 1, 0),
@@ -297,11 +308,23 @@ def list_branch_employees_ch(id_empresa: int, id_filial: int) -> List[Dict[str, 
         out.append(
             {
                 "id_funcionario": fid,
-                "nome": str(r.get("nome") or "").strip() or f"Funcionário {fid}",
+                "nome": _clean_employee_nome(str(r.get("nome") or "").strip(), fid),
                 "funcao": str(r.get("funcao") or "").strip(),
             }
         )
     return out
+
+
+def _clean_employee_nome(nome: str, id_funcionario: int) -> str:
+    """Evita exibir código/id como nome quando o payload Xpert está incompleto."""
+    text = (nome or "").strip()
+    if not text:
+        return ""
+    if text == str(id_funcionario):
+        return ""
+    if text.isdigit() and int(text) == int(id_funcionario):
+        return ""
+    return text
 
 
 def get_config_employees(config_id: int) -> List[Dict[str, Any]]:
@@ -338,7 +361,10 @@ def merge_config_employees(
         merged.append(
             {
                 "id_funcionario": fid,
-                "nome": str(snap.get("nome_funcionario_snapshot") or row.get("nome") or ""),
+                "nome": _clean_employee_nome(
+                    str(snap.get("nome_funcionario_snapshot") or row.get("nome") or ""),
+                    fid,
+                ),
                 "funcao": str(snap.get("funcao_snapshot") or row.get("funcao") or ""),
                 "include_in_commission": bool(
                     saved_row.get("include_in_commission") if saved_row else True
@@ -351,7 +377,10 @@ def merge_config_employees(
         merged.append(
             {
                 "id_funcionario": fid,
-                "nome": str(saved_row.get("nome_funcionario_snapshot") or f"Funcionário {fid}"),
+                "nome": _clean_employee_nome(
+                    str(saved_row.get("nome_funcionario_snapshot") or f"Funcionário {fid}"),
+                    fid,
+                ) or "Nome não cadastrado",
                 "funcao": str(saved_row.get("funcao_snapshot") or ""),
                 "include_in_commission": bool(saved_row.get("include_in_commission")),
             }

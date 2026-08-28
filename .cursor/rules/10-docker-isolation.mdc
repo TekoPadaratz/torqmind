@@ -53,3 +53,32 @@ docker compose -p NOME_EXATO -f ARQUIVO_EXATO --env-file ENV_EXATO up -d --no-de
 
 Homologação primeiro, um serviço por vez. Nunca derrubar Hom e Prod juntos.
 Nunca `--remove-orphans`. Bind mounts ativos: `sql/migrations` e `deploy/nginx/*.conf` — editar no checkout `/home/tm/torqmind` afeta containers imediatamente; use worktree para hardening.
+
+## ⛔ Nginx após recreate de api/web (incidente 28/08/2026)
+
+`deploy/nginx/default.conf` usa DNS Docker dinâmico (`resolver 127.0.0.11` + `proxy_pass http://$var`), igual homolog.
+Mesmo assim, **sempre** após `--force-recreate` de `api` ou `web` em produção:
+
+1. Recriar ou reiniciar **só** `nginx` no projeto `torqmind` (`--no-deps`)
+2. Provar `curl -fsS http://127.0.0.1/api/health` → HTTP 200 **antes** declarar deploy OK
+3. Provar URL pública `https://www.torqmind.com.br` → HTTP 200
+
+Sem isso, nginx pode manter IP antigo dos upstreams → **502 em produção** com api/web healthy.
+
+Script canônico: `deploy/scripts/prod-app-up.sh` (já inclui refresh nginx + health gate).
+
+## Proibido em deploy de app
+
+```bash
+docker compose up -d --build          # sem -p -f --env-file e sem --no-deps
+docker compose up -d --force-recreate # idem — recria tudo e pode derrubar nginx errado
+SERVICES="api web" ... up ...        # sem refresh nginx depois
+```
+
+## Deploy produção app (ordem obrigatória)
+
+1. Homolog primeiro (`torqmind-homolog`, `docker-compose.homolog.yml`, `homolog.app.env`)
+2. Inventário `docker ps` + `docker compose ls`
+3. `ENV_FILE=/etc/torqmind/prod.app.env ./deploy/scripts/prod-app-up.sh`
+   ou `SERVICES="api"` + script (nginx refresh automático)
+4. Health local + público antes de avisar usuários

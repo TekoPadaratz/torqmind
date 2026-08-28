@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { formatCurrency } from "../lib/format";
@@ -25,6 +25,42 @@ function matchesProductSearch(nome: string, idProduto: number, query: string): b
   const hay = `${nome} ${idProduto}`.toLocaleLowerCase("pt-BR");
   return hay.includes(q);
 }
+
+type EmployeeRow = {
+  id_funcionario: number;
+  nome: string;
+  funcao: string;
+  include_in_commission: boolean;
+};
+
+const FUNCAO_SEM_CADASTRO = "Sem função cadastrada";
+
+function funcaoLabel(raw: string): string {
+  const text = String(raw || "").trim();
+  return text || FUNCAO_SEM_CADASTRO;
+}
+
+function funcaoKeyFromLabel(label: string): string {
+  return label.toLocaleLowerCase("pt-BR");
+}
+
+function employeeDisplayName(emp: EmployeeRow): string {
+  const nome = String(emp.nome || "").trim();
+  if (!nome) return "Nome não cadastrado";
+  if (nome === String(emp.id_funcionario)) return "Nome não cadastrado";
+  if (/^\d+$/.test(nome) && Number(nome) === emp.id_funcionario) return "Nome não cadastrado";
+  return nome;
+}
+
+function matchesEmployeeSearch(emp: EmployeeRow, query: string): boolean {
+  const q = String(query || "").trim().toLocaleLowerCase("pt-BR");
+  if (!q) return true;
+  const hay = `${employeeDisplayName(emp)} ${emp.funcao} ${emp.id_funcionario}`
+    .toLocaleLowerCase("pt-BR");
+  return hay.includes(q);
+}
+
+type FuncaoUiState = { expanded?: boolean; employeeQuery?: string };
 
 const TIER_STYLES: Record<string, { color: string; bg: string; icon: string }> = {
   bronze: { color: "#cd7f32", bg: "rgba(205,127,50,0.08)", icon: "🥉" },
@@ -67,17 +103,11 @@ type GroupRow = {
   productQuery?: string;
 };
 
-type EmployeeRow = {
-  id_funcionario: number;
-  nome: string;
-  funcao: string;
-  include_in_commission: boolean;
-};
-
 export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: ConfigTabProps) {
   const [groups, setGroups] = useState<GroupRow[]>([]);
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
-  const [employeeQuery, setEmployeeQuery] = useState("");
+  const [funcaoSearch, setFuncaoSearch] = useState("");
+  const [funcaoUi, setFuncaoUi] = useState<Record<string, FuncaoUiState>>({});
   const [tiers, setTiers] = useState<TierDraft[]>([]);
   const [paymentMode, setPaymentMode] = useState("individual_sales");
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
@@ -116,11 +146,12 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
       setEmployees(
         (resp.employees || []).map((e: any) => ({
           id_funcionario: Number(e.id_funcionario),
-          nome: String(e.nome || ""),
-          funcao: String(e.funcao || ""),
+          nome: String(e.nome || "").trim(),
+          funcao: String(e.funcao || "").trim(),
           include_in_commission: !!e.include_in_commission,
         })),
       );
+      setFuncaoUi({});
     } catch (err: any) {
       setError(extractApiError(err, "Falha ao carregar configuração."));
     } finally {
@@ -131,6 +162,31 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
   useEffect(() => {
     fetchConfig();
   }, [fetchConfig]);
+
+  const funcaoGroups = useMemo(() => {
+    const map = new Map<string, { label: string; employees: EmployeeRow[] }>();
+    for (const emp of employees) {
+      const label = funcaoLabel(emp.funcao);
+      const key = funcaoKeyFromLabel(label);
+      if (!map.has(key)) map.set(key, { label, employees: [] });
+      map.get(key)!.employees.push(emp);
+    }
+    return Array.from(map.entries())
+      .map(([funcaoKey, g]) => {
+        const sorted = [...g.employees].sort((a, b) =>
+          employeeDisplayName(a).localeCompare(employeeDisplayName(b), "pt-BR"),
+        );
+        return {
+          funcaoKey,
+          label: g.label,
+          employees: sorted,
+          selected: sorted.some((e) => e.include_in_commission),
+          expanded: funcaoUi[funcaoKey]?.expanded ?? false,
+          employeeQuery: funcaoUi[funcaoKey]?.employeeQuery ?? "",
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+  }, [employees, funcaoUi]);
 
   const loadProducts = async (idGrupo: number) => {
     if (!idFilial) return;
@@ -290,6 +346,63 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
     );
   };
 
+  const toggleFuncaoExpand = (funcaoKey: string) => {
+    setFuncaoUi((prev) => ({
+      ...prev,
+      [funcaoKey]: { ...prev[funcaoKey], expanded: !prev[funcaoKey]?.expanded },
+    }));
+  };
+
+  const toggleFuncao = (funcaoKey: string) => {
+    const group = funcaoGroups.find((g) => g.funcaoKey === funcaoKey);
+    if (!group) return;
+    const nextSelected = !group.selected;
+    const ids = new Set(group.employees.map((e) => e.id_funcionario));
+    setEmployees((prev) =>
+      prev.map((e) =>
+        ids.has(e.id_funcionario) ? { ...e, include_in_commission: nextSelected } : e,
+      ),
+    );
+  };
+
+  const toggleEmployee = (idFuncionario: number) => {
+    setEmployees((prev) =>
+      prev.map((e) =>
+        e.id_funcionario === idFuncionario
+          ? { ...e, include_in_commission: !e.include_in_commission }
+          : e,
+      ),
+    );
+  };
+
+  const setFuncaoEmployeeQuery = (funcaoKey: string, query: string) => {
+    setFuncaoUi((prev) => ({
+      ...prev,
+      [funcaoKey]: { ...prev[funcaoKey], employeeQuery: query },
+    }));
+  };
+
+  const setFuncaoEmployeesSelected = (funcaoKey: string, nextSelected: boolean) => {
+    const group = funcaoGroups.find((g) => g.funcaoKey === funcaoKey);
+    if (!group) return;
+    const query = group.employeeQuery || "";
+    const targetIds = new Set(
+      group.employees
+        .filter((e) => matchesEmployeeSearch(e, query))
+        .map((e) => e.id_funcionario),
+    );
+    if (targetIds.size === 0) return;
+    setEmployees((prev) =>
+      prev.map((e) =>
+        targetIds.has(e.id_funcionario) ? { ...e, include_in_commission: nextSelected } : e,
+      ),
+    );
+  };
+
+  const setAllEmployeesIncluded = (nextSelected: boolean) => {
+    setEmployees((prev) => prev.map((e) => ({ ...e, include_in_commission: nextSelected })));
+  };
+
   const updateTier = (index: number, field: keyof TierDraft, value: any) => {
     setTiers((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
   };
@@ -389,13 +502,15 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
   const selectedCount = groups.filter((g) => g.selected).length;
   const allGroupsSelected = groups.length > 0 && selectedCount === groups.length;
 
-  const employeeQueryNorm = employeeQuery.trim().toLocaleLowerCase("pt-BR");
-  const filteredEmployees = employees.filter((e) => {
-    if (!employeeQueryNorm) return true;
-    const hay = `${e.nome} ${e.funcao} ${e.id_funcionario}`.toLocaleLowerCase("pt-BR");
-    return hay.includes(employeeQueryNorm);
+  const funcaoSearchNorm = funcaoSearch.trim().toLocaleLowerCase("pt-BR");
+  const filteredFuncaoGroups = funcaoGroups.filter((fg) => {
+    if (!funcaoSearchNorm) return true;
+    if (fg.label.toLocaleLowerCase("pt-BR").includes(funcaoSearchNorm)) return true;
+    return fg.employees.some((e) => matchesEmployeeSearch(e, funcaoSearch));
   });
   const includedEmployees = employees.filter((e) => e.include_in_commission).length;
+  const allFuncoesSelected =
+    funcaoGroups.length > 0 && funcaoGroups.every((fg) => fg.selected);
 
   const bulkBtnStyle: CSSProperties = {
     fontSize: 12,
@@ -410,85 +525,175 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
 
   return (
     <div style={{ marginTop: 16 }}>
-      <div className="card" style={{ padding: "14px 18px", borderLeft: "3px solid var(--color-accent, #3b82f6)" }}>
-        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Configuração da Comissão — Funcionários</div>
-        <div className="muted" style={{ fontSize: 13 }}>
-          Grupos da base do posto. Expanda um grupo para incluir/excluir produtos.
+      {error && <div className="card errorCard" style={{ marginBottom: 12 }}>{error}</div>}
+      {message && (
+        <div className="card" style={{ marginBottom: 12, color: "#22c55e", fontWeight: 500, padding: "10px 14px" }}>
+          {message}
         </div>
-      </div>
+      )}
 
-      {error && <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div>}
-      {message && <div className="card" style={{ marginTop: 12, color: "#22c55e", fontWeight: 500, padding: "10px 14px" }}>{message}</div>}
-
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>Funcionários — considerar no relatório</div>
-          <GridSearchInput value={employeeQuery} onChange={setEmployeeQuery} />
-          <span className="muted" style={{ fontSize: 12 }}>
-            {includedEmployees} de {employees.length} incluídos
-          </span>
+      <section
+        className="solvenciaFilialCard commissionFilialCard commissionConfigSection"
+        style={{ borderLeft: "4px solid var(--accent-copper, #b8722c)" }}
+      >
+        <div className="commissionFilialHead commissionConfigSectionHead">
+          <div>
+            <div className="sectionEyebrow">Equipe</div>
+            <h2 className="commissionFilialTitle">Funcionários no relatório</h2>
+          </div>
+          <div className="commissionFilialSummary">
+            <span className="muted">Incluídos</span>
+            <strong>{includedEmployees}</strong>
+            <span className="muted">de {employees.length}</span>
+          </div>
         </div>
         <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
-          Função vinda do Xpert. Desmarque quem não é vendedor (gerente, administrativo, etc.).
+          Agrupado por função do Xpert. Marque a função para incluir todos; expanda para ajustar individualmente.
+        </div>
+        <div className="commissionConfigToolbar">
+          <GridSearchInput value={funcaoSearch} onChange={setFuncaoSearch} aria-label="Pesquisar função ou funcionário" />
+          <button
+            type="button"
+            className="btn"
+            style={bulkBtnStyle}
+            onClick={() => setAllEmployeesIncluded(!allFuncoesSelected)}
+            disabled={employees.length === 0}
+          >
+            {allFuncoesSelected ? "Desmarcar todas as funções" : "Marcar todas as funções"}
+          </button>
         </div>
         {employees.length === 0 ? (
           <EmptyState title="Sem funcionários" detail="Nenhum funcionário ativo encontrado na filial." />
+        ) : filteredFuncaoGroups.length === 0 ? (
+          <EmptyState title="Sem resultados" detail={`Nenhuma função ou funcionário para “${funcaoSearch.trim()}”.`} />
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="dataTable" style={{ fontSize: 13 }}>
-              <thead>
-                <tr>
-                  <th>Funcionário</th>
-                  <th>Função (Xpert)</th>
-                  <th style={{ textAlign: "center" }}>Vendedor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEmployees.map((emp) => (
-                  <tr key={emp.id_funcionario}>
-                    <td>{emp.nome || `Funcionário ${emp.id_funcionario}`}</td>
-                    <td>{emp.funcao || "—"}</td>
-                    <td style={{ textAlign: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={emp.include_in_commission}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          setEmployees((prev) =>
-                            prev.map((row) =>
-                              row.id_funcionario === emp.id_funcionario
-                                ? { ...row, include_in_commission: checked }
-                                : row,
-                            ),
-                          );
-                        }}
+          <div className="commissionConfigTree">
+            {filteredFuncaoGroups.map((fg) => (
+              <div key={fg.funcaoKey}>
+                <div className="commissionConfigTreeRow">
+                  <button
+                    type="button"
+                    className="commissionConfigExpandBtn"
+                    onClick={() => toggleFuncaoExpand(fg.funcaoKey)}
+                    aria-label={fg.expanded ? "Recolher funcionários" : "Expandir funcionários"}
+                  >
+                    {fg.expanded ? "▾" : "▸"}
+                  </button>
+                  <input
+                    type="checkbox"
+                    checked={fg.selected}
+                    onChange={() => toggleFuncao(fg.funcaoKey)}
+                    style={{ width: 16, height: 16, flexShrink: 0 }}
+                  />
+                  <span style={{ fontSize: 13, minWidth: 0, fontWeight: 600 }}>{fg.label}</span>
+                  <span className="commissionConfigTreeMeta">
+                    {fg.employees.filter((e) => e.include_in_commission).length}/{fg.employees.length}
+                  </span>
+                </div>
+                {fg.expanded ? (
+                  <div className="commissionConfigTreeExpand">
+                    <div className="commissionConfigToolbar" style={{ paddingTop: 8 }}>
+                      <GridSearchInput
+                        value={fg.employeeQuery}
+                        onChange={(value) => setFuncaoEmployeeQuery(fg.funcaoKey, value)}
+                        placeholder="Pesquisar funcionário…"
+                        aria-label={`Pesquisar funcionários de ${fg.label}`}
                       />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      {(() => {
+                        const visible = fg.employees.filter((e) =>
+                          matchesEmployeeSearch(e, fg.employeeQuery),
+                        );
+                        const allVisibleOn =
+                          visible.length > 0 && visible.every((e) => e.include_in_commission);
+                        return (
+                          <button
+                            type="button"
+                            className="btn"
+                            style={bulkBtnStyle}
+                            disabled={visible.length === 0}
+                            onClick={() => setFuncaoEmployeesSelected(fg.funcaoKey, !allVisibleOn)}
+                          >
+                            {allVisibleOn ? "Desmarcar todos" : "Marcar todos"}
+                          </button>
+                        );
+                      })()}
+                    </div>
+                    {(() => {
+                      const visible = fg.employees.filter((e) =>
+                        matchesEmployeeSearch(e, fg.employeeQuery),
+                      );
+                      if (visible.length === 0) {
+                        return (
+                          <div className="muted" style={{ fontSize: 12, padding: "4px 0 6px" }}>
+                            Nenhum funcionário para “{fg.employeeQuery}”.
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="commissionConfigEmployeeGrid">
+                          {visible.map((emp) => (
+                            <label key={emp.id_funcionario} className="commissionConfigEmployeeLabel">
+                              <input
+                                type="checkbox"
+                                checked={emp.include_in_commission}
+                                onChange={() => toggleEmployee(emp.id_funcionario)}
+                                style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}
+                              />
+                              <span style={{ minWidth: 0, wordBreak: "break-word" }}>
+                                {employeeDisplayName(emp)}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : null}
+              </div>
+            ))}
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Modo de pagamento padrão</div>
+      <section
+        className="solvenciaFilialCard commissionFilialCard commissionConfigSection"
+        style={{ borderLeft: "4px solid var(--accent-copper, #b8722c)" }}
+      >
+        <div className="commissionConfigSectionHead">
+          <div className="sectionEyebrow">Pagamento</div>
+          <h2 className="commissionFilialTitle">Modo padrão</h2>
+        </div>
         <select
           value={paymentMode}
           onChange={(e) => setPaymentMode(e.target.value)}
-          style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--card-bg)", color: "inherit", width: "100%", maxWidth: 320 }}
+          style={{
+            padding: "8px 10px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            background: "var(--card-bg)",
+            color: "inherit",
+            width: "100%",
+            maxWidth: 360,
+          }}
         >
           <option value="individual_sales">Individual por quantidade</option>
           <option value="team_total">Equipe (quantidade total)</option>
           <option value="equal_split">Rateio igual por equipe</option>
         </select>
-        <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Define o modo padrão ao abrir a aba Comissões.</div>
-      </div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+          Define o modo padrão ao abrir a aba Comissões.
+        </div>
+      </section>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
-          <div style={{ fontWeight: 600, fontSize: 13 }}>Grupos e produtos participantes</div>
+      <section
+        className="solvenciaFilialCard commissionFilialCard commissionConfigSection"
+        style={{ borderLeft: "4px solid var(--accent-copper, #b8722c)" }}
+      >
+        <div className="commissionFilialHead commissionConfigSectionHead">
+          <div>
+            <div className="sectionEyebrow">Produtos</div>
+            <h2 className="commissionFilialTitle">Grupos participantes</h2>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <button
               type="button"
@@ -505,36 +710,19 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
           </div>
         </div>
         {selectedCount === 0 && (
-          <div style={{ padding: "8px 12px", background: "rgba(234,179,8,0.08)", borderRadius: 6, fontSize: 12, marginBottom: 8, color: "#ca8a04" }}>
+          <div className="commissionConfigHint">
             Selecione os grupos que devem participar da comissão.
           </div>
         )}
-        <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+        <div className="commissionConfigTree">
           {groups.map((g) => (
-            <div key={g.id_grupo_produto} style={{ borderBottom: "1px solid var(--table-row-border)" }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "28px 18px 1fr auto",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                }}
-              >
+            <div key={g.id_grupo_produto}>
+              <div className="commissionConfigTreeRow">
                 <button
                   type="button"
+                  className="commissionConfigExpandBtn"
                   onClick={() => toggleExpand(g.id_grupo_produto)}
                   aria-label={g.expanded ? "Recolher produtos" : "Expandir produtos"}
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: 6,
-                    border: "1px solid var(--border)",
-                    background: "var(--card-bg)",
-                    color: "inherit",
-                    cursor: "pointer",
-                    fontSize: 12,
-                  }}
                 >
                   {g.expanded ? "▾" : "▸"}
                 </button>
@@ -545,28 +733,19 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                   style={{ width: 16, height: 16, flexShrink: 0 }}
                 />
                 <span style={{ fontSize: 13, minWidth: 0 }}>{g.nome}</span>
-                <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                <span className="commissionConfigTreeMeta">
                   {(g.faturamento_30d || 0) > 0 ? `${formatCurrency(g.faturamento_30d || 0)} /30d` : "—"}
                 </span>
               </div>
               {g.expanded ? (
-                <div style={{ padding: "0 12px 10px 48px", background: "var(--surface-faint, rgba(0,0,0,0.03))" }}>
+                <div className="commissionConfigTreeExpand">
                   {g.productsLoading ? (
-                    <div className="muted" style={{ fontSize: 12, padding: "6px 0" }}>Carregando produtos…</div>
+                    <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>Carregando produtos…</div>
                   ) : (g.products || []).length === 0 ? (
-                    <div className="muted" style={{ fontSize: 12, padding: "6px 0" }}>Nenhum produto neste grupo.</div>
+                    <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>Nenhum produto neste grupo.</div>
                   ) : (
                     <>
-                      <div
-                        style={{
-                          padding: "6px 0 10px",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          flexWrap: "wrap",
-                          justifyContent: "flex-start",
-                        }}
-                      >
+                      <div className="commissionConfigToolbar" style={{ paddingTop: 8 }}>
                         <GridSearchInput
                           value={g.productQuery || ""}
                           onChange={(value) => setGroupProductQuery(g.id_grupo_produto, value)}
@@ -606,36 +785,16 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                           );
                         }
                         return (
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
-                              gap: 6,
-                              alignItems: "start",
-                            }}
-                          >
+                          <div className="commissionConfigEmployeeGrid">
                             {visible.map((p) => (
-                              <label
-                                key={p.id_produto}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "flex-start",
-                                  gap: 8,
-                                  fontSize: 12,
-                                  cursor: "pointer",
-                                  minWidth: 0,
-                                  padding: "2px 0",
-                                }}
-                              >
+                              <label key={p.id_produto} className="commissionConfigEmployeeLabel">
                                 <input
                                   type="checkbox"
                                   checked={!!p.selected}
                                   onChange={() => toggleProduct(g.id_grupo_produto, p.id_produto)}
                                   style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}
                                 />
-                                <span style={{ minWidth: 0, lineHeight: 1.35, wordBreak: "break-word" }}>
-                                  {p.nome}
-                                </span>
+                                <span style={{ minWidth: 0, wordBreak: "break-word" }}>{p.nome}</span>
                               </label>
                             ))}
                           </div>
@@ -648,10 +807,16 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
             </div>
           ))}
         </div>
-      </div>
+      </section>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>Níveis de premiação</div>
+      <section
+        className="solvenciaFilialCard commissionFilialCard commissionConfigSection"
+        style={{ borderLeft: "4px solid var(--accent-copper, #b8722c)" }}
+      >
+        <div className="commissionConfigSectionHead">
+          <div className="sectionEyebrow">Premiação</div>
+          <h2 className="commissionFilialTitle">Níveis de comissão</h2>
+        </div>
         <div style={{ display: "grid", gap: 10 }}>
           {tiers.map((tier, i) => {
             const style = TIER_STYLES[tier.tier_key] || TIER_STYLES.bronze;
@@ -741,7 +906,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
           Venda elegível = grupos marcados − produtos desmarcados.
         </div>
-      </div>
+      </section>
 
       <div style={{ marginTop: 16, display: "flex", gap: 12 }}>
         <button
