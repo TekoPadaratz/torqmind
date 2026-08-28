@@ -13,7 +13,7 @@ from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
 from app.permissions import require_screen, redact_sensitive, require_not_kiosk, can_access_screen
-from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id
+from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id, materialize_branch_query_targets
 from app import repos_analytics as repos_mart
 from app import repos_auth
 from app.services import snapshot_cache
@@ -2324,15 +2324,17 @@ def product_stock_idle_overview(
 ):
     from app.repos_product_management import list_product_stock_idle
 
-    tenant, filial, branch_scope = resolve_scope_filters(
+    tenant, branch_scope, branch_ids = resolve_scope_filters(
         claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
     )
-    filial_ids = accessible_branch_ids(branch_scope) if branch_scope else None
+    filial_q, filiais_q = materialize_branch_query_targets(branch_scope, branch_ids)
+    if filial_q is None and not filiais_q:
+        raise HTTPException(status_code=422, detail="Informe ao menos uma filial.")
     return redact_sensitive(
         list_product_stock_idle(
             tenant,
-            id_filial=filial,
-            id_filiais=filial_ids if filial is None else None,
+            id_filial=filial_q,
+            id_filiais=filiais_q,
             min_dias_sem_venda=min_dias_sem_venda,
             setor=setor,
             limit=limit,

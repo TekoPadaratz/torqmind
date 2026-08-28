@@ -8,6 +8,27 @@ from app.db_clickhouse import insert_batch, query_dict
 
 MART_STOCK = "torqmind_mart_rt.product_stock_idle"
 MART_PURCHASE = "torqmind_mart_rt.product_purchase_recent"
+CURRENT_DB = "torqmind_current"
+
+
+def _filial_filter_sql(
+    id_filial: Optional[int],
+    id_filiais: Optional[List[int]],
+    params: Dict[str, Any],
+    *,
+    column: str = "s.id_filial",
+) -> str:
+    if id_filial is not None:
+        if not isinstance(id_filial, int):
+            raise ValueError("id_filial deve ser inteiro")
+        params["id_filial"] = int(id_filial)
+        return f"AND {column} = {{id_filial:Int32}}"
+    if id_filiais:
+        ids = [int(x) for x in id_filiais if int(x) > 0]
+        if ids:
+            params["id_filiais"] = ids
+            return f"AND {column} IN {{id_filiais:Array(Int32)}}"
+    return ""
 
 
 def list_product_stock_idle(
@@ -26,28 +47,20 @@ def list_product_stock_idle(
         "limit": max(1, min(int(limit or 2000), 5000)),
         "offset": max(0, int(offset or 0)),
     }
-    filial_filter = ""
-    if id_filial is not None:
-        filial_filter = "AND id_filial = {id_filial:Int32}"
-        params["id_filial"] = int(id_filial)
-    elif id_filiais:
-        ids = [int(x) for x in id_filiais if int(x) > 0]
-        if ids:
-            filial_filter = "AND id_filial IN {id_filiais:Array(Int32)}"
-            params["id_filiais"] = ids
+    filial_filter = _filial_filter_sql(id_filial, id_filiais, params, column="s.id_filial")
 
     setor_filter = ""
     if setor:
         params["setor"] = str(setor).strip().lower()
-        setor_filter = "AND setor_gerencial = {setor:String}"
+        setor_filter = "AND s.setor_gerencial = {setor:String}"
 
     count_row = query_dict(
         f"""
         SELECT count() AS total
-        FROM {MART_STOCK} FINAL
-        WHERE id_empresa = {{id_empresa:Int32}}
+        FROM {MART_STOCK} AS s
+        WHERE s.id_empresa = {{id_empresa:Int32}}
           {filial_filter}
-          AND dias_sem_venda >= {{min_dias:Int32}}
+          AND s.dias_sem_venda >= {{min_dias:Int32}}
           {setor_filter}
         """,
         parameters=params,
@@ -57,21 +70,28 @@ def list_product_stock_idle(
     rows = query_dict(
         f"""
         SELECT
-          id_filial,
-          id_produto,
-          nome_produto,
-          setor_gerencial,
-          qtd_estoque,
-          last_sale_date,
-          dias_sem_venda,
-          custo_medio_compra,
-          preco_venda
-        FROM {MART_STOCK} FINAL
-        WHERE id_empresa = {{id_empresa:Int32}}
+          s.id_filial,
+          coalesce(f.nome, concat('Filial ', toString(s.id_filial))) AS filial_label,
+          s.id_produto,
+          s.nome_produto,
+          s.setor_gerencial,
+          s.qtd_estoque,
+          s.last_sale_date,
+          s.dias_sem_venda,
+          s.custo_medio_compra,
+          s.preco_venda
+        FROM {MART_STOCK} AS s
+        LEFT JOIN (
+          SELECT id_empresa, id_filial, any(nome) AS nome
+          FROM {CURRENT_DB}.dim_filial
+          WHERE id_empresa = {{id_empresa:Int32}}
+          GROUP BY id_empresa, id_filial
+        ) AS f ON f.id_empresa = s.id_empresa AND f.id_filial = s.id_filial
+        WHERE s.id_empresa = {{id_empresa:Int32}}
           {filial_filter}
-          AND dias_sem_venda >= {{min_dias:Int32}}
+          AND s.dias_sem_venda >= {{min_dias:Int32}}
           {setor_filter}
-        ORDER BY id_filial ASC, dias_sem_venda DESC, nome_produto ASC, id_produto ASC
+        ORDER BY s.id_filial ASC, s.dias_sem_venda DESC, s.nome_produto ASC, s.id_produto ASC
         LIMIT {{limit:UInt32}} OFFSET {{offset:UInt32}}
         """,
         parameters=params,
@@ -86,6 +106,7 @@ def list_product_stock_idle(
         produtos.append(
             {
                 "id_filial": int(r.get("id_filial") or 0),
+                "filial_label": str(r.get("filial_label") or ""),
                 "id_produto": int(r.get("id_produto") or 0),
                 "nome_produto": str(r.get("nome_produto") or ""),
                 "setor": setor_key,
@@ -102,12 +123,12 @@ def list_product_stock_idle(
 
     setores_rows = query_dict(
         f"""
-        SELECT DISTINCT setor_gerencial
-        FROM {MART_STOCK} FINAL
-        WHERE id_empresa = {{id_empresa:Int32}}
+        SELECT DISTINCT s.setor_gerencial
+        FROM {MART_STOCK} AS s
+        WHERE s.id_empresa = {{id_empresa:Int32}}
           {filial_filter}
-          AND dias_sem_venda >= {{min_dias:Int32}}
-        ORDER BY setor_gerencial ASC
+          AND s.dias_sem_venda >= {{min_dias:Int32}}
+        ORDER BY s.setor_gerencial ASC
         """,
         parameters=params,
     )
@@ -142,7 +163,7 @@ def list_product_purchases_recent(
           qtd,
           valor_unitario,
           valor_total
-        FROM {MART_PURCHASE} FINAL
+        FROM {MART_PURCHASE}
         WHERE id_empresa = {{id_empresa:Int32}}
           AND id_filial = {{id_filial:Int32}}
           AND id_produto = {{id_produto:Int32}}

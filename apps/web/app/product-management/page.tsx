@@ -7,6 +7,7 @@ import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { apiGet } from "../lib/api";
+import { extractApiError } from "../lib/errors";
 import { buildUserLabel, formatCurrency } from "../lib/format";
 import {
   buildModuleLoadingCopy,
@@ -14,7 +15,7 @@ import {
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
-import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
+import { useGridSearch } from "../lib/use-grid-search";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +24,7 @@ const SCREEN_TITLE = "Gestão de Produtos";
 
 type ProductRow = {
   id_filial: number;
+  filial_label?: string;
   id_produto: number;
   nome_produto: string;
   setor: string;
@@ -56,11 +58,22 @@ function fmtQty(value: number): string {
   return Number(value || 0).toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 }
 
+function hasBranchScope(scope: {
+  id_filial?: string | null;
+  id_filiais?: string[];
+  branch_scope?: string | null;
+}): boolean {
+  if (scope.branch_scope === "all") return true;
+  if (scope.id_filial) return true;
+  return (scope.id_filiais?.length || 0) > 0;
+}
+
 export default function ProductManagementPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
   const session = readCachedSession();
   const allowed = canAccessScreenKey(session, "product_management");
+  const branchReady = scope.ready && hasBranchScope(scope);
 
   const [diasSemVenda, setDiasSemVenda] = useState(7);
   const [setorFilter, setSetorFilter] = useState("");
@@ -68,17 +81,20 @@ export default function ProductManagementPage() {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [purchaseCache, setPurchaseCache] = useState<Record<string, PurchaseRow[]>>({});
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
+  const [purchaseError, setPurchaseError] = useState("");
 
   const { claims, data, error, loading, pendingUnavailable } = useBiScopeData<Payload>({
     moduleKey: `product_stock_idle:${diasSemVenda}:${setorFilter}:${reloadNonce}`,
     scope,
+    keepPreviousData: true,
+    requestTimeoutMs: 30_000,
     errorMessage: "Falha ao carregar gestão de produtos",
     buildRequestUrl: (currentScope) => {
-      if (!allowed || !currentScope.id_filial) return null;
+      if (!allowed || !hasBranchScope(currentScope)) return null;
       const p = buildScopeParams(currentScope);
       p.set("dias_sem_venda", String(diasSemVenda));
       if (setorFilter) p.set("setor", setorFilter);
-      p.set("limit", "3000");
+      p.set("limit", "2000");
       return `/bi/operations/product-stock-idle?${p.toString()}`;
     },
   });
@@ -89,6 +105,11 @@ export default function ProductManagementPage() {
     : buildModuleLoadingCopy("gestão de produtos");
 
   const rows = data?.produtos || [];
+  const showFilialColumn = useMemo(() => {
+    const filiais = new Set(rows.map((r) => r.id_filial));
+    return filiais.size > 1;
+  }, [rows]);
+
   const { query, setQuery, filteredRows } = useGridSearch(rows, {
     excludeKeys: /^id_/,
   });
@@ -108,16 +129,22 @@ export default function ProductManagementPage() {
         return;
       }
       setExpandedKey(key);
+      setPurchaseError("");
       if (purchaseCache[key]) return;
       setPurchaseLoading(key);
       try {
         const p = buildScopeParams({ ...scope, id_filial: String(row.id_filial) });
         p.set("id_produto", String(row.id_produto));
-        const resp = await apiGet(`/bi/operations/product-stock-idle/purchases?${p.toString()}`);
+        const resp = await apiGet(`/bi/operations/product-stock-idle/purchases?${p.toString()}`, {
+          timeout: 20_000,
+        });
         setPurchaseCache((prev) => ({
           ...prev,
           [key]: (resp?.compras || []) as PurchaseRow[],
         }));
+      } catch (err: unknown) {
+        setPurchaseError(extractApiError(err, "Falha ao carregar compras."));
+        setExpandedKey(null);
       } finally {
         setPurchaseLoading(null);
       }
@@ -160,10 +187,18 @@ export default function ProductManagementPage() {
             últimas 3 notas de compra.
           </p>
 
-          {!scope.ready || !scope.id_filial ? (
-            <ScopeTransitionState headline={transitionCopy.headline} detail={transitionCopy.detail} />
+          {!branchReady ? (
+            <ScopeTransitionState
+              mode={scope.ready ? "unavailable" : "loading"}
+              headline={scope.ready ? "Selecione o escopo de filiais" : transitionCopy.headline}
+              detail={
+                scope.ready
+                  ? "Escolha uma filial, várias filiais ou Todas no painel lateral para carregar os produtos parados."
+                  : transitionCopy.detail
+              }
+            />
           ) : (loading || pendingUnavailable) && !data ? (
-            <div className="muted" style={{ padding: 24 }}>{transitionCopy.detail}</div>
+            <ScopeTransitionState mode="loading" headline={transitionCopy.headline} detail={transitionCopy.detail} />
           ) : error ? (
             <EmptyState title="Falha ao carregar" detail={String(error)} />
           ) : (
@@ -198,16 +233,21 @@ export default function ProductManagementPage() {
                 </button>
               </div>
 
+              {purchaseError ? (
+                <div className="card errorCard" style={{ marginBottom: 12 }}>{purchaseError}</div>
+              ) : null}
+
               {filteredRows.length === 0 ? (
                 <EmptyState
                   title="Nenhum produto parado"
-                  detail={`Não há produtos com estoque e ≥ ${diasSemVenda} dias sem venda nesta filial.`}
+                  detail={`Não há produtos com estoque e ≥ ${diasSemVenda} dias sem venda no escopo selecionado.`}
                 />
               ) : (
                 <div className="tableScroll">
                   <table className="table compact" style={{ fontSize: 13 }}>
                     <thead>
                       <tr>
+                        {showFilialColumn ? <th style={{ textAlign: "left" }}>Filial</th> : null}
                         <th style={{ textAlign: "left" }}>Produto</th>
                         <th style={{ textAlign: "left" }}>Setor</th>
                         <th style={{ textAlign: "right" }}>Dias s/ venda</th>
@@ -223,13 +263,19 @@ export default function ProductManagementPage() {
                         const key = `${row.id_filial}:${row.id_produto}`;
                         const expanded = expandedKey === key;
                         const purchases = purchaseCache[key] || [];
+                        const colSpan = showFilialColumn ? 9 : 8;
                         return (
                           <Fragment key={key}>
                             <tr
-                              onClick={() => toggleExpand(row)}
+                              onClick={() => void toggleExpand(row)}
                               style={{ cursor: "pointer", borderBottom: "1px solid var(--table-row-border)" }}
                               className={expanded ? "commissionConfigTreeRow" : undefined}
                             >
+                              {showFilialColumn ? (
+                                <td style={{ padding: "8px 6px", whiteSpace: "nowrap" }}>
+                                  {row.filial_label || `Filial ${row.id_filial}`}
+                                </td>
+                              ) : null}
                               <td style={{ padding: "8px 6px" }}>
                                 <span style={{ marginRight: 6, opacity: 0.7 }}>{expanded ? "▾" : "▸"}</span>
                                 {row.nome_produto}
@@ -248,7 +294,7 @@ export default function ProductManagementPage() {
                             </tr>
                             {expanded ? (
                               <tr key={`${key}-detail`}>
-                                <td colSpan={8} style={{ padding: "0 12px 12px 32px", background: "var(--surface-faint)" }}>
+                                <td colSpan={colSpan} style={{ padding: "0 12px 12px 32px", background: "var(--surface-faint)" }}>
                                   {purchaseLoading === key ? (
                                     <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>Carregando compras…</div>
                                   ) : purchases.length === 0 ? (

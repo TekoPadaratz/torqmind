@@ -9,6 +9,7 @@ from app.repos_product_management import (
     list_product_purchases_recent,
     list_product_stock_idle,
 )
+from app.scope import materialize_branch_query_targets
 
 
 def test_product_management_screen_registered():
@@ -23,6 +24,18 @@ def test_setor_label_mapping():
     assert _setor_label("automotivo") == "Automotivo"
 
 
+def test_materialize_branch_query_targets_multi():
+    filial, filiais = materialize_branch_query_targets([14458, 14459], None)
+    assert filial is None
+    assert filiais == [14458, 14459]
+
+
+def test_materialize_branch_query_targets_single():
+    filial, filiais = materialize_branch_query_targets(14458, None)
+    assert filial == 14458
+    assert filiais is None
+
+
 @patch("app.repos_product_management.query_dict")
 def test_list_product_stock_idle_maps_rows(mock_qd):
     mock_qd.side_effect = [
@@ -30,6 +43,7 @@ def test_list_product_stock_idle_maps_rows(mock_qd):
         [
             {
                 "id_filial": 14458,
+                "filial_label": "VR 01",
                 "id_produto": 42,
                 "nome_produto": "ARLA 32",
                 "setor_gerencial": "automotivo",
@@ -47,6 +61,7 @@ def test_list_product_stock_idle_maps_rows(mock_qd):
     assert len(out["produtos"]) == 1
     p = out["produtos"][0]
     assert p["nome_produto"] == "ARLA 32"
+    assert p["filial_label"] == "VR 01"
     assert p["custo_medio_total"] == 25.0
     assert p["receita_total"] == 32.9
     assert p["setor_label"] == "Automotivo"

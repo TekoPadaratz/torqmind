@@ -198,3 +198,23 @@ def primary_branch_id(branch_scope: Optional[int | list[int]]) -> Optional[int]:
     if isinstance(branch_scope, list):
         return branch_scope[0] if len(branch_scope) == 1 else None
     return int(branch_scope) if branch_scope is not None else None
+
+
+def materialize_branch_query_targets(
+    branch_scope: Optional[int | list[int]],
+    branch_ids: Optional[list[int]],
+) -> tuple[Optional[int], Optional[list[int]]]:
+    """Normaliza escopo de filial para endpoints BI (id_filial único ou id_filiais)."""
+    ids: list[int] = []
+    if branch_ids:
+        ids = sorted({int(b) for b in branch_ids if int(b) > 0})
+    elif isinstance(branch_scope, list):
+        ids = sorted({int(b) for b in branch_scope if int(b) > 0})
+    elif branch_scope not in (None, []):
+        return int(branch_scope), None
+
+    if len(ids) == 1:
+        return ids[0], None
+    if ids:
+        return None, ids
+    return None, None
