@@ -169,7 +169,7 @@ export default function IntelligenceHost() {
     let cancelled = false;
     (async () => {
       try {
-        const data = await apiGet(`/ai/conversations/${conversationId}/messages`, scopePayload);
+        const data = await apiGet(`/ai/conversations/${conversationId}/messages`, { params: scopePayload });
         if (cancelled) return;
         const items = Array.isArray(data?.items) ? data.items : [];
         const restored: ChatMessage[] = items
