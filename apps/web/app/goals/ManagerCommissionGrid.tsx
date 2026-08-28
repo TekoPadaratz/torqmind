@@ -6,6 +6,7 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
+import { extractApiError } from "../lib/errors";
 import { sortGridRows } from "../lib/grid-sort";
 import ManagerCommissionDrilldown, {
   type DrilldownPayload,
@@ -161,7 +162,7 @@ export default function ManagerCommissionGrid({
         setDrilldownByFilial({});
       } catch (err: any) {
         if (ac.signal.aborted || isRequestCanceled(err)) return;
-        setError(err?.response?.data?.detail || "Falha ao calcular comissão de gerentes.");
+        setError(extractApiError(err, "Falha ao calcular comissão de gerentes."));
         setRows([]);
         setExpandedFilial(null);
         setDrilldownByFilial({});
@@ -249,7 +250,7 @@ export default function ManagerCommissionGrid({
       });
       setDrilldownByFilial((prev) => ({ ...prev, [fid]: resp }));
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao carregar o detalhe.");
+      setError(extractApiError(err, "Falha ao carregar o detalhe."));
       setExpandedFilial(null);
     } finally {
       setDrilldownLoading(null);
@@ -315,7 +316,7 @@ export default function ManagerCommissionGrid({
         }
       }
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao gravar ajuste.");
+      setError(extractApiError(err, "Falha ao gravar ajuste."));
     } finally {
       setSavingKey(null);
     }

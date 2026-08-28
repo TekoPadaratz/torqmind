@@ -6,6 +6,7 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
+import { coerceDisplayMessage, extractApiError } from "../lib/errors";
 import { formatCommissionPeriodLabel } from "../lib/commission-period.mjs";
 
 const TIER_STYLES: Record<
@@ -312,7 +313,7 @@ export default function CommissionsTab({
       } catch (err: any) {
         if (ac.signal.aborted || isRequestCanceled(err)) return;
         setData(null);
-        setError(err?.response?.data?.detail || "Falha ao carregar comissões.");
+        setError(extractApiError(err, "Falha ao carregar comissões."));
       } finally {
         if (!ac.signal.aborted) setLoading(false);
       }
@@ -350,7 +351,7 @@ export default function CommissionsTab({
       } catch (err: any) {
         if (ac.signal.aborted || isRequestCanceled(err)) return;
         setDiscountData(null);
-        setDiscountError(err?.response?.data?.detail || "Falha ao carregar descontos.");
+        setDiscountError(extractApiError(err, "Falha ao carregar descontos."));
       } finally {
         if (!ac.signal.aborted) setDiscountLoading(false);
       }
@@ -533,7 +534,7 @@ export default function CommissionsTab({
 
   return (
     <div style={{ marginTop: 16 }}>
-      {error ? <div className="card errorCard" style={{ marginBottom: 12 }}>{error}</div> : null}
+      {error ? <div className="card errorCard" style={{ marginBottom: 12 }}>{String(error)}</div> : null}
 
       {loading ? (
         <div className="card" style={{ textAlign: "center", padding: 32 }}>
@@ -629,7 +630,10 @@ export default function CommissionsTab({
 
           {data.message && sellers.length === 0 ? (
             <div className="card" style={{ marginTop: 12 }}>
-              <EmptyState title="Sem dados" detail={data.message} />
+              <EmptyState
+                title="Sem dados"
+                detail={coerceDisplayMessage(data.message, "Sem vendas elegíveis no período.")}
+              />
             </div>
           ) : sellers.length === 0 ? (
             <div className="card" style={{ marginTop: 12 }}>
@@ -768,7 +772,7 @@ export default function CommissionsTab({
               <GridSearchInput value={discountsSearch} onChange={setDiscountsSearch} />
             </div>
             {discountError ? (
-              <div className="errorCard" style={{ marginTop: 10 }}>{discountError}</div>
+              <div className="errorCard" style={{ marginTop: 10 }}>{String(discountError)}</div>
             ) : null}
             {discountLoading ? (
               <div className="muted" style={{ marginTop: 12 }}>Carregando descontos…</div>
