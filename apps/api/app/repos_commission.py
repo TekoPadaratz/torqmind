@@ -334,11 +334,12 @@ def merge_config_employees(
         fid = int(row["id_funcionario"])
         seen.add(fid)
         saved_row = saved.get(fid)
+        snap = saved_row or {}
         merged.append(
             {
                 "id_funcionario": fid,
-                "nome": str(saved_row.get("nome_funcionario_snapshot") or row.get("nome") or ""),
-                "funcao": str(saved_row.get("funcao_snapshot") or row.get("funcao") or ""),
+                "nome": str(snap.get("nome_funcionario_snapshot") or row.get("nome") or ""),
+                "funcao": str(snap.get("funcao_snapshot") or row.get("funcao") or ""),
                 "include_in_commission": bool(
                     saved_row.get("include_in_commission") if saved_row else True
                 ),

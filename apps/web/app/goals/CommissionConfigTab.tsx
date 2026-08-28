@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
+import { extractApiError } from "../lib/errors";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
@@ -121,7 +122,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         })),
       );
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao carregar configuração.");
+      setError(extractApiError(err, "Falha ao carregar configuração."));
     } finally {
       setLoading(false);
     }
@@ -165,7 +166,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         }),
       );
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao carregar produtos do grupo.");
+      setError(extractApiError(err, "Falha ao carregar produtos do grupo."));
       setGroups((prev) =>
         prev.map((g) =>
           g.id_grupo_produto === idGrupo ? { ...g, productsLoading: false } : g,
@@ -363,7 +364,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
       if (onSaved) onSaved();
       await fetchConfig();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao salvar configuração.");
+      setError(extractApiError(err, "Falha ao salvar configuração."));
     } finally {
       setSaving(false);
     }

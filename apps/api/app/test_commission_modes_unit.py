@@ -182,3 +182,17 @@ def test_excluded_funcionario_removed_from_commission_calc():
     assert len(res["vendedores"]) == 1
     assert res["vendedores"][0]["id_funcionario"] == 1
     assert res["comissao_total"] == 800.00
+
+
+def test_merge_config_employees_without_saved_rows():
+    branch_rows = [
+        {"id_funcionario": 1, "nome": "João", "funcao": "Frentista"},
+        {"id_funcionario": 2, "nome": "Maria", "funcao": "Gerente"},
+    ]
+    with patch.object(repos_commission, "list_branch_employees_ch", return_value=branch_rows), \
+         patch.object(repos_commission, "get_config_employees", return_value=[]):
+        merged = repos_commission.merge_config_employees(1, 14122, 99)
+    assert len(merged) == 2
+    assert merged[0]["include_in_commission"] is True
+    assert merged[0]["nome"] == "João"
+    assert merged[1]["funcao"] == "Gerente"

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
+import { extractApiError } from "../lib/errors";
 import EmptyState from "../components/ui/EmptyState";
 
 interface Props {
@@ -58,7 +59,7 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
       setLossGroups(resp?.stock_loss_groups || []);
       setCashNote(String(resp?.cash_adj_note || ""));
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao carregar config de gerente.");
+      setError(extractApiError(err, "Falha ao carregar config de gerente."));
     } finally {
       setLoading(false);
     }
@@ -97,7 +98,7 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
       setMessage("Configuração de gerente salva.");
       onSaved?.();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Falha ao salvar.");
+      setError(extractApiError(err, "Falha ao salvar."));
     } finally {
       setSaving(false);
     }
