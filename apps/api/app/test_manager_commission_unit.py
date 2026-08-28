@@ -75,8 +75,8 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         params = inspect.signature(calc_branch_drilldown).parameters
         self.assertIn("id_empresa", params)
         self.assertIn("id_filial", params)
-        self.assertIn("year", params)
-        self.assertIn("month", params)
+        self.assertIn("dt_ini", params)
+        self.assertIn("dt_fim", params)
 
 
 if __name__ == "__main__":

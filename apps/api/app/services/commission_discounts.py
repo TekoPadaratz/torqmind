@@ -45,15 +45,14 @@ def _label(fid: int) -> str:
 
 def commission_discounts_overview(
     id_empresa: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     *,
     id_filial: Optional[int] = None,
     id_filiais: Optional[Sequence[int]] = None,
     limit: int = 200,
 ) -> Dict[str, Any]:
     """Lista unificada (tipo explícito) sem misturar comissão. Sem custo/margem."""
-    dt_ini, dt_fim = _month_bounds(year, month)
     limit = max(1, min(int(limit), 500))
     branch_sql, branch_params = _branch_sql(id_filial, id_filiais, "i.id_filial")
     params: Dict[str, Any] = {

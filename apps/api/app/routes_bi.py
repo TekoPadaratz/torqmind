@@ -2754,8 +2754,8 @@ def team_commissions_config_products(
 
 @router.get("/team/commissions/results")
 def team_commissions_results(
-    month: int = Query(..., ge=1, le=12),
-    year: int = Query(..., ge=2020, le=2100),
+    dt_ini: Optional[str] = Query(None, description="Início do período (YYYY-MM-DD)"),
+    dt_fim: Optional[str] = Query(None, description="Fim do período (YYYY-MM-DD)"),
     id_filial: Optional[int] = Query(None, description="Branch ID (single)"),
     id_filiais: Optional[List[int]] = Query(None, description="Multi-branch scope"),
     payment_mode: Optional[str] = Query(None),
@@ -2764,6 +2764,12 @@ def team_commissions_results(
     _screen=Depends(require_screen("goals_team.comissoes")),
 ):
     """Employee commission results — single or multi-branch (config stays 1 filial)."""
+    from app.commission_period import resolve_commission_period_from_query
+
+    try:
+        period_ini, period_fim = resolve_commission_period_from_query(dt_ini, dt_fim)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     tenant, branch_scope, branch_ids = resolve_scope_filters(
         claims,
         id_empresa_q=id_empresa,
@@ -2788,8 +2794,8 @@ def team_commissions_results(
         payload = repos_commission.calculate_commission_results_multi(
             tenant,
             targets,
-            month,
-            year,
+            period_ini,
+            period_fim,
             payment_mode=effective_mode,
         )
     except RuntimeError as exc:
@@ -2806,8 +2812,8 @@ def team_commissions_results(
 
 @router.get("/team/commissions/discounts")
 def team_commissions_discounts(
-    month: int = Query(..., ge=1, le=12),
-    year: int = Query(..., ge=2020, le=2100),
+    dt_ini: Optional[str] = Query(None, description="Início do período (YYYY-MM-DD)"),
+    dt_fim: Optional[str] = Query(None, description="Fim do período (YYYY-MM-DD)"),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None),
@@ -2815,7 +2821,13 @@ def team_commissions_discounts(
     _screen=Depends(require_screen("goals_team.comissoes")),
 ):
     """Descontos na venda (VLRDESCONTO) e preço fixo — não altera comissão."""
+    from app.commission_period import resolve_commission_period_from_query
     from app.services.commission_discounts import commission_discounts_overview
+
+    try:
+        period_ini, period_fim = resolve_commission_period_from_query(dt_ini, dt_fim)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     tenant, branch_scope, branch_ids = resolve_scope_filters(
         claims,
@@ -2836,8 +2848,8 @@ def team_commissions_discounts(
         raise HTTPException(status_code=422, detail="Informe ao menos uma filial.")
     return commission_discounts_overview(
         tenant,
-        year,
-        month,
+        period_ini,
+        period_fim,
         id_filiais=targets,
         limit=300,
     )
@@ -2904,8 +2916,8 @@ def manager_commissions_config_save(
 
 @router.get("/team/manager-commissions/calc")
 def manager_commissions_calc(
-    month: int = Query(..., ge=1, le=12),
-    year: int = Query(..., ge=2020, le=2100),
+    dt_ini: Optional[str] = Query(None, description="Início do período (YYYY-MM-DD)"),
+    dt_fim: Optional[str] = Query(None, description="Fim do período (YYYY-MM-DD)"),
     id_filial: Optional[int] = Query(None),
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None),
@@ -2916,6 +2928,12 @@ def manager_commissions_calc(
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.gerente")),
 ):
+    from app.commission_period import resolve_commission_period_from_query
+
+    try:
+        period_ini, period_fim = resolve_commission_period_from_query(dt_ini, dt_fim)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     tenant, branch_scope, branch_ids = resolve_scope_filters(
         claims,
         id_empresa_q=id_empresa,
@@ -2965,8 +2983,8 @@ def manager_commissions_calc(
             repos_manager_commission.calc_branch_row(
                 tenant,
                 fid,
-                year,
-                month,
+                period_ini,
+                period_fim,
                 filial_label=labels.get(fid),
                 publish=bool(refresh),
             )
@@ -2974,8 +2992,8 @@ def manager_commissions_calc(
     # Grid contract: Filial ASC
     rows_out.sort(key=lambda r: (str(r.get("filial_label") or ""), int(r.get("id_filial") or 0)))
     return {
-        "year": year,
-        "month": month,
+        "dt_ini": period_ini.isoformat(),
+        "dt_fim": period_fim.isoformat(),
         "id_empresa": tenant,
         "rows": rows_out,
         "cash_source": "unavailable_pending_agent_dataset",
@@ -2985,14 +3003,20 @@ def manager_commissions_calc(
 
 @router.get("/team/manager-commissions/drilldown")
 def manager_commissions_drilldown(
-    month: int = Query(..., ge=1, le=12),
-    year: int = Query(..., ge=2020, le=2100),
+    dt_ini: Optional[str] = Query(None, description="Início do período (YYYY-MM-DD)"),
+    dt_fim: Optional[str] = Query(None, description="Fim do período (YYYY-MM-DD)"),
     id_filial: int = Query(..., description="Branch ID"),
     id_empresa: Optional[int] = Query(None),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.gerente")),
 ):
-    """Grupos da venda bruta + notas de perda (NF) da filial/mês."""
+    """Grupos da venda bruta + notas de perda (NF) da filial/período."""
+    from app.commission_period import resolve_commission_period_from_query
+
+    try:
+        period_ini, period_fim = resolve_commission_period_from_query(dt_ini, dt_fim)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     tenant, _, _ = resolve_scope_filters(
         claims,
         id_empresa_q=id_empresa,
@@ -3023,8 +3047,8 @@ def manager_commissions_drilldown(
     return repos_manager_commission.calc_branch_drilldown(
         tenant,
         int(id_filial),
-        year,
-        month,
+        period_ini,
+        period_fim,
         filial_label=filial_label,
     )
 
@@ -3041,10 +3065,19 @@ def manager_commissions_overrides_save(
 
     id_empresa = body.get("id_empresa")
     id_filial = body.get("id_filial")
-    year = body.get("year")
-    month = body.get("month")
-    if not all([id_empresa, id_filial, year, month]):
-        raise HTTPException(status_code=422, detail="id_empresa, id_filial, year e month são obrigatórios.")
+    dt_ini_raw = body.get("dt_ini")
+    dt_fim_raw = body.get("dt_fim")
+    if not all([id_empresa, id_filial, dt_ini_raw, dt_fim_raw]):
+        raise HTTPException(status_code=422, detail="id_empresa, id_filial, dt_ini e dt_fim são obrigatórios.")
+
+    from app.commission_period import parse_iso_date, validate_commission_period
+
+    try:
+        period_ini = parse_iso_date(str(dt_ini_raw))
+        period_fim = parse_iso_date(str(dt_fim_raw))
+        validate_commission_period(period_ini, period_fim)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     tenant, _, _ = resolve_scope_filters(
         claims,
@@ -3058,8 +3091,8 @@ def manager_commissions_overrides_save(
     saved = repos_manager_commission.upsert_period_override(
         tenant,
         int(id_filial),
-        int(year),
-        int(month),
+        period_ini,
+        period_fim,
         payload,
         updated_by=updated_by,
     )
@@ -3089,8 +3122,8 @@ def manager_commissions_overrides_save(
     row = repos_manager_commission.calc_branch_row(
         tenant,
         int(id_filial),
-        int(year),
-        int(month),
+        period_ini,
+        period_fim,
         filial_label=filial_label,
         publish=False,
     )

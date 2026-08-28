@@ -93,16 +93,16 @@ interface Props {
   idEmpresa: number | null;
   idFilial: number | null;
   idFiliais?: string[];
-  month: number;
-  year: number;
+  dtIni: string;
+  dtFim: string;
 }
 
 export default function ManagerCommissionGrid({
   idEmpresa,
   idFilial,
   idFiliais,
-  month,
-  year,
+  dtIni,
+  dtFim,
 }: Props) {
   const [rows, setRows] = useState<RowState[]>([]);
   const [loading, setLoading] = useState(false);
@@ -132,8 +132,8 @@ export default function ManagerCommissionGrid({
     (async () => {
       try {
         const params = new URLSearchParams();
-        params.set("month", String(month));
-        params.set("year", String(year));
+        params.set("dt_ini", dtIni);
+        params.set("dt_fim", dtFim);
         if (idEmpresa) params.set("id_empresa", String(idEmpresa));
         if (!idFilial && multi.length > 0) {
           for (const f of multi) params.append("id_filiais", String(f));
@@ -170,7 +170,7 @@ export default function ManagerCommissionGrid({
       }
     })();
     return () => ac.abort();
-  }, [idEmpresa, idFilial, multiKey, month, year]);
+  }, [idEmpresa, idFilial, multiKey, dtIni, dtFim]);
 
   const sortedRows = useMemo(
     () =>
@@ -240,8 +240,8 @@ export default function ManagerCommissionGrid({
     setDrilldownLoading(fid);
     try {
       const params = new URLSearchParams();
-      params.set("month", String(month));
-      params.set("year", String(year));
+      params.set("dt_ini", dtIni);
+      params.set("dt_fim", dtFim);
       params.set("id_filial", String(fid));
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
       const resp = await apiGet(`/bi/team/manager-commissions/drilldown?${params.toString()}`, {
@@ -264,8 +264,8 @@ export default function ManagerCommissionGrid({
       const resp = await apiPut("/bi/team/manager-commissions/overrides", {
         id_empresa: row.id_empresa,
         id_filial: row.id_filial,
-        year,
-        month,
+        dt_ini: dtIni,
+        dt_fim: dtFim,
         fields: {
           rate_pct: row.rate_pct,
           perdas_estoque: row.perdas_estoque,
@@ -297,8 +297,8 @@ export default function ManagerCommissionGrid({
             setDrilldownLoading(mapped.id_filial);
             try {
               const params = new URLSearchParams();
-              params.set("month", String(month));
-              params.set("year", String(year));
+              params.set("dt_ini", dtIni);
+              params.set("dt_fim", dtFim);
               params.set("id_filial", String(mapped.id_filial));
               if (idEmpresa) params.set("id_empresa", String(idEmpresa));
               const detail = await apiGet(

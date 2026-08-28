@@ -23,29 +23,12 @@ import CommissionsTab from './CommissionsTab';
 import CommissionConfigTab from './CommissionConfigTab';
 import ManagerCommissionConfigPanel from './ManagerCommissionConfigPanel';
 import ManagerCommissionGrid from './ManagerCommissionGrid';
-import MonthYearSelect from '../components/ui/MonthYearSelect';
-import { clampAnoMes, currentAnoMesSP, splitAnoMes } from '../lib/month-year.mjs';
-
-const COMMISSION_MONTH_KEY = 'torqmind.goals.commissionAnoMes';
-
-function readCommissionAnoMes() {
-  if (typeof window === 'undefined') return currentAnoMesSP();
-  try {
-    const raw = sessionStorage.getItem(COMMISSION_MONTH_KEY);
-    if (raw == null || raw === '') return currentAnoMesSP();
-    return clampAnoMes(Number(raw));
-  } catch {
-    return currentAnoMesSP();
-  }
-}
-
-function persistCommissionAnoMes(anoMes: number) {
-  try {
-    sessionStorage.setItem(COMMISSION_MONTH_KEY, String(anoMes));
-  } catch {
-    /* private mode / quota */
-  }
-}
+import CommissionPeriodRange from './CommissionPeriodRange';
+import {
+  persistCommissionPeriodSession,
+  readCommissionPeriodSession,
+  validateCommissionPeriod,
+} from '../lib/commission-period.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -104,11 +87,11 @@ export default function GoalsPage() {
   const [activeTab, setActiveTab] = useState<GoalsTab>(
     () => parseGoalsTab(searchParams.get('tab')) || 'metas',
   );
-  const [commissionAnoMes, setCommissionAnoMes] = useState(readCommissionAnoMes);
-  const onCommissionAnoMesChange = (anoMes: number) => {
-    const next = clampAnoMes(anoMes);
-    persistCommissionAnoMes(next);
-    setCommissionAnoMes(next);
+  const [commissionPeriod, setCommissionPeriod] = useState(readCommissionPeriodSession);
+  const onCommissionPeriodChange = (next: { dt_ini: string; dt_fim: string }) => {
+    if (validateCommissionPeriod(next.dt_ini, next.dt_fim)) return;
+    persistCommissionPeriodSession(next);
+    setCommissionPeriod(next);
   };
 
   useEffect(() => {
@@ -138,7 +121,6 @@ export default function GoalsPage() {
     ? activeTab
     : (allowedTabs[0] || 'metas');
   const isCommissionArea = effectiveTab !== 'metas';
-  const commissionPeriod = splitAnoMes(commissionAnoMes);
 
   const selectTab = (tab: GoalsTab) => {
     setActiveTab(tab);
@@ -257,14 +239,11 @@ export default function GoalsPage() {
                 </button>
               ))}
             </div>
-            <div className="profitScopeToggles" role="group" aria-label="Mês das comissões">
-              <MonthYearSelect
-                value={commissionAnoMes}
-                onChange={onCommissionAnoMesChange}
-                title="Mês de competência das comissões"
-                aria-label="Mês das comissões"
-              />
-            </div>
+            <CommissionPeriodRange
+              dtIni={commissionPeriod.dt_ini}
+              dtFim={commissionPeriod.dt_fim}
+              onChange={onCommissionPeriodChange}
+            />
           </div>
         ) : null}
 
@@ -273,7 +252,8 @@ export default function GoalsPage() {
             idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
             idFilial={singleBranchId ? Number(singleBranchId) : null}
             idFiliais={scope.id_filiais || []}
-            anoMes={commissionAnoMes}
+            dtIni={commissionPeriod.dt_ini}
+            dtFim={commissionPeriod.dt_fim}
           />
         )}
         {effectiveTab === 'gerente' && (
@@ -282,8 +262,8 @@ export default function GoalsPage() {
               idEmpresa={scope.id_empresa ? Number(scope.id_empresa) : null}
               idFilial={singleBranchId ? Number(singleBranchId) : null}
               idFiliais={scope.id_filiais || []}
-              month={commissionPeriod.month}
-              year={commissionPeriod.year}
+              dtIni={commissionPeriod.dt_ini}
+              dtFim={commissionPeriod.dt_fim}
             />
           </div>
         )}

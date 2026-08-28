@@ -299,26 +299,26 @@ def save_rule_config(
 
 
 def get_period_override(
-    id_empresa: int, id_filial: int, year: int, month: int
+    id_empresa: int, id_filial: int, dt_ini: date, dt_fim: date
 ) -> Optional[Dict[str, Any]]:
     sql = """
-      SELECT id_empresa, id_filial, year, month, rate_pct,
+      SELECT id_empresa, id_filial, dt_ini, dt_fim, year, month, rate_pct,
              perdas_estoque, sobras_estoque, sobras_caixa, furos_caixa,
              updated_at, updated_by
       FROM app.manager_commission_period_override
-      WHERE id_empresa = %s AND id_filial = %s AND year = %s AND month = %s
+      WHERE id_empresa = %s AND id_filial = %s AND dt_ini = %s AND dt_fim = %s
       LIMIT 1
     """
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        row = conn.execute(sql, [id_empresa, id_filial, year, month]).fetchone()
+        row = conn.execute(sql, [id_empresa, id_filial, dt_ini, dt_fim]).fetchone()
     return dict(row) if row else None
 
 
 def upsert_period_override(
     id_empresa: int,
     id_filial: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     fields: Dict[str, Any],
     updated_by: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -331,25 +331,39 @@ def upsert_period_override(
     )
     payload = {k: fields.get(k) for k in allowed if k in fields}
     if not payload:
-        existing = get_period_override(id_empresa, id_filial, year, month)
+        existing = get_period_override(id_empresa, id_filial, dt_ini, dt_fim)
         return existing or {}
 
-    cols = ["id_empresa", "id_filial", "year", "month"] + list(payload.keys()) + ["updated_at", "updated_by"]
-    values = [id_empresa, id_filial, year, month] + [payload[k] for k in payload] + ["now()", updated_by]
-    # Build SQL carefully
-    placeholders = ["%s", "%s", "%s", "%s"] + ["%s"] * len(payload) + ["now()", "%s"]
-    value_params = [id_empresa, id_filial, year, month] + [payload[k] for k in payload] + [updated_by]
+    year = int(dt_fim.year)
+    month = int(dt_fim.month)
+    cols = [
+        "id_empresa",
+        "id_filial",
+        "dt_ini",
+        "dt_fim",
+        "year",
+        "month",
+    ] + list(payload.keys()) + ["updated_at", "updated_by"]
+    placeholders = ["%s", "%s", "%s", "%s", "%s", "%s"] + ["%s"] * len(payload) + ["now()", "%s"]
+    value_params = [
+        id_empresa,
+        id_filial,
+        dt_ini,
+        dt_fim,
+        year,
+        month,
+    ] + [payload[k] for k in payload] + [updated_by]
 
     set_clause = ", ".join(f"{k} = EXCLUDED.{k}" for k in payload.keys())
-    set_clause += ", updated_at = now(), updated_by = EXCLUDED.updated_by"
+    set_clause += ", updated_at = now(), updated_by = EXCLUDED.updated_by, year = EXCLUDED.year, month = EXCLUDED.month"
 
     sql = f"""
       INSERT INTO app.manager_commission_period_override
         ({", ".join(cols)})
       VALUES ({", ".join(placeholders)})
-      ON CONFLICT (id_empresa, id_filial, year, month) DO UPDATE
+      ON CONFLICT (id_empresa, id_filial, dt_ini, dt_fim) DO UPDATE
         SET {set_clause}
-      RETURNING id_empresa, id_filial, year, month, rate_pct,
+      RETURNING id_empresa, id_filial, dt_ini, dt_fim, year, month, rate_pct,
                 perdas_estoque, sobras_estoque, sobras_caixa, furos_caixa,
                 updated_at, updated_by
     """
@@ -363,17 +377,15 @@ def _sum_metric_from_slim(
     *,
     id_empresa: int,
     id_filial: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     group_ids: Sequence[int],
     cfops: Optional[Sequence[int]] = None,
     cfop_exclude: Optional[Sequence[int]] = None,
 ) -> float:
     if not group_ids:
         return 0.0
-    dt_ini, dt_fim = _month_bounds(year, month)
-    ini = _date_key(dt_ini)
-    fim = _date_key(dt_fim)
+    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
     # ClickHouse array parameter via string list — keep IDs int-safe
     group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
     if not group_list:
@@ -429,8 +441,8 @@ def _sales_groups_breakdown(
     *,
     id_empresa: int,
     id_filial: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     sales_groups: Sequence[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Totais por grupo da base de venda (mesmos filtros do KPI)."""
@@ -452,7 +464,6 @@ def _sales_groups_breakdown(
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
     group_expr = _sales_group_id_sql("i", "p")
-    dt_ini, dt_fim = _month_bounds(year, month)
     rows = query_dict(
         f"""
         SELECT
@@ -488,8 +499,8 @@ def _loss_notes_breakdown(
     *,
     id_empresa: int,
     id_filial: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     loss_groups: Sequence[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Notas de perda (CFOP 5927) nos grupos configurados — DOCUMENTO = NF."""
@@ -504,7 +515,6 @@ def _loss_notes_breakdown(
         return []
     group_list = ", ".join(str(g) for g in group_ids)
     group_expr = _loss_group_id_sql("i", "p")
-    dt_ini, dt_fim = _month_bounds(year, month)
     rows = query_dict(
         f"""
         SELECT
@@ -582,14 +592,14 @@ def _loss_notes_breakdown(
 def calc_branch_drilldown(
     id_empresa: int,
     id_filial: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     *,
     filial_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Detalhe operacional da linha de comissão de gerente (grupos + notas de perda)."""
     summary = calc_branch_row(
-        id_empresa, id_filial, year, month, filial_label=filial_label, publish=False
+        id_empresa, id_filial, dt_ini, dt_fim, filial_label=filial_label, publish=False
     )
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
@@ -598,15 +608,15 @@ def calc_branch_drilldown(
     groups = _sales_groups_breakdown(
         id_empresa=id_empresa,
         id_filial=id_filial,
-        year=year,
-        month=month,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
         sales_groups=sales_groups,
     )
     notes = _loss_notes_breakdown(
         id_empresa=id_empresa,
         id_filial=id_filial,
-        year=year,
-        month=month,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
         loss_groups=loss_groups,
     )
     grupos_total = round(sum(float(g["valor"]) for g in groups), 2)
@@ -616,8 +626,8 @@ def calc_branch_drilldown(
         "id_empresa": id_empresa,
         "id_filial": id_filial,
         "filial_label": summary.get("filial_label") or filial_label or f"Filial {id_filial}",
-        "year": year,
-        "month": month,
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
         "venda_bruta_total": round(float(summary.get("venda_bruta_total") or 0), 2),
         "grupos": groups,
         "grupos_total": grupos_total,
@@ -756,8 +766,8 @@ def _sum_from_mart(
 def calc_branch_row(
     id_empresa: int,
     id_filial: int,
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
     *,
     filial_label: Optional[str] = None,
     publish: bool = False,
@@ -777,7 +787,7 @@ def calc_branch_row(
 
     if publish:
         try:
-            publish_manager_commission_month(id_empresa, id_filial, year, month)
+            publish_manager_commission_month(id_empresa, id_filial, dt_fim.year, dt_fim.month)
         except Exception as exc:
             logger.warning("publish_manager_commission_month failed: %s", str(exc)[:200])
 
@@ -785,8 +795,8 @@ def calc_branch_row(
     venda = _sum_metric_from_slim(
         id_empresa=id_empresa,
         id_filial=id_filial,
-        year=year,
-        month=month,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
         group_ids=sales_ids,
         cfop_exclude=SALES_EXCLUDED_CFOPS,
     )
@@ -794,8 +804,8 @@ def calc_branch_row(
     perdas_default = _sum_metric_from_slim(
         id_empresa=id_empresa,
         id_filial=id_filial,
-        year=year,
-        month=month,
+        dt_ini=dt_ini,
+        dt_fim=dt_fim,
         group_ids=loss_ids,
         cfops=(STOCK_LOSS_CFOP,),
     )
@@ -806,7 +816,7 @@ def calc_branch_row(
     furos_caixa_default = 0.0
 
     rate_default = float(config.get("default_rate_pct") or DEFAULT_RATE_PCT)
-    override = get_period_override(id_empresa, id_filial, year, month) or {}
+    override = get_period_override(id_empresa, id_filial, dt_ini, dt_fim) or {}
 
     def _coalesce_num(key: str, default: float) -> float:
         if key in override and override.get(key) is not None:
@@ -832,8 +842,8 @@ def calc_branch_row(
         "id_empresa": id_empresa,
         "id_filial": id_filial,
         "filial_label": filial_label or f"Filial {id_filial}",
-        "year": year,
-        "month": month,
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
         "venda_bruta_total": round(float(venda), 2),
         "rate_pct": rate,
         "rate_pct_default": rate_default,

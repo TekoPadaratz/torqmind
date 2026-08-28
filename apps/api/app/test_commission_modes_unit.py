@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import date
 from unittest.mock import patch
 
 from app import repos_commission
@@ -81,6 +82,9 @@ def _sales_rows():
     ]
 
 
+_PERIOD = (date(2026, 6, 1), date(2026, 6, 30))
+
+
 @contextmanager
 def _patched_calc(default_mode: str = "team_total"):
     """Patch the DB-backed helpers used by calculate_commission_results."""
@@ -96,7 +100,9 @@ def _patched_calc(default_mode: str = "team_total"):
 
 def test_individual_sales_mode_uses_per_employee_tier():
     with _patched_calc():
-        res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "individual_sales")
+        res = repos_commission.calculate_commission_results(
+            1, 14122, _PERIOD[0], _PERIOD[1], "individual_sales"
+        )
     assert res["payment_mode"] == "individual_sales"
     # Cada um ≥50 e <110 → bronze 2%: 40000*2% + 30000*2% = 800 + 600
     assert res["comissao_total"] == 1400.00
@@ -110,7 +116,9 @@ def test_individual_sales_mode_uses_per_employee_tier():
 
 def test_team_total_mode_uses_team_tier_and_proportional_split():
     with _patched_calc():
-        res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "team_total")
+        res = repos_commission.calculate_commission_results(
+            1, 14122, _PERIOD[0], _PERIOD[1], "team_total"
+        )
     assert res["payment_mode"] == "team_total"
     # qtd 120 → prata 3% sobre R$ 70.000 = 2.100
     assert res["comissao_total"] == 2100.00
@@ -124,7 +132,9 @@ def test_team_total_mode_uses_team_tier_and_proportional_split():
 
 def test_equal_split_mode_divides_team_commission_equally():
     with _patched_calc():
-        res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "equal_split")
+        res = repos_commission.calculate_commission_results(
+            1, 14122, _PERIOD[0], _PERIOD[1], "equal_split"
+        )
     assert res["payment_mode"] == "equal_split"
     assert res["comissao_total"] == 2100.00
     by_id = {e["id_funcionario"]: e for e in res["vendedores"]}
@@ -135,7 +145,9 @@ def test_equal_split_mode_divides_team_commission_equally():
 
 def test_invalid_payment_mode_falls_back_to_config_default():
     with _patched_calc(default_mode="equal_split"):
-        res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "bogus_mode")
+        res = repos_commission.calculate_commission_results(
+            1, 14122, _PERIOD[0], _PERIOD[1], "bogus_mode"
+        )
     assert res["payment_mode"] == "equal_split"
 
 
@@ -178,7 +190,9 @@ def test_excluded_funcionario_removed_from_commission_calc():
          patch.object(repos_commission, "get_excluded_funcionario_ids", return_value={2}), \
          patch.object(repos_commission, "_filial_labels", return_value={14122: "VR 05"}), \
          patch.object(repos_commission, "_query_eligible_sales_ch", return_value=_sales_rows()):
-        res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "individual_sales")
+        res = repos_commission.calculate_commission_results(
+            1, 14122, _PERIOD[0], _PERIOD[1], "individual_sales"
+        )
     assert len(res["vendedores"]) == 1
     assert res["vendedores"][0]["id_funcionario"] == 1
     assert res["comissao_total"] == 800.00

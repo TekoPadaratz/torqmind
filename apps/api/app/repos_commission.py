@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from datetime import date
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.commission_period import data_key_bounds_half_open
 from app.db import get_conn
 from app.db_clickhouse import query_dict
 
@@ -44,15 +46,6 @@ def _situacao_excluidas_sql() -> str:
     return ",".join(str(int(s)) for s in COMMISSION_EXCLUDED_SITUACOES)
 
 
-def _month_data_key_bounds(year: int, month: int) -> tuple[int, int]:
-    start = int(year) * 10000 + int(month) * 100 + 1
-    if int(month) >= 12:
-        end = (int(year) + 1) * 10000 + 100 + 1
-    else:
-        end = int(year) * 10000 + (int(month) + 1) * 100 + 1
-    return start, end
-
-
 def _active_sale_sql(alias: str = "v") -> str:
     """Venda ativa: não cancelada, não ignorada (3), não devolução (14)."""
     return (
@@ -65,8 +58,8 @@ def _active_sale_sql(alias: str = "v") -> str:
 def _query_eligible_sales_ch(
     id_empresa: int,
     id_filiais: Sequence[int],
-    year: int,
-    month: int,
+    dt_ini: date,
+    dt_fim: date,
 ) -> List[Dict[str, Any]]:
     """Agrega vendas elegíveis no ClickHouse slim (fonte BI canônica).
 
@@ -76,7 +69,7 @@ def _query_eligible_sales_ch(
     targets = sorted({int(f) for f in id_filiais if int(f) > 0})
     if not targets:
         return []
-    dk_ini, dk_fim = _month_data_key_bounds(year, month)
+    dk_ini, dk_fim = data_key_bounds_half_open(dt_ini, dt_fim)
     filial_list = ", ".join(str(f) for f in targets)
     situacao_list = _situacao_excluidas_sql()
     cfop_pred = _cfop_sales_predicate_sql("i")
@@ -769,8 +762,8 @@ def _filial_labels(id_empresa: int, id_filiais: Sequence[int]) -> Dict[int, str]
 def calculate_commission_results_multi(
     id_empresa: int,
     id_filiais: Sequence[int],
-    month: int,
-    year: int,
+    dt_ini: date,
+    dt_fim: date,
     payment_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Calculate employee commissions for one or many branches.
@@ -782,7 +775,7 @@ def calculate_commission_results_multi(
     """
     targets = sorted({int(f) for f in id_filiais if int(f) > 0})
     if not targets:
-        return _empty_results(month, year, 0, reason="no_config")
+        return _empty_results(dt_ini, dt_fim, 0, reason="no_config")
 
     labels = _filial_labels(id_empresa, targets)
     valid_modes = ("team_total", "equal_split", "individual_sales")
@@ -790,9 +783,14 @@ def calculate_commission_results_multi(
 
     # Uma leitura CH para todas as filiais do escopo (evita N× scan em fact_* PG).
     try:
-        raw_sales = _query_eligible_sales_ch(id_empresa, targets, year, month)
+        raw_sales = _query_eligible_sales_ch(id_empresa, targets, dt_ini, dt_fim)
     except Exception as exc:
-        logger.exception("commission CH sales failed empresa=%s mes=%s/%s", id_empresa, month, year)
+        logger.exception(
+            "commission CH sales failed empresa=%s period=%s..%s",
+            id_empresa,
+            dt_ini.isoformat(),
+            dt_fim.isoformat(),
+        )
         raise RuntimeError(f"Falha ao consultar vendas elegíveis no analytics: {exc}") from exc
     sales_by_filial: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for row in raw_sales:
@@ -815,8 +813,8 @@ def calculate_commission_results_multi(
         branch = calculate_commission_results(
             id_empresa,
             fid,
-            month,
-            year,
+            dt_ini,
+            dt_fim,
             mode,
             sales_rows=sales_by_filial.get(fid, []),
             include_manager=False,
@@ -850,8 +848,8 @@ def calculate_commission_results_multi(
     single = len(targets) == 1
     primary = branch_results[0] if branch_results else {}
     return {
-        "month": month,
-        "year": year,
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
         "id_filial": targets[0] if single else None,
         "id_filiais": targets,
         "multi_filial": not single,
@@ -891,21 +889,21 @@ def calculate_commission_results_multi(
 def calculate_commission_results(
     id_empresa: int,
     id_filial: int,
-    month: int,
-    year: int,
+    dt_ini: date,
+    dt_fim: date,
     payment_mode: str = "individual_sales",
     *,
     sales_rows: Optional[Sequence[Dict[str, Any]]] = None,
     include_manager: bool = False,
 ) -> Dict[str, Any]:
-    """Calculate commission results for a month/year using individual commission rules.
+    """Calculate commission results for a date range using individual commission rules.
 
     ``sales_rows``: pré-leitura CH (grão produto) para reuso no multi-filial.
     ``include_manager``: legado; endpoint de vendedores não usa gerente (há rota própria).
     """
     config = get_config(id_empresa, id_filial)
     if not config:
-        return _empty_results(month, year, id_filial, reason="no_config")
+        return _empty_results(dt_ini, dt_fim, id_filial, reason="no_config")
 
     config_id = config["id"]
     groups = get_config_groups(config_id)
@@ -919,7 +917,7 @@ def calculate_commission_results(
         effective_mode = "individual_sales"
 
     if not groups:
-        return _empty_results(month, year, id_filial, reason="no_groups", payment_mode=effective_mode)
+        return _empty_results(dt_ini, dt_fim, id_filial, reason="no_groups", payment_mode=effective_mode)
 
     group_ids = [g["id_grupo_produto"] for g in groups]
     exclude_ids = [int(p["id_produto"]) for p in excludes if int(p.get("id_produto") or 0) > 0]
@@ -927,14 +925,14 @@ def calculate_commission_results(
 
     if sales_rows is None:
         try:
-            sales_rows = _query_eligible_sales_ch(id_empresa, [id_filial], year, month)
+            sales_rows = _query_eligible_sales_ch(id_empresa, [id_filial], dt_ini, dt_fim)
         except Exception as exc:
             logger.exception(
-                "commission CH sales failed empresa=%s filial=%s mes=%s/%s",
+                "commission CH sales failed empresa=%s filial=%s period=%s..%s",
                 id_empresa,
                 id_filial,
-                month,
-                year,
+                dt_ini.isoformat(),
+                dt_fim.isoformat(),
             )
             raise RuntimeError(f"Falha ao consultar vendas elegíveis no analytics: {exc}") from exc
 
@@ -949,7 +947,7 @@ def calculate_commission_results(
     manager_commission_gross = 0.0
 
     if include_manager:
-        dk_ini, dk_fim = _month_data_key_bounds(year, month)
+        dk_ini, dk_fim = data_key_bounds_half_open(dt_ini, dt_fim)
         manager_sql = f"""
           SELECT
             COALESCE(SUM(i.total), 0)::numeric(18,2) AS venda_total_sem_combustiveis,
@@ -985,8 +983,8 @@ def calculate_commission_results(
 
     if not rows:
         return _empty_results(
-            month,
-            year,
+            dt_ini,
+            dt_fim,
             id_filial,
             reason="no_sales",
             payment_mode=effective_mode,
@@ -1083,8 +1081,8 @@ def calculate_commission_results(
         g["filial_label"] = filial_label
 
     return {
-        "month": month,
-        "year": year,
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
         "id_filial": id_filial,
         "id_filiais": [id_filial],
         "multi_filial": False,
@@ -1124,8 +1122,8 @@ def calculate_commission_results(
 
 
 def _empty_results(
-    month: int,
-    year: int,
+    dt_ini: date,
+    dt_fim: date,
     id_filial: int,
     reason: str = "no_config",
     payment_mode: str = "individual_sales",
@@ -1137,11 +1135,11 @@ def _empty_results(
     messages = {
         "no_config": "Nenhuma configuração de comissão encontrada para esta filial.",
         "no_groups": "Nenhum grupo configurado para comissão nesta filial. Acesse Configuração para selecionar os grupos participantes.",
-        "no_sales": "Não há vendas elegíveis para o mês selecionado.",
+        "no_sales": "Não há vendas elegíveis para o período selecionado.",
     }
     return {
-        "month": month,
-        "year": year,
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
         "id_filial": id_filial,
         "payment_mode": payment_mode,
         "venda_elegivel": 0,

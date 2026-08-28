@@ -6,7 +6,7 @@ import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
-import { splitAnoMes } from "../lib/month-year.mjs";
+import { formatCommissionPeriodLabel } from "../lib/commission-period.mjs";
 
 const TIER_STYLES: Record<
   string,
@@ -97,7 +97,8 @@ interface CommissionsTabProps {
   idEmpresa: number | null;
   idFilial: number | null;
   idFiliais?: string[];
-  anoMes: number;
+  dtIni: string;
+  dtFim: string;
 }
 
 function escapeHtml(value: string | number | null | undefined): string {
@@ -232,9 +233,9 @@ export default function CommissionsTab({
   idEmpresa,
   idFilial,
   idFiliais,
-  anoMes,
+  dtIni,
+  dtFim,
 }: CommissionsTabProps) {
-  const { year: selectedYear, month: selectedMonth } = splitAnoMes(anoMes);
   const [paymentMode, setPaymentMode] = useState<string>("");
   /** Vazio = todos os níveis (mesmo padrão de Prioridades de cobrança). */
   const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set());
@@ -269,8 +270,8 @@ export default function CommissionsTab({
 
     const params = new URLSearchParams();
     if (idEmpresa) params.set("id_empresa", String(idEmpresa));
-    params.set("month", String(selectedMonth));
-    params.set("year", String(selectedYear));
+    params.set("dt_ini", dtIni);
+    params.set("dt_fim", dtFim);
     if (isMulti || (!idFilial && multiFiliais.length > 0)) {
       for (const f of multiFiliais) params.append("id_filiais", String(f));
     } else if (idFilial) {
@@ -298,7 +299,7 @@ export default function CommissionsTab({
 
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, selectedMonth, selectedYear, paymentMode]);
+  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, dtIni, dtFim, paymentMode]);
 
   useEffect(() => {
     if (!idFilial && multiFiliais.length === 0) {
@@ -310,8 +311,8 @@ export default function CommissionsTab({
     setDiscountError("");
     const params = new URLSearchParams();
     if (idEmpresa) params.set("id_empresa", String(idEmpresa));
-    params.set("month", String(selectedMonth));
-    params.set("year", String(selectedYear));
+    params.set("dt_ini", dtIni);
+    params.set("dt_fim", dtFim);
     if (isMulti || (!idFilial && multiFiliais.length > 0)) {
       for (const f of multiFiliais) params.append("id_filiais", String(f));
     } else if (idFilial) {
@@ -335,7 +336,7 @@ export default function CommissionsTab({
     })();
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, selectedMonth, selectedYear]);
+  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, dtIni, dtFim]);
 
   const sellers = useMemo(
     () => ((data?.vendedores || []) as SellerRow[]),
@@ -441,7 +442,7 @@ export default function CommissionsTab({
     const html = buildCommissionsReportHtml({
       empresaLabel: idEmpresa ? `Empresa ${idEmpresa}` : "—",
       filiaisLabel: filialGroups.map((g) => g.label).join(", ") || "—",
-      periodoLabel: `${String(selectedMonth).padStart(2, "0")}/${selectedYear}`,
+      periodoLabel: formatCommissionPeriodLabel(dtIni, dtFim),
       modoLabel,
       niveisLabel,
       groups: filialGroups.map((g) => ({
