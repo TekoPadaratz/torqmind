@@ -115,6 +115,7 @@ function buildCommissionsReportHtml(opts: {
   periodoLabel: string;
   modoLabel: string;
   niveisLabel: string;
+  includeValues: boolean;
   groups: Array<{
     label: string;
     sellers: SellerRow[];
@@ -123,6 +124,7 @@ function buildCommissionsReportHtml(opts: {
   totalGeral: number;
 }): string {
   const printedAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const includeValues = opts.includeValues;
   const sections = opts.groups
     .map((g) => {
       const rows = g.sellers
@@ -130,6 +132,13 @@ function buildCommissionsReportHtml(opts: {
           const qty = Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
             maximumFractionDigits: 0,
           });
+          if (!includeValues) {
+            return `<tr>
+            <td>${escapeHtml(emp.nome_vendedor || "—")}</td>
+            <td>${escapeHtml(sellerTierLabel(emp))}</td>
+            <td class="num">${escapeHtml(qty)}</td>
+          </tr>`;
+          }
           return `<tr>
             <td>${escapeHtml(emp.nome_vendedor || "—")}</td>
             <td>${escapeHtml(sellerTierLabel(emp))}</td>
@@ -146,21 +155,22 @@ function buildCommissionsReportHtml(opts: {
       const vendaTot = formatCurrency(
         g.sellers.reduce((acc, emp) => acc + Number(emp.venda_elegivel || 0), 0),
       );
-      return `<section class="filial">
-        <h2>${escapeHtml(g.label)}</h2>
-        <table>
-          <thead>
-            <tr>
+      const head = includeValues
+        ? `<tr>
               <th>Vendedor</th>
               <th>Nível</th>
               <th class="num">Quantidade</th>
               <th class="num">Venda elegível</th>
               <th class="num">Percentual</th>
               <th class="num">Comissão</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-          <tfoot>
+            </tr>`
+        : `<tr>
+              <th>Vendedor</th>
+              <th>Nível</th>
+              <th class="num">Quantidade</th>
+            </tr>`;
+      const foot = includeValues
+        ? `<tfoot>
             <tr>
               <td colspan="2"><strong>Total filial</strong></td>
               <td class="num"><strong>${escapeHtml(qtyTot)}</strong></td>
@@ -168,11 +178,21 @@ function buildCommissionsReportHtml(opts: {
               <td class="num">—</td>
               <td class="num"><strong>${escapeHtml(formatCurrency(g.total))}</strong></td>
             </tr>
-          </tfoot>
+          </tfoot>`
+        : "";
+      return `<section class="filial">
+        <h2>${escapeHtml(g.label)}</h2>
+        <table>
+          <thead>${head}</thead>
+          <tbody>${rows}</tbody>
+          ${foot}
         </table>
       </section>`;
     })
     .join("\n");
+  const totalBlock = includeValues
+    ? `<div class="total-geral">Total geral: ${escapeHtml(formatCurrency(opts.totalGeral))}</div>`
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -224,7 +244,7 @@ function buildCommissionsReportHtml(opts: {
     <div><strong>Gerado em:</strong> ${escapeHtml(printedAt)}</div>
   </div>
   ${sections}
-  <div class="total-geral">Total geral: ${escapeHtml(formatCurrency(opts.totalGeral))}</div>
+  ${totalBlock}
 </body>
 </html>`;
 }
@@ -237,6 +257,7 @@ export default function CommissionsTab({
   dtFim,
 }: CommissionsTabProps) {
   const [paymentMode, setPaymentMode] = useState<string>("");
+  const [printIncludeValues, setPrintIncludeValues] = useState(true);
   /** Vazio = todos os níveis (mesmo padrão de Prioridades de cobrança). */
   const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set());
 
@@ -445,6 +466,7 @@ export default function CommissionsTab({
       periodoLabel: formatCommissionPeriodLabel(dtIni, dtFim),
       modoLabel,
       niveisLabel,
+      includeValues: printIncludeValues,
       groups: filialGroups.map((g) => ({
         label: g.label,
         sellers: g.sellers,
@@ -539,6 +561,16 @@ export default function CommissionsTab({
                 </label>
               ) : null}
               <div className="commissionToolbarMeta">
+                <button
+                  type="button"
+                  className={`profitScopeToggle${printIncludeValues ? " on" : ""}`}
+                  aria-pressed={printIncludeValues}
+                  onClick={() => setPrintIncludeValues((v) => !v)}
+                  title="Incluir valores monetários na impressão"
+                >
+                  <span className="profitScopeToggleDot" aria-hidden />
+                  Imprimir valores?
+                </button>
                 <button
                   type="button"
                   className="btn"

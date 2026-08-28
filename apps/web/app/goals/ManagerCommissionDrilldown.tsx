@@ -40,7 +40,7 @@ type Props = {
 
 export default function ManagerCommissionDrilldown({ payload, loading }: Props) {
   const groups = useMemo(() => {
-    const list = [...(payload?.grupos || [])];
+    const list = (payload?.grupos || []).filter((g) => Math.abs(Number(g.valor || 0)) > 0.009);
     list.sort((a, b) => String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR"));
     return list;
   }, [payload]);
@@ -99,7 +99,7 @@ export default function ManagerCommissionDrilldown({ payload, loading }: Props) 
           <GridSearchInput value={groupQuery} onChange={setGroupQuery} />
         </div>
         {groupList.length === 0 ? (
-          <EmptyState title="Sem grupos" detail="Nenhum grupo nesta configuração." />
+          <EmptyState title="Sem grupos" detail="Nenhum grupo com valor no período." />
         ) : (
           <div className="tableScroll">
             <table className="table compact" style={{ width: "100%", minWidth: 360 }}>

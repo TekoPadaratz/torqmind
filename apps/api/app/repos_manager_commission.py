@@ -491,6 +491,7 @@ def _sales_groups_breakdown(
     by_id = {int(r["id_grupo_produto"]): round(float(r.get("valor") or 0), 2) for r in rows}
     for item in configured:
         item["valor"] = by_id.get(item["id_grupo_produto"], 0.0)
+    configured = [g for g in configured if abs(float(g.get("valor") or 0)) > 0.009]
     configured.sort(key=lambda r: (str(r["nome"] or "").casefold(), int(r["id_grupo_produto"])))
     return configured
 
