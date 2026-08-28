@@ -7,7 +7,12 @@ Uso (API container com ClickHouse):
   PYTHONPATH=apps/api python3 tools/report_sales_cfop_day_pdf.py \\
     --id-empresa 1 --id-filial 14458 --dia 2026-08-17 --out /tmp/cfop-vr01.pdf
 
+  # mês inteiro:
+  PYTHONPATH=apps/api python3 tools/report_sales_cfop_day_pdf.py \\
+    --id-empresa 1 --mes 2026-07 --out /tmp/cfop-jul2026.pdf
+
 Considerado = CFOP > 5000 excluindo 5927/5929/6929 (venda canônica TorqMind).
+Paridade com Vendas: commercial_eligible + espelho Central excluído.
 Não considerado = entrada, devolução, perda, transferência ou sem CFOP.
 """
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
+from calendar import monthrange
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -49,11 +55,31 @@ def _classify(cfop: int) -> Tuple[str, str]:
     return "nao_considerado", "outro"
 
 
-def _fetch_rows(id_empresa: int, id_filial: int | None, dia: date) -> List[Dict[str, Any]]:
+def _fetch_rows(
+    id_empresa: int,
+    id_filial: int | None,
+    *,
+    data_key: int | None = None,
+    data_key_from: int | None = None,
+    data_key_to: int | None = None,
+) -> List[Dict[str, Any]]:
     from app.db_clickhouse import query_dict
+    from app.sales_semantics import central_mirror_exclude_sql
 
     filial_sql = f"AND c.id_filial = {int(id_filial)}" if id_filial else ""
-    key = int(dia.strftime("%Y%m%d"))
+    mirror_sql = central_mirror_exclude_sql("c")
+    if data_key is not None:
+        date_sql = "AND c.data_key = {data_key:Int32}"
+        params: Dict[str, Any] = {"id_empresa": int(id_empresa), "data_key": int(data_key)}
+    else:
+        date_sql = (
+            "AND c.data_key >= {data_key_from:Int32} AND c.data_key <= {data_key_to:Int32}"
+        )
+        params = {
+            "id_empresa": int(id_empresa),
+            "data_key_from": int(data_key_from),
+            "data_key_to": int(data_key_to),
+        }
     return query_dict(
         f"""
         SELECT
@@ -66,15 +92,47 @@ def _fetch_rows(id_empresa: int, id_filial: int | None, dia: date) -> List[Dict[
           ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
          AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
         WHERE c.id_empresa = {{id_empresa:Int32}}
-          AND c.data_key = {{data_key:Int32}}
+          {date_sql}
           AND c.is_deleted = 0 AND i.is_deleted = 0
           AND c.commercial_eligible = 1
+          AND {mirror_sql}
           {filial_sql}
         GROUP BY cfop
         ORDER BY valor DESC
         """,
-        {"id_empresa": int(id_empresa), "data_key": key},
+        params,
     )
+
+
+def _fetch_mart_parity(
+    id_empresa: int,
+    id_filial: int | None,
+    *,
+    data_key: int | None = None,
+    data_key_from: int | None = None,
+    data_key_to: int | None = None,
+) -> Tuple[float, int]:
+    from app.db_clickhouse import query_dict
+
+    filial_sql = f"AND id_filial = {int(id_filial)}" if id_filial else ""
+    if data_key is not None:
+        date_sql = f"AND data_key = {int(data_key)}"
+    else:
+        date_sql = f"AND data_key BETWEEN {int(data_key_from)} AND {int(data_key_to)}"
+    rows = query_dict(
+        f"""
+        SELECT round(sum(faturamento), 2) AS valor, sum(qtd_vendas) AS qtd_docs
+        FROM torqmind_mart_rt.sales_daily_rt FINAL
+        WHERE id_empresa = {int(id_empresa)} {date_sql} {filial_sql}
+        """
+    )
+    row = rows[0] if rows else {}
+    return float(row.get("valor") or 0), int(row.get("qtd_docs") or 0)
+
+
+def _month_keys(year: int, month: int) -> Tuple[int, int]:
+    last = monthrange(year, month)[1]
+    return year * 10000 + month * 100 + 1, year * 10000 + month * 100 + last
 
 
 def _pdf_escape(text: str) -> str:
@@ -132,17 +190,19 @@ def build_pdf(
     *,
     id_empresa: int,
     id_filial: int | None,
-    dia: date,
+    periodo_label: str,
     rows: List[Dict[str, Any]],
     out_path: Path,
+    mart_parity: Tuple[float, int] | None = None,
 ) -> Path:
     filial_lbl = f"filial {id_filial}" if id_filial else "todas as filiais"
     lines: List[str] = [
-        "TorqMind - CFOPs do dia (Considerado x Nao considerado)",
-        f"Empresa {id_empresa} | {filial_lbl} | dia {dia.strftime('%d/%m/%Y')}",
+        "TorqMind - CFOPs (Considerado x Nao considerado)",
+        f"Empresa {id_empresa} | {filial_lbl} | {periodo_label}",
         f"Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}",
         "",
         "Considerado = CFOP > 5000 sem 5927/5929/6929 (venda canonica).",
+        "Espelho Central excluido (paridade card Vendas / sales_daily_rt).",
         "Nao considerado = entrada, devolucao, perda, transferencia ou sem CFOP.",
         "",
         f"{'CFOP':<8}{'Classe':<22}{'Status':<18}{'Docs':>6}{'Itens':>8}{'Valor':>16}",
@@ -163,6 +223,11 @@ def build_pdf(
     lines.append("-" * 78)
     lines.append(f"TOTAL CONSIDERADO:     {_money(buckets['considerado'])}")
     lines.append(f"TOTAL NAO CONSIDERADO: {_money(buckets['nao_considerado'])}")
+    if mart_parity is not None:
+        mart_val, mart_docs = mart_parity
+        lines.append(
+            f"PARIDADE VENDAS (mart): {_money(mart_val)} | {mart_docs} comprovante(s)"
+        )
     out_path.write_bytes(_build_pdf_bytes(lines))
     # Também grava .txt ao lado para auditoria rápida
     out_path.with_suffix(".txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -173,21 +238,61 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--id-empresa", type=int, default=1)
     ap.add_argument("--id-filial", type=int, default=None)
-    ap.add_argument("--dia", required=True, help="YYYY-MM-DD")
+    ap.add_argument("--dia", default=None, help="YYYY-MM-DD (um dia)")
+    ap.add_argument("--mes", default=None, help="YYYY-MM (mês inteiro)")
     ap.add_argument("--out", default=None, help="Caminho do PDF")
     args = ap.parse_args()
-    dia = _parse_day(args.dia)
+    if not args.dia and not args.mes:
+        ap.error("Informe --dia ou --mes")
+    if args.dia and args.mes:
+        ap.error("Use apenas um: --dia ou --mes")
+
+    period_slug = ""
+    periodo_label = ""
+    if args.mes:
+        year, month = map(int, args.mes.split("-"))
+        key_from, key_to = _month_keys(year, month)
+        period_slug = f"{year:04d}-{month:02d}"
+        periodo_label = f"mes {month:02d}/{year}"
+        rows = _fetch_rows(
+            args.id_empresa,
+            args.id_filial,
+            data_key_from=key_from,
+            data_key_to=key_to,
+        )
+        mart_parity = _fetch_mart_parity(
+            args.id_empresa,
+            args.id_filial,
+            data_key_from=key_from,
+            data_key_to=key_to,
+        )
+    else:
+        dia = _parse_day(args.dia)
+        period_slug = dia.isoformat()
+        periodo_label = f"dia {dia.strftime('%d/%m/%Y')}"
+        data_key = int(dia.strftime("%Y%m%d"))
+        rows = _fetch_rows(
+            args.id_empresa,
+            args.id_filial,
+            data_key=data_key,
+        )
+        mart_parity = _fetch_mart_parity(
+            args.id_empresa,
+            args.id_filial,
+            data_key=data_key,
+        )
+
     out = Path(
         args.out
-        or f"/tmp/torqmind-cfop-{args.id_empresa}-{args.id_filial or 'all'}-{dia.isoformat()}.pdf"
+        or f"/tmp/torqmind-cfop-{args.id_empresa}-{args.id_filial or 'all'}-{period_slug}.pdf"
     )
-    rows = _fetch_rows(args.id_empresa, args.id_filial, dia)
     build_pdf(
         id_empresa=args.id_empresa,
         id_filial=args.id_filial,
-        dia=dia,
+        periodo_label=periodo_label,
         rows=rows,
         out_path=out,
+        mart_parity=mart_parity,
     )
     print(f"OK pdf={out} txt={out.with_suffix('.txt')} cfops={len(rows)}")
     return 0

@@ -64,14 +64,38 @@ export const PRODUCT_NAV_GROUPS = [
   },
 ];
 
+function explicitChildScreens(parentScreen) {
+  const keys = new Set();
+  for (const link of PRODUCT_LINKS) {
+    if (link.parent_screen === parentScreen && link.screen_key) {
+      keys.add(link.screen_key);
+    }
+  }
+  for (const group of PRODUCT_NAV_GROUPS) {
+    for (const child of group.children) {
+      if (child.parent_screen === parentScreen && child.screen_key) {
+        keys.add(child.screen_key);
+      }
+    }
+  }
+  return [...keys];
+}
+
 function screenAllowed(set, link) {
   if (set.has(link.screen_key)) return true;
-  if (link.parent_screen && set.has(link.parent_screen)) return true;
-  if (link.parent_screen === 'finance' && set.has('finance')) return true;
+  const parent = link.parent_screen;
+  if (!parent || !set.has(parent)) {
+    return false;
+  }
+  // Menu pai sem filhos explícitos: mostra todos os filhos (legado).
+  // Se o usuário tem permissão granular (ex.: finance.receivable), só mostra o que foi marcado.
+  const childKeys = explicitChildScreens(parent);
+  const hasExplicitChild = childKeys.some((key) => set.has(key));
+  if (hasExplicitChild) return false;
   if (link.screen_key === 'goals_team.comissoes' && set.has('goals_team')) return true;
   if (link.screen_key === 'team.custos' && set.has('team')) return true;
   if (link.screen_key === 'sales.abc' && set.has('sales')) return true;
-  return false;
+  return true;
 }
 
 /**

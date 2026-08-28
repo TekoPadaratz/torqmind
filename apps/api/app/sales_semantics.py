@@ -43,6 +43,37 @@ def sales_cfop_filter_sql(alias: str) -> str:
     )
 
 
+def central_filiais_subquery_sql(current_db: str = "torqmind_current") -> str:
+    """Filiais administrativas CENTRAL (espelho Xpert), identificadas pelo nome."""
+    nome = (
+        "positionCaseInsensitiveUTF8("
+        "ifNull(JSONExtractString(payload, 'NOMEFILIAL'), ''), 'CENTRAL') > 0"
+    )
+    apelido = (
+        "positionCaseInsensitiveUTF8("
+        "ifNull(JSONExtractString(payload, 'APELIDO'), ''), 'CENTRAL') > 0"
+    )
+    nome_alt = (
+        "positionCaseInsensitiveUTF8("
+        "ifNull(JSONExtractString(payload, 'NOME'), ''), 'CENTRAL') > 0"
+    )
+    return (
+        f"SELECT id_empresa, id_filial FROM {current_db}.stg_filiais FINAL "
+        f"WHERE is_deleted = 0 AND ({nome} OR {apelido} OR {nome_alt})"
+    )
+
+
+def central_mirror_exclude_sql(alias: str = "c", current_db: str = "torqmind_current") -> str:
+    """Exclui vendas da Central espelhadas no posto operacional (paridade sales_daily_rt)."""
+    central = central_filiais_subquery_sql(current_db)
+    return (
+        f"NOT ("
+        f"({alias}.id_empresa, {alias}.id_db) IN ({central}) "
+        f"AND ({alias}.id_empresa, {alias}.id_filial) NOT IN ({central})"
+        f")"
+    )
+
+
 def comercial_cfop_numeric_sql(alias: str) -> str:
     return f"etl.cfop_numeric_from_payload({alias}.payload)"
 

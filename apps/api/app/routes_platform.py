@@ -41,7 +41,7 @@ def screen_registry(
     claims=Depends(get_current_claims),
 ):
     """Árvore de menus/painéis para o cadastro de permissões de usuário."""
-    from app.permissions import screen_permission_tree
+    from app.permissions import screen_permission_tree, module_tier_catalog
 
     role = claims.get("user_role") or ""
     include_kiosk = role in {"platform_master", "platform_admin", "channel_admin", "tenant_admin"}
@@ -51,6 +51,7 @@ def screen_registry(
         _raise(exc)
     return {
         "menus": screen_permission_tree(include_kiosk=include_kiosk, include_platform=False),
+        "module_tiers": module_tier_catalog(),
     }
 
 

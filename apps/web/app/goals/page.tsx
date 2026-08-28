@@ -11,7 +11,7 @@ import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from '../lib/scope';
-import { canAccessScreenKey } from '../lib/session';
+import { canAccessScreenKey, canViewSensitiveFinancials } from '../lib/session';
 import { useBiScopeData } from '../lib/use-bi-scope-data';
 import { useGridSearch } from '../lib/use-grid-search';
 import { apiPost } from '../lib/api';
@@ -119,6 +119,12 @@ export default function GoalsPage() {
   const userLabel = useMemo(() => {
     return buildUserLabel(claims);
   }, [claims]);
+  const canSeeMargin = canViewSensitiveFinancials(claims);
+
+  useEffect(() => {
+    if (canSeeMargin) setShowMargin(true);
+    else setShowMargin(false);
+  }, [canSeeMargin]);
 
   const allowedTabs = useMemo(() => {
     const all: GoalsTab[] = ['metas', 'comissoes', 'gerente', 'config'];
@@ -341,9 +347,11 @@ export default function GoalsPage() {
                   <h2 style={{ marginBottom: 4 }}>Top 5 Vendedores</h2>
                   <div className="muted">Ranking por vendas brutas, com leitura competitiva e margem protegida por padrão.</div>
                 </div>
-                <button className="btn" onClick={() => setShowMargin((current) => !current)}>
-                  {showMargin ? 'Ocultar margem' : 'Mostrar margem'}
-                </button>
+                {canSeeMargin ? (
+                  <button className="btn" onClick={() => setShowMargin((current) => !current)}>
+                    {showMargin ? 'Ocultar margem' : 'Mostrar margem'}
+                  </button>
+                ) : null}
               </div>
 
               {!loading && !podium.length ? (
@@ -475,7 +483,8 @@ export default function GoalsPage() {
                           <div>
                             <div style={{ fontSize: row.rank === 1 ? 28 : 22, fontWeight: 900 }}>{formatCurrency(row.faturamento)}</div>
                             <div className="muted" style={{ marginTop: 6 }}>
-                              {showMargin ? `Margem ${formatCurrency(row.margem)}` : 'Margem protegida'}
+                              {canSeeMargin && showMargin ? `Margem ${formatCurrency(row.margem)}` : null}
+                              {!canSeeMargin ? null : !showMargin ? 'Margem protegida' : null}
                             </div>
                             <div style={{ marginTop: 10 }}>
                               {(() => {
@@ -501,7 +510,7 @@ export default function GoalsPage() {
               <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionário não retornou registros no período." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Pos.</th><th>Funcionário</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th><th>Margem</th><th>Leitura operacional</th><th>Status</th></tr></thead>
+              <thead><tr><th>Pos.</th><th>Funcionário</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th>{canSeeMargin ? <th>Margem</th> : null}<th>Leitura operacional</th><th>Status</th></tr></thead>
               <tbody>
                 {filteredLeaderboard.map((r: any) => {
                   const badge = getSellerBadge(r, filteredLeaderboard as any);
@@ -529,7 +538,7 @@ export default function GoalsPage() {
                       </td>
                       <td>{r.vendas}</td>
                       <td>{formatCurrency(r.faturamento)}</td>
-                      <td>{showMargin ? formatCurrency(r.margem) : 'Oculta'}</td>
+                      {canSeeMargin ? <td>{showMargin ? formatCurrency(r.margem) : 'Oculta'}</td> : null}
                       <td>{Number(r.scoreRisco || 0).toFixed(1)}</td>
                       <td>
                         <span className={`badge ${riskStatus.className}`}>{riskStatus.label}</span>

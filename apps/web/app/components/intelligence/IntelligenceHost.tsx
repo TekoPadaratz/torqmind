@@ -9,6 +9,31 @@ import { getClaims, getToken, requireAuth } from '../../lib/auth';
 import { useScopeQuery } from '../../lib/scope';
 
 type Capability = { intent_id?: string; label?: string; examples?: string[] };
+type ClarificationOption = { label?: string; value?: string; documento_masked?: string };
+type ChatMessage = {
+  role: 'user' | 'assistant';
+  text: string;
+  clarificationOptions?: ClarificationOption[];
+  clarificationKind?: string;
+  suggestions?: string[];
+};
+
+function clarificationSendText(kind: string | undefined, opt: ClarificationOption): string {
+  const label = String(opt.label || opt.value || '').trim();
+  if (!label) return '';
+  switch (kind) {
+    case 'customer':
+      return `Quanto o cliente ${label} está me devendo?`;
+    case 'branch':
+      return `Faturamento de hoje na ${label}`;
+    case 'period_year':
+      return `Faturamento ${label}`;
+    case 'intent':
+      return label;
+    default:
+      return label;
+  }
+}
 
 function isKioskClaims(claims: any): boolean {
   const role = String(claims?.user_role || claims?.role || '').toLowerCase();
@@ -27,12 +52,13 @@ export default function IntelligenceHost() {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const restoredConvRef = useRef<string | null>(null);
 
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
   const [caps, setCaps] = useState<Capability[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<{ role: string; text: string }[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,15 +69,30 @@ export default function IntelligenceHost() {
       parseOptionalInt(scope.id_empresa) ??
       parseOptionalInt(String(getClaims()?.id_empresa ?? '')) ??
       undefined;
-    const idFilial =
-      parseOptionalInt(scope.id_filial) ??
-      parseOptionalInt(scope.id_filiais?.[0]) ??
-      undefined;
-    const body: { id_empresa?: number; id_filial?: number } = {};
+    const branchScopeAll = String(scope.branch_scope || '').toLowerCase() === 'all';
+    const filiais = (scope.id_filiais || [])
+      .map((f) => parseOptionalInt(String(f)))
+      .filter((n): n is number => n != null);
+    const singleFilial = parseOptionalInt(scope.id_filial);
+
+    const body: {
+      id_empresa?: number;
+      id_filial?: number;
+      id_filiais?: number[];
+      branch_scope?: string;
+    } = {};
     if (idEmpresa != null) body.id_empresa = idEmpresa;
-    if (idFilial != null) body.id_filial = idFilial;
+
+    if (branchScopeAll || filiais.length > 1) {
+      body.branch_scope = 'all';
+      if (filiais.length > 0) body.id_filiais = filiais;
+    } else if (singleFilial != null) {
+      body.id_filial = singleFilial;
+    } else if (filiais.length === 1) {
+      body.id_filial = filiais[0];
+    }
     return body;
-  }, [scope.id_empresa, scope.id_filial, scope.id_filiais]);
+  }, [scope.id_empresa, scope.id_filial, scope.id_filiais, scope.branch_scope]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (pathname === '/' || pathname.startsWith('/tv') || pathname.startsWith('/login')) {
@@ -74,7 +115,8 @@ export default function IntelligenceHost() {
   useEffect(() => {
     setConversationId(null);
     setMessages([]);
-  }, [scopePayload.id_empresa]);
+    restoredConvRef.current = null;
+  }, [scopePayload.id_empresa, scopePayload.id_filiais, scopePayload.branch_scope]);
 
   const ensureConversation = useCallback(async () => {
     if (conversationId) return conversationId;
@@ -87,6 +129,14 @@ export default function IntelligenceHost() {
     setConversationId(id);
     return id;
   }, [conversationId, scopePayload]);
+
+  const toggleOpen = useCallback(() => {
+    setOpen((prev) => !prev);
+  }, []);
+
+  const close = useCallback(() => {
+    setOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!ready || !open) return;
@@ -114,14 +164,49 @@ export default function IntelligenceHost() {
   }, [ready, open]);
 
   useEffect(() => {
+    if (!ready || !open || !conversationId) return;
+    if (restoredConvRef.current === conversationId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiGet(`/ai/conversations/${conversationId}/messages`, scopePayload);
+        if (cancelled) return;
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const restored: ChatMessage[] = items
+          .map((row: any) => {
+            const role = String(row?.role || '');
+            if (role === 'user') {
+              return { role: 'user' as const, text: String(row.content_text || '') };
+            }
+            if (role === 'assistant') {
+              return {
+                role: 'assistant' as const,
+                text: String(row.content_text || ''),
+              };
+            }
+            return null;
+          })
+          .filter(Boolean) as ChatMessage[];
+        if (restored.length) setMessages(restored);
+        restoredConvRef.current = conversationId;
+      } catch {
+        /* mantém mensagens em memória se falhar */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, open, conversationId, scopePayload]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setOpen(false);
+      if (ev.key === 'Escape') close();
     };
     window.addEventListener('keydown', onKey);
     inputRef.current?.focus();
     return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
+  }, [open, close]);
 
   useEffect(() => {
     if (!open || !panelRef.current) return;
@@ -143,7 +228,7 @@ export default function IntelligenceHost() {
     };
     root.addEventListener('keydown', trap);
     return () => root.removeEventListener('keydown', trap);
-  }, [open, messages.length]);
+  }, [open, messages.length, busy]);
 
   const send = async (text: string) => {
     const cleaned = text.trim();
@@ -158,17 +243,46 @@ export default function IntelligenceHost() {
         text: cleaned,
         ...scopePayload,
       });
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', text: String(resp?.answer_text || 'Sem resposta.') },
-      ]);
+      const answerText = String(resp?.answer_text || '').trim();
+      const options = Array.isArray(resp?.clarification_options) ? resp.clarification_options : [];
+      const clarificationKind = resp?.clarification_kind ? String(resp.clarification_kind) : undefined;
+      const respSuggestions = Array.isArray(resp?.suggestions)
+        ? resp.suggestions.map((s: unknown) => String(s)).filter(Boolean)
+        : [];
+      if (!answerText) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            text: 'Não consegui montar uma resposta agora. Tente reformular a pergunta.',
+          },
+        ]);
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            text: answerText,
+            clarificationOptions: options.length ? options : undefined,
+            clarificationKind,
+            suggestions: respSuggestions.length ? respSuggestions : undefined,
+          },
+        ]);
+      }
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
+      const status = err?.response?.status;
       const msg =
         (typeof detail === 'object' && detail?.message) ||
         err?.response?.data?.message ||
-        'Não foi possível enviar a mensagem.';
-      setError(String(msg));
+        (status === 500
+          ? 'Não consegui consultar os dados agora. Tente de novo em instantes ou reformule a pergunta.'
+          : 'Não foi possível enviar a mensagem.');
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', text: String(msg) },
+      ]);
+      setError(null);
     } finally {
       setBusy(false);
     }
@@ -185,15 +299,16 @@ export default function IntelligenceHost() {
     <>
       <button
         type="button"
-        className="tmIntelFab"
-        aria-label="Abrir Assistente TorqMind"
-        onClick={() => setOpen(true)}
+        className={`tmIntelFab${open ? ' tmIntelFabOpen' : ''}`}
+        aria-label={open ? 'Fechar Assistente TorqMind' : 'Abrir Assistente TorqMind'}
+        aria-expanded={open}
+        onClick={toggleOpen}
       >
         <Image src="/brand/Logo_Icone.png" alt="" width={28} height={28} priority={false} />
       </button>
 
       {open ? (
-        <div className="tmIntelOverlay" role="presentation" onClick={() => setOpen(false)}>
+        <div className="tmIntelOverlay" role="presentation" onClick={close}>
           <div
             ref={panelRef}
             className="tmIntelPanel"
@@ -207,7 +322,7 @@ export default function IntelligenceHost() {
                 <Image src="/brand/Logo_Icone.png" alt="" width={22} height={22} />
                 <h2 id={titleId}>Assistente TorqMind</h2>
               </div>
-              <button type="button" className="tmIntelClose" onClick={() => setOpen(false)} aria-label="Fechar">
+              <button type="button" className="tmIntelClose" onClick={close} aria-label="Fechar">
                 ×
               </button>
             </header>
@@ -224,15 +339,55 @@ export default function IntelligenceHost() {
             </div>
 
             <div className="tmIntelMessages" aria-live="polite">
-              {messages.length === 0 ? (
-                <p className="tmIntelEmpty">Pergunte sobre vendas, clientes, caixa ou metas.</p>
+              {messages.length === 0 && !busy ? (
+                <p className="tmIntelEmpty">Pergunte sobre vendas, clientes, caixa ou metas — pode citar a filial (ex.: VR 01).</p>
               ) : (
                 messages.map((m, idx) => (
                   <div key={`${m.role}-${idx}`} className={m.role === 'user' ? 'tmIntelMsgUser' : 'tmIntelMsgAsst'}>
                     {m.text}
+                    {m.role === 'assistant' && m.clarificationOptions?.length ? (
+                      <div className="tmIntelClarify">
+                        {m.clarificationOptions.slice(0, 5).map((opt) => {
+                          const label = String(opt.label || opt.value || '').trim();
+                          if (!label) return null;
+                          const sendText = clarificationSendText(m.clarificationKind, opt);
+                          return (
+                            <button
+                              key={`${label}-${opt.value || idx}`}
+                              type="button"
+                              className="tmIntelChip tmIntelClarifyChip"
+                              onClick={() => send(sendText)}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {m.role === 'assistant' && m.suggestions?.length ? (
+                      <div className="tmIntelClarify">
+                        {m.suggestions.slice(0, 4).map((sug) => (
+                          <button
+                            key={`sug-${sug}-${idx}`}
+                            type="button"
+                            className="tmIntelChip tmIntelClarifyChip"
+                            onClick={() => send(sug)}
+                          >
+                            {sug}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 ))
               )}
+              {busy ? (
+                <div className="tmIntelMsgAsst tmIntelTyping" role="status" aria-label="Assistente digitando">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              ) : null}
             </div>
 
             {error ? <div className="tmIntelError">{error}</div> : null}
@@ -281,6 +436,9 @@ export default function IntelligenceHost() {
         .tmIntelFab:hover {
           filter: brightness(1.08);
         }
+        .tmIntelFabOpen {
+          z-index: 80;
+        }
         @media (prefers-reduced-motion: no-preference) {
           .tmIntelFab {
             transition: transform 0.15s ease, filter 0.15s ease;
@@ -294,10 +452,8 @@ export default function IntelligenceHost() {
           inset: 0;
           z-index: 70;
           background: transparent;
-          pointer-events: none;
         }
         .tmIntelPanel {
-          pointer-events: auto;
           position: fixed;
           right: 20px;
           bottom: 84px;
@@ -358,6 +514,16 @@ export default function IntelligenceHost() {
           font-size: 0.75rem;
           cursor: pointer;
         }
+        .tmIntelClarify {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 10px;
+        }
+        .tmIntelClarifyChip {
+          text-align: left;
+          max-width: 100%;
+        }
         .tmIntelMessages {
           flex: 1;
           overflow: auto;
@@ -389,6 +555,45 @@ export default function IntelligenceHost() {
           align-self: flex-start;
           background: var(--surface-elevated, #1c1814);
           border: 1px solid var(--chrome-border, #3a3228);
+        }
+        .tmIntelTyping {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          min-height: 36px;
+          padding: 12px 14px;
+        }
+        .tmIntelTyping span {
+          width: 7px;
+          height: 7px;
+          border-radius: 999px;
+          background: var(--chrome-fg, #f3e8d8);
+          opacity: 0.45;
+          animation: tmIntelDot 1.2s ease-in-out infinite;
+        }
+        .tmIntelTyping span:nth-child(2) {
+          animation-delay: 0.15s;
+        }
+        .tmIntelTyping span:nth-child(3) {
+          animation-delay: 0.3s;
+        }
+        @keyframes tmIntelDot {
+          0%,
+          80%,
+          100% {
+            transform: translateY(0);
+            opacity: 0.35;
+          }
+          40% {
+            transform: translateY(-4px);
+            opacity: 0.9;
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .tmIntelTyping span {
+            animation: none;
+            opacity: 0.6;
+          }
         }
         .tmIntelError {
           color: #f2b8b5;

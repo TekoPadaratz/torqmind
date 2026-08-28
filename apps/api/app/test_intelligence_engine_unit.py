@@ -57,7 +57,30 @@ class IntelligenceEngineGoldTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _empresa({"id_empresa": None, "accesses": []})
 
-    def test_faturamento_agosto_sales_overview(self):
+    def test_faturamento_hoje_conversational_with_bundle(self):
+        claims = _owner_claims()
+        bundle = {
+            "kpis": {"faturamento": 45230.5, "ticket_medio": 120},
+            "commercial_kpis": {"saidas": 45230.5, "qtd_saidas": 380},
+            "stats": {"vendas": 380},
+        }
+        with patch("app.intelligence.tools.executor._call_analytics") as mock_fn:
+            mock_fn.return_value = bundle
+            out = process_message(
+                claims,
+                "Qual o total do faturamento de hoje?",
+                conversation_context={},
+                scope={"id_empresa": 1, "id_filial": 10169},
+            )
+        self.assertEqual(out.get("intent_id"), "sales.overview")
+        self.assertEqual(out["status"], "ok")
+        text = out["answer_text"]
+        self.assertIn("Hoje o faturamento", text)
+        self.assertIn("R$", text)
+        self.assertNotIn("Evidências", text)
+        self.assertNotIn("Escopo:", text)
+        self.assertNotIn("não altera informações", text)
+
         claims = _owner_claims()
         with patch("app.intelligence.tools.executor._call_analytics") as mock_fn:
             mock_fn.return_value = {"faturamento": 12345.67, "qtd_vendas": 10}

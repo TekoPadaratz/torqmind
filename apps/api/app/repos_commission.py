@@ -156,14 +156,19 @@ def _filter_sales_for_config(
     raw_rows: Sequence[Dict[str, Any]],
     group_ids: Sequence[int],
     exclude_ids: Sequence[int],
+    excluded_funcionario_ids: Optional[set[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Aplica grupos/exclusões da config e reagrupa em funcionário+grupo."""
     groups = {int(g) for g in group_ids if int(g) > 0}
     excludes = {int(p) for p in exclude_ids if int(p) > 0}
+    func_excludes = excluded_funcionario_ids or set()
     if not groups:
         return []
     agg: Dict[tuple, Dict[str, Any]] = {}
     for r in raw_rows:
+        fid = int(r.get("id_funcionario") or 0)
+        if func_excludes and fid in func_excludes:
+            continue
         gid = int(r.get("id_grupo_produto") or 0)
         if gid not in groups:
             continue
@@ -244,6 +249,126 @@ def get_config_product_excludes(config_id: int) -> List[Dict[str, Any]]:
     """
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, [config_id]).fetchall()]
+
+
+def _employee_funcao_ch_sql() -> str:
+    return (
+        "coalesce("
+        "nullIf(trimBoth(JSONExtractString(payload, 'FUNCAO')), ''), "
+        "nullIf(trimBoth(JSONExtractString(payload, 'CARGO')), ''), "
+        "nullIf(trimBoth(JSONExtractString(payload, 'DESCRFUNCAO')), ''), "
+        "''"
+        ")"
+    )
+
+
+def list_branch_employees_ch(id_empresa: int, id_filial: int) -> List[Dict[str, Any]]:
+    """Funcionários ativos da filial com função do Xpert (stg_funcionarios)."""
+    funcao_expr = _employee_funcao_ch_sql()
+    rows = query_dict(
+        f"""
+        SELECT
+          id_funcionario,
+          argMax(nullIf(trimBoth(JSONExtractString(payload, 'NOME')), ''), source_ts_ms) AS nome,
+          argMax({funcao_expr}, source_ts_ms) AS funcao,
+          argMax(
+            if(lowerUTF8(JSONExtractString(payload, 'ATIVO')) IN ('true', '1', 't', 's'), 1, 0),
+            source_ts_ms
+          ) AS ativo
+        FROM {CURRENT_DB}.stg_funcionarios FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND id_filial = {{id_filial:Int32}}
+          AND is_deleted = 0
+          AND id_funcionario > 0
+        GROUP BY id_funcionario
+        HAVING argMax(
+          if(lowerUTF8(JSONExtractString(payload, 'ATIVO')) IN ('true', '1', 't', 's'), 1, 0),
+          source_ts_ms
+        ) = 1
+        ORDER BY nome ASC, id_funcionario ASC
+        """,
+        parameters={"id_empresa": int(id_empresa), "id_filial": int(id_filial)},
+    )
+    out: List[Dict[str, Any]] = []
+    for r in rows or []:
+        fid = int(r.get("id_funcionario") or 0)
+        if fid <= 0:
+            continue
+        out.append(
+            {
+                "id_funcionario": fid,
+                "nome": str(r.get("nome") or "").strip() or f"Funcionário {fid}",
+                "funcao": str(r.get("funcao") or "").strip(),
+            }
+        )
+    return out
+
+
+def get_config_employees(config_id: int) -> List[Dict[str, Any]]:
+    sql = """
+      SELECT id, config_id, id_funcionario, nome_funcionario_snapshot,
+             funcao_snapshot, include_in_commission, is_active
+      FROM app.commission_config_employee
+      WHERE config_id = %s AND is_active = true
+      ORDER BY nome_funcionario_snapshot, id_funcionario
+    """
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, [config_id]).fetchall()]
+
+
+def merge_config_employees(
+    id_empresa: int,
+    id_filial: int,
+    config_id: int,
+) -> List[Dict[str, Any]]:
+    """Lista funcionários Xpert + overrides salvos (include_in_commission)."""
+    branch_rows = list_branch_employees_ch(id_empresa, id_filial)
+    saved = {
+        int(r["id_funcionario"]): r
+        for r in get_config_employees(config_id)
+        if int(r.get("id_funcionario") or 0) > 0
+    }
+    merged: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for row in branch_rows:
+        fid = int(row["id_funcionario"])
+        seen.add(fid)
+        saved_row = saved.get(fid)
+        merged.append(
+            {
+                "id_funcionario": fid,
+                "nome": str(saved_row.get("nome_funcionario_snapshot") or row.get("nome") or ""),
+                "funcao": str(saved_row.get("funcao_snapshot") or row.get("funcao") or ""),
+                "include_in_commission": bool(
+                    saved_row.get("include_in_commission") if saved_row else True
+                ),
+            }
+        )
+    for fid, saved_row in sorted(saved.items(), key=lambda x: (str(x[1].get("nome_funcionario_snapshot") or ""), x[0])):
+        if fid in seen:
+            continue
+        merged.append(
+            {
+                "id_funcionario": fid,
+                "nome": str(saved_row.get("nome_funcionario_snapshot") or f"Funcionário {fid}"),
+                "funcao": str(saved_row.get("funcao_snapshot") or ""),
+                "include_in_commission": bool(saved_row.get("include_in_commission")),
+            }
+        )
+    return merged
+
+
+def get_excluded_funcionario_ids(config_id: int) -> Optional[set[int]]:
+    """IDs excluídos do cálculo. None = sem overrides (legado: todos com venda entram)."""
+    rows = get_config_employees(config_id)
+    if not rows:
+        return None
+    excluded: set[int] = set()
+    for r in rows:
+        fid = int(r.get("id_funcionario") or 0)
+        if fid > 0 and not bool(r.get("include_in_commission")):
+            excluded.add(fid)
+    return excluded
 
 
 def get_config_tiers(config_id: int) -> List[Dict[str, Any]]:
@@ -447,11 +572,13 @@ def save_config(
     manager_commission_mode: str = "use_tiers",
     manager_commission_percent: float = 0.0,
     excluded_products: Optional[Sequence[Dict[str, Any]]] = None,
+    employees: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Save/update commission configuration atomically."""
     config = ensure_default_config(id_empresa, id_filial)
     config_id = config["id"]
     excluded = list(excluded_products or [])
+    employees = list(employees or [])
 
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
         conn.execute("""
@@ -491,6 +618,33 @@ def save_config(
                 ON CONFLICT (config_id, id_produto) WHERE is_active = true
                 DO UPDATE SET is_active = true, nome_produto_snapshot = EXCLUDED.nome_produto_snapshot
             """, [config_id, pid, str(p.get("nome") or p.get("nome_produto_snapshot") or "")])
+
+        conn.execute("""
+            UPDATE app.commission_config_employee SET is_active = false WHERE config_id = %s
+        """, [config_id])
+        for emp in employees:
+            fid = int(emp.get("id_funcionario") or 0)
+            if fid <= 0:
+                continue
+            conn.execute("""
+                INSERT INTO app.commission_config_employee
+                    (config_id, id_funcionario, nome_funcionario_snapshot, funcao_snapshot,
+                     include_in_commission, is_active, updated_at)
+                VALUES (%s, %s, %s, %s, %s, true, now())
+                ON CONFLICT (config_id, id_funcionario) WHERE is_active = true
+                DO UPDATE SET
+                    nome_funcionario_snapshot = EXCLUDED.nome_funcionario_snapshot,
+                    funcao_snapshot = EXCLUDED.funcao_snapshot,
+                    include_in_commission = EXCLUDED.include_in_commission,
+                    is_active = true,
+                    updated_at = now()
+            """, [
+                config_id,
+                fid,
+                str(emp.get("nome") or emp.get("nome_funcionario_snapshot") or ""),
+                str(emp.get("funcao") or emp.get("funcao_snapshot") or ""),
+                bool(emp.get("include_in_commission", True)),
+            ])
 
         conn.execute("DELETE FROM app.commission_config_tier WHERE config_id = %s", [config_id])
         for tier in tiers:
@@ -739,6 +893,7 @@ def calculate_commission_results(
 
     group_ids = [g["id_grupo_produto"] for g in groups]
     exclude_ids = [int(p["id_produto"]) for p in excludes if int(p.get("id_produto") or 0) > 0]
+    excluded_func_ids = get_excluded_funcionario_ids(config_id)
 
     if sales_rows is None:
         try:
@@ -753,7 +908,7 @@ def calculate_commission_results(
             )
             raise RuntimeError(f"Falha ao consultar vendas elegíveis no analytics: {exc}") from exc
 
-    rows = _filter_sales_for_config(sales_rows, group_ids, exclude_ids)
+    rows = _filter_sales_for_config(sales_rows, group_ids, exclude_ids, excluded_func_ids)
 
     manager_sales = 0.0
     manager_qty = 0.0

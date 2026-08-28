@@ -156,6 +156,7 @@ def _load_company_row_tx(conn, tenant_id: int):
           t.issue_day,
           t.sales_history_days,
           t.default_product_scope_days,
+          t.module_tier,
           t.created_at,
           t.updated_at,
           c.name AS channel_name
@@ -241,6 +242,7 @@ def _load_branch_row_tx(conn, tenant_id: int, branch_id: int):
           valid_from,
           valid_until,
           blocked_reason,
+          module_tier,
           created_at,
           updated_at
         FROM auth.filiais
@@ -268,6 +270,7 @@ def _load_user_rows() -> list[dict[str, Any]]:
               u.last_login_at,
               u.failed_login_count,
               u.locked_until,
+              u.can_view_sensitive_financials,
               u.created_at,
               u.updated_at,
               u.totp_enabled,
@@ -572,11 +575,13 @@ def upsert_company(
                   issue_day,
                   sales_history_days,
                   default_product_scope_days,
+                  module_tier,
                   updated_at
                 )
                 VALUES (
                   %s, %s, %s, COALESCE(%s, 'active'), COALESCE(%s, CURRENT_DATE), %s,
-                  COALESCE(%s, 'current'), %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, 365), COALESCE(%s, 1), now()
+                  COALESCE(%s, 'current'), %s, %s, %s, %s, %s, %s, %s, %s,
+                  COALESCE(%s, 365), COALESCE(%s, 1), COALESCE(%s, 'essencial'), now()
                 )
                 RETURNING id_empresa
                 """,
@@ -597,6 +602,7 @@ def upsert_company(
                     payload.get("issue_day"),
                     payload.get("sales_history_days"),
                     payload.get("default_product_scope_days"),
+                    payload.get("module_tier") or "essencial",
                 ),
             ).fetchone()
             tenant_id = int(row["id_empresa"])
@@ -636,6 +642,7 @@ def upsert_company(
                   issue_day = COALESCE(%s, issue_day),
                   sales_history_days = COALESCE(%s, sales_history_days),
                   default_product_scope_days = COALESCE(%s, default_product_scope_days),
+                  module_tier = COALESCE(%s, module_tier),
                   updated_at = now()
                 WHERE id_empresa = %s
                 """,
@@ -661,6 +668,7 @@ def upsert_company(
                     payload.get("issue_day"),
                     payload.get("sales_history_days"),
                     payload.get("default_product_scope_days"),
+                    payload.get("module_tier"),
                     tenant_id,
                 ),
             )
@@ -705,6 +713,7 @@ def upsert_branch(
               valid_from = %s,
               valid_until = %s,
               blocked_reason = %s,
+              module_tier = COALESCE(%s, module_tier),
               updated_at = now()
             WHERE id_empresa = %s
               AND id_filial = %s
@@ -717,6 +726,7 @@ def upsert_branch(
                 payload.get("valid_from"),
                 payload.get("valid_until"),
                 payload.get("blocked_reason"),
+                payload.get("module_tier"),
                 tenant_id,
                 branch_id,
             ),
@@ -937,6 +947,11 @@ def upsert_user(
         "username": _validate_username_or_raise(payload.get("username")),
     }
     accesses = _validate_access_payload(claims, payload["role"], payload.get("accesses") or [])
+    role_for_sensitive = str(payload.get("role") or "")
+    if role_for_sensitive in {"platform_master", "platform_admin", "product_global", "tenant_admin"}:
+        can_view_sensitive = True
+    else:
+        can_view_sensitive = bool(payload.get("can_view_sensitive_financials", False))
 
     with _connect() as conn:
         previous = None
@@ -967,6 +982,7 @@ def upsert_user(
                 bool(payload.get("must_change_password", False)),
                 payload.get("locked_until"),
                 bool(payload.get("reset_failed_login", False)),
+                can_view_sensitive,
             ]
             if payload.get("password"):
                 password_sql = ", password_hash = %s"
@@ -985,7 +1001,8 @@ def upsert_user(
                   valid_until = %s,
                   must_change_password = %s,
                   locked_until = %s,
-                  failed_login_count = CASE WHEN %s THEN 0 ELSE failed_login_count END
+                  failed_login_count = CASE WHEN %s THEN 0 ELSE failed_login_count END,
+                  can_view_sensitive_financials = %s
                   {password_sql}
                 WHERE id = %s::uuid
                 """,
@@ -1012,9 +1029,10 @@ def upsert_user(
                   is_active,
                   valid_from,
                   valid_until,
-                  must_change_password
+                  must_change_password,
+                  can_view_sensitive_financials
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -1027,6 +1045,7 @@ def upsert_user(
                     payload.get("valid_from"),
                     payload.get("valid_until"),
                     bool(payload.get("must_change_password", False)),
+                    can_view_sensitive,
                 ),
             ).fetchone()
             user_id = str(created["id"])

@@ -2480,6 +2480,7 @@ def team_commissions_config(
     tiers = repos_commission.get_config_tiers(config_id)
     groups_available = repos_commission.get_available_groups(tenant, id_filial)
     excluded_products = repos_commission.get_config_product_excludes(config_id)
+    employees = repos_commission.merge_config_employees(tenant, id_filial, config_id)
 
     # Mark selected groups
     selected_ids = {g["id_grupo_produto"] for g in groups_selected}
@@ -2504,6 +2505,7 @@ def team_commissions_config(
             }
             for p in excluded_products
         ],
+        "employees": employees,
         "tiers": [
             {
                 "tier_key": t["tier_key"],
@@ -2593,6 +2595,22 @@ def team_commissions_config_save(
                 "nome": str((p or {}).get("nome") or (p or {}).get("nome_produto_snapshot") or ""),
             })
 
+    employees_payload = body.get("employees") or []
+    cleaned_employees = []
+    for emp in employees_payload:
+        try:
+            fid = int((emp or {}).get("id_funcionario") or 0)
+        except (TypeError, ValueError):
+            fid = 0
+        if fid <= 0:
+            continue
+        cleaned_employees.append({
+            "id_funcionario": fid,
+            "nome": str((emp or {}).get("nome") or (emp or {}).get("nome_funcionario_snapshot") or ""),
+            "funcao": str((emp or {}).get("funcao") or (emp or {}).get("funcao_snapshot") or ""),
+            "include_in_commission": bool((emp or {}).get("include_in_commission", True)),
+        })
+
     repos_commission.save_config(
         tenant,
         id_filial,
@@ -2602,6 +2620,7 @@ def team_commissions_config_save(
         manager_commission_mode,
         manager_commission_percent,
         excluded_products=cleaned_excludes,
+        employees=cleaned_employees,
     )
     return {"ok": True, "message": "Configuração salva com sucesso."}
 

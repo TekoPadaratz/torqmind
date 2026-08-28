@@ -74,10 +74,6 @@ def _handler_customer_search(args: dict[str, Any], claims: dict[str, Any], scope
             {
                 "nome": row.get("nome_cliente") or row.get("nome"),
                 "documento_masked": _mask_doc(row.get("documento")),
-                "segmento": row.get("segmento"),
-                "total_compras_30d": row.get("total_compras_30d"),
-                "recencia_dias": row.get("recencia_dias"),
-                # nunca resolve só por id_entidade — id fica opaco/interno
                 "ref": f"c:{row.get('id_cliente')}",
             }
         )
@@ -265,17 +261,36 @@ def _handler_cheques(args: dict[str, Any], claims: dict[str, Any], scope: dict[s
 
 
 def _handler_open_titles(args: dict[str, Any], claims: dict[str, Any], scope: dict[str, Any]) -> Any:
+    tipo = int(args.get("title_tipo") or args.get("tipo") or 1)
+    q = str(args.get("customer_name") or args.get("search") or args.get("q") or "").strip() or None
     return _call_analytics(
         "finance_titles_overview",
         _role(claims),
         int(scope["id_empresa"]),
         scope.get("id_filial"),
-        1,  # tipo receber
+        tipo,
         args.get("dt_ini"),
         args.get("dt_fim"),
-        q=args.get("customer_name") or args.get("search"),
+        q=q,
         page=1,
-        page_size=min(50, int(args.get("page_size") or 20)),
+        page_size=50,
+    )
+
+
+def _handler_finance_titles(args: dict[str, Any], claims: dict[str, Any], scope: dict[str, Any]) -> Any:
+    tipo = int(args.get("title_tipo") or args.get("tipo") or 0)
+    q = str(args.get("customer_name") or args.get("search") or args.get("q") or "").strip() or None
+    return _call_analytics(
+        "finance_titles_overview",
+        _role(claims),
+        int(scope["id_empresa"]),
+        scope.get("id_filial"),
+        tipo,
+        args.get("dt_ini"),
+        args.get("dt_fim"),
+        q=q,
+        page=1,
+        page_size=50,
     )
 
 
@@ -315,6 +330,7 @@ _HANDLERS: dict[str, Callable[..., Any]] = {
     "credit_sales": _handler_credit,
     "cheques_or_unsupported": _handler_cheques,
     "open_titles": _handler_open_titles,
+    "finance_titles": _handler_finance_titles,
     "playbook_revenue_drop": _playbook_handler("revenue_drop"),
     "playbook_delinquency": _playbook_handler("delinquency_priority"),
     "playbook_mix": _playbook_handler("mix_shift"),

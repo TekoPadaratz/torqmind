@@ -23,10 +23,29 @@ _METRIC_OPS = {
 
 _ORDINAL_RE = re.compile(r"\b(o|a)\s+(primeiro|segundo|terceiro|quarto|quinto)\b", re.I)
 _FILIAL_RE = re.compile(r"\bfilial\s+([a-z0-9][\w\s\-]{1,40})", re.I)
+# VR 01, posto VR, na VR 01, da filial VR 02 — apelido operacional
+_BRANCH_HINT_RE = re.compile(
+    r"(?:\b(?:na|no|da|do|de|em)\s+)?"
+    r"(?:filial\s+|posto\s+)?"
+    r"((?:vr|rede)\s*[-]?\s*\d{1,4}|[a-zà-ú]{2,12}\s*\d{1,4})",
+    re.I,
+)
+def _extract_filial_label(display: str) -> Optional[str]:
+    """Apelido operacional: filial VR 01, na VR 02, posto VR 01."""
+    filial_m = _FILIAL_RE.search(display)
+    if filial_m:
+        return filial_m.group(1).strip()
+    branch_m = _BRANCH_HINT_RE.search(display)
+    if branch_m:
+        return branch_m.group(1).strip()
+    return None
+
+
 _CUSTOMER_RE = re.compile(
     r"\b(?:saldo|cliente|do cliente|da cliente|de)\s+(?:do\s+|da\s+|de\s+)?([a-zà-ú0-9][\wà-ú\s\.]{1,60})",
     re.I,
 )
+_CLIENTE_NOME_RE = re.compile(r"\bcliente\s+([A-Za-zÀ-ú][\wÀ-ú\.]{1,40})", re.I)
 
 
 @dataclass
@@ -69,15 +88,19 @@ def _extract_metric_op(fold: str) -> Optional[str]:
 
 
 def _extract_customer_name(display: str, fold: str) -> Optional[str]:
+    m = _CLIENTE_NOME_RE.search(display)
+    if m:
+        return m.group(1).strip(" .,!?")
     m = _CUSTOMER_RE.search(display)
     if m:
         name = m.group(1).strip(" .,!?")
-        # corta stopwords de período/intent
-        stop = {"hoje", "ontem", "agosto", "mes", "mês", "filial", "da", "do", "de"}
+        stop = {
+            "hoje", "ontem", "agosto", "mes", "mês", "filial", "da", "do", "de",
+            "esta", "está", "me", "devendo", "devedor", "tenho", "quanto",
+        }
         parts = [p for p in name.split() if p.casefold() not in stop]
         if parts:
-            return " ".join(parts[:4])
-    # "saldo junior"
+            return " ".join(parts[:3])
     if "saldo" in fold:
         rest = fold.split("saldo", 1)[-1].strip()
         if rest and len(rest.split()) <= 4:
@@ -111,6 +134,81 @@ def parse_intent(text: str | None) -> ParseResult:
         )
 
     customer = _extract_customer_name(norm.display, fold)
+    if customer and any(
+        k in fold
+        for k in (
+            "devendo",
+            "devedor",
+            "me deve",
+            "me devendo",
+            "inadimpl",
+            "atrasad",
+            "receber",
+            "cobrar",
+            "titulo",
+            "titulos",
+            "título",
+            "títulos",
+        )
+    ):
+        period = parse_period(norm.display) or parse_period(fold)
+        slots: dict[str, Any] = {
+            "customer_name": customer,
+            "customer_query": customer,
+            "title_tipo": 1,
+        }
+        if period:
+            slots["period_label"] = period.label
+        return ParseResult(
+            intent_id="customer.open_titles",
+            confidence=0.96,
+            slots=slots,
+            period=period,
+            candidates=[{"intent_id": "customer.open_titles", "confidence": 0.96, "matched": "devendo"}],
+            action="execute",
+        )
+
+    if any(k in fold for k in ("contas a pagar", "titulos a pagar", "títulos a pagar", "a pagar")):
+        period = parse_period(norm.display) or parse_period(fold) or default_period()
+        return ParseResult(
+            intent_id="finance.titles",
+            confidence=0.95,
+            slots={"title_tipo": 0, "period_label": period.label},
+            period=period,
+            candidates=[{"intent_id": "finance.titles", "confidence": 0.95, "matched": "contas a pagar"}],
+            action="execute",
+        )
+
+    if any(k in fold for k in ("contas a receber", "titulos a receber", "títulos a receber")):
+        period = parse_period(norm.display) or parse_period(fold) or default_period()
+        return ParseResult(
+            intent_id="finance.titles",
+            confidence=0.94,
+            slots={"title_tipo": 1, "period_label": period.label},
+            period=period,
+            candidates=[{"intent_id": "finance.titles", "confidence": 0.94, "matched": "contas a receber"}],
+            action="execute",
+        )
+
+    if re.search(r"\b(faturamento|faturou|quanto vendi|quanto faturou|receita|quanto entrou)\b", fold):
+        period = parse_period(norm.display) or parse_period(fold)
+        if not period and re.search(r"\bhoje\b", fold):
+            period = parse_period("hoje")
+        if not period:
+            period = default_period()
+        slots: dict[str, Any] = {"period_label": period.label}
+        filial_label = _extract_filial_label(norm.display)
+        if filial_label:
+            slots["filial_label"] = filial_label
+        return ParseResult(
+            intent_id="sales.overview",
+            confidence=0.94,
+            slots=slots,
+            period=period,
+            candidates=[{"intent_id": "sales.overview", "confidence": 0.94, "matched": "faturamento"}],
+            action="execute",
+        )
+
     if "saldo" in fold and customer:
         period = parse_period(norm.display) or parse_period(fold)
         slots: dict[str, Any] = {"customer_name": customer, "customer_query": customer}
@@ -162,9 +260,9 @@ def parse_intent(text: str | None) -> ParseResult:
     metric_op = _extract_metric_op(fold)
     if metric_op:
         slots["metric_op"] = metric_op
-    filial_m = _FILIAL_RE.search(norm.display)
-    if filial_m:
-        slots["filial_label"] = filial_m.group(1).strip()
+    filial_label = _extract_filial_label(norm.display)
+    if filial_label:
+        slots["filial_label"] = filial_label
     if customer:
         slots["customer_name"] = customer
         slots["customer_query"] = customer

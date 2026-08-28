@@ -407,7 +407,100 @@ ROLE_DEFAULT_SCREENS: Dict[str, Set[str]] = {
     "tenant_admin": _ALL_PRODUCT_SCREENS,
 }
 # tenant_manager, tenant_viewer, tenant_kiosk → from DB only
-# (mas o default de criação/backfill é acesso completo ao produto — ver abaixo)
+
+MODULE_TIER_KEYS: tuple[str, ...] = ("essencial", "profissional", "gestao", "intelligence")
+
+_MODULE_TIER_ESSENCIAL: Set[str] = {
+    "sales",
+    "sales.abc",
+    "customers",
+    "team",
+    "inventory",
+    "competitor_pricing",
+    "competitor_pricing.register",
+    "competitor_pricing.history",
+    "competitor_pricing.comparison",
+}
+
+_MODULE_TIER_PROFISSIONAL_EXTRA: Set[str] = {
+    "finance",
+    "finance.overview",
+    "finance.payable",
+    "finance.receivable",
+    "finance.cheques",
+    "cash",
+    "goals_team",
+    "goals_team.metas",
+}
+
+_MODULE_TIER_GESTAO_EXTRA: Set[str] = {
+    "finance.despesas",
+    "finance.budget",
+    "profit_management",
+    "profit_management.overview",
+    "profit_management.products",
+    "profit_management.repricing",
+    "profit_management.solvencia",
+    "profit_management.anp",
+    "fraud",
+    "fraud.core",
+    "fraud.risco_financeiro",
+    "fraud.credito_funcionario",
+    "team.custos",
+    "goals_team.comissoes",
+    "goals_team.gerente",
+    "goals_team.config",
+    "fuel_loss",
+}
+
+MODULE_TIER_LABELS: Dict[str, str] = {
+    "essencial": "Essencial",
+    "profissional": "Profissional",
+    "gestao": "Gestão",
+    "intelligence": "Gestão + Intelligence",
+}
+
+MODULE_TIER_PRESETS_RAW: Dict[str, Set[str]] = {
+    "essencial": set(_MODULE_TIER_ESSENCIAL),
+    "profissional": set(_MODULE_TIER_ESSENCIAL) | _MODULE_TIER_PROFISSIONAL_EXTRA,
+    "gestao": (
+        set(_MODULE_TIER_ESSENCIAL)
+        | _MODULE_TIER_PROFISSIONAL_EXTRA
+        | _MODULE_TIER_GESTAO_EXTRA
+    ),
+    "intelligence": (
+        set(_MODULE_TIER_ESSENCIAL)
+        | _MODULE_TIER_PROFISSIONAL_EXTRA
+        | _MODULE_TIER_GESTAO_EXTRA
+    ),
+}
+
+
+def normalize_module_tier(tier: str | None) -> str:
+    key = str(tier or "").strip().lower()
+    if key in MODULE_TIER_PRESETS_RAW:
+        return key
+    return "essencial"
+
+
+def module_tier_preset_screens(tier: str | None) -> List[str]:
+    """Telas do pacote (expandidas) para pré-marcar ACL de usuário."""
+    key = normalize_module_tier(tier)
+    return sorted(expand_screen_permissions(MODULE_TIER_PRESETS_RAW[key]))
+
+
+def module_tier_catalog() -> List[Dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "label": MODULE_TIER_LABELS.get(key, key),
+            "screens": module_tier_preset_screens(key),
+        }
+        for key in MODULE_TIER_KEYS
+    ]
+
+
+# (tenant_manager defaults — ver default_explicit_screen_permissions)
 
 
 def default_explicit_screen_permissions(role: str) -> List[str]:
@@ -473,6 +566,12 @@ _FINANCIAL_ROLES: Set[str] = {
 }
 
 
+def user_can_view_sensitive_financials(user_role: str, user_flag: bool | None = None) -> bool:
+    if (user_role or "") in _FINANCIAL_ROLES:
+        return True
+    return bool(user_flag)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────
@@ -506,7 +605,13 @@ def can_view_sensitive_financials(claims: dict[str, Any]) -> bool:
     cached = claims.get("can_view_sensitive_financials")
     if cached is not None:
         return bool(cached)
-    return (claims.get("user_role") or "") in _FINANCIAL_ROLES
+    role = claims.get("user_role") or ""
+    if role in _FINANCIAL_ROLES:
+        return True
+    user_flag = claims.get("user_can_view_sensitive_financials")
+    if user_flag is not None:
+        return bool(user_flag)
+    return False
 
 
 def is_kiosk_user(claims: dict[str, Any]) -> bool:

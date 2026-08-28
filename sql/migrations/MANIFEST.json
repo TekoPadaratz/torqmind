@@ -1313,6 +1313,24 @@
       "sha256_utf8_normalized": "08d27be270ce821116d7fda2a8052db0956dc0fd063062aa3f5513356e597fa2",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "141_commission_config_employee.sql",
+      "prefix": "141",
+      "encoding": "utf-8",
+      "sha256_raw": "4fdf2468e6c53236335e4f796cd0b9b57829dc318cbf1aa94300e314ab2d7659",
+      "sha256_utf8_normalized": "4fdf2468e6c53236335e4f796cd0b9b57829dc318cbf1aa94300e314ab2d7659",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "142_module_tiers_and_sensitive_flag.sql",
+      "prefix": "142",
+      "encoding": "utf-8",
+      "sha256_raw": "fe410fd925624f389cc25e14451bf7d81899c72df2d891b61557f2bde37a3b14",
+      "sha256_utf8_normalized": "fe410fd925624f389cc25e14451bf7d81899c72df2d891b61557f2bde37a3b14",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

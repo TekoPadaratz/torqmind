@@ -38,9 +38,39 @@ function emptyUser(role = 'tenant_admin') {
     must_change_password: true,
     locked_until: '',
     reset_failed_login: false,
+    can_view_sensitive_financials: false,
     screen_permissions: [] as string[],
     accesses: [emptyAccess(role)],
   };
+}
+
+type ModuleTierOption = { key: string; label: string; screens: string[] };
+
+function resolveAccessModuleTier(
+  accesses: any[],
+  branchesMap: Record<string, any[]>,
+  companies: any[],
+): string {
+  const access = (accesses || []).find((a) => a.id_filial && a.id_empresa);
+  if (!access) return 'essencial';
+  const empresaId = String(access.id_empresa);
+  const filialId = Number(access.id_filial);
+  const branches = branchesMap[empresaId] || [];
+  const branch = branches.find((b: any) => Number(b.id_filial) === filialId);
+  if (branch?.module_tier) return String(branch.module_tier);
+  const company = companies.find((c: any) => String(c.id_empresa) === empresaId);
+  return String(company?.module_tier || 'essencial');
+}
+
+function screenTreeMatchesQuery(menu: ScreenMenu, query: string): boolean {
+  const q = query.trim().toLocaleLowerCase('pt-BR');
+  if (!q) return true;
+  const menuHay = `${menu.label} ${menu.key}`.toLocaleLowerCase('pt-BR');
+  if (menuHay.includes(q)) return true;
+  return menu.panels.some((panel) => {
+    const panelHay = `${panel.label} ${panel.key}`.toLocaleLowerCase('pt-BR');
+    return panelHay.includes(q);
+  });
 }
 
 function emptyContact() {
@@ -119,6 +149,9 @@ export default function PlatformUsersPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [screenTree, setScreenTree] = useState<ScreenMenu[]>(FALLBACK_SCREEN_TREE);
+  const [moduleTiers, setModuleTiers] = useState<ModuleTierOption[]>([]);
+  const [selectedModuleTier, setSelectedModuleTier] = useState('essencial');
+  const [screenPermissionQuery, setScreenPermissionQuery] = useState('');
   const usersSearch = useGridSearch(items);
 
   async function load(session: any) {
@@ -137,6 +170,9 @@ export default function PlatformUsersPage() {
       setCompanies(companiesRes?.items || []);
       if (Array.isArray(registryRes?.menus) && registryRes.menus.length) {
         setScreenTree(registryRes.menus);
+      }
+      if (Array.isArray(registryRes?.module_tiers)) {
+        setModuleTiers(registryRes.module_tiers);
       }
       setChannels(channelsRes?.items || []);
       setError('');
@@ -168,6 +204,7 @@ export default function PlatformUsersPage() {
       must_change_password: Boolean(user.must_change_password),
       locked_until: toDatetimeInput(user.locked_until),
       reset_failed_login: false,
+      can_view_sensitive_financials: Boolean(user.can_view_sensitive_financials),
       screen_permissions: Array.isArray(user.screen_permissions) ? user.screen_permissions : [],
       accesses: (user.accesses || []).length
         ? user.accesses.map((access: any) => ({
@@ -181,6 +218,16 @@ export default function PlatformUsersPage() {
           }))
         : [emptyAccess(firstRole)],
     });
+    setSelectedModuleTier(
+      resolveAccessModuleTier(
+        (user.accesses || []).map((access: any) => ({
+          id_empresa: access.id_empresa ? String(access.id_empresa) : '',
+          id_filial: access.id_filial ? String(access.id_filial) : '',
+        })),
+        branchesMap,
+        companies,
+      ),
+    );
     setContactForm({
       user_id: user.id,
       telegram_chat_id: user.telegram_chat_id || '',
@@ -246,6 +293,15 @@ export default function PlatformUsersPage() {
     });
   }
 
+  function applyModuleTierPreset(tierKey: string) {
+    const tier = moduleTiers.find((t) => t.key === tierKey);
+    if (!tier) return;
+    const validKeys = validPermissionKeysForRole(form.role, screenTree);
+    const screens = tier.screens.filter((k: string) => validKeys.has(k));
+    setSelectedModuleTier(tierKey);
+    setForm((current: any) => ({ ...current, screen_permissions: screens }));
+  }
+
   function updateAccess(index: number, patch: any) {
     const accesses = [...form.accesses];
     accesses[index] = { ...accesses[index], ...patch, role: form.role };
@@ -265,6 +321,13 @@ export default function PlatformUsersPage() {
       }
     }
     setForm({ ...form, accesses });
+    if (patch.id_filial !== undefined || patch.id_empresa !== undefined) {
+      const tierKey = resolveAccessModuleTier(accesses, branchesMap, companies);
+      setSelectedModuleTier(tierKey);
+      if (roleUsesScreenPermissions(form.role) && patch.id_filial) {
+        applyModuleTierPreset(tierKey);
+      }
+    }
   }
 
   async function submit(event: FormEvent) {
@@ -290,6 +353,7 @@ export default function PlatformUsersPage() {
         valid_until: form.valid_until || null,
         locked_until: form.locked_until || null,
         screen_permissions: roleUsesScreenPermissions(form.role) ? form.screen_permissions : null,
+        can_view_sensitive_financials: form.can_view_sensitive_financials,
         accesses:
           form.role === 'platform_admin' || form.role === 'platform_master' || form.role === 'product_global'
             ? [{ role: form.role, channel_id: null, id_empresa: null, id_filial: null, is_enabled: true, valid_from: null, valid_until: null }]
@@ -558,8 +622,26 @@ export default function PlatformUsersPage() {
               {roleUsesScreenPermissions(form.role) ? (
                 <div style={{ width: '100%', marginBottom: 8 }}>
                   <div className="platformFieldHint" style={{ marginBottom: 4 }}>
-                    Menus e painéis permitidos (default = tudo liberado; desmarque o que não pode ver):
+                    Pacote da filial (pré-marca telas; você pode ajustar manualmente abaixo):
                   </div>
+                  <select
+                    className="input"
+                    value={selectedModuleTier}
+                    onChange={(e) => applyModuleTierPreset(e.target.value)}
+                    style={{ maxWidth: 360, marginBottom: 8 }}
+                  >
+                    {moduleTiers.map((tier) => (
+                      <option key={tier.key} value={tier.key}>{tier.label}</option>
+                    ))}
+                  </select>
+                  <div className="platformFieldHint" style={{ marginBottom: 4 }}>
+                    Menus e painéis permitidos:
+                  </div>
+                  <GridSearchInput
+                    value={screenPermissionQuery}
+                    onChange={setScreenPermissionQuery}
+                    aria-label="Pesquisar telas"
+                  />
                   {form.role === 'tenant_kiosk' ? (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                       {TV_SCREEN_OPTIONS.map((screen) => (
@@ -580,7 +662,9 @@ export default function PlatformUsersPage() {
                     </div>
                   ) : (
                     <div className="platformScreenTree">
-                      {menusForRole(form.role, screenTree).map((menu) => {
+                      {menusForRole(form.role, screenTree)
+                        .filter((menu) => screenTreeMatchesQuery(menu, screenPermissionQuery))
+                        .map((menu) => {
                         const menuOn = form.screen_permissions.includes(menu.key);
                         return (
                           <div key={menu.key} className="platformScreenMenu">
@@ -603,7 +687,14 @@ export default function PlatformUsersPage() {
                             </label>
                             {menuOn && menu.panels.length > 0 ? (
                               <div className="platformScreenPanels">
-                                {menu.panels.map((panel) => (
+                                {menu.panels
+                                  .filter((panel) => {
+                                    const q = screenPermissionQuery.trim().toLocaleLowerCase('pt-BR');
+                                    if (!q) return true;
+                                    const hay = `${panel.label} ${panel.key} ${menu.label}`.toLocaleLowerCase('pt-BR');
+                                    return hay.includes(q);
+                                  })
+                                  .map((panel) => (
                                   <label key={panel.key} className="platformCheckbox">
                                     <input
                                       type="checkbox"
@@ -631,6 +722,20 @@ export default function PlatformUsersPage() {
                     </div>
                   )}
                 </div>
+              ) : null}
+
+              {form.role === 'tenant_manager' || form.role === 'tenant_viewer' ? (
+                <label className="platformCheckbox">
+                  <input
+                    type="checkbox"
+                    checked={form.can_view_sensitive_financials}
+                    onChange={(e) => setForm({ ...form, can_view_sensitive_financials: e.target.checked })}
+                  />
+                  Permite ver margem, custo e lucro
+                </label>
+              ) : null}
+              {form.role === 'tenant_admin' ? (
+                <div className="platformFieldHint">Owner sempre vê margem, custo e lucro.</div>
               ) : null}
 
               <label className="platformCheckbox">
