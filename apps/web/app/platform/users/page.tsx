@@ -15,6 +15,8 @@ import {
   allProductPermissionKeys,
   toggleMenuPermission,
   togglePanelPermission,
+  isMenuGranted,
+  isPanelGranted,
   type ScreenMenu,
 } from '../../lib/screen-permissions';
 import { USERNAME_ERROR_MESSAGE, normalizeUsernameInput, validateUsernameInput } from '../../lib/username-policy.mjs';
@@ -665,7 +667,7 @@ export default function PlatformUsersPage() {
                       {menusForRole(form.role, screenTree)
                         .filter((menu) => screenTreeMatchesQuery(menu, screenPermissionQuery))
                         .map((menu) => {
-                        const menuOn = form.screen_permissions.includes(menu.key);
+                        const menuOn = isMenuGranted(form.screen_permissions, menu);
                         return (
                           <div key={menu.key} className="platformScreenMenu">
                             <label className="platformCheckbox">
@@ -698,7 +700,7 @@ export default function PlatformUsersPage() {
                                   <label key={panel.key} className="platformCheckbox">
                                     <input
                                       type="checkbox"
-                                      checked={form.screen_permissions.includes(panel.key)}
+                                      checked={isPanelGranted(form.screen_permissions, menu, panel.key)}
                                       onChange={(e) =>
                                         setForm({
                                           ...form,

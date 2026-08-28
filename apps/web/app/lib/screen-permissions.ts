@@ -159,6 +159,22 @@ export function toggleMenuPermission(
   return [...without, menu.key, ...panelKeys];
 }
 
+export function isMenuGranted(current: string[], menu: ScreenMenu): boolean {
+  if (current.includes(menu.key)) return true;
+  return menu.panels.some((panel) => current.includes(panel.key));
+}
+
+export function isPanelGranted(current: string[], menu: ScreenMenu, panelKey: string): boolean {
+  if (current.includes(panelKey)) return true;
+  if (
+    current.includes(menu.key)
+    && !menu.panels.some((panel) => current.includes(panel.key))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function togglePanelPermission(
   current: string[],
   menu: ScreenMenu,

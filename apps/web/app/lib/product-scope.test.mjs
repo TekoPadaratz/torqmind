@@ -7,6 +7,7 @@ import {
   buildScopeKey,
   buildScopeSearchParams,
   filterProductLinks,
+  filterProductNavGroups,
   getScopeControls,
   hasExplicitBranchSelection,
   needsCanonicalScope,
@@ -433,6 +434,25 @@ test("filterProductLinks with granular sales child hides siblings without parent
   const paths = result.map((l) => l.path);
   assert.ok(paths.includes("/sales"));
   assert.ok(!paths.includes("/sales/abc"));
+});
+
+test("filterProductNavGroups hides unmarked sales panels when ACL is granular", () => {
+  const groups = filterProductNavGroups(["sales", "sales.evolution"]);
+  const comercial = groups.find((g) => g.id === "comercial");
+  assert.ok(comercial);
+  const labels = comercial.children.map((c) => c.label);
+  assert.ok(labels.includes("Vendas"));
+  assert.ok(!labels.includes("Curva ABC"));
+});
+
+test("filterProductNavGroups hides finance siblings when only one view is granted", () => {
+  const groups = filterProductNavGroups(["finance", "finance.receivable"]);
+  const financeiro = groups.find((g) => g.id === "financeiro");
+  assert.ok(financeiro);
+  const labels = financeiro.children.map((c) => c.label);
+  assert.ok(labels.includes("Contas a receber"));
+  assert.ok(!labels.includes("Contas a pagar"));
+  assert.ok(!labels.includes("Geral (Pagar × Receber)"));
 });
 
 test("filterProductLinks with screen without panels returns only that link", () => {

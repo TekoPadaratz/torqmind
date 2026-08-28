@@ -65,46 +65,81 @@ export const PRODUCT_NAV_GROUPS = [
   },
 ];
 
-function explicitChildScreens(parentScreen) {
-  const keys = new Set();
-  for (const link of PRODUCT_LINKS) {
-    if (link.parent_screen === parentScreen && link.screen_key) {
-      keys.add(link.screen_key);
-    }
-  }
-  for (const group of PRODUCT_NAV_GROUPS) {
-    for (const child of group.children) {
-      if (child.parent_screen === parentScreen && child.screen_key) {
-        keys.add(child.screen_key);
-      }
-    }
-  }
-  return [...keys];
+/**
+ * Espelho de SCREEN_REGISTRY (menu → painéis). Nav só exibe chaves presentes no ACL.
+ */
+const REGISTRY_PANELS_BY_MENU = {
+  sales: ['sales.overview', 'sales.evolution', 'sales.hourly', 'sales.top', 'sales.abc'],
+  fraud: ['fraud.core', 'fraud.risco_financeiro', 'fraud.credito_funcionario'],
+  finance: [
+    'finance.overview',
+    'finance.payable',
+    'finance.receivable',
+    'finance.cheques',
+    'finance.despesas',
+    'finance.budget',
+  ],
+  goals_team: ['goals_team.metas', 'goals_team.comissoes', 'goals_team.gerente', 'goals_team.config'],
+  competitor_pricing: [
+    'competitor_pricing.register',
+    'competitor_pricing.history',
+    'competitor_pricing.comparison',
+  ],
+  profit_management: [
+    'profit_management.overview',
+    'profit_management.products',
+    'profit_management.repricing',
+    'profit_management.solvencia',
+    'profit_management.anp',
+  ],
+  team: ['team.custos'],
+};
+
+function menuHasRegisteredPanels(menuKey) {
+  const panels = REGISTRY_PANELS_BY_MENU[menuKey];
+  return Array.isArray(panels) && panels.length > 0;
 }
 
-function hasSalesPanelAccess(set) {
-  for (const key of set) {
-    if (typeof key === 'string' && key.startsWith('sales.')) return true;
+function anyRegisteredPanelGranted(set, menuKey) {
+  const panels = REGISTRY_PANELS_BY_MENU[menuKey];
+  if (!panels?.length) return false;
+  return panels.some((key) => set.has(key));
+}
+
+/** Alinha com expand_screen_permissions da API (legado: menu sem filhos → todos os painéis). */
+function expandAllowedScreens(allowed_screens) {
+  if (!Array.isArray(allowed_screens)) return allowed_screens;
+  const result = new Set(allowed_screens);
+  for (const [menu, panels] of Object.entries(REGISTRY_PANELS_BY_MENU)) {
+    const hasParent = result.has(menu);
+    const hasChild = panels.some((key) => result.has(key));
+    if (hasParent && !hasChild) {
+      for (const key of panels) result.add(key);
+    } else if (hasChild && !hasParent) {
+      result.add(menu);
+    }
   }
-  return false;
+  return [...result];
 }
 
 function screenAllowed(set, link) {
   if (set.has(link.screen_key)) return true;
-  if (link.screen_key === 'sales' && hasSalesPanelAccess(set)) return true;
+
+  const key = link.screen_key;
   const parent = link.parent_screen;
-  if (!parent || !set.has(parent)) {
+
+  // Rota de entrada (/sales, /goals) quando algum painel filho está permitido.
+  if (!parent && menuHasRegisteredPanels(key) && anyRegisteredPanelGranted(set, key)) {
+    return true;
+  }
+
+  // Painel ou item de nav filho: só com chave explícita — pai não abre siblings desmarcados.
+  if (parent || key.includes('.')) {
     return false;
   }
-  // Menu pai sem filhos explícitos: mostra todos os filhos (legado).
-  // Se o usuário tem permissão granular (ex.: finance.receivable), só mostra o que foi marcado.
-  const childKeys = explicitChildScreens(parent);
-  const hasExplicitChild = childKeys.some((key) => set.has(key));
-  if (hasExplicitChild) return false;
-  if (link.screen_key === 'goals_team.comissoes' && set.has('goals_team')) return true;
-  if (link.screen_key === 'team.custos' && set.has('team')) return true;
-  if (link.parent_screen === 'sales' && set.has('sales')) return true;
-  return true;
+
+  // Menu sem painéis (cash, customers, …): chave do menu basta.
+  return set.has(key);
 }
 
 /**
@@ -119,7 +154,7 @@ export function filterProductLinks(allowed_screens) {
   if (allowed_screens.length === 0) {
     return [];
   }
-  const set = new Set(allowed_screens);
+  const set = new Set(expandAllowedScreens(allowed_screens));
   return PRODUCT_LINKS.filter((link) => screenAllowed(set, link));
 }
 
@@ -131,7 +166,7 @@ export function filterProductNavGroups(allowed_screens) {
   if (allowed_screens.length === 0) {
     return [];
   }
-  const set = new Set(allowed_screens);
+  const set = new Set(expandAllowedScreens(allowed_screens));
   return PRODUCT_NAV_GROUPS
     .map((group) => ({
       ...group,

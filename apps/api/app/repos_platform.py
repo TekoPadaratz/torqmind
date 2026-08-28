@@ -753,7 +753,6 @@ def list_users(
 
     # Load screen permissions for all users
     from app.db import get_conn as _get_conn_perms
-    from app.permissions import expand_screen_permissions
     screen_perms_map: dict[str, list[str]] = {}
     if users:
         with _get_conn_perms() as pconn:
@@ -763,7 +762,8 @@ def list_users(
                 uid = row["uid"]
                 raw_map.setdefault(uid, set()).add(row["screen_key"])
             for uid, keys in raw_map.items():
-                screen_perms_map[uid] = sorted(expand_screen_permissions(keys))
+                # Chaves crusas do DB — o cadastro reflete exatamente o que foi marcado.
+                screen_perms_map[uid] = sorted(keys)
 
     filtered: list[dict[str, Any]] = []
     for user in users:
