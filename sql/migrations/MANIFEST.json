@@ -1331,6 +1331,51 @@
       "sha256_utf8_normalized": "fe410fd925624f389cc25e14451bf7d81899c72df2d891b61557f2bde37a3b14",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "143_product_stock_idle.sql",
+      "prefix": "143",
+      "encoding": "utf-8",
+      "sha256_raw": "16058f6399f56d003cce2e4bd825d95395d673c854e0f75746d5f97e07735007",
+      "sha256_utf8_normalized": "16058f6399f56d003cce2e4bd825d95395d673c854e0f75746d5f97e07735007",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "144_product_stock_idle_dedup.sql",
+      "prefix": "144",
+      "encoding": "utf-8",
+      "sha256_raw": "41a2fb1406eb7107c9de68970c3667a19c2ba38a27e07a2e63a86484145f84e5",
+      "sha256_utf8_normalized": "41a2fb1406eb7107c9de68970c3667a19c2ba38a27e07a2e63a86484145f84e5",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "145_product_stock_idle_prod_order.sql",
+      "prefix": "145",
+      "encoding": "utf-8",
+      "sha256_raw": "6248116cda4b1712fe327e70f880182ca790617322a69805679b3fdd8b45a422",
+      "sha256_utf8_normalized": "6248116cda4b1712fe327e70f880182ca790617322a69805679b3fdd8b45a422",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "146_product_stock_idle_perf.sql",
+      "prefix": "146",
+      "encoding": "utf-8",
+      "sha256_raw": "5e58ff5195c7929476336fde1d99712470c4424fce17981676487d9b4fe2b964",
+      "sha256_utf8_normalized": "5e58ff5195c7929476336fde1d99712470c4424fce17981676487d9b4fe2b964",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "147_product_stock_idle_cte_fix.sql",
+      "prefix": "147",
+      "encoding": "utf-8",
+      "sha256_raw": "748204d3386f30688a1261ef69c35e0b771f88b1f9c17883b9519bdbe62551f6",
+      "sha256_utf8_normalized": "748204d3386f30688a1261ef69c35e0b771f88b1f9c17883b9519bdbe62551f6",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

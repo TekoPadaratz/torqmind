@@ -431,6 +431,13 @@ def publish_all_hotpath(role: str = "platform_master", id_empresa: int = 1) -> D
     except Exception as exc:
         logger.warning("cliente_preco_fixo publish skipped: %s", str(exc)[:200])
         out["cliente_preco_fixo"] = {"error": str(exc)[:200]}
+    try:
+        from app.repos_product_management import refresh_and_publish_product_stock_idle
+
+        out["product_stock_idle"] = refresh_and_publish_product_stock_idle(role, id_empresa)
+    except Exception as exc:
+        logger.warning("product_stock_idle publish skipped: %s", str(exc)[:200])
+        out["product_stock_idle"] = {"error": str(exc)[:200]}
     logger.info("publish_all_hotpath empresa=%s %s", id_empresa, out)
     return out
 

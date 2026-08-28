@@ -2306,6 +2306,60 @@ def inventory_fuel_afericoes_overview(
     )
 
 
+# ------------------------
+# Gestão de Produtos (estoque parado)
+# ------------------------
+
+@router.get("/operations/product-stock-idle")
+def product_stock_idle_overview(
+    min_dias_sem_venda: int = Query(7, ge=0, le=3650, alias="dias_sem_venda"),
+    setor: Optional[str] = Query(None),
+    limit: int = Query(2000, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("product_management")),
+):
+    from app.repos_product_management import list_product_stock_idle
+
+    tenant, filial, branch_scope = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    filial_ids = accessible_branch_ids(branch_scope) if branch_scope else None
+    return redact_sensitive(
+        list_product_stock_idle(
+            tenant,
+            id_filial=filial,
+            id_filiais=filial_ids if filial is None else None,
+            min_dias_sem_venda=min_dias_sem_venda,
+            setor=setor,
+            limit=limit,
+            offset=offset,
+        ),
+        claims,
+    )
+
+
+@router.get("/operations/product-stock-idle/purchases")
+def product_stock_idle_purchases(
+    id_produto: int = Query(..., ge=1),
+    id_filial: Optional[int] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("product_management")),
+):
+    from app.repos_product_management import list_product_purchases_recent
+
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=None
+    )
+    if filial is None:
+        raise HTTPException(status_code=400, detail="Selecione uma filial para ver compras do produto.")
+    return list_product_purchases_recent(tenant, filial, int(id_produto))
+
+
 @router.get("/sync/status")
 def sync_status(
     id_filial: Optional[int] = Query(None),
