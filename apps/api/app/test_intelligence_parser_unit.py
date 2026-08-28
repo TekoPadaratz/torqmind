@@ -20,6 +20,11 @@ class IntelligenceParserBasicTests(unittest.TestCase):
         self.assertEqual(out.slots.get("title_tipo"), 0)
         self.assertEqual(out.period.label, "esta semana")
 
+    def test_faturamento_na_vr(self):
+        out = parse_intent("faturamento hoje na VR 02")
+        self.assertEqual(out.intent_id, "sales.overview")
+        self.assertEqual(out.slots.get("filial_label"), "VR 02")
+
 
 if __name__ == "__main__":
     unittest.main()

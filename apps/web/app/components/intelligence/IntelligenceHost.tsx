@@ -14,7 +14,26 @@ type ChatMessage = {
   role: 'user' | 'assistant';
   text: string;
   clarificationOptions?: ClarificationOption[];
+  clarificationKind?: string;
+  suggestions?: string[];
 };
+
+function clarificationSendText(kind: string | undefined, opt: ClarificationOption): string {
+  const label = String(opt.label || opt.value || '').trim();
+  if (!label) return '';
+  switch (kind) {
+    case 'customer':
+      return `Quanto o cliente ${label} está me devendo?`;
+    case 'branch':
+      return `Faturamento de hoje na ${label}`;
+    case 'period_year':
+      return `Faturamento ${label}`;
+    case 'intent':
+      return label;
+    default:
+      return label;
+  }
+}
 
 function isKioskClaims(claims: any): boolean {
   const role = String(claims?.user_role || claims?.role || '').toLowerCase();
@@ -33,6 +52,7 @@ export default function IntelligenceHost() {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const restoredConvRef = useRef<string | null>(null);
 
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
@@ -95,6 +115,7 @@ export default function IntelligenceHost() {
   useEffect(() => {
     setConversationId(null);
     setMessages([]);
+    restoredConvRef.current = null;
   }, [scopePayload.id_empresa, scopePayload.id_filiais, scopePayload.branch_scope]);
 
   const ensureConversation = useCallback(async () => {
@@ -143,6 +164,41 @@ export default function IntelligenceHost() {
   }, [ready, open]);
 
   useEffect(() => {
+    if (!ready || !open || !conversationId) return;
+    if (restoredConvRef.current === conversationId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiGet(`/ai/conversations/${conversationId}/messages`, scopePayload);
+        if (cancelled) return;
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const restored: ChatMessage[] = items
+          .map((row: any) => {
+            const role = String(row?.role || '');
+            if (role === 'user') {
+              return { role: 'user' as const, text: String(row.content_text || '') };
+            }
+            if (role === 'assistant') {
+              return {
+                role: 'assistant' as const,
+                text: String(row.content_text || ''),
+              };
+            }
+            return null;
+          })
+          .filter(Boolean) as ChatMessage[];
+        if (restored.length) setMessages(restored);
+        restoredConvRef.current = conversationId;
+      } catch {
+        /* mantém mensagens em memória se falhar */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, open, conversationId, scopePayload]);
+
+  useEffect(() => {
     if (!open) return;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === 'Escape') close();
@@ -189,6 +245,10 @@ export default function IntelligenceHost() {
       });
       const answerText = String(resp?.answer_text || '').trim();
       const options = Array.isArray(resp?.clarification_options) ? resp.clarification_options : [];
+      const clarificationKind = resp?.clarification_kind ? String(resp.clarification_kind) : undefined;
+      const respSuggestions = Array.isArray(resp?.suggestions)
+        ? resp.suggestions.map((s: unknown) => String(s)).filter(Boolean)
+        : [];
       if (!answerText) {
         setMessages((prev) => [
           ...prev,
@@ -204,6 +264,8 @@ export default function IntelligenceHost() {
             role: 'assistant',
             text: answerText,
             clarificationOptions: options.length ? options : undefined,
+            clarificationKind,
+            suggestions: respSuggestions.length ? respSuggestions : undefined,
           },
         ]);
       }
@@ -278,7 +340,7 @@ export default function IntelligenceHost() {
 
             <div className="tmIntelMessages" aria-live="polite">
               {messages.length === 0 && !busy ? (
-                <p className="tmIntelEmpty">Pergunte sobre vendas, clientes, caixa ou metas.</p>
+                <p className="tmIntelEmpty">Pergunte sobre vendas, clientes, caixa ou metas — pode citar a filial (ex.: VR 01).</p>
               ) : (
                 messages.map((m, idx) => (
                   <div key={`${m.role}-${idx}`} className={m.role === 'user' ? 'tmIntelMsgUser' : 'tmIntelMsgAsst'}>
@@ -288,17 +350,32 @@ export default function IntelligenceHost() {
                         {m.clarificationOptions.slice(0, 5).map((opt) => {
                           const label = String(opt.label || opt.value || '').trim();
                           if (!label) return null;
+                          const sendText = clarificationSendText(m.clarificationKind, opt);
                           return (
                             <button
                               key={`${label}-${opt.value || idx}`}
                               type="button"
                               className="tmIntelChip tmIntelClarifyChip"
-                              onClick={() => send(`Quanto o cliente ${label} está me devendo?`)}
+                              onClick={() => send(sendText)}
                             >
                               {label}
                             </button>
                           );
                         })}
+                      </div>
+                    ) : null}
+                    {m.role === 'assistant' && m.suggestions?.length ? (
+                      <div className="tmIntelClarify">
+                        {m.suggestions.slice(0, 4).map((sug) => (
+                          <button
+                            key={`sug-${sug}-${idx}`}
+                            type="button"
+                            className="tmIntelChip tmIntelClarifyChip"
+                            onClick={() => send(sug)}
+                          >
+                            {sug}
+                          </button>
+                        ))}
                       </div>
                     ) : null}
                   </div>

@@ -23,6 +23,24 @@ _METRIC_OPS = {
 
 _ORDINAL_RE = re.compile(r"\b(o|a)\s+(primeiro|segundo|terceiro|quarto|quinto)\b", re.I)
 _FILIAL_RE = re.compile(r"\bfilial\s+([a-z0-9][\w\s\-]{1,40})", re.I)
+# VR 01, posto VR, na VR 01, da filial VR 02 — apelido operacional
+_BRANCH_HINT_RE = re.compile(
+    r"(?:\b(?:na|no|da|do|de|em)\s+)?"
+    r"(?:filial\s+|posto\s+)?"
+    r"((?:vr|rede)\s*[-]?\s*\d{1,4}|[a-zà-ú]{2,12}\s*\d{1,4})",
+    re.I,
+)
+def _extract_filial_label(display: str) -> Optional[str]:
+    """Apelido operacional: filial VR 01, na VR 02, posto VR 01."""
+    filial_m = _FILIAL_RE.search(display)
+    if filial_m:
+        return filial_m.group(1).strip()
+    branch_m = _BRANCH_HINT_RE.search(display)
+    if branch_m:
+        return branch_m.group(1).strip()
+    return None
+
+
 _CUSTOMER_RE = re.compile(
     r"\b(?:saldo|cliente|do cliente|da cliente|de)\s+(?:do\s+|da\s+|de\s+)?([a-zà-ú0-9][\wà-ú\s\.]{1,60})",
     re.I,
@@ -179,9 +197,9 @@ def parse_intent(text: str | None) -> ParseResult:
         if not period:
             period = default_period()
         slots: dict[str, Any] = {"period_label": period.label}
-        filial_m = _FILIAL_RE.search(norm.display)
-        if filial_m:
-            slots["filial_label"] = filial_m.group(1).strip()
+        filial_label = _extract_filial_label(norm.display)
+        if filial_label:
+            slots["filial_label"] = filial_label
         return ParseResult(
             intent_id="sales.overview",
             confidence=0.94,
@@ -242,9 +260,9 @@ def parse_intent(text: str | None) -> ParseResult:
     metric_op = _extract_metric_op(fold)
     if metric_op:
         slots["metric_op"] = metric_op
-    filial_m = _FILIAL_RE.search(norm.display)
-    if filial_m:
-        slots["filial_label"] = filial_m.group(1).strip()
+    filial_label = _extract_filial_label(norm.display)
+    if filial_label:
+        slots["filial_label"] = filial_label
     if customer:
         slots["customer_name"] = customer
         slots["customer_query"] = customer

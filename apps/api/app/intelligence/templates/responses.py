@@ -129,8 +129,13 @@ def _scope_phrase(scope_label: str | None) -> str | None:
     if not scope_label:
         return None
     text = sanitize_text(scope_label)
-    if "todas as filiais" in text.lower():
+    lower = text.lower()
+    if "todas as filiais" in lower:
         return "em todas as filiais do escopo"
+    if lower.startswith("filial "):
+        apelido = text.split("filial", 1)[-1].strip()
+        if apelido:
+            return f"na {apelido}"
     return None
 
 
@@ -216,10 +221,10 @@ def build_answer(
     elif status == "unknown":
         parts.append(
             "Hmm… não entendi bem o suficiente para buscar nos dados. "
-            "Tente algo como faturamento de hoje, vendas por hora ou top produtos."
+            "Tente algo como “faturamento de hoje”, “vendas por hora” ou “quanto o cliente X está devendo”."
         )
     elif status == "clarification_required":
-        parts.append("Preciso de um detalhe para seguir.")
+        parts.append("Só preciso confirmar um detalhe para seguir com a consulta.")
     elif status == "no_data":
         screen = _screen_label(deep_link) or "Vendas"
         parts.append(

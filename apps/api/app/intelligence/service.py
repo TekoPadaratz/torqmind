@@ -6,9 +6,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
-from app.intelligence.authz import permission_hash, reauthorize
-from app.intelligence.capability_map.loader import get_intent, list_intents
+from app.filial_apelido import load_apelido_map
+from app.intelligence.authz import reauthorize
+from app.intelligence.branch_resolve import BranchResolveResult, apply_resolved_branch, resolve_branch_hint
+from app.intelligence.capability_map.loader import get_intent, list_intents, suggestions_for_claims
 from app.intelligence.conversation import invalidate_if_scope_changed, update_after_turn
+from app.intelligence.disambiguation import consume_pending_disambiguation
 from app.intelligence.entity_resolve import search_customers
 from app.intelligence.evidence import EvidenceStore
 from app.intelligence.guards import detect_injection, detect_mutation_request, detect_sensitive_probe
@@ -46,6 +49,7 @@ class EngineResult:
     intent_id: str | None = None
     confidence: float = 0.0
     clarification_options: list[Any] = field(default_factory=list)
+    clarification_kind: str | None = None
     suggestions: list[str] = field(default_factory=list)
     deep_link: str | None = None
     evidence_ids: list[str] = field(default_factory=list)
@@ -84,8 +88,11 @@ def list_capabilities(claims: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _scope_label(scope: dict[str, Any]) -> str:
+    if scope.get("filial_label"):
+        return f"filial {scope['filial_label']}"
     emp = scope.get("id_empresa")
     fil = scope.get("id_filial")
+    apelidos = load_apelido_map(int(emp)) if emp else {}
     if scope.get("branch_scope") == "all" or (
         isinstance(fil, list) and len(fil) > 1
     ):
@@ -97,7 +104,47 @@ def _scope_label(scope: dict[str, Any]) -> str:
         fil = fil[0]
     if fil is None:
         return f"empresa {emp} (todas as filiais do escopo)"
-    return f"empresa {emp}, filial {fil}"
+    label = apelidos.get(int(fil)) or f"Filial {fil}"
+    return f"filial {label}"
+
+
+def _intent_label(intent_id: str | None) -> str:
+    if not intent_id:
+        return ""
+    meta = get_intent(intent_id) or {}
+    syns = meta.get("synonyms") or []
+    return str(syns[0] if syns else intent_id)
+
+
+def _follow_up_suggestions(claims: dict[str, Any], intent_id: str | None) -> list[str]:
+    if intent_id:
+        meta = get_intent(intent_id) or {}
+        follow = [str(x) for x in (meta.get("follow_ups") or []) if x]
+        if follow:
+            return follow[:4]
+    screens = claims.get("allowed_screens") or []
+    chips = suggestions_for_claims(
+        screens,
+        can_view_sensitive_financials(claims),
+        limit=4,
+    )
+    return [str(c.get("text") or "").replace("Sobre ", "").replace("?", "") for c in chips if c.get("text")]
+
+
+def _resolve_branch_from_slots(
+    parsed_slots: dict[str, Any],
+    scope: dict[str, Any],
+    claims: dict[str, Any],
+) -> tuple[dict[str, Any], Optional[BranchResolveResult]]:
+    hint = parsed_slots.get("filial_label")
+    if not hint:
+        return scope, None
+    branch = resolve_branch_hint(str(hint), scope, claims)
+    if branch.status == "resolved":
+        return apply_resolved_branch(scope, branch), branch
+    if branch.status in {"ambiguous", "not_found"}:
+        return scope, branch
+    return scope, None
 
 
 def _default_suggestions(claims: dict[str, Any]) -> list[str]:
@@ -202,7 +249,11 @@ def process_message(
         )
         return result.to_dict()
 
-    parsed = parse_intent(norm.display)
+    pending_override, scope, consumed = consume_pending_disambiguation(norm.display, ctx, scope)
+    if consumed and pending_override:
+        parsed = pending_override
+    else:
+        parsed = parse_intent(norm.display)
 
     if parsed.action == "unknown" or not parsed.intent_id:
         suggestions = _default_suggestions(claims)
@@ -232,6 +283,39 @@ def process_message(
             intent_meta.get("requires_sensitive_role") or intent_meta.get("requires_sensitive")
         ),
     }
+
+    parsed_slots_with_intent = {**parsed.slots, "intent_id": parsed.intent_id}
+    scope, branch_result = _resolve_branch_from_slots(parsed_slots_with_intent, scope, claims)
+    if branch_result and branch_result.status == "ambiguous":
+        options = branch_result.candidates
+        answer = build_answer(
+            status="clarification_required",
+            intent_id=parsed.intent_id,
+            custom_lead=branch_result.message or "Qual filial você quer consultar?",
+            clarification_options=options,
+        )
+        pending = {"kind": "branch", "intent_id": parsed.intent_id, "options": options}
+        result = EngineResult(
+            status="clarification_required",
+            answer_text=answer,
+            intent_id=parsed.intent_id,
+            confidence=parsed.confidence,
+            clarification_options=options,
+            clarification_kind="branch",
+            request_id=request_id,
+            answer_id=answer_id,
+            conversation_context=update_after_turn(
+                ctx,
+                intent_id=parsed.intent_id,
+                slots=parsed.slots,
+                period=None,
+                entities=[],
+                pending=pending,
+            ),
+        )
+        return result.to_dict()
+    if branch_result and branch_result.status == "not_found" and branch_result.message:
+        parsed.slots["filial_resolve_warning"] = branch_result.message
 
     ok, reason = reauthorize(claims, tool_spec, tool_spec.get("screens"))
     if not ok:
@@ -272,6 +356,7 @@ def process_message(
             intent_id=parsed.intent_id,
             confidence=parsed.confidence,
             clarification_options=options,
+            clarification_kind="period_year",
             deep_link=deep_link,
             request_id=request_id,
             answer_id=answer_id,
@@ -318,6 +403,7 @@ def process_message(
                 intent_id=parsed.intent_id,
                 confidence=parsed.confidence,
                 clarification_options=options,
+                clarification_kind="customer",
                 deep_link=deep_link,
                 evidence_ids=[eid for eid in [search_meta.get("evidence_id")] if eid],
                 tool_calls_meta=tool_meta,
@@ -329,7 +415,7 @@ def process_message(
                     slots=parsed.slots,
                     period=None,
                     entities=list(unique.values()),
-                    pending={"kind": "customer", "options": options},
+                    pending={"kind": "customer", "intent_id": parsed.intent_id, "options": options},
                 ),
             )
             return result.to_dict()
@@ -356,6 +442,7 @@ def process_message(
                 intent_id=parsed.intent_id,
                 confidence=parsed.confidence,
                 clarification_options=options,
+                clarification_kind="customer",
                 deep_link=deep_link,
                 evidence_ids=[eid for eid in [search_meta.get("evidence_id")] if eid],
                 tool_calls_meta=tool_meta,
@@ -367,14 +454,17 @@ def process_message(
                     slots=parsed.slots,
                     period=None,
                     entities=candidates,
-                    pending={"kind": "customer", "options": options},
+                    pending={"kind": "customer", "intent_id": parsed.intent_id, "options": options},
                 ),
             )
             return result.to_dict()
 
     if parsed.action == "clarify":
         options = [
-            {"label": c.get("intent_id"), "value": c.get("intent_id")}
+            {
+                "label": _intent_label(c.get("intent_id")),
+                "value": c.get("intent_id"),
+            }
             for c in parsed.candidates[:3]
         ]
         answer = build_answer(
@@ -383,6 +473,7 @@ def process_message(
             clarification_options=options,
             suggestions=_default_suggestions(claims),
             deep_link=deep_link,
+            custom_lead="Entendi parte da pergunta — qual dessas consultas você quer?",
         )
         result = EngineResult(
             status="clarification_required",
@@ -390,12 +481,18 @@ def process_message(
             intent_id=parsed.intent_id,
             confidence=parsed.confidence,
             clarification_options=options,
+            clarification_kind="intent",
             suggestions=_default_suggestions(claims),
             deep_link=deep_link,
             request_id=request_id,
             answer_id=answer_id,
             conversation_context=update_after_turn(
-                ctx, intent_id=parsed.intent_id, slots=parsed.slots, period=None, entities=[], pending={"kind": "intent"}
+                ctx,
+                intent_id=parsed.intent_id,
+                slots=parsed.slots,
+                period=None,
+                entities=[],
+                pending={"kind": "intent", "options": options},
             ),
         )
         return result.to_dict()
@@ -435,10 +532,14 @@ def process_message(
         suggestions=_default_suggestions(claims) if status in {"unknown", "unsupported"} else None,
         slots=parsed.slots,
     )
+    warning = parsed.slots.get("filial_resolve_warning")
+    if warning and status == "ok":
+        answer = f"{answer}\n\n({warning})"
 
     if status == "ok" and not evidence.validate_numbers(answer, evidence.ids()):
         answer = uncertain_answer(deep_link)
 
+    follow_ups = _follow_up_suggestions(claims, parsed.intent_id) if status == "ok" else []
     ctx2 = update_after_turn(
         ctx,
         intent_id=parsed.intent_id,
@@ -458,6 +559,6 @@ def process_message(
         request_id=request_id,
         answer_id=answer_id,
         conversation_context=ctx2,
-        suggestions=_default_suggestions(claims) if status == "unknown" else [],
+        suggestions=follow_ups if follow_ups else (_default_suggestions(claims) if status == "unknown" else []),
     )
     return result.to_dict()
