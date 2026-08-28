@@ -88,6 +88,7 @@ def _patched_calc(default_mode: str = "team_total"):
          patch.object(repos_commission, "get_config_groups", return_value=[{"id_grupo_produto": 10}]), \
          patch.object(repos_commission, "get_config_tiers", return_value=list(repos_commission.DEFAULT_TIERS)), \
          patch.object(repos_commission, "get_config_product_excludes", return_value=[]), \
+         patch.object(repos_commission, "get_excluded_funcionario_ids", return_value=None), \
          patch.object(repos_commission, "_filial_labels", return_value={14122: "VR 05"}), \
          patch.object(repos_commission, "_query_eligible_sales_ch", return_value=_sales_rows()):
         yield
@@ -167,3 +168,17 @@ def test_ensure_default_config_returns_existing():
     with patch.object(repos_commission, "get_config", return_value=_config()):
         res = repos_commission.ensure_default_config(1, 14122)
     assert res["id"] == 1
+
+
+def test_excluded_funcionario_removed_from_commission_calc():
+    with patch.object(repos_commission, "get_config", return_value=_config("individual_sales")), \
+         patch.object(repos_commission, "get_config_groups", return_value=[{"id_grupo_produto": 10}]), \
+         patch.object(repos_commission, "get_config_tiers", return_value=list(repos_commission.DEFAULT_TIERS)), \
+         patch.object(repos_commission, "get_config_product_excludes", return_value=[]), \
+         patch.object(repos_commission, "get_excluded_funcionario_ids", return_value={2}), \
+         patch.object(repos_commission, "_filial_labels", return_value={14122: "VR 05"}), \
+         patch.object(repos_commission, "_query_eligible_sales_ch", return_value=_sales_rows()):
+        res = repos_commission.calculate_commission_results(1, 14122, 6, 2026, "individual_sales")
+    assert len(res["vendedores"]) == 1
+    assert res["vendedores"][0]["id_funcionario"] == 1
+    assert res["comissao_total"] == 800.00

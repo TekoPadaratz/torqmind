@@ -1314,15 +1314,16 @@ export default function FraudPage() {
                           <tr>
                             <th></th>
                             <th>Funcionário</th>
-                            <th style={{ textAlign: "right" }}>Limite a prazo</th>
+                            <th>Uso no mês</th>
+                            <th style={{ textAlign: "right" }}>Limite crédito</th>
                             <th style={{ textAlign: "right" }}>Limite vale</th>
-                            <th style={{ textAlign: "right" }}>Limite total</th>
-                            <th style={{ textAlign: "right" }}>Usado mês</th>
+                            <th style={{ textAlign: "right" }}>Vale (mês)</th>
+                            <th style={{ textAlign: "right" }}>Crédito (mês)</th>
                             <th style={{ textAlign: "right" }}>Usado geral</th>
                             <th style={{ textAlign: "right" }}>Pago mês</th>
                             <th style={{ textAlign: "right" }}>Saldo aberto</th>
                             <th style={{ textAlign: "right" }}>Saldo mês</th>
-                            <th style={{ textAlign: "right" }}>Usos</th>
+                            <th style={{ textAlign: "right" }}>Lançamentos</th>
                             <th>Status</th>
                           </tr>
                         </thead>
@@ -1330,6 +1331,16 @@ export default function FraudPage() {
                           {credFuncPageRows.map((row: any) => {
                             const expanded = credFuncExpandido === Number(row.id_funcionario);
                             const suspeito = String(row.status || "") === "Suspeito";
+                            const usadoVale = Number(row.usado_vale || 0);
+                            const usadoPrazo = Number(row.usado_prazo || 0);
+                            const tipoUso =
+                              usadoVale > 0 && usadoPrazo <= 0
+                                ? "Vale"
+                                : usadoPrazo > 0 && usadoVale <= 0
+                                  ? "A prazo"
+                                  : usadoVale > 0 && usadoPrazo > 0
+                                    ? "Misto"
+                                    : "—";
                             return (
                               <Fragment key={row.id_funcionario}>
                                 <tr
@@ -1350,12 +1361,11 @@ export default function FraudPage() {
                                       </div>
                                     ) : null}
                                   </td>
+                                  <td>{tipoUso}</td>
                                   <td style={{ textAlign: "right" }}>{formatCurrency(row.limite_prazo)}</td>
                                   <td style={{ textAlign: "right" }}>{formatCurrency(row.limite_vale)}</td>
-                                  <td style={{ textAlign: "right", fontWeight: 700 }}>
-                                    {formatCurrency(row.limite_total ?? row.limite)}
-                                  </td>
-                                  <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_mes)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(usadoVale)}</td>
+                                  <td style={{ textAlign: "right" }}>{formatCurrency(usadoPrazo)}</td>
                                   <td style={{ textAlign: "right" }}>{formatCurrency(row.usado_geral)}</td>
                                   <td style={{ textAlign: "right" }}>{formatCurrency(row.pago_mes)}</td>
                                   <td style={{ textAlign: "right", fontWeight: 700 }}>
@@ -1431,7 +1441,7 @@ export default function FraudPage() {
                                                         <td style={{ minWidth: 160, maxWidth: 360, whiteSpace: "normal" }}>
                                                           {String(u.observacao || u.historico || "").trim() || "—"}
                                                         </td>
-                                                        <td>{u.tipo_uso === "vale" ? "Vale" : "A prazo"}</td>
+                                                        <td>{u.tipo_uso === "vale" ? "Vale" : "Crédito a prazo"}</td>
                                                         <td>{u.situacao === "pago" ? "Pago" : "Em aberto"}</td>
                                                         <td style={{ textAlign: "right" }}>{formatCurrency(u.valor)}</td>
                                                         <td style={{ textAlign: "right" }}>{formatCurrency(u.vlr_pago)}</td>

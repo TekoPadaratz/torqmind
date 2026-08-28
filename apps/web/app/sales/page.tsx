@@ -25,7 +25,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
-import { isSalesFloorMode } from "../lib/session";
+import { canViewSensitiveFinancials, isSalesFloorMode } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
 
@@ -71,6 +71,7 @@ export default function SalesPage() {
 
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
   const floorMode = useMemo(() => isSalesFloorMode(claims), [claims]);
+  const showSensitive = canViewSensitiveFinancials(claims);
   const transitionCopy = pendingUnavailable
     ? buildModuleUnavailableCopy("vendas")
     : buildModuleLoadingCopy("vendas");
@@ -332,12 +333,14 @@ export default function SalesPage() {
                 </div>
               </div>
 
-              <div className="card kpi col-4">
-                <div className="label">Margem analítica</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(data?.kpis?.margem)}
+              {showSensitive ? (
+                <div className="card kpi col-4">
+                  <div className="label">Margem analítica</div>
+                  <div className="value">
+                    {loading ? "..." : formatCurrency(data?.kpis?.margem)}
+                  </div>
                 </div>
-              </div>
+              ) : null}
               <div className="card kpi col-4">
                 <div className="label">Ticket Médio Produtos</div>
                 <div className="value">
@@ -432,7 +435,7 @@ export default function SalesPage() {
                       <tr>
                         <th style={{ whiteSpace: "nowrap" }}>Grupo</th>
                         <th style={{ whiteSpace: "nowrap" }}>Receita</th>
-                        <th style={{ whiteSpace: "nowrap" }}>Margem</th>
+                        {showSensitive ? <th style={{ whiteSpace: "nowrap" }}>Margem</th> : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -455,7 +458,9 @@ export default function SalesPage() {
                               {g.grupo_nome}
                             </td>
                             <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(g.faturamento)}</td>
-                            <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(g.margem)}</td>
+                            {showSensitive ? (
+                              <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(g.margem)}</td>
+                            ) : null}
                           </tr>
                         );
                       })}
@@ -481,8 +486,12 @@ export default function SalesPage() {
                       <tr>
                         <th style={{ whiteSpace: "nowrap" }}>Produto</th>
                         <th style={{ whiteSpace: "nowrap" }}>Receita</th>
-                        <th style={{ whiteSpace: "nowrap" }}>Custo</th>
-                        <th style={{ whiteSpace: "nowrap" }}>Margem</th>
+                        {showSensitive ? (
+                          <>
+                            <th style={{ whiteSpace: "nowrap" }}>Custo</th>
+                            <th style={{ whiteSpace: "nowrap" }}>Margem</th>
+                          </>
+                        ) : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -496,8 +505,12 @@ export default function SalesPage() {
                             </div>
                           </td>
                           <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.faturamento)}</td>
-                          <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.custo_total)}</td>
-                          <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.margem)}</td>
+                          {showSensitive ? (
+                            <>
+                              <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.custo_total)}</td>
+                              <td style={{ whiteSpace: "nowrap" }}>{formatCurrency(p.margem)}</td>
+                            </>
+                          ) : null}
                         </tr>
                       ))}
                     </tbody>

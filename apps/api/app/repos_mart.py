@@ -10092,22 +10092,14 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
               AND is_deleted = 0
               AND id_entidade > 0
               AND JSONExtractString(payload, 'ID_GRUPOENTIDADES') = '12'
-              AND (
-                toFloat64OrZero(JSONExtractString(payload, 'LIMITE')) > 0
-                OR toFloat64OrZero(JSONExtractString(payload, 'LIMITE_VALE')) > 0
-              )
         )
         GROUP BY id_entidade
         """,
         {"id_empresa": id_empresa},
     )
-    if not base_rows:
-        return {"resumo": 0, "usos": 0}
-
-    ents_csv = ", ".join(str(int(r["id_entidade"])) for r in base_rows)
 
     cr_rows = query_dict(
-        f"""
+        """
         SELECT
             id_filial,
             id_contasreceber,
@@ -10127,8 +10119,15 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
         FROM torqmind_current.stg_contasreceber FINAL
         WHERE id_empresa = %(id_empresa)s
           AND is_deleted = 0
-          AND toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) IN ({ents_csv})
           AND toFloat64OrZero(JSONExtractString(payload, 'VALOR')) > 0
+          AND toInt32OrZero(JSONExtractString(payload, 'ID_ENTIDADE')) IN (
+            SELECT id_entidade
+            FROM torqmind_current.stg_entidades FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND is_deleted = 0
+              AND id_entidade > 0
+              AND JSONExtractString(payload, 'ID_GRUPOENTIDADES') = '12'
+          )
         """,
         {"id_empresa": id_empresa},
     )
@@ -10138,6 +10137,19 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
 
     tz = ZoneInfo("America/Sao_Paulo")
     today_local = datetime.now(tz).date()
+
+    def _infer_tipo_uso(hist: str, obs: str, nro_doc: str) -> str:
+        blob = f"{hist} {obs}".lower()
+        if "vale" in blob:
+            return "vale"
+        if nro_doc or nf_re.search(hist):
+            return "prazo"
+        # Lançamento direto no CAR sem NF — convenio/vale funcionário
+        return "vale"
+
+    entidade_meta: Dict[int, Dict[str, Any]] = {
+        int(r["id_entidade"]): r for r in base_rows if r.get("id_entidade") is not None
+    }
 
     def _ym(dt_val: Any) -> int | None:
         if dt_val is None:
@@ -10169,6 +10181,8 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
         }
     )
 
+    missing_entidades: set[int] = set()
+
     for row in cr_rows:
         eid = int(row.get("id_entidade") or 0)
         if not eid:
@@ -10177,17 +10191,20 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
         if valor <= 0:
             continue
         vlr_pago = float(row.get("vlr_pago") or 0)
-        dtapgto_raw = str(row.get("dtapgto_raw") or "").strip()
-        aberto = not dtapgto_raw
-        saldo_aberto = max(valor - vlr_pago, 0.0) if aberto else 0.0
         hist = str(row.get("historico") or "")
         obs = str(row.get("observacao") or "").strip()
-        tipo = "vale" if "vale" in hist.lower() else "prazo"
+        m = nf_re.search(hist)
+        nro_doc = m.group(1) if m else ""
+        tipo = _infer_tipo_uso(hist, obs, nro_doc)
+        saldo_aberto = max(valor - vlr_pago, 0.0)
         dt_evento = row.get("dt_evento")
         dt_venc = row.get("dt_vencimento")
         dt_pag = row.get("dt_pagamento")
         lanc_ym = _ym(dt_evento)
-        pag_ym = _ym(dt_pag) if dt_pag is not None else (_ym(dtapgto_raw) if dtapgto_raw else None)
+        pag_ym = _ym(dt_pag) if dt_pag is not None else None
+
+        if eid not in entidade_meta:
+            missing_entidades.add(eid)
 
         bucket = agg[eid]
         bucket["usado_geral"] += valor
@@ -10218,15 +10235,13 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
                 bucket["qtd_aberto_vencido"] += 1
 
         grupo_lista = ""
-        if pag_ym == ym and vlr_pago > 0:
+        if lanc_ym == ym:
+            grupo_lista = "aberto_mes" if saldo_aberto > 0.01 else "pago_mes"
+        elif pag_ym == ym and vlr_pago > 0:
             grupo_lista = "pago_mes"
-        elif lanc_ym == ym and saldo_aberto > 0.01:
-            grupo_lista = "aberto_mes"
         if not grupo_lista:
             continue
 
-        m = nf_re.search(hist)
-        nro_doc = m.group(1) if m else ""
         situacao = "aberto" if saldo_aberto > 0.01 else "pago"
         bucket["items"].append({
             "id_empresa": id_empresa,
@@ -10255,7 +10270,45 @@ def mash_fraud_credito_funcionario_ch(id_empresa: int, ano_mes: int) -> Dict[str
             "published_at": published_at,
         })
 
+    if missing_entidades:
+        miss_csv = ", ".join(str(i) for i in sorted(missing_entidades))
+        extra_rows = query_dict(
+            f"""
+            SELECT
+                id_entidade,
+                if(
+                    nullIf(trimBoth(JSONExtractString(payload, 'NOMEENTIDADE')), '') IS NOT NULL,
+                    trimBoth(JSONExtractString(payload, 'NOMEENTIDADE')),
+                    ifNull(nullIf(trimBoth(JSONExtractString(payload, 'RAZAOSOCIALENTIDADE')), ''), 'Funcionário')
+                ) AS nome_funcionario,
+                replaceRegexpAll(
+                    coalesce(
+                        nullIf(JSONExtractString(payload, 'CNPJCPF'), ''),
+                        nullIf(JSONExtractString(payload, 'CPF'), ''),
+                        ''
+                    ),
+                    '[^0-9]',
+                    ''
+                ) AS cpf,
+                if(lowerUTF8(JSONExtractString(payload, 'ATIVO')) IN ('true', '1', 't'), 1, 0) AS ativo,
+                toFloat64OrZero(JSONExtractString(payload, 'LIMITE')) AS limite_prazo,
+                toFloat64OrZero(JSONExtractString(payload, 'LIMITE_VALE')) AS limite_vale
+            FROM torqmind_current.stg_entidades FINAL
+            WHERE id_empresa = %(id_empresa)s
+              AND is_deleted = 0
+              AND id_entidade IN ({miss_csv})
+            """,
+            {"id_empresa": id_empresa},
+        )
+        for ent_row in extra_rows:
+            eid_extra = int(ent_row.get("id_entidade") or 0)
+            if eid_extra:
+                entidade_meta[eid_extra] = ent_row
+                base_rows.append(ent_row)
+
     # Inativo sem movimento no mês e sem saldo aberto: fora da lista.
+    if not base_rows:
+        return {"resumo": 0, "usos": 0}
     base_rows = [
         r
         for r in base_rows

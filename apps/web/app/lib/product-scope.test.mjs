@@ -434,6 +434,17 @@ test("filterProductLinks with screen without panels returns only that link", () 
   assert.equal(result[0].path, "/cash");
 });
 
+test("filterProductLinks with granular finance child hides siblings without parent grant", () => {
+  const result = filterProductLinks(["finance.receivable"]);
+  const paths = result.map((l) => l.path);
+  assert.ok(paths.includes("/finance?view=receivable"));
+  assert.ok(!paths.includes("/finance?view=payable"));
+  assert.ok(!paths.includes("/finance?view=cheques"));
+  assert.ok(!paths.includes("/finance?view=despesas"));
+  assert.ok(!paths.includes("/finance"));
+  assert.ok(!paths.includes("/finance?view=budget"));
+});
+
 test("filterProductLinks with all screens returns all links", () => {
   const allKeys = PRODUCT_LINKS.map((l) => l.screen_key);
   const result = filterProductLinks(allKeys);

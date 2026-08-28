@@ -66,8 +66,17 @@ type GroupRow = {
   productQuery?: string;
 };
 
+type EmployeeRow = {
+  id_funcionario: number;
+  nome: string;
+  funcao: string;
+  include_in_commission: boolean;
+};
+
 export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: ConfigTabProps) {
   const [groups, setGroups] = useState<GroupRow[]>([]);
+  const [employees, setEmployees] = useState<EmployeeRow[]>([]);
+  const [employeeQuery, setEmployeeQuery] = useState("");
   const [tiers, setTiers] = useState<TierDraft[]>([]);
   const [paymentMode, setPaymentMode] = useState("individual_sales");
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set());
@@ -103,6 +112,14 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
       );
       setTiers(resp.tiers || []);
       setPaymentMode(resp.config?.default_payment_mode || "individual_sales");
+      setEmployees(
+        (resp.employees || []).map((e: any) => ({
+          id_funcionario: Number(e.id_funcionario),
+          nome: String(e.nome || ""),
+          funcao: String(e.funcao || ""),
+          include_in_commission: !!e.include_in_commission,
+        })),
+      );
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Falha ao carregar configuração.");
     } finally {
@@ -335,6 +352,12 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
         tiers,
         default_payment_mode: paymentMode,
         excluded_products,
+        employees: employees.map((e) => ({
+          id_funcionario: e.id_funcionario,
+          nome: e.nome,
+          funcao: e.funcao,
+          include_in_commission: e.include_in_commission,
+        })),
       });
       setMessage("Configuração salva com sucesso!");
       if (onSaved) onSaved();
@@ -365,6 +388,14 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
   const selectedCount = groups.filter((g) => g.selected).length;
   const allGroupsSelected = groups.length > 0 && selectedCount === groups.length;
 
+  const employeeQueryNorm = employeeQuery.trim().toLocaleLowerCase("pt-BR");
+  const filteredEmployees = employees.filter((e) => {
+    if (!employeeQueryNorm) return true;
+    const hay = `${e.nome} ${e.funcao} ${e.id_funcionario}`.toLocaleLowerCase("pt-BR");
+    return hay.includes(employeeQueryNorm);
+  });
+  const includedEmployees = employees.filter((e) => e.include_in_commission).length;
+
   const bulkBtnStyle: CSSProperties = {
     fontSize: 12,
     padding: "4px 10px",
@@ -387,6 +418,58 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
 
       {error && <div className="card errorCard" style={{ marginTop: 12 }}>{error}</div>}
       {message && <div className="card" style={{ marginTop: 12, color: "#22c55e", fontWeight: 500, padding: "10px 14px" }}>{message}</div>}
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>Funcionários — considerar no relatório</div>
+          <GridSearchInput value={employeeQuery} onChange={setEmployeeQuery} />
+          <span className="muted" style={{ fontSize: 12 }}>
+            {includedEmployees} de {employees.length} incluídos
+          </span>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          Função vinda do Xpert. Desmarque quem não é vendedor (gerente, administrativo, etc.).
+        </div>
+        {employees.length === 0 ? (
+          <EmptyState title="Sem funcionários" detail="Nenhum funcionário ativo encontrado na filial." />
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="dataTable" style={{ fontSize: 13 }}>
+              <thead>
+                <tr>
+                  <th>Funcionário</th>
+                  <th>Função (Xpert)</th>
+                  <th style={{ textAlign: "center" }}>Vendedor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEmployees.map((emp) => (
+                  <tr key={emp.id_funcionario}>
+                    <td>{emp.nome || `Funcionário ${emp.id_funcionario}`}</td>
+                    <td>{emp.funcao || "—"}</td>
+                    <td style={{ textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={emp.include_in_commission}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setEmployees((prev) =>
+                            prev.map((row) =>
+                              row.id_funcionario === emp.id_funcionario
+                                ? { ...row, include_in_commission: checked }
+                                : row,
+                            ),
+                          );
+                        }}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div className="card" style={{ marginTop: 12 }}>
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>Modo de pagamento padrão</div>

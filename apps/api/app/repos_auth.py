@@ -30,6 +30,7 @@ from app.permissions import (
     load_user_screen_permissions,
     resolve_default_route as _resolve_default,
     ROLE_DEFAULT_SCREENS,
+    user_can_view_sensitive_financials,
 )
 from app.security import verify_password
 from app.usernames import (
@@ -145,6 +146,7 @@ def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
               last_login_at,
               failed_login_count,
               locked_until,
+              can_view_sensitive_financials,
               created_at,
               updated_at
             FROM auth.users
@@ -1023,10 +1025,13 @@ def _build_session_context(
     _claims_stub = {
         "user_role": user_role,
         "allowed_screens": allowed_screens,
-        "can_view_sensitive_financials": _can_view_sensitive({"user_role": user_role}),
+        "can_view_sensitive_financials": user_can_view_sensitive_financials(
+            user_role,
+            user.get("can_view_sensitive_financials"),
+        ),
     }
     default_route = _resolve_default(_claims_stub)
-    can_see_financials = _can_view_sensitive({"user_role": user_role})
+    can_see_financials = _claims_stub["can_view_sensitive_financials"]
 
     home_path = (
         default_route

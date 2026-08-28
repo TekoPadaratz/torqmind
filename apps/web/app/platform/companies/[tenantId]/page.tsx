@@ -27,6 +27,7 @@ function buildBranchForm(branch: any) {
     valid_from: toDateInput(branch.valid_from),
     valid_until: toDateInput(branch.valid_until),
     blocked_reason: branch.blocked_reason || '',
+    module_tier: branch.module_tier || 'essencial',
   };
 }
 
@@ -66,6 +67,7 @@ export default function PlatformCompanyDetailPage() {
         suspended_reason: detail.suspended_reason || '',
         sales_history_days: String(detail.sales_history_days || 365),
         default_product_scope_days: String(detail.default_product_scope_days || 1),
+        module_tier: detail.module_tier || 'essencial',
       });
       const branches = detail.branches || [];
       const nextSelectedBranchId = preferredBranchId ?? selectedBranchId;
@@ -124,6 +126,7 @@ export default function PlatformCompanyDetailPage() {
         billing_status: me?.access?.platform_finance ? companyForm.billing_status : null,
         sales_history_days: Number(companyForm.sales_history_days || 365),
         default_product_scope_days: Number(companyForm.default_product_scope_days || 1),
+        module_tier: companyForm.module_tier || 'essencial',
       });
       await loadCompany(me);
     } catch (err: any) {
@@ -135,7 +138,10 @@ export default function PlatformCompanyDetailPage() {
 
   function selectBranch(branch: any) {
     setSelectedBranchId(branch.id_filial);
-    setBranchForm(buildBranchForm(branch));
+    setBranchForm({
+      ...buildBranchForm(branch),
+      module_tier: branch.module_tier || companyForm?.module_tier || 'essencial',
+    });
     setBranchError('');
   }
 
@@ -153,6 +159,7 @@ export default function PlatformCompanyDetailPage() {
         valid_from: branchForm.valid_from || null,
         valid_until: branchForm.valid_until || null,
         blocked_reason: branchForm.blocked_reason || null,
+        module_tier: branchForm.module_tier || null,
       });
       await loadCompany(me, branchForm.id_filial);
     } catch (err: any) {
@@ -208,6 +215,16 @@ export default function PlatformCompanyDetailPage() {
               onChange={(e) => setCompanyForm({ ...companyForm, default_product_scope_days: e.target.value })}
               placeholder="Janela padrão do produto"
             />
+            <select
+              className="input"
+              value={companyForm.module_tier || 'essencial'}
+              onChange={(e) => setCompanyForm({ ...companyForm, module_tier: e.target.value })}
+            >
+              <option value="essencial">Essencial</option>
+              <option value="profissional">Profissional</option>
+              <option value="gestao">Gestão</option>
+              <option value="intelligence">Gestão + Intelligence</option>
+            </select>
             {me?.access?.platform_finance ? (
               <>
                 <select className="input" value={companyForm.status} onChange={(e) => setCompanyForm({ ...companyForm, status: e.target.value })}>
@@ -351,6 +368,16 @@ export default function PlatformCompanyDetailPage() {
                   onChange={(e) => setBranchForm({ ...branchForm, blocked_reason: e.target.value })}
                   placeholder="Motivo do bloqueio"
                 />
+                <select
+                  className="input"
+                  value={branchForm.module_tier || 'essencial'}
+                  onChange={(e) => setBranchForm({ ...branchForm, module_tier: e.target.value })}
+                >
+                  <option value="essencial">Essencial</option>
+                  <option value="profissional">Profissional</option>
+                  <option value="gestao">Gestão</option>
+                  <option value="intelligence">Gestão + Intelligence</option>
+                </select>
                 <label className="platformCheckbox">
                   <input
                     type="checkbox"

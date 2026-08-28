@@ -36,7 +36,7 @@ class TenantUpsertRequest(BaseModel):
     billing_day: Optional[int] = Field(default=None, ge=1, le=31)
     issue_day: Optional[int] = Field(default=None, ge=1, le=31)
     sales_history_days: Optional[int] = Field(default=None, ge=1, le=3650)
-    default_product_scope_days: Optional[int] = Field(default=None, ge=1, le=365)
+    module_tier: Optional[str] = Field(default="essencial", description="Pacote modular contratado")
 
 
 class BranchUpsertRequest(BaseModel):
@@ -47,6 +47,7 @@ class BranchUpsertRequest(BaseModel):
     valid_from: Optional[date] = None
     valid_until: Optional[date] = None
     blocked_reason: Optional[str] = None
+    module_tier: Optional[str] = None
 
 
 class UserAccessInput(BaseModel):
@@ -73,6 +74,10 @@ class UserUpsertRequest(BaseModel):
     reset_failed_login: bool = False
     accesses: list[UserAccessInput] = Field(default_factory=list)
     screen_permissions: Optional[List[str]] = Field(default=None, description="Allowed screen keys for manager/kiosk roles")
+    can_view_sensitive_financials: bool = Field(
+        default=False,
+        description="Permite ver margem, custo e lucro (owner/master sempre true)",
+    )
 
     @field_validator("email")
     @classmethod
