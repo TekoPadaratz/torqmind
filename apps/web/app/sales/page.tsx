@@ -25,7 +25,7 @@ import {
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
-import { canViewSensitiveFinancials, isSalesFloorMode } from "../lib/session";
+import { canViewSensitiveFinancials, isSalesFloorMode, canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
 
@@ -46,6 +46,17 @@ const MONTH_LABELS = [
   "Dez",
 ];
 
+const SALES_OVERVIEW_PANELS = [
+  "sales.overview",
+  "sales.evolution",
+  "sales.hourly",
+  "sales.top",
+] as const;
+
+function hasAnySalesOverviewPanel(session: unknown): boolean {
+  return SALES_OVERVIEW_PANELS.some((key) => canAccessScreenKey(session, key));
+}
+
 export default function SalesPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
@@ -60,7 +71,8 @@ export default function SalesPage() {
       scope,
       errorMessage: "Falha ao carregar vendas",
       keepPreviousData: true,
-      buildRequestUrl: (currentScope) => {
+      buildRequestUrl: (currentScope, session) => {
+        if (!hasAnySalesOverviewPanel(session)) return null;
         const params = buildScopeParams(currentScope);
         for (const id of selectedGrupoIds) {
           params.append("id_grupos", String(id));
@@ -72,6 +84,11 @@ export default function SalesPage() {
   const userLabel = useMemo(() => buildUserLabel(claims), [claims]);
   const floorMode = useMemo(() => isSalesFloorMode(claims), [claims]);
   const showSensitive = canViewSensitiveFinancials(claims);
+  const canSeeOverview = canAccessScreenKey(claims, "sales.overview");
+  const canSeeEvolution = canAccessScreenKey(claims, "sales.evolution");
+  const canSeeHourly = canAccessScreenKey(claims, "sales.hourly");
+  const canSeeTop = canAccessScreenKey(claims, "sales.top");
+  const hasAnyPanel = canSeeOverview || canSeeEvolution || canSeeHourly || canSeeTop;
   const transitionCopy = pendingUnavailable
     ? buildModuleUnavailableCopy("vendas")
     : buildModuleLoadingCopy("vendas");
@@ -167,6 +184,20 @@ export default function SalesPage() {
       prev.includes(idGrupo) ? prev.filter((id) => id !== idGrupo) : [...prev, idGrupo],
     );
   const productsDisplayLimit = selectedGrupoIds.length ? 50 : 15;
+
+  if (!hasAnyPanel) {
+    return (
+      <div>
+        <AppNav title="Vendas" userLabel={userLabel} />
+        <div className="container">
+          <div className="card errorCard" style={{ marginTop: 12 }}>
+            Você não tem permissão para os painéis de Vendas neste usuário.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (floorMode) {
     const devolucoes = Number(
       data?.kpis?.devolucoes || commercial?.entradas || 0,
@@ -235,34 +266,70 @@ export default function SalesPage() {
         ) : (
           <>
             <div className="bi-grid" style={{ marginTop: 12 }}>
-              <div className="card kpi col-4">
-                <div className="label">Vendas</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercial?.saidas)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {Number(commercial?.qtd_saidas || 0)} comprovante(s)
-                </div>
-              </div>
-              <div className="card kpi col-4">
-                <div className="label">Cancelamentos</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(commercial?.cancelamentos)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {Number(commercial?.qtd_cancelamentos || 0)} comprovante(s)
-                </div>
-              </div>
-              <div className="card kpi col-4">
-                <div className="label">Devoluções do período</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(data?.kpis?.devolucoes)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {Number(commercial?.qtd_entradas || 0)} comprovante(s)
-                </div>
-              </div>
+              {canSeeOverview ? (
+                <>
+                  <div className="card kpi col-4">
+                    <div className="label">Vendas</div>
+                    <div className="value">
+                      {loading ? "..." : formatCurrency(commercial?.saidas)}
+                    </div>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      {Number(commercial?.qtd_saidas || 0)} comprovante(s)
+                    </div>
+                  </div>
+                  <div className="card kpi col-4">
+                    <div className="label">Cancelamentos</div>
+                    <div className="value">
+                      {loading ? "..." : formatCurrency(commercial?.cancelamentos)}
+                    </div>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      {Number(commercial?.qtd_cancelamentos || 0)} comprovante(s)
+                    </div>
+                  </div>
+                  <div className="card kpi col-4">
+                    <div className="label">Devoluções do período</div>
+                    <div className="value">
+                      {loading ? "..." : formatCurrency(data?.kpis?.devolucoes)}
+                    </div>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      {Number(commercial?.qtd_entradas || 0)} comprovante(s)
+                    </div>
+                  </div>
+                  {showSensitive ? (
+                    <div className="card kpi col-4">
+                      <div className="label">Margem analítica</div>
+                      <div className="value">
+                        {loading ? "..." : formatCurrency(data?.kpis?.margem)}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="card kpi col-4">
+                    <div className="label">Ticket Médio Produtos</div>
+                    <div className="value">
+                      {loading ? "..." : formatCurrency(data?.kpis?.ticket_medio)}
+                    </div>
+                  </div>
+                  <div className="card kpi col-4">
+                    <div className="label">Ticket Médio Combustível</div>
+                    <div className="value">
+                      {loading ? "..." : formatCurrency(data?.ticket_combustivel?.ticket_medio)}
+                    </div>
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      {!loading ? (
+                        <>
+                          {Number(data?.ticket_combustivel?.qtd_abastecimentos || 0).toLocaleString("pt-BR")}{" "}
+                          item(ns)
+                          {Number(data?.ticket_combustivel?.valor_total || 0) > 0
+                            ? ` · ${formatCurrency(data?.ticket_combustivel?.valor_total)} em combustível`
+                            : ""}
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                </>
+              ) : null}
 
+              {canSeeEvolution ? (
               <div className="card col-12 chartCard">
                 <h2>Evolução de vendas</h2>
                 <div className="muted" style={{ marginTop: 8 }}>
@@ -332,39 +399,9 @@ export default function SalesPage() {
                   </ResponsiveContainer>
                 </div>
               </div>
-
-              {showSensitive ? (
-                <div className="card kpi col-4">
-                  <div className="label">Margem analítica</div>
-                  <div className="value">
-                    {loading ? "..." : formatCurrency(data?.kpis?.margem)}
-                  </div>
-                </div>
               ) : null}
-              <div className="card kpi col-4">
-                <div className="label">Ticket Médio Produtos</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(data?.kpis?.ticket_medio)}
-                </div>
-              </div>
-              <div className="card kpi col-4">
-                <div className="label">Ticket Médio Combustível</div>
-                <div className="value">
-                  {loading ? "..." : formatCurrency(data?.ticket_combustivel?.ticket_medio)}
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  {!loading ? (
-                    <>
-                      {Number(data?.ticket_combustivel?.qtd_abastecimentos || 0).toLocaleString("pt-BR")}{" "}
-                      item(ns)
-                      {Number(data?.ticket_combustivel?.valor_total || 0) > 0
-                        ? ` · ${formatCurrency(data?.ticket_combustivel?.valor_total)} em combustível`
-                        : ""}
-                    </>
-                  ) : null}
-                </div>
-              </div>
 
+              {canSeeHourly ? (
               <div className="card col-12 chartCard">
                 <h2>Vendas por hora</h2>
                 {!loading && !hasHourValues ? (
@@ -398,7 +435,10 @@ export default function SalesPage() {
                   </ResponsiveContainer>
                 </div>
               </div>
+              ) : null}
 
+              {canSeeTop ? (
+              <>
               <div className="card col-6">
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline", justifyContent: "space-between" }}>
                   <h2>Top grupos</h2>
@@ -517,8 +557,10 @@ export default function SalesPage() {
                   </table>
                 </div>
               </div>
+              </>
+              ) : null}
 
-              {!loading && !hasCommercialData ? (
+              {canSeeOverview && !loading && !hasCommercialData ? (
                 <div className="card col-12">
                   <EmptyState
                     title="Sem movimento comercial relevante no período."

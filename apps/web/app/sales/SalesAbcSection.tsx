@@ -19,7 +19,7 @@ import GridPager, { useClientPager } from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
-import { readCachedSession } from "../lib/session";
+import { canAccessScreenKey, readCachedSession } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
 
@@ -167,7 +167,8 @@ export default function SalesAbcSection() {
     moduleKey: `sales_abc_curve_${sortBy}_${params.abc_threshold_a}_${params.abc_threshold_b}_g${appliedGroups.slice().sort((a, b) => a - b).join("-")}_${refreshKey}`,
     scope,
     errorMessage: "Falha ao carregar Curva ABC",
-    buildRequestUrl: (currentScope) => {
+    buildRequestUrl: (currentScope, session) => {
+      if (!canAccessScreenKey(session, "sales.abc")) return null;
       const base = `/bi/sales/abc-curve?sort_by=${sortBy}&threshold_a=${params.abc_threshold_a}&threshold_b=${params.abc_threshold_b}&${buildScopeParams(currentScope).toString()}`;
       const grupos = appliedGroups.map((id) => `&id_grupos=${id}`).join("");
       return base + grupos;

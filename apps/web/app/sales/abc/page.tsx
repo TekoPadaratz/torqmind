@@ -2,13 +2,28 @@
 
 import AppNav from "../../components/AppNav";
 import { buildUserLabel } from "../../lib/format";
-import { readCachedSession } from "../../lib/session";
+import { canAccessScreenKey, readCachedSession } from "../../lib/session";
 import SalesAbcSection from "../SalesAbcSection";
 
 export const dynamic = "force-dynamic";
 
 export default function SalesAbcPage() {
-  const userLabel = buildUserLabel(readCachedSession());
+  const session = readCachedSession();
+  const allowed = canAccessScreenKey(session, "sales.abc");
+  const userLabel = buildUserLabel(session);
+
+  if (!allowed) {
+    return (
+      <div>
+        <AppNav title="Curva ABC" userLabel={userLabel} />
+        <div className="container">
+          <div className="card errorCard" style={{ marginTop: 12 }}>
+            Você não tem permissão para a Curva ABC neste usuário.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

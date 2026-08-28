@@ -62,6 +62,30 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "category": "Comercial",
         "has_sensitive": True,
     },
+    "sales.overview": {
+        "label": "Visão geral",
+        "category": "Comercial",
+        "parent": "sales",
+        "has_sensitive": True,
+    },
+    "sales.evolution": {
+        "label": "Evolução de vendas",
+        "category": "Comercial",
+        "parent": "sales",
+        "has_sensitive": True,
+    },
+    "sales.hourly": {
+        "label": "Vendas por hora",
+        "category": "Comercial",
+        "parent": "sales",
+        "has_sensitive": True,
+    },
+    "sales.top": {
+        "label": "Top vendas",
+        "category": "Comercial",
+        "parent": "sales",
+        "has_sensitive": True,
+    },
     "sales.abc": {
         "label": "Curva ABC",
         "category": "Comercial",
@@ -151,6 +175,11 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "label": "Movimentações de Combustível",
         "category": "Operação",
         "has_sensitive": False,
+    },
+    "product_management": {
+        "label": "Gestão de Produtos",
+        "category": "Operação",
+        "has_sensitive": True,
     },
     "competitor_pricing": {
         "label": "Preço Concorrente",
@@ -412,6 +441,10 @@ MODULE_TIER_KEYS: tuple[str, ...] = ("essencial", "profissional", "gestao", "int
 
 _MODULE_TIER_ESSENCIAL: Set[str] = {
     "sales",
+    "sales.overview",
+    "sales.evolution",
+    "sales.hourly",
+    "sales.top",
     "sales.abc",
     "customers",
     "team",

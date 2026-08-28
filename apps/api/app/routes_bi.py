@@ -675,6 +675,48 @@ def _safe_fraud_overview_payload(tenant_id: int, dt_ini: date, dt_fim: date, dt_
     )
 
 
+def _apply_sales_panel_access(bundle: Dict[str, Any], claims: dict) -> Dict[str, Any]:
+    """Redact overview payload fields the user cannot access (grid-by-grid ACL)."""
+    from app.permissions import can_access_screen
+
+    result = copy.deepcopy(bundle)
+    if not can_access_screen(claims, "sales.overview"):
+        result["kpis"] = {k: None for k in (result.get("kpis") or {})}
+        result["commercial_kpis"] = {
+            k: None for k in (result.get("commercial_kpis") or {})
+        }
+        result["ticket_combustivel"] = {
+            "ticket_medio": 0.0,
+            "valor_total": 0.0,
+            "qtd_abastecimentos": 0,
+        }
+        result["cfop_breakdown"] = []
+        result["by_day"] = []
+    if not can_access_screen(claims, "sales.evolution"):
+        result["monthly_evolution"] = []
+        result["annual_comparison"] = {
+            "current_year": None,
+            "previous_year": None,
+            "months": [],
+        }
+    if not can_access_screen(claims, "sales.hourly"):
+        result["commercial_by_hour"] = []
+        result["by_hour"] = []
+    if not can_access_screen(claims, "sales.top"):
+        result["top_products"] = []
+        result["top_groups"] = []
+        result["top_employees"] = []
+    return result
+
+
+_SALES_OVERVIEW_PANELS = (
+    "sales.overview",
+    "sales.evolution",
+    "sales.hourly",
+    "sales.top",
+)
+
+
 def _empty_sales_overview_payload() -> Dict[str, Any]:
     return {
         "kpis": {"faturamento": None, "margem": None, "ticket_medio": None, "devolucoes": None},
@@ -1110,10 +1152,22 @@ def sales_overview(
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("sales")),
 ):
+    from app.permissions import can_access_screen
+
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
     as_of = resolve_business_date(dt_ref, tenant)
     grupo_ids = sorted({int(g) for g in (id_grupos or []) if g is not None})
+
+    if not any(can_access_screen(claims, panel) for panel in _SALES_OVERVIEW_PANELS):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "screen_access_denied",
+                "message": "Sem permissão para os painéis de Vendas.",
+                "screen_key": "sales",
+            },
+        )
 
     def build_response() -> Dict[str, Any]:
         bundle = repos_mart.sales_overview_bundle(
@@ -1123,7 +1177,7 @@ def sales_overview(
             bundle["ticket_combustivel"] = repos_mart.sales_ticket_combustivel(role, tenant, filial, dt_ini, dt_fim)
         except Exception:
             bundle["ticket_combustivel"] = {"ticket_medio": 0.0, "valor_total": 0.0, "qtd_abastecimentos": 0}
-        return redact_sensitive(bundle, claims)
+        return _apply_sales_panel_access(redact_sensitive(bundle, claims), claims)
 
     return redact_sensitive(_with_cached_response(
         scope_key="sales_overview",
@@ -1151,7 +1205,7 @@ def sales_abc_curve(
     id_filiais: Optional[List[int]] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
-    _screen=Depends(require_screen("sales")),
+    _screen=Depends(require_screen("sales.abc")),
 ):
     role = claims["role"]
     tenant, filial, branch_scope = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)

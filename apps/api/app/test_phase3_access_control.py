@@ -769,6 +769,35 @@ class TestRequireNotKiosk(unittest.TestCase):
 # 15) expand / normalize screen permissions (profit_management panels)
 # ---------------------------------------------------------------------------
 
+class TestSalesScreenPermissions(unittest.TestCase):
+    """Unit tests for sales panel ACL (grid-by-grid)."""
+
+    def test_expand_parent_includes_all_sales_panels(self):
+        expanded = expand_screen_permissions({"sales"})
+        self.assertIn("sales", expanded)
+        self.assertIn("sales.overview", expanded)
+        self.assertIn("sales.evolution", expanded)
+        self.assertIn("sales.hourly", expanded)
+        self.assertIn("sales.top", expanded)
+        self.assertIn("sales.abc", expanded)
+
+    def test_expand_hourly_panel_includes_parent_not_abc(self):
+        expanded = expand_screen_permissions({"sales.hourly"})
+        self.assertIn("sales", expanded)
+        self.assertIn("sales.hourly", expanded)
+        self.assertNotIn("sales.abc", expanded)
+
+    def test_normalize_orphan_sales_panel_dropped(self):
+        saved = normalize_screen_permissions_for_save(["sales.evolution"])
+        self.assertNotIn("sales.evolution", saved)
+        self.assertEqual(saved, [])
+
+    def test_normalize_parent_and_sales_panel_kept(self):
+        saved = normalize_screen_permissions_for_save(["sales", "sales.top"])
+        self.assertIn("sales", saved)
+        self.assertIn("sales.top", saved)
+
+
 class TestProfitManagementScreenPermissions(unittest.TestCase):
     """Unit tests for parent↔panel expansion and orphan-panel drop on save."""
 

@@ -420,12 +420,19 @@ test("filterProductLinks with null returns all links (admin fallback)", () => {
 
 test("filterProductLinks with single screen returns that link and its panels", () => {
   // Pai sem painéis explícitos ganha os painéis (mesma semântica do backend
-  // expand_screen_permissions): sales → sales + sales.abc.
+  // expand_screen_permissions): sales → sales + todos os painéis filhos.
   const result = filterProductLinks(["sales"]);
   assert.deepEqual(
     result.map((l) => l.path),
     ["/sales", "/sales/abc"],
   );
+});
+
+test("filterProductLinks with granular sales child hides siblings without parent grant", () => {
+  const result = filterProductLinks(["sales.hourly"]);
+  const paths = result.map((l) => l.path);
+  assert.ok(paths.includes("/sales"));
+  assert.ok(!paths.includes("/sales/abc"));
 });
 
 test("filterProductLinks with screen without panels returns only that link", () => {

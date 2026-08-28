@@ -13,7 +13,7 @@ export const PRODUCT_LINKS = [
   { path: '/cash', label: 'Caixa', screen_key: 'cash' },
   { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
   { path: '/fuel-loss', label: 'Movimentações de Combustível', screen_key: 'fuel_loss' },
-  { path: '/finance?view=payable', label: 'Contas a pagar', screen_key: 'finance.payable', parent_screen: 'finance' },
+  { path: '/product-management', label: 'Gestão de Produtos', screen_key: 'product_management' },
   { path: '/finance?view=receivable', label: 'Contas a receber', screen_key: 'finance.receivable', parent_screen: 'finance' },
   { path: '/finance?view=cheques', label: 'Controle de cheques', screen_key: 'finance.cheques', parent_screen: 'finance' },
   { path: '/finance?view=despesas', label: 'Despesas', screen_key: 'finance.despesas', parent_screen: 'finance' },
@@ -60,6 +60,7 @@ export const PRODUCT_NAV_GROUPS = [
       { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
       { path: '/cash', label: 'Caixa', screen_key: 'cash' },
       { path: '/fuel-loss', label: 'Movimentações de Combustível', screen_key: 'fuel_loss' },
+      { path: '/product-management', label: 'Gestão de Produtos', screen_key: 'product_management' },
     ],
   },
 ];
@@ -81,8 +82,16 @@ function explicitChildScreens(parentScreen) {
   return [...keys];
 }
 
+function hasSalesPanelAccess(set) {
+  for (const key of set) {
+    if (typeof key === 'string' && key.startsWith('sales.')) return true;
+  }
+  return false;
+}
+
 function screenAllowed(set, link) {
   if (set.has(link.screen_key)) return true;
+  if (link.screen_key === 'sales' && hasSalesPanelAccess(set)) return true;
   const parent = link.parent_screen;
   if (!parent || !set.has(parent)) {
     return false;
@@ -94,7 +103,7 @@ function screenAllowed(set, link) {
   if (hasExplicitChild) return false;
   if (link.screen_key === 'goals_team.comissoes' && set.has('goals_team')) return true;
   if (link.screen_key === 'team.custos' && set.has('team')) return true;
-  if (link.screen_key === 'sales.abc' && set.has('sales')) return true;
+  if (link.parent_screen === 'sales' && set.has('sales')) return true;
   return true;
 }
 

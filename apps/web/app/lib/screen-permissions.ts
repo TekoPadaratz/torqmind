@@ -23,7 +23,13 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
     key: "sales",
     label: "Vendas",
     category: "Comercial",
-    panels: [{ key: "sales.abc", label: "Curva ABC" }],
+    panels: [
+      { key: "sales.overview", label: "Visão geral" },
+      { key: "sales.evolution", label: "Evolução de vendas" },
+      { key: "sales.hourly", label: "Vendas por hora" },
+      { key: "sales.top", label: "Top vendas" },
+      { key: "sales.abc", label: "Curva ABC" },
+    ],
   },
   {
     key: "customers",
@@ -83,6 +89,12 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
   {
     key: "fuel_loss",
     label: "Movimentações de Combustível",
+    category: "Operação",
+    panels: [],
+  },
+  {
+    key: "product_management",
+    label: "Gestão de Produtos",
     category: "Operação",
     panels: [],
   },

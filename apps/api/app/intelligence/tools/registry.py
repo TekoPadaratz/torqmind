@@ -50,10 +50,10 @@ def _spec(
 
 
 TOOLS: dict[str, dict[str, Any]] = {
-    "sales.overview": _spec(analytics_fn="sales_overview_bundle", screens=["sales"]),
-    "sales.hourly": _spec(analytics_fn="sales_by_hour", screens=["sales"]),
-    "sales.products": _spec(analytics_fn="sales_top_products", screens=["sales"]),
-    "sales.groups": _spec(analytics_fn="sales_top_groups", screens=["sales"]),
+    "sales.overview": _spec(analytics_fn="sales_overview_bundle", screens=["sales", "sales.overview"]),
+    "sales.hourly": _spec(analytics_fn="sales_by_hour", screens=["sales", "sales.hourly"]),
+    "sales.products": _spec(analytics_fn="sales_top_products", screens=["sales", "sales.top"]),
+    "sales.groups": _spec(analytics_fn="sales_top_groups", screens=["sales", "sales.top"]),
     "sales.payments": _spec(analytics_fn="payments_overview", screens=["sales", "cash"]),
     "sales.abc": _spec(analytics_fn="sales_abc_curve", screens=["sales", "sales.abc"]),
     "customer.search": _spec(

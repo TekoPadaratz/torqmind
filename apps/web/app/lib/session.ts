@@ -148,6 +148,13 @@ export function isSalesFloorMode(me: any): boolean {
   if (canViewSensitiveFinancials(me)) return false;
   const screens = getAllowedScreens(me);
   if (!Array.isArray(screens)) return false;
+  const analyticPanels = [
+    'sales.overview',
+    'sales.evolution',
+    'sales.top',
+    'sales.abc',
+  ];
+  if (analyticPanels.some((key) => screens.includes(key))) return false;
   const menus = screens.filter((key: unknown) => {
     if (typeof key !== 'string' || !key) return false;
     if (key.includes('.')) return false;
