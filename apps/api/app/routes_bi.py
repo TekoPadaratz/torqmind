@@ -2422,6 +2422,43 @@ def team_employee_cost(
     return redact_sensitive(payload, claims)
 
 
+@router.get("/team/fuel-employees")
+def team_fuel_employees(
+    ano_mes: Optional[int] = Query(None, description="YYYYMM (padrão mês corrente SP)"),
+    dt_ini: Optional[date] = Query(None),
+    dt_fim: Optional[date] = Query(None),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("team.custos")),
+):
+    """Ranking de abastecimentos (litros combustível) por funcionário, por filial."""
+    from calendar import monthrange
+    from zoneinfo import ZoneInfo
+
+    if dt_ini is not None and dt_fim is not None:
+        ini, fim = dt_ini, dt_fim
+    elif ano_mes is not None:
+        am = int(ano_mes)
+        ano_v, mes_v = am // 100, am % 100
+        if mes_v < 1 or mes_v > 12:
+            raise HTTPException(status_code=400, detail="ano_mes inválido")
+        ini = date(ano_v, mes_v, 1)
+        fim = date(ano_v, mes_v, monthrange(ano_v, mes_v)[1])
+    else:
+        now_sp = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        ini = date(now_sp.year, now_sp.month, 1)
+        fim = date(now_sp.year, now_sp.month, monthrange(now_sp.year, now_sp.month)[1])
+
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.team_fuel_employees_dashboard(role, tenant, filial, ini, fim)
+    return redact_sensitive(payload, claims)
+
+
 @router.put("/team/employee-cost")
 def team_employee_cost_upsert(
     body: Dict[str, Any],

@@ -3721,6 +3721,256 @@ def sales_top_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date
     ]
 
 
+def team_fuel_employees_dashboard(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Ranking de litros de combustível por funcionário, agrupado por filial (CH slim/mart)."""
+    from app.filial_apelido import apelido_for
+
+    if dt_fim < dt_ini:
+        return {"dt_ini": dt_ini.isoformat(), "dt_fim": dt_fim.isoformat(), "filiais": []}
+
+    branch_i = _branch_clause("i.id_filial", id_filial)
+    branch_docs = _branch_clause("id_filial", id_filial)
+    combustivel = _combustivel_nome_grupo_predicate("nome_grupo")
+    params: Dict[str, Any] = {
+        "id_empresa": int(id_empresa),
+        "ini": _date_key(dt_ini),
+        "fim": _date_key(dt_fim),
+    }
+
+    mart_count = query_scalar(
+        f"""
+        SELECT count()
+        FROM {MART_RT_DB}.team_fuel_employee_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          {_branch_clause("id_filial", id_filial)}
+        """,
+        parameters=params,
+    )
+    use_mart = int(mart_count or 0) > 0
+
+    if use_mart:
+        rows = query_dict(
+            f"""
+            SELECT
+              id_filial,
+              id_funcionario,
+              id_produto,
+              nome_produto,
+              nome_grupo,
+              sum(litros) AS litros
+            FROM {MART_RT_DB}.team_fuel_employee_daily_rt FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+              {_branch_clause("id_filial", id_filial)}
+            GROUP BY id_filial, id_funcionario, id_produto, nome_produto, nome_grupo
+            HAVING sum(litros) > 0
+            """,
+            parameters=params,
+        )
+    else:
+        rows = query_dict(
+            f"""
+            WITH
+            docs AS (
+              SELECT id_empresa, id_filial, id_db, id_comprovante
+              FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+              WHERE id_empresa = {{id_empresa:Int32}}
+                AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                AND is_deleted = 0 AND cancelado = 0 AND commercial_eligible = 1
+                {branch_docs}
+            ),
+            nfe_bloqueada AS (
+              SELECT n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+              FROM {CURRENT_DB}.stg_nfe_slim AS n FINAL
+              INNER JOIN docs AS d
+                ON d.id_empresa = n.id_empresa AND d.id_filial = n.id_filial
+               AND d.id_db = n.id_db AND d.id_comprovante = n.id_comprovante
+              WHERE n.is_deleted = 0
+              GROUP BY n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+              HAVING argMax(n.status, n.source_ts_ms) IN (4, 5)
+            ),
+            prod AS (
+              SELECT
+                id_empresa,
+                id_produto,
+                argMax(nullIf(JSONExtractString(payload, 'NOMEPRODUTO'), ''), source_ts_ms) AS nome_produto,
+                argMax(toInt32OrZero(JSONExtractString(payload, 'ID_GRUPOPRODUTOS')), source_ts_ms) AS id_grupo_produto
+              FROM {CURRENT_DB}.stg_produtos FINAL
+              WHERE is_deleted = 0
+              GROUP BY id_empresa, id_produto
+            ),
+            grp AS (
+              SELECT
+                id_empresa,
+                id_grupoprodutos,
+                argMax(nullIf(JSONExtractString(payload, 'NOMEGRUPOPRODUTOS'), ''), source_ts_ms) AS nome_grupo
+              FROM {CURRENT_DB}.stg_grupoprodutos FINAL
+              WHERE is_deleted = 0
+              GROUP BY id_empresa, id_grupoprodutos
+            )
+            SELECT
+              i.id_filial AS id_filial,
+              i.id_funcionario AS id_funcionario,
+              i.id_produto AS id_produto,
+              coalesce(nullIf(p.nome_produto, ''), 'Combustível') AS nome_produto,
+              coalesce(nullIf(g.nome_grupo, ''), '') AS nome_grupo,
+              sum(i.qtd) AS litros
+            FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+            INNER JOIN docs AS c
+              ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+             AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+            LEFT ANTI JOIN nfe_bloqueada AS n
+              ON n.id_empresa = i.id_empresa AND n.id_filial = i.id_filial
+             AND n.id_db = i.id_db AND n.id_comprovante = i.id_comprovante
+            LEFT JOIN prod AS p
+              ON p.id_empresa = i.id_empresa AND p.id_produto = i.id_produto
+            LEFT JOIN grp AS g
+              ON g.id_empresa = i.id_empresa
+             AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
+            WHERE i.id_empresa = {{id_empresa:Int32}}
+              AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+              AND i.is_deleted = 0
+              AND {sales_cfop_filter_sql("i")}
+              AND i.id_funcionario > 0
+              AND {combustivel}
+              {branch_i}
+            GROUP BY id_filial, id_funcionario, id_produto, nome_produto, nome_grupo
+            HAVING sum(i.qtd) > 0
+            """,
+            parameters=params,
+        )
+
+    func_ids = sorted(
+        {
+            int(r.get("id_funcionario") or 0)
+            for r in rows or []
+            if int(r.get("id_funcionario") or 0) > 0
+        }
+    )
+    func_names: Dict[tuple[int, int], str] = {}
+    if func_ids:
+        branch_f = _branch_clause("id_filial", id_filial)
+        fname_rows = query_dict(
+            f"""
+            SELECT id_filial, id_funcionario, argMax(nullIf(nome, ''), source_ts_ms) AS nome
+            FROM {CURRENT_DB}.dim_funcionario FINAL
+            WHERE id_empresa = {{id_empresa:Int32}}
+              {branch_f}
+              AND id_funcionario IN {{func_ids:Array(Int32)}}
+            GROUP BY id_filial, id_funcionario
+            """,
+            parameters={**params, "func_ids": func_ids},
+        )
+        for fr in fname_rows or []:
+            fid = int(fr.get("id_filial") or 0)
+            eid = int(fr.get("id_funcionario") or 0)
+            func_names[(fid, eid)] = str(fr.get("nome") or "").strip()
+
+    by_filial: Dict[int, Dict[str, Any]] = {}
+    for r in rows or []:
+        fid = int(r.get("id_filial") or 0)
+        eid = int(r.get("id_funcionario") or 0)
+        if fid <= 0 or eid <= 0:
+            continue
+        litros = float(r.get("litros") or 0)
+        if litros <= 0:
+            continue
+        bucket = by_filial.setdefault(
+            fid,
+            {
+                "id_filial": fid,
+                "filial_label": apelido_for(fid) or f"Filial {fid}",
+                "rows": [],
+            },
+        )
+        bucket["rows"].append(
+            {
+                "id_funcionario": eid,
+                "funcionario_nome": func_names.get((fid, eid)) or f"Funcionário #{eid}",
+                "id_produto": int(r.get("id_produto") or 0),
+                "combustivel_label": str(r.get("nome_produto") or "Combustível").strip(),
+                "litros": round(litros, 3),
+            }
+        )
+
+    filiais_out: List[Dict[str, Any]] = []
+    for fid in sorted(by_filial.keys(), key=lambda x: by_filial[x]["filial_label"]):
+        bucket = by_filial[fid]
+        item_rows = bucket["rows"]
+        emp_totals: Dict[int, Dict[str, Any]] = {}
+        fuel_totals: Dict[str, float] = {}
+        for row in item_rows:
+            eid = int(row["id_funcionario"])
+            emp = emp_totals.setdefault(
+                eid,
+                {
+                    "id_funcionario": eid,
+                    "nome": row["funcionario_nome"],
+                    "litros": 0.0,
+                },
+            )
+            emp["litros"] = round(emp["litros"] + float(row["litros"]), 3)
+            label = row["combustivel_label"]
+            fuel_totals[label] = round(fuel_totals.get(label, 0.0) + float(row["litros"]), 3)
+
+        ranking = sorted(emp_totals.values(), key=lambda x: (-x["litros"], x["nome"]))
+        total_litros = round(sum(e["litros"] for e in ranking), 3)
+        combustiveis = [
+            {
+                "label": label,
+                "litros": round(lit, 3),
+                "pct": round((lit / total_litros) * 100, 1) if total_litros else 0.0,
+            }
+            for label, lit in sorted(fuel_totals.items(), key=lambda x: (-x[1], x[0]))
+        ]
+        by_employee: Dict[str, Any] = {}
+        for eid in emp_totals:
+            emp_lit = emp_totals[eid]["litros"]
+            fuels: Dict[str, float] = {}
+            for row in item_rows:
+                if int(row["id_funcionario"]) != eid:
+                    continue
+                lbl = row["combustivel_label"]
+                fuels[lbl] = round(fuels.get(lbl, 0.0) + float(row["litros"]), 3)
+            by_employee[str(eid)] = {
+                "total_litros": emp_lit,
+                "combustiveis": [
+                    {
+                        "label": lbl,
+                        "litros": round(v, 3),
+                        "pct": round((v / emp_lit) * 100, 1) if emp_lit else 0.0,
+                    }
+                    for lbl, v in sorted(fuels.items(), key=lambda x: (-x[1], x[0]))
+                ],
+            }
+
+        filiais_out.append(
+            {
+                "id_filial": fid,
+                "filial_label": bucket["filial_label"],
+                "ranking": ranking,
+                "total_litros": total_litros,
+                "combustiveis": combustiveis,
+                "by_employee": by_employee,
+            }
+        )
+
+    return {
+        "dt_ini": dt_ini.isoformat(),
+        "dt_fim": dt_fim.isoformat(),
+        "filiais": filiais_out,
+        "source": "team_fuel_employee_daily_rt" if use_mart else "stg_itenscomprovantes_slim",
+    }
+
+
 def leaderboard_employees(role: str, id_empresa: int, id_filial: Any, dt_ini: date, dt_fim: date, limit: int = 20) -> List[Dict[str, Any]]:
     if dt_fim < dt_ini:
         return []
@@ -6914,6 +7164,7 @@ REALTIME_FUNCTIONS = {
     "finance_titles_overview",
     "finance_despesas_overview",
     "team_employee_cost_overview",
+    "team_fuel_employees_dashboard",
     "finance_receipts_by_day",
     "streaming_health",
     "goals_today",

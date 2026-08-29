@@ -271,6 +271,7 @@ class MartBuilder:
                         results.append(self._refresh_sales_hourly_stg(client, data_keys))
                         results.append(self._refresh_dashboard_home_stg(client, data_keys))
                         results.append(self._refresh_sales_products_stg(client, data_keys))
+                        results.append(self._refresh_team_fuel_employee_daily_stg(client, data_keys))
                         results.append(self._refresh_sales_groups_stg(client, data_keys))
                         results.append(self._refresh_fraud_daily_stg(client, data_keys))
                         results.append(self._refresh_risk_recent_events_stg(client))
@@ -529,6 +530,7 @@ class MartBuilder:
                     results.append(self._refresh_sales_daily_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
                     results.append(self._refresh_sales_hourly_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
                     results.append(self._refresh_sales_products_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
+                    results.append(self._refresh_team_fuel_employee_daily_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
                     results.append(self._refresh_sales_groups_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
                     results.append(self._refresh_payments_by_type_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
                     results.append(self._refresh_dashboard_home_stg(client, chunk, id_empresa=id_empresa, id_filial=id_filial, skip_delete=skip_batch_deletes))
@@ -1312,6 +1314,86 @@ class MartBuilder:
         """
         rows = self._insert_and_count(client, "sales_products_rt", sql, data_keys, id_empresa, id_filial)
         return MartRefreshResult("sales_products_rt", rows, int((time.time() - t0) * 1000))
+
+    @staticmethod
+    def _combustivel_grupo_sql(col: str = "nome_grupo") -> str:
+        excludes = (
+            "FILTRO",
+            "OLEO",
+            "LUBR",
+            "ADITIV",
+            "GRAXA",
+            "ARLA",
+            "CARRO",
+            "UTILIDADE",
+            "LIMPEZA",
+        )
+        exclude_sql = " AND ".join(
+            f"positionCaseInsensitiveUTF8({col}, '{token}') = 0" for token in excludes
+        )
+        return (
+            f"((positionCaseInsensitiveUTF8({col}, 'COMBUST') > 0 "
+            f"OR upperUTF8({col}) IN ('GASOLINA', 'ETANOL', 'DIESEL', 'GNV')) "
+            f"AND {exclude_sql})"
+        )
+
+    def _refresh_team_fuel_employee_daily_stg(
+        self,
+        client: Any,
+        data_keys: list[int],
+        id_empresa: int = 0,
+        id_filial: Optional[int] = None,
+        skip_delete: bool = False,
+    ) -> MartRefreshResult:
+        """Litros de combustível por funcionário × produto × dia (Equipe)."""
+        t0 = time.time()
+        kf_c = self._slim_keys_filter(data_keys, "c")
+        kf_i = self._slim_keys_filter(data_keys, "i")
+        empresa_filter_i = f"AND i.id_empresa = {int(id_empresa)}" if id_empresa else ""
+        filial_filter_i = f"AND i.id_filial = {int(id_filial)}" if id_filial else ""
+        combustivel = self._combustivel_grupo_sql("nome_grupo")
+        if not skip_delete:
+            self._delete_mart_batch(client, "team_fuel_employee_daily_rt", data_keys, id_empresa, id_filial)
+        sql = f"""
+        INSERT INTO {self.mart_rt_db}.team_fuel_employee_daily_rt
+        SELECT
+            i.id_empresa, i.id_filial, i.data_key,
+            toDate(toString(i.data_key), '%Y%m%d') AS dt,
+            i.id_funcionario,
+            i.id_produto,
+            coalesce(nullIf(p.nome_produto, ''), 'Combustível') AS nome_produto,
+            coalesce(nullIf(g.nome_grupo, ''), '') AS nome_grupo,
+            sum(i.qtd) AS litros,
+            sum(i.total) AS faturamento,
+            now64(6) AS published_at
+        FROM {self.current_db}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {self.current_db}.stg_comprovantes_slim AS c FINAL
+            ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+            AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+        LEFT JOIN (
+            SELECT id_empresa, id_produto,
+                   argMax(JSONExtractString(payload, 'NOMEPRODUTO'), source_ts_ms) AS nome_produto,
+                   argMax(toInt32OrZero(JSONExtractString(payload, 'ID_GRUPOPRODUTOS')), source_ts_ms) AS id_grupo_produto
+            FROM {self.current_db}.stg_produtos
+            GROUP BY id_empresa, id_produto
+        ) AS p ON p.id_empresa = i.id_empresa AND p.id_produto = i.id_produto
+        LEFT JOIN (
+            SELECT id_empresa, id_grupoprodutos,
+                   argMax(JSONExtractString(payload, 'NOMEGRUPOPRODUTOS'), source_ts_ms) AS nome_grupo
+            FROM {self.current_db}.stg_grupoprodutos
+            GROUP BY id_empresa, id_grupoprodutos
+        ) AS g ON g.id_empresa = i.id_empresa AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
+        WHERE {kf_c} AND i.is_deleted = 0 AND c.is_deleted = 0
+                    AND c.commercial_eligible = 1 AND {_sales_cfop_pred("i")}
+                    AND {self._exclude_central_mirror("c")}
+                    AND i.id_funcionario > 0
+                    AND {combustivel}
+                    AND {kf_i}
+          {empresa_filter_i} {filial_filter_i}
+        GROUP BY i.id_empresa, i.id_filial, i.data_key, i.id_funcionario, i.id_produto, nome_produto, nome_grupo
+        """
+        rows = self._insert_and_count(client, "team_fuel_employee_daily_rt", sql, data_keys, id_empresa, id_filial)
+        return MartRefreshResult("team_fuel_employee_daily_rt", rows, int((time.time() - t0) * 1000))
 
     def _refresh_sales_groups_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Sales by group from slim tables."""
