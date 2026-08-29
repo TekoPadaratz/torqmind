@@ -80,6 +80,16 @@ def _manager_claims():
 
 
 class IntelligenceCorpusGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._apelido_patch = patch(
+            "app.intelligence.service.load_apelido_map",
+            return_value={1: "VR 01", 10169: "VR 01"},
+        )
+        self._apelido_patch.start()
+
+    def tearDown(self) -> None:
+        self._apelido_patch.stop()
+
     def test_catalog_and_tool_coverage(self):
         catalog = load_catalog()
         intents = list_intents()
