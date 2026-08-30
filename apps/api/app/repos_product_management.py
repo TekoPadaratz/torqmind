@@ -5,10 +5,39 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.db_clickhouse import insert_batch, query_dict
+from app.filial_apelido import apelido_for
 
 MART_STOCK = "torqmind_mart_rt.product_stock_idle"
 MART_PURCHASE = "torqmind_mart_rt.product_purchase_recent"
 CURRENT_DB = "torqmind_current"
+_NEVER_SOLD_DAYS = 9999
+
+_LATEST_STOCK_SQL = f"""
+  SELECT
+    id_empresa,
+    id_filial,
+    id_produto,
+    argMax(nome_produto, published_at) AS nome_produto,
+    argMax(setor_gerencial, published_at) AS setor_gerencial,
+    argMax(qtd_estoque, published_at) AS qtd_estoque,
+    argMax(last_sale_date, published_at) AS last_sale_date,
+    argMax(dias_sem_venda, published_at) AS dias_sem_venda,
+    argMax(custo_medio_compra, published_at) AS custo_medio_compra,
+    argMax(preco_venda, published_at) AS preco_venda
+  FROM {MART_STOCK}
+  WHERE id_empresa = {{id_empresa:Int32}}
+  GROUP BY id_empresa, id_filial, id_produto
+"""
+
+
+def _filial_label(id_filial: int, nome_cadastro: Any = None) -> str:
+    apelido = apelido_for(int(id_filial))
+    if apelido:
+        return apelido
+    nome = str(nome_cadastro or "").strip()
+    if nome:
+        return nome
+    return f"Filial {id_filial}"
 
 
 def _filial_filter_sql(
@@ -57,10 +86,11 @@ def list_product_stock_idle(
     count_row = query_dict(
         f"""
         SELECT count() AS total
-        FROM {MART_STOCK} AS s
-        WHERE s.id_empresa = {{id_empresa:Int32}}
+        FROM ({_LATEST_STOCK_SQL}) AS s
+        WHERE s.qtd_estoque > 0
           {filial_filter}
           AND s.dias_sem_venda >= {{min_dias:Int32}}
+          AND s.dias_sem_venda < {_NEVER_SOLD_DAYS}
           {setor_filter}
         """,
         parameters=params,
@@ -80,16 +110,17 @@ def list_product_stock_idle(
           s.dias_sem_venda,
           s.custo_medio_compra,
           s.preco_venda
-        FROM {MART_STOCK} AS s
+        FROM ({_LATEST_STOCK_SQL}) AS s
         LEFT JOIN (
           SELECT id_empresa, id_filial, any(nome) AS nome
           FROM {CURRENT_DB}.dim_filial
           WHERE id_empresa = {{id_empresa:Int32}}
           GROUP BY id_empresa, id_filial
         ) AS f ON f.id_empresa = s.id_empresa AND f.id_filial = s.id_filial
-        WHERE s.id_empresa = {{id_empresa:Int32}}
+        WHERE s.qtd_estoque > 0
           {filial_filter}
           AND s.dias_sem_venda >= {{min_dias:Int32}}
+          AND s.dias_sem_venda < {_NEVER_SOLD_DAYS}
           {setor_filter}
         ORDER BY s.id_filial ASC, s.dias_sem_venda DESC, s.nome_produto ASC, s.id_produto ASC
         LIMIT {{limit:UInt32}} OFFSET {{offset:UInt32}}
@@ -103,10 +134,11 @@ def list_product_stock_idle(
         custo_u = float(r.get("custo_medio_compra") or 0)
         preco = float(r.get("preco_venda") or 0)
         setor_key = str(r.get("setor_gerencial") or "outros")
+        id_filial_row = int(r.get("id_filial") or 0)
         produtos.append(
             {
-                "id_filial": int(r.get("id_filial") or 0),
-                "filial_label": str(r.get("filial_label") or ""),
+                "id_filial": id_filial_row,
+                "filial_label": _filial_label(id_filial_row, r.get("filial_label")),
                 "id_produto": int(r.get("id_produto") or 0),
                 "nome_produto": str(r.get("nome_produto") or ""),
                 "setor": setor_key,
@@ -124,10 +156,11 @@ def list_product_stock_idle(
     setores_rows = query_dict(
         f"""
         SELECT DISTINCT s.setor_gerencial
-        FROM {MART_STOCK} AS s
-        WHERE s.id_empresa = {{id_empresa:Int32}}
+        FROM ({_LATEST_STOCK_SQL}) AS s
+        WHERE s.qtd_estoque > 0
           {filial_filter}
           AND s.dias_sem_venda >= {{min_dias:Int32}}
+          AND s.dias_sem_venda < {_NEVER_SOLD_DAYS}
         ORDER BY s.setor_gerencial ASC
         """,
         parameters=params,
@@ -220,7 +253,7 @@ def refresh_and_publish_product_stock_idle(role: str, id_empresa: int) -> Dict[s
     from app.db import get_conn
 
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
-        conn.execute("SET statement_timeout = '600s'")
+        conn.execute("SET statement_timeout = '0'")
         row = conn.execute(
             "SELECT etl.refresh_product_stock_idle(%s) AS rows",
             [int(id_empresa)],

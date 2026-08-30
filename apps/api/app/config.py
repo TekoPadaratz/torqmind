@@ -133,6 +133,7 @@ class Settings(BaseSettings):
     ai_chat_enabled: bool = False
     ai_chat_max_message_chars: int = 2000
     ai_chat_rate_limit_per_minute: int = 30
+    ai_voice_enabled: bool = True
 
     # Micro risk (2-minute loop friendly)
     micro_risk_critical_min_score: int = 85
