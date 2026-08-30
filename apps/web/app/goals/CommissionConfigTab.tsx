@@ -6,6 +6,7 @@ import { extractApiError } from "../lib/errors";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import { formatGroupLabel } from "./commission-group-labels.mjs";
 
 /** Quantidade inteira (ex.: 160) — níveis de premiação não são em R$. */
 function formatQty(value: number): string {
@@ -732,7 +733,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                   onChange={() => toggleGroup(g.id_grupo_produto)}
                   style={{ width: 16, height: 16, flexShrink: 0 }}
                 />
-                <span style={{ fontSize: 13, minWidth: 0 }}>{g.nome}</span>
+                <span style={{ fontSize: 13, minWidth: 0 }}>{formatGroupLabel(g.id_grupo_produto, g.nome)}</span>
                 <span className="commissionConfigTreeMeta">
                   {(g.faturamento_30d || 0) > 0 ? `${formatCurrency(g.faturamento_30d || 0)} /30d` : "—"}
                 </span>
@@ -750,7 +751,7 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
                           value={g.productQuery || ""}
                           onChange={(value) => setGroupProductQuery(g.id_grupo_produto, value)}
                           placeholder="Pesquisar produto…"
-                          aria-label={`Pesquisar produtos de ${g.nome}`}
+                          aria-label={`Pesquisar produtos de ${formatGroupLabel(g.id_grupo_produto, g.nome)}`}
                         />
                         {(() => {
                           const visible = (g.products || []).filter((p) =>
