@@ -1385,6 +1385,24 @@
       "sha256_utf8_normalized": "0a24b9ec3a0ebd524882c477464a8278b2fbb8cf0781893de7cadb64415e79a1",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "149_product_stock_idle_xpert_fields.sql",
+      "prefix": "149",
+      "encoding": "utf-8",
+      "sha256_raw": "54282e16ce2bcbfb87eb378f15a7acb71503d3c1335d6649fb8b773c367b99d7",
+      "sha256_utf8_normalized": "54282e16ce2bcbfb87eb378f15a7acb71503d3c1335d6649fb8b773c367b99d7",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "150_product_stock_idle_last_sale_merge.sql",
+      "prefix": "150",
+      "encoding": "utf-8",
+      "sha256_raw": "029ef7052a255827272ddffe4457953bc8b45462ca9504ace4436b98b19e18af",
+      "sha256_utf8_normalized": "029ef7052a255827272ddffe4457953bc8b45462ca9504ace4436b98b19e18af",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

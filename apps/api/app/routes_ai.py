@@ -145,7 +145,7 @@ def ai_capabilities(
     _screen=Depends(require_screen("assistant")),
 ):
     _ensure_enabled()
-    return {"items": list_capabilities(claims), "disclaimer": "Somente leitura. O assistente não altera informações."}
+    return {"items": list_capabilities(claims), "disclaimer": "Somente leitura. O assistente não altera informações.", "voice_enabled": bool(getattr(settings, "ai_voice_enabled", True))}
 
 
 @router.get("/capability-coverage")

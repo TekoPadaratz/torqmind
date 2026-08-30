@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import EmptyState from "../components/ui/EmptyState";
+import { formatGroupLabel, formatSelectedGroupCodes } from "./commission-group-labels.mjs";
 
 interface Props {
   idEmpresa: number | null;
@@ -135,7 +136,7 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
               style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}
             />
             <span style={{ minWidth: 0, wordBreak: "break-word" }}>
-              {g.nome || `Grupo ${g.id_grupo_produto}`}
+              {formatGroupLabel(g.id_grupo_produto, g.nome)}
             </span>
           </label>
         ))}
@@ -181,7 +182,7 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>A. Vendas base (comissão bruta)</div>
             <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
-              Pré-seleção exclui grupos 1–4, 7–10, 16, 39, 40.
+              Grupos selecionados: {formatSelectedGroupCodes(salesGroups)}.
             </p>
             {renderGroupList("sales", salesGroups)}
           </div>

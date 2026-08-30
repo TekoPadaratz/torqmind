@@ -21,6 +21,7 @@ import { canAccessScreenKey, readCachedSession } from "../lib/session";
 export const dynamic = "force-dynamic";
 
 const SCREEN_TITLE = "Gestão de Produtos";
+const NEVER_SOLD_DAYS = 9999;
 
 type ProductRow = {
   id_filial: number;
@@ -54,6 +55,19 @@ type Payload = {
   setores?: { key: string; label: string }[];
 };
 
+type SortKey =
+  | "nome_produto"
+  | "setor_label"
+  | "last_sale_date"
+  | "dias_sem_venda"
+  | "qtd_estoque"
+  | "custo_medio"
+  | "custo_medio_total"
+  | "preco_venda"
+  | "receita_total";
+
+type SortDir = "asc" | "desc";
+
 function fmtQty(value: number): string {
   return Number(value || 0).toLocaleString("pt-BR", { maximumFractionDigits: 3 });
 }
@@ -66,6 +80,72 @@ function hasBranchScope(scope: {
   if (scope.branch_scope === "all") return true;
   if (scope.id_filial) return true;
   return (scope.id_filiais?.length || 0) > 0;
+}
+
+function diasSortValue(dias: number): number {
+  return dias >= NEVER_SOLD_DAYS ? NEVER_SOLD_DAYS : dias;
+}
+
+function fmtDateBr(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const raw = String(iso).split("T")[0];
+  const [y, m, d] = raw.split("-");
+  if (!y || !m || !d) return raw;
+  return `${d}/${m}/${y}`;
+}
+
+function compareProductRows(a: ProductRow, b: ProductRow, key: SortKey, dir: SortDir): number {
+  const sign = dir === "asc" ? 1 : -1;
+
+  if (key === "last_sale_date") {
+    const av = a.last_sale_date || "";
+    const bv = b.last_sale_date || "";
+    if (!av && !bv) return a.nome_produto.localeCompare(b.nome_produto, "pt-BR");
+    if (!av) return 1;
+    if (!bv) return -1;
+    const cmp = av.localeCompare(bv);
+    if (cmp !== 0) return sign * cmp;
+    return a.nome_produto.localeCompare(b.nome_produto, "pt-BR");
+  }
+
+  if (key === "dias_sem_venda") {
+    const tierA = a.dias_sem_venda >= NEVER_SOLD_DAYS ? 1 : 0;
+    const tierB = b.dias_sem_venda >= NEVER_SOLD_DAYS ? 1 : 0;
+    if (tierA !== tierB) return sign * (tierA - tierB);
+    const cmp = diasSortValue(a.dias_sem_venda) - diasSortValue(b.dias_sem_venda);
+    if (cmp !== 0) return sign * cmp;
+    return a.nome_produto.localeCompare(b.nome_produto, "pt-BR");
+  }
+
+  const numericKeys: SortKey[] = [
+    "qtd_estoque",
+    "custo_medio",
+    "custo_medio_total",
+    "preco_venda",
+    "receita_total",
+  ];
+  if (numericKeys.includes(key)) {
+    const cmp = Number(a[key] || 0) - Number(b[key] || 0);
+    if (cmp !== 0) return sign * cmp;
+    return a.nome_produto.localeCompare(b.nome_produto, "pt-BR");
+  }
+
+  const av = String(a[key] || "");
+  const bv = String(b[key] || "");
+  const cmp = av.localeCompare(bv, "pt-BR");
+  if (cmp !== 0) return sign * cmp;
+  return a.id_produto - b.id_produto;
+}
+
+function buildPurchaseScopeParams(
+  scope: ReturnType<typeof useScopeQuery>,
+  row: ProductRow,
+): URLSearchParams {
+  const p = new URLSearchParams();
+  if (scope.id_empresa) p.set("id_empresa", String(scope.id_empresa));
+  p.set("id_filial", String(row.id_filial));
+  p.set("id_produto", String(row.id_produto));
+  return p;
 }
 
 export default function ProductManagementPage() {
@@ -82,6 +162,8 @@ export default function ProductManagementPage() {
   const [purchaseCache, setPurchaseCache] = useState<Record<string, PurchaseRow[]>>({});
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("dias_sem_venda");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
 
   const { claims, data, error, loading, pendingUnavailable } = useBiScopeData<Payload>({
     moduleKey: `product_stock_idle:${diasSemVenda}:${setorFilter}:${reloadNonce}`,
@@ -94,7 +176,7 @@ export default function ProductManagementPage() {
       const p = buildScopeParams(currentScope);
       p.set("dias_sem_venda", String(diasSemVenda));
       if (setorFilter) p.set("setor", setorFilter);
-      p.set("limit", "2000");
+      p.set("limit", "5000");
       return `/bi/operations/product-stock-idle?${p.toString()}`;
     },
   });
@@ -105,14 +187,33 @@ export default function ProductManagementPage() {
     : buildModuleLoadingCopy("gestão de produtos");
 
   const rows = data?.produtos || [];
-  const showFilialColumn = useMemo(() => {
-    const filiais = new Set(rows.map((r) => r.id_filial));
-    return filiais.size > 1;
-  }, [rows]);
 
-  const { query, setQuery, filteredRows } = useGridSearch(rows, {
+  const { query, setQuery, filteredRows: searchedRows } = useGridSearch(rows, {
     excludeKeys: /^id_/,
   });
+
+  const sortedRows = useMemo(() => {
+    const copy = [...searchedRows];
+    copy.sort((a, b) => compareProductRows(a, b, sortKey, sortDir));
+    return copy;
+  }, [searchedRows, sortKey, sortDir]);
+
+  const filialGroups = useMemo(() => {
+    const byFilial = new Map<number, { id_filial: number; label: string; products: ProductRow[] }>();
+    for (const row of sortedRows) {
+      const id = row.id_filial;
+      const cur = byFilial.get(id) || {
+        id_filial: id,
+        label: row.filial_label || `Filial ${id}`,
+        products: [],
+      };
+      cur.products.push(row);
+      byFilial.set(id, cur);
+    }
+    return Array.from(byFilial.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, "pt-BR", { numeric: true, sensitivity: "base" }),
+    );
+  }, [sortedRows]);
 
   const setorOptions = useMemo(() => {
     const fromApi = data?.setores || [];
@@ -120,6 +221,27 @@ export default function ProductManagementPage() {
     const keys = new Set(rows.map((r) => r.setor));
     return Array.from(keys).map((k) => ({ key: k, label: k }));
   }, [data?.setores, rows]);
+
+  const onSortColumn = useCallback((key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDir(
+      key === "dias_sem_venda" || key === "nome_produto" || key === "setor_label"
+        ? "asc"
+        : "desc",
+    );
+  }, [sortKey]);
+
+  const sortIndicator = useCallback(
+    (key: SortKey) => {
+      if (sortKey !== key) return "";
+      return sortDir === "asc" ? " ▲" : " ▼";
+    },
+    [sortDir, sortKey],
+  );
 
   const toggleExpand = useCallback(
     async (row: ProductRow) => {
@@ -133,8 +255,7 @@ export default function ProductManagementPage() {
       if (purchaseCache[key]) return;
       setPurchaseLoading(key);
       try {
-        const p = buildScopeParams({ ...scope, id_filial: String(row.id_filial) });
-        p.set("id_produto", String(row.id_produto));
+        const p = buildPurchaseScopeParams(scope, row);
         const resp = await apiGet(`/bi/operations/product-stock-idle/purchases?${p.toString()}`, {
           timeout: 20_000,
         });
@@ -151,6 +272,8 @@ export default function ProductManagementPage() {
     },
     [expandedKey, scope, purchaseCache],
   );
+
+  const truncated = (data?.total || 0) > sortedRows.length;
 
   if (!allowed && session) {
     return (
@@ -179,12 +302,12 @@ export default function ProductManagementPage() {
             <div className="commissionFilialSummary">
               <span className="muted">Parados ≥</span>
               <strong>{diasSemVenda}</strong>
-              <span className="muted">dias · {data?.total ?? rows.length} produto(s)</span>
+              <span className="muted">dias · {data?.total ?? sortedRows.length} produto(s)</span>
             </div>
           </div>
           <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
-            Produtos com estoque positivo e sem venda há pelo menos o número de dias abaixo. Clique na linha para ver as
-            últimas 3 notas de compra.
+            Produtos com estoque e sem venda há pelo menos o número de dias abaixo (com histórico de venda).
+            Clique na linha para ver as últimas 3 notas de compra.
           </p>
 
           {!branchReady ? (
@@ -233,105 +356,146 @@ export default function ProductManagementPage() {
                 </button>
               </div>
 
+              {truncated ? (
+                <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                  Exibindo {sortedRows.length} de {data?.total} produtos. Refine o setor ou a filial para ver todos.
+                </div>
+              ) : null}
+
               {purchaseError ? (
                 <div className="card errorCard" style={{ marginBottom: 12 }}>{purchaseError}</div>
               ) : null}
 
-              {filteredRows.length === 0 ? (
+              {sortedRows.length === 0 ? (
                 <EmptyState
                   title="Nenhum produto parado"
                   detail={`Não há produtos com estoque e ≥ ${diasSemVenda} dias sem venda no escopo selecionado.`}
                 />
               ) : (
-                <div className="tableScroll">
-                  <table className="table compact" style={{ fontSize: 13 }}>
-                    <thead>
-                      <tr>
-                        {showFilialColumn ? <th style={{ textAlign: "left" }}>Filial</th> : null}
-                        <th style={{ textAlign: "left" }}>Produto</th>
-                        <th style={{ textAlign: "left" }}>Setor</th>
-                        <th style={{ textAlign: "right" }}>Dias s/ venda</th>
-                        <th style={{ textAlign: "right" }}>Qtd</th>
-                        <th style={{ textAlign: "right" }}>Custo médio</th>
-                        <th style={{ textAlign: "right" }}>Custo total</th>
-                        <th style={{ textAlign: "right" }}>Vlr venda</th>
-                        <th style={{ textAlign: "right" }}>Receita total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredRows.map((row) => {
-                        const key = `${row.id_filial}:${row.id_produto}`;
-                        const expanded = expandedKey === key;
-                        const purchases = purchaseCache[key] || [];
-                        const colSpan = showFilialColumn ? 9 : 8;
-                        return (
-                          <Fragment key={key}>
-                            <tr
-                              onClick={() => void toggleExpand(row)}
-                              style={{ cursor: "pointer", borderBottom: "1px solid var(--table-row-border)" }}
-                              className={expanded ? "commissionConfigTreeRow" : undefined}
-                            >
-                              {showFilialColumn ? (
-                                <td style={{ padding: "8px 6px", whiteSpace: "nowrap" }}>
-                                  {row.filial_label || `Filial ${row.id_filial}`}
-                                </td>
-                              ) : null}
-                              <td style={{ padding: "8px 6px" }}>
-                                <span style={{ marginRight: 6, opacity: 0.7 }}>{expanded ? "▾" : "▸"}</span>
-                                {row.nome_produto}
-                              </td>
-                              <td style={{ padding: "8px 6px", textTransform: "capitalize" }}>
-                                {row.setor_label || row.setor}
-                              </td>
-                              <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                                {row.dias_sem_venda >= 9999 ? "—" : row.dias_sem_venda}
-                              </td>
-                              <td style={{ padding: "8px 6px", textAlign: "right" }}>{fmtQty(row.qtd_estoque)}</td>
-                              <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.custo_medio)}</td>
-                              <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.custo_medio_total)}</td>
-                              <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.preco_venda)}</td>
-                              <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.receita_total)}</td>
-                            </tr>
-                            {expanded ? (
-                              <tr key={`${key}-detail`}>
-                                <td colSpan={colSpan} style={{ padding: "0 12px 12px 32px", background: "var(--surface-faint)" }}>
-                                  {purchaseLoading === key ? (
-                                    <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>Carregando compras…</div>
-                                  ) : purchases.length === 0 ? (
-                                    <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>
-                                      Sem notas de compra recentes para este produto.
-                                    </div>
-                                  ) : (
-                                    <table className="table compact" style={{ fontSize: 12, marginTop: 8 }}>
-                                      <thead>
-                                        <tr>
-                                          <th style={{ textAlign: "left" }}>Documento</th>
-                                          <th style={{ textAlign: "left" }}>Data</th>
-                                          <th style={{ textAlign: "right" }}>Qtd</th>
-                                          <th style={{ textAlign: "right" }}>Valor</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {purchases.map((c) => (
-                                          <tr key={c.rank}>
-                                            <td>{c.numero_documento || "—"}</td>
-                                            <td>{c.data_compra || "—"}</td>
-                                            <td style={{ textAlign: "right" }}>{fmtQty(c.qtd)}</td>
-                                            <td style={{ textAlign: "right" }}>{formatCurrency(c.valor_total)}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  )}
-                                </td>
-                              </tr>
-                            ) : null}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                filialGroups.map((group) => (
+                  <section
+                    key={`${group.id_filial}:${group.label}`}
+                    className="solvenciaFilialCard commissionFilialCard"
+                    style={{ marginTop: 12, borderLeft: "4px solid var(--accent-copper, #b8722c)" }}
+                  >
+                    <div className="commissionFilialHead">
+                      <div>
+                        <div className="sectionEyebrow">Filial</div>
+                        <h2 className="commissionFilialTitle">{group.label}</h2>
+                      </div>
+                      <div className="commissionFilialSummary">
+                        <span className="muted">{group.products.length} produto(s)</span>
+                      </div>
+                    </div>
+                    <div className="tableScroll">
+                      <table className="table compact" style={{ fontSize: 13 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onSortColumn("nome_produto")}>
+                              Produto{sortIndicator("nome_produto")}
+                            </th>
+                            <th style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onSortColumn("setor_label")}>
+                              Setor{sortIndicator("setor_label")}
+                            </th>
+                            <th style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onSortColumn("last_sale_date")}>
+                              Última venda{sortIndicator("last_sale_date")}
+                            </th>
+                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("dias_sem_venda")}>
+                              Dias s/ venda{sortIndicator("dias_sem_venda")}
+                            </th>
+                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("qtd_estoque")}>
+                              Qtd{sortIndicator("qtd_estoque")}
+                            </th>
+                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio")}>
+                              Custo médio{sortIndicator("custo_medio")}
+                            </th>
+                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio_total")}>
+                              Custo total{sortIndicator("custo_medio_total")}
+                            </th>
+                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("preco_venda")}>
+                              Vlr venda{sortIndicator("preco_venda")}
+                            </th>
+                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("receita_total")}>
+                              Receita total{sortIndicator("receita_total")}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.products.map((row) => {
+                            const key = `${row.id_filial}:${row.id_produto}`;
+                            const expanded = expandedKey === key;
+                            const purchases = purchaseCache[key] || [];
+                            return (
+                              <Fragment key={key}>
+                                <tr
+                                  onClick={() => void toggleExpand(row)}
+                                  style={{
+                                    cursor: "pointer",
+                                    borderBottom: "1px solid var(--table-row-border)",
+                                    background: expanded ? "var(--surface-faint)" : undefined,
+                                  }}
+                                >
+                                  <td style={{ padding: "8px 6px" }}>
+                                    <span style={{ marginRight: 6, opacity: 0.7 }}>{expanded ? "▾" : "▸"}</span>
+                                    {row.nome_produto}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textTransform: "capitalize" }}>
+                                    {row.setor_label || row.setor}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", fontVariantNumeric: "tabular-nums" }}>
+                                    {fmtDateBr(row.last_sale_date)}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                                    {row.dias_sem_venda >= NEVER_SOLD_DAYS ? "—" : row.dias_sem_venda}
+                                  </td>
+                                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{fmtQty(row.qtd_estoque)}</td>
+                                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.custo_medio)}</td>
+                                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.custo_medio_total)}</td>
+                                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.preco_venda)}</td>
+                                  <td style={{ padding: "8px 6px", textAlign: "right" }}>{formatCurrency(row.receita_total)}</td>
+                                </tr>
+                                {expanded ? (
+                                  <tr>
+                                    <td colSpan={9} className="commissionConfigTreeExpand">
+                                      {purchaseLoading === key ? (
+                                        <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>Carregando compras…</div>
+                                      ) : purchases.length === 0 ? (
+                                        <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>
+                                          Sem notas de compra recentes para este produto.
+                                        </div>
+                                      ) : (
+                                        <table className="table compact" style={{ fontSize: 12, marginTop: 8, width: "100%" }}>
+                                          <thead>
+                                            <tr>
+                                              <th style={{ textAlign: "left" }}>Documento</th>
+                                              <th style={{ textAlign: "left" }}>Data</th>
+                                              <th style={{ textAlign: "right" }}>Qtd</th>
+                                              <th style={{ textAlign: "right" }}>Valor</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {purchases.map((c) => (
+                                              <tr key={c.rank}>
+                                                <td>{c.numero_documento || "—"}</td>
+                                                <td>{c.data_compra || "—"}</td>
+                                                <td style={{ textAlign: "right" }}>{fmtQty(c.qtd)}</td>
+                                                <td style={{ textAlign: "right" }}>{formatCurrency(c.valor_total)}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ) : null}
+                              </Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ))
               )}
             </>
           )}

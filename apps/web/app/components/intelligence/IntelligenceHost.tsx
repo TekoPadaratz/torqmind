@@ -1,12 +1,20 @@
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
 import { apiGet, apiPost } from '../../lib/api';
 import { getClaims, getToken, requireAuth } from '../../lib/auth';
 import { useScopeQuery } from '../../lib/scope';
+import { canAccessScreenKey, readCachedSession } from '../../lib/session';
+import {
+  browserSpeechRecognitionSupported,
+  speak,
+  startVoiceListening,
+  stopSpeaking,
+} from '../../lib/voice-assistant';
 
 type Capability = { intent_id?: string; label?: string; examples?: string[] };
 type ClarificationOption = { label?: string; value?: string; documento_masked?: string };
@@ -16,6 +24,7 @@ type ChatMessage = {
   clarificationOptions?: ClarificationOption[];
   clarificationKind?: string;
   suggestions?: string[];
+  deepLink?: string;
 };
 
 function clarificationSendText(kind: string | undefined, opt: ClarificationOption): string {
@@ -53,6 +62,8 @@ export default function IntelligenceHost() {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const restoredConvRef = useRef<string | null>(null);
+  const stopVoiceRef = useRef<(() => void) | null>(null);
+  const voiceDraftRef = useRef('');
 
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
@@ -63,6 +74,11 @@ export default function IntelligenceHost() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [voiceDraft, setVoiceDraft] = useState('');
+  const [speakReplies, setSpeakReplies] = useState(true);
 
   const scopePayload = useMemo(() => {
     const idEmpresa =
@@ -108,15 +124,40 @@ export default function IntelligenceHost() {
       setReady(false);
       return;
     }
+    const session = readCachedSession() || claims;
+    if (!canAccessScreenKey(session, 'assistant')) {
+      setReady(false);
+      return;
+    }
+    setVoiceSupported(browserSpeechRecognitionSupported());
     setReady(true);
   }, [pathname]);
 
-  // Troca de empresa invalida a conversa em memória
+  const convStorageKey = useMemo(() => {
+    const idEmpresa = scopePayload.id_empresa;
+    return idEmpresa ? `torqmind.ai.conversation.${idEmpresa}` : null;
+  }, [scopePayload.id_empresa]);
+
   useEffect(() => {
-    setConversationId(null);
+    if (!convStorageKey || typeof window === 'undefined') return;
+    try {
+      const saved = sessionStorage.getItem(convStorageKey);
+      setConversationId(saved);
+    } catch {
+      setConversationId(null);
+    }
     setMessages([]);
     restoredConvRef.current = null;
-  }, [scopePayload.id_empresa, scopePayload.id_filiais, scopePayload.branch_scope]);
+  }, [convStorageKey]);
+
+  useEffect(() => {
+    if (!convStorageKey || !conversationId || typeof window === 'undefined') return;
+    try {
+      sessionStorage.setItem(convStorageKey, conversationId);
+    } catch {
+      /* ignore */
+    }
+  }, [convStorageKey, conversationId]);
 
   const ensureConversation = useCallback(async () => {
     if (conversationId) return conversationId;
@@ -146,6 +187,7 @@ export default function IntelligenceHost() {
         const data = await apiGet('/ai/capabilities');
         if (cancelled) return;
         setCaps(Array.isArray(data?.items) ? data.items : []);
+        setVoiceEnabled(Boolean(data?.voice_enabled) && browserSpeechRecognitionSupported());
         setEnabled(true);
         setError(null);
       } catch (err: any) {
@@ -230,13 +272,14 @@ export default function IntelligenceHost() {
     return () => root.removeEventListener('keydown', trap);
   }, [open, messages.length, busy]);
 
-  const send = async (text: string) => {
+  const send = async (text: string, options?: { speakReply?: boolean }) => {
     const cleaned = text.trim();
     if (!cleaned || busy || !enabled) return;
     setBusy(true);
     setError(null);
     setMessages((prev) => [...prev, { role: 'user', text: cleaned }]);
     setDraft('');
+    setVoiceDraft('');
     try {
       const id = await ensureConversation();
       const resp = await apiPost(`/ai/conversations/${id}/messages`, {
@@ -244,30 +287,29 @@ export default function IntelligenceHost() {
         ...scopePayload,
       });
       const answerText = String(resp?.answer_text || '').trim();
-      const options = Array.isArray(resp?.clarification_options) ? resp.clarification_options : [];
+      const optionsList = Array.isArray(resp?.clarification_options) ? resp.clarification_options : [];
       const clarificationKind = resp?.clarification_kind ? String(resp.clarification_kind) : undefined;
       const respSuggestions = Array.isArray(resp?.suggestions)
         ? resp.suggestions.map((s: unknown) => String(s)).filter(Boolean)
         : [];
+      const deepLink = resp?.deep_link ? String(resp.deep_link) : undefined;
       if (!answerText) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            text: 'Não consegui montar uma resposta agora. Tente reformular a pergunta.',
-          },
-        ]);
+        const fallback = 'Não consegui montar uma resposta agora. Tente reformular a pergunta.';
+        setMessages((prev) => [...prev, { role: 'assistant', text: fallback }]);
+        if (options?.speakReply && speakReplies) speak(fallback);
       } else {
         setMessages((prev) => [
           ...prev,
           {
             role: 'assistant',
             text: answerText,
-            clarificationOptions: options.length ? options : undefined,
+            clarificationOptions: optionsList.length ? optionsList : undefined,
             clarificationKind,
             suggestions: respSuggestions.length ? respSuggestions : undefined,
+            deepLink,
           },
         ]);
+        if (options?.speakReply && speakReplies) speak(answerText);
       }
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
@@ -287,6 +329,56 @@ export default function IntelligenceHost() {
       setBusy(false);
     }
   };
+
+  const stopListening = useCallback(() => {
+    stopVoiceRef.current?.();
+    stopVoiceRef.current = null;
+    setListening(false);
+  }, []);
+
+  useEffect(() => () => {
+    stopListening();
+    stopSpeaking();
+  }, [stopListening]);
+
+  const toggleVoiceInput = useCallback(() => {
+    if (!voiceEnabled || !voiceSupported || busy || !enabled) return;
+    if (listening) {
+      stopListening();
+      return;
+    }
+    stopSpeaking();
+    voiceDraftRef.current = '';
+    setVoiceDraft('');
+    setListening(true);
+    stopVoiceRef.current = startVoiceListening(
+      {
+        onInterim: (text) => {
+          voiceDraftRef.current = text;
+          setVoiceDraft(text);
+        },
+        onFinal: (text) => {
+          voiceDraftRef.current = text;
+          setVoiceDraft(text);
+        },
+        onError: (code) => {
+          if (code !== 'aborted' && code !== 'no-speech') {
+            setError('Não consegui ouvir. Tente de novo ou digite.');
+          }
+          setListening(false);
+        },
+        onEnd: () => {
+          setListening(false);
+          stopVoiceRef.current = null;
+          const text = voiceDraftRef.current.trim();
+          voiceDraftRef.current = '';
+          setVoiceDraft('');
+          if (text) void send(text, { speakReply: true });
+        },
+      },
+      { silenceMs: 1500 },
+    );
+  }, [voiceEnabled, voiceSupported, busy, enabled, listening, stopListening]);
 
   if (!ready) return null;
 
@@ -378,6 +470,13 @@ export default function IntelligenceHost() {
                         ))}
                       </div>
                     ) : null}
+                    {m.role === 'assistant' && m.deepLink ? (
+                      <div className="tmIntelClarify">
+                        <Link href={m.deepLink} className="tmIntelChip tmIntelDeepLink" onClick={close}>
+                          Abrir na tela
+                        </Link>
+                      </div>
+                    ) : null}
                   </div>
                 ))
               )}
@@ -390,27 +489,60 @@ export default function IntelligenceHost() {
               ) : null}
             </div>
 
+            {listening ? (
+              <div className="tmIntelVoiceBanner" role="status">
+                <span className="tmIntelVoicePulse" aria-hidden />
+                Ouvindo… fale agora
+                {voiceDraft ? `: “${voiceDraft.slice(0, 120)}${voiceDraft.length > 120 ? '…' : ''}”` : null}
+              </div>
+            ) : null}
+
             {error ? <div className="tmIntelError">{error}</div> : null}
 
             <form
               className="tmIntelComposer"
               onSubmit={(e) => {
                 e.preventDefault();
-                void send(draft);
+                void send(draft, { speakReply: false });
               }}
             >
+              {voiceEnabled && voiceSupported ? (
+                <button
+                  type="button"
+                  className={`tmIntelMic${listening ? ' tmIntelMicActive' : ''}`}
+                  aria-label={listening ? 'Parar de ouvir' : 'Falar com o assistente'}
+                  aria-pressed={listening}
+                  disabled={busy || !enabled}
+                  onClick={() => toggleVoiceInput()}
+                >
+                  {listening ? '■' : '🎤'}
+                </button>
+              ) : null}
               <input
                 ref={inputRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="Escreva sua pergunta…"
-                disabled={busy || !enabled}
+                value={listening ? voiceDraft : draft}
+                onChange={(e) => {
+                  if (listening) return;
+                  setDraft(e.target.value);
+                }}
+                placeholder={listening ? 'Ouvindo…' : 'Escreva ou use o microfone…'}
+                disabled={busy || !enabled || listening}
                 maxLength={2000}
               />
-              <button type="submit" disabled={busy || !enabled || !draft.trim()}>
+              <button type="submit" disabled={busy || !enabled || listening || !(listening ? voiceDraft : draft).trim()}>
                 Enviar
               </button>
             </form>
+            {voiceEnabled && voiceSupported ? (
+              <label className="tmIntelVoiceToggle">
+                <input
+                  type="checkbox"
+                  checked={speakReplies}
+                  onChange={(e) => setSpeakReplies(e.target.checked)}
+                />
+                Responder por voz
+              </label>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -524,6 +656,11 @@ export default function IntelligenceHost() {
           text-align: left;
           max-width: 100%;
         }
+        .tmIntelDeepLink {
+          display: inline-flex;
+          text-decoration: none;
+          color: inherit;
+        }
         .tmIntelMessages {
           flex: 1;
           overflow: auto;
@@ -602,6 +739,47 @@ export default function IntelligenceHost() {
         .tmIntelComposer {
           display: flex;
           gap: 8px;
+          align-items: center;
+        }
+        .tmIntelMic {
+          border-radius: 10px;
+          border: 1px solid var(--chrome-border, #3a3228);
+          background: var(--surface-elevated, #1c1814);
+          color: inherit;
+          width: 42px;
+          height: 42px;
+          cursor: pointer;
+          flex-shrink: 0;
+        }
+        .tmIntelMicActive {
+          background: #5a2a18;
+          border-color: #b8722c;
+        }
+        .tmIntelVoiceBanner {
+          font-size: 0.82rem;
+          opacity: 0.9;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .tmIntelVoicePulse {
+          width: 10px;
+          height: 10px;
+          border-radius: 999px;
+          background: #e05a3a;
+          animation: tmIntelVoicePulse 1s ease-in-out infinite;
+        }
+        @keyframes tmIntelVoicePulse {
+          0%, 100% { opacity: 0.35; transform: scale(0.85); }
+          50% { opacity: 1; transform: scale(1.1); }
+        }
+        .tmIntelVoiceToggle {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 0.78rem;
+          opacity: 0.85;
+          margin-top: -4px;
         }
         .tmIntelComposer input {
           flex: 1;
