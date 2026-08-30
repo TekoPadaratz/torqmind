@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatGroupLabel, formatSelectedGroupCodes } from "./commission-group-labels.mjs";
+import { formatExcludedGroupCodes, formatGroupLabel, formatSelectedGroupCodes } from "./commission-group-labels.mjs";
 
 test("formatGroupLabel prefixa id_grupo_produto antes do nome", () => {
   assert.equal(formatGroupLabel(5, "LUBRIFICANTES"), "5 — LUBRIFICANTES");
@@ -15,4 +15,15 @@ test("formatSelectedGroupCodes lista só ids selecionados", () => {
   ];
   assert.equal(formatSelectedGroupCodes(groups), "5, 11");
   assert.equal(formatSelectedGroupCodes([]), "nenhum");
+});
+
+test("formatExcludedGroupCodes lista só ids desmarcados", () => {
+  const groups = [
+    { id_grupo_produto: 11, selected: true },
+    { id_grupo_produto: 5, selected: true },
+    { id_grupo_produto: 3, selected: false },
+    { id_grupo_produto: 7, selected: false },
+  ];
+  assert.equal(formatExcludedGroupCodes(groups), "3, 7");
+  assert.equal(formatExcludedGroupCodes(groups.filter((g) => g.selected)), "nenhum");
 });
