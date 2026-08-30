@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import EmptyState from "../components/ui/EmptyState";
-import { formatGroupLabel, formatSelectedGroupCodes } from "./commission-group-labels.mjs";
+import { formatGroupLabel, formatExcludedGroupCodes, formatSelectedGroupCodes } from "./commission-group-labels.mjs";
 
 interface Props {
   idEmpresa: number | null;
@@ -181,16 +181,22 @@ export default function ManagerCommissionConfigPanel({ idEmpresa, idFilial, onSa
 
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>A. Vendas base (comissão bruta)</div>
-            <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
-              Grupos selecionados: {formatSelectedGroupCodes(salesGroups)}.
+            <p className="muted" style={{ fontSize: 11, marginTop: 0, lineHeight: 1.45 }}>
+              Grupos incluídos: {formatSelectedGroupCodes(salesGroups)}
+              <br />
+              Grupos excluídos: {formatExcludedGroupCodes(salesGroups)}
             </p>
             {renderGroupList("sales", salesGroups)}
           </div>
 
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>B. Notas de perda de estoque</div>
-            <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
+            <p className="muted" style={{ fontSize: 11, marginTop: 0, lineHeight: 1.45 }}>
               CFOP 5.927 · INSUMOS removido por padrão.
+              <br />
+              Grupos incluídos: {formatSelectedGroupCodes(lossGroups)}
+              <br />
+              Grupos excluídos: {formatExcludedGroupCodes(lossGroups)}
             </p>
             {renderGroupList("loss", lossGroups)}
           </div>

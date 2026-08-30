@@ -20,3 +20,14 @@ export function formatSelectedGroupCodes(groups) {
   if (!ids.length) return "nenhum";
   return ids.join(", ");
 }
+
+/** Lista só os códigos dos grupos desmarcados, ordenados. */
+export function formatExcludedGroupCodes(groups) {
+  const ids = (groups || [])
+    .filter((g) => g && !g.selected)
+    .map((g) => Number(g.id_grupo_produto))
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .sort((a, b) => a - b);
+  if (!ids.length) return "nenhum";
+  return ids.join(", ");
+}

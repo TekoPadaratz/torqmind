@@ -6,7 +6,7 @@ import { extractApiError } from "../lib/errors";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
-import { formatGroupLabel } from "./commission-group-labels.mjs";
+import { formatGroupLabel, formatExcludedGroupCodes, formatSelectedGroupCodes } from "./commission-group-labels.mjs";
 
 /** Quantidade inteira (ex.: 160) — níveis de premiação não são em R$. */
 function formatQty(value: number): string {
@@ -705,10 +705,14 @@ export default function CommissionConfigTab({ idEmpresa, idFilial, onSaved }: Co
             >
               {allGroupsSelected ? "Desmarcar todos os grupos" : "Marcar todos os grupos"}
             </button>
-            <span className="muted" style={{ fontSize: 12 }}>
-              {selectedCount} grupo(s) · {excludedIds.size} produto(s) excluído(s)
-            </span>
           </div>
+        </div>
+        <div className="muted" style={{ fontSize: 11, lineHeight: 1.45, marginBottom: 8 }}>
+          <div>Grupos incluídos: {formatSelectedGroupCodes(groups)}</div>
+          <div>Grupos excluídos: {formatExcludedGroupCodes(groups)}</div>
+          {excludedIds.size > 0 ? (
+            <div>{excludedIds.size} produto(s) excluído(s) individualmente</div>
+          ) : null}
         </div>
         {selectedCount === 0 && (
           <div className="commissionConfigHint">
