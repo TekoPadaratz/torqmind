@@ -1,0 +1,5 @@
+{
+  "name": "TorqMind",
+  "install": "sudo apt-get update -qq && sudo apt-get install -y -qq sshpass openssh-client && bash deploy/scripts/cloud-agent-install-ssh.sh && cd apps/web && npm ci",
+  "start": "bash deploy/scripts/cloud-agent-install-ssh.sh"
+}
