@@ -31,17 +31,18 @@ def _cfop_sales_predicate_sql(alias: str = "i") -> str:
     return sales_cfop_filter_sql(alias)
 
 
-def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
-    """Mesmos filtros comerciais da mart ``sales_groups_rt``."""
-    from app.sales_semantics import central_mirror_exclude_sql
-
-    mirror = central_mirror_exclude_sql(comprovante_alias)
+def _slim_lsc_sales_where_sql(comprovante_alias: str = "c") -> str:
+    """Base de venda LSC (paridade Xpert): cancelado/situacao=3, sem espelho Central."""
     return (
         f"i.is_deleted = 0 "
         f"AND {comprovante_alias}.is_deleted = 0 "
-        f"AND {comprovante_alias}.commercial_eligible = 1 "
-        f"AND {mirror}"
+        f"AND {comprovante_alias}.commercial_eligible = 1"
     )
+
+
+def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
+    """Alias legado — comissão gerente usa regra LSC, não a mart de Vendas."""
+    return _slim_lsc_sales_where_sql(comprovante_alias)
 
 
 def _slim_loss_where_sql(comprovante_alias: str = "c") -> str:
@@ -54,7 +55,26 @@ def _slim_loss_where_sql(comprovante_alias: str = "c") -> str:
     )
 
 
-def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
+def _stg_produto_grupo_join_sql(prod_alias: str = "sp") -> str:
+    """Cadastro de grupo via ``stg_produtos`` (paridade ``sales_groups_rt`` / Xpert)."""
+    return f"""
+        LEFT JOIN (
+            SELECT
+              id_empresa,
+              id_produto,
+              argMax(
+                toInt32OrZero(JSONExtractString(payload, 'ID_GRUPOPRODUTOS')),
+                source_ts_ms
+              ) AS id_grupo_produto
+            FROM {CURRENT_DB}.stg_produtos
+            GROUP BY id_empresa, id_produto
+        ) AS {prod_alias}
+          ON {prod_alias}.id_empresa = i.id_empresa
+         AND {prod_alias}.id_produto = i.id_produto
+    """
+
+
+def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
     """Grupo: cadastro do produto primeiro (igual ``sales_groups_rt`` / Top grupos)."""
     return (
         f"coalesce(nullIf({prod_alias}.id_grupo_produto, 0), "
@@ -62,7 +82,7 @@ def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
     )
 
 
-def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
+def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
     """Grupo do item com fallback no cadastro (paridade slim)."""
     return (
         f"if({item_alias}.id_grupo_produto > 0, {item_alias}.id_grupo_produto, "
@@ -92,10 +112,7 @@ def _slim_item_from_sql() -> str:
          AND c.id_filial = i.id_filial
          AND c.id_db = i.id_db
          AND c.id_comprovante = i.id_comprovante
-        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
-          ON p.id_empresa = i.id_empresa
-         AND p.id_filial = i.id_filial
-         AND p.id_produto = i.id_produto
+        {_stg_produto_grupo_join_sql("sp")}
     """
 
 
@@ -414,7 +431,7 @@ def _sum_metric_from_slim(
         if not group_list or not cfop_exclude:
             return 0.0
         cfop_pred = _cfop_sales_predicate_sql("i")
-        group_expr = _sales_group_id_sql("i", "p")
+        group_expr = _sales_group_id_sql("i", "sp")
         group_filter = f"AND {group_expr} IN ({group_list})"
     else:
         scope_sql = _slim_loss_where_sql("c")
@@ -654,12 +671,12 @@ def publish_manager_commission_month(
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
             cfop_pred = _cfop_sales_predicate_sql("i")
-            group_expr = _sales_group_id_sql("i", "p")
+            group_expr = _sales_group_id_sql("i", "sp")
             scope_sql = _slim_comercial_where_sql("c")
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
-            group_expr = _loss_group_id_sql("i", "p")
+            group_expr = _loss_group_id_sql("i", "sp")
             scope_sql = _slim_loss_where_sql("c")
         rows = query_dict(
             f"""
