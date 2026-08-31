@@ -10,7 +10,7 @@ from app.repos_manager_commission import (
     _loss_group_id_sql,
     _nfe_documento,
     _sales_group_id_sql,
-    _slim_comercial_where_sql,
+    _slim_lsc_sales_where_sql,
     _date_key_iso,
     net_commission,
 )
@@ -81,15 +81,15 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         self.assertIn("dt_ini", params)
         self.assertIn("dt_fim", params)
 
-    def test_sales_group_sql_uses_produto_dim_alias(self):
-        expr = _sales_group_id_sql("i", "p")
-        self.assertIn("p.id_grupo_produto", expr)
-        self.assertIn("i.id_grupo_produto", expr)
-
-    def test_slim_comercial_where_excludes_central_mirror(self):
-        pred = _slim_comercial_where_sql("c").replace(" ", "").lower()
+    def test_slim_lsc_sales_where_uses_commercial_eligible_without_central_mirror(self):
+        pred = _slim_lsc_sales_where_sql("c").replace(" ", "").lower()
         self.assertIn("commercial_eligible=1", pred)
-        self.assertIn("central", pred)
+        self.assertNotIn("central", pred)
+
+    def test_sales_group_sql_uses_stg_produtos_alias(self):
+        expr = _sales_group_id_sql("i", "sp")
+        self.assertIn("sp.id_grupo_produto", expr)
+        self.assertIn("i.id_grupo_produto", expr)
 
     def test_loss_group_sql_prefers_item_group(self):
         expr = _loss_group_id_sql("i", "p")
