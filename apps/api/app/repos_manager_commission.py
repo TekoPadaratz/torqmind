@@ -44,6 +44,16 @@ def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
     )
 
 
+def _slim_loss_where_sql(comprovante_alias: str = "c") -> str:
+    """Filtro mínimo para notas de perda (5927) — paridade Xpert LSC."""
+    return (
+        f"i.is_deleted = 0 "
+        f"AND {comprovante_alias}.is_deleted = 0 "
+        f"AND {comprovante_alias}.cancelado = 0 "
+        f"AND {comprovante_alias}.situacao != 3"
+    )
+
+
 def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
     """Grupo: cadastro do produto primeiro (igual ``sales_groups_rt`` / Top grupos)."""
     return (
@@ -397,9 +407,9 @@ def _sum_metric_from_slim(
     cfop_exclude: Optional[Sequence[int]] = None,
 ) -> float:
     ini, fim = _date_key(dt_ini), _date_key(dt_fim)
-    comercial = _slim_comercial_where_sql("c")
     if cfop_exclude is not None:
         # Base de venda: espelha tela de Vendas + exclui transferência.
+        scope_sql = _slim_comercial_where_sql("c")
         group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
         if not group_list or not cfop_exclude:
             return 0.0
@@ -407,6 +417,7 @@ def _sum_metric_from_slim(
         group_expr = _sales_group_id_sql("i", "p")
         group_filter = f"AND {group_expr} IN ({group_list})"
     else:
+        scope_sql = _slim_loss_where_sql("c")
         include = ", ".join(str(int(c)) for c in (cfops or ()))
         if not include:
             return 0.0
@@ -420,7 +431,7 @@ def _sum_metric_from_slim(
         WHERE i.id_empresa = {{id_empresa:Int32}}
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND {comercial}
+          AND {scope_sql}
           AND {cfop_pred}
           {group_filter}
         """,
@@ -503,7 +514,7 @@ def _loss_notes_breakdown(
 ) -> List[Dict[str, Any]]:
     """Notas de perda (CFOP 5927) — valor integral do comprovante (paridade Xpert LSC)."""
     _ = loss_groups  # config permanece na UI; cálculo segue todas as notas 5927 do período.
-    comercial = _slim_comercial_where_sql("c")
+    loss_scope = _slim_loss_where_sql("c")
     rows = query_dict(
         f"""
         SELECT
@@ -536,7 +547,7 @@ def _loss_notes_breakdown(
         WHERE i.id_empresa = {{id_empresa:Int32}}
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND {comercial}
+          AND {loss_scope}
           AND i.cfop = {int(STOCK_LOSS_CFOP)}
         GROUP BY i.id_filial, i.id_db, i.id_comprovante
         HAVING abs(valor) > 0.009
@@ -640,15 +651,16 @@ def publish_manager_commission_month(
         ("stock_loss", (STOCK_LOSS_CFOP,), None),
     )
     inserted = 0
-    comercial = _slim_comercial_where_sql("c")
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
             cfop_pred = _cfop_sales_predicate_sql("i")
             group_expr = _sales_group_id_sql("i", "p")
+            scope_sql = _slim_comercial_where_sql("c")
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
             group_expr = _loss_group_id_sql("i", "p")
+            scope_sql = _slim_loss_where_sql("c")
         rows = query_dict(
             f"""
             SELECT
@@ -661,7 +673,7 @@ def publish_manager_commission_month(
             WHERE i.id_empresa = {{id_empresa:Int32}}
               AND i.id_filial = {{id_filial:Int32}}
               AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-              AND {comercial}
+              AND {scope_sql}
               AND {cfop_pred}
             GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
             HAVING id_grupo_produto > 0
