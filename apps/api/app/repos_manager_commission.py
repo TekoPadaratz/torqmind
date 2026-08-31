@@ -36,12 +36,12 @@ def _stg_produto_grupo_join_sql(prod_alias: str = "sp") -> str:
     return f"""
         LEFT JOIN (
             SELECT
-              id_empresa,
-              id_produto,
-              argMax(id_grupo_produto, source_ts_ms) AS grupo_produto_res
-            FROM {CURRENT_DB}.stg_produtos FINAL
-            WHERE is_deleted = 0
-            GROUP BY id_empresa, id_produto
+              stg.id_empresa AS id_empresa,
+              stg.id_produto AS id_produto,
+              argMax(stg.id_grupo_produto, stg.source_ts_ms) AS grupo_produto_res
+            FROM {CURRENT_DB}.stg_produtos AS stg FINAL
+            WHERE stg.is_deleted = 0
+            GROUP BY stg.id_empresa, stg.id_produto
         ) AS {prod_alias}
           ON {prod_alias}.id_empresa = i.id_empresa
          AND {prod_alias}.id_produto = i.id_produto
