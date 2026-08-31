@@ -31,7 +31,37 @@ def _cfop_sales_predicate_sql(alias: str = "i") -> str:
     return sales_cfop_filter_sql(alias)
 
 
-def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
+def _stg_produto_grupo_join_sql(prod_alias: str = "sp") -> str:
+    """Cadastro de grupo via ``stg_produtos`` (paridade ``sales_groups_rt``)."""
+    return f"""
+        LEFT JOIN (
+            SELECT
+              id_empresa,
+              id_produto,
+              argMax(id_grupo_produto, source_ts_ms) AS id_grupo_produto
+            FROM {CURRENT_DB}.stg_produtos FINAL
+            WHERE is_deleted = 0
+            GROUP BY id_empresa, id_produto
+        ) AS {prod_alias}
+          ON {prod_alias}.id_empresa = i.id_empresa
+         AND {prod_alias}.id_produto = i.id_produto
+    """
+
+
+def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
+    """Mesmos filtros comerciais da mart ``sales_groups_rt``."""
+    from app.sales_semantics import central_mirror_exclude_sql
+
+    mirror = central_mirror_exclude_sql(comprovante_alias)
+    return (
+        f"i.is_deleted = 0 "
+        f"AND {comprovante_alias}.is_deleted = 0 "
+        f"AND {comprovante_alias}.commercial_eligible = 1 "
+        f"AND {mirror}"
+    )
+
+
+def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
     """Grupo: cadastro do produto primeiro (igual ``sales_groups_rt`` / Top grupos)."""
     return (
         f"coalesce(nullIf({prod_alias}.id_grupo_produto, 0), "
@@ -39,8 +69,8 @@ def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
     )
 
 
-def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
-    """Perdas (CFOP 5927): grupo do item primeiro, cadastro como fallback."""
+def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
+    """Grupo do item com fallback no cadastro (paridade slim)."""
     return (
         f"if({item_alias}.id_grupo_produto > 0, {item_alias}.id_grupo_produto, "
         f"coalesce({prod_alias}.id_grupo_produto, 0))"
@@ -69,10 +99,7 @@ def _slim_item_from_sql() -> str:
          AND c.id_filial = i.id_filial
          AND c.id_db = i.id_db
          AND c.id_comprovante = i.id_comprovante
-        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
-          ON p.id_empresa = i.id_empresa
-         AND p.id_filial = i.id_filial
-         AND p.id_produto = i.id_produto
+        {_stg_produto_grupo_join_sql("sp")}
     """
 
 
@@ -383,47 +410,33 @@ def _sum_metric_from_slim(
     cfops: Optional[Sequence[int]] = None,
     cfop_exclude: Optional[Sequence[int]] = None,
 ) -> float:
-    if not group_ids:
-        return 0.0
     ini, fim = _date_key(dt_ini), _date_key(dt_fim)
-    # ClickHouse array parameter via string list — keep IDs int-safe
-    group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
-    if not group_list:
-        return 0.0
+    comercial = _slim_comercial_where_sql("c")
     if cfop_exclude is not None:
         # Base de venda: espelha tela de Vendas + exclui transferência.
-        if not cfop_exclude:
+        group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
+        if not group_list or not cfop_exclude:
             return 0.0
         cfop_pred = _cfop_sales_predicate_sql("i")
-        group_expr = _sales_group_id_sql("i", "p")
+        group_expr = _sales_group_id_sql("i", "sp")
+        group_filter = f"AND {group_expr} IN ({group_list})"
     else:
         include = ", ".join(str(int(c)) for c in (cfops or ()))
         if not include:
             return 0.0
         cfop_pred = f"i.cfop IN ({include})"
-        group_expr = _loss_group_id_sql("i", "p")
+        # Xpert LSC: nota de perda 5927 entra pelo valor integral do comprovante.
+        group_filter = ""
     rows = query_dict(
         f"""
         SELECT sum(i.total) AS valor
-        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
-        INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
-          ON c.id_empresa = i.id_empresa
-         AND c.id_filial = i.id_filial
-         AND c.id_db = i.id_db
-         AND c.id_comprovante = i.id_comprovante
-        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
-          ON p.id_empresa = i.id_empresa
-         AND p.id_filial = i.id_filial
-         AND p.id_produto = i.id_produto
+        {_slim_item_from_sql()}
         WHERE i.id_empresa = {{id_empresa:Int32}}
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND i.is_deleted = 0
-          AND c.is_deleted = 0
-          AND c.cancelado = 0
-          AND c.situacao != 3
+          AND {comercial}
           AND {cfop_pred}
-          AND {group_expr} IN ({group_list})
+          {group_filter}
         """,
         parameters={
             "id_empresa": int(id_empresa),
@@ -463,7 +476,8 @@ def _sales_groups_breakdown(
     if not configured:
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
-    group_expr = _sales_group_id_sql("i", "p")
+    group_expr = _sales_group_id_sql("i", "sp")
+    comercial = _slim_comercial_where_sql("c")
     rows = query_dict(
         f"""
         SELECT
@@ -473,10 +487,7 @@ def _sales_groups_breakdown(
         WHERE i.id_empresa = {{id_empresa:Int32}}
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND i.is_deleted = 0
-          AND c.is_deleted = 0
-          AND c.cancelado = 0
-          AND c.situacao != 3
+          AND {comercial}
           AND {_cfop_sales_predicate_sql("i")}
           AND {group_expr} IN ({group_list})
         GROUP BY id_grupo_produto
@@ -504,18 +515,9 @@ def _loss_notes_breakdown(
     dt_fim: date,
     loss_groups: Sequence[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Notas de perda (CFOP 5927) nos grupos configurados — DOCUMENTO = NF."""
-    group_ids = sorted(
-        {
-            int(g.get("id_grupo_produto") or 0)
-            for g in loss_groups
-            if int(g.get("id_grupo_produto") or 0) > 0
-        }
-    )
-    if not group_ids:
-        return []
-    group_list = ", ".join(str(g) for g in group_ids)
-    group_expr = _loss_group_id_sql("i", "p")
+    """Notas de perda (CFOP 5927) — valor integral do comprovante (paridade Xpert LSC)."""
+    _ = loss_groups  # config permanece na UI; cálculo segue todas as notas 5927 do período.
+    comercial = _slim_comercial_where_sql("c")
     rows = query_dict(
         f"""
         SELECT
@@ -548,13 +550,10 @@ def _loss_notes_breakdown(
         WHERE i.id_empresa = {{id_empresa:Int32}}
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-          AND i.is_deleted = 0
-          AND c.is_deleted = 0
-          AND c.cancelado = 0
-          AND c.situacao != 3
+          AND {comercial}
           AND i.cfop = {int(STOCK_LOSS_CFOP)}
-          AND {group_expr} IN ({group_list})
         GROUP BY i.id_filial, i.id_db, i.id_comprovante
+        HAVING abs(valor) > 0.009
         ORDER BY data_key DESC, numero_nfe ASC, i.id_comprovante ASC
         LIMIT 500
         """,
@@ -655,14 +654,15 @@ def publish_manager_commission_month(
         ("stock_loss", (STOCK_LOSS_CFOP,), None),
     )
     inserted = 0
+    comercial = _slim_comercial_where_sql("c")
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
             cfop_pred = _cfop_sales_predicate_sql("i")
-            group_expr = _sales_group_id_sql("i", "p")
+            group_expr = _sales_group_id_sql("i", "sp")
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
-            group_expr = _loss_group_id_sql("i", "p")
+            group_expr = _loss_group_id_sql("i", "sp")
         rows = query_dict(
             f"""
             SELECT
@@ -671,23 +671,11 @@ def publish_manager_commission_month(
               {group_expr} AS id_grupo_produto,
               sum(i.total) AS valor,
               count() AS qtd_itens
-            FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
-            INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
-              ON c.id_empresa = i.id_empresa
-             AND c.id_filial = i.id_filial
-             AND c.id_db = i.id_db
-             AND c.id_comprovante = i.id_comprovante
-            LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
-              ON p.id_empresa = i.id_empresa
-             AND p.id_filial = i.id_filial
-             AND p.id_produto = i.id_produto
+            {_slim_item_from_sql()}
             WHERE i.id_empresa = {{id_empresa:Int32}}
               AND i.id_filial = {{id_filial:Int32}}
               AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
-              AND i.is_deleted = 0
-              AND c.is_deleted = 0
-              AND c.cancelado = 0
-              AND c.situacao != 3
+              AND {comercial}
               AND {cfop_pred}
             GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
             HAVING id_grupo_produto > 0

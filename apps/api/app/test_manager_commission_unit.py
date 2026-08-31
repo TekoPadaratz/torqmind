@@ -7,7 +7,10 @@ from app.repos_manager_commission import (
     SALES_BASE_EXCLUDED_GROUP_IDS,
     SALES_EXCLUDED_CFOPS,
     _cfop_sales_predicate_sql,
+    _loss_group_id_sql,
     _nfe_documento,
+    _sales_group_id_sql,
+    _slim_comercial_where_sql,
     _date_key_iso,
     net_commission,
 )
@@ -77,6 +80,21 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         self.assertIn("id_filial", params)
         self.assertIn("dt_ini", params)
         self.assertIn("dt_fim", params)
+
+    def test_sales_group_sql_uses_stg_produtos_alias(self):
+        expr = _sales_group_id_sql("i", "sp")
+        self.assertIn("sp.id_grupo_produto", expr)
+        self.assertIn("i.id_grupo_produto", expr)
+
+    def test_slim_comercial_where_excludes_central_mirror(self):
+        pred = _slim_comercial_where_sql("c").replace(" ", "").lower()
+        self.assertIn("commercial_eligible=1", pred)
+        self.assertIn("central", pred)
+
+    def test_loss_group_sql_prefers_item_group(self):
+        expr = _loss_group_id_sql("i", "sp")
+        self.assertIn("i.id_grupo_produto", expr)
+        self.assertIn("sp.id_grupo_produto", expr)
 
 
 if __name__ == "__main__":
