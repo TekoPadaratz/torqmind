@@ -31,23 +31,6 @@ def _cfop_sales_predicate_sql(alias: str = "i") -> str:
     return sales_cfop_filter_sql(alias)
 
 
-def _stg_produto_grupo_join_sql(prod_alias: str = "sp") -> str:
-    """Cadastro de grupo via ``stg_produtos`` (paridade ``sales_groups_rt``)."""
-    return f"""
-        LEFT JOIN (
-            SELECT
-              stg.id_empresa AS id_empresa,
-              stg.id_produto AS id_produto,
-              argMax(stg.id_grupo_produto, stg.source_ts_ms) AS grupo_produto_res
-            FROM {CURRENT_DB}.stg_produtos AS stg FINAL
-            WHERE stg.is_deleted = 0
-            GROUP BY stg.id_empresa, stg.id_produto
-        ) AS {prod_alias}
-          ON {prod_alias}.id_empresa = i.id_empresa
-         AND {prod_alias}.id_produto = i.id_produto
-    """
-
-
 def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
     """Mesmos filtros comerciais da mart ``sales_groups_rt``."""
     from app.sales_semantics import central_mirror_exclude_sql
@@ -61,19 +44,19 @@ def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
     )
 
 
-def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
+def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
     """Grupo: cadastro do produto primeiro (igual ``sales_groups_rt`` / Top grupos)."""
     return (
-        f"coalesce(nullIf({prod_alias}.grupo_produto_res, 0), "
+        f"coalesce(nullIf({prod_alias}.id_grupo_produto, 0), "
         f"nullIf({item_alias}.id_grupo_produto, 0), 0)"
     )
 
 
-def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
+def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "p") -> str:
     """Grupo do item com fallback no cadastro (paridade slim)."""
     return (
         f"if({item_alias}.id_grupo_produto > 0, {item_alias}.id_grupo_produto, "
-        f"coalesce({prod_alias}.grupo_produto_res, 0))"
+        f"coalesce({prod_alias}.id_grupo_produto, 0))"
     )
 
 
@@ -99,7 +82,10 @@ def _slim_item_from_sql() -> str:
          AND c.id_filial = i.id_filial
          AND c.id_db = i.id_db
          AND c.id_comprovante = i.id_comprovante
-        {_stg_produto_grupo_join_sql("sp")}
+        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
+          ON p.id_empresa = i.id_empresa
+         AND p.id_filial = i.id_filial
+         AND p.id_produto = i.id_produto
     """
 
 
@@ -418,7 +404,7 @@ def _sum_metric_from_slim(
         if not group_list or not cfop_exclude:
             return 0.0
         cfop_pred = _cfop_sales_predicate_sql("i")
-        group_expr = _sales_group_id_sql("i", "sp")
+        group_expr = _sales_group_id_sql("i", "p")
         group_filter = f"AND {group_expr} IN ({group_list})"
     else:
         include = ", ".join(str(int(c)) for c in (cfops or ()))
@@ -476,7 +462,7 @@ def _sales_groups_breakdown(
     if not configured:
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
-    group_expr = _sales_group_id_sql("i", "sp")
+    group_expr = _sales_group_id_sql("i", "p")
     comercial = _slim_comercial_where_sql("c")
     rows = query_dict(
         f"""
@@ -658,11 +644,11 @@ def publish_manager_commission_month(
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
             cfop_pred = _cfop_sales_predicate_sql("i")
-            group_expr = _sales_group_id_sql("i", "sp")
+            group_expr = _sales_group_id_sql("i", "p")
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
-            group_expr = _loss_group_id_sql("i", "sp")
+            group_expr = _loss_group_id_sql("i", "p")
         rows = query_dict(
             f"""
             SELECT
