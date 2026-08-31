@@ -83,7 +83,7 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
 
     def test_sales_group_sql_uses_stg_produtos_alias(self):
         expr = _sales_group_id_sql("i", "sp")
-        self.assertIn("sp.id_grupo_produto", expr)
+        self.assertIn("sp.grupo_produto_res", expr)
         self.assertIn("i.id_grupo_produto", expr)
 
     def test_slim_comercial_where_excludes_central_mirror(self):
@@ -94,7 +94,7 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
     def test_loss_group_sql_prefers_item_group(self):
         expr = _loss_group_id_sql("i", "sp")
         self.assertIn("i.id_grupo_produto", expr)
-        self.assertIn("sp.id_grupo_produto", expr)
+        self.assertIn("sp.grupo_produto_res", expr)
 
 
 if __name__ == "__main__":

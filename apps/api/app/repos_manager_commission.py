@@ -38,7 +38,7 @@ def _stg_produto_grupo_join_sql(prod_alias: str = "sp") -> str:
             SELECT
               id_empresa,
               id_produto,
-              argMax(id_grupo_produto, source_ts_ms) AS id_grupo_produto
+              argMax(id_grupo_produto, source_ts_ms) AS grupo_produto_res
             FROM {CURRENT_DB}.stg_produtos FINAL
             WHERE is_deleted = 0
             GROUP BY id_empresa, id_produto
@@ -64,7 +64,7 @@ def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
 def _sales_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
     """Grupo: cadastro do produto primeiro (igual ``sales_groups_rt`` / Top grupos)."""
     return (
-        f"coalesce(nullIf({prod_alias}.id_grupo_produto, 0), "
+        f"coalesce(nullIf({prod_alias}.grupo_produto_res, 0), "
         f"nullIf({item_alias}.id_grupo_produto, 0), 0)"
     )
 
@@ -73,7 +73,7 @@ def _loss_group_id_sql(item_alias: str = "i", prod_alias: str = "sp") -> str:
     """Grupo do item com fallback no cadastro (paridade slim)."""
     return (
         f"if({item_alias}.id_grupo_produto > 0, {item_alias}.id_grupo_produto, "
-        f"coalesce({prod_alias}.id_grupo_produto, 0))"
+        f"coalesce({prod_alias}.grupo_produto_res, 0))"
     )
 
 
