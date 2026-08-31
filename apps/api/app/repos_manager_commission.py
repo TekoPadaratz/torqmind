@@ -490,7 +490,7 @@ def _sales_groups_breakdown(
     if not configured:
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
-    group_expr = _sales_group_id_sql("i", "p")
+    group_expr = _sales_group_id_sql("i", "sp")
     comercial = _slim_comercial_where_sql("c")
     rows = query_dict(
         f"""
