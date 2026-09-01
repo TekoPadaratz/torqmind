@@ -100,7 +100,7 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
 
     def test_commission_central_entrada_cfops(self):
         from app.sales_semantics import (
-            CENTRAL_MIRROR_1101_EXCLUDED_PRODUCT_IDS,
+            CENTRAL_MIRROR_2102_EXCLUDED_ITEM_IDS,
             CENTRAL_MIRROR_ENTRADA_CFOPS,
             central_mirror_commission_sales_sql,
             central_mirror_entrada_sales_sql,
@@ -114,10 +114,10 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         entrada = central_mirror_commission_sales_sql("i", "c").replace(" ", "").lower()
         self.assertIn("2102", entrada)
         self.assertIn("1101", entrada)
-        self.assertIn("9819", entrada)
+        self.assertIn("id_itemcomprovante", entrada)
         self.assertIn("stg_filiais", entrada)
         self.assertEqual(CENTRAL_MIRROR_ENTRADA_CFOPS, (2102, 1101))
-        self.assertEqual(CENTRAL_MIRROR_1101_EXCLUDED_PRODUCT_IDS, (9819,))
+        self.assertEqual(len(CENTRAL_MIRROR_2102_EXCLUDED_ITEM_IDS), 10)
         self.assertEqual(
             central_mirror_entrada_sales_sql("i", "c"),
             central_mirror_commission_sales_sql("i", "c"),
