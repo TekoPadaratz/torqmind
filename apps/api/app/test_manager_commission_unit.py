@@ -98,12 +98,22 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         self.assertEqual(_slim_comercial_where_sql("c"), default)
         self.assertEqual(_slim_comercial_where_sql("c", include_central_mirror=True), with_mirror)
 
-    def test_commission_mirror_cfop_dual_predicate(self):
+    def test_commission_central_entrada_cfops(self):
+        from app.sales_semantics import (
+            CENTRAL_MIRROR_ENTRADA_CFOPS,
+            central_mirror_entrada_sales_sql,
+            commission_sales_cfop_predicate_sql,
+        )
+
         off = commission_sales_cfop_predicate_sql("i", "c", include_central_mirror=False)
         on = commission_sales_cfop_predicate_sql("i", "c", include_central_mirror=True)
+        self.assertEqual(off, on)
         self.assertIn("cfop,0)>5000", off.replace(" ", "").lower())
-        self.assertIn("stg_filiais", on.lower())
-        self.assertIn("notin(5927,6929)", on.replace(" ", "").lower())
+        entrada = central_mirror_entrada_sales_sql("i", "c").replace(" ", "").lower()
+        self.assertIn("2102", entrada)
+        self.assertIn("1101", entrada)
+        self.assertIn("stg_filiais", entrada)
+        self.assertEqual(CENTRAL_MIRROR_ENTRADA_CFOPS, (2102, 1101))
 
     def test_sales_group_sql_uses_stg_produtos_alias(self):
         expr = _sales_group_id_sql("i", "sp")

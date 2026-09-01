@@ -77,9 +77,29 @@ def central_mirror_exclude_sql(alias: str = "c", current_db: str = "torqmind_cur
     return f"NOT ({central_mirror_match_sql(alias, current_db)})"
 
 
+# Entrada espelhada da Central que o Xpert LSC soma na base de comissão.
+CENTRAL_MIRROR_ENTRADA_CFOPS: tuple[int, ...] = (2102, 1101)
+
+
 def commission_mirror_cfop_relaxed_sql(item_alias: str = "i") -> str:
     """CFOP para espelho Central no LSC — Xpert não exige saída > 5000."""
-    return f"COALESCE({item_alias}.cfop, 0) NOT IN (5927, 6929)"
+    excl = ",".join(str(int(c)) for c in SALES_EXCLUDED_CFOPS)
+    return f"COALESCE({item_alias}.cfop, 0) NOT IN ({excl})"
+
+
+def central_mirror_entrada_sales_sql(
+    item_alias: str = "i",
+    comprovante_alias: str = "c",
+    *,
+    current_db: str = "torqmind_current",
+) -> str:
+    """Linhas de entrada da Central espelhadas no posto (paridade Xpert LSC)."""
+    mirror = central_mirror_match_sql(comprovante_alias, current_db)
+    cfops = ",".join(str(int(c)) for c in CENTRAL_MIRROR_ENTRADA_CFOPS)
+    relaxed = commission_mirror_cfop_relaxed_sql(item_alias)
+    return (
+        f"({mirror}) AND {relaxed} AND COALESCE({item_alias}.cfop, 0) IN ({cfops})"
+    )
 
 
 def commission_sales_cfop_predicate_sql(
@@ -89,17 +109,14 @@ def commission_sales_cfop_predicate_sql(
     include_central_mirror: bool = False,
     current_db: str = "torqmind_current",
 ) -> str:
-    """Predicado CFOP da comissão (vendedor/gerente).
+    """Predicado CFOP da comissão (vendedor/gerente) — sempre saída comercial padrão.
 
-    Com espelho Central ligado, comprovantes ``id_db`` da Central no posto entram
-  com regra relaxada (sem cfop > 5000), paridade Xpert LSC.
+    O espelho Central com CFOP de entrada (2102/1101) é somado à parte em
+    ``_sum_metric_from_slim`` / ``_query_eligible_sales_ch`` quando
+    ``include_central_mirror`` está ligado. Não usar OR no SQL (precedência CH).
     """
-    standard = sales_cfop_filter_sql(item_alias)
-    if not include_central_mirror:
-        return standard
-    mirror = central_mirror_match_sql(comprovante_alias, current_db)
-    relaxed = commission_mirror_cfop_relaxed_sql(item_alias)
-    return f"(({mirror}) AND ({relaxed})) OR ((NOT ({mirror})) AND ({standard}))"
+    _ = include_central_mirror, comprovante_alias, current_db
+    return sales_cfop_filter_sql(item_alias)
 
 
 def commission_slim_sales_scope_sql(

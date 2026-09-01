@@ -75,15 +75,19 @@ def _query_eligible_sales_ch(
     filial_list = ", ".join(str(f) for f in targets)
     situacao_list = _situacao_excluidas_sql()
     from app.sales_semantics import (
+        central_mirror_entrada_sales_sql,
         central_mirror_exclude_sql,
         commission_sales_cfop_predicate_sql,
+        sales_cfop_filter_sql,
     )
 
-    cfop_pred = commission_sales_cfop_predicate_sql(
-        "i", "c", include_central_mirror=include_central_mirror
-    )
-    mirror_sql = ""
-    if not include_central_mirror:
+    native_cfop = sales_cfop_filter_sql("i")
+    if include_central_mirror:
+        central_pred = central_mirror_entrada_sales_sql("i", "c")
+        cfop_pred = f"(({native_cfop}) OR ({central_pred}))"
+        mirror_sql = ""
+    else:
+        cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
         mirror_sql = f" AND {central_mirror_exclude_sql('c')}"
     sql = f"""
       SELECT

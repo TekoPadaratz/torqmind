@@ -442,39 +442,16 @@ def upsert_period_override(
     return dict(row) if row else {}
 
 
-def _sum_metric_from_slim(
+def _sum_slim_total(
     *,
     id_empresa: int,
     id_filial: int,
-    dt_ini: date,
-    dt_fim: date,
-    group_ids: Sequence[int],
-    cfops: Optional[Sequence[int]] = None,
-    cfop_exclude: Optional[Sequence[int]] = None,
-    include_central_mirror: bool = False,
+    ini: int,
+    fim: int,
+    scope_sql: str,
+    cfop_pred: str,
+    group_filter: str,
 ) -> float:
-    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
-    if cfop_exclude is not None:
-        # Base de venda: espelha tela de Vendas + exclui transferência.
-        scope_sql = _slim_comercial_where_sql("c", include_central_mirror=include_central_mirror)
-        group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
-        if not group_list or not cfop_exclude:
-            return 0.0
-        from app.sales_semantics import commission_sales_cfop_predicate_sql
-
-        cfop_pred = commission_sales_cfop_predicate_sql(
-            "i", "c", include_central_mirror=include_central_mirror
-        )
-        group_expr = _sales_group_id_sql("i", "sp")
-        group_filter = f"AND {group_expr} IN ({group_list})"
-    else:
-        scope_sql = _slim_loss_where_sql("c")
-        include = ", ".join(str(int(c)) for c in (cfops or ()))
-        if not include:
-            return 0.0
-        cfop_pred = f"i.cfop IN ({include})"
-        # Xpert LSC: nota de perda 5927 entra pelo valor integral do comprovante.
-        group_filter = ""
     rows = query_dict(
         f"""
         SELECT sum(i.total) AS valor
@@ -496,6 +473,72 @@ def _sum_metric_from_slim(
     if not rows:
         return 0.0
     return round(float(rows[0].get("valor") or 0), 2)
+
+
+def _sum_metric_from_slim(
+    *,
+    id_empresa: int,
+    id_filial: int,
+    dt_ini: date,
+    dt_fim: date,
+    group_ids: Sequence[int],
+    cfops: Optional[Sequence[int]] = None,
+    cfop_exclude: Optional[Sequence[int]] = None,
+    include_central_mirror: bool = False,
+) -> float:
+    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
+    if cfop_exclude is not None:
+        # Base de venda: espelha tela de Vendas + exclui transferência.
+        group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
+        if not group_list or not cfop_exclude:
+            return 0.0
+        from app.sales_semantics import (
+            central_mirror_entrada_sales_sql,
+            commission_sales_cfop_predicate_sql,
+        )
+
+        cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
+        group_expr = _sales_group_id_sql("i", "sp")
+        group_filter = f"AND {group_expr} IN ({group_list})"
+        # Sempre parte nativa (sem espelho Central) com CFOP de saída.
+        scope_sql = _slim_comercial_where_sql("c", include_central_mirror=False)
+        native = _sum_slim_total(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            ini=ini,
+            fim=fim,
+            scope_sql=scope_sql,
+            cfop_pred=cfop_pred,
+            group_filter=group_filter,
+        )
+        if not include_central_mirror:
+            return native
+        central_pred = central_mirror_entrada_sales_sql("i", "c")
+        central_scope = _slim_comercial_where_sql("c", include_central_mirror=True)
+        central = _sum_slim_total(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            ini=ini,
+            fim=fim,
+            scope_sql=f"{central_scope} AND {central_pred}",
+            cfop_pred="1=1",
+            group_filter=group_filter,
+        )
+        return round(native + central, 2)
+    scope_sql = _slim_loss_where_sql("c")
+    include = ", ".join(str(int(c)) for c in (cfops or ()))
+    if not include:
+        return 0.0
+    cfop_pred = f"i.cfop IN ({include})"
+    return _sum_slim_total(
+        id_empresa=id_empresa,
+        id_filial=id_filial,
+        ini=ini,
+        fim=fim,
+        scope_sql=scope_sql,
+        cfop_pred=cfop_pred,
+        group_filter="",
+    )
 
 
 def _sales_groups_breakdown(
@@ -526,14 +569,46 @@ def _sales_groups_breakdown(
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
     group_expr = _sales_group_id_sql("i", "sp")
-    from app.sales_semantics import commission_sales_cfop_predicate_sql
-
-    comercial = _slim_comercial_where_sql("c", include_central_mirror=include_central_mirror)
-    cfop_pred = commission_sales_cfop_predicate_sql(
-        "i", "c", include_central_mirror=include_central_mirror
+    from app.sales_semantics import (
+        central_mirror_entrada_sales_sql,
+        commission_sales_cfop_predicate_sql,
     )
-    rows = query_dict(
-        f"""
+
+    cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
+    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
+    if include_central_mirror:
+        central_pred = central_mirror_entrada_sales_sql("i", "c")
+        comercial = _slim_comercial_where_sql("c", include_central_mirror=True)
+        sql = f"""
+        SELECT id_grupo_produto, round(sum(valor), 2) AS valor
+        FROM (
+          SELECT
+            {group_expr} AS id_grupo_produto,
+            i.total AS valor
+          {_slim_item_from_sql()}
+          WHERE i.id_empresa = {{id_empresa:Int32}}
+            AND i.id_filial = {{id_filial:Int32}}
+            AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND {_slim_comercial_where_sql("c", include_central_mirror=False)}
+            AND {cfop_pred}
+            AND {group_expr} IN ({group_list})
+          UNION ALL
+          SELECT
+            {group_expr} AS id_grupo_produto,
+            i.total AS valor
+          {_slim_item_from_sql()}
+          WHERE i.id_empresa = {{id_empresa:Int32}}
+            AND i.id_filial = {{id_filial:Int32}}
+            AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND {comercial}
+            AND {central_pred}
+            AND {group_expr} IN ({group_list})
+        )
+        GROUP BY id_grupo_produto
+        """
+    else:
+        comercial = _slim_comercial_where_sql("c", include_central_mirror=False)
+        sql = f"""
         SELECT
           {group_expr} AS id_grupo_produto,
           round(sum(i.total), 2) AS valor
@@ -545,12 +620,14 @@ def _sales_groups_breakdown(
           AND {cfop_pred}
           AND {group_expr} IN ({group_list})
         GROUP BY id_grupo_produto
-        """,
+        """
+    rows = query_dict(
+        sql,
         parameters={
             "id_empresa": int(id_empresa),
             "id_filial": int(id_filial),
-            "ini": _date_key(dt_ini),
-            "fim": _date_key(dt_fim),
+            "ini": ini,
+            "fim": fim,
         },
     )
     by_id = {int(r["id_grupo_produto"]): round(float(r.get("valor") or 0), 2) for r in rows}
@@ -727,20 +804,77 @@ def publish_manager_commission_month(
     inserted = 0
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
-            from app.sales_semantics import commission_sales_cfop_predicate_sql
-
-            cfop_pred = commission_sales_cfop_predicate_sql(
-                "i", "c", include_central_mirror=mirror
+            from app.sales_semantics import (
+                central_mirror_entrada_sales_sql,
+                commission_sales_cfop_predicate_sql,
             )
+
+            cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
             group_expr = _sales_group_id_sql("i", "sp")
-            scope_sql = _slim_comercial_where_sql("c", include_central_mirror=mirror)
+            if mirror:
+                central_pred = central_mirror_entrada_sales_sql("i", "c")
+                scope_sql = _slim_comercial_where_sql("c", include_central_mirror=True)
+                sql = f"""
+                SELECT
+                  id_empresa,
+                  id_filial,
+                  id_grupo_produto,
+                  sum(valor) AS valor,
+                  sum(qtd_itens) AS qtd_itens
+                FROM (
+                  SELECT
+                    i.id_empresa AS id_empresa,
+                    i.id_filial AS id_filial,
+                    {group_expr} AS id_grupo_produto,
+                    i.total AS valor,
+                    1 AS qtd_itens
+                  {_slim_item_from_sql()}
+                  WHERE i.id_empresa = {{id_empresa:Int32}}
+                    AND i.id_filial = {{id_filial:Int32}}
+                    AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                    AND {_slim_comercial_where_sql("c", include_central_mirror=False)}
+                    AND {cfop_pred}
+                  UNION ALL
+                  SELECT
+                    i.id_empresa AS id_empresa,
+                    i.id_filial AS id_filial,
+                    {group_expr} AS id_grupo_produto,
+                    i.total AS valor,
+                    1 AS qtd_itens
+                  {_slim_item_from_sql()}
+                  WHERE i.id_empresa = {{id_empresa:Int32}}
+                    AND i.id_filial = {{id_filial:Int32}}
+                    AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                    AND {scope_sql}
+                    AND {central_pred}
+                )
+                GROUP BY id_empresa, id_filial, id_grupo_produto
+                HAVING id_grupo_produto > 0
+                """
+            else:
+                scope_sql = _slim_comercial_where_sql("c", include_central_mirror=False)
+                sql = f"""
+                SELECT
+                  i.id_empresa AS id_empresa,
+                  i.id_filial AS id_filial,
+                  {group_expr} AS id_grupo_produto,
+                  sum(i.total) AS valor,
+                  count() AS qtd_itens
+                {_slim_item_from_sql()}
+                WHERE i.id_empresa = {{id_empresa:Int32}}
+                  AND i.id_filial = {{id_filial:Int32}}
+                  AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                  AND {scope_sql}
+                  AND {cfop_pred}
+                GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
+                HAVING id_grupo_produto > 0
+                """
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
             group_expr = _loss_group_id_sql("i", "sp")
             scope_sql = _slim_loss_where_sql("c")
-        rows = query_dict(
-            f"""
+            sql = f"""
             SELECT
               i.id_empresa AS id_empresa,
               i.id_filial AS id_filial,
@@ -755,7 +889,9 @@ def publish_manager_commission_month(
               AND {cfop_pred}
             GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
             HAVING id_grupo_produto > 0
-            """,
+            """
+        rows = query_dict(
+            sql,
             parameters={
                 "id_empresa": int(id_empresa),
                 "id_filial": int(id_filial),
