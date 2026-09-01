@@ -79,6 +79,8 @@ def central_mirror_exclude_sql(alias: str = "c", current_db: str = "torqmind_cur
 
 # Entrada espelhada da Central que o Xpert LSC soma na base de comissão.
 CENTRAL_MIRROR_ENTRADA_CFOPS: tuple[int, ...] = (2102, 1101)
+# CFOP 1101 espelhado: Xpert LSC não soma insumos (ex.: produto 9819 em VR06 ago/2026).
+CENTRAL_MIRROR_1101_EXCLUDED_PRODUCT_IDS: tuple[int, ...] = (9819,)
 
 
 def commission_mirror_cfop_relaxed_sql(item_alias: str = "i") -> str:
@@ -87,18 +89,41 @@ def commission_mirror_cfop_relaxed_sql(item_alias: str = "i") -> str:
     return f"COALESCE({item_alias}.cfop, 0) NOT IN ({excl})"
 
 
+def central_mirror_commission_sales_sql(
+    item_alias: str = "i",
+    comprovante_alias: str = "c",
+    *,
+    current_db: str = "torqmind_current",
+) -> str:
+    """Linhas espelhadas da Central no posto (paridade Xpert LSC com toggle ligado).
+
+    Soma três famílias, com filtro de grupos aplicado na query chamadora:
+    - CFOP 2102 (entrada comercialização)
+    - CFOP 1101 exceto produtos de insumo não elegíveis
+    - Saída comercial padrão (cfop > 5000, sem perda/transferência)
+    """
+    mirror = central_mirror_match_sql(comprovante_alias, current_db)
+    relaxed = commission_mirror_cfop_relaxed_sql(item_alias)
+    std = sales_cfop_filter_sql(item_alias)
+    prod_excl = ",".join(str(int(p)) for p in CENTRAL_MIRROR_1101_EXCLUDED_PRODUCT_IDS)
+    cfop = f"COALESCE({item_alias}.cfop, 0)"
+    entrada = (
+        f"({cfop} = 2102)"
+        f" OR ({cfop} = 1101 AND COALESCE({item_alias}.id_produto, 0) NOT IN ({prod_excl}))"
+        f" OR ({std})"
+    )
+    return f"({mirror}) AND ({relaxed}) AND ({entrada})"
+
+
 def central_mirror_entrada_sales_sql(
     item_alias: str = "i",
     comprovante_alias: str = "c",
     *,
     current_db: str = "torqmind_current",
 ) -> str:
-    """Linhas de entrada da Central espelhadas no posto (paridade Xpert LSC)."""
-    mirror = central_mirror_match_sql(comprovante_alias, current_db)
-    cfops = ",".join(str(int(c)) for c in CENTRAL_MIRROR_ENTRADA_CFOPS)
-    relaxed = commission_mirror_cfop_relaxed_sql(item_alias)
-    return (
-        f"({mirror}) AND {relaxed} AND COALESCE({item_alias}.cfop, 0) IN ({cfops})"
+    """Alias legado — usar ``central_mirror_commission_sales_sql``."""
+    return central_mirror_commission_sales_sql(
+        item_alias, comprovante_alias, current_db=current_db
     )
 
 
@@ -111,7 +136,7 @@ def commission_sales_cfop_predicate_sql(
 ) -> str:
     """Predicado CFOP da comissão (vendedor/gerente) — sempre saída comercial padrão.
 
-    O espelho Central com CFOP de entrada (2102/1101) é somado à parte em
+    O espelho Central (entrada 2102/1101 + saída comercial) é somado à parte em
     ``_sum_metric_from_slim`` / ``_query_eligible_sales_ch`` quando
     ``include_central_mirror`` está ligado. Não usar OR no SQL (precedência CH).
     """
