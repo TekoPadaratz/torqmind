@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { apiGet, isRequestCanceled } from "../lib/api";
+import { apiGet, apiPut, isRequestCanceled } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
 import { coerceDisplayMessage, extractApiError } from "../lib/errors";
 import { formatCommissionPeriodLabel } from "../lib/commission-period.mjs";
+import CommissionCentralMirrorToggle from "./CommissionCentralMirrorToggle";
 
 const TIER_STYLES: Record<
   string,
@@ -259,6 +260,8 @@ export default function CommissionsTab({
 }: CommissionsTabProps) {
   const [paymentMode, setPaymentMode] = useState<string>("");
   const [printIncludeValues, setPrintIncludeValues] = useState(true);
+  const [includeCentralMirror, setIncludeCentralMirror] = useState(false);
+  const [centralMirrorTouched, setCentralMirrorTouched] = useState(false);
   /** Vazio = todos os níveis (mesmo padrão de Prioridades de cobrança). */
   const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set());
 
@@ -276,6 +279,33 @@ export default function CommissionsTab({
   const isMulti = multiFiliais.length > 1 || (!idFilial && multiFiliais.length > 0);
   const hasScope = Boolean(idFilial) || multiFiliais.length > 0;
   const multiFiliaisKey = multiFiliais.join(",");
+
+  useEffect(() => {
+    setCentralMirrorTouched(false);
+  }, [idFilial, multiFiliaisKey]);
+
+  useEffect(() => {
+    const fromApi = data?.config?.include_central_mirror;
+    if (!centralMirrorTouched && fromApi != null) {
+      setIncludeCentralMirror(Boolean(fromApi));
+    }
+  }, [data?.config?.include_central_mirror, centralMirrorTouched]);
+
+  const handleCentralMirrorToggle = async (next: boolean) => {
+    setCentralMirrorTouched(true);
+    setIncludeCentralMirror(next);
+    if (!idFilial || isMulti) return;
+    try {
+      const params = new URLSearchParams();
+      params.set("id_filial", String(idFilial));
+      if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+      await apiPut(`/bi/team/commissions/preferences?${params.toString()}`, {
+        include_central_mirror: next,
+      });
+    } catch {
+      /* recálculo ainda reflete o toggle local */
+    }
+  };
 
   useEffect(() => {
     if (!idFilial && multiFiliais.length === 0) {
@@ -300,6 +330,9 @@ export default function CommissionsTab({
       params.set("id_filial", String(idFilial));
     }
     if (idFilial && paymentMode) params.set("payment_mode", paymentMode);
+    if (centralMirrorTouched) {
+      params.set("include_central_mirror", includeCentralMirror ? "true" : "false");
+    }
 
     (async () => {
       try {
@@ -321,7 +354,7 @@ export default function CommissionsTab({
 
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, dtIni, dtFim, paymentMode]);
+  }, [idEmpresa, idFilial, multiFiliaisKey, isMulti, dtIni, dtFim, paymentMode, includeCentralMirror, centralMirrorTouched]);
 
   useEffect(() => {
     if (!idFilial && multiFiliais.length === 0) {
@@ -562,6 +595,10 @@ export default function CommissionsTab({
                 </label>
               ) : null}
               <div className="commissionToolbarMeta">
+                <CommissionCentralMirrorToggle
+                  value={includeCentralMirror}
+                  onChange={handleCentralMirrorToggle}
+                />
                 <button
                   type="button"
                   className={`profitScopeToggle${printIncludeValues ? " on" : ""}`}

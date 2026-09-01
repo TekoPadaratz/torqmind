@@ -2604,6 +2604,7 @@ def team_commissions_config(
             "default_payment_mode": config["default_payment_mode"],
             "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
             "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
+            "include_central_mirror": bool(config.get("include_central_mirror")),
             "eligible_cfops": [],
             "excluded_cfops": list(repos_commission.COMMISSION_EXCLUDED_CFOPS),
         },
@@ -2735,6 +2736,32 @@ def team_commissions_config_save(
     return {"ok": True, "message": "Configuração salva com sucesso."}
 
 
+@router.put("/team/commissions/preferences")
+def team_commissions_preferences(
+    body: dict = Body(...),
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.comissoes")),
+):
+    """Preferências de cálculo (ex.: incluir espelho Central)."""
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem alterar preferências.")
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    flag = bool(body.get("include_central_mirror"))
+    try:
+        row = repos_commission.update_preferences(
+            tenant, id_filial, include_central_mirror=flag
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "include_central_mirror": bool(row.get("include_central_mirror")),
+    }
+
+
 @router.get("/team/commissions/config/products")
 def team_commissions_config_products(
     id_filial: int = Query(..., description="Branch ID"),
@@ -2761,6 +2788,10 @@ def team_commissions_results(
     id_filial: Optional[int] = Query(None, description="Branch ID (single)"),
     id_filiais: Optional[List[int]] = Query(None, description="Multi-branch scope"),
     payment_mode: Optional[str] = Query(None),
+    include_central_mirror: Optional[bool] = Query(
+        None,
+        description="Incluir vendas espelhadas da filial Central (paridade Xpert).",
+    ),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.comissoes")),
@@ -2799,6 +2830,7 @@ def team_commissions_results(
             period_ini,
             period_fim,
             payment_mode=effective_mode,
+            include_central_mirror=include_central_mirror,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -2910,10 +2942,37 @@ def manager_commissions_config_save(
             default_rate_pct=rate,
             sales_groups=sales_groups,
             stock_loss_groups=stock_groups,
+            include_central_mirror=body.get("include_central_mirror"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"ok": True, "message": "Configuração de comissão de gerente salva."}
+
+
+@router.put("/team/manager-commissions/preferences")
+def manager_commissions_preferences(
+    body: dict = Body(...),
+    id_filial: int = Query(..., description="Branch ID"),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("goals_team.gerente")),
+):
+    """Preferências de cálculo LSC (ex.: incluir espelho Central)."""
+    role = claims["role"]
+    if role not in {"MASTER", "OWNER"}:
+        raise HTTPException(status_code=403, detail="Apenas administradores podem alterar preferências.")
+    tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
+    flag = bool(body.get("include_central_mirror"))
+    try:
+        row = repos_manager_commission.update_preferences(
+            tenant, id_filial, include_central_mirror=flag
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "include_central_mirror": bool(row.get("include_central_mirror")),
+    }
 
 
 @router.get("/team/manager-commissions/calc")
@@ -2926,6 +2985,10 @@ def manager_commissions_calc(
     refresh: bool = Query(
         False,
         description="Se true, republica mart CH a partir do slim antes de calcular (ops; não usar no hot path).",
+    ),
+    include_central_mirror: Optional[bool] = Query(
+        None,
+        description="Incluir vendas espelhadas da filial Central (paridade Xpert).",
     ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.gerente")),
@@ -2989,6 +3052,7 @@ def manager_commissions_calc(
                 period_fim,
                 filial_label=labels.get(fid),
                 publish=bool(refresh),
+                include_central_mirror=include_central_mirror,
             )
         )
     # Grid contract: Filial ASC
@@ -3009,6 +3073,10 @@ def manager_commissions_drilldown(
     dt_fim: Optional[str] = Query(None, description="Fim do período (YYYY-MM-DD)"),
     id_filial: int = Query(..., description="Branch ID"),
     id_empresa: Optional[int] = Query(None),
+    include_central_mirror: Optional[bool] = Query(
+        None,
+        description="Incluir vendas espelhadas da filial Central (paridade Xpert).",
+    ),
     claims=Depends(get_current_claims),
     _screen=Depends(require_screen("goals_team.gerente")),
 ):
@@ -3052,6 +3120,7 @@ def manager_commissions_drilldown(
         period_ini,
         period_fim,
         filial_label=filial_label,
+        include_central_mirror=include_central_mirror,
     )
 
 

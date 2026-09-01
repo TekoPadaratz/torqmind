@@ -10,10 +10,11 @@ from app.repos_manager_commission import (
     _loss_group_id_sql,
     _nfe_documento,
     _sales_group_id_sql,
-    _slim_lsc_sales_where_sql,
+    _slim_comercial_where_sql,
     _date_key_iso,
     net_commission,
 )
+from app.sales_semantics import commission_slim_sales_scope_sql
 
 
 class ManagerCommissionFormulaTests(unittest.TestCase):
@@ -81,10 +82,21 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         self.assertIn("dt_ini", params)
         self.assertIn("dt_fim", params)
 
-    def test_slim_lsc_sales_where_uses_commercial_eligible_without_central_mirror(self):
-        pred = _slim_lsc_sales_where_sql("c").replace(" ", "").lower()
+    def test_slim_comercial_where_excludes_central_mirror_by_default(self):
+        pred = _slim_comercial_where_sql("c").replace(" ", "").lower()
         self.assertIn("commercial_eligible=1", pred)
-        self.assertNotIn("central", pred)
+        self.assertIn("stg_filiais", pred)
+
+    def test_slim_comercial_where_includes_central_when_flag_on(self):
+        pred = _slim_comercial_where_sql("c", include_central_mirror=True).replace(" ", "").lower()
+        self.assertIn("commercial_eligible=1", pred)
+        self.assertNotIn("stg_filiais", pred)
+
+    def test_commission_slim_sales_scope_sql_matches_manager_wrapper(self):
+        default = commission_slim_sales_scope_sql("c", include_central_mirror=False)
+        with_mirror = commission_slim_sales_scope_sql("c", include_central_mirror=True)
+        self.assertEqual(_slim_comercial_where_sql("c"), default)
+        self.assertEqual(_slim_comercial_where_sql("c", include_central_mirror=True), with_mirror)
 
     def test_sales_group_sql_uses_stg_produtos_alias(self):
         expr = _sales_group_id_sql("i", "sp")

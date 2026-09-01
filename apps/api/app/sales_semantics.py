@@ -74,6 +74,23 @@ def central_mirror_exclude_sql(alias: str = "c", current_db: str = "torqmind_cur
     )
 
 
+def commission_slim_sales_scope_sql(
+    comprovante_alias: str = "c",
+    *,
+    include_central_mirror: bool = False,
+    current_db: str = "torqmind_current",
+) -> str:
+    """Filtro slim de vendas para comissão. Por padrão exclui espelho Central."""
+    base = (
+        f"i.is_deleted = 0 "
+        f"AND {comprovante_alias}.is_deleted = 0 "
+        f"AND {comprovante_alias}.commercial_eligible = 1"
+    )
+    if include_central_mirror:
+        return base
+    return f"{base} AND {central_mirror_exclude_sql(comprovante_alias, current_db)}"
+
+
 def comercial_cfop_numeric_sql(alias: str) -> str:
     return f"etl.cfop_numeric_from_payload({alias}.payload)"
 

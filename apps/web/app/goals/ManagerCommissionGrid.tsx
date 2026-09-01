@@ -11,6 +11,7 @@ import { sortGridRows } from "../lib/grid-sort";
 import ManagerCommissionDrilldown, {
   type DrilldownPayload,
 } from "./ManagerCommissionDrilldown";
+import CommissionCentralMirrorToggle from "./CommissionCentralMirrorToggle";
 
 function parseBrCurrency(input: string): number {
   const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
@@ -112,11 +113,42 @@ export default function ManagerCommissionGrid({
   const [expandedFilial, setExpandedFilial] = useState<number | null>(null);
   const [drilldownByFilial, setDrilldownByFilial] = useState<Record<number, DrilldownPayload>>({});
   const [drilldownLoading, setDrilldownLoading] = useState<number | null>(null);
+  const [includeCentralMirror, setIncludeCentralMirror] = useState(false);
+  const [centralMirrorTouched, setCentralMirrorTouched] = useState(false);
 
   const multiKey = useMemo(
     () => (idFiliais || []).map(String).filter(Boolean).join(","),
     [idFiliais],
   );
+
+  useEffect(() => {
+    setCentralMirrorTouched(false);
+  }, [idFilial, multiKey]);
+
+  const appendCentralMirrorParam = (params: URLSearchParams) => {
+    if (centralMirrorTouched) {
+      params.set("include_central_mirror", includeCentralMirror ? "true" : "false");
+    }
+  };
+
+  const handleCentralMirrorToggle = async (next: boolean) => {
+    setCentralMirrorTouched(true);
+    setIncludeCentralMirror(next);
+    setDrilldownByFilial({});
+    setExpandedFilial(null);
+    const targetFilial = idFilial || Number((idFiliais || [])[0] || 0);
+    if (!targetFilial || (idFiliais || []).filter(Boolean).length > 1) return;
+    try {
+      const params = new URLSearchParams();
+      params.set("id_filial", String(targetFilial));
+      if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+      await apiPut(`/bi/team/manager-commissions/preferences?${params.toString()}`, {
+        include_central_mirror: next,
+      });
+    } catch {
+      /* recálculo segue com o toggle local */
+    }
+  };
 
   useEffect(() => {
     const multi = multiKey ? multiKey.split(",") : [];
@@ -145,6 +177,7 @@ export default function ManagerCommissionGrid({
         } else if (multi[0]) {
           params.set("id_filial", String(multi[0]));
         }
+        appendCentralMirrorParam(params);
         const resp = await apiGet(`/bi/team/manager-commissions/calc?${params.toString()}`, {
           signal: ac.signal,
           timeout: 60000,
@@ -157,6 +190,10 @@ export default function ManagerCommissionGrid({
             nome: row.filial_label || String(row.id_filial),
           })),
         );
+        const firstRow = resp?.rows?.[0];
+        if (!centralMirrorTouched && firstRow?.include_central_mirror != null && mapped.length === 1) {
+          setIncludeCentralMirror(Boolean(firstRow.include_central_mirror));
+        }
         setError("");
         setExpandedFilial(null);
         setDrilldownByFilial({});
@@ -171,7 +208,15 @@ export default function ManagerCommissionGrid({
       }
     })();
     return () => ac.abort();
-  }, [idEmpresa, idFilial, multiKey, dtIni, dtFim]);
+  }, [
+    idEmpresa,
+    idFilial,
+    multiKey,
+    dtIni,
+    dtFim,
+    includeCentralMirror,
+    centralMirrorTouched,
+  ]);
 
   const sortedRows = useMemo(
     () =>
@@ -245,6 +290,7 @@ export default function ManagerCommissionGrid({
       params.set("dt_fim", dtFim);
       params.set("id_filial", String(fid));
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+      appendCentralMirrorParam(params);
       const resp = await apiGet(`/bi/team/manager-commissions/drilldown?${params.toString()}`, {
         timeout: 60000,
       });
@@ -302,6 +348,7 @@ export default function ManagerCommissionGrid({
               params.set("dt_fim", dtFim);
               params.set("id_filial", String(mapped.id_filial));
               if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+              appendCentralMirrorParam(params);
               const detail = await apiGet(
                 `/bi/team/manager-commissions/drilldown?${params.toString()}`,
                 { timeout: 60000 },
@@ -368,6 +415,10 @@ export default function ManagerCommissionGrid({
         }}
       >
         <GridSearchInput value={query} onChange={setQuery} />
+        <CommissionCentralMirrorToggle
+          value={includeCentralMirror}
+          onChange={handleCentralMirrorToggle}
+        />
         <div className="muted" style={{ marginLeft: "auto", fontSize: 12, textAlign: "right" }}>
           Edite a linha e saia do campo para gravar.
         </div>
