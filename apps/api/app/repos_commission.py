@@ -74,9 +74,14 @@ def _query_eligible_sales_ch(
     dk_ini, dk_fim = data_key_bounds_half_open(dt_ini, dt_fim)
     filial_list = ", ".join(str(f) for f in targets)
     situacao_list = _situacao_excluidas_sql()
-    cfop_pred = _cfop_sales_predicate_sql("i")
-    from app.sales_semantics import central_mirror_exclude_sql
+    from app.sales_semantics import (
+        central_mirror_exclude_sql,
+        commission_sales_cfop_predicate_sql,
+    )
 
+    cfop_pred = commission_sales_cfop_predicate_sql(
+        "i", "c", include_central_mirror=include_central_mirror
+    )
     mirror_sql = ""
     if not include_central_mirror:
         mirror_sql = f" AND {central_mirror_exclude_sql('c')}"

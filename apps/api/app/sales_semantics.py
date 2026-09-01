@@ -63,15 +63,43 @@ def central_filiais_subquery_sql(current_db: str = "torqmind_current") -> str:
     )
 
 
-def central_mirror_exclude_sql(alias: str = "c", current_db: str = "torqmind_current") -> str:
-    """Exclui vendas da Central espelhadas no posto operacional (paridade sales_daily_rt)."""
+def central_mirror_match_sql(alias: str = "c", current_db: str = "torqmind_current") -> str:
+    """Comprovante espelhado da Central no posto operacional (id_db Central, id_filial posto)."""
     central = central_filiais_subquery_sql(current_db)
     return (
-        f"NOT ("
         f"({alias}.id_empresa, {alias}.id_db) IN ({central}) "
         f"AND ({alias}.id_empresa, {alias}.id_filial) NOT IN ({central})"
-        f")"
     )
+
+
+def central_mirror_exclude_sql(alias: str = "c", current_db: str = "torqmind_current") -> str:
+    """Exclui vendas da Central espelhadas no posto operacional (paridade sales_daily_rt)."""
+    return f"NOT ({central_mirror_match_sql(alias, current_db)})"
+
+
+def commission_mirror_cfop_relaxed_sql(item_alias: str = "i") -> str:
+    """CFOP para espelho Central no LSC — Xpert não exige saída > 5000."""
+    return f"COALESCE({item_alias}.cfop, 0) NOT IN (5927, 6929)"
+
+
+def commission_sales_cfop_predicate_sql(
+    item_alias: str = "i",
+    comprovante_alias: str = "c",
+    *,
+    include_central_mirror: bool = False,
+    current_db: str = "torqmind_current",
+) -> str:
+    """Predicado CFOP da comissão (vendedor/gerente).
+
+    Com espelho Central ligado, comprovantes ``id_db`` da Central no posto entram
+  com regra relaxada (sem cfop > 5000), paridade Xpert LSC.
+    """
+    standard = sales_cfop_filter_sql(item_alias)
+    if not include_central_mirror:
+        return standard
+    mirror = central_mirror_match_sql(comprovante_alias, current_db)
+    relaxed = commission_mirror_cfop_relaxed_sql(item_alias)
+    return f"(({mirror}) AND ({relaxed})) OR ((NOT ({mirror})) AND ({standard}))"
 
 
 def commission_slim_sales_scope_sql(

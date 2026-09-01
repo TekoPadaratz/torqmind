@@ -460,7 +460,11 @@ def _sum_metric_from_slim(
         group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
         if not group_list or not cfop_exclude:
             return 0.0
-        cfop_pred = _cfop_sales_predicate_sql("i")
+        from app.sales_semantics import commission_sales_cfop_predicate_sql
+
+        cfop_pred = commission_sales_cfop_predicate_sql(
+            "i", "c", include_central_mirror=include_central_mirror
+        )
         group_expr = _sales_group_id_sql("i", "sp")
         group_filter = f"AND {group_expr} IN ({group_list})"
     else:
@@ -522,7 +526,12 @@ def _sales_groups_breakdown(
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
     group_expr = _sales_group_id_sql("i", "sp")
+    from app.sales_semantics import commission_sales_cfop_predicate_sql
+
     comercial = _slim_comercial_where_sql("c", include_central_mirror=include_central_mirror)
+    cfop_pred = commission_sales_cfop_predicate_sql(
+        "i", "c", include_central_mirror=include_central_mirror
+    )
     rows = query_dict(
         f"""
         SELECT
@@ -533,7 +542,7 @@ def _sales_groups_breakdown(
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           AND {comercial}
-          AND {_cfop_sales_predicate_sql("i")}
+          AND {cfop_pred}
           AND {group_expr} IN ({group_list})
         GROUP BY id_grupo_produto
         """,
@@ -718,7 +727,11 @@ def publish_manager_commission_month(
     inserted = 0
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
-            cfop_pred = _cfop_sales_predicate_sql("i")
+            from app.sales_semantics import commission_sales_cfop_predicate_sql
+
+            cfop_pred = commission_sales_cfop_predicate_sql(
+                "i", "c", include_central_mirror=mirror
+            )
             group_expr = _sales_group_id_sql("i", "sp")
             scope_sql = _slim_comercial_where_sql("c", include_central_mirror=mirror)
         else:

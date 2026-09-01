@@ -14,7 +14,7 @@ from app.repos_manager_commission import (
     _date_key_iso,
     net_commission,
 )
-from app.sales_semantics import commission_slim_sales_scope_sql
+from app.sales_semantics import commission_slim_sales_scope_sql, commission_sales_cfop_predicate_sql
 
 
 class ManagerCommissionFormulaTests(unittest.TestCase):
@@ -97,6 +97,13 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         with_mirror = commission_slim_sales_scope_sql("c", include_central_mirror=True)
         self.assertEqual(_slim_comercial_where_sql("c"), default)
         self.assertEqual(_slim_comercial_where_sql("c", include_central_mirror=True), with_mirror)
+
+    def test_commission_mirror_cfop_dual_predicate(self):
+        off = commission_sales_cfop_predicate_sql("i", "c", include_central_mirror=False)
+        on = commission_sales_cfop_predicate_sql("i", "c", include_central_mirror=True)
+        self.assertIn("cfop,0)>5000", off.replace(" ", "").lower())
+        self.assertIn("stg_filiais", on.lower())
+        self.assertIn("notin(5927,6929)", on.replace(" ", "").lower())
 
     def test_sales_group_sql_uses_stg_produtos_alias(self):
         expr = _sales_group_id_sql("i", "sp")
