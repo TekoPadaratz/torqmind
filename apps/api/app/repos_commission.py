@@ -856,35 +856,13 @@ def calculate_commission_results_multi(
                 include_central_mirror=bool(include_central_mirror),
             )
         else:
-            with_mirror: List[int] = []
-            without_mirror: List[int] = []
-            for fid in targets:
-                cfg = get_config(id_empresa, fid) or {}
-                if bool(cfg.get("include_central_mirror")):
-                    with_mirror.append(fid)
-                else:
-                    without_mirror.append(fid)
-            raw_sales = []
-            if without_mirror:
-                raw_sales.extend(
-                    _query_eligible_sales_ch(
-                        id_empresa,
-                        without_mirror,
-                        dt_ini,
-                        dt_fim,
-                        include_central_mirror=False,
-                    )
-                )
-            if with_mirror:
-                raw_sales.extend(
-                    _query_eligible_sales_ch(
-                        id_empresa,
-                        with_mirror,
-                        dt_ini,
-                        dt_fim,
-                        include_central_mirror=True,
-                    )
-                )
+            raw_sales = _query_eligible_sales_ch(
+                id_empresa,
+                targets,
+                dt_ini,
+                dt_fim,
+                include_central_mirror=True,
+            )
     except Exception as exc:
         logger.exception(
             "commission CH sales failed empresa=%s period=%s..%s",
@@ -1031,11 +1009,7 @@ def calculate_commission_results(
     excluded_func_ids = get_excluded_funcionario_ids(config_id)
 
     if sales_rows is None:
-        mirror = (
-            bool(include_central_mirror)
-            if include_central_mirror is not None
-            else bool(config.get("include_central_mirror"))
-        )
+        mirror = True if include_central_mirror is None else bool(include_central_mirror)
         try:
             sales_rows = _query_eligible_sales_ch(
                 id_empresa,
@@ -1234,7 +1208,7 @@ def calculate_commission_results(
             "default_payment_mode": config["default_payment_mode"],
             "manager_commission_mode": manager_mode,
             "manager_commission_percent": manager_fixed_percent,
-            "include_central_mirror": bool(config.get("include_central_mirror")),
+            "include_central_mirror": bool(config.get("include_central_mirror", True)),
         },
     }
 

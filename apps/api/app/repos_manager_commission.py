@@ -731,11 +731,7 @@ def calc_branch_drilldown(
 ) -> Dict[str, Any]:
     """Detalhe operacional da linha de comissão de gerente (grupos + notas de perda)."""
     config = ensure_rule_config(id_empresa, id_filial)
-    mirror = (
-        bool(include_central_mirror)
-        if include_central_mirror is not None
-        else bool(config.get("include_central_mirror"))
-    )
+    mirror = True if include_central_mirror is None else bool(include_central_mirror)
     summary = calc_branch_row(
         id_empresa,
         id_filial,
@@ -790,7 +786,7 @@ def publish_manager_commission_month(
     from app.db_clickhouse import insert_batch
 
     config = ensure_rule_config(id_empresa, id_filial)
-    mirror = bool(config.get("include_central_mirror"))
+    mirror = True
 
     dt_ini, dt_fim = _month_bounds(year, month)
     ini = _date_key(dt_ini)
@@ -982,11 +978,7 @@ def calc_branch_row(
     """
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
-    mirror = (
-        bool(include_central_mirror)
-        if include_central_mirror is not None
-        else bool(config.get("include_central_mirror"))
-    )
+    mirror = True if include_central_mirror is None else bool(include_central_mirror)
     sales_groups = get_rule_groups(config_id, "sales_base")
     loss_groups = get_rule_groups(config_id, "stock_loss")
     sales_ids = [int(g["id_grupo_produto"]) for g in sales_groups]
@@ -1032,7 +1024,10 @@ def calc_branch_row(
         return float(default)
 
     rate = _coalesce_num("rate_pct", rate_default)
-    perdas = _coalesce_num("perdas_estoque", perdas_default)
+    if override.get("perdas_estoque") is not None:
+        perdas = max(float(override["perdas_estoque"]), float(perdas_default))
+    else:
+        perdas = float(perdas_default)
     sobras_est = _coalesce_num("sobras_estoque", sobras_estoque_default)
     sobras_cx = _coalesce_num("sobras_caixa", sobras_caixa_default)
     furos = _coalesce_num("furos_caixa", furos_caixa_default)

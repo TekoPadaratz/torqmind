@@ -123,6 +123,17 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
             central_mirror_commission_sales_sql("i", "c"),
         )
 
+    def test_central_mirror_excludes_month_end_entrada(self):
+        from app.sales_semantics import (
+            central_mirror_commission_sales_sql,
+            central_mirror_month_end_entrada_guard_sql,
+        )
+
+        guard = central_mirror_month_end_entrada_guard_sql("i").replace(" ", "").lower()
+        self.assertIn("data_key%100)<>31", guard)
+        entrada = central_mirror_commission_sales_sql("i", "c").replace(" ", "").lower()
+        self.assertIn("data_key%100)<>31", entrada)
+
     def test_sales_group_sql_uses_stg_produtos_alias(self):
         expr = _sales_group_id_sql("i", "sp")
         self.assertIn("sp.id_grupo_produto", expr)

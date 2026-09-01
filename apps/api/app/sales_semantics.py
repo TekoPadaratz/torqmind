@@ -109,6 +109,11 @@ def central_mirror_2102_item_exclude_sql(item_alias: str = "i") -> str:
     return f"COALESCE({item_alias}.id_itemcomprovante, 0) NOT IN ({ids})"
 
 
+def central_mirror_month_end_entrada_guard_sql(item_alias: str = "i") -> str:
+    """Xpert LSC não soma entradas espelhadas da Central no dia 31 do mês."""
+    return f"({item_alias}.data_key % 100) <> 31"
+
+
 def central_mirror_commission_sales_sql(
     item_alias: str = "i",
     comprovante_alias: str = "c",
@@ -118,14 +123,16 @@ def central_mirror_commission_sales_sql(
     """Linhas espelhadas da Central no posto (paridade Xpert LSC com toggle ligado).
 
     Inclui CFOP 1101 integral e CFOP 2102 exceto itens excluídos (rateio parcial).
+    Entradas espelhadas no dia 31 do mês ficam fora (paridade Xpert LSC).
     """
     mirror = central_mirror_match_sql(comprovante_alias, current_db)
     relaxed = commission_mirror_cfop_relaxed_sql(item_alias)
     cfop = f"COALESCE({item_alias}.cfop, 0)"
     item_excl = central_mirror_2102_item_exclude_sql(item_alias)
+    month_end = central_mirror_month_end_entrada_guard_sql(item_alias)
     entrada = (
-        f"({cfop} = 1101)"
-        f" OR ({cfop} = 2102 AND {item_excl})"
+        f"(({cfop} = 1101) OR ({cfop} = 2102 AND {item_excl}))"
+        f" AND {month_end}"
     )
     return f"({mirror}) AND ({relaxed}) AND ({entrada})"
 

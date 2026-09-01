@@ -1412,6 +1412,15 @@
       "sha256_utf8_normalized": "106afdd9eb20acb5c565c911e19e9d93afc4cf3b5ca9ce904e0863f0180aac74",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "152_commission_central_mirror_default_on.sql",
+      "prefix": "152",
+      "encoding": "utf-8",
+      "sha256_raw": "6bb2d28ef169187a32c40aaad1f7c91194b300d84305a999081173a072a2efef",
+      "sha256_utf8_normalized": "6bb2d28ef169187a32c40aaad1f7c91194b300d84305a999081173a072a2efef",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }
