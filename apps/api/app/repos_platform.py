@@ -157,6 +157,7 @@ def _load_company_row_tx(conn, tenant_id: int):
           t.sales_history_days,
           t.default_product_scope_days,
           t.module_tier,
+          t.ingest_key::text AS ingest_key,
           t.created_at,
           t.updated_at,
           c.name AS channel_name
@@ -508,6 +509,13 @@ def list_companies(
     return {"items": [dict(row) for row in rows], "total": int(total_row["total"] or 0)}
 
 
+def _redact_ingest_key(claims: dict[str, Any], company: dict[str, Any]) -> dict[str, Any]:
+    """Ingest key só para platform_master (credencial do Agent no posto)."""
+    if normalize_role(claims.get("user_role")) != "platform_master":
+        company.pop("ingest_key", None)
+    return company
+
+
 def get_company_detail(claims: dict[str, Any], tenant_id: int) -> dict[str, Any]:
     company = _assert_company_visible(claims, tenant_id)
     company["branches"] = _load_company_branches(tenant_id)
@@ -527,7 +535,7 @@ def get_company_detail(claims: dict[str, Any], tenant_id: int) -> dict[str, Any]
         offset=0,
     )["items"]
     company["audit"] = list_audit(claims, tenant_id=tenant_id, limit=30) if role == "platform_master" else []
-    return company
+    return _redact_ingest_key(claims, company)
 
 
 def upsert_company(
@@ -580,7 +588,7 @@ def upsert_company(
                 )
                 VALUES (
                   %s, %s, %s, COALESCE(%s, 'active'), COALESCE(%s, CURRENT_DATE), %s,
-                  COALESCE(%s, 'current'), %s, %s, %s, %s, %s, %s, %s, %s,
+                  COALESCE(%s, 'current'), %s, %s, %s, %s, %s, %s, %s,
                   COALESCE(%s, 365), COALESCE(%s, 1), COALESCE(%s, 'essencial'), now()
                 )
                 RETURNING id_empresa
@@ -678,7 +686,7 @@ def upsert_company(
                 action = "tenant.reactivate"
             _audit(conn, claims, action, "tenant", str(tenant_id), previous, entity, ip)
         conn.commit()
-    return entity
+    return _redact_ingest_key(claims, entity)
 
 
 def upsert_branch(

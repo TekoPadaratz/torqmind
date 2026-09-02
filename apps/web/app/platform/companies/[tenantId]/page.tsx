@@ -17,6 +17,35 @@ function toDateInput(value: any) {
   return value ? String(value).slice(0, 10) : '';
 }
 
+function CopyReadonlyField({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!value) return null;
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, gridColumn: '1 / -1' }}>
+      <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>{label}</span>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+        <input className="input" value={value} readOnly aria-readonly />
+        <button
+          type="button"
+          className="btn"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(value);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 2000);
+            } catch {
+              /* fallback silencioso */
+            }
+          }}
+        >
+          {copied ? 'Copiado' : 'Copiar'}
+        </button>
+      </div>
+      {hint ? <span className="platformFieldHint">{hint}</span> : null}
+    </label>
+  );
+}
+
 function buildBranchForm(branch: any) {
   return {
     id_filial: branch.id_filial,
@@ -193,10 +222,29 @@ export default function PlatformCompanyDetailPage() {
             </div>
           </div>
           <form className="platformFormGrid" onSubmit={saveCompany}>
-            <input className="input" value={companyForm.nome} onChange={(e) => setCompanyForm({ ...companyForm, nome: e.target.value })} />
-            <input className="input" value={companyForm.cnpj} onChange={(e) => setCompanyForm({ ...companyForm, cnpj: e.target.value })} placeholder="CNPJ" />
-            <input className="input" type="date" value={companyForm.valid_from} onChange={(e) => setCompanyForm({ ...companyForm, valid_from: e.target.value })} />
-            <input className="input" type="date" value={companyForm.valid_until} onChange={(e) => setCompanyForm({ ...companyForm, valid_until: e.target.value })} />
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>Nome da empresa</span>
+              <input className="input" value={companyForm.nome} onChange={(e) => setCompanyForm({ ...companyForm, nome: e.target.value })} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>CNPJ</span>
+              <input className="input" value={companyForm.cnpj} onChange={(e) => setCompanyForm({ ...companyForm, cnpj: e.target.value })} placeholder="CNPJ" />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>Vigência — início</span>
+              <input className="input" type="date" value={companyForm.valid_from} onChange={(e) => setCompanyForm({ ...companyForm, valid_from: e.target.value })} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>Vigência — fim</span>
+              <input className="input" type="date" value={companyForm.valid_until} onChange={(e) => setCompanyForm({ ...companyForm, valid_until: e.target.value })} />
+            </label>
+            {data?.ingest_key ? (
+              <CopyReadonlyField
+                label="Ingest Key (Agent)"
+                value={String(data.ingest_key)}
+                hint="Uma chave por empresa. Copie para o config.enc do posto (api.ingest_key). Somente leitura."
+              />
+            ) : null}
             <input
               className="input"
               type="number"

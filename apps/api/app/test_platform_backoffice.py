@@ -2971,6 +2971,9 @@ class PlatformBackofficeTest(unittest.TestCase):
         tenant_id = int(create_response.json()["id_empresa"])
         self.assertEqual(int(create_response.json()["sales_history_days"]), 365)
         self.assertEqual(int(create_response.json()["default_product_scope_days"]), 1)
+        ingest_key = create_response.json().get("ingest_key")
+        self.assertTrue(ingest_key, "platform_master deve receber ingest_key ao criar empresa")
+        self.assertRegex(str(ingest_key), r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
         update_response = self.client.patch(
             f"/platform/companies/{tenant_id}",
@@ -2992,6 +2995,13 @@ class PlatformBackofficeTest(unittest.TestCase):
         detail = detail_response.json()
         self.assertEqual(int(detail["sales_history_days"]), 180)
         self.assertEqual(int(detail["default_product_scope_days"]), 45)
+        self.assertEqual(detail.get("ingest_key"), ingest_key)
+
+        platform_admin_email = self._create_user("platform_admin", "Senha@123")
+        platform_admin_headers = self._auth_headers(platform_admin_email, "Senha@123")
+        redacted_detail = self.client.get(f"/platform/companies/{tenant_id}", headers=platform_admin_headers)
+        self.assertEqual(redacted_detail.status_code, 200, redacted_detail.text)
+        self.assertNotIn("ingest_key", redacted_detail.json())
 
     def test_platform_admin_and_tenant_admin_cannot_cross_platform_finance_boundaries(self) -> None:
         platform_admin_email = self._create_user("platform_admin", "Senha@123")
