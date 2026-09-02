@@ -561,7 +561,7 @@ def fetch_fuel_entries_daily(
             FROM combined
             GROUP BY 1, 2, 3, 4
             """,
-            [id_empresa, id_empresa, id_empresa, cutoff, id_empresa, cutoff],
+            [id_empresa, id_empresa, cutoff, id_empresa, cutoff],
         ).fetchall()
     return [dict(r) for r in rows]
 
