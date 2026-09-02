@@ -711,18 +711,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "  ON p.ID_FILIAL = i.ID_FILIAL AND p.ID_PRODUTOS = i.ID_PRODUTOS "
             "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1 "
             "  AND ISNULL(c.CANCELADO, 0) = 0 "
-            "  AND ISNULL(c.SITUACAO, 1) = 1 "
-            "  AND ("
-            "    ISNULL(p.TIPOCOMBUSTIVEL, 0) > 0 "
-            "    OR ("
-            "      NULLIF(LTRIM(RTRIM(CAST(p.CODIGOANP AS varchar(32)))), '') IS NOT NULL "
-            "      AND UPPER(LTRIM(RTRIM(CAST(p.UNIDADE AS varchar(16))))) = 'LT'"
-            "    ) "
-            "    OR p.NOMEPRODUTO LIKE 'GASOLINA%' "
-            "    OR p.NOMEPRODUTO LIKE 'ETANOL%' "
-            "    OR p.NOMEPRODUTO LIKE 'OLEO DIESEL%' "
-            "    OR p.NOMEPRODUTO LIKE 'DIESEL%'"
-            "  )"
+            "  AND ISNULL(c.SITUACAO, 1) = 1"
         ),
         "enabled": True,
     },
