@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import copy
 import os
+import re
 from typing import Any, Dict, Optional
 
 import yaml
@@ -711,18 +712,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
             "  ON p.ID_FILIAL = i.ID_FILIAL AND p.ID_PRODUTOS = i.ID_PRODUTOS "
             "WHERE ISNULL(c.SAIDAS_ENTRADAS, 0) = 1 "
             "  AND ISNULL(c.CANCELADO, 0) = 0 "
-            "  AND ISNULL(c.SITUACAO, 1) = 1 "
-            "  AND ("
-            "    ISNULL(p.TIPOCOMBUSTIVEL, 0) > 0 "
-            "    OR ("
-            "      NULLIF(LTRIM(RTRIM(CAST(p.CODIGOANP AS varchar(32)))), '') IS NOT NULL "
-            "      AND UPPER(LTRIM(RTRIM(CAST(p.UNIDADE AS varchar(16))))) = 'LT'"
-            "    ) "
-            "    OR p.NOMEPRODUTO LIKE 'GASOLINA%' "
-            "    OR p.NOMEPRODUTO LIKE 'ETANOL%' "
-            "    OR p.NOMEPRODUTO LIKE 'OLEO DIESEL%' "
-            "    OR p.NOMEPRODUTO LIKE 'DIESEL%'"
-            "  )"
+            "  AND ISNULL(c.SITUACAO, 1) = 1"
         ),
         "enabled": True,
     },
@@ -1126,6 +1116,27 @@ class AgentConfigError(RuntimeError):
     pass
 
 
+_INGEST_KEY_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def normalize_ingest_key(raw: str | None) -> str | None:
+    """Strip api.ingest_key and recover first UUID when copy-pasted twice."""
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    if _INGEST_KEY_UUID.match(value):
+        return value.lower()
+    head = value[:36]
+    if _INGEST_KEY_UUID.match(head) and len(value) > 36:
+        return head.lower()
+    return value
+
+
 def derive_encrypted_config_path(config_path: str | Path) -> Path:
     cfg_path = Path(config_path)
     if cfg_path.suffix.lower() == ".enc":
@@ -1386,6 +1397,9 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
             cur = raw["datasets"].get(ds, {})
             cur["enabled"] = True
             raw["datasets"][ds] = cur
+
+    if api.get("ingest_key"):
+        api["ingest_key"] = normalize_ingest_key(api.get("ingest_key"))
 
     return raw
 

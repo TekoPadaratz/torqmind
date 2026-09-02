@@ -98,6 +98,7 @@ def test_fetch_fuel_entries_sql_requires_active_comprovante():
     src = inspect.getsource(inv.fetch_fuel_entries_daily)
     assert "stg.comprovantes" in src
     assert "_comprovante_ativo_sql" in src
+    assert "stg.movprodutos" in src
     assert "DTACONTA" in src  # dia de negócio alinhado à leitura/saída
 
 

@@ -11,9 +11,9 @@ Fonte canônica (validada migração 100):
 Movimentação documentada (aferição / estoque ao vivo):
 - Saídas: itens de comprovante de venda comercialmente ativos
   (não cancelado, situacao=1, CFOP saída; CFOP via shadow com fallback payload).
-- Entradas: NFe de compra (SAIDAS_ENTRADAS=1) com comprovante ativo
-  (não cancelado, situacao=1). Nota sem comprovante resolvido é excluída.
-  Agent também filtra CANCELADO/SITUACAO na origem.
+- Entradas: NFe de compra (COMPROVANTES SAIDAS_ENTRADAS=1 + COMPENTRADAS) e
+  movimentação MOVPRODUTOS (SAIDAS_ENTRADAS 1/2) para produtos de tanque.
+  Comprovante ativo quando resolvível (não cancelado, situacao=1).
 """
 from __future__ import annotations
 
@@ -453,15 +453,26 @@ def publish_fuel_sales_daily(
 def fetch_fuel_entries_daily(
     role: str, id_empresa: int, days: int = READINGS_DAYS
 ) -> List[Dict[str, Any]]:
-    """Litros de entrada (NFe compra) por produto/dia — só combustível de tanque.
-
-    Apenas notas com comprovante comercialmente ativo (não cancelado, situacao=1).
-    """
+    """Litros de entrada (NF compra + MOVPRODUTOS) por produto/dia — combustível de tanque."""
     from datetime import date, timedelta
 
     days = max(7, min(int(days), 366))
     cutoff = date.today() - timedelta(days=days)
     ativo = _comprovante_ativo_sql("c")
+    dia_nfe = (
+        "coalesce("
+        "(etl.safe_timestamp(c.payload->>'DTACONTA'))::date, "
+        "(n.dt_entrada_shadow AT TIME ZONE 'America/Sao_Paulo')::date, "
+        "(i.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date"
+        ")"
+    )
+    dia_mov = (
+        "coalesce("
+        "(etl.safe_timestamp(m.payload->>'DTACONTA'))::date, "
+        "(m.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date"
+        ")"
+    )
+    se_mov = "COALESCE(etl.safe_int(m.payload->>'SAIDAS_ENTRADAS'), m.saidas_entradas_shadow, -1)"
     with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
         rows = conn.execute(
             f"""
@@ -475,54 +486,82 @@ def fetch_fuel_entries_daily(
                 AND coalesce((nullif(t.payload->>'CAPACIDADE',''))::numeric, 0) > 0
                 AND coalesce(nullif(t.payload->>'ATIVO',''),'1')
                     NOT IN ('0','false','False','f','N','n')
+            ),
+            nfe_lines AS (
+              SELECT
+                i.id_empresa,
+                i.id_filial,
+                i.id_produto_shadow AS id_produto,
+                {dia_nfe} AS dia,
+                sum(coalesce(i.qtd_shadow, 0))::numeric AS litros
+              FROM stg.itens_nfe_entrada i
+              JOIN stg.nfe_entrada n
+                ON n.id_empresa = i.id_empresa
+               AND n.id_filial = i.id_filial
+               AND n.id_db = i.id_db
+               AND n.id_nota = i.id_nota
+              JOIN stg.comprovantes c
+                ON c.id_empresa = n.id_empresa
+               AND c.id_filial = n.id_filial
+               AND c.id_db = n.id_db
+               AND c.id_comprovante = n.id_nota
+              JOIN tanque_prods tp
+                ON tp.id_filial = i.id_filial
+               AND tp.id_produto = i.id_produto_shadow
+              WHERE i.id_empresa = %s
+                AND coalesce(i.qtd_shadow, 0) > 0
+                AND i.id_produto_shadow IS NOT NULL
+                AND {dia_nfe} >= %s
+                AND (
+                  coalesce(i.eh_combustivel_shadow, false) = true
+                  OR i.id_produto_shadow IN (SELECT id_produto FROM tanque_prods)
+                )
+                AND {ativo}
+              GROUP BY 1, 2, 3, 4
+            ),
+            mov_lines AS (
+              SELECT
+                im.id_empresa,
+                im.id_filial,
+                coalesce(im.id_produto_shadow, etl.safe_int(im.payload->>'ID_PRODUTOS')) AS id_produto,
+                {dia_mov} AS dia,
+                sum(
+                  coalesce(
+                    im.qtd_shadow,
+                    etl.safe_numeric(im.payload->>'QTDE'),
+                    0
+                  )
+                )::numeric AS litros
+              FROM stg.itensmovprodutos im
+              JOIN stg.movprodutos m
+                ON m.id_empresa = im.id_empresa
+               AND m.id_filial = im.id_filial
+               AND m.id_db = im.id_db
+               AND m.id_movprodutos = im.id_movprodutos
+              JOIN tanque_prods tp
+                ON tp.id_filial = im.id_filial
+               AND tp.id_produto = coalesce(im.id_produto_shadow, etl.safe_int(im.payload->>'ID_PRODUTOS'))
+              WHERE im.id_empresa = %s
+                AND {se_mov} IN (1, 2)
+                AND coalesce(im.id_produto_shadow, etl.safe_int(im.payload->>'ID_PRODUTOS')) > 0
+                AND {dia_mov} >= %s
+              GROUP BY 1, 2, 3, 4
+            ),
+            combined AS (
+              SELECT * FROM nfe_lines
+              UNION ALL
+              SELECT * FROM mov_lines
             )
             SELECT
-              i.id_empresa,
-              i.id_filial,
-              i.id_produto_shadow AS id_produto,
-              -- Dia de negócio alinhado à leitura do tanque (DTACONTA) /
-              -- saídas bomba. DATAENTRADA/UTC sozinho deslocava litros.
-              coalesce(
-                (etl.safe_timestamp(c.payload->>'DTACONTA'))::date,
-                (n.dt_entrada_shadow AT TIME ZONE 'America/Sao_Paulo')::date,
-                (i.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date
-              ) AS dia,
-              sum(coalesce(i.qtd_shadow, 0))::numeric AS litros
-            FROM stg.itens_nfe_entrada i
-            JOIN stg.nfe_entrada n
-              ON n.id_empresa = i.id_empresa
-             AND n.id_filial = i.id_filial
-             AND n.id_db = i.id_db
-             AND n.id_nota = i.id_nota
-            JOIN stg.comprovantes c
-              ON c.id_empresa = n.id_empresa
-             AND c.id_filial = n.id_filial
-             AND c.id_db = n.id_db
-             AND c.id_comprovante = n.id_nota
-            JOIN tanque_prods tp
-              ON tp.id_filial = i.id_filial
-             AND tp.id_produto = i.id_produto_shadow
-            WHERE i.id_empresa = %s
-              AND coalesce(i.qtd_shadow, 0) > 0
-              AND i.id_produto_shadow IS NOT NULL
-              AND coalesce(
-                etl.safe_timestamp(c.payload->>'DTACONTA'),
-                n.dt_entrada_shadow,
-                i.dt_evento
-              ) IS NOT NULL
-              AND coalesce(
-                (etl.safe_timestamp(c.payload->>'DTACONTA'))::date,
-                (n.dt_entrada_shadow AT TIME ZONE 'America/Sao_Paulo')::date,
-                (i.dt_evento AT TIME ZONE 'America/Sao_Paulo')::date
-              ) >= %s
-              AND (
-                coalesce(i.eh_combustivel_shadow, false) = true
-                OR i.id_produto_shadow IN (SELECT id_produto FROM tanque_prods)
-              )
-              AND {ativo}
+              id_empresa,
+              id_filial,
+              id_produto,
+              dia,
+              sum(litros)::numeric AS litros
+            FROM combined
             GROUP BY 1, 2, 3, 4
             """,
-            [id_empresa, id_empresa, cutoff],
+            [id_empresa, id_empresa, cutoff, id_empresa, cutoff],
         ).fetchall()
     return [dict(r) for r in rows]
 
