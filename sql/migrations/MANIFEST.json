@@ -1421,6 +1421,15 @@
       "sha256_utf8_normalized": "6bb2d28ef169187a32c40aaad1f7c91194b300d84305a999081173a072a2efef",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "153_product_stock_idle_mov_entrada.sql",
+      "prefix": "153",
+      "encoding": "utf-8",
+      "sha256_raw": "85b8352b30d2d4d528c2694e76663c09a64b43bb9bb0029de168b29989783c5f",
+      "sha256_utf8_normalized": "85b8352b30d2d4d528c2694e76663c09a64b43bb9bb0029de168b29989783c5f",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

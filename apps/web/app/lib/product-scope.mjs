@@ -59,8 +59,8 @@ export const PRODUCT_NAV_GROUPS = [
     children: [
       { path: '/fraud', label: 'Antifraude', screen_key: 'fraud' },
       { path: '/cash', label: 'Caixa', screen_key: 'cash' },
-      { path: '/fuel-loss', label: 'Movimentações de Combustível', screen_key: 'fuel_loss' },
       { path: '/product-management', label: 'Gestão de Produtos', screen_key: 'product_management' },
+      { path: '/fuel-loss', label: 'Movimentações de Combustível', screen_key: 'fuel_loss' },
     ],
   },
 ];
@@ -160,8 +160,14 @@ export function filterProductLinks(allowed_screens) {
 
 /** Filter nav groups for flyout rendering. */
 export function filterProductNavGroups(allowed_screens) {
+  const sortChildren = (groups) =>
+    groups.map((group) => ({
+      ...group,
+      children: [...group.children].sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')),
+    }));
+
   if (!Array.isArray(allowed_screens)) {
-    return PRODUCT_NAV_GROUPS;
+    return sortChildren(PRODUCT_NAV_GROUPS);
   }
   if (allowed_screens.length === 0) {
     return [];
@@ -170,7 +176,9 @@ export function filterProductNavGroups(allowed_screens) {
   return PRODUCT_NAV_GROUPS
     .map((group) => ({
       ...group,
-      children: group.children.filter((link) => screenAllowed(set, link)),
+      children: group.children
+        .filter((link) => screenAllowed(set, link))
+        .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR')),
     }))
     .filter((group) => group.children.length > 0);
 }

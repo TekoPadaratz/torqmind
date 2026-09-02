@@ -180,6 +180,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "label": "Gestão de Produtos",
         "category": "Operação",
         "has_sensitive": True,
+        "master_only_default": True,
     },
     "competitor_pricing": {
         "label": "Preço Concorrente",
@@ -428,12 +429,16 @@ _MENU_PRODUCT_SCREENS = {
     k for k in _ALL_PRODUCT_SCREENS if is_menu_screen(k)
 }
 
+_MASTER_ONLY_DEFAULT_SCREENS = {
+    k for k, v in SCREEN_REGISTRY.items() if v.get("master_only_default")
+}
+
 ROLE_DEFAULT_SCREENS: Dict[str, Set[str]] = {
     "platform_master": _ALL_SCREENS,
-    "platform_admin": _ALL_SCREENS - {"platform"},  # no finance but has ops
-    "product_global": _ALL_PRODUCT_SCREENS,
-    "channel_admin": _ALL_PRODUCT_SCREENS | {"user_management"},
-    "tenant_admin": _ALL_PRODUCT_SCREENS,
+    "platform_admin": _ALL_SCREENS - {"platform"} - _MASTER_ONLY_DEFAULT_SCREENS,
+    "product_global": _ALL_PRODUCT_SCREENS - _MASTER_ONLY_DEFAULT_SCREENS,
+    "channel_admin": (_ALL_PRODUCT_SCREENS - _MASTER_ONLY_DEFAULT_SCREENS) | {"user_management"},
+    "tenant_admin": _ALL_PRODUCT_SCREENS - _MASTER_ONLY_DEFAULT_SCREENS,
 }
 # tenant_manager, tenant_viewer, tenant_kiosk → from DB only
 
@@ -484,6 +489,7 @@ _MODULE_TIER_GESTAO_EXTRA: Set[str] = {
     "goals_team.gerente",
     "goals_team.config",
     "fuel_loss",
+    "product_management",
 }
 
 MODULE_TIER_LABELS: Dict[str, str] = {

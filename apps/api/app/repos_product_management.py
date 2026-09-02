@@ -12,6 +12,22 @@ MART_PURCHASE = "torqmind_mart_rt.product_purchase_recent"
 CURRENT_DB = "torqmind_current"
 _NEVER_SOLD_DAYS = 9999
 
+_LATEST_PURCHASE_SQL = f"""
+  SELECT
+    id_empresa,
+    id_filial,
+    id_produto,
+    rank,
+    argMax(numero_documento, published_at) AS numero_documento,
+    argMax(data_compra, published_at) AS data_compra,
+    argMax(qtd, published_at) AS qtd,
+    argMax(valor_unitario, published_at) AS valor_unitario,
+    argMax(valor_total, published_at) AS valor_total
+  FROM {MART_PURCHASE}
+  WHERE id_empresa = {{id_empresa:Int32}}
+  GROUP BY id_empresa, id_filial, id_produto, rank
+"""
+
 _LATEST_STOCK_SQL = f"""
   SELECT
     id_empresa,
@@ -196,10 +212,9 @@ def list_product_purchases_recent(
           qtd,
           valor_unitario,
           valor_total
-        FROM {MART_PURCHASE}
-        WHERE id_empresa = {{id_empresa:Int32}}
-          AND id_filial = {{id_filial:Int32}}
-          AND id_produto = {{id_produto:Int32}}
+        FROM ({_LATEST_PURCHASE_SQL}) AS p
+        WHERE p.id_filial = {{id_filial:Int32}}
+          AND p.id_produto = {{id_produto:Int32}}
         ORDER BY rank ASC
         """,
         parameters={

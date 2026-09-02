@@ -82,14 +82,105 @@ def _query_eligible_sales_ch(
     )
 
     native_cfop = sales_cfop_filter_sql("i")
+    base_where = f"""
+        i.id_empresa = {{id_empresa:Int32}}
+        AND i.id_filial IN ({filial_list})
+        AND i.data_key >= {{dk_ini:Int32}}
+        AND i.data_key < {{dk_fim:Int32}}
+        AND i.is_deleted = 0
+        AND c.is_deleted = 0
+        AND c.cancelado = 0
+        AND c.situacao NOT IN ({situacao_list})
+        AND coalesce(c.commercial_eligible, 1) = 1
+        AND i.id_funcionario > 0
+    """
     if include_central_mirror:
         central_pred = central_mirror_entrada_sales_sql("i", "c")
-        cfop_pred = f"(({native_cfop}) OR ({central_pred}))"
-        mirror_sql = ""
+        mirror_exclude = central_mirror_exclude_sql("c")
+        sql = f"""
+      SELECT
+        id_filial,
+        id_funcionario,
+        nome_vendedor,
+        id_grupo_produto,
+        nome_grupo_produto,
+        id_produto,
+        round(sum(venda_total), 2) AS venda_total,
+        round(sum(quantidade_vendas), 4) AS quantidade_vendas
+      FROM (
+        SELECT
+          i.id_filial AS id_filial,
+          i.id_funcionario AS id_funcionario,
+          coalesce(nullIf(f.nome, ''), '(Sem vendedor)') AS nome_vendedor,
+          if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) AS id_grupo_produto,
+          coalesce(nullIf(g.nome, ''), '(Sem grupo)') AS nome_grupo_produto,
+          i.id_produto AS id_produto,
+          i.total AS venda_total,
+          i.qtd AS quantidade_vendas
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+          ON c.id_empresa = i.id_empresa
+         AND c.id_filial = i.id_filial
+         AND c.id_db = i.id_db
+         AND c.id_comprovante = i.id_comprovante
+        LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
+          ON f.id_empresa = i.id_empresa
+         AND f.id_filial = i.id_filial
+         AND f.id_funcionario = i.id_funcionario
+        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
+          ON p.id_empresa = i.id_empresa
+         AND p.id_filial = i.id_filial
+         AND p.id_produto = i.id_produto
+        LEFT JOIN {CURRENT_DB}.dim_grupo_produto AS g FINAL
+          ON g.id_empresa = i.id_empresa
+         AND g.id_filial = i.id_filial
+         AND g.id_grupo_produto = if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))
+        WHERE {base_where}
+          AND {mirror_exclude}
+          AND {native_cfop}
+        UNION ALL
+        SELECT
+          i.id_filial AS id_filial,
+          i.id_funcionario AS id_funcionario,
+          coalesce(nullIf(f.nome, ''), '(Sem vendedor)') AS nome_vendedor,
+          if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) AS id_grupo_produto,
+          coalesce(nullIf(g.nome, ''), '(Sem grupo)') AS nome_grupo_produto,
+          i.id_produto AS id_produto,
+          i.total AS venda_total,
+          i.qtd AS quantidade_vendas
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+          ON c.id_empresa = i.id_empresa
+         AND c.id_filial = i.id_filial
+         AND c.id_db = i.id_db
+         AND c.id_comprovante = i.id_comprovante
+        LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
+          ON f.id_empresa = i.id_empresa
+         AND f.id_filial = i.id_filial
+         AND f.id_funcionario = i.id_funcionario
+        LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
+          ON p.id_empresa = i.id_empresa
+         AND p.id_filial = i.id_filial
+         AND p.id_produto = i.id_produto
+        LEFT JOIN {CURRENT_DB}.dim_grupo_produto AS g FINAL
+          ON g.id_empresa = i.id_empresa
+         AND g.id_filial = i.id_filial
+         AND g.id_grupo_produto = if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))
+        WHERE {base_where}
+          AND {central_pred}
+      )
+      GROUP BY
+        id_filial,
+        id_funcionario,
+        nome_vendedor,
+        id_grupo_produto,
+        nome_grupo_produto,
+        id_produto
+    """
     else:
         cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
         mirror_sql = f" AND {central_mirror_exclude_sql('c')}"
-    sql = f"""
+        sql = f"""
       SELECT
         i.id_filial AS id_filial,
         i.id_funcionario AS id_funcionario,
@@ -117,17 +208,8 @@ def _query_eligible_sales_ch(
         ON g.id_empresa = i.id_empresa
        AND g.id_filial = i.id_filial
        AND g.id_grupo_produto = if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0))
-      WHERE i.id_empresa = {{id_empresa:Int32}}
-        AND i.id_filial IN ({filial_list})
-        AND i.data_key >= {{dk_ini:Int32}}
-        AND i.data_key < {{dk_fim:Int32}}
-        AND i.is_deleted = 0
-        AND c.is_deleted = 0
-        AND c.cancelado = 0
-        AND c.situacao NOT IN ({situacao_list})
-        AND coalesce(c.commercial_eligible, 1) = 1
+      WHERE {base_where}
         AND {cfop_pred}
-        AND i.id_funcionario > 0
         {mirror_sql}
       GROUP BY
         id_filial,

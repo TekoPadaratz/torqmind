@@ -17,6 +17,7 @@ def test_product_management_screen_registered():
     assert meta.get("label") == "Gestão de Produtos"
     assert meta.get("category") == "Operação"
     assert meta.get("has_sensitive") is True
+    assert meta.get("master_only_default") is True
 
 
 def test_setor_label_mapping():
