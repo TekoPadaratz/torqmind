@@ -23,7 +23,7 @@ import logging
 import zlib
 from datetime import date, datetime, timedelta
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from psycopg import sql
@@ -964,11 +964,19 @@ def _resolve_id_empresa(x_ingest_key: Optional[str], x_empresa_id: Optional[str]
     """Resolve tenant id from X-Ingest-Key, fallback to X-Empresa-Id (dev only)."""
 
     if x_ingest_key:
+        key = str(x_ingest_key).strip()
+        try:
+            UUID(key)
+        except ValueError:
+            raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
         with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
-            row = conn.execute(
-                "SELECT id_empresa FROM app.tenants WHERE ingest_key = %s AND is_active = true",
-                (x_ingest_key,),
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT id_empresa FROM app.tenants WHERE ingest_key = %s AND is_active = true",
+                    (key,),
+                ).fetchone()
+            except Exception:
+                raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
             if not row:
                 raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
             return int(row["id_empresa"])

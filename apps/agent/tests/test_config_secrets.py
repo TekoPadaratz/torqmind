@@ -10,6 +10,7 @@ from agent.config import (
     load_config,
     load_raw_config,
     migrate_yaml_to_encrypted_config,
+    normalize_ingest_key,
     save_encrypted_config,
 )
 from agent.secrets import load_encrypted_json_file
@@ -175,6 +176,16 @@ datasets:
         formas = raw["datasets"]["formas_pgto_comprovantes"]
         self.assertIn("enabled", formas)
         self.assertNotIn("query", formas)
+
+    def test_normalize_ingest_key_recovers_duplicated_uuid_paste(self):
+        duplicated = (
+            "505aee7c-3651-4a1f-877f-ae96772caac5"
+            "505aee7c-3651-4a1f-877f-ae96772caac5"
+        )
+        self.assertEqual(
+            normalize_ingest_key(duplicated),
+            "505aee7c-3651-4a1f-877f-ae96772caac5",
+        )
 
 
 if __name__ == "__main__":

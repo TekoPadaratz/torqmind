@@ -40,3 +40,13 @@ def test_ingest_health_requires_key_when_configured():
     with patch("app.routes_ingest.settings.ingest_require_key", True):
         resp = client.get("/ingest/health")
     assert resp.status_code in {401, 400}
+
+
+def test_ingest_health_invalid_uuid_returns_401_not_500():
+    client = _client()
+    duplicated = "505aee7c-3651-4a1f-877f-ae96772caac5505aee7c-3651-4a1f-877f-ae96772caac5"
+    with patch("app.routes_ingest.get_conn") as get_conn:
+        resp = client.get("/ingest/health", headers={"X-Ingest-Key": duplicated})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid X-Ingest-Key"
+    get_conn.assert_not_called()

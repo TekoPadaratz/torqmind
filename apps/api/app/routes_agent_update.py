@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -30,11 +31,19 @@ def _release_dir() -> Path:
 def _resolve_tenant_from_ingest(x_ingest_key: Optional[str]) -> int:
     if not x_ingest_key:
         raise HTTPException(status_code=401, detail="X-Ingest-Key required")
+    key = str(x_ingest_key).strip()
+    try:
+        UUID(key)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT id_empresa FROM app.tenants WHERE ingest_key = %s AND is_active = true",
-            (x_ingest_key,),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT id_empresa FROM app.tenants WHERE ingest_key = %s AND is_active = true",
+                (key,),
+            ).fetchone()
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
     if not row:
         raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
     return int(row["id_empresa"] if isinstance(row, dict) else row[0])
