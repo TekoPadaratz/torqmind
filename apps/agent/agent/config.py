@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import copy
 import os
+import re
 from typing import Any, Dict, Optional
 
 import yaml
@@ -1126,6 +1127,27 @@ class AgentConfigError(RuntimeError):
     pass
 
 
+_INGEST_KEY_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def normalize_ingest_key(raw: str | None) -> str | None:
+    """Strip api.ingest_key and recover first UUID when copy-pasted twice."""
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
+    if _INGEST_KEY_UUID.match(value):
+        return value.lower()
+    head = value[:36]
+    if _INGEST_KEY_UUID.match(head) and len(value) > 36:
+        return head.lower()
+    return value
+
+
 def derive_encrypted_config_path(config_path: str | Path) -> Path:
     cfg_path = Path(config_path)
     if cfg_path.suffix.lower() == ".enc":
@@ -1386,6 +1408,9 @@ def _apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
             cur = raw["datasets"].get(ds, {})
             cur["enabled"] = True
             raw["datasets"][ds] = cur
+
+    if api.get("ingest_key"):
+        api["ingest_key"] = normalize_ingest_key(api.get("ingest_key"))
 
     return raw
 
