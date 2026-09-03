@@ -6,7 +6,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
-from app.filial_apelido import load_apelido_map
+from app.filial_apelido import apelido_for, load_apelido_map
 from app.intelligence.authz import reauthorize
 from app.intelligence.branch_resolve import BranchResolveResult, apply_resolved_branch, resolve_branch_hint
 from app.intelligence.capability_map.loader import get_intent, list_intents, suggestions_for_claims
@@ -104,8 +104,10 @@ def _scope_label(scope: dict[str, Any]) -> str:
         fil = fil[0]
     if fil is None:
         return f"empresa {emp} (todas as filiais do escopo)"
-    label = apelidos.get(int(fil)) or f"Filial {fil}"
-    return f"filial {label}"
+    label = apelidos.get(int(fil)) or apelido_for(fil)
+    if label:
+        return f"filial {label}"
+    return "filial selecionada"
 
 
 def _intent_label(intent_id: str | None) -> str:

@@ -134,7 +134,7 @@ def _scope_phrase(scope_label: str | None) -> str | None:
         return "em todas as filiais do escopo"
     if lower.startswith("filial "):
         apelido = text.split("filial", 1)[-1].strip()
-        if apelido:
+        if apelido and not re.fullmatch(r"filial \d+", apelido, flags=re.I):
             return f"na {apelido}"
     return None
 

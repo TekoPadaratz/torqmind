@@ -9,8 +9,6 @@ import { formatCurrency } from "../lib/format";
 import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
-import MonthYearSelect from "../components/ui/MonthYearSelect";
-import { currentAnoMesSP } from "../lib/month-year.mjs";
 
 const PAGE_SIZE = 50;
 
@@ -53,9 +51,13 @@ function rowKey(row: EmployeeRow): string {
   return `${Number(row.id_filial || 0)}:${Number(row.id_funcionario || 0)}`;
 }
 
-export default function TeamCostSection() {
+type Props = {
+  anoMes: number;
+  hideMonthSelect?: boolean;
+};
+
+export default function TeamCostSection({ anoMes }: Props) {
   const scope = useScopeQuery();
-  const [anoMes, setAnoMes] = useState<number>(() => currentAnoMesSP());
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [page, setPage] = useState(1);
@@ -202,12 +204,6 @@ export default function TeamCostSection() {
       <h2 style={{ marginTop: 4 }}>Custo do funcionário</h2>
 
       <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
-        <MonthYearSelect
-          value={anoMes}
-          onChange={setAnoMes}
-          title="Mês de referência do custo da equipe"
-          aria-label="Mês do custo da equipe"
-        />
         <GridSearchInput value={q} onChange={setQ} />
       </div>
 

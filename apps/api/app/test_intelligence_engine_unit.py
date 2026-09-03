@@ -47,6 +47,16 @@ def _manager_claims():
 
 
 class IntelligenceEngineGoldTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._apelido_patch = patch(
+            "app.intelligence.service.load_apelido_map",
+            return_value={1: "VR 01", 10169: "VR 01"},
+        )
+        self._apelido_patch.start()
+
+    def tearDown(self) -> None:
+        self._apelido_patch.stop()
+
     def test_empresa_resolves_from_accesses_when_claim_null(self):
         claims = {
             "id_empresa": None,
