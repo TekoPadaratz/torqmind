@@ -1,9 +1,10 @@
 "use client";
 
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridPager, { useClientPager, GRID_PAGE_SIZE } from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import { apiGet } from "../lib/api";
@@ -198,9 +199,15 @@ export default function ProductManagementPage() {
     return copy;
   }, [searchedRows, sortKey, sortDir]);
 
+  const pager = useClientPager(sortedRows, GRID_PAGE_SIZE);
+
+  useEffect(() => {
+    setExpandedKey(null);
+  }, [pager.page, query, sortKey, sortDir, diasSemVenda, setorFilter]);
+
   const filialGroups = useMemo(() => {
     const byFilial = new Map<number, { id_filial: number; label: string; products: ProductRow[] }>();
-    for (const row of sortedRows) {
+    for (const row of pager.slice) {
       const id = row.id_filial;
       const cur = byFilial.get(id) || {
         id_filial: id,
@@ -213,7 +220,7 @@ export default function ProductManagementPage() {
     return Array.from(byFilial.values()).sort((a, b) =>
       a.label.localeCompare(b.label, "pt-BR", { numeric: true, sensitivity: "base" }),
     );
-  }, [sortedRows]);
+  }, [pager.slice]);
 
   const setorOptions = useMemo(() => {
     const fromApi = data?.setores || [];
@@ -467,8 +474,8 @@ export default function ProductManagementPage() {
                                         <table className="table compact" style={{ fontSize: 12, marginTop: 8, width: "100%" }}>
                                           <thead>
                                             <tr>
-                                              <th style={{ textAlign: "left" }}>Nota Fiscal</th>
                                               <th style={{ textAlign: "left" }}>Data</th>
+                                              <th style={{ textAlign: "left" }}>Nota Fiscal</th>
                                               <th style={{ textAlign: "right" }}>Qtd</th>
                                               <th style={{ textAlign: "right" }}>Custo unitário</th>
                                               <th style={{ textAlign: "right" }}>Valor total</th>
@@ -485,8 +492,8 @@ export default function ProductManagementPage() {
                                                     : 0;
                                               return (
                                               <tr key={c.rank}>
-                                                <td>{c.numero_documento || "—"}</td>
                                                 <td>{fmtDateBr(c.data_compra)}</td>
+                                                <td>{c.numero_documento || "—"}</td>
                                                 <td style={{ textAlign: "right" }}>{fmtQty(qtd)}</td>
                                                 <td style={{ textAlign: "right" }}>{formatCurrency(unit)}</td>
                                                 <td style={{ textAlign: "right" }}>{formatCurrency(c.valor_total)}</td>
@@ -508,6 +515,14 @@ export default function ProductManagementPage() {
                   </section>
                 ))
               )}
+              <GridPager
+                page={pager.page}
+                totalPages={pager.totalPages}
+                total={pager.total}
+                pageSize={pager.pageSize}
+                onPrev={pager.onPrev}
+                onNext={pager.onNext}
+              />
             </>
           )}
         </section>

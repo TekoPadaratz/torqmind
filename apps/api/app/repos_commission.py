@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import date
 from typing import Any, Dict, List, Optional, Sequence
@@ -13,6 +14,24 @@ from app.db_clickhouse import query_dict
 logger = logging.getLogger(__name__)
 
 CURRENT_DB = "torqmind_current"
+
+# Frentista (média/highlight de Qtd abastecimentos):
+# 1) FUNCAO/CARGO/DESCRFUNCAO do Xpert contém "frentista"; OU
+# 2) vendedor elegível de comissão com qtd_abastecimentos > 0 no período
+#    (proxy operacional: vende combustível / grupo combustível).
+# Média e highlight usam SOMENTE is_frentista=True.
+_FRENTISTA_FUNCAO_RE = re.compile(r"frentista", re.IGNORECASE)
+_COMBUSTIVEL_EXCLUDES = (
+    "FILTRO",
+    "OLEO",
+    "LUBR",
+    "ADITIV",
+    "GRAXA",
+    "ARLA",
+    "CARRO",
+    "UTILIDADE",
+    "LIMPEZA",
+)
 
 # Default tiers when no configuration exists.
 # min_sales_amount guarda QUANTIDADE mínima de produtos (coluna histórica).
@@ -40,6 +59,63 @@ def _cfop_sales_predicate_sql(alias: str = "i") -> str:
     from app.sales_semantics import sales_cfop_filter_sql
 
     return sales_cfop_filter_sql(alias)
+
+
+def is_combustivel_grupo_nome(nome: str) -> bool:
+    """Espelha ``_combustivel_nome_grupo_predicate`` (repos_mart_realtime)."""
+    text = str(nome or "").strip()
+    if not text:
+        return False
+    upper = text.upper()
+    if "COMBUST" not in upper and upper not in {"GASOLINA", "ETANOL", "DIESEL", "GNV"}:
+        return False
+    for token in _COMBUSTIVEL_EXCLUDES:
+        if token in upper:
+            return False
+    return True
+
+
+def is_frentista_funcao(funcao: str) -> bool:
+    return bool(_FRENTISTA_FUNCAO_RE.search(str(funcao or "")))
+
+
+def annotate_frentista_abastecimentos(
+    employee_list: Sequence[Dict[str, Any]],
+    *,
+    funcao_by_id: Optional[Dict[int, str]] = None,
+) -> float:
+    """Marca frentistas, média de Qtd abastecimentos e flag abaixo da média.
+
+    Regra frentista: cargo/função Xpert com "frentista" **ou**
+    ``qtd_abastecimentos > 0`` (vende combustível no período).
+    Retorna a média entre frentistas (0.0 se nenhum).
+    """
+    funcoes = funcao_by_id or {}
+    frentistas: List[Dict[str, Any]] = []
+    for emp in employee_list:
+        fid = int(emp.get("id_funcionario") or 0)
+        qtd = int(emp.get("qtd_abastecimentos") or 0)
+        cargo_hit = is_frentista_funcao(funcoes.get(fid, "") or str(emp.get("funcao") or ""))
+        is_frentista = bool(cargo_hit or qtd > 0)
+        emp["is_frentista"] = is_frentista
+        emp["qtd_abastecimentos"] = qtd
+        if is_frentista:
+            frentistas.append(emp)
+
+    if not frentistas:
+        for emp in employee_list:
+            emp["abaixo_media_abastecimentos"] = False
+        return 0.0
+
+    media = sum(int(e.get("qtd_abastecimentos") or 0) for e in frentistas) / float(len(frentistas))
+    media_r = round(media, 2)
+    for emp in employee_list:
+        if emp.get("is_frentista"):
+            emp["abaixo_media_abastecimentos"] = int(emp.get("qtd_abastecimentos") or 0) < media
+        else:
+            emp["abaixo_media_abastecimentos"] = False
+        emp["media_abastecimentos_frentistas"] = media_r
+    return media_r
 
 
 def _situacao_excluidas_sql() -> str:
@@ -98,7 +174,8 @@ def _query_eligible_sales_ch(
         coalesce(nullIf(g.nome, ''), '(Sem grupo)') AS nome_grupo_produto,
         i.id_produto AS id_produto,
         round(sum(i.total), 2) AS venda_total,
-        round(sum(i.qtd), 4) AS quantidade_vendas
+        round(sum(i.qtd), 4) AS quantidade_vendas,
+        toUInt32(count()) AS qtd_itens
       FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
       INNER JOIN {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
         ON c.id_empresa = i.id_empresa
@@ -157,6 +234,7 @@ def _query_eligible_sales_ch(
                 "id_produto": int(r.get("id_produto") or 0),
                 "venda_total": float(r.get("venda_total") or 0),
                 "quantidade_vendas": float(r.get("quantidade_vendas") or 0),
+                "qtd_itens": int(r.get("qtd_itens") or 0),
             }
         )
     return out
@@ -195,10 +273,17 @@ def _filter_sales_for_config(
                 "nome_grupo_produto": str(r.get("nome_grupo_produto") or "(Sem grupo)"),
                 "venda_total": 0.0,
                 "quantidade_vendas": 0.0,
+                "qtd_itens": 0,
+                "qtd_abastecimentos": 0,
             }
             agg[key] = slot
         slot["venda_total"] += float(r.get("venda_total") or 0)
         slot["quantidade_vendas"] += float(r.get("quantidade_vendas") or 0)
+        qtd_itens = int(r.get("qtd_itens") or 0)
+        slot["qtd_itens"] += qtd_itens
+        # Qtd abastecimentos = count de itens combustível (NÃO litros).
+        if is_combustivel_grupo_nome(str(r.get("nome_grupo_produto") or "")):
+            slot["qtd_abastecimentos"] += qtd_itens
     return list(agg.values())
 
 
@@ -1101,14 +1186,35 @@ def calculate_commission_results(
                 "nome_vendedor": r["nome_vendedor"],
                 "venda_elegivel": 0.0,
                 "quantidade_vendas": 0,
+                "qtd_abastecimentos": 0,
             }
         employees[emp_id]["venda_elegivel"] += float(r["venda_total"] or 0)
         employees[emp_id]["quantidade_vendas"] += float(r["quantidade_vendas"] or 0)
+        employees[emp_id]["qtd_abastecimentos"] += int(r.get("qtd_abastecimentos") or 0)
 
     for emp in employees.values():
         emp["quantidade_vendas"] = round(float(emp["quantidade_vendas"] or 0), 4)
+        emp["qtd_abastecimentos"] = int(emp.get("qtd_abastecimentos") or 0)
 
     employee_list = sorted(employees.values(), key=lambda e: e["venda_elegivel"], reverse=True)
+
+    # Função/cargo Xpert para marcar frentista além do proxy combustível.
+    funcao_by_id: Dict[int, str] = {}
+    try:
+        for er in list_branch_employees_ch(id_empresa, id_filial):
+            fid = int(er.get("id_funcionario") or 0)
+            if fid > 0:
+                funcao_by_id[fid] = str(er.get("funcao") or "")
+    except Exception as exc:
+        logger.warning(
+            "commission frentista funcao lookup miss empresa=%s filial=%s: %s",
+            id_empresa,
+            id_filial,
+            str(exc)[:160],
+        )
+    media_abast = annotate_frentista_abastecimentos(
+        employee_list, funcao_by_id=funcao_by_id
+    )
     total_eligible = sum(float(e["venda_elegivel"] or 0) for e in employee_list)
     total_qty = sum(float(e["quantidade_vendas"] or 0) for e in employee_list)
     n_eligible = sum(1 for e in employee_list if float(e["venda_elegivel"] or 0) > 0)
@@ -1188,6 +1294,7 @@ def calculate_commission_results(
         "proximo_nivel": next_tier_payload if effective_mode != "individual_sales" else None,
         "vendedores": employee_list,
         "vendedores_elegiveis": len(employee_list),
+        "media_abastecimentos_frentistas": media_abast,
         "grupos_configurados": groups_out,
         "produtos_excluidos": [
             {"id_produto": int(p["id_produto"]), "nome": p.get("nome_produto_snapshot") or ""}

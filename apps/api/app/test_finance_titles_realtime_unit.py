@@ -1,6 +1,44 @@
 from datetime import date
 
+import pytest
+
 from app import repos_mart_realtime
+
+
+def test_finance_titles_preset_sql_carteira_aberta_vs_periodo():
+    """Presets = carteira aberta (today); sem preset = janela dt_ini/dt_fim."""
+    default = repos_mart_realtime._finance_titles_period_or_preset_sql(None)
+    assert "dt_vencimento BETWEEN {dt_ini:Date} AND {dt_fim:Date}" in default
+    assert "status = 'vencido'" in default
+
+    vencidos = repos_mart_realtime._finance_titles_period_or_preset_sql("vencidos")
+    assert "status = 'vencido'" in vencidos
+    # Não clipar vencidos em dt_fim (tela muda com mês passado).
+    assert "dt_fim" not in vencidos
+    assert "today()" not in vencidos
+
+    d7 = repos_mart_realtime._finance_titles_period_or_preset_sql("a_vencer_7d")
+    assert "today()" in d7
+    assert "today() + 7" in d7
+    assert "dt_ini" not in d7
+
+    mes = repos_mart_realtime._finance_titles_period_or_preset_sql("a_vencer_mes")
+    assert "toLastDayOfMonth(today())" in mes
+    assert "dt_ini" not in mes
+
+    av = repos_mart_realtime._finance_titles_period_or_preset_sql("a_vencer")
+    assert "dt_vencimento >= today()" in av
+    assert "dt_ini" not in av
+
+    with pytest.raises(ValueError, match="preset inválido"):
+        repos_mart_realtime._finance_titles_period_or_preset_sql("pago")
+
+
+def test_finance_titles_search_variants_br_date_and_money():
+    variants = repos_mart_realtime._finance_titles_search_variants("1.234,56")
+    assert "1234.56" in variants
+    iso = repos_mart_realtime._finance_titles_search_variants("2026-08-15")
+    assert "15/08/2026" in iso
 
 
 def test_finance_titles_realtime_contract_and_kpis(monkeypatch):

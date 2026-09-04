@@ -6,7 +6,6 @@ Não altera a fórmula de comissão. Grãos separados:
 """
 from __future__ import annotations
 
-from calendar import monthrange
 from datetime import date
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -15,11 +14,6 @@ from app.filial_apelido import apelido_for
 
 CURRENT_DB = "torqmind_current"
 MART_RT = "torqmind_mart_rt"
-
-
-def _month_bounds(year: int, month: int) -> tuple[date, date]:
-    last = monthrange(int(year), int(month))[1]
-    return date(int(year), int(month), 1), date(int(year), int(month), last)
 
 
 def _branch_sql(
@@ -197,48 +191,15 @@ def commission_discounts_overview(
             }
         )
 
-    items.sort(
-        key=lambda x: (
-            str(x.get("filial_label") or "").casefold(),
-            str(x.get("dt_venda") or ""),
-            str(x.get("documento") or "").casefold(),
-        )
-    )
-    # Filial ASC, Data DESC, Documento ASC
-    from collections import defaultdict
-
-    by_fil: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for it in items:
-        by_fil[str(it.get("filial_label") or "")].append(it)
-    ordered: List[Dict[str, Any]] = []
-    for fil in sorted(by_fil.keys(), key=lambda s: s.casefold()):
-        chunk = by_fil[fil]
-        chunk.sort(
-            key=lambda x: (str(x.get("dt_venda") or ""), str(x.get("documento") or "").casefold()),
-            reverse=True,
-        )
-        # documento ASC within same date
-        chunk.sort(
-            key=lambda x: (
-                # negate date via reverse groups
-                str(x.get("dt_venda") or ""),
-            ),
-            reverse=True,
-        )
-        # stable secondary ASC on documento
-        from itertools import groupby as gb
-
-        for _, g in gb(chunk, key=lambda x: str(x.get("dt_venda") or "")):
-            ordered.extend(
-                sorted(list(g), key=lambda x: str(x.get("documento") or "").casefold())
-            )
+    # Filial ASC → Data DESC → Documento ASC (contrato grids BI; sorts estáveis).
+    items.sort(key=lambda x: str(x.get("documento") or "").casefold())
+    items.sort(key=lambda x: str(x.get("dt_venda") or ""), reverse=True)
+    items.sort(key=lambda x: str(x.get("filial_label") or "").casefold())
 
     return {
-        "ano": int(year),
-        "mes": int(month),
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
-        "items": ordered[:limit],
-        "total": len(ordered),
+        "items": items[:limit],
+        "total": len(items),
         "source": "clickhouse",
     }

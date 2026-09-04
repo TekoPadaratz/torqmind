@@ -116,34 +116,33 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
 
   return (
     <div className="card col-12">
+      <div className="sectionEyebrow">Financeiro</div>
+      <h2 style={{ marginTop: 4 }}>
+        {tipo === 0 ? 'Contas a pagar' : 'Contas a receber'}
+      </h2>
+
+      {/* Busca à esquerda (contrato 08-grids); chips à direita. */}
       <div
         style={{
           display: 'flex',
           flexWrap: 'wrap',
           gap: 12,
           alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 12,
+          marginTop: 12,
+          marginBottom: 8,
         }}
       >
-        <div>
-          <div className="sectionEyebrow">Financeiro</div>
-          <h2 style={{ marginTop: 4 }}>
-            {tipo === 0 ? 'Contas a pagar' : 'Contas a receber'}
-          </h2>
-        </div>
         <GridSearchInput
           value={q}
           onChange={setQ}
           placeholder={`Pesquisar ${entidadeLabel.toLowerCase()}, valor, data…`}
         />
+        <PresetFilterChips
+          options={PRESETS}
+          value={preset}
+          onChange={setPreset}
+        />
       </div>
-
-      <PresetFilterChips
-        options={PRESETS}
-        value={preset}
-        onChange={setPreset}
-      />
 
       {error ? <div className="errorCard" style={{ marginBottom: 8 }}>{error}</div> : null}
 
@@ -154,7 +153,11 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
       ) : !items.length ? (
         <EmptyState
           title="Sem títulos no filtro"
-          detail="Ajuste o período, a filial ou os filtros rápidos."
+          detail={
+            preset
+              ? 'Limpe o filtro rápido ou ajuste a pesquisa.'
+              : 'Ajuste o período, a filial ou os filtros rápidos.'
+          }
         />
       ) : (
         <>

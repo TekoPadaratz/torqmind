@@ -12,6 +12,12 @@ from app.repos_mart_realtime import team_fuel_employees_dashboard
 @patch("app.repos_mart_realtime.query_dict")
 def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _mock_apelido):
     mock_qd.side_effect = [
+        # qty_abastecimentos (slim count)
+        [
+            {"id_filial": 10169, "id_funcionario": 10, "qtd_abastecimentos": 15},
+            {"id_filial": 10169, "id_funcionario": 20, "qtd_abastecimentos": 8},
+        ],
+        # litros rows (fallback slim path — mart_count=0)
         [
             {
                 "id_filial": 10169,
@@ -51,7 +57,10 @@ def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _
     filial = out["filiais"][0]
     assert filial["filial_label"] == "VR 01"
     assert filial["total_litros"] == 2300.0
+    assert filial["total_abastecimentos"] == 23
     assert filial["ranking"][0]["id_funcionario"] == 10
     assert filial["ranking"][0]["litros"] == 1500.0
+    assert filial["ranking"][0]["qtd_abastecimentos"] == 15
     assert len(filial["combustiveis"]) == 2
     assert filial["by_employee"]["10"]["total_litros"] == 1500.0
+    assert filial["by_employee"]["10"]["qtd_abastecimentos"] == 15
