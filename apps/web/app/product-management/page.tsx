@@ -414,10 +414,10 @@ export default function ProductManagementPage() {
                               Qtd{sortIndicator("qtd_estoque")}
                             </th>
                             <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio")}>
-                              Custo unitário{sortIndicator("custo_medio")}
+                              Custo médio{sortIndicator("custo_medio")}
                             </th>
                             <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio_total")}>
-                              Custo total{sortIndicator("custo_medio_total")}
+                              Custo médio total{sortIndicator("custo_medio_total")}
                             </th>
                             <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("preco_venda")}>
                               Vlr venda{sortIndicator("preco_venda")}
