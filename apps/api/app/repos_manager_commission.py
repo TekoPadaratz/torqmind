@@ -31,18 +31,15 @@ def _cfop_sales_predicate_sql(alias: str = "i") -> str:
     return sales_cfop_filter_sql(alias)
 
 
-def _slim_lsc_sales_where_sql(comprovante_alias: str = "c") -> str:
-    """Base de venda LSC (paridade Xpert): cancelado/situacao=3, sem espelho Central."""
-    return (
-        f"i.is_deleted = 0 "
-        f"AND {comprovante_alias}.is_deleted = 0 "
-        f"AND {comprovante_alias}.commercial_eligible = 1"
+def _slim_comercial_where_sql(
+    comprovante_alias: str = "c", *, include_central_mirror: bool = False
+) -> str:
+    """Base de venda LSC — espelho Central opcional (paridade Xpert quando ligado)."""
+    from app.sales_semantics import commission_slim_sales_scope_sql
+
+    return commission_slim_sales_scope_sql(
+        comprovante_alias, include_central_mirror=include_central_mirror
     )
-
-
-def _slim_comercial_where_sql(comprovante_alias: str = "c") -> str:
-    """Alias legado — comissão gerente usa regra LSC, não a mart de Vendas."""
-    return _slim_lsc_sales_where_sql(comprovante_alias)
 
 
 def _slim_loss_where_sql(comprovante_alias: str = "c") -> str:
@@ -154,7 +151,8 @@ def net_commission(
 
 def get_rule_config(id_empresa: int, id_filial: int) -> Optional[Dict[str, Any]]:
     sql = """
-      SELECT id, id_empresa, id_filial, default_rate_pct, is_active, created_at, updated_at
+      SELECT id, id_empresa, id_filial, default_rate_pct, is_active,
+             include_central_mirror, created_at, updated_at
       FROM app.manager_commission_rule_config
       WHERE id_empresa = %s AND id_filial = %s AND is_active = true
       LIMIT 1
@@ -282,6 +280,26 @@ def ensure_rule_config(id_empresa: int, id_filial: int) -> Dict[str, Any]:
     return config
 
 
+def update_preferences(
+    id_empresa: int, id_filial: int, *, include_central_mirror: bool
+) -> Dict[str, Any]:
+    """Atualiza preferências de cálculo (toggle na tela de comissão de gerente)."""
+    config = ensure_rule_config(id_empresa, id_filial)
+    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        row = conn.execute(
+            """
+            UPDATE app.manager_commission_rule_config
+            SET include_central_mirror = %s, updated_at = now()
+            WHERE id = %s
+            RETURNING id, id_empresa, id_filial, default_rate_pct, is_active,
+                      include_central_mirror, created_at, updated_at
+            """,
+            [bool(include_central_mirror), int(config["id"])],
+        ).fetchone()
+        conn.commit()
+    return dict(row) if row else config
+
+
 def save_rule_config(
     id_empresa: int,
     id_filial: int,
@@ -289,6 +307,7 @@ def save_rule_config(
     default_rate_pct: float,
     sales_groups: Sequence[Dict[str, Any]],
     stock_loss_groups: Sequence[Dict[str, Any]],
+    include_central_mirror: Optional[bool] = None,
 ) -> Dict[str, Any]:
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
@@ -297,14 +316,24 @@ def save_rule_config(
         raise ValueError("default_rate_pct must be between 0 and 100")
 
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        conn.execute(
-            """
-            UPDATE app.manager_commission_rule_config
-            SET default_rate_pct = %s, updated_at = now()
-            WHERE id = %s
-            """,
-            [rate, config_id],
-        )
+        if include_central_mirror is not None:
+            conn.execute(
+                """
+                UPDATE app.manager_commission_rule_config
+                SET default_rate_pct = %s, include_central_mirror = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                [rate, bool(include_central_mirror), config_id],
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE app.manager_commission_rule_config
+                SET default_rate_pct = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                [rate, config_id],
+            )
         conn.execute(
             "UPDATE app.manager_commission_rule_group SET is_active = false WHERE config_id = %s",
             [config_id],
@@ -413,34 +442,16 @@ def upsert_period_override(
     return dict(row) if row else {}
 
 
-def _sum_metric_from_slim(
+def _sum_slim_total(
     *,
     id_empresa: int,
     id_filial: int,
-    dt_ini: date,
-    dt_fim: date,
-    group_ids: Sequence[int],
-    cfops: Optional[Sequence[int]] = None,
-    cfop_exclude: Optional[Sequence[int]] = None,
+    ini: int,
+    fim: int,
+    scope_sql: str,
+    cfop_pred: str,
+    group_filter: str,
 ) -> float:
-    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
-    if cfop_exclude is not None:
-        # Base de venda: espelha tela de Vendas + exclui transferência.
-        scope_sql = _slim_comercial_where_sql("c")
-        group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
-        if not group_list or not cfop_exclude:
-            return 0.0
-        cfop_pred = _cfop_sales_predicate_sql("i")
-        group_expr = _sales_group_id_sql("i", "sp")
-        group_filter = f"AND {group_expr} IN ({group_list})"
-    else:
-        scope_sql = _slim_loss_where_sql("c")
-        include = ", ".join(str(int(c)) for c in (cfops or ()))
-        if not include:
-            return 0.0
-        cfop_pred = f"i.cfop IN ({include})"
-        # Xpert LSC: nota de perda 5927 entra pelo valor integral do comprovante.
-        group_filter = ""
     rows = query_dict(
         f"""
         SELECT sum(i.total) AS valor
@@ -464,6 +475,72 @@ def _sum_metric_from_slim(
     return round(float(rows[0].get("valor") or 0), 2)
 
 
+def _sum_metric_from_slim(
+    *,
+    id_empresa: int,
+    id_filial: int,
+    dt_ini: date,
+    dt_fim: date,
+    group_ids: Sequence[int],
+    cfops: Optional[Sequence[int]] = None,
+    cfop_exclude: Optional[Sequence[int]] = None,
+    include_central_mirror: bool = False,
+) -> float:
+    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
+    if cfop_exclude is not None:
+        # Base de venda: espelha tela de Vendas + exclui transferência.
+        group_list = ", ".join(str(int(g)) for g in group_ids if int(g) > 0)
+        if not group_list or not cfop_exclude:
+            return 0.0
+        from app.sales_semantics import (
+            central_mirror_entrada_sales_sql,
+            commission_sales_cfop_predicate_sql,
+        )
+
+        cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
+        group_expr = _sales_group_id_sql("i", "sp")
+        group_filter = f"AND {group_expr} IN ({group_list})"
+        # Sempre parte nativa (sem espelho Central) com CFOP de saída.
+        scope_sql = _slim_comercial_where_sql("c", include_central_mirror=False)
+        native = _sum_slim_total(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            ini=ini,
+            fim=fim,
+            scope_sql=scope_sql,
+            cfop_pred=cfop_pred,
+            group_filter=group_filter,
+        )
+        if not include_central_mirror:
+            return native
+        central_pred = central_mirror_entrada_sales_sql("i", "c")
+        central_scope = _slim_comercial_where_sql("c", include_central_mirror=True)
+        central = _sum_slim_total(
+            id_empresa=id_empresa,
+            id_filial=id_filial,
+            ini=ini,
+            fim=fim,
+            scope_sql=f"{central_scope} AND {central_pred}",
+            cfop_pred="1=1",
+            group_filter=group_filter,
+        )
+        return round(native + central, 2)
+    scope_sql = _slim_loss_where_sql("c")
+    include = ", ".join(str(int(c)) for c in (cfops or ()))
+    if not include:
+        return 0.0
+    cfop_pred = f"i.cfop IN ({include})"
+    return _sum_slim_total(
+        id_empresa=id_empresa,
+        id_filial=id_filial,
+        ini=ini,
+        fim=fim,
+        scope_sql=scope_sql,
+        cfop_pred=cfop_pred,
+        group_filter="",
+    )
+
+
 def _sales_groups_breakdown(
     *,
     id_empresa: int,
@@ -471,6 +548,7 @@ def _sales_groups_breakdown(
     dt_ini: date,
     dt_fim: date,
     sales_groups: Sequence[Dict[str, Any]],
+    include_central_mirror: bool = False,
 ) -> List[Dict[str, Any]]:
     """Totais por grupo da base de venda (mesmos filtros do KPI)."""
     configured = []
@@ -491,9 +569,46 @@ def _sales_groups_breakdown(
         return []
     group_list = ", ".join(str(g["id_grupo_produto"]) for g in configured)
     group_expr = _sales_group_id_sql("i", "sp")
-    comercial = _slim_comercial_where_sql("c")
-    rows = query_dict(
-        f"""
+    from app.sales_semantics import (
+        central_mirror_entrada_sales_sql,
+        commission_sales_cfop_predicate_sql,
+    )
+
+    cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
+    ini, fim = _date_key(dt_ini), _date_key(dt_fim)
+    if include_central_mirror:
+        central_pred = central_mirror_entrada_sales_sql("i", "c")
+        comercial = _slim_comercial_where_sql("c", include_central_mirror=True)
+        sql = f"""
+        SELECT id_grupo_produto, round(sum(valor), 2) AS valor
+        FROM (
+          SELECT
+            {group_expr} AS id_grupo_produto,
+            i.total AS valor
+          {_slim_item_from_sql()}
+          WHERE i.id_empresa = {{id_empresa:Int32}}
+            AND i.id_filial = {{id_filial:Int32}}
+            AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND {_slim_comercial_where_sql("c", include_central_mirror=False)}
+            AND {cfop_pred}
+            AND {group_expr} IN ({group_list})
+          UNION ALL
+          SELECT
+            {group_expr} AS id_grupo_produto,
+            i.total AS valor
+          {_slim_item_from_sql()}
+          WHERE i.id_empresa = {{id_empresa:Int32}}
+            AND i.id_filial = {{id_filial:Int32}}
+            AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND {comercial}
+            AND {central_pred}
+            AND {group_expr} IN ({group_list})
+        )
+        GROUP BY id_grupo_produto
+        """
+    else:
+        comercial = _slim_comercial_where_sql("c", include_central_mirror=False)
+        sql = f"""
         SELECT
           {group_expr} AS id_grupo_produto,
           round(sum(i.total), 2) AS valor
@@ -502,15 +617,17 @@ def _sales_groups_breakdown(
           AND i.id_filial = {{id_filial:Int32}}
           AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
           AND {comercial}
-          AND {_cfop_sales_predicate_sql("i")}
+          AND {cfop_pred}
           AND {group_expr} IN ({group_list})
         GROUP BY id_grupo_produto
-        """,
+        """
+    rows = query_dict(
+        sql,
         parameters={
             "id_empresa": int(id_empresa),
             "id_filial": int(id_filial),
-            "ini": _date_key(dt_ini),
-            "fim": _date_key(dt_fim),
+            "ini": ini,
+            "fim": fim,
         },
     )
     by_id = {int(r["id_grupo_produto"]): round(float(r.get("valor") or 0), 2) for r in rows}
@@ -610,10 +727,19 @@ def calc_branch_drilldown(
     dt_fim: date,
     *,
     filial_label: Optional[str] = None,
+    include_central_mirror: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Detalhe operacional da linha de comissão de gerente (grupos + notas de perda)."""
+    config = ensure_rule_config(id_empresa, id_filial)
+    mirror = True if include_central_mirror is None else bool(include_central_mirror)
     summary = calc_branch_row(
-        id_empresa, id_filial, dt_ini, dt_fim, filial_label=filial_label, publish=False
+        id_empresa,
+        id_filial,
+        dt_ini,
+        dt_fim,
+        filial_label=filial_label,
+        publish=False,
+        include_central_mirror=mirror,
     )
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
@@ -625,6 +751,7 @@ def calc_branch_drilldown(
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         sales_groups=sales_groups,
+        include_central_mirror=mirror,
     )
     notes = _loss_notes_breakdown(
         id_empresa=id_empresa,
@@ -658,6 +785,9 @@ def publish_manager_commission_month(
     """Materializa totais por grupo no CH mart_rt (sales_base + stock_loss)."""
     from app.db_clickhouse import insert_batch
 
+    config = ensure_rule_config(id_empresa, id_filial)
+    mirror = True
+
     dt_ini, dt_fim = _month_bounds(year, month)
     ini = _date_key(dt_ini)
     fim = _date_key(dt_fim)
@@ -670,16 +800,77 @@ def publish_manager_commission_month(
     inserted = 0
     for metric_kind, cfops_include, cfops_exclude in specs:
         if cfops_exclude is not None:
-            cfop_pred = _cfop_sales_predicate_sql("i")
+            from app.sales_semantics import (
+                central_mirror_entrada_sales_sql,
+                commission_sales_cfop_predicate_sql,
+            )
+
+            cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
             group_expr = _sales_group_id_sql("i", "sp")
-            scope_sql = _slim_comercial_where_sql("c")
+            if mirror:
+                central_pred = central_mirror_entrada_sales_sql("i", "c")
+                scope_sql = _slim_comercial_where_sql("c", include_central_mirror=True)
+                sql = f"""
+                SELECT
+                  id_empresa,
+                  id_filial,
+                  id_grupo_produto,
+                  sum(valor) AS valor,
+                  sum(qtd_itens) AS qtd_itens
+                FROM (
+                  SELECT
+                    i.id_empresa AS id_empresa,
+                    i.id_filial AS id_filial,
+                    {group_expr} AS id_grupo_produto,
+                    i.total AS valor,
+                    1 AS qtd_itens
+                  {_slim_item_from_sql()}
+                  WHERE i.id_empresa = {{id_empresa:Int32}}
+                    AND i.id_filial = {{id_filial:Int32}}
+                    AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                    AND {_slim_comercial_where_sql("c", include_central_mirror=False)}
+                    AND {cfop_pred}
+                  UNION ALL
+                  SELECT
+                    i.id_empresa AS id_empresa,
+                    i.id_filial AS id_filial,
+                    {group_expr} AS id_grupo_produto,
+                    i.total AS valor,
+                    1 AS qtd_itens
+                  {_slim_item_from_sql()}
+                  WHERE i.id_empresa = {{id_empresa:Int32}}
+                    AND i.id_filial = {{id_filial:Int32}}
+                    AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                    AND {scope_sql}
+                    AND {central_pred}
+                )
+                GROUP BY id_empresa, id_filial, id_grupo_produto
+                HAVING id_grupo_produto > 0
+                """
+            else:
+                scope_sql = _slim_comercial_where_sql("c", include_central_mirror=False)
+                sql = f"""
+                SELECT
+                  i.id_empresa AS id_empresa,
+                  i.id_filial AS id_filial,
+                  {group_expr} AS id_grupo_produto,
+                  sum(i.total) AS valor,
+                  count() AS qtd_itens
+                {_slim_item_from_sql()}
+                WHERE i.id_empresa = {{id_empresa:Int32}}
+                  AND i.id_filial = {{id_filial:Int32}}
+                  AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+                  AND {scope_sql}
+                  AND {cfop_pred}
+                GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
+                HAVING id_grupo_produto > 0
+                """
         else:
             cfop_list = ", ".join(str(int(c)) for c in (cfops_include or ()))
             cfop_pred = f"i.cfop IN ({cfop_list})"
             group_expr = _loss_group_id_sql("i", "sp")
             scope_sql = _slim_loss_where_sql("c")
-        rows = query_dict(
-            f"""
+            sql = f"""
             SELECT
               i.id_empresa AS id_empresa,
               i.id_filial AS id_filial,
@@ -694,7 +885,9 @@ def publish_manager_commission_month(
               AND {cfop_pred}
             GROUP BY i.id_empresa, i.id_filial, id_grupo_produto
             HAVING id_grupo_produto > 0
-            """,
+            """
+        rows = query_dict(
+            sql,
             parameters={
                 "id_empresa": int(id_empresa),
                 "id_filial": int(id_filial),
@@ -775,6 +968,7 @@ def calc_branch_row(
     *,
     filial_label: Optional[str] = None,
     publish: bool = False,
+    include_central_mirror: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Calcula comissão de gerente para uma filial.
 
@@ -784,6 +978,7 @@ def calc_branch_row(
     """
     config = ensure_rule_config(id_empresa, id_filial)
     config_id = int(config["id"])
+    mirror = True if include_central_mirror is None else bool(include_central_mirror)
     sales_groups = get_rule_groups(config_id, "sales_base")
     loss_groups = get_rule_groups(config_id, "stock_loss")
     sales_ids = [int(g["id_grupo_produto"]) for g in sales_groups]
@@ -803,6 +998,7 @@ def calc_branch_row(
         dt_fim=dt_fim,
         group_ids=sales_ids,
         cfop_exclude=SALES_EXCLUDED_CFOPS,
+        include_central_mirror=mirror,
     )
 
     perdas_default = _sum_metric_from_slim(
@@ -828,7 +1024,10 @@ def calc_branch_row(
         return float(default)
 
     rate = _coalesce_num("rate_pct", rate_default)
-    perdas = _coalesce_num("perdas_estoque", perdas_default)
+    if override.get("perdas_estoque") is not None:
+        perdas = max(float(override["perdas_estoque"]), float(perdas_default))
+    else:
+        perdas = float(perdas_default)
     sobras_est = _coalesce_num("sobras_estoque", sobras_estoque_default)
     sobras_cx = _coalesce_num("sobras_caixa", sobras_caixa_default)
     furos = _coalesce_num("furos_caixa", furos_caixa_default)
@@ -865,6 +1064,7 @@ def calc_branch_row(
         "has_override": bool(override),
         "groups_sales_count": len(sales_ids),
         "groups_loss_count": len(loss_ids),
+        "include_central_mirror": mirror,
     }
 
 
@@ -897,6 +1097,7 @@ def build_config_response(id_empresa: int, id_filial: int) -> Dict[str, Any]:
             "id_empresa": id_empresa,
             "id_filial": id_filial,
             "default_rate_pct": float(config.get("default_rate_pct") or DEFAULT_RATE_PCT),
+            "include_central_mirror": bool(config.get("include_central_mirror")),
         },
         "sales_base_groups": sales_groups,
         "stock_loss_groups": loss_groups,

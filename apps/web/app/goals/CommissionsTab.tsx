@@ -8,6 +8,7 @@ import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
 import { coerceDisplayMessage, extractApiError } from "../lib/errors";
 import { formatCommissionPeriodLabel } from "../lib/commission-period.mjs";
+import CommissionCentralMirrorToggle from "./CommissionCentralMirrorToggle";
 
 const TIER_STYLES: Record<
   string,
@@ -259,6 +260,7 @@ export default function CommissionsTab({
 }: CommissionsTabProps) {
   const [paymentMode, setPaymentMode] = useState<string>("");
   const [printIncludeValues, setPrintIncludeValues] = useState(true);
+  const includeCentralMirror = true;
   /** Vazio = todos os níveis (mesmo padrão de Prioridades de cobrança). */
   const [selectedTiers, setSelectedTiers] = useState<Set<string>>(new Set());
 
@@ -300,6 +302,7 @@ export default function CommissionsTab({
       params.set("id_filial", String(idFilial));
     }
     if (idFilial && paymentMode) params.set("payment_mode", paymentMode);
+    params.set("include_central_mirror", "true");
 
     (async () => {
       try {
@@ -562,6 +565,11 @@ export default function CommissionsTab({
                 </label>
               ) : null}
               <div className="commissionToolbarMeta">
+                <CommissionCentralMirrorToggle
+                  value={includeCentralMirror}
+                  onChange={() => {}}
+                  visible={false}
+                />
                 <button
                   type="button"
                   className={`profitScopeToggle${printIncludeValues ? " on" : ""}`}

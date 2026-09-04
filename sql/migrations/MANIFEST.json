@@ -1421,6 +1421,24 @@
       "sha256_utf8_normalized": "7900b674f70687ee74b4d2e98c61191dd581cea1c2da8bd1bb1110f4d35c5c37",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "153_commission_include_central_mirror.sql",
+      "prefix": "153",
+      "encoding": "utf-8",
+      "sha256_raw": "ee4a22cda84f2c489bc091b4a284551be2a9078093bd1e577c70f5c3f452cbea",
+      "sha256_utf8_normalized": "ee4a22cda84f2c489bc091b4a284551be2a9078093bd1e577c70f5c3f452cbea",
+      "kind": "incremental",
+      "historical_duplicate": false
+    },
+    {
+      "filename": "154_commission_central_mirror_default_on.sql",
+      "prefix": "154",
+      "encoding": "utf-8",
+      "sha256_raw": "c99de3b825ce6bc212f2221987b368ceb4b9d5e3604504fe8c6cc081ae4c1174",
+      "sha256_utf8_normalized": "c99de3b825ce6bc212f2221987b368ceb4b9d5e3604504fe8c6cc081ae4c1174",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

@@ -10,10 +10,11 @@ from app.repos_manager_commission import (
     _loss_group_id_sql,
     _nfe_documento,
     _sales_group_id_sql,
-    _slim_lsc_sales_where_sql,
+    _slim_comercial_where_sql,
     _date_key_iso,
     net_commission,
 )
+from app.sales_semantics import commission_slim_sales_scope_sql, commission_sales_cfop_predicate_sql
 
 
 class ManagerCommissionFormulaTests(unittest.TestCase):
@@ -81,10 +82,57 @@ class ManagerCommissionFormulaTests(unittest.TestCase):
         self.assertIn("dt_ini", params)
         self.assertIn("dt_fim", params)
 
-    def test_slim_lsc_sales_where_uses_commercial_eligible_without_central_mirror(self):
-        pred = _slim_lsc_sales_where_sql("c").replace(" ", "").lower()
+    def test_slim_comercial_where_excludes_central_mirror_by_default(self):
+        pred = _slim_comercial_where_sql("c").replace(" ", "").lower()
         self.assertIn("commercial_eligible=1", pred)
-        self.assertNotIn("central", pred)
+        self.assertIn("stg_filiais", pred)
+
+    def test_slim_comercial_where_includes_central_when_flag_on(self):
+        pred = _slim_comercial_where_sql("c", include_central_mirror=True).replace(" ", "").lower()
+        self.assertIn("commercial_eligible=1", pred)
+        self.assertNotIn("stg_filiais", pred)
+
+    def test_commission_slim_sales_scope_sql_matches_manager_wrapper(self):
+        default = commission_slim_sales_scope_sql("c", include_central_mirror=False)
+        with_mirror = commission_slim_sales_scope_sql("c", include_central_mirror=True)
+        self.assertEqual(_slim_comercial_where_sql("c"), default)
+        self.assertEqual(_slim_comercial_where_sql("c", include_central_mirror=True), with_mirror)
+
+    def test_commission_central_entrada_cfops(self):
+        from app.sales_semantics import (
+            CENTRAL_MIRROR_2102_EXCLUDED_ITEM_IDS,
+            CENTRAL_MIRROR_ENTRADA_CFOPS,
+            central_mirror_commission_sales_sql,
+            central_mirror_entrada_sales_sql,
+            commission_sales_cfop_predicate_sql,
+        )
+
+        off = commission_sales_cfop_predicate_sql("i", "c", include_central_mirror=False)
+        on = commission_sales_cfop_predicate_sql("i", "c", include_central_mirror=True)
+        self.assertEqual(off, on)
+        self.assertIn("cfop,0)>5000", off.replace(" ", "").lower())
+        entrada = central_mirror_commission_sales_sql("i", "c").replace(" ", "").lower()
+        self.assertIn("2102", entrada)
+        self.assertIn("1101", entrada)
+        self.assertIn("id_itemcomprovante", entrada)
+        self.assertIn("stg_filiais", entrada)
+        self.assertEqual(CENTRAL_MIRROR_ENTRADA_CFOPS, (2102, 1101))
+        self.assertEqual(len(CENTRAL_MIRROR_2102_EXCLUDED_ITEM_IDS), 10)
+        self.assertEqual(
+            central_mirror_entrada_sales_sql("i", "c"),
+            central_mirror_commission_sales_sql("i", "c"),
+        )
+
+    def test_central_mirror_excludes_month_end_entrada(self):
+        from app.sales_semantics import (
+            central_mirror_commission_sales_sql,
+            central_mirror_month_end_entrada_guard_sql,
+        )
+
+        guard = central_mirror_month_end_entrada_guard_sql("i").replace(" ", "").lower()
+        self.assertIn("data_key%100)<>31", guard)
+        entrada = central_mirror_commission_sales_sql("i", "c").replace(" ", "").lower()
+        self.assertIn("data_key%100)<>31", entrada)
 
     def test_sales_group_sql_uses_stg_produtos_alias(self):
         expr = _sales_group_id_sql("i", "sp")
