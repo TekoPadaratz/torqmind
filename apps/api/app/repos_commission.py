@@ -60,6 +60,8 @@ def _query_eligible_sales_ch(
     id_filiais: Sequence[int],
     dt_ini: date,
     dt_fim: date,
+    *,
+    include_central_mirror: bool = False,
 ) -> List[Dict[str, Any]]:
     """Agrega vendas elegíveis no ClickHouse slim (fonte BI canônica).
 
@@ -72,7 +74,21 @@ def _query_eligible_sales_ch(
     dk_ini, dk_fim = data_key_bounds_half_open(dt_ini, dt_fim)
     filial_list = ", ".join(str(f) for f in targets)
     situacao_list = _situacao_excluidas_sql()
-    cfop_pred = _cfop_sales_predicate_sql("i")
+    from app.sales_semantics import (
+        central_mirror_entrada_sales_sql,
+        central_mirror_exclude_sql,
+        commission_sales_cfop_predicate_sql,
+        sales_cfop_filter_sql,
+    )
+
+    native_cfop = sales_cfop_filter_sql("i")
+    if include_central_mirror:
+        central_pred = central_mirror_entrada_sales_sql("i", "c")
+        cfop_pred = f"(({native_cfop}) OR ({central_pred}))"
+        mirror_sql = ""
+    else:
+        cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
+        mirror_sql = f" AND {central_mirror_exclude_sql('c')}"
     sql = f"""
       SELECT
         i.id_filial AS id_filial,
@@ -112,6 +128,7 @@ def _query_eligible_sales_ch(
         AND coalesce(c.commercial_eligible, 1) = 1
         AND {cfop_pred}
         AND i.id_funcionario > 0
+        {mirror_sql}
       GROUP BY
         id_filial,
         id_funcionario,
@@ -210,6 +227,7 @@ def get_config(id_empresa: int, id_filial: int) -> Optional[Dict[str, Any]]:
     sql = """
           SELECT id, id_empresa, id_filial, name, is_active, default_payment_mode,
               manager_commission_mode, manager_commission_percent,
+              include_central_mirror,
              created_at, updated_at
       FROM app.commission_config
       WHERE id_empresa = %s AND id_filial = %s AND is_active = true
@@ -586,6 +604,27 @@ def ensure_default_config(id_empresa: int, id_filial: int) -> Dict[str, Any]:
     return config
 
 
+def update_preferences(
+    id_empresa: int, id_filial: int, *, include_central_mirror: bool
+) -> Dict[str, Any]:
+    """Atualiza preferências de cálculo (toggle na tela de comissão de vendedores)."""
+    config = ensure_default_config(id_empresa, id_filial)
+    with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
+        row = conn.execute(
+            """
+            UPDATE app.commission_config
+            SET include_central_mirror = %s, updated_at = now()
+            WHERE id = %s
+            RETURNING id, id_empresa, id_filial, name, is_active, default_payment_mode,
+                      manager_commission_mode, manager_commission_percent,
+                      include_central_mirror, created_at, updated_at
+            """,
+            [bool(include_central_mirror), int(config["id"])],
+        ).fetchone()
+        conn.commit()
+    return dict(row) if row else config
+
+
 def save_config(
     id_empresa: int,
     id_filial: int,
@@ -596,6 +635,7 @@ def save_config(
     manager_commission_percent: float = 0.0,
     excluded_products: Optional[Sequence[Dict[str, Any]]] = None,
     employees: Optional[Sequence[Dict[str, Any]]] = None,
+    include_central_mirror: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Save/update commission configuration atomically."""
     config = ensure_default_config(id_empresa, id_filial)
@@ -604,14 +644,37 @@ def save_config(
     employees = list(employees or [])
 
     with get_conn(tenant_id=id_empresa, branch_id=_conn_branch_id(id_filial)) as conn:
-        conn.execute("""
-          UPDATE app.commission_config
-          SET default_payment_mode = %s,
-              manager_commission_mode = %s,
-              manager_commission_percent = %s,
-              updated_at = now()
-          WHERE id = %s
-        """, [default_payment_mode, manager_commission_mode, manager_commission_percent, config_id])
+        if include_central_mirror is not None:
+            conn.execute(
+                """
+              UPDATE app.commission_config
+              SET default_payment_mode = %s,
+                  manager_commission_mode = %s,
+                  manager_commission_percent = %s,
+                  include_central_mirror = %s,
+                  updated_at = now()
+              WHERE id = %s
+            """,
+                [
+                    default_payment_mode,
+                    manager_commission_mode,
+                    manager_commission_percent,
+                    bool(include_central_mirror),
+                    config_id,
+                ],
+            )
+        else:
+            conn.execute(
+                """
+              UPDATE app.commission_config
+              SET default_payment_mode = %s,
+                  manager_commission_mode = %s,
+                  manager_commission_percent = %s,
+                  updated_at = now()
+              WHERE id = %s
+            """,
+                [default_payment_mode, manager_commission_mode, manager_commission_percent, config_id],
+            )
 
         conn.execute("""
             UPDATE app.commission_config_group SET is_active = false WHERE config_id = %s
@@ -765,6 +828,7 @@ def calculate_commission_results_multi(
     dt_ini: date,
     dt_fim: date,
     payment_mode: Optional[str] = None,
+    include_central_mirror: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Calculate employee commissions for one or many branches.
 
@@ -783,7 +847,22 @@ def calculate_commission_results_multi(
 
     # Uma leitura CH para todas as filiais do escopo (evita N× scan em fact_* PG).
     try:
-        raw_sales = _query_eligible_sales_ch(id_empresa, targets, dt_ini, dt_fim)
+        if include_central_mirror is not None:
+            raw_sales = _query_eligible_sales_ch(
+                id_empresa,
+                targets,
+                dt_ini,
+                dt_fim,
+                include_central_mirror=bool(include_central_mirror),
+            )
+        else:
+            raw_sales = _query_eligible_sales_ch(
+                id_empresa,
+                targets,
+                dt_ini,
+                dt_fim,
+                include_central_mirror=True,
+            )
     except Exception as exc:
         logger.exception(
             "commission CH sales failed empresa=%s period=%s..%s",
@@ -818,6 +897,11 @@ def calculate_commission_results_multi(
             mode,
             sales_rows=sales_by_filial.get(fid, []),
             include_manager=False,
+            include_central_mirror=(
+                bool(include_central_mirror)
+                if include_central_mirror is not None
+                else None
+            ),
         )
         label = labels.get(fid, f"Filial {fid}")
         branch["filial_label"] = label
@@ -895,6 +979,7 @@ def calculate_commission_results(
     *,
     sales_rows: Optional[Sequence[Dict[str, Any]]] = None,
     include_manager: bool = False,
+    include_central_mirror: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Calculate commission results for a date range using individual commission rules.
 
@@ -924,8 +1009,15 @@ def calculate_commission_results(
     excluded_func_ids = get_excluded_funcionario_ids(config_id)
 
     if sales_rows is None:
+        mirror = True if include_central_mirror is None else bool(include_central_mirror)
         try:
-            sales_rows = _query_eligible_sales_ch(id_empresa, [id_filial], dt_ini, dt_fim)
+            sales_rows = _query_eligible_sales_ch(
+                id_empresa,
+                [id_filial],
+                dt_ini,
+                dt_fim,
+                include_central_mirror=mirror,
+            )
         except Exception as exc:
             logger.exception(
                 "commission CH sales failed empresa=%s filial=%s period=%s..%s",
@@ -1116,6 +1208,7 @@ def calculate_commission_results(
             "default_payment_mode": config["default_payment_mode"],
             "manager_commission_mode": manager_mode,
             "manager_commission_percent": manager_fixed_percent,
+            "include_central_mirror": bool(config.get("include_central_mirror", True)),
         },
     }
 

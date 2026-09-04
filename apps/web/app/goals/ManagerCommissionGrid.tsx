@@ -11,7 +11,6 @@ import { sortGridRows } from "../lib/grid-sort";
 import ManagerCommissionDrilldown, {
   type DrilldownPayload,
 } from "./ManagerCommissionDrilldown";
-
 function parseBrCurrency(input: string): number {
   const normalized = input.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, "");
   const value = Number(normalized);
@@ -112,11 +111,14 @@ export default function ManagerCommissionGrid({
   const [expandedFilial, setExpandedFilial] = useState<number | null>(null);
   const [drilldownByFilial, setDrilldownByFilial] = useState<Record<number, DrilldownPayload>>({});
   const [drilldownLoading, setDrilldownLoading] = useState<number | null>(null);
-
   const multiKey = useMemo(
     () => (idFiliais || []).map(String).filter(Boolean).join(","),
     [idFiliais],
   );
+
+  const appendCentralMirrorParam = (params: URLSearchParams) => {
+    params.set("include_central_mirror", "true");
+  };
 
   useEffect(() => {
     const multi = multiKey ? multiKey.split(",") : [];
@@ -145,6 +147,7 @@ export default function ManagerCommissionGrid({
         } else if (multi[0]) {
           params.set("id_filial", String(multi[0]));
         }
+        appendCentralMirrorParam(params);
         const resp = await apiGet(`/bi/team/manager-commissions/calc?${params.toString()}`, {
           signal: ac.signal,
           timeout: 60000,
@@ -245,6 +248,7 @@ export default function ManagerCommissionGrid({
       params.set("dt_fim", dtFim);
       params.set("id_filial", String(fid));
       if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+      appendCentralMirrorParam(params);
       const resp = await apiGet(`/bi/team/manager-commissions/drilldown?${params.toString()}`, {
         timeout: 60000,
       });
@@ -302,6 +306,7 @@ export default function ManagerCommissionGrid({
               params.set("dt_fim", dtFim);
               params.set("id_filial", String(mapped.id_filial));
               if (idEmpresa) params.set("id_empresa", String(idEmpresa));
+              appendCentralMirrorParam(params);
               const detail = await apiGet(
                 `/bi/team/manager-commissions/drilldown?${params.toString()}`,
                 { timeout: 60000 },
