@@ -279,8 +279,32 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = sub.add_parser("backfill", help="Run backfill for one dataset")
     backfill.add_argument("--config", dest="command_config", default=None, help="Path to config file")
     backfill.add_argument("--dataset", required=True)
-    backfill.add_argument("--from", dest="from_date", required=True, help="YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
-    backfill.add_argument("--to", dest="to_date", required=True, help="YYYY-MM-DD or exact exclusive datetime")
+    backfill.add_argument(
+        "--from",
+        dest="from_date",
+        default=None,
+        help="YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS (obrigatório salvo com --ids)",
+    )
+    backfill.add_argument(
+        "--to",
+        dest="to_date",
+        default=None,
+        help="YYYY-MM-DD or exact exclusive datetime (obrigatório salvo com --ids)",
+    )
+    backfill.add_argument(
+        "--ids",
+        default=None,
+        help=(
+            "Lista de IDs (vírgula) para backfill cirúrgico sem avançar watermark. "
+            "Ex.: --dataset itenscomprovantes --ids 3694867,3694873 "
+            "(coluna padrão ID_COMPROVANTE; use --id-column se necessário)."
+        ),
+    )
+    backfill.add_argument(
+        "--id-column",
+        default=None,
+        help="Coluna de filtro para --ids (default por dataset: ID_COMPROVANTE / ID_MOVPRODUTOS)",
+    )
 
     check = sub.add_parser("check", help="Check SQL Server + API + ingest credentials")
     check.add_argument("--config", dest="command_config", default=None, help="Path to config file")
@@ -488,6 +512,24 @@ def main() -> None:
             return
 
         if args.command == "backfill":
+            ids_raw = getattr(args, "ids", None)
+            if ids_raw:
+                ids = []
+                for part in str(ids_raw).split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    ids.append(int(part))
+                if not ids:
+                    raise ValueError("--ids must contain at least one integer id")
+                runner.backfill_ids(
+                    dataset=args.dataset,
+                    ids=ids,
+                    id_column=getattr(args, "id_column", None),
+                )
+                return
+            if not args.from_date or not args.to_date:
+                raise ValueError("backfill requires --from/--to or --ids")
             dt_from, from_is_date_only = _parse_window_value(args.from_date)
             dt_to, to_is_date_only = _parse_window_value(args.to_date)
             if dt_to < dt_from:

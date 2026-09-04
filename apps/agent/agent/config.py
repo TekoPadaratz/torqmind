@@ -297,6 +297,11 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "watermark_overlap_seconds": PARENT_CHILD_WATERMARK_OVERLAP_SECONDS,
+        # Janela recente pelo DATA do header: cobre itens cujo DATAREPL atrasou
+        # após o watermark do filho avançar (órfãos header↔item no estoque).
+        "revisit_open_clause": (
+            "CAST(TORQMIND_DT_EVENTO AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date)"
+        ),
         "query": (
             "SELECT i.*, "
             "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import re
 import time
 from typing import Any, Dict, Iterable, Optional
 
@@ -1376,6 +1377,78 @@ class AgentRunner:
             dt_to=to_exclusive,
             ignore_watermark=True,
         )
+
+    def backfill_ids(
+        self,
+        dataset: str,
+        ids: list[int],
+        *,
+        id_column: Optional[str] = None,
+    ) -> None:
+        """Backfill cirúrgico por IDs (não avança watermark).
+
+        Uso típico: headers órfãos sem itens — no posto::
+
+            torqmind-agent.exe backfill --dataset itenscomprovantes --ids 3694867,3694873
+
+        Colunas padrão:
+        - comprovantes / itenscomprovantes / formas_pgto_*: ID_COMPROVANTE
+        - movprodutos / itensmovprodutos: ID_MOVPRODUTOS
+        """
+        key = str(dataset or "").strip().lower()
+        ids_clean = sorted({int(i) for i in ids if int(i) > 0})
+        if not ids_clean:
+            raise ValueError("backfill_ids requires at least one positive id")
+        default_cols = {
+            "comprovantes": "ID_COMPROVANTE",
+            "itenscomprovantes": "ID_COMPROVANTE",
+            "formas_pgto_comprovantes": "ID_COMPROVANTE",
+            "movprodutos": "ID_MOVPRODUTOS",
+            "itensmovprodutos": "ID_MOVPRODUTOS",
+        }
+        col = str(id_column or default_cols.get(key) or "ID_COMPROVANTE").strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", col):
+            raise ValueError(f"invalid id_column={col!r}")
+        id_list = ",".join(str(i) for i in ids_clean)
+
+        original = dict(self.cfg.datasets.get(key) or {})
+        if not original:
+            raise ValueError(f"unknown dataset={dataset}")
+        base_query = str(original.get("query") or "").strip()
+        if not base_query:
+            table = str(original.get("table") or "").strip()
+            if not table:
+                raise ValueError(f"dataset={dataset} has no query/table for id backfill")
+            base_query = f"SELECT * FROM {table}"
+        wrapped = (
+            f"SELECT * FROM ({base_query}) AS _idbf "
+            f"WHERE [{col}] IN ({id_list})"
+        )
+        patched = {**original, "query": wrapped, "enabled": True}
+        # Evita revisit_open_clause alargar o filtro além dos IDs pedidos.
+        patched.pop("revisit_open_clause", None)
+
+        scope = self._scope()
+        saved_cursor = self.state.get_cursor(key, scope=scope)
+        self.cfg.datasets[key] = patched
+        self.logger.info(
+            "dataset=%s phase=backfill_ids ids=%s id_column=%s count=%s",
+            key,
+            id_list,
+            col,
+            len(ids_clean),
+        )
+        try:
+            self.run_once(only_dataset=key, ignore_watermark=True)
+        finally:
+            self.cfg.datasets[key] = original
+            # Preserva watermark: run_once com ignore_watermark pode avançar o cursor.
+            self.state.set_cursor(key, saved_cursor, scope=scope)
+            self.logger.info(
+                "dataset=%s phase=backfill_ids_done watermark_restored=%s",
+                key,
+                saved_cursor.last_watermark,
+            )
 
     def reset_watermark(self, dataset: str) -> None:
         scope = self._scope()

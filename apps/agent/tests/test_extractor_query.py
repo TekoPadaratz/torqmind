@@ -130,6 +130,13 @@ class TestExtractorQuery(unittest.TestCase):
     def test_quote_ident_escapes_brackets(self):
         self.assertEqual(SQLServerExtractor._quote_ident("ab]cd"), "[ab]]cd]")
 
+    def test_default_itensmovprodutos_has_parent_revisit_window(self):
+        from agent.config import DEFAULT_DATASETS
+
+        clause = str(DEFAULT_DATASETS["itensmovprodutos"].get("revisit_open_clause") or "")
+        self.assertIn("TORQMIND_DT_EVENTO", clause)
+        self.assertIn("DATEADD(day,-14,GETDATE())", clause)
+
     def test_query_plan_can_revisit_recent_parent_window_when_watermark_stalls(self):
         cfg = self._cfg()
         cfg.datasets["itensmovprodutos"] = {
