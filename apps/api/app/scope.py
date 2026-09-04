@@ -168,6 +168,15 @@ def resolve_scope_filters(
 ) -> tuple[int, Optional[int | list[int]], Optional[list[int]]]:
     tenant_id, default_branch = resolve_scope(claims, id_empresa_q=id_empresa_q, id_filial_q=None)
     requested_branch_ids = _normalize_branch_ids(id_filiais_q, id_filial_q)
+    user_role = normalize_role(claims.get("user_role"))
+
+    # Alinha com resolve_scope: platform_master/admin pode pedir qualquer filial
+    # sem cruzar o diretório ativo (evita 403/400 quando PG indisponível ou filial
+    # ainda não listada em auth.filiais — contrato de acesso total).
+    if requested_branch_ids and user_role in {"platform_master", "platform_admin"}:
+        effective_scope = _materialize_branch_filter(requested_branch_ids)
+        return tenant_id, effective_scope, requested_branch_ids
+
     can_list_all, allowed_branch_ids = accessible_branch_ids(claims, tenant_id)
     allowed_branch_set = set(allowed_branch_ids)
 
