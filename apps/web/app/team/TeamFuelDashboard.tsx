@@ -275,7 +275,7 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
                   Por combustível
                 </h3>
                 {pieData.length === 0 ? (
-                  <EmptyState title="Sem mix" detail="Sem litros no recorte selecionado." />
+                  <EmptyState title="Sem mix" detail="Sem litros no período selecionado." />
                 ) : (
                   <div className="chartWrap" style={{ height: 240 }}>
                     <ResponsiveContainer width="100%" height="100%">
