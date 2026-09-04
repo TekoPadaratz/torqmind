@@ -693,7 +693,9 @@ class SnapshotCacheTests(unittest.TestCase):
         self.assertIn("Base atualizada em", result["message"])
 
     def test_sales_overview_uses_same_snapshot_policy_as_other_hot_routes(self):
-        claims = {"role": "MASTER"}
+        # user_role necessário: sales_overview checa painéis via can_access_screen
+        # (ROLE_DEFAULT_SCREENS); só "role": MASTER deixa allowed_screens vazio → 403.
+        claims = {"role": "MASTER", "user_role": "platform_master"}
         expected = {"ok": True}
 
         with (
