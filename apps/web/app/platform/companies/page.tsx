@@ -22,6 +22,35 @@ const emptyForm = {
   channel_id: '',
 };
 
+function CopyReadonlyField({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!value) return null;
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>{label}</span>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+        <input className="input" value={value} readOnly aria-readonly />
+        <button
+          type="button"
+          className="btn"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(value);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 2000);
+            } catch {
+              /* fallback silencioso */
+            }
+          }}
+        >
+          {copied ? 'Copiado' : 'Copiar'}
+        </button>
+      </div>
+      {hint ? <span className="platformFieldHint">{hint}</span> : null}
+    </label>
+  );
+}
+
 export default function PlatformCompaniesPage() {
   const router = useRouter();
   const [me, setMe] = useState<any>(null);
@@ -33,6 +62,7 @@ export default function PlatformCompaniesPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [createdCompany, setCreatedCompany] = useState<any>(null);
   const companiesSearch = useGridSearch(items);
 
   const load = async (session: any, currentSearch = search, currentStatus = status) => {
@@ -70,8 +100,9 @@ export default function PlatformCompaniesPage() {
     event.preventDefault();
     setSaving(true);
     setError('');
+    setCreatedCompany(null);
     try {
-      await apiPost('/platform/companies', {
+      const created = await apiPost('/platform/companies', {
         nome: form.nome,
         cnpj: form.cnpj || null,
         is_enabled: form.is_enabled,
@@ -79,6 +110,7 @@ export default function PlatformCompaniesPage() {
         valid_until: form.valid_until || null,
         channel_id: form.channel_id ? Number(form.channel_id) : null,
       });
+      setCreatedCompany(created);
       setForm(emptyForm);
       await load(me, search, status);
     } catch (err: any) {
@@ -105,10 +137,22 @@ export default function PlatformCompaniesPage() {
         </div>
 
         <form className="platformFormGrid" onSubmit={handleSubmit}>
-          <input className="input" placeholder="Nome da empresa" value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
-          <input className="input" placeholder="CNPJ" value={form.cnpj} onChange={(e) => setForm({ ...form, cnpj: e.target.value })} />
-          <input className="input" type="date" value={form.valid_from} onChange={(e) => setForm({ ...form, valid_from: e.target.value })} />
-          <input className="input" type="date" value={form.valid_until} onChange={(e) => setForm({ ...form, valid_until: e.target.value })} />
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>Nome da empresa</span>
+            <input className="input" placeholder="Nome da empresa" value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} required />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>CNPJ</span>
+            <input className="input" placeholder="CNPJ" value={form.cnpj} onChange={(e) => setForm({ ...form, cnpj: e.target.value })} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>Vigência — início</span>
+            <input className="input" type="date" value={form.valid_from} onChange={(e) => setForm({ ...form, valid_from: e.target.value })} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span className="platformFieldHint" style={{ fontWeight: 600, color: 'var(--text-primary, inherit)' }}>Vigência — fim</span>
+            <input className="input" type="date" value={form.valid_until} onChange={(e) => setForm({ ...form, valid_until: e.target.value })} />
+          </label>
           {me?.access?.platform_finance ? (
             <select className="input" value={form.channel_id} onChange={(e) => setForm({ ...form, channel_id: e.target.value })}>
               <option value="">Sem canal</option>
@@ -129,6 +173,22 @@ export default function PlatformCompaniesPage() {
             {saving ? 'Salvando...' : 'Criar empresa'}
           </button>
         </form>
+
+        {createdCompany?.ingest_key ? (
+          <div style={{ marginTop: 16 }}>
+            <CopyReadonlyField
+              label="Ingest Key (Agent)"
+              value={String(createdCompany.ingest_key)}
+              hint="Uma chave por empresa. Copie e configure no posto (config.enc → api.ingest_key). Não é editável."
+            />
+            {createdCompany.id_empresa ? (
+              <div className="platformFieldHint" style={{ marginTop: 8 }}>
+                Empresa criada com ID {createdCompany.id_empresa}.{' '}
+                <Link href={`/platform/companies/${createdCompany.id_empresa}`}>Abrir cadastro</Link>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div style={{ height: 16 }} />
