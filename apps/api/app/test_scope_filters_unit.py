@@ -106,6 +106,28 @@ class ScopeFiltersUnitTest(unittest.TestCase):
         self.assertEqual(branch_filter, [])
         self.assertIsNone(branch_scope)
 
+    def test_platform_master_explicit_branch_bypasses_active_directory(self) -> None:
+        """platform_master pode pedir filial específica sem consultar auth.filiais."""
+        claims = {
+            "role": "MASTER",
+            "user_role": "platform_master",
+            "id_empresa": None,
+            "id_filial": None,
+            "access": {"product": True, "platform": True},
+            "accesses": [],
+        }
+
+        # Sem mock de get_conn: se o bypass falhar, tentaria PG e quebraria/negaria.
+        tenant_id, branch_filter, branch_scope = scope.resolve_scope_filters(
+            claims,
+            id_empresa_q=1,
+            id_filial_q=14458,
+        )
+
+        self.assertEqual(tenant_id, 1)
+        self.assertEqual(branch_filter, 14458)
+        self.assertEqual(branch_scope, [14458])
+
 
 if __name__ == "__main__":
     unittest.main()
