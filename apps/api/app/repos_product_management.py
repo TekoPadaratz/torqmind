@@ -225,14 +225,25 @@ def list_product_purchases_recent(
     )
     compras = []
     for r in rows or []:
+        qtd = float(r.get("qtd") or 0)
+        unit = float(r.get("valor_unitario") or 0)
+        total = float(r.get("valor_total") or 0)
+        if unit <= 0 and qtd > 0 and total > 0:
+            unit = total / qtd
+        if total <= 0 and unit > 0 and qtd > 0:
+            total = unit * qtd
+        doc = str(r.get("numero_documento") or "").strip()
+        # Nunca exibir chave de acesso (44 dígitos) como "documento"
+        if len(doc) == 44 and doc.isdigit():
+            doc = doc[25:34].lstrip("0") or "—"
         compras.append(
             {
                 "rank": int(r.get("rank") or 0),
-                "numero_documento": str(r.get("numero_documento") or "—"),
+                "numero_documento": doc or "—",
                 "data_compra": _fmt_date(r.get("data_compra")),
-                "qtd": float(r.get("qtd") or 0),
-                "valor_unitario": float(r.get("valor_unitario") or 0),
-                "valor_total": float(r.get("valor_total") or 0),
+                "qtd": qtd,
+                "valor_unitario": round(unit, 4),
+                "valor_total": round(total, 2),
             }
         )
     return {

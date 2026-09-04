@@ -407,7 +407,7 @@ export default function ProductManagementPage() {
                               Qtd{sortIndicator("qtd_estoque")}
                             </th>
                             <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio")}>
-                              Custo médio{sortIndicator("custo_medio")}
+                              Custo unitário{sortIndicator("custo_medio")}
                             </th>
                             <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio_total")}>
                               Custo total{sortIndicator("custo_medio_total")}
@@ -467,21 +467,32 @@ export default function ProductManagementPage() {
                                         <table className="table compact" style={{ fontSize: 12, marginTop: 8, width: "100%" }}>
                                           <thead>
                                             <tr>
-                                              <th style={{ textAlign: "left" }}>Documento</th>
+                                              <th style={{ textAlign: "left" }}>Nota Fiscal</th>
                                               <th style={{ textAlign: "left" }}>Data</th>
                                               <th style={{ textAlign: "right" }}>Qtd</th>
-                                              <th style={{ textAlign: "right" }}>Valor</th>
+                                              <th style={{ textAlign: "right" }}>Custo unitário</th>
+                                              <th style={{ textAlign: "right" }}>Valor total</th>
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {purchases.map((c) => (
+                                            {purchases.map((c) => {
+                                              const qtd = Number(c.qtd || 0);
+                                              const unit =
+                                                Number(c.valor_unitario || 0) > 0
+                                                  ? Number(c.valor_unitario)
+                                                  : qtd > 0
+                                                    ? Number(c.valor_total || 0) / qtd
+                                                    : 0;
+                                              return (
                                               <tr key={c.rank}>
                                                 <td>{c.numero_documento || "—"}</td>
-                                                <td>{c.data_compra || "—"}</td>
-                                                <td style={{ textAlign: "right" }}>{fmtQty(c.qtd)}</td>
+                                                <td>{fmtDateBr(c.data_compra)}</td>
+                                                <td style={{ textAlign: "right" }}>{fmtQty(qtd)}</td>
+                                                <td style={{ textAlign: "right" }}>{formatCurrency(unit)}</td>
                                                 <td style={{ textAlign: "right" }}>{formatCurrency(c.valor_total)}</td>
                                               </tr>
-                                            ))}
+                                              );
+                                            })}
                                           </tbody>
                                         </table>
                                       )}

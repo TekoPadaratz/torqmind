@@ -83,3 +83,22 @@ def test_list_product_purchases_recent(mock_qd):
     assert out["id_produto"] == 42
     assert len(out["compras"]) == 1
     assert out["compras"][0]["numero_documento"] == "8756"
+    assert out["compras"][0]["valor_unitario"] == 2.4
+
+
+@patch("app.repos_product_management.query_dict")
+def test_list_product_purchases_strips_chave_and_derives_unit(mock_qd):
+    mock_qd.return_value = [
+        {
+            "rank": 1,
+            "numero_documento": "42260252924350000148550010000002791648072839",
+            "data_compra": "2026-02-20",
+            "qtd": 12,
+            "valor_unitario": 0,
+            "valor_total": 68.40,
+        }
+    ]
+    out = list_product_purchases_recent(1, 14458, 42)
+    compra = out["compras"][0]
+    assert compra["numero_documento"] == "279"
+    assert compra["valor_unitario"] == 5.7

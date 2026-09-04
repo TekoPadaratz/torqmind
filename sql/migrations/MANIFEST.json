@@ -1412,6 +1412,15 @@
       "sha256_utf8_normalized": "5cbb7ebc0debefee64675d23c424f0339afa04936aa259a13485701288a7a2bd",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "152_product_stock_idle_nf_numero.sql",
+      "prefix": "152",
+      "encoding": "utf-8",
+      "sha256_raw": "7900b674f70687ee74b4d2e98c61191dd581cea1c2da8bd1bb1110f4d35c5c37",
+      "sha256_utf8_normalized": "7900b674f70687ee74b4d2e98c61191dd581cea1c2da8bd1bb1110f4d35c5c37",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }
