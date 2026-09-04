@@ -12,6 +12,12 @@ from app.repos_mart_realtime import team_fuel_employees_dashboard
 @patch("app.repos_mart_realtime.query_dict")
 def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _mock_apelido):
     mock_qd.side_effect = [
+        # qty_abastecimentos (slim count por funcionário)
+        [
+            {"id_filial": 10169, "id_funcionario": 10, "qtd_abastecimentos": 45},
+            {"id_filial": 10169, "id_funcionario": 20, "qtd_abastecimentos": 20},
+        ],
+        # litros (slim fallback — mart vazia)
         [
             {
                 "id_filial": 10169,
@@ -20,6 +26,7 @@ def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _
                 "nome_produto": "GASOLINA C COMUM",
                 "nome_grupo": "COMBUSTIVEIS",
                 "litros": 1200.0,
+                "qtd_abastecimentos": 30,
             },
             {
                 "id_filial": 10169,
@@ -28,6 +35,7 @@ def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _
                 "nome_produto": "ETANOL COMUM",
                 "nome_grupo": "COMBUSTIVEIS",
                 "litros": 300.0,
+                "qtd_abastecimentos": 15,
             },
             {
                 "id_filial": 10169,
@@ -36,9 +44,13 @@ def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _
                 "nome_produto": "GASOLINA C COMUM",
                 "nome_grupo": "COMBUSTIVEIS",
                 "litros": 800.0,
+                "qtd_abastecimentos": 20,
             },
         ],
-        [{"id_filial": 10169, "id_funcionario": 10, "nome": "JOAO"}, {"id_filial": 10169, "id_funcionario": 20, "nome": "MARIA"}],
+        [
+            {"id_filial": 10169, "id_funcionario": 10, "nome": "JOAO"},
+            {"id_filial": 10169, "id_funcionario": 20, "nome": "MARIA"},
+        ],
     ]
     out = team_fuel_employees_dashboard(
         "platform_master",
@@ -51,7 +63,10 @@ def test_team_fuel_employees_dashboard_groups_by_filial(mock_qd, _mock_scalar, _
     filial = out["filiais"][0]
     assert filial["filial_label"] == "VR 01"
     assert filial["total_litros"] == 2300.0
+    assert filial["total_abastecimentos"] == 65
     assert filial["ranking"][0]["id_funcionario"] == 10
     assert filial["ranking"][0]["litros"] == 1500.0
+    assert filial["ranking"][0]["qtd_abastecimentos"] == 45
     assert len(filial["combustiveis"]) == 2
     assert filial["by_employee"]["10"]["total_litros"] == 1500.0
+    assert filial["by_employee"]["10"]["qtd_abastecimentos"] == 45

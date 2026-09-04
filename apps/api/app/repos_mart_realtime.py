@@ -2921,6 +2921,45 @@ def _finance_titles_search_sql(search: str, params: Dict[str, Any]) -> str:
     return " AND (" + " OR ".join(clauses) + ")"
 
 
+def _finance_titles_period_or_preset_sql(preset: Optional[str]) -> str:
+    """Fragmento WHERE de período vs filtro rápido (carteira aberta).
+
+    Sem preset: janela ``dt_ini..dt_fim`` + vencidos abertos até ``dt_fim``
+    (evita grid mudo quando o KPI de aberto inclui carteira fora do mês).
+
+    Com preset: filtros rápidos operam sobre a **carteira aberta as-of today**,
+    sem intersectar ``dt_ini`` — o período do menu não deve “sumir” títulos
+    vencidos/a vencer só porque o usuário olhou um mês passado. Presets
+    ``a_vencer_*`` usam ``today()`` de propósito (horizonte operacional).
+    """
+    key = (preset or "").strip().lower()
+    if key == "vencidos":
+        # Carteira aberta: todo vencido em aberto (não clipa em dt_fim).
+        return " AND status = 'vencido'"
+    if key == "a_vencer_7d":
+        return (
+            " AND status = 'a_vencer'"
+            " AND dt_vencimento >= today()"
+            " AND dt_vencimento <= today() + 7"
+        )
+    if key == "a_vencer_mes":
+        return (
+            " AND status = 'a_vencer'"
+            " AND dt_vencimento >= today()"
+            " AND dt_vencimento <= toLastDayOfMonth(today())"
+        )
+    if key == "a_vencer":
+        return " AND status = 'a_vencer' AND dt_vencimento >= today()"
+    if key:
+        raise ValueError("preset inválido")
+    return (
+        " AND ("
+        "  dt_vencimento BETWEEN {dt_ini:Date} AND {dt_fim:Date}"
+        "  OR (status = 'vencido' AND dt_vencimento <= {dt_fim:Date})"
+        " )"
+    )
+
+
 def finance_titles_overview(
     role: str,
     id_empresa: int,
@@ -2949,42 +2988,14 @@ def finance_titles_overview(
         "dt_ini": dt_ini,
         "dt_fim": dt_fim,
     }
-    # Base: títulos em aberto. Período do menu cobre vencimentos na janela
-    # e também vencidos ainda abertos (até dt_fim), para o grid não ficar
-    # “mudo” quando o KPI de aberto inclui carteira fora do mês filtrado.
+    # Base: títulos em aberto (carteira). Período/preset: ver helper.
     where = (
         "id_empresa = {id_empresa:Int32} "
         "AND tipo_titulo = {tipo:Int8} "
         "AND valor_aberto > 0.01"
         f"{filial}"
     )
-
-    preset = (preset or "").strip().lower()
-    if preset == "vencidos":
-        where += " AND status = 'vencido' AND dt_vencimento <= {dt_fim:Date}"
-    elif preset == "a_vencer_7d":
-        where += (
-            " AND status = 'a_vencer'"
-            " AND dt_vencimento >= today()"
-            " AND dt_vencimento <= today() + 7"
-        )
-    elif preset == "a_vencer_mes":
-        where += (
-            " AND status = 'a_vencer'"
-            " AND dt_vencimento >= today()"
-            " AND dt_vencimento <= toLastDayOfMonth(today())"
-        )
-    elif preset == "a_vencer":
-        where += " AND status = 'a_vencer' AND dt_vencimento >= today()"
-    elif preset:
-        raise ValueError("preset inválido")
-    else:
-        where += (
-            " AND ("
-            "  dt_vencimento BETWEEN {dt_ini:Date} AND {dt_fim:Date}"
-            "  OR (status = 'vencido' AND dt_vencimento <= {dt_fim:Date})"
-            " )"
-        )
+    where += _finance_titles_period_or_preset_sql(preset)
 
     search = (q or "").strip()
     if search:
@@ -3008,13 +3019,15 @@ def finance_titles_overview(
     )
     totals = totals_rows[0] if totals_rows else {}
     offset = (page - 1) * page_size
+    # Exceção ao contrato Data DESC: CAP/CAR prioriza vencimento ASC
+    # (mais urgente primeiro). Filial ASC + nome ASC mantidos.
     rows = query_dict(f"""
         SELECT
           id_filial, tipo_titulo, id_titulo, id_db, id_entidade, entidade_nome,
           nro_documento, dt_lancamento, dt_vencimento, valor, valor_pago, valor_aberto, status
         FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
         WHERE {where}
-        ORDER BY {filial_sort} ASC, dt_vencimento ASC, id_titulo ASC
+        ORDER BY {filial_sort} ASC, dt_vencimento ASC, entidade_nome ASC, id_titulo ASC
         LIMIT {page_size} OFFSET {offset}
     """, parameters=params)
     for row in rows:
@@ -3756,6 +3769,67 @@ def team_fuel_employees_dashboard(
     )
     use_mart = int(mart_count or 0) > 0
 
+    # Contagem de itens combustível (qtd abastecimentos ≠ litros). Sem ALTER na mart.
+    qty_rows = query_dict(
+        f"""
+        WITH
+        docs AS (
+          SELECT id_empresa, id_filial, id_db, id_comprovante
+          FROM {CURRENT_DB}.stg_comprovantes_slim FINAL
+          WHERE id_empresa = {{id_empresa:Int32}}
+            AND data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+            AND is_deleted = 0 AND cancelado = 0 AND commercial_eligible = 1
+            {branch_docs}
+        ),
+        prod AS (
+          SELECT
+            id_empresa,
+            id_produto,
+            argMax(toInt32OrZero(JSONExtractString(payload, 'ID_GRUPOPRODUTOS')), source_ts_ms) AS id_grupo_produto
+          FROM {CURRENT_DB}.stg_produtos FINAL
+          WHERE is_deleted = 0
+          GROUP BY id_empresa, id_produto
+        ),
+        grp AS (
+          SELECT
+            id_empresa,
+            id_grupoprodutos,
+            argMax(nullIf(JSONExtractString(payload, 'NOMEGRUPOPRODUTOS'), ''), source_ts_ms) AS nome_grupo
+          FROM {CURRENT_DB}.stg_grupoprodutos FINAL
+          WHERE is_deleted = 0
+          GROUP BY id_empresa, id_grupoprodutos
+        )
+        SELECT
+          i.id_filial AS id_filial,
+          i.id_funcionario AS id_funcionario,
+          count() AS qtd_abastecimentos
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
+        INNER JOIN docs AS c
+          ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
+         AND c.id_db = i.id_db AND c.id_comprovante = i.id_comprovante
+        LEFT JOIN prod AS p
+          ON p.id_empresa = i.id_empresa AND p.id_produto = i.id_produto
+        LEFT JOIN grp AS g
+          ON g.id_empresa = i.id_empresa
+         AND g.id_grupoprodutos = coalesce(p.id_grupo_produto, i.id_grupo_produto)
+        WHERE i.id_empresa = {{id_empresa:Int32}}
+          AND i.data_key BETWEEN {{ini:Int32}} AND {{fim:Int32}}
+          AND i.is_deleted = 0
+          AND {sales_cfop_filter_sql("i")}
+          AND i.id_funcionario > 0
+          AND {combustivel}
+          {branch_i}
+        GROUP BY id_filial, id_funcionario
+        """,
+        parameters=params,
+    )
+    qty_by_emp: Dict[tuple[int, int], int] = {
+        (int(qr.get("id_filial") or 0), int(qr.get("id_funcionario") or 0)): int(
+            qr.get("qtd_abastecimentos") or 0
+        )
+        for qr in (qty_rows or [])
+    }
+
     if use_mart:
         rows = query_dict(
             f"""
@@ -3822,7 +3896,8 @@ def team_fuel_employees_dashboard(
               i.id_produto AS id_produto,
               coalesce(nullIf(p.nome_produto, ''), 'Combustível') AS nome_produto,
               coalesce(nullIf(g.nome_grupo, ''), '') AS nome_grupo,
-              sum(i.qtd) AS litros
+              sum(i.qtd) AS litros,
+              toUInt32(count()) AS qtd_abastecimentos
             FROM {CURRENT_DB}.stg_itenscomprovantes_slim AS i FINAL
             INNER JOIN docs AS c
               ON c.id_empresa = i.id_empresa AND c.id_filial = i.id_filial
@@ -3883,6 +3958,7 @@ def team_fuel_employees_dashboard(
         litros = float(r.get("litros") or 0)
         if litros <= 0:
             continue
+        qtd_abast = int(r.get("qtd_abastecimentos") or 0)
         bucket = by_filial.setdefault(
             fid,
             {
@@ -3898,6 +3974,7 @@ def team_fuel_employees_dashboard(
                 "id_produto": int(r.get("id_produto") or 0),
                 "combustivel_label": str(r.get("nome_produto") or "Combustível").strip(),
                 "litros": round(litros, 3),
+                "qtd_abastecimentos": qtd_abast,
             }
         )
 
@@ -3915,6 +3992,7 @@ def team_fuel_employees_dashboard(
                     "id_funcionario": eid,
                     "nome": row["funcionario_nome"],
                     "litros": 0.0,
+                    "qtd_abastecimentos": int(qty_by_emp.get((fid, eid), 0)),
                 },
             )
             emp["litros"] = round(emp["litros"] + float(row["litros"]), 3)
@@ -3923,6 +4001,7 @@ def team_fuel_employees_dashboard(
 
         ranking = sorted(emp_totals.values(), key=lambda x: (-x["litros"], x["nome"]))
         total_litros = round(sum(e["litros"] for e in ranking), 3)
+        total_abastecimentos = int(sum(int(e.get("qtd_abastecimentos") or 0) for e in ranking))
         combustiveis = [
             {
                 "label": label,
@@ -3942,6 +4021,7 @@ def team_fuel_employees_dashboard(
                 fuels[lbl] = round(fuels.get(lbl, 0.0) + float(row["litros"]), 3)
             by_employee[str(eid)] = {
                 "total_litros": emp_lit,
+                "qtd_abastecimentos": int(emp_totals[eid].get("qtd_abastecimentos") or 0),
                 "combustiveis": [
                     {
                         "label": lbl,
@@ -3958,6 +4038,7 @@ def team_fuel_employees_dashboard(
                 "filial_label": bucket["filial_label"],
                 "ranking": ranking,
                 "total_litros": total_litros,
+                "total_abastecimentos": total_abastecimentos,
                 "combustiveis": combustiveis,
                 "by_employee": by_employee,
             }

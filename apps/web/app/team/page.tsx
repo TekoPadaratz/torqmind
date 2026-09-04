@@ -46,7 +46,9 @@ export default function TeamPage() {
         </div>
         <div className="bi-grid">
           <TeamFuelDashboard anoMes={anoMes} />
-          <TeamCostSection anoMes={anoMes} hideMonthSelect />
+          <div className="col-12">
+            <TeamCostSection anoMes={anoMes} hideMonthSelect />
+          </div>
         </div>
       </div>
     </div>

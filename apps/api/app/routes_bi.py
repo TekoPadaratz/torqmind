@@ -1939,7 +1939,13 @@ def finance_titles(
     dt_ini: date = Query(...),
     dt_fim: date = Query(...),
     q: Optional[str] = Query(None, max_length=160),
-    preset: Optional[str] = Query(None, description="vencidos | a_vencer_7d | a_vencer_mes | a_vencer"),
+    preset: Optional[str] = Query(
+        None,
+        description=(
+            "Filtro rápido sobre carteira aberta (ignora dt_ini): "
+            "vencidos | a_vencer_7d | a_vencer_mes | a_vencer"
+        ),
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     refresh: bool = Query(False, description="Reservado para publicação operacional; a leitura não consulta STG."),

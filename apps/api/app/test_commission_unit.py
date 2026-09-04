@@ -242,3 +242,27 @@ class TestCommissionCfopExclusion:
         pred = _cfop_sales_predicate_sql("i").replace(" ", "").lower()
         assert "cfop,0)>5000" in pred
         assert "notin(5927,5929,6929)" in pred
+
+
+class TestFrentistaAbastecimentos:
+    def test_media_and_highlight_only_frentistas(self):
+        from app.repos_commission import (
+            annotate_frentista_abastecimentos,
+            is_combustivel_grupo_nome,
+            is_frentista_funcao,
+        )
+
+        assert is_frentista_funcao("Frentista Pista")
+        assert is_combustivel_grupo_nome("COMBUSTIVEIS")
+        assert not is_combustivel_grupo_nome("LUBRIFICANTES")
+        emps = [
+            {"id_funcionario": 1, "qtd_abastecimentos": 10, "funcao": "Frentista"},
+            {"id_funcionario": 2, "qtd_abastecimentos": 4, "funcao": "Frentista"},
+            {"id_funcionario": 3, "qtd_abastecimentos": 0, "funcao": "Caixa"},
+        ]
+        media = annotate_frentista_abastecimentos(emps)
+        assert media == 7.0
+        assert emps[0]["abaixo_media_abastecimentos"] is False
+        assert emps[1]["abaixo_media_abastecimentos"] is True
+        assert emps[2]["is_frentista"] is False
+        assert emps[2]["abaixo_media_abastecimentos"] is False

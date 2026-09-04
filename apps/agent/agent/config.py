@@ -17,7 +17,9 @@ COMMERCIAL_WINDOW_DAYS = 365
 # (batch_delay_seconds) para nao estourar CPU no SQL Server do cliente.
 SOLVENCIA_BOOTSTRAP_DAYS = 560
 DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS = 240
-# Dims com full_refresh=True: no máximo 1 sync completo a cada 30 min (corta wear SSD).
+# Itens (comprovante/mov) podem gravar depois do header; overlap curto deixa
+# órfãos (header no STG sem itens). 6h cobre o atraso típico Xpert→Agent.
+PARENT_CHILD_WATERMARK_OVERLAP_SECONDS = 21600
 DEFAULT_FULL_REFRESH_MIN_INTERVAL_SECONDS = 1800
 FULL_REFRESH_LAST_RUN_KEY = "last_full_refresh_at"
 EVENT_DATE_ALIAS = "TORQMIND_DT_EVENTO"
@@ -238,7 +240,7 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         },
         "retention_days": COMMERCIAL_WINDOW_DAYS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
-        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "watermark_overlap_seconds": PARENT_CHILD_WATERMARK_OVERLAP_SECONDS,
         "query": (
             "SELECT i.*, "
             "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
@@ -294,7 +296,12 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # combustível / custo VLRCUSTOCOMICMS). Parear sempre com movprodutos.
         "retention_days": SOLVENCIA_BOOTSTRAP_DAYS,
         "bootstrap_days": SOLVENCIA_BOOTSTRAP_DAYS,
-        "watermark_overlap_seconds": DEFAULT_TEMPORAL_WATERMARK_OVERLAP_SECONDS,
+        "watermark_overlap_seconds": PARENT_CHILD_WATERMARK_OVERLAP_SECONDS,
+        # Janela recente pelo DATA do header: cobre itens cujo DATAREPL atrasou
+        # após o watermark do filho avançar (órfãos header↔item no estoque).
+        "revisit_open_clause": (
+            "CAST(TORQMIND_DT_EVENTO AS date) >= CAST(DATEADD(day,-14,GETDATE()) AS date)"
+        ),
         "query": (
             "SELECT i.*, "
             "CAST(m.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "

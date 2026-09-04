@@ -57,9 +57,37 @@ type SellerRow = {
   venda_elegivel?: number | null;
   percentual_aplicado?: number | null;
   comissao_estimada?: number | null;
+  qtd_abastecimentos?: number | null;
+  is_frentista?: boolean | null;
+  abaixo_media_abastecimentos?: boolean | null;
   nivel_atingido?: { tier_key?: string; tier_name?: string } | null;
   [key: string]: unknown;
 };
+
+/** Média de Qtd abastecimentos só entre frentistas do grupo (filial). */
+function frentistaAbastecimentosStats(sellers: SellerRow[]): {
+  media: number;
+  belowIds: Set<number>;
+} {
+  const frentistas = sellers.filter((emp) => {
+    if (emp.is_frentista === true) return true;
+    if (emp.is_frentista === false) return false;
+    return Number(emp.qtd_abastecimentos || 0) > 0;
+  });
+  if (frentistas.length === 0) {
+    return { media: 0, belowIds: new Set() };
+  }
+  const media =
+    frentistas.reduce((acc, emp) => acc + Number(emp.qtd_abastecimentos || 0), 0) /
+    frentistas.length;
+  const belowIds = new Set<number>();
+  for (const emp of frentistas) {
+    if (Number(emp.qtd_abastecimentos || 0) < media) {
+      belowIds.add(Number(emp.id_funcionario || 0));
+    }
+  }
+  return { media, belowIds };
+}
 
 function sellerTierKey(emp: SellerRow): string {
   const key = String(emp?.nivel_atingido?.tier_key || "")
@@ -134,11 +162,15 @@ function buildCommissionsReportHtml(opts: {
           const qty = Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
             maximumFractionDigits: 0,
           });
+          const abast = Number(emp.qtd_abastecimentos || 0).toLocaleString("pt-BR", {
+            maximumFractionDigits: 0,
+          });
           if (!includeValues) {
             return `<tr>
             <td>${escapeHtml(emp.nome_vendedor || "—")}</td>
             <td>${escapeHtml(sellerTierLabel(emp))}</td>
             <td class="num">${escapeHtml(qty)}</td>
+            <td class="num">${escapeHtml(abast)}</td>
           </tr>`;
           }
           return `<tr>
@@ -148,6 +180,7 @@ function buildCommissionsReportHtml(opts: {
             <td class="num">${escapeHtml(formatCurrency(emp.venda_elegivel))}</td>
             <td class="num">${escapeHtml(Number(emp.percentual_aplicado || 0).toFixed(2))}%</td>
             <td class="num">${escapeHtml(formatCurrency(emp.comissao_estimada || 0))}</td>
+            <td class="num">${escapeHtml(abast)}</td>
           </tr>`;
         })
         .join("\n");
@@ -157,6 +190,9 @@ function buildCommissionsReportHtml(opts: {
       const vendaTot = formatCurrency(
         g.sellers.reduce((acc, emp) => acc + Number(emp.venda_elegivel || 0), 0),
       );
+      const abastTot = g.sellers
+        .reduce((acc, emp) => acc + Number(emp.qtd_abastecimentos || 0), 0)
+        .toLocaleString("pt-BR", { maximumFractionDigits: 0 });
       const head = includeValues
         ? `<tr>
               <th>Vendedor</th>
@@ -165,11 +201,13 @@ function buildCommissionsReportHtml(opts: {
               <th class="num">Venda elegível</th>
               <th class="num">Percentual</th>
               <th class="num">Comissão</th>
+              <th class="num">Qtd abastecimentos</th>
             </tr>`
         : `<tr>
               <th>Vendedor</th>
               <th>Nível</th>
               <th class="num">Quantidade</th>
+              <th class="num">Qtd abastecimentos</th>
             </tr>`;
       const foot = includeValues
         ? `<tfoot>
@@ -179,9 +217,16 @@ function buildCommissionsReportHtml(opts: {
               <td class="num"><strong>${escapeHtml(vendaTot)}</strong></td>
               <td class="num">—</td>
               <td class="num"><strong>${escapeHtml(formatCurrency(g.total))}</strong></td>
+              <td class="num"><strong>${escapeHtml(abastTot)}</strong></td>
             </tr>
           </tfoot>`
-        : "";
+        : `<tfoot>
+            <tr>
+              <td colspan="2"><strong>Total filial</strong></td>
+              <td class="num"><strong>${escapeHtml(qtyTot)}</strong></td>
+              <td class="num"><strong>${escapeHtml(abastTot)}</strong></td>
+            </tr>
+          </tfoot>`;
       return `<section class="filial">
         <h2>${escapeHtml(g.label)}</h2>
         <table>
@@ -683,7 +728,7 @@ export default function CommissionsTab({
                 </div>
 
                 <div className="tableScroll">
-                  <table className="table compact" style={{ width: "100%", minWidth: 560 }}>
+                  <table className="table compact" style={{ width: "100%", minWidth: 640 }}>
                     <thead>
                       <tr>
                         <th style={{ textAlign: "left" }}>Funcionário</th>
@@ -692,14 +737,30 @@ export default function CommissionsTab({
                         <th style={{ textAlign: "left" }}>Nível</th>
                         <th style={{ textAlign: "right" }}>%</th>
                         <th style={{ textAlign: "right" }}>Comissão</th>
+                        <th style={{ textAlign: "right" }}>Qtd abastecimentos</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {group.sellers.map((emp) => {
+                      {(() => {
+                        const { belowIds } = frentistaAbastecimentosStats(group.sellers);
+                        return group.sellers.map((emp) => {
                         const tierKey = sellerTierKey(emp);
                         const style = TIER_STYLES[tierKey] || TIER_STYLES.none;
+                        const belowAvg = belowIds.has(Number(emp.id_funcionario || 0));
                         return (
-                          <tr key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}>
+                          <tr
+                            key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}
+                            style={
+                              belowAvg
+                                ? { background: "rgba(185, 74, 48, 0.14)" }
+                                : undefined
+                            }
+                            title={
+                              belowAvg
+                                ? "Frentista abaixo da média de abastecimentos da filial"
+                                : undefined
+                            }
+                          >
                             <td style={{ fontWeight: 500, textAlign: "left" }}>
                               {emp.nome_vendedor}
                             </td>
@@ -730,9 +791,15 @@ export default function CommissionsTab({
                             >
                               {formatCurrency(emp.comissao_estimada || 0)}
                             </td>
+                            <td style={numCell}>
+                              {Number(emp.qtd_abastecimentos || 0).toLocaleString("pt-BR", {
+                                maximumFractionDigits: 0,
+                              })}
+                            </td>
                           </tr>
                         );
-                      })}
+                      });
+                      })()}
                     </tbody>
                     <tfoot className="commissionGridFoot">
                       <tr>
@@ -764,6 +831,11 @@ export default function CommissionsTab({
                           }}
                         >
                           {formatCurrency(group.total)}
+                        </td>
+                        <td style={{ ...numCell, fontWeight: 700 }}>
+                          {group.sellers
+                            .reduce((acc, emp) => acc + Number(emp.qtd_abastecimentos || 0), 0)
+                            .toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
                         </td>
                       </tr>
                     </tfoot>
