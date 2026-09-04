@@ -14,11 +14,13 @@ globs: ["**/permissions.py", "**/platform/users/**", "**/screen-permissions*", "
 
 ## Obrigatório em feature nova com aba/painel
 
-1. Registrar no `SCREEN_REGISTRY` com `parent`.
-2. Endpoint: `Depends(require_screen("menu.painel"))`.
-3. FE: filtrar aba com `canAccessScreenKey(claims, "menu.painel")`.
-4. Cadastro de usuário: árvore via `GET /platform/screen-registry` (sem lista hard-coded incompleta).
-5. Desmarcar menu limpa todos os painéis; marcar menu marca todos.
+1. Registrar no `SCREEN_REGISTRY` com `parent` (menu) ou sem `parent` (menu raiz).
+2. Endpoint: `Depends(require_screen("menu.painel"))` ou `require_screen("menu")`.
+3. FE: `PRODUCT_LINKS` + `PRODUCT_NAV_GROUPS` em `product-scope.mjs` (filhos em **ordem alfabética** por label).
+4. Fallback: `screen-permissions.ts` → `FALLBACK_SCREEN_TREE`.
+5. Cadastro: árvore via `GET /platform/screen-registry`.
+6. **Default de acesso:** novas telas sensíveis/platform usam `master_only_default: true` — só `platform_master` (Teko/master) vem marcado por padrão; `tenant_admin`/owner precisam checkbox explícito.
+7. Pacote comercial: incluir em `_MODULE_TIER_*` quando couber.
 
 ## Legado
 
