@@ -94,7 +94,19 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: npm audit runtime (critical)
-        run: npm audit --omit=dev --audit-level=critical
+        # Fail only on real critical vulns. npm registry sometimes returns
+        # 400 "Invalid package tree" / endpoint errors (flake) — non-blocking.
+        run: |
+          set +e
+          output="$(npm audit --omit=dev --audit-level=critical 2>&1)"
+          code=$?
+          printf '%s\n' "$output"
+          if printf '%s\n' "$output" | grep -Eqi \
+            'audit endpoint returned an error|Invalid package tree|EAI_AGAIN|ETIMEDOUT|ENOTFOUND|502 Bad Gateway|503 Service Unavailable|400 Bad Request'; then
+            echo "::warning::npm audit registry unavailable or rejected package tree; treating as non-blocking"
+            exit 0
+          fi
+          exit "$code"
 
   validate:
     runs-on: ubuntu-latest
