@@ -1,5 +1,9 @@
 # Functional Audit
 
+> Historical document — this file represents the system state at the time it was produced (2026-03-10).
+> For current architecture and operational rules, follow AGENTS.md, CODEX_TORQMIND_MAP.md and applicable `.cursor/rules/`.
+> Em particular: hot path BI atual é ClickHouse-first; não use as colunas “Fonte” abaixo como lei de arquitetura atual.
+
 Data de auditoria: 2026-03-10
 
 ## Implementado e funcionando

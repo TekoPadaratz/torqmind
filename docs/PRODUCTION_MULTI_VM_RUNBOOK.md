@@ -80,7 +80,7 @@ TORQMIND_PG_PRIVATE_IP=<pg-private-ip>
 TORQMIND_ANALYTICS_PRIVATE_IP=<analytics-private-ip>
 TORQMIND_APP_PRIVATE_IP=<app-private-ip>
 TORQMIND_REPO_DIR=/home/deploy/apps/torqmind
-TORQMIND_BRANCH=nova-branch-limpa
+TORQMIND_BRANCH=master
 TORQMIND_ENV_DIR=/etc/torqmind
 TORQMIND_REPO_URL=<git-url>
 ```

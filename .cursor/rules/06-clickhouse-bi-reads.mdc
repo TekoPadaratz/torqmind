@@ -41,8 +41,12 @@ Leitura EXCLUSIVA de marts ClickHouse:
 5. Front só chama o endpoint — zero SQL no browser
 6. Prova: latência do GET quente; query CH com `id_empresa` (+ filial)
 
-## Exceções permitidas (não são BI analítico)
+## Exceções permitidas (não proíbem PostgreSQL em todo lugar)
 
+Esta regra governa o **hot path de leitura BI** consumido pelo frontend.
+Não proíbe PostgreSQL para ETL, mash, publish, OLTP ou dívidas **explicitamente registradas**.
+
+Exceções válidas:
 - Auth, ACL, branding, configs OLTP (`app.*`)
 - Insights gerados / notificações / writes OLTP (`_POSTGRES_OWNED_FUNCTIONS`)
 - Dívidas analíticas **registradas** em `apps/api/app/analytics_pg_exceptions.json` (CI bloqueia nova exceção)

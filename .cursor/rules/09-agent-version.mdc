@@ -1,7 +1,11 @@
 ---
 description: Versionamento obrigatório do TorqMind Agent Windows (.exe)
-globs: apps/agent/**,agent_build/**,scripts/publish_agent_release.py,docs/agent_runbook.md
-alwaysApply: true
+globs:
+  - "apps/agent/**"
+  - "agent_build/**"
+  - "scripts/publish_agent_release.py"
+  - "docs/agent_runbook.md"
+alwaysApply: false
 ---
 
 # Agent Windows — versão obrigatória

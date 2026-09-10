@@ -6,6 +6,10 @@
 -- PURPOSE: Step-by-step instructions for Phase 3 implementation
 -- CREATED: 2026-04-28
 --
+-- Historical document — system state at the time produced.
+-- Current architecture/ops: AGENTS.md, CODEX_TORQMIND_MAP.md, .cursor/rules/
+-- Do NOT execute the Week 1–6 checklist below as current production procedure.
+--
 -- ============================================================================
 
 ## FASE 3 CHECKLIST & TIMELINE

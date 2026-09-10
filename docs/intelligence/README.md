@@ -3,6 +3,14 @@
 Versão do catálogo: `1.0.0`  
 Branch de entrega: `codex/torqmind-intelligence-deterministic-ptbr-2026-08-27`
 
+## Terminologia (não misturar)
+
+| Nome | Estado | O que é |
+|---|---|---|
+| **TorqMind Intelligence** | **Atual** | Assistente determinístico (sem LLM) no produto |
+| **Jarvis** | **Atual (opcional)** | `/bi/jarvis/*` + `services/jarvis_ai.py` — OpenAI quando configurado, com fallback local |
+| Capacidades agentic futuras | **Planejado** | Não confundir com Intelligence/Jarvis atuais |
+
 ## O que é
 
 Bolha conversacional no produto autenticado. Responde perguntas de negócio em português brasileiro **sem LLM**: parser, sinônimos, tools tipadas, playbooks e templates.

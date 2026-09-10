@@ -1,5 +1,8 @@
 # TorqMind Diagnostics Report (Fase 0)
 
+> Historical document — this file represents the system state at the time it was produced.
+> For current architecture and operational rules, follow AGENTS.md, CODEX_TORQMIND_MAP.md and applicable `.cursor/rules/`.
+
 Data: 2026-03-03
 Ambiente: Docker local (`TORQMIND`)
 

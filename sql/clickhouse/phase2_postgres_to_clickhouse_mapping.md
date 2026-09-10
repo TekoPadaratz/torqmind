@@ -2,6 +2,10 @@
 -- FASE 2 REFERENCE: PostgreSQL MV → ClickHouse MV → repos_mart.py Function Mapping
 -- ============================================================================
 --
+-- Historical document — mapping as designed at production time of this file.
+-- Current BI hot path: AGENTS.md / CODEX_TORQMIND_MAP.md / .cursor/rules/06-clickhouse-bi-reads.mdc
+-- Do NOT treat Postgres mart.* + repos_mart as the default dashboard read path today.
+--
 -- Este documento mapeia:
 --   1. Cada Postgres MV no schema mart (fonte original)
 --   2. Sua tradução ClickHouse em torqmind_mart

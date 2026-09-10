@@ -22,7 +22,7 @@ Exemplos corretos:
 WHERE id_empresa = :id_empresa AND id_filial = :id_filial
 
 -- ❌ CRIME — nunca faça isso
-SELECT * FROM mart.agg_vendas_diaria;
+SELECT * FROM torqmind_mart_rt.sales_daily_rt;
 ```
 
 ```python
@@ -33,25 +33,29 @@ SELECT * FROM mart.agg_vendas_diaria;
 .all()  # sem filtro de tenant
 ```
 
-## ⛔ CRIME #2 — Ler fatos no Dashboard
+## ⛔ CRIME #2 — Hot path BI lento / fonte errada
 
-O Dashboard Geral e endpoints de overview NUNCA leem de `dw.fact_*`.
-Leitura EXCLUSIVA de Materialized Views: `mart.*`
+O Dashboard Geral e endpoints de overview **NUNCA** leem `dw.fact_*` nem usam `mart.*` PostgreSQL como resposta silenciosa da API de BI.
+
+Leitura analítica canônica: ClickHouse (`torqmind_mart_rt` / `torqmind_mart`) via `repos_analytics` / `repos_mart_realtime`.
+Exceções PG analíticas só se registradas em `apps/api/app/analytics_pg_exceptions.json`.
+Contrato: `.cursor/rules/06-clickhouse-bi-reads.mdc`.
 
 ```python
-# ✅ Correto — lê da mart
-SELECT * FROM mart.agg_vendas_diaria WHERE id_empresa = :id_empresa
+# ✅ Correto — facade BI / mart realtime CH (com id_empresa)
+# repos_analytics → REALTIME_FUNCTIONS / torqmind_mart_rt.*
 
-# ❌ CRIME — causa 3 minutos de lentidão
+# ❌ CRIME — fato no hot path da tela
 SELECT * FROM dw.fact_venda WHERE id_empresa = :id_empresa
 ```
 
 ## ⛔ CRIME #3 — Assumer nomes de colunas
 
-A fonte da verdade são as migrations SQL (até a 061+).
+A fonte da verdade são as migrations SQL (`sql/migrations/MANIFEST.json` + arquivos).
 Nunca assuma nomes. Sempre verifique.
 
-Exemplo crítico: o valor em `fact_venda` chama-se `total_vendas`, não `valor`, não `amount`.
+Exemplo crítico: em `dw.fact_venda` o valor chama-se `total_venda` (singular), não `valor`, não `amount`.
+Agregados/marts podem expor `total_vendas` (plural) — não misturar camadas.
 
 ## ⛔ CRIME #4 — Motor de Risco sem tratamento
 

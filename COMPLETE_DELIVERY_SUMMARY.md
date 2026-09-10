@@ -4,6 +4,9 @@ date: "2026-04-28"
 status: "READY FOR PRODUCTION"
 ---
 
+> Historical document — this file represents the system state at the time it was produced.
+> For current architecture and operational rules, follow AGENTS.md, CODEX_TORQMIND_MAP.md and applicable `.cursor/rules/`.
+
 # 🎯 EXECUTIVE SUMMARY: Complete ClickHouse Migration (Phase 1-3)
 
 ## PROJECT OVERVIEW

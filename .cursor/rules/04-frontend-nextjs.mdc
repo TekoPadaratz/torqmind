@@ -8,23 +8,36 @@ alwaysApply: false
 
 # 🖥️ Frontend — Next.js 14 + TypeScript
 
-## Módulos do Dashboard
+## Rotas de produto (evidência atual em `apps/web/app/**/page.tsx`)
 
 ```
-/dashboard/geral        → KPIs executivos — lê mart.agg_vendas_diaria
-/dashboard/vendas       → Análise de vendas por produto/filial
-/dashboard/risco        → Antifraude e eventos de risco
-/dashboard/financeiro   → DRE simplificado, margem, custo
-/dashboard/clientes     → Churn, RFM, retenção
-/dashboard/caixa        → Fluxo de caixa e conciliação
-/backoffice             → Platform admin (empresas, filiais, usuários)
+/dashboard              → Dashboard geral / home operacional
+/sales                  → Vendas (overview; ABC em /sales/abc)
+/fraud                  → Antifraude / risco
+/finance                → Financeiro
+/profit-management      → Gestão de lucro
+/product-management     → Gestão de produto
+/customers              → Clientes / churn / RFM
+/cash                   → Caixa
+/inventory              → Inventário
+/fuel-loss              → Perda de combustível
+/pricing                → Preço concorrente
+/goals                  → Metas
+/team                   → Equipe
+/platform               → Backoffice platform (empresas, usuários, contratos, …)
+/security               → Segurança / sessão
+/tv                     → Modo TV (/tv/sales-hourly, /tv/sales-ranking)
 ```
+
+Não inventar rotas. Confirmar em `apps/web/app/**/page.tsx` e `permissions.py` (`SCREEN_REGISTRY` / deep links).
 
 ## Regras de Dados no Frontend
 
-- NUNCA chame endpoints que leem `dw.fact_*` diretamente
-- Sempre use os endpoints de `mart.*` para dashboards
-- Dados do "dia de hoje" vêm da mart — não crie workarounds
+- Front **só** chama endpoints da API — zero SQL no browser
+- Hot path BI = ClickHouse via API (`repos_analytics` / realtime). Ver `06-clickhouse-bi-reads.mdc`
+- NUNCA depender de endpoints que leem `dw.fact_*` no hot path
+- Não reintroduzir “overlay ao vivo” em fatos para o dia corrente
+- Exceções PG analíticas são dívida registrada no backend — não contornar no FE
 
 ## Padrões de Componente
 
@@ -48,7 +61,9 @@ if (error) return <ErrorState message={error.message} />
 - Hooks customizados com prefixo `use`
 - Server Components quando possível (Next.js 14)
 - Client Components apenas quando necessário (interatividade, hooks de estado)
-- Tailwind CSS para estilização — sem CSS modules ou styled-components
+- Seguir tokens/tema TorqMind existentes (`theme.tsx`, `globals.css`) — não inventar design system paralelo
+- Grids: `.cursor/rules/08-grids-colunas-ordenacao.mdc` + `GridSearchInput` / `useGridSearch`
+- Documento na UI = NF-e/NFC-e — `.cursor/rules/07-documento-nota-fiscal.mdc`
 
 ## Copy na UI (cliente final)
 

@@ -1,8 +1,8 @@
 # TorqMind — Mapa Mestre de Continuidade
 
-Atualizado em: **2026-08-14 — America/Sao_Paulo**
+Atualizado em: **2026-09-10 — America/Sao_Paulo** (consolidação de contexto; topologia e hot path revalidados)
 
-Revisão de código usada: **branch `cursor/torqmind-hardening-2026-08-3837` sobre `master` @ `944f9cc`**
+Revisão de base histórica: **hardening 2026-08-14** (`cursor/torqmind-hardening-2026-08-3837` sobre `master` @ `944f9cc`)
 
 Estado do documento: **fonte canônica de contexto técnico e operacional**
 
@@ -173,12 +173,10 @@ Inventário rastreado na revisão:
 ### Agent Windows
 
 - Código: `apps/agent`.
-- Versão canônica: `apps/agent/agent/__init__.py`.
-- Versão no código e no canal de releases: `2.0.5`.
-- Publicado em `/var/torqmind/agent-releases` em 2026-08-14T16:53:02Z.
-- SHA-256: `261b930ef09f96ff4230f65df689434416a3011e012ff998a43311eb1ae3119c`.
-- Tamanho: `11390800` bytes. URL: `https://www.torqmind.com.br/api/agent/update/download/2.0.5`.
-- `mandatory=false`, `min_version=2.0.0`. Prova: manifest + download autenticado com mesmo SHA.
+- Versão canônica: `apps/agent/agent/__init__.py` → `__version__` (ler o arquivo; não assumir número deste mapa).
+- Versão no código (2026-09-10): `2.0.11`.
+- Snapshot publicado em 2026-08-14: `2.0.5` em `/var/torqmind/agent-releases` (SHA-256 `261b930ef09f96ff4230f65df689434416a3011e012ff998a43311eb1ae3119c`; URL `/api/agent/update/download/2.0.5`). Revalidar manifest/release atual antes de declarar o binário em produção.
+- `mandatory=false`, `min_version=2.0.0` (valores do snapshot 2026-08-14; confirmar no canal vivo).
 - 44 datasets configurados: 40 habilitados e 4 desabilitados por padrão.
 - Desabilitados: `filiais`, `clientes`, `localvendas`, `financeiro`.
 - `movprodutos` e `itensmovprodutos` permanecem habilitados para estoque.

@@ -1,3 +1,8 @@
+-- ============================================================================
+-- Historical design snapshot - do NOT apply blindly to Hom/Prod analytics.
+-- Current architecture: AGENTS.md / CODEX_TORQMIND_MAP.md / .cursor/rules/06-clickhouse-bi-reads.mdc
+-- ============================================================================
+
 --   CREATE MATERIALIZED VIEW mv_<nome> TO torqmind_mart.<tabela_destino> AS
 --   SELECT ... FROM torqmind_dw.fact_* ...
 --

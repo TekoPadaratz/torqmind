@@ -2,6 +2,9 @@
 -- FASE 2: EXECUTION SUMMARY & ARCHITECTURAL DECISIONS
 -- ============================================================================
 --
+-- Historical document — system state / design snapshot at the time produced.
+-- Current architecture/ops: AGENTS.md, CODEX_TORQMIND_MAP.md, .cursor/rules/
+--
 -- PROJECT: TorqMind BI Analytics Layer Modernization
 -- PHASE: 2 - ClickHouse Materialized Views Design & Implementation
 -- STATUS: Complete (DDL Design + Mapping + Architecture)

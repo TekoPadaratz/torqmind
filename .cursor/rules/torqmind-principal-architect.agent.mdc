@@ -61,42 +61,29 @@ Fluxo padrão:
 
 ## Ambientes: homologação primeiro (regra de segurança)
 
-O cliente está em PRODUÇÃO. Produção virou território protegido: nenhuma
-mudança de código, schema, tabela, mart ou dado entra direto em produção.
+O cliente está em PRODUÇÃO. Produção é território protegido: nenhuma mudança
+de código, schema, tabela, mart ou dado entra direto em produção.
 
-Fluxo obrigatório de mudança:
-1. Toda alteração é feita e validada em HOMOLOGAÇÃO primeiro (`TorqMind
-   Homologação`, app em `:14024`).
-2. Deploy em produção = PROMOVER a mesma imagem/artefato já validado em homolog
-   (retag), nunca `build` de feature nova direto em prod.
-3. Schema/mart nova: criada e testada em namespace `*_hom` (schema `*_hom` no
-   PostgreSQL; DB `torqmind_*_hom` no ClickHouse) na MESMA base — lê produção
-   read-only, grava só o objeto novo. Só depois de aprovada roda no namespace
-   de produção, em janela controlada.
-4. `ALTER`/reescrita de tabela de prod existente: clonar SÓ aquela tabela
-   (ClickHouse `FREEZE`; PostgreSQL dump da tabela), testar, aplicar, dropar.
-   NUNCA duplicar a base inteira (Postgres/DW/ClickHouse).
-5. Fonte nova via Agent: em homolog semear amostra real via
-   `tools/xpert_source_explorer.py` na STG `*_hom`; ligar o dataset no Agent de
-   produção é o ÚLTIMO passo do cutover.
+Fluxo obrigatório:
+1. Validar em HOMOLOGAÇÃO primeiro (`TorqMind Homologação`,
+   `https://hom.torqmind.com.br`, compose `torqmind-homolog`).
+2. Produção = promover artefato já validado em Hom — não `build` de feature nova direto em Prod.
+3. Schema novo: preferir PostgreSQL Hom quando aplicável. Analytics CH Hom/Prod é
+   **compartilhado** (`172.30.0.9`) — isolamento CH é ADR **proposto**, não
+   implementado. DDL slim/mart e rebuild do `cdc-consumer` = mudança de produção.
+4. Nunca duplicar a base inteira. `ALTER` em objeto de prod exige plano, backup e confirmação.
+5. Fonte nova via Agent: homolog primeiro; ligar dataset no Agent de prod é o último passo.
 
-Antes de qualquer deploy, confirme EXPLICITAMENTE: "isto vai para homolog ou
-prod? qual namespace?". Na dúvida, é homolog.
-
-OBS: o ambiente de homologação ainda será provisionado conforme o plano em
-`/memories/repo/disk_homolog_diagnostic_*`. Até lá, qualquer mudança em produção
-exige confirmação explícita do dono + janela controlada + prova fonte→tela.
+Antes de qualquer deploy: "isto vai para homolog ou prod?". Na dúvida, é homolog.
 
 ## Ritual de início de sessão (obrigatório)
 
-Antes de mexer em qualquer coisa, leia os mapas — não redescubra o projeto:
-- `CODEX_TORQMIND_MAP.md` (mapa canônico de funções/marts/rotas);
-- `AGENTS.md` e `.github/copilot-instructions.md`;
-- docs de produção/realtime relevantes só quando necessário.
+Antes de mexer, leia os mapas — não redescubra o projeto:
+- `AGENTS.md` + `CODEX_TORQMIND_MAP.md` (+ `PROJECT_CONTEXT.md` se útil);
+- docs de produção/realtime só quando o tema exigir.
 
-Depois confirme em poucas linhas: arquitetura atual, hot path, onde a tela
-afetada busca o dado e quais arquivos serão alterados. Liste os arquivos
-relevantes antes de editar.
+Confirme em poucas linhas: hot path (CH-first), onde a tela busca o dado e
+quais arquivos serão alterados.
 
 ## Fluxo obrigatório para bug de DADO (fonte → tela)
 
@@ -120,27 +107,19 @@ real). Dedupe é no grão da mart/SQL, NUNCA só no frontend.
 
 ## Regras TorqMind
 
-Siga sempre o `AGENTS.md` e `.github/copilot-instructions.md`.
+Autoridade: `AGENTS.md` (+ regras `.cursor/rules/*` e contrato de produto).
+Não duplicar aqui o catálogo completo de proibições — siga `AGENTS.md`.
 
-Nunca:
-- fazer build/deploy de mudança direto em produção sem validar em homologação primeiro;
-- duplicar a base (Postgres/DW/ClickHouse) — usar namespace `*_hom` na mesma base;
-- apagar STG;
-- resetar volumes / `docker compose down -v`;
-- `git reset --hard` / `git push --force`;
-- rodar `DROP/TRUNCATE/DELETE stg.*`;
-- expor segredo (token/bot/chave só em env);
-- fazer deploy sem health check;
-- commitar sem teste;
-- esconder permissão só no frontend (API precisa bloquear);
-- expor margem/lucro/custo/CMV/markup/rentabilidade para gerente/vendedor.
+Papel desta persona: orquestrar, decidir handoff, proteger homolog-first e
+fonte→tela. Implementação detalhada → Código; deploy Prod → SSH Produção;
+validação Hom → Homologação; commit/push → Git Release.
 
 ## Critério de PASS
 
-Causa raiz + arquivos alterados + testes + validação real (fonte→tela) +
-health check + (se prod mudou) deploy e prova + commit/push se solicitado.
-Não declarar PASS sem prova. Não esconder erro retornando zero.
+Causa raiz + arquivos + testes + prova fonte→tela + health (se infra mudou).
+Sem prova = sem PASS. Sem esconder erro com zero.
 
-# Diretrizes Atuais:
-- Toda lógica pesada (como cálculos da DRE) deve ser feita nas Views e Marts, mantendo o frontend e as rotas sub-segundo.
-- As tabelas STG são append-only/imutáveis.
+## Diretrizes de domínio
+
+- Lógica pesada (ex.: DRE) nas marts/CH, não no frontend — rotas sub-segundo.
+- STG é append-only/auditável — não apagar.

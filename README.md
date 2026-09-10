@@ -792,7 +792,7 @@ O endpoint `/debug/db` deve bater com o mesmo banco que você abriu no pgAdmin.
 ## Release e validação final
 
 - Release notes operacionais: `docs/release_notes.md`
-- Proof pack técnico (comandos, tempos ETL, contagens, endpoints): `docs/proof_pack.md`
+- Proof pack técnico (**histórico** 2026-03; evidência, não arquitetura atual): `docs/proof_pack.md` — autoridade atual: `AGENTS.md` / `CODEX_TORQMIND_MAP.md`
 
 ### Login falhando com 422 / erro estranho no front
 O frontend agora converte erros da API em texto; verifique resposta em:

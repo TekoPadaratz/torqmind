@@ -1,32 +1,70 @@
 # ⚙️ Configuração do Cursor para o TorqMind
 
-## Estrutura dos Arquivos
+## Estrutura real dos arquivos
 
 ```
 torqmind/
 ├── .cursor/
 │   └── rules/
-│       ├── 00-torqmind-global.mdc     → Contexto global, identidade e fluxo de entrega
-│       ├── 01-security-tenancy.mdc    → Regras de ouro: multi-tenant e segurança
-│       ├── 02-etl-database.mdc        → Pipeline ETL e PostgreSQL
-│       ├── 03-backend-fastapi.mdc     → Backend FastAPI
-│       └── 04-frontend-nextjs.mdc     → Frontend Next.js
-├── .cursorignore                      → Exclui node_modules, builds, dados, segredos
-└── PROJECT_CONTEXT.md                 → Contexto vivo do projeto (lido pelo Agent)
+│       ├── 00-torqmind-global.mdc              → alwaysApply — identidade, entrega, proteções
+│       ├── 01-security-tenancy.mdc             → alwaysApply — multi-tenant / dados / ACL
+│       ├── 02-etl-database.mdc                 → glob (ETL/SQL/repos) — PG + pipeline + CH cutover
+│       ├── 03-backend-fastapi.mdc              → glob apps/api — FastAPI
+│       ├── 04-frontend-nextjs.mdc              → glob apps/web — Next.js
+│       ├── 05-economia-tokens.mdc              → alwaysApply — resposta enxuta
+│       ├── 06-clickhouse-bi-reads.mdc          → alwaysApply — hot path BI = ClickHouse
+│       ├── 06-acl-painel-tipografia.mdc        → glob ACL/painéis — menu + aba
+│       ├── 07-documento-nota-fiscal.mdc        → glob web/api/sql — DOCUMENTO = NF
+│       ├── 08-grids-colunas-ordenacao.mdc      → alwaysApply — contrato de grids
+│       ├── 09-agent-version.mdc                → glob agent/build — bump __version__
+│       ├── 10-docker-isolation.mdc             → alwaysApply — compose seguro
+│       ├── 11-migrations-safety.mdc            → glob migrations — sem reset destrutivo
+│       ├── torqmind-principal-architect.agent.mdc
+│       ├── torqmind-codigo.agent.mdc
+│       ├── torqmind-ssh-producao.agent.mdc
+│       ├── torqmind-homologacao.agent.mdc
+│       └── torqmind-git-release.agent.mdc
+├── .cursorignore
+├── AGENTS.md                                   → autoridade operacional #1
+├── CODEX_TORQMIND_MAP.md                       → mapa técnico vivo #2
+├── PROJECT_CONTEXT.md                          → contexto resumido do Agent
+└── docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md
 ```
+
+**Não existe** `.cursor/agents/` nem `.github/agents/` neste repositório.
+As personas atuais são os arquivos `*.agent.mdc` em `.cursor/rules/`.
+
+## Tipos de regra
+
+| Tipo | Comportamento |
+|---|---|
+| `alwaysApply: true` | Injeta em toda sessão Cursor |
+| `alwaysApply: false` + `globs` | Aplica quando arquivos casam o glob |
+| `*.agent.mdc` | Persona (papel, escopo, limites de decisão) — não duplicar a arquitetura inteira |
+
+alwaysApply atuais (revisar periodicamente): `00`, `01`, `05`, `06-clickhouse`, `08`, `10`.
+Regras sensíveis a escopo: `02`, `03`, `04`, `06-acl`, `07`, `09`, `11`, personas.
+
+## Ambiente / fontes de verdade
+
+1. `AGENTS.md` — segurança, dados, deploy, PASS  
+2. `CODEX_TORQMIND_MAP.md` — mapa técnico  
+3. `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` — contrato UI/produto  
+4. `.cursor/rules/*.mdc` — execução focada  
+5. Docs de domínio / ops / intelligence  
+6. ADRs  
+7. `PHASE3_*` / `COMPLETE_DELIVERY_*` — evidência histórica, não lei atual  
+
+Não criar outro “master context” paralelo a esses.
 
 ## Instalação
 
-1. Copie a pasta `.cursor/` para a raiz do seu monorepo TorqMind
-2. Copie `.cursorignore` para a raiz do monorepo
-3. Copie `PROJECT_CONTEXT.md` para a raiz do monorepo
-4. Abra o Cursor e vá em **Settings → Rules** (User Rules)
+1. Checkout canônico: `/home/tm/torqmind` (ou clone com `.cursor/` na raiz)
+2. Confirme `.cursorignore` na raiz
+3. Confirme `PROJECT_CONTEXT.md`, `AGENTS.md`, `CODEX_TORQMIND_MAP.md`
+4. Opcional — User Rules (Settings → Rules) para preferências pessoais, sem contradizer `AGENTS.md`
 
----
-
-## Configuração de User Rules (Settings → Rules)
-
-Cole isso no campo de User Rules do Cursor (aplica a TODOS os projetos seus):
+## User Rules sugeridas (pessoais)
 
 ```
 Sempre responda em português brasileiro.
@@ -36,53 +74,55 @@ Prefira diffs cirúrgicos a rewrites completos.
 Ao terminar uma tarefa, liste: arquivos alterados, o que mudou, riscos remanescentes.
 ```
 
----
+## Personas (Cursor)
 
-## Como Usar o Cursor no TorqMind
+| Persona | Arquivo | Uso |
+|---|---|---|
+| Principal Architect | `torqmind-principal-architect.agent.mdc` | Orquestração, plano, handoff |
+| Código | `torqmind-codigo.agent.mdc` | Implementação API/Web/SQL/testes |
+| SSH Produção | `torqmind-ssh-producao.agent.mdc` | Deploy/diagnóstico produção |
+| Homologação | `torqmind-homologacao.agent.mdc` | Validar em Hom antes de Prod |
+| Git/Release | `torqmind-git-release.agent.mdc` | Branch, commit, push |
 
-### Agent Mode (⌘. ou Ctrl+.)
-Use para tarefas que envolvem múltiplos arquivos:
-- "Adiciona endpoint de overview de vendas respeitando multi-tenant"
-- "Cria migration para nova coluna em dw.fact_venda"
-- "Refatora o ETL da track operational para ser mais eficiente"
+Não criar personas novas sem decisão explícita. Não migrar para `.cursor/agents/` nesta fase.
 
-O Agent vai automaticamente ler as regras e o PROJECT_CONTEXT.md.
+## Como usar
 
-### Composer (⌘K ou Ctrl+K)
-Use para edições inline em arquivo único:
-- Refatorar uma função específica
-- Corrigir um bug pontual
-- Adicionar tipagem Pydantic
+### Agent Mode
+Tarefas multi-arquivo; as rules alwaysApply + globs relevantes entram automaticamente.
+
+### Composer / edição inline
+Arquivo único; globs do path aberto tendem a aplicar.
 
 ### @-references úteis
 ```
-@PROJECT_CONTEXT.md        → força o Agent a ler o contexto do projeto
-@sql/migrations/           → referencia as migrations para checar schema
-@apps/api/etl_orchestrator.py  → referencia o orquestrador ETL
-```
-
----
-
-## Modelo Recomendado
-
-No Cursor, selecione **Claude Sonnet 4.6** para tarefas do dia a dia.
-Para decisões arquiteturais complexas ou refatorações grandes, use **Claude Opus 4.6**.
-
----
-
-## Dica: Prompt de Inicialização de Sessão
-
-Ao começar uma nova sessão de trabalho no Agent, use este prompt:
-
-```
+@AGENTS.md
+@CODEX_TORQMIND_MAP.md
 @PROJECT_CONTEXT.md
-
-Leia o contexto do projeto e confirme que entendeu:
-1. A arquitetura de schemas (stg → dw → mart)
-2. A regra de nunca ler dw.fact_* nos dashboards
-3. O isolamento multi-tenant obrigatório
-
-Quando estiver pronto, me diga o que está no seu contexto ativo.
+@sql/migrations/
+@apps/api/app/repos_analytics.py
 ```
 
-Isso garante que o Agent não vai inventar nomes de colunas ou quebrar as regras de ouro.
+## Prompt de início de sessão
+
+```
+@AGENTS.md @CODEX_TORQMIND_MAP.md @PROJECT_CONTEXT.md
+
+Confirme em poucas linhas:
+1. Hot path BI = ClickHouse (exceções PG só se registradas)
+2. Isolamento multi-tenant (id_empresa / id_filial)
+3. Homolog e Prod compartilham analytics em 172.30.0.9
+4. Quais arquivos você vai tocar
+
+Quando estiver pronto, diga o contexto ativo.
+```
+
+## MCP
+
+Não há `.cursor/mcp.json` neste repositório. MCP pode ser introduzido depois, só com ferramentas de domínio controladas — nunca acesso irrestrito a banco.
+
+## Copilot (VS Code)
+
+Instruções: `.github/copilot-instructions.md`.  
+Prompts: `.github/prompts/*.prompt.md`.  
+**Não** há pack `.github/agents/*.agent.md` — personas vivem no Cursor (`.cursor/rules/*.agent.mdc`).

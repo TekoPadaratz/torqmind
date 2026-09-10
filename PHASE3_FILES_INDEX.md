@@ -1,5 +1,8 @@
 # 📑 PHASE 3 IMPLEMENTATION FILES - COMPLETE INDEX
 
+> Historical document — this file represents the system state at the time it was produced.
+> For current architecture and operational rules, follow AGENTS.md, CODEX_TORQMIND_MAP.md and applicable `.cursor/rules/`.
+
 **Status**: ✅ **READY FOR DEPLOYMENT**  
 **Date**: 2026-04-28  
 **Total Files Created/Updated**: 9

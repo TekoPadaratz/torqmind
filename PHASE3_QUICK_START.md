@@ -4,6 +4,10 @@
 # PHASE 3: QUICK START CHECKLIST
 # ============================================================================
 #
+# Historical document — system state at production time of this file.
+# Current architecture/ops: AGENTS.md, CODEX_TORQMIND_MAP.md, .cursor/rules/
+# Do NOT treat “Week 1 checklist” below as current deployment instructions.
+#
 # Purpose: Day-by-day implementation checklist for Week 1
 # How to use: Follow each section in order, checking off as you complete
 #

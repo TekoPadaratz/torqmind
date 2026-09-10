@@ -8,14 +8,27 @@ Markdown
 [cite_start]Projeto estruturado como um Monorepo[cite: 5]:
 - **Frontend (`apps/web`)**: Next.js 14 + TypeScript. [cite_start]Possui dashboards operacionais, de vendas, antifraude, financeiro, metas e backoffice[cite: 5, 7].
 - **Backend (`apps/api`)**: FastAPI + Pydantic + JWT. [cite_start]Expõe autenticação, ingestão NDJSON, ETL e endpoints de BI[cite: 5, 6].
-- [cite_start]**Dados (`sql/migrations`)**: PostgreSQL schema + ETL + DW + MARTs/materialized views[cite: 5].
-- [cite_start]**Infra (`deploy`)**: Docker Compose, scripts de produção e nginx (Ubuntu 24.04 alvo)[cite: 5].
+- **Dados**: PostgreSQL (`sql/migrations` — OLTP/STG/DW/mash) + ClickHouse (`sql/clickhouse` — leitura BI).
+- **Streaming**: Debezium + Redpanda + `apps/cdc_consumer`.
+- [cite_start]**Infra (`deploy`)**: Docker Compose multi-VM, scripts de produção e nginx[cite: 5].
 
-## 3. Modelo de Dados e Pipeline (ETL)
-[cite_start]Os dados chegam via ingest NDJSON da origem operacional[cite: 8]. [cite_start]O fluxo ETL é crítico, roda continuamente e precisa ser eficiente, lidando com cargas novas durante a janela de execução[cite: 21, 22].
-- [cite_start]`stg.*` = landing/raw (dados brutos) [cite: 9]
-- [cite_start]`dw.*` = dimensões e fatos consolidados [cite: 9]
-- [cite_start]`mart.*` = views e materialized views para dashboards [cite: 9]
+## 3. Modelo de Dados e Pipeline
+
+**Estado atual (hot path BI):** ClickHouse-first.
+
+```
+stg/dw (PG) → CDC/ETL/publish → torqmind_mart_rt / torqmind_mart (CH) → API → Web
+```
+
+- `stg.*` = landing/raw (dados brutos)
+- `dw.*` = dimensões e fatos consolidados (mash ETL)
+- `mart.*` (PostgreSQL) = staging de mash / publicação / legado — **não** é a fonte padrão de resposta dos dashboards
+- ClickHouse `torqmind_mart_rt` / `torqmind_mart` = leitura analítica canônica da API para o frontend
+- Exceções PG analíticas: só se registradas em `apps/api/app/analytics_pg_exceptions.json`
+
+Autoridade: `AGENTS.md`, `CODEX_TORQMIND_MAP.md`, `.cursor/rules/06-clickhouse-bi-reads.mdc`.
+
+> **Histórico:** menções a “dashboard lê exclusivamente `mart.agg_*` PG” (ex.: incidente 2026-04 na seção 8) descrevem a correção que eliminou `dw.fact_*` do overlay. Isso **não** é o hot path atual após o cutover realtime ClickHouse.
 
 ## 4. Regras de Ouro (Multi-tenant e Segurança)
 - **Isolamento Absoluto:** O sistema é multi-tenant. [cite_start]Use `id_empresa` e, frequentemente, `id_filial` como chaves de escopo obrigatórias em todas as queries e lógicas[cite: 9]. [cite_start]Nunca vaze dados entre tenants[cite: 11].
@@ -58,13 +71,16 @@ Markdown
 - **Watermark:** `etl.set_watermark(empresa,'risk_events', now())` ao final.
 - **Call-sites:** `apps/api/app/routes_etl.py` (micro_risk), `apps/api/app/services/etl_orchestrator.py` (cycle), `apps/api/app/test_release_hardening.py`.
 
-## 8. Histórico de Incidentes
+## 8. Histórico de Incidentes (evidência — não lei de arquitetura atual)
+
+> As entradas desta seção são **históricas**. O hot path BI atual é ClickHouse (`repos_mart_realtime` / `torqmind_mart_rt`), não “ler só `mart.agg_*` PostgreSQL”.
+
 - **2026-04 — Risk_v2 broken:** v2 inicial (migration 059) inseria `FUNCIONARIO_OUTLIER` com todos os IDs NULL → `*_nk` colapsavam para `(-1,-1,-1)` → violação de `uq_fact_risco_evento_nk` quando havia mais de 1 outlier no dia/filial. Adicionalmente, fazia 3 scans em `fact_comprovante`. **Resolvido em migration 062** (IDs sintéticos + CTE base materializada).
 - **Confusão `total_venda` vs `total_vendas`:** o campo real em `dw.fact_venda` é `total_venda` (singular). Views `mart.*` (ex.: `mart.fato_caixa_diario`) podem expor o agregado como `total_vendas` (plural). A função `compute_risk_events_v2` **NÃO usa `fact_venda`** — opera apenas em `fact_comprovante.valor_total`.
 - **2026-04-27 a 2026-05-05 — `fact_estoque_atual` ausente:** o pipeline `etl-operational` falhava no step 14 com `function etl.load_fact_estoque_atual(smallint) does not exist`. **Resolvido na migration 074**, que cria `stg.estoque`, `dw.fact_estoque_atual`, `etl.load_fact_estoque_atual` e `mart.agg_estoque_posicao_atual`, reativando o step de estoque no orchestrator e no teste de ordem.
-- **2026-04-29 — Dashboard Geral stale + lentidão (3min/1dia):** Duas fases de correção:
+- **2026-04-29 — Dashboard Geral stale + lentidão (3min/1dia):** Duas fases de correção **na época**:
   - **Fase 1 — ETL:** track `etl-operational` não invocava `etl.refresh_marts`. Resolvido alterando `_track_runs_publication` para incluir `TRACK_OPERATIONAL`. Flag `publication_deferred` congelada em `False`.
-  - **Fase 2 — Eliminação de `dw.fact_*` do Dashboard:** `dashboard_home_bundle`, `dashboard_kpis`, `dashboard_series` e `sales_overview_bundle` usavam overlay "dia ao vivo" que escaneava `dw.fact_venda` + `dw.fact_venda_item` via `_sales_window_fact_cte` / `sales_operational_day_bundle`. Com marts frescas a cada 5 min, esse overlay é desnecessário e era a causa dos 3 min de carga. **Removido inteiramente.** Dashboard agora lê **exclusivamente** de `mart.agg_vendas_diaria`, `mart.agg_vendas_hora`, `mart.agg_produtos_diaria`, `mart.agg_grupos_diaria`, `mart.agg_funcionarios_diaria`. Freshness metadata mudou: `source = "mart.agg_vendas_diaria"`, `reading_status = "mart_snapshot"`. Testes unitários e de integração atualizados. `sales_operational_range_bundle` e `sales_operational_day_bundle` permanecem no código mas **não são mais invocados** por Dashboard Geral nem Tela de Vendas (via `sales_overview_bundle`).
+  - **Fase 2 — Eliminação de `dw.fact_*` do Dashboard:** remoção do overlay “dia ao vivo” que escaneava `dw.fact_*`. Naquele momento o dashboard passou a ler agregados `mart.agg_*` PG. **Depois** veio o cutover ClickHouse-first: a leitura canônica de dashboard/overview é CH via `repos_analytics` / `repos_mart_realtime` (ver seção 3 e `AGENTS.md`). Não reintroduzir fatos no hot path.
 
 ## 9. ETL — Mapa de Steps Operacionais (PHASE_SQL_STEPS)
 Localização: `apps/api/app/services/etl_orchestrator.py` (~linha 74). Steps executados sequencialmente em `_run_tenant_phase` para a track operacional. `step_count` é dinâmico: `len(PHASE_SQL_STEPS) + int(track_runs_risk)`.
@@ -88,7 +104,10 @@ Localização: `apps/api/app/services/etl_orchestrator.py` (~linha 74). Steps ex
 | risk | risk_events (track risk) | `etl.compute_risk_events_v2` (migration 062) |
 
 ## 10. Política de Refresh por Track (`etl_orchestrator._track_runs_publication`)
-Após 2026-04-29 (incidente Dashboard Geral):
+
+> **Contexto histórico (pós 2026-04-29).** No cutover ClickHouse-first atual, `etl.refresh_marts` PG legado pode estar desligado; freshness da tela vem de publish/CDC CH. Validar flags e `mart_publication_log` — não assumir que MV PG está fresca só porque a track rodou.
+
+Após 2026-04-29 (incidente Dashboard Geral), o mapa de tracks era:
 
 | Track | Per-tenant phase | Fast-path post-refresh | Global `etl.refresh_marts` |
 |---|---|---|---|
@@ -98,4 +117,4 @@ Após 2026-04-29 (incidente Dashboard Geral):
 
 - `_track_runs_publication(track)` retorna `True` para `{OPERATIONAL, RISK, FULL}`.
 - A flag `publication_deferred` (item `meta`) está congelada em `False` no novo regime — chave preservada apenas para compatibilidade do schema do summary.
-- Cron `prod-etl-operational.sh` (a cada 5 min) agora mantém todas as marts gerais frescas. `prod-etl-risk.sh` segue responsável por `agg_risco_diaria` + custos pesados (RFM/churn/health_score) que rodam dentro de `etl.refresh_marts` mas só são tocados quando o `aggregated_meta` indica trabalho relevante.
+- Cron `prod-etl-operational.sh` / tracks acima são o mapa **histórico** de refresh PG. No cutover atual, validar publish CH / `mart_publication_log` e flags realtime — não assumir que `etl.refresh_marts` PG alimenta a tela.

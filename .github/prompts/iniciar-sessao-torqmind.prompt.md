@@ -27,7 +27,7 @@ redescobrir o projeto (economia de tokens) e não quebrar padrão.
 - Env de produção: `/etc/torqmind/prod.app.env`
   (`set -a; source /etc/torqmind/prod.app.env; set +a`).
 - SQL Server Xpert disponível via `tools/xpert_source_explorer.py`.
-- URL pública: `http://redevr.ddns.me:14023` (e `/api`).
+- URL pública canônica: `https://www.torqmind.com.br` (NAT legado de diagnóstico: `http://redevr.ddns.me:14023`).
 
 ## 4. Disciplina
 

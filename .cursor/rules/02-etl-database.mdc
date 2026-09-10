@@ -1,5 +1,5 @@
 ---
-description: Regras do pipeline ETL e arquitetura PostgreSQL do TorqMind
+description: Regras do pipeline ETL e arquitetura PostgreSQL + cutover ClickHouse
 globs:
   - "apps/api/etl_orchestrator.py"
   - "apps/api/*etl*.py"
@@ -8,96 +8,92 @@ globs:
 alwaysApply: false
 ---
 
-# 🗄️ Pipeline ETL e PostgreSQL
+# 🗄️ Pipeline ETL, PostgreSQL e publicação analítica
 
-## Arquitetura dos Schemas (Os 4 Schemas Sagrados)
+## Schemas PostgreSQL (responsabilidades)
 
 ```
-stg.*   → Landing/Raw — dados chegam aqui via ingestão NDJSON
-dw.*    → Fatos e Dimensões consolidadas
+stg.*   → Landing/raw — ingestão NDJSON / Agent
+dw.*    → Fatos e dimensões consolidadas (mash ETL)
             ex: dw.fact_venda, dw.fact_comprovante
-mart.*  → Materialized Views para leitura real-time
-            ex: mart.agg_vendas_diaria
-etl.*   → Controle, logs e funções PL/pgSQL
+mart.*  → Mash/staging / materialized views PG para publish e legado
+            (NÃO é o hot path silencioso do dashboard — ver abaixo)
+etl.*   → Controle, logs, watermarks e funções PL/pgSQL
+app.* / auth.* → OLTP (não é ETL analítico)
 ```
 
-## Fluxo de Dados (canônico produção)
+## Hot path BI vs responsabilidades de armazenamento
+
+| Camada | Pode existir? | Serve dashboard? |
+|---|---|---|
+| ClickHouse `torqmind_mart_rt` / `torqmind_mart` | Sim — canônico | **Sim** (hot path) |
+| PG `mart.*` | Sim — mash/publish/legado | Só se **exceção registrada** |
+| PG `dw.*` / `stg.*` | Sim — ETL/audit | **Não** no hot path da tela |
+
+Contrato de leitura da API para o frontend: `.cursor/rules/06-clickhouse-bi-reads.mdc`.
+Não repetir aqui o checklist completo — siga a regra 06.
+
+## Fluxo de dados (canônico produção)
 
 ```
 [Origem Operacional]
       ↓ NDJSON / Agent
   stg.* (raw PG)
       ↓ ETL incremental
-  dw.* / mash PG
+  dw.* / mash PG  (+ mart.* PG como staging de publicação quando aplicável)
       ↓ Debezium CDC + publish scripts
   ClickHouse torqmind_current / torqmind_mart_rt / torqmind_mart
       ↓
-  API BI / Front  ←  ÚNICA fonte de leitura analítica
+  API BI / Front  ←  fonte de leitura analítica
 ```
-
-`mart.*` PostgreSQL é staging de mash / legado — **não** é fonte do dashboard.
-Ver regra sempre-aplicada `06-clickhouse-bi-reads.mdc`.
 
 ## Regras do ETL
 
 - O ETL é **incremental** — nunca reprocesse tudo sem necessidade
 - O arquivo central é `etl_orchestrator.py` — não quebre sua interface
-- A track `operational` faz REFRESH MATERIALIZED VIEW automaticamente ao final de cada ciclo
+- A track `operational` pode acionar refresh/publish ao final do ciclo; no cutover atual, `etl.refresh_marts` PG legado pode estar desligado — valide freshness, não presuma
 - O cron de produção precisa terminar rápido — sem operações que travem por horas
 - Cargas novas podem chegar DURANTE a janela do ETL — o pipeline deve ser robusto a isso
 - Filiais administráveis via backoffice: o ETL jamais reverte mudanças administrativas
 
-## Realtime / cutover ClickHouse-first (estado atual de produção)
+## Realtime / cutover ClickHouse-first (produção)
 
-- Produção roda `USE_REALTIME_MARTS=true`, `USE_CLICKHOUSE=true`,
-  `REALTIME_MARTS_FALLBACK=false`. O hot path analítico é
-  `repos_mart_realtime` (lê `torqmind_current` / `torqmind_mart_rt`).
-- A facade `repos_analytics` decide o backend por função
-  (`REALTIME_FUNCTIONS`). Se uma função realtime tem grão/contrato errado,
-  o bug aparece SÓ em produção (testes locais batem no PostgreSQL).
-- `etl.refresh_marts` (publicação legada PG) está DESLIGADO no cutover
-  (`_legacy_pg_marts_enabled()` = false). Marts PG só são atualizadas se a
-  função tiver REFRESH próprio no fast-path operacional. Não assuma que uma
-  materialized view PG está fresca só porque existe.
-- Ao escrever/auditar uma leitura realtime de ClickHouse:
-  - confira o GRÃO da tabela antes de fazer JOIN (ex.:
-    `torqmind_mart_rt.mart_clientes_resumo` é por empresa/filial/cliente —
-    JOIN só por `id_cliente` multiplica linhas pelo nº de filiais);
-  - saldo de recebível subtrai baixas reais
-    (`stg_contasreceberbaixa`), não só `VALOR - VLRPAGO`;
-  - prefira uma mart PG reconciliada (rápida, indexada, com grão correto) a
-    uma query pesada por requisição no endpoint.
-- Dedupe é responsabilidade do grão da mart/SQL. NUNCA deduplicar no frontend.
+- Produção: `USE_REALTIME_MARTS=true`, `USE_CLICKHOUSE=true`, `REALTIME_MARTS_FALLBACK=false`.
+- Hot path: `repos_mart_realtime` (lê `torqmind_current` / `torqmind_mart_rt`).
+- Facade `repos_analytics` decide o backend por função (`REALTIME_FUNCTIONS`).
+- Bug de grão/contrato realtime aparece em produção mesmo com testes locais batendo no PG.
+- Ao escrever/auditar leitura realtime CH:
+  - confira o GRÃO antes do JOIN;
+  - saldo de recebível subtrai baixas reais (`stg_contasreceberbaixa`);
+  - dedupe é no grão da mart/SQL — nunca só no frontend.
 
 ## Migrations
 
 - Idempotentes e seguras (`CREATE OR REPLACE`, `IF NOT EXISTS`, `ON CONFLICT`).
-- Sequenciais `NNN_descricao.sql`. Montadas em `./sql/migrations:/app/sql/migrations:ro`.
-- Aplicar via `make migrate` / `deploy/scripts/prod-migrate.sh`. Se o runner
-  travar numa migration legada já aplicada, aplicar a nova via `psql -f` e
-  registrar em `app.schema_migrations(filename, checksum=sha256, execution_kind)`.
-
+- Sequenciais `NNN_descricao.sql`. Inventário: `sql/migrations/MANIFEST.json`.
+- Montadas em `./sql/migrations:/app/sql/migrations:ro`.
+- Aplicar via `make migrate` / `deploy/scripts/prod-migrate.sh`. Ver também `11-migrations-safety.mdc`.
 
 ## Performance SQL
 
-- Prefira queries O(1) ou O(N) — evite N+1 absolutamente
-- Use índices nas colunas de filtro de tenant (`id_empresa`, `id_filial`)
-- Materialized views com índices nos campos de join e filtro
+- Prefira queries O(1) ou O(N) — evite N+1
+- Índices em filtros de tenant (`id_empresa`, `id_filial`)
 - NEVER faça SELECT * em tabelas de fatos em produção
 - Use EXPLAIN ANALYZE antes de commitar queries novas em tabelas grandes
 
 ## Nomenclatura
 
-- Tabelas de fato: `dw.fact_<entidade>` (ex: `dw.fact_venda`)
-- Dimensões: `dw.dim_<entidade>` (ex: `dw.dim_produto`)
-- Agregados: `mart.agg_<descricao>` (ex: `mart.agg_vendas_diaria`)
-- Migrations: sequenciais com prefixo numérico `NNN_descricao.sql`
+- Fatos: `dw.fact_<entidade>` (ex: `dw.fact_venda` → coluna `total_venda`)
+- Dimensões: `dw.dim_<entidade>`
+- Agregados PG (mash/legado): `mart.agg_<descricao>`
+- Marts CH: `torqmind_mart_rt.*` / `torqmind_mart.*`
+- Migrations: `NNN_descricao.sql`
 
-## Comandos Operacionais
+## Comandos Operacionais (local)
 
 ```bash
-make migrate          # aplica migrations pendentes
-make test             # roda suite de testes
-make lint             # linting completo
-make etl-incremental  # roda ciclo ETL incremental
+make migrate
+make test
+make lint
+make etl-incremental
 ```

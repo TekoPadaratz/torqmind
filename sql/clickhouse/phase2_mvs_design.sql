@@ -1,6 +1,8 @@
 -- ============================================================================
 -- FASE 2: ClickHouse Materialized Views - Analytics Intelligence Layer
 -- ============================================================================
+-- Historical design snapshot - do NOT apply blindly to Hom/Prod.
+-- Current architecture: AGENTS.md / CODEX_TORQMIND_MAP.md / .cursor/rules/06-clickhouse-bi-reads.mdc
 -- 
 -- OBJETIVO: Migrar 25 MVs do PostgreSQL para ClickHouse, eliminando:
 --   1. Latência de REFRESH manual (cron a cada 5 min)

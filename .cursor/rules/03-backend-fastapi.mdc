@@ -21,7 +21,7 @@ alwaysApply: false
 # ✅ Sempre tipar com Pydantic
 class VendaResponse(BaseModel):
     id_empresa: int
-    total_vendas: Decimal  # nome correto — não use "valor" ou "amount"
+    total_vendas: Decimal  # campo de resposta/agregado; em dw.fact_venda a coluna é total_venda
     data_referencia: date
 
 # ✅ Sempre validar escopo no início do endpoint
@@ -36,7 +36,7 @@ async def get_vendas_overview(
 
 ## Regras de Endpoint
 
-- Endpoints de overview/dashboard → leem EXCLUSIVAMENTE de `mart.*`
+- Endpoints de overview/dashboard → hot path ClickHouse via `repos_analytics` / `repos_mart_realtime` (ver `06-clickhouse-bi-reads.mdc`); PG `mart.*` só se exceção registrada
 - Endpoints de backoffice platform → contexto de permissão DIFERENTE dos endpoints de tenant
 - Toda ingestão NDJSON deve ser idempotente
 - Respostas de erro devem ter estrutura consistente com código HTTP correto

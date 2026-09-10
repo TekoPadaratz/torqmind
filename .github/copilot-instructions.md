@@ -65,9 +65,9 @@ find . -type f -name "*.pyc" -delete
 
 ## Deploy
 
-Produção: App/API/Web/Nginx `172.30.0.10`; PostgreSQL/STG/DW `172.30.0.8`; Analytics/ClickHouse/CDC `172.30.0.9`; URL `http://redevr.ddns.me:14023`.
+Produção: App/API/Web/Nginx `172.30.0.10`; PostgreSQL/STG/DW `172.30.0.8`; Analytics/ClickHouse/CDC `172.30.0.9`; URL canônica `https://www.torqmind.com.br` (NAT legado `http://redevr.ddns.me:14023`).
 
-Não fazer deploy sem health check.
+Personas Cursor: `.cursor/rules/*.agent.mdc`. Não há `.github/agents/`.
 
 ## Relatório
 
