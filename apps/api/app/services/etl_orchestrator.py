@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from app.config import settings
-from app.db import get_conn
+from app.db import db_purpose, get_conn
 from app.services.telegram import send_telegram_alert
 
 TRACK_OPERATIONAL = "operational"
@@ -212,7 +212,7 @@ def list_target_tenants(tenant_id: int | None = None) -> list[dict[str, Any]]:
     else:
         where = "WHERE is_active = true AND nome NOT ILIKE %s"
         params = [ETL_PLACEHOLDER_TENANT_NAME_LIKE]
-    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None, purpose="etl") as conn:
         rows = conn.execute(
             f"""
             SELECT id_empresa, nome, status, is_active
@@ -296,7 +296,7 @@ def run_incremental_cycle(
     fail_fast_abort_reason: str | None = None
     cycle_started = time.perf_counter()
 
-    with get_conn(role=db_role, tenant_id=db_tenant_scope, branch_id=None) as conn:
+    with db_purpose("etl"), get_conn(role=db_role, tenant_id=db_tenant_scope, branch_id=None) as conn:
         _apply_runtime_scope(
             conn,
             ref_date=ref_date,

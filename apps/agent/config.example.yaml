@@ -48,12 +48,22 @@ sqlserver:
 
 api:
   # Public base URL. The agent auto-detects the real API root behind nginx (/api).
+  # LAN HTTP (ex.: http://172.30.0.10) permanece permitido por padrão (allow_insecure_http).
+  # HTTPS público: https://www.torqmind.com.br — tls_verify=true (default).
   base_url: http://177.70.206.90:14023
   route_prefix: auto
   # Production key expected by the published API. It must be a valid UUID.
   ingest_key: "CHANGE_ME_UUID"
   # Legacy/dev fallback only. The published production endpoint still requires X-Ingest-Key.
   empresa_id: 1
+  tls_verify: true
+  allow_insecure_http: true
+  require_https: false
+  allow_foreign_download: false
+  update_max_download_bytes: 83886080
+  # update_secure_mode: false   # true só após instalar trust store offline (Ed25519)
+  # update_trust_store_path: "C:\\TorqMind\\update_trust\\keys.json"
+  # Nunca distribuir HMAC global aos postos; HMAC é legado incompleto fora do modo seguro.
 
 id_empresa: 1
 id_db: 1

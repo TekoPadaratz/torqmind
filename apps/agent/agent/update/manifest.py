@@ -25,6 +25,15 @@ class ReleaseManifest:
     released_at: Optional[str] = None
     min_version: Optional[str] = None
     mandatory: bool = False
+    product: str = "torqmind-agent"
+    channel: str = "stable"
+    key_id: Optional[str] = None
+    valid_not_before: Optional[str] = None
+    valid_not_after: Optional[str] = None
+    # Authenticity: Ed25519 is the real verifier in secure mode.
+    # HMAC is legacy-only and never a silent substitute under update_secure_mode.
+    signature_ed25519: Optional[str] = None
+    signature_hmac_sha256: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ReleaseManifest":
@@ -37,6 +46,8 @@ class ReleaseManifest:
             size = int(data.get("size") or 0)
         except (TypeError, ValueError) as exc:
             raise ValueError("manifest size must be int") from exc
+        sig_hmac = data.get("signature_hmac_sha256")
+        sig_ed = data.get("signature_ed25519")
         return cls(
             version=version,
             sha256=sha256,
@@ -45,6 +56,17 @@ class ReleaseManifest:
             released_at=(str(data["released_at"]) if data.get("released_at") else None),
             min_version=(str(data["min_version"]).strip() if data.get("min_version") else None),
             mandatory=bool(data.get("mandatory", False)),
+            product=str(data.get("product") or "torqmind-agent").strip() or "torqmind-agent",
+            channel=str(data.get("channel") or "stable").strip() or "stable",
+            key_id=(str(data["key_id"]).strip() if data.get("key_id") else None),
+            valid_not_before=(
+                str(data["valid_not_before"]).strip() if data.get("valid_not_before") else None
+            ),
+            valid_not_after=(
+                str(data["valid_not_after"]).strip() if data.get("valid_not_after") else None
+            ),
+            signature_ed25519=(str(sig_ed).strip() if sig_ed else None),
+            signature_hmac_sha256=(str(sig_hmac).strip() if sig_hmac else None),
         )
 
 

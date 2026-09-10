@@ -4,8 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import AppNav from "../components/AppNav";
-import { setAuthToken } from "../lib/api";
-import { getToken } from "../lib/auth";
 import { buildUserLabel } from "../lib/format";
 import { useEnsureScopedProductUrl } from "../lib/scope";
 import { loadSession } from "../lib/session";
@@ -23,8 +21,6 @@ export default function TeamPage() {
   const [anoMes, setAnoMes] = useState<number>(() => currentAnoMesSP());
 
   useEffect(() => {
-    const t = getToken();
-    if (t) setAuthToken(t);
     loadSession(router, "product").then((me) => {
       if (me) setClaims(me);
     });

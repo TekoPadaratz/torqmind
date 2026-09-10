@@ -1,0 +1,18 @@
+-- ClickHouse users (TEMPLATE for clickhouse-client / HTTP). Not applied.
+-- Passwords via ops secret injection only.
+-- Do not demote the existing shared privileged user until dual-run soak.
+
+-- BI read (API)
+-- CREATE USER torqmind_ch_read IDENTIFIED WITH sha256_password BY 'REPLACE_ME_CH_READ';
+-- GRANT SELECT ON torqmind_mart.* TO torqmind_ch_read;
+-- GRANT SELECT ON torqmind_mart_rt.* TO torqmind_ch_read;
+
+-- CDC / publish write
+-- CREATE USER torqmind_ch_write IDENTIFIED WITH sha256_password BY 'REPLACE_ME_CH_WRITE';
+-- GRANT SELECT, INSERT, ALTER, CREATE, DROP ON torqmind_raw.* TO torqmind_ch_write;
+-- GRANT SELECT, INSERT, ALTER, CREATE, DROP ON torqmind_current.* TO torqmind_ch_write;
+-- GRANT SELECT, INSERT, ALTER ON torqmind_ops.* TO torqmind_ch_write;
+-- GRANT SELECT, INSERT, ALTER ON torqmind_mart_rt.* TO torqmind_ch_write;
+-- GRANT SELECT, INSERT, ALTER ON torqmind_mart.* TO torqmind_ch_write;
+
+-- Homolog twins: suffix _hom and separate passwords; Hom app must not use Prod CH write user.

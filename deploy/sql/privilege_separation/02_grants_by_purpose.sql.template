@@ -1,0 +1,46 @@
+-- Grants mínimos por papel (TEMPLATE). Ajustar ownership real antes de aplicar.
+-- Não revoga privilégios de `torqmind` neste script.
+
+BEGIN;
+
+GRANT CONNECT ON DATABASE CURRENT_DATABASE TO torqmind_api, torqmind_ingest, torqmind_etl, torqmind_auth, torqmind_migrate;
+GRANT USAGE ON SCHEMA app, auth, stg, dw, mart, etl TO torqmind_migrate;
+
+-- API: app + auth session reads/writes típicos
+GRANT USAGE ON SCHEMA app, auth TO torqmind_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO torqmind_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA auth TO torqmind_api;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app TO torqmind_api;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA auth TO torqmind_api;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO torqmind_api;
+ALTER DEFAULT PRIVILEGES IN SCHEMA auth GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO torqmind_api;
+
+-- Auth-focused (pode coincidir com API no início; separe DSN depois)
+GRANT USAGE ON SCHEMA auth, app TO torqmind_auth;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA auth TO torqmind_auth;
+GRANT SELECT ON app.tenants TO torqmind_auth;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA auth TO torqmind_auth;
+
+-- Ingest: STG only
+GRANT USAGE ON SCHEMA stg TO torqmind_ingest;
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA stg TO torqmind_ingest;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA stg TO torqmind_ingest;
+ALTER DEFAULT PRIVILEGES IN SCHEMA stg GRANT SELECT, INSERT, UPDATE ON TABLES TO torqmind_ingest;
+
+-- ETL: read STG, write DW/mart/etl
+GRANT USAGE ON SCHEMA stg, dw, mart, etl, app TO torqmind_etl;
+GRANT SELECT ON ALL TABLES IN SCHEMA stg TO torqmind_etl;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA dw TO torqmind_etl;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA mart TO torqmind_etl;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA etl TO torqmind_etl;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO torqmind_etl;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA etl TO torqmind_etl;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA dw, mart, etl TO torqmind_etl;
+
+-- Migrator: broad DDL within managed schemas (still not SUPERUSER)
+GRANT ALL ON SCHEMA app, auth, stg, dw, mart, etl TO torqmind_migrate;
+GRANT ALL ON ALL TABLES IN SCHEMA app, auth, stg, dw, mart, etl TO torqmind_migrate;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA app, auth, stg, dw, mart, etl TO torqmind_migrate;
+GRANT ALL ON ALL FUNCTIONS IN SCHEMA app, auth, stg, dw, mart, etl TO torqmind_migrate;
+
+COMMIT;

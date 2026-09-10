@@ -1,3 +1,16 @@
+"""Windows DPAPI secret store for Agent config (machine-scope).
+
+``CRYPTPROTECT_LOCAL_MACHINE`` binds ciphertext to the Windows machine, not the
+interactive user. Compatible with WinSW LocalSystem services: the same machine
+account that wrote ``config.enc`` can read it after reboot.
+
+Do **not** change the Windows service account by assumption — a User-scope
+re-encrypt would orphan existing ``config.enc`` and break spool recovery.
+
+Spool / dead-letter live as plaintext files under ``runtime.spool_dir`` with
+payload SHA-256 in sidecar meta. Hardening here is operational (ACLs on the
+agent directory), not silent deletion or format break of existing queues.
+"""
 from __future__ import annotations
 
 import json

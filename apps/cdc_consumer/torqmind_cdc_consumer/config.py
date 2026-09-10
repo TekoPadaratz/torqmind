@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     clickhouse_raw_db: str = "torqmind_raw"
     clickhouse_current_db: str = "torqmind_current"
     clickhouse_ops_db: str = "torqmind_ops"
+    # TLS (clickhouse-connect). Default off until analytics HTTPS + CA are ready.
+    clickhouse_secure: bool = False
+    clickhouse_verify: bool = True
+    clickhouse_ca_cert: str = ""
+    clickhouse_server_host_name: str = ""
 
     # Operational
     log_level: str = "INFO"

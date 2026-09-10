@@ -32,7 +32,7 @@ from app.permissions import (
     ROLE_DEFAULT_SCREENS,
     user_can_view_sensitive_financials,
 )
-from app.security import verify_password
+from app.security import hash_password, verify_password, verify_password_detailed
 from app.usernames import (
     identifier_looks_like_email,
     is_valid_username,
@@ -76,6 +76,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
               valid_from,
               valid_until,
               must_change_password,
+              password_changed_at,
               last_login_at,
               failed_login_count,
               locked_until,
@@ -107,6 +108,7 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
               valid_from,
               valid_until,
               must_change_password,
+              password_changed_at,
               last_login_at,
               failed_login_count,
               locked_until,
@@ -143,6 +145,7 @@ def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
               valid_from,
               valid_until,
               must_change_password,
+              password_changed_at,
               last_login_at,
               failed_login_count,
               locked_until,
@@ -679,6 +682,36 @@ def _record_successful_login(user_id: str) -> None:
         conn.commit()
 
 
+def _force_must_change_password(user_id: str) -> None:
+    """Force authenticated password change without rewriting the hash."""
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        conn.execute(
+            """
+            UPDATE auth.users
+            SET must_change_password = TRUE,
+                updated_at = now()
+            WHERE id = %s::uuid
+            """,
+            (user_id,),
+        )
+        conn.commit()
+
+
+def _upgrade_password_hash(user_id: str, new_hash: str) -> None:
+    """In-place hash upgrade after a successful unambiguous verify (no credential reset)."""
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        conn.execute(
+            """
+            UPDATE auth.users
+            SET password_hash = %s,
+                updated_at = now()
+            WHERE id = %s::uuid
+            """,
+            (new_hash, user_id),
+        )
+        conn.commit()
+
+
 def _user_now() -> tuple[date, datetime]:
     now = datetime.now(timezone.utc)
     return now.date(), now
@@ -1064,6 +1097,7 @@ def _build_session_context(
         "id_filial": selected_branch_id,
         "channel_id": selected_channel_id,
         "must_change_password": bool(user.get("must_change_password")),
+        "password_changed_at": user.get("password_changed_at"),
         "last_login_at": user.get("last_login_at"),
         "tenant_status": selected.get("tenant_status"),
         "messages": warnings,
@@ -1114,18 +1148,31 @@ def verify_login(
         verify_password(password, DUMMY_PASSWORD_HASH)  # constant time
         raise AuthError(423, "user_locked", "Usuário temporariamente bloqueado.")
 
-    if not verify_password(password, user["password_hash"]):
+    check = verify_password_detailed(password, user["password_hash"])
+    if not check.ok:
         _record_failed_login(str(user["id"]))
         raise AuthError(401, "invalid_credentials", "Credenciais inválidas.")
 
+    user_id = str(user["id"])
+    if check.ambiguous_bcrypt_long:
+        # Distinct suffixes beyond 72 bytes collide under bcrypt — do not rehash.
+        _force_must_change_password(user_id)
+        user["must_change_password"] = True
+    elif check.upgradeable_to_argon2:
+        try:
+            _upgrade_password_hash(user_id, hash_password(password))
+        except Exception:
+            # Login still succeeds on the verified legacy hash.
+            pass
+
     session = _build_session_context(
         user,
-        access_rows=_list_user_access_rows(str(user["id"])),
+        access_rows=_list_user_access_rows(user_id),
         preferred_tenant_id=id_empresa,
         preferred_branch_id=id_filial,
         include_default_scope=include_default_scope,
     )
-    _record_successful_login(str(user["id"]))
+    _record_successful_login(user_id)
     session["last_login_at"] = datetime.now(timezone.utc)
     return session
 

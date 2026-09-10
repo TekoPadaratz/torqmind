@@ -10,7 +10,10 @@ import httpx
 
 from app.config import settings
 from app.db import get_conn
+from app.scope import branch_scope_as_ids
 from app.services.telegram import send_telegram_alert
+
+BranchScope = Optional[int | List[int]]
 
 
 def _estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
@@ -182,15 +185,48 @@ def _call_openai_structured(insight: Dict[str, Any], model: str) -> tuple[Dict[s
     raise RuntimeError("OpenAI call failed after retries")
 
 
+def _normalize_branch_scope(id_filial: BranchScope) -> List[int]:
+    """Filiais autorizadas para Jarvis. Vazio = negar (nunca omitir filtro)."""
+    return branch_scope_as_ids(id_filial)
+
+
+def _branch_sql_clause(column: str, branch_ids: List[int]) -> tuple[str, List[Any]]:
+    if not branch_ids:
+        return "AND 1 = 0", []
+    if len(branch_ids) == 1:
+        return f"AND {column} = %s", [branch_ids[0]]
+    return f"AND {column} = ANY(%s)", [branch_ids]
+
+
+def _conn_branch_id(branch_ids: List[int]) -> Optional[int]:
+    return branch_ids[0] if len(branch_ids) == 1 else None
+
+
+def _empty_generation_stats(requested: int) -> Dict[str, Any]:
+    return {
+        "requested": requested,
+        "candidates": 0,
+        "processed": 0,
+        "cache_hits": 0,
+        "openai_calls": 0,
+        "fallback_used": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "scope_denied": True,
+    }
+
+
 def _candidate_insights(
     role: str,
     id_empresa: int,
-    id_filial: Optional[int],
+    id_filial: BranchScope,
     dt_ref: date,
     limit: int,
 ) -> List[Dict[str, Any]]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params: List[Any] = [id_empresa, dt_ref] + ([] if id_filial is None else [id_filial]) + [limit]
+    branch_ids = _normalize_branch_scope(id_filial)
+    where_filial, branch_params = _branch_sql_clause("id_filial", branch_ids)
+    params: List[Any] = [id_empresa, dt_ref] + branch_params + [limit]
 
     sql = f"""
       SELECT
@@ -218,7 +254,7 @@ def _candidate_insights(
       LIMIT %s
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(branch_ids)) as conn:
         return list(conn.execute(sql, params).fetchall())
 
 
@@ -246,13 +282,15 @@ def _read_cache(
     insight_hash: str,
     model: str,
 ) -> Optional[Dict[str, Any]]:
-    where_filial = "id_filial IS NULL" if id_filial is None else "id_filial = %s"
-    params = [id_empresa] + ([] if id_filial is None else [id_filial]) + [insight_hash, model]
-    sql = f"""
+    # Cache é por insight/filial concreta — nunca usar IS NULL como “qualquer filial”.
+    if id_filial is None:
+        return None
+    params = [id_empresa, int(id_filial), insight_hash, model]
+    sql = """
       SELECT response_json, prompt_tokens, completion_tokens, estimated_cost_usd, source, error
       FROM app.insight_ai_cache
       WHERE id_empresa = %s
-        AND {where_filial}
+        AND id_filial = %s
         AND insight_hash = %s
         AND model = %s
       ORDER BY created_at DESC
@@ -274,6 +312,9 @@ def _write_cache(
     source: str,
     error: Optional[str],
 ) -> None:
+    if id_filial is None:
+        # Sem filial concreta não persistimos cache (evita chave ambígua / vazamento).
+        return
     cost = _estimate_cost_usd(prompt_tokens, completion_tokens)
     sql = """
       INSERT INTO app.insight_ai_cache (
@@ -296,7 +337,7 @@ def _write_cache(
             sql,
             (
                 id_empresa,
-                id_filial,
+                int(id_filial),
                 insight_hash,
                 model,
                 json.dumps(response_json, ensure_ascii=False),
@@ -322,6 +363,7 @@ def _attach_plan_to_insight(
     cache_hit: bool,
     error: Optional[str],
 ) -> None:
+    # Sempre restringe por empresa + id; filial do insight quando conhecida.
     where_filial = "" if id_filial is None else "AND id_filial = %s"
     params = [
         json.dumps(plan, ensure_ascii=False),
@@ -429,15 +471,18 @@ def _create_notification_for_critical(
 def generate_jarvis_ai_plans(
     role: str,
     id_empresa: int,
-    id_filial: Optional[int],
+    id_filial: BranchScope,
     dt_ref: date,
     limit: Optional[int] = None,
     force: bool = False,
 ) -> Dict[str, Any]:
     max_n = int(limit or settings.jarvis_ai_top_n)
     model = settings.jarvis_model_fast
+    branch_ids = _normalize_branch_scope(id_filial)
+    if not branch_ids:
+        return _empty_generation_stats(max_n)
 
-    insights = _candidate_insights(role, id_empresa, id_filial, dt_ref, max_n)
+    insights = _candidate_insights(role, id_empresa, branch_ids, dt_ref, max_n)
     stats = {
         "requested": max_n,
         "candidates": len(insights),
@@ -448,13 +493,24 @@ def generate_jarvis_ai_plans(
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "estimated_cost_usd": 0.0,
+        "scope_denied": False,
+        "id_filiais": branch_ids,
     }
 
+    allowed_set = set(branch_ids)
+
     for ins in insights:
-        if ins.get("ai_plan") and not force:
+        insight_filial_raw = ins.get("id_filial")
+        if insight_filial_raw is None:
+            # Insight sem filial não entra em escopo multifilial restrito.
+            continue
+        insight_filial = int(insight_filial_raw)
+        if insight_filial not in allowed_set:
+            # Defesa em profundidade: nunca gerar/notificar fora do conjunto autorizado.
             continue
 
-        insight_filial = int(ins["id_filial"]) if ins.get("id_filial") is not None else id_filial
+        if ins.get("ai_plan") and not force:
+            continue
 
         insight_hash = _hash_for_insight(ins, model)
         cached = _read_cache(role, id_empresa, insight_filial, insight_hash, model)
@@ -522,11 +578,29 @@ def generate_jarvis_ai_plans(
 def ai_usage_summary(
     role: str,
     id_empresa: int,
-    id_filial: Optional[int],
+    id_filial: BranchScope,
     days: int,
 ) -> Dict[str, Any]:
-    where_filial = "" if id_filial is None else "AND id_filial = %s"
-    params: List[Any] = [id_empresa, max(1, int(days))] + ([] if id_filial is None else [id_filial])
+    branch_ids = _normalize_branch_scope(id_filial)
+    where_filial, branch_params = _branch_sql_clause("id_filial", branch_ids)
+    params: List[Any] = [id_empresa, max(1, int(days))] + branch_params
+
+    if not branch_ids:
+        return {
+            "window_days": max(1, int(days)),
+            "totals": {
+                "cache_rows": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "estimated_cost_usd": 0,
+                "openai_calls": 0,
+                "fallback_calls": 0,
+            },
+            "by_model": [],
+            "daily": [],
+            "scope_denied": True,
+            "id_filiais": [],
+        }
 
     sql_total = f"""
       SELECT
@@ -572,7 +646,7 @@ def ai_usage_summary(
       ORDER BY dt DESC
     """
 
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=id_filial) as conn:
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=_conn_branch_id(branch_ids)) as conn:
         total = conn.execute(sql_total, params).fetchone() or {}
         by_model = list(conn.execute(sql_by_model, params).fetchall())
         daily = list(conn.execute(sql_daily, params).fetchall())
@@ -582,4 +656,6 @@ def ai_usage_summary(
         "totals": total,
         "by_model": by_model,
         "daily": daily,
+        "scope_denied": False,
+        "id_filiais": branch_ids,
     }

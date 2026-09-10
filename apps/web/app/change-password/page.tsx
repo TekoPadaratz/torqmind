@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, apiGet, setAuthToken } from "../lib/api";
-import { clearAuth, getToken, requireAuth, setToken } from "../lib/auth";
+import { api, apiGet } from "../lib/api";
+import { clearAuth, markSession, requireAuth } from "../lib/auth";
 import { extractApiError } from "../lib/errors";
 import { evaluatePassword, isValidPassword } from "../lib/password-policy.mjs";
 
@@ -20,14 +20,10 @@ export default function ChangePasswordPage() {
   const [totpCode, setTotpCode] = useState("");
 
   useEffect(() => {
-    // Após redirect full-page do login, o axios perde o Authorization no default.
-    // Sem isto o POST /auth/change-password volta 401 e o interceptor manda ao login.
     if (!requireAuth()) {
       window.location.href = "/";
       return;
     }
-    const token = getToken();
-    if (token) setAuthToken(token);
 
     apiGet("/auth/me")
       .catch((err) => {
@@ -68,8 +64,6 @@ export default function ChangePasswordPage() {
       window.location.href = "/";
       return;
     }
-    const token = getToken();
-    if (token) setAuthToken(token);
 
     if (!isValidPassword(newPassword)) {
       setError("A nova senha não atende a todos os requisitos.");
@@ -92,10 +86,8 @@ export default function ChangePasswordPage() {
       };
       if (mfaRequired) payload.totp_code = totpCode.trim();
 
-      const res = await api.post("/auth/change-password", payload);
-      if (res.data?.access_token) {
-        setToken(res.data.access_token);
-      }
+      await api.post("/auth/change-password", payload);
+      markSession();
 
       try {
         const me = await apiGet("/auth/me");

@@ -209,6 +209,20 @@ def primary_branch_id(branch_scope: Optional[int | list[int]]) -> Optional[int]:
     return int(branch_scope) if branch_scope is not None else None
 
 
+def branch_scope_as_ids(branch_scope: Optional[int | list[int]]) -> list[int]:
+    """Conjunto concreto de filiais autorizadas para queries sensíveis (ex.: Jarvis).
+
+    Lista vazia / None ⇒ nenhum acesso (nunca “todas as filiais”).
+    Não usar primary_branch_id aqui: multi-filial colapsava para None e ampliava o SQL.
+    """
+    if branch_scope is None:
+        return []
+    if isinstance(branch_scope, list):
+        return sorted({int(value) for value in branch_scope if value is not None and int(value) > 0})
+    value = int(branch_scope)
+    return [value] if value > 0 else []
+
+
 def materialize_branch_query_targets(
     branch_scope: Optional[int | list[int]],
     branch_ids: Optional[list[int]],

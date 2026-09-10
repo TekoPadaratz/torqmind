@@ -3,6 +3,7 @@
 
 export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 128;
+export const PASSWORD_MAX_BYTES = 256;
 
 // Cada regra: { key, label, test }. A ordem é a mesma do backend.
 export const PASSWORD_RULES = [
@@ -12,6 +13,14 @@ export const PASSWORD_RULES = [
   { key: "digit", label: "Um número (0-9)", test: (p) => /\d/.test(p) },
   { key: "special", label: "Um caractere especial (ex.: ! @ # $ % & *)", test: (p) => /[^A-Za-z0-9]/.test(p) },
 ];
+
+function utf8ByteLength(value) {
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(String(value ?? "")).length;
+  }
+  // Fallback approximate for rare non-browser runtimes.
+  return unescape(encodeURIComponent(String(value ?? ""))).length;
+}
 
 // Retorna a lista de regras com o estado de atendimento da senha informada.
 export function evaluatePassword(password) {
@@ -25,6 +34,9 @@ export function validatePassword(password) {
   const errors = PASSWORD_RULES.filter((rule) => !rule.test(pw)).map((rule) => rule.label);
   if (pw.length > PASSWORD_MAX_LENGTH) {
     errors.push(`No máximo ${PASSWORD_MAX_LENGTH} caracteres`);
+  }
+  if (utf8ByteLength(pw) > PASSWORD_MAX_BYTES) {
+    errors.push(`No máximo ${PASSWORD_MAX_BYTES} bytes (UTF-8)`);
   }
   return errors;
 }

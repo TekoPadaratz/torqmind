@@ -120,6 +120,14 @@ def agent_update_manifest(
         "url": url,
         "released_at": data.get("released_at"),
         "mandatory": bool(data.get("mandatory", False)),
+        "product": data.get("product") or "torqmind-agent",
+        "channel": data.get("channel") or "stable",
+        "key_id": data.get("key_id"),
+        "valid_not_before": data.get("valid_not_before"),
+        "valid_not_after": data.get("valid_not_after"),
+        "signature_ed25519": data.get("signature_ed25519"),
+        # Legacy field only — agents in secure mode ignore HMAC.
+        "signature_hmac_sha256": data.get("signature_hmac_sha256"),
     }
 
 

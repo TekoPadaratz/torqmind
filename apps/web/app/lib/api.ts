@@ -3,9 +3,42 @@ import type { AxiosRequestConfig } from "axios";
 import { resolveBrowserApiBaseURL } from "./api-base-client.mjs";
 import { isRequestCanceled as isRequestCanceledBase } from "./request-cancel.mjs";
 
+/** Read double-submit CSRF cookie (tm_csrf / tm_csrf_hom / …). */
+export function readCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const parts = document.cookie.split(";").map((p) => p.trim());
+  for (const part of parts) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (name === "tm_csrf" || name.startsWith("tm_csrf_")) {
+      return decodeURIComponent(part.slice(eq + 1));
+    }
+  }
+  return null;
+}
+
 export const api = axios.create({
   baseURL: resolveBrowserApiBaseURL(),
   timeout: 30000,
+  withCredentials: true,
+});
+
+api.interceptors.request.use((config) => {
+  // Browser session is cookie-only — never send Authorization from localStorage.
+  if (config.headers) {
+    delete (config.headers as any).Authorization;
+    delete (config.headers as any).authorization;
+  }
+  const method = (config.method || "get").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    const csrf = readCsrfToken();
+    if (csrf) {
+      config.headers = config.headers || {};
+      (config.headers as any)["X-CSRF-Token"] = csrf;
+    }
+  }
+  return config;
 });
 
 // Intercept 401 responses to redirect to login
@@ -47,12 +80,9 @@ api.interceptors.response.use(
   }
 );
 
-export function setAuthToken(token: string | null) {
-  if (token) {
-    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  } else {
-    delete api.defaults.headers.common["Authorization"];
-  }
+/** No-op for browser cookie sessions (kept for call-site compatibility). */
+export function setAuthToken(_token: string | null) {
+  delete api.defaults.headers.common["Authorization"];
 }
 
 export async function apiGet(path: string, config?: AxiosRequestConfig) {

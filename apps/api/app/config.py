@@ -19,11 +19,35 @@ class Settings(BaseSettings):
 
     # Database (PostgreSQL)
     database_url: str | None = None
+    # Optional purpose-specific DSNs (gradual privilege separation). Empty → fall back
+    # to database_url / PG_*. A single POSTGRES_USER does NOT separate pools' rights.
+    database_url_api: str | None = None
+    database_url_ingest: str | None = None
+    database_url_etl: str | None = None
+    database_url_migrate: str | None = None
+    database_url_auth: str | None = None
     pg_host: str = "localhost"
     pg_port: int = 5432
     pg_database: str = "TORQMIND"
     pg_user: str = "postgres"
     pg_password: str = "1234"
+    pg_user_api: str = ""
+    pg_password_api: str = ""
+    pg_user_ingest: str = ""
+    pg_password_ingest: str = ""
+    pg_user_etl: str = ""
+    pg_password_etl: str = ""
+    pg_user_migrate: str = ""
+    pg_password_migrate: str = ""
+    pg_user_auth: str = ""
+    pg_password_auth: str = ""
+    # TLS: empty sslmode = do not force TLS (infra dependency). Preserve URL query
+    # params in app.db.build_conninfo. Never enable verify-full without a CA path.
+    pg_sslmode: str = ""
+    pg_sslrootcert: str = ""
+    pg_sslcert: str = ""
+    pg_sslkey: str = ""
+    pg_sslcrl: str = ""
     db_pool_min_size: int = 2
     db_pool_max_size: int = 30
     db_pool_timeout_seconds: int = 30
@@ -40,6 +64,11 @@ class Settings(BaseSettings):
     clickhouse_database: str = "torqmind_mart"
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
+    # TLS for clickhouse-connect. Default secure=False until CH HTTPS is ready.
+    clickhouse_secure: bool = False
+    clickhouse_verify: bool = True
+    clickhouse_ca_cert: str = ""
+    clickhouse_server_host_name: str = ""
 
     # Feature flags for Phase 3 migration
     use_clickhouse: bool = True  # When False, fallback to PostgreSQL dw
@@ -60,6 +89,17 @@ class Settings(BaseSettings):
     api_jwt_secret: str = "CHANGE_ME_SUPER_SECRET"
     api_jwt_issuer: str = "torqmind-api"
     api_access_token_minutes: int = 480
+    # Absolute session lifetime preserved across /auth/refresh (minutes from login).
+    # Sliding refresh cannot extend beyond this wall clock from session start.
+    api_session_absolute_minutes: int = 1440
+    # Prompt 7 — cookie session (HttpOnly). Browser must use cookies; bearer
+    # fallback is only for non-browser clients (TestClient/ETL) when enabled.
+    auth_allow_bearer_fallback: bool = True
+    auth_omit_tokens_in_json_for_browser: bool = True
+    auth_cookie_suffix: str = ""
+    auth_cookie_secure: bool | None = None
+    auth_cookie_samesite: str = "lax"
+    auth_csrf_enforce: bool = True
     platform_sovereign_emails: str = "teko94@gmail.com"
 
     # Password reset ("esqueci minha senha")
@@ -97,12 +137,44 @@ class Settings(BaseSettings):
     mfa_challenge_ttl_minutes: int = 5
     # Máximo de tentativas de código antes de invalidar o desafio.
     mfa_max_attempts: int = 5
+    # When True, privileged roles without totp_enabled must enroll (setup token).
+    # Default False — does not block existing admins or mutate cadastros.
+    mfa_enforce_privileged: bool = False
 
+    # Password hashing (Argon2id preferred; bcrypt legacy verify kept).
+    argon2_time_cost: int = 2
+    argon2_memory_kib: int = 65536
+    argon2_parallelism: int = 2
+
+    # Abuse controls (Prompt 5). IP buckets use client_ip_for_rate_limit.
+    # hops=0 → ignore XFF (residual: shared Docker gateway). Set to 1 after
+    # proving nginx appends/overwrites the client address correctly.
+    api_trusted_proxy_hops: int = 0
+    auth_login_ip_max_per_window: int = 10
+    auth_login_ip_window_seconds: int = 60
+    auth_login_identity_max_per_window: int = 20
+    auth_login_identity_window_seconds: int = 60
+    auth_mail_ip_max_per_window: int = 5
+    auth_mail_ip_window_seconds: int = 60
+    auth_mail_identity_max_per_window: int = 5
+    auth_mail_identity_window_seconds: int = 60
+
+    # Ingestion streaming limits (checked while reading — not after full body).
+    # Sized from agent defaults (batch_size 2000–5000) with headroom for sync bursts.
+    ingest_batch_size: int = 5000
+    ingest_max_records_per_request: int = 25000
+    ingest_max_wire_bytes: int = 64 * 1024 * 1024
+    ingest_max_decoded_bytes: int = 256 * 1024 * 1024
+    ingest_max_line_bytes: int = 4 * 1024 * 1024
+    ingest_max_seconds: int = 600
+    ingest_max_gzip_expansion_ratio: float = 100.0
+    # Soft request-rate per tenant via security_attempt_buckets (not a hard semaphore).
+    ingest_tenant_max_requests_per_window: int = 120
+    ingest_tenant_window_seconds: int = 60
 
     # Ingestion
     # If True, /ingest requires X-Ingest-Key (recommended for production).
     ingest_require_key: bool = False
-    ingest_batch_size: int = 5000
     ingest_retention_override_min_date: date | None = None
     ingest_retention_override_datasets: str = (
         "comprovantes,movprodutos,itensmovprodutos,formas_pgto_comprovantes,turnos"

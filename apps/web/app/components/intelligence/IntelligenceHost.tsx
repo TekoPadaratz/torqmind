@@ -6,7 +6,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation';
 
 import { apiGet, apiPost } from '../../lib/api';
-import { getClaims, getToken, requireAuth } from '../../lib/auth';
+import { getClaims, hasSession, requireAuth } from '../../lib/auth';
 import { useScopeQuery } from '../../lib/scope';
 import { canAccessScreenKey, readCachedSession } from '../../lib/session';
 import {
@@ -120,7 +120,7 @@ export default function IntelligenceHost() {
       return;
     }
     const claims = getClaims();
-    if (!getToken() || isKioskClaims(claims)) {
+    if (!hasSession() || isKioskClaims(claims)) {
       setReady(false);
       return;
     }

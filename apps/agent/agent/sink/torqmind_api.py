@@ -31,7 +31,9 @@ class TorqMindSink:
         self.api = api
         self.runtime = runtime
         self.logger = logger
-        self.session = requests.Session()
+        from agent.transport import build_http_session
+
+        self.session = build_http_session(tls_verify=bool(getattr(api, "tls_verify", True)))
         self.spool = SpoolQueue(runtime.spool_dir)
         self._resolved_api_root: Optional[str] = None
 
@@ -70,10 +72,22 @@ class TorqMindSink:
         headers: Optional[Dict[str, str]] = None,
         data: bytes | None = None,
     ) -> requests.Response:
+        from agent.transport import assert_transport_allowed, strip_auth_if_foreign_host
+
+        assert_transport_allowed(
+            url,
+            allow_insecure_http=bool(getattr(self.api, "allow_insecure_http", True)),
+            require_https=bool(getattr(self.api, "require_https", False)),
+        )
+        safe_headers = strip_auth_if_foreign_host(
+            headers or {},
+            request_url=url,
+            api_base_url=self.api.base_url,
+        )
         return self.session.request(
             method=method,
             url=url,
-            headers=headers,
+            headers=safe_headers,
             data=data,
             timeout=self._timeout(),
             allow_redirects=False,

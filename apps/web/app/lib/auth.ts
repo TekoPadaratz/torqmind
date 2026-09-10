@@ -1,20 +1,57 @@
-import { setAuthToken } from './api';
+import { api, setAuthToken } from './api';
 
+/** Legacy JWT storage — cleared on load; never used for browser auth after Prompt 7. */
 const TOKEN_KEY = 'torqmind.token';
 const CLAIMS_KEY = 'torqmind.claims';
+/** Soft flag only (no JWT). Cookie HttpOnly is the real session. */
+const SESSION_FLAG_KEY = 'torqmind.session';
 
-export function getToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(TOKEN_KEY);
+function purgeLegacyBearer(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem('torqmind.mfa_setup');
+  } catch {
+    /* no-op */
+  }
+  setAuthToken(null);
 }
 
-export function setToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
-  setAuthToken(token);
+/** Call once on app boot / auth module load. */
+export function purgeLegacySessionArtifacts(): void {
+  purgeLegacyBearer();
+}
+
+export function hasSession(): boolean {
+  if (typeof window === 'undefined') return false;
+  purgeLegacyBearer();
+  return localStorage.getItem(SESSION_FLAG_KEY) === '1';
+}
+
+/** @deprecated Prefer hasSession(); browsers no longer hold JWTs. */
+export function getToken(): string | null {
+  purgeLegacyBearer();
+  return null;
+}
+
+/** Mark soft session; JWT (if any) is ignored — cookies carry auth. */
+export function setToken(_token?: string | null) {
+  purgeLegacyBearer();
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(SESSION_FLAG_KEY, '1');
+  }
+  setAuthToken(null);
+}
+
+export function markSession() {
+  setToken(null);
 }
 
 export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem(SESSION_FLAG_KEY);
+    localStorage.removeItem(TOKEN_KEY);
+  }
   setAuthToken(null);
 }
 
@@ -33,29 +70,28 @@ export function clearClaims() {
 }
 
 export function requireAuth(): boolean {
-  const t = getToken();
-  if (!t) return false;
-  const parts = t.split('.');
-  if (parts.length !== 3) {
-    clearAuth();
+  purgeLegacyBearer();
+  if (!hasSession()) {
+    clearClaims();
     return false;
   }
-  try {
-    const payload = JSON.parse(atob(parts[1]));
-    const exp = Number(payload?.exp || 0);
-    if (exp && Date.now() >= exp * 1000) {
-      clearAuth();
-      return false;
-    }
-  } catch {
-    clearAuth();
-    return false;
-  }
-  setAuthToken(t);
   return true;
 }
 
-export function clearAuth() {
+export function clearLocalAuth() {
   clearToken();
   clearClaims();
+}
+
+export function clearAuth() {
+  clearLocalAuth();
+  // Best-effort cookie clear (HttpOnly logout).
+  if (typeof window !== 'undefined') {
+    void api.post('/auth/logout').catch(() => undefined);
+  }
+}
+
+// Purge any leftover bearer on module evaluation in the browser.
+if (typeof window !== 'undefined') {
+  purgeLegacyBearer();
 }

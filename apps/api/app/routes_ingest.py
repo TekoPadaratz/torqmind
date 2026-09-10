@@ -969,7 +969,7 @@ def _resolve_id_empresa(x_ingest_key: Optional[str], x_empresa_id: Optional[str]
             UUID(key)
         except ValueError:
             raise HTTPException(status_code=401, detail="Invalid X-Ingest-Key")
-        with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+        with get_conn(role="MASTER", tenant_id=None, branch_id=None, purpose="ingest") as conn:
             try:
                 row = conn.execute(
                     "SELECT id_empresa FROM app.tenants WHERE ingest_key = %s AND is_active = true",
@@ -995,7 +995,7 @@ def _resolve_id_empresa(x_ingest_key: Optional[str], x_empresa_id: Optional[str]
 
 
 def _load_tenant_ingest_policy(id_empresa: int) -> Dict[str, Any]:
-    with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
+    with get_conn(role="MASTER", tenant_id=None, branch_id=None, purpose="ingest") as conn:
         row = conn.execute(
             """
             SELECT
@@ -1061,10 +1061,63 @@ def _retention_policy_response(dataset_key: str, tenant_policy: Dict[str, Any]) 
     }
 
 
+class IngestStreamLimitError(HTTPException):
+    """Raised while streaming when a request exceeds configured ingest budgets."""
+
+    def __init__(self, code: str, message: str, status_code: int = 413):
+        super().__init__(status_code=status_code, detail={"error": code, "message": message})
+
+
 async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterator[Dict[str, Any]]:
+    """Parse NDJSON from the request body with streaming size/time/record limits.
+
+    Limits are enforced while reading chunks — the full body is never buffered
+    solely to measure size. Partial lines across chunk boundaries are preserved.
+    """
+    import time as _time
+
     buffer = b""
     line_no = 0
+    records = 0
+    wire_bytes = 0
+    decoded_bytes = 0
+    started = _time.monotonic()
+    max_wire = int(settings.ingest_max_wire_bytes)
+    max_decoded = int(settings.ingest_max_decoded_bytes)
+    max_line = int(settings.ingest_max_line_bytes)
+    max_records = int(settings.ingest_max_records_per_request)
+    max_seconds = float(settings.ingest_max_seconds)
+    max_ratio = float(settings.ingest_max_gzip_expansion_ratio)
     decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS) if is_gzip else None
+
+    def _check_budgets(partial_line: bytes = b"") -> None:
+        elapsed = _time.monotonic() - started
+        if elapsed > max_seconds:
+            raise IngestStreamLimitError(
+                "ingest_timeout",
+                f"Ingest exceeded {int(max_seconds)}s time budget.",
+                status_code=408,
+            )
+        if wire_bytes > max_wire:
+            raise IngestStreamLimitError(
+                "ingest_wire_too_large",
+                f"Compressed/raw body exceeded {max_wire} bytes.",
+            )
+        if decoded_bytes > max_decoded:
+            raise IngestStreamLimitError(
+                "ingest_decoded_too_large",
+                f"Decoded body exceeded {max_decoded} bytes.",
+            )
+        if len(partial_line) > max_line:
+            raise IngestStreamLimitError(
+                "ingest_line_too_large",
+                f"NDJSON line exceeded {max_line} bytes before newline.",
+            )
+        if is_gzip and decoded_bytes > 64 * 1024 and wire_bytes > 0 and decoded_bytes > wire_bytes * max_ratio:
+            raise IngestStreamLimitError(
+                "ingest_gzip_bomb",
+                "Gzip expansion ratio exceeded safe limit.",
+            )
 
     def flush_lines(chunk_buffer: bytes) -> Tuple[List[bytes], bytes]:
         lines = chunk_buffer.splitlines(keepends=True)
@@ -1072,46 +1125,67 @@ async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterat
             return lines[:-1], lines[-1]
         return lines, b""
 
+    def emit_line(raw_line: bytes) -> Optional[Dict[str, Any]]:
+        nonlocal line_no, records
+        line = raw_line.strip()
+        if not line:
+            return None
+        if len(line) > max_line:
+            raise IngestStreamLimitError(
+                "ingest_line_too_large",
+                f"NDJSON line exceeded {max_line} bytes.",
+            )
+        line_no += 1
+        records += 1
+        if records > max_records:
+            raise IngestStreamLimitError(
+                "ingest_too_many_records",
+                f"Request exceeded {max_records} records.",
+            )
+        try:
+            obj = json.loads(line)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: {exc}")
+        if not isinstance(obj, dict):
+            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: line is not an object")
+        return obj
+
     async for chunk in request.stream():
         if not chunk:
             continue
+        wire_bytes += len(chunk)
+        _check_budgets(buffer)
         if decompressor is not None:
             try:
                 chunk = decompressor.decompress(chunk)
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}")
         if not chunk:
+            _check_budgets(buffer)
             continue
+        decoded_bytes += len(chunk)
         buffer += chunk
+        _check_budgets(buffer)
         lines, buffer = flush_lines(buffer)
         for raw_line in lines:
-            line = raw_line.strip()
-            if not line:
-                continue
-            line_no += 1
-            try:
-                obj = json.loads(line)
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: {exc}")
-            if not isinstance(obj, dict):
-                raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: line is not an object")
-            yield obj
+            obj = emit_line(raw_line)
+            if obj is not None:
+                yield obj
 
     if decompressor is not None:
         try:
-            buffer += decompressor.flush()
+            tail = decompressor.flush()
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}")
+        if tail:
+            decoded_bytes += len(tail)
+            buffer += tail
+            _check_budgets(buffer)
 
     if buffer.strip():
-        line_no += 1
-        try:
-            obj = json.loads(buffer)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: {exc}")
-        if not isinstance(obj, dict):
-            raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: line is not an object")
-        yield obj
+        obj = emit_line(buffer)
+        if obj is not None:
+            yield obj
 
 
 def _bulk_upsert_with_stats(
@@ -1243,7 +1317,7 @@ def ingest_health(
         }
 
     out: List[Dict[str, Any]] = []
-    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+    with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None, purpose="ingest") as conn:
         for dataset, spec in sorted(DATASETS.items()):
             row = conn.execute(
                 f"""
@@ -1291,6 +1365,26 @@ async def ingest_dataset(
         )
 
     id_empresa = _resolve_id_empresa(x_ingest_key=x_ingest_key, x_empresa_id=x_empresa_id)
+
+    # Soft per-tenant request rate via shared security_attempt_buckets (migration 155).
+    # Not a hard cross-worker concurrency semaphore — see residual docs in client_ip /
+    # hardening pendencies. Health stays on a separate path and is unaffected.
+    if str(settings.app_env or "").strip().lower() != "test":
+        from app import security_attempts
+
+        tenant_key = security_attempts.bucket_key("ingest", "post", id_empresa)
+        max_n = int(settings.ingest_tenant_max_requests_per_window)
+        window = int(settings.ingest_tenant_window_seconds)
+        if security_attempts.is_rate_limited(tenant_key, max_attempts=max_n, window_seconds=window):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "rate_limited",
+                    "message": "Muitas requisições de ingestão para este tenant. Aguarde e tente novamente.",
+                },
+            )
+        security_attempts.record_attempt(tenant_key, window_seconds=window)
+
     spec = DATASETS[dataset_key]
     tenant_policy = await asyncio.to_thread(_load_tenant_ingest_policy, id_empresa)
     retention_policy = _retention_policy_response(dataset_key, tenant_policy)
@@ -1331,7 +1425,7 @@ async def ingest_dataset(
             return
         batch_values, batch_duplicates = _dedupe_rows_by_pk(spec.pk_cols, batch_values)
         duplicates_in_batch += batch_duplicates
-        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None) as conn:
+        with get_conn(role="MASTER", tenant_id=id_empresa, branch_id=None, purpose="ingest") as conn:
             with conn.transaction():
                 batch_inserted, batch_updated, batch_unchanged = _bulk_upsert_with_stats(
                     conn, dataset_key, spec.table, spec.pk_cols, batch_values

@@ -1063,6 +1063,19 @@ class APIConfig:
     ingest_key: Optional[str] = None
     empresa_id: Optional[int] = None
     idempotency_header: str = "X-Idempotency-Key"
+    # Transport / update hardening (Prompt 8) — gradual; LAN HTTP preserved by default.
+    tls_verify: bool = True
+    allow_insecure_http: bool = True
+    require_https: bool = False
+    allow_foreign_download: bool = False
+    update_max_download_bytes: int = 80 * 1024 * 1024
+    # Legacy HMAC only outside secure mode — do NOT distribute a global HMAC to postos.
+    update_hmac_key: Optional[str] = None
+    # Secure mode: Ed25519 + HTTPS + tls_verify; incomplete protection when false.
+    update_secure_mode: bool = False
+    update_trust_store_path: Optional[str] = None
+    update_trusted_public_keys: Optional[list] = None
+    update_channel: str = "stable"
 
 
 @dataclass
@@ -1208,6 +1221,16 @@ def build_default_raw_config() -> Dict[str, Any]:
             "ingest_key": "",
             "empresa_id": 1,
             "idempotency_header": "X-Idempotency-Key",
+            "tls_verify": True,
+            "allow_insecure_http": True,
+            "require_https": False,
+            "allow_foreign_download": False,
+            "update_max_download_bytes": 83886080,
+            "update_hmac_key": "",
+            "update_secure_mode": False,
+            "update_trust_store_path": "",
+            "update_trusted_public_keys": [],
+            "update_channel": "stable",
         },
         "runtime": {
             "batch_size": 2000,

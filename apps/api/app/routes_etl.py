@@ -5,14 +5,13 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, HTTPException, Header
+from fastapi import APIRouter, Depends, Query, HTTPException, Header, Request
 
 from app.business_time import business_date_for_datetime, business_today, resolve_business_date
 from app.config import settings
 from app.db import get_conn
-from app.deps import get_current_claims
+from app.deps import get_current_claims, resolve_access_session
 from app import repos_auth
-from app.security import decode_token
 from app.scope import resolve_scope
 from app.services.etl_orchestrator import EtlCycleBusyError, TRACK_OPERATIONAL, normalize_track, run_incremental_cycle
 from app.services.telegram import send_telegram_alert
@@ -125,6 +124,7 @@ def _resolve_micro_scope(
     authorization: Optional[str],
     x_ingest_key: Optional[str],
     x_internal_key: Optional[str],
+    request: Optional[Request] = None,
 ) -> tuple[int, Optional[int], str]:
     if x_internal_key:
         if not settings.etl_internal_key or x_internal_key != settings.etl_internal_key:
@@ -136,20 +136,16 @@ def _resolve_micro_scope(
         filial = int(id_filial_q) if id_filial_q is not None else None
         return ingest_empresa, filial, "INGEST_KEY"
 
-    if not authorization or not authorization.startswith("Bearer "):
+    has_bearer = bool(authorization and authorization.startswith("Bearer "))
+    has_cookie = False
+    if request is not None:
+        from app.session_cookies import access_cookie_name
+
+        has_cookie = bool((request.cookies.get(access_cookie_name()) or "").strip())
+    if not has_bearer and not has_cookie:
         raise HTTPException(status_code=401, detail="Missing auth (Bearer or X-Ingest-Key/X-Internal-Key)")
 
-    token = authorization.split(" ", 1)[1].strip()
-    payload = decode_token(token)
-    try:
-        claims = repos_auth.get_session_context(
-            user_id=str(payload.get("sub") or ""),
-            id_empresa=payload.get("id_empresa"),
-            id_filial=payload.get("id_filial"),
-            channel_id=payload.get("channel_id"),
-        )
-    except repos_auth.AuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
+    claims, _payload = resolve_access_session(authorization, request=request, include_default_scope=False)
     tenant, filial = resolve_scope(claims, id_empresa_q=id_empresa_q, id_filial_q=id_filial_q)
     return tenant, filial, "BEARER"
 
@@ -183,6 +179,7 @@ def _upsert_notification_critical(
 
 @router.post("/micro_risk")
 def run_micro_risk(
+    request: Request,
     minutes: int = Query(5, ge=1, le=120),
     id_filial: Optional[int] = Query(None),
     id_empresa: Optional[int] = Query(None, description="Only used by MASTER or internal key"),
@@ -196,6 +193,7 @@ def run_micro_risk(
         authorization=authorization,
         x_ingest_key=x_ingest_key,
         x_internal_key=x_internal_key,
+        request=request,
     )
 
     critical_min_score = int(settings.micro_risk_critical_min_score)

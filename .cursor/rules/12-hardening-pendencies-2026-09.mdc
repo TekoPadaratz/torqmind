@@ -1,0 +1,77 @@
+---
+description: Pendências de hardening TorqMind (set/2026) — implantação bloqueada até revisão
+alwaysApply: true
+---
+
+# Hardening 2026-09 — pendências (não são PASS)
+
+Implantação (merge/migration Hom·Prod/deploy) permanece **bloqueada** até revisão explícita.
+Listas abaixo registram débitos; **não** comprovam, sozinhas, que Prompts 3 e 4 estão validados.
+
+## Migration 155 (`auth.security_attempt_buckets` + `totp_last_counter`)
+
+- Revisar SQL e **todo** código dependente (`security_attempts` / `repos_mfa` / auth abuse).
+- Ordem obrigatória na implantação futura: **migration 155 → API**.
+- Confirmar: API antiga sem 155 (falha vs degrade); API nova com 155; **rollback** (API first vs migration).
+- **Não aplicar** em Hom/Prod nesta sequência.
+
+## Argon2id
+
+- Instalar `argon2-cffi` **somente** em imagem/CI/local autorizado — não no servidor físico de terceiros.
+- Antes de implantar: login legado bcrypt, rehash curto, senhas longas/ambíguas (>72 B), custo sob concorrência.
+
+## MFA privilegiado
+
+- Manter `mfa_enforce_privileged=OFF` até enrollment + recuperação preparados.
+- Não bloquear administradores existentes nem bulk-update de cadastros.
+
+## Escopo vazio → todas (P1 residual)
+
+- Pendência de segurança relevante em consumidores de `_branch_ids([])` → `None`.
+- Corrigir em **etapa específica** com mapa de consumidores + testes de isolamento — não “no global” oportunista.
+
+## Next / browser / sessão absoluta
+
+- Upgrade Next e sessão absoluta (P2/P3) **sem** aprovação funcional de browser/Hom.
+- Não declarar pronto só por audit limpo + build/unit.
+
+## Rate-limit compartilhado (P4 → P5+)
+
+- Fonte única: tabela `auth.security_attempt_buckets` (migration 155).
+- **Proibido** criar segundo limitador / tabela equivalente / política concorrente.
+- Novos controles de abuso (login, reset, ingest) devem **reutilizar** o módulo/helpers dessa tabela.
+
+## Prompt 6 — privilégios / TLS (preparado, não aplicado)
+
+- `app.db.build_conninfo` preserva `sslmode`/`sslrootcert`/… da URL; default **não** exige TLS.
+- ClickHouse: `CLICKHOUSE_SECURE` default false até HTTPS+CA na analytics.
+- Roles/grants: apenas templates em `deploy/sql/privilege_separation/` — **não aplicar**.
+- Separar DSN por `purpose` (`DATABASE_URL_INGEST`, …); pool único com mesmo user ≠ privilégio mínimo.
+- Não revogar conta compartilhada `torqmind` / CH god; não resetar slot/publication Debezium.
+- Dependência infra: certs PG/CH, binds, CA nas imagens — fora do código app.
+
+## Host de terceiros
+
+- Worktree isola arquivos, não CPU/disco. Evitar builds npm pesados e `pip install` neste App host.
+
+## Prompt 7 — sessão browser em cookies HttpOnly (código pronto, não implantado)
+
+- API: cookies `tm_at` / `tm_mfa_*` / `tm_csrf` (+ sufixo Hom), CSRF double-submit + Origin, browsers **sem** dual-accept LS+cookie.
+- FE: `withCredentials`, sem JWT em `localStorage`; flag soft `torqmind.session`; logout `POST /auth/logout`.
+- Implantação futura: **API + Web juntos**; `Secure` exige HTTPS; Hom isolado por sufixo `_hom`; revisar `app_cors_origins` / `web_public_url`.
+- Prova pendente: login → MFA → refresh → logout no browser Hom; TV/kiosk refresh; downloads/fetch com credentials.
+- **Não** alterar nginx/CSP genérico nesta sequência.
+
+## Prompt 8 — Agent update/transporte (código pronto; exe Windows pendente)
+
+- Versão agent **2.0.13**. Build: `agent_build/build.ps1`; canal: manifest + download.
+- **Implementado:** Ed25519 (`cryptography`) sobre canônico product/channel/key_id/version/sha256/size/url/validity; trust store offline; `update_secure_mode` rejeita unsigned/HMAC-only/expirado/chave desconhecida; origem scheme+host+port; TLS obrigatório no modo seguro; floor/last_applied (apagar floor ≠ recovery).
+- **Legado explícito:** `update_secure_mode=false` ainda aceita unsigned (proteção incompleta).
+- **Não:** HMAC global aos postos; chave privada em CLI/git; bootstrap de trust via HTTP; publish/.exe nesta etapa.
+- **Pendente:** Windows WinSW; instalação IT da trust store; chaves produtivas pelo publicador.
+
+## Prompt 9 — CI consolidado (workflow; sem deploy)
+
+- `.github/workflows/ci.yml`: secret-scan fail-closed; testes P1–8 no api-static; agent com `cryptography`; npm audit flake ≠ PASS.
+- Scanner: `scanner_ok_clean` | `scanner_ok_findings` | `scanner_unavailable` (indisponível ≠ aprovação).
+---

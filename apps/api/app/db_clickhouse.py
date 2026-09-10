@@ -34,6 +34,32 @@ def _safe_identifier(value: str, *, label: str) -> str:
     return value
 
 
+def clickhouse_client_kwargs() -> dict:
+    """Build clickhouse-connect kwargs including optional verified TLS.
+
+    ``clickhouse_secure`` defaults False — do not require TLS until the
+    analytics endpoint presents HTTPS with a CA ops can mount.
+    """
+    kwargs: dict = {
+        "host": settings.clickhouse_host,
+        "port": settings.clickhouse_port,
+        "database": settings.clickhouse_database,
+        "username": settings.clickhouse_user,
+        "password": settings.clickhouse_password,
+        "connect_timeout": 10,
+        "send_receive_timeout": 30,
+        "secure": bool(getattr(settings, "clickhouse_secure", False)),
+        "verify": bool(getattr(settings, "clickhouse_verify", True)),
+    }
+    ca = (getattr(settings, "clickhouse_ca_cert", None) or "").strip()
+    if ca:
+        kwargs["ca_cert"] = ca
+    server_name = (getattr(settings, "clickhouse_server_host_name", None) or "").strip()
+    if server_name:
+        kwargs["server_host_name"] = server_name
+    return kwargs
+
+
 def _get_client() -> clickhouse_connect.driver.client.Client | None:
     """Create an independent ClickHouse client for one query context.
 
@@ -42,15 +68,7 @@ def _get_client() -> clickhouse_connect.driver.client.Client | None:
     and closes it when the query/insert context finishes.
     """
     try:
-        return clickhouse_connect.get_client(
-            host=settings.clickhouse_host,
-            port=settings.clickhouse_port,
-            database=settings.clickhouse_database,
-            username=settings.clickhouse_user,
-            password=settings.clickhouse_password,
-            connect_timeout=10,
-            send_receive_timeout=30,
-        )
+        return clickhouse_connect.get_client(**clickhouse_client_kwargs())
     except Exception as e:
         logger.error(f"Failed to initialize ClickHouse client: {e}")
         raise

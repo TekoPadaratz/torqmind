@@ -84,23 +84,39 @@ def now_code(secret_b32: str, at: float | None = None) -> str:
     return _hotp(secret_b32, counter)
 
 
+def match_code(
+    secret_b32: str,
+    code: str,
+    *,
+    valid_window: int | None = None,
+    at: float | None = None,
+) -> int | None:
+    """Return the matching TOTP counter, or None.
+
+    Prefer this over :func:`verify_code` when the caller must claim the counter
+    atomically to defeat replay within the validity window.
+    """
+    if not code:
+        return None
+    code = code.strip().replace(" ", "")
+    if not code.isdigit() or len(code) != _DIGITS:
+        return None
+    window = settings.totp_valid_window if valid_window is None else valid_window
+    base = int((at if at is not None else time.time()) // _PERIOD)
+    for drift in range(-window, window + 1):
+        counter = base + drift
+        candidate = _hotp(secret_b32, counter)
+        if hmac.compare_digest(candidate, code):
+            return counter
+    return None
+
+
 def verify_code(secret_b32: str, code: str, *, valid_window: int | None = None, at: float | None = None) -> bool:
     """Verify a TOTP code with a small clock-tolerance window.
 
     Uses constant-time comparison and never logs the code or the secret.
     """
-    if not code:
-        return False
-    code = code.strip().replace(" ", "")
-    if not code.isdigit() or len(code) != _DIGITS:
-        return False
-    window = settings.totp_valid_window if valid_window is None else valid_window
-    base = int((at if at is not None else time.time()) // _PERIOD)
-    for drift in range(-window, window + 1):
-        candidate = _hotp(secret_b32, base + drift)
-        if hmac.compare_digest(candidate, code):
-            return True
-    return False
+    return match_code(secret_b32, code, valid_window=valid_window, at=at) is not None
 
 
 def provisioning_uri(secret_b32: str, account_label: str, issuer: str | None = None) -> str:

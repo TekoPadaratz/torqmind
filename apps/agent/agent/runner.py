@@ -1329,6 +1329,24 @@ class AgentRunner:
                         ingest_key=self.cfg.api.ingest_key,
                         logger=self.logger,
                         auto_update=bool(getattr(self.cfg.runtime, "auto_update", True)),
+                        tls_verify=bool(getattr(self.cfg.api, "tls_verify", True)),
+                        allow_insecure_http=bool(getattr(self.cfg.api, "allow_insecure_http", True)),
+                        require_https=bool(getattr(self.cfg.api, "require_https", False)),
+                        allow_foreign_download=bool(
+                            getattr(self.cfg.api, "allow_foreign_download", False)
+                        ),
+                        max_download_bytes=int(
+                            getattr(self.cfg.api, "update_max_download_bytes", 80 * 1024 * 1024)
+                            or (80 * 1024 * 1024)
+                        ),
+                        update_hmac_key=getattr(self.cfg.api, "update_hmac_key", None) or None,
+                        update_secure_mode=bool(getattr(self.cfg.api, "update_secure_mode", False)),
+                        update_trust_store_path=getattr(self.cfg.api, "update_trust_store_path", None)
+                        or None,
+                        update_trusted_public_keys=getattr(
+                            self.cfg.api, "update_trusted_public_keys", None
+                        )
+                        or None,
                     )
                 except Exception as exc:  # noqa: BLE001
                     self.logger.warning("phase=update_check_error error=%s", str(exc)[:200])

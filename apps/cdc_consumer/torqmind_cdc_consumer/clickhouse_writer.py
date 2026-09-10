@@ -33,12 +33,21 @@ class ClickHouseWriter:
 
     def _get_client(self) -> clickhouse_connect.driver.Client:
         """Create a new ClickHouse client (no sharing between flushes)."""
-        return clickhouse_connect.get_client(
-            host=settings.clickhouse_host,
-            port=settings.clickhouse_port,
-            username=settings.clickhouse_user,
-            password=settings.clickhouse_password,
-        )
+        kwargs = {
+            "host": settings.clickhouse_host,
+            "port": settings.clickhouse_port,
+            "username": settings.clickhouse_user,
+            "password": settings.clickhouse_password,
+            "secure": bool(getattr(settings, "clickhouse_secure", False)),
+            "verify": bool(getattr(settings, "clickhouse_verify", True)),
+        }
+        ca = (getattr(settings, "clickhouse_ca_cert", None) or "").strip()
+        if ca:
+            kwargs["ca_cert"] = ca
+        server_name = (getattr(settings, "clickhouse_server_host_name", None) or "").strip()
+        if server_name:
+            kwargs["server_host_name"] = server_name
+        return clickhouse_connect.get_client(**kwargs)
 
     def process_event(self, event: DebeziumEvent) -> None:
         """Process a single Debezium event into write buffers."""

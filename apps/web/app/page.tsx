@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { api, setAuthToken } from "./lib/api";
-import { clearAuth, getToken, setToken } from "./lib/auth";
+import { api } from "./lib/api";
+import { clearLocalAuth, hasSession, markSession } from "./lib/auth";
 import { extractApiError } from "./lib/errors";
 import { LOGIN_IDENTIFIER_LABEL, LOGIN_IDENTIFIER_PLACEHOLDER } from "./lib/login-copy.mjs";
 import { LOGIN_FORM_DEFAULTS } from "./lib/login-form-defaults.mjs";
@@ -15,17 +15,15 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
-  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaPending, setMfaPending] = useState(false);
   const [mfaCode, setMfaCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    const t = getToken();
-    if (!t) {
+    if (!hasSession()) {
       setCheckingSession(false);
       return;
     }
-    setAuthToken(t);
     api
       .get("/auth/me")
       .then((res) => {
@@ -42,7 +40,7 @@ export default function LoginPage() {
       })
       .catch((error) => {
         if (isConfirmedSessionInvalidation(error)) {
-          clearAuth();
+          clearLocalAuth();
           setError("Sessão expirada ou inválida. Faça login novamente.");
           return;
         }
@@ -58,17 +56,16 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      clearAuth();
+      clearLocalAuth();
       const res = await api.post("/auth/login", { identifier, password });
-      // Two-factor: the password step may return a challenge instead of a token.
-      if (res.data?.mfa_required && res.data?.mfa_challenge_token) {
-        setMfaChallenge(res.data.mfa_challenge_token as string);
+      // Two-factor: challenge lives in HttpOnly cookie; JSON may omit the token.
+      if (res.data?.mfa_required) {
+        setMfaPending(true);
         setMfaCode("");
         return;
       }
-      // Enforced enrollment: account requires 2FA but has not configured it yet.
-      if (res.data?.mfa_setup_required && res.data?.mfa_setup_token) {
-        sessionStorage.setItem("torqmind.mfa_setup", res.data.mfa_setup_token as string);
+      // Enforced enrollment: cookie carries mfa_setup; no bearer in sessionStorage.
+      if (res.data?.mfa_setup_required) {
         window.location.href = "/security?setup=1";
         return;
       }
@@ -81,8 +78,7 @@ export default function LoginPage() {
   }
 
   function finishLogin(data: any) {
-    const token = data?.access_token as string;
-    setToken(token);
+    markSession();
     const session = cacheSession(data?.session || data || null);
     if (session?.must_change_password) {
       window.location.href = '/change-password';
@@ -101,7 +97,6 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       const res = await api.post("/auth/mfa/verify", {
-        mfa_challenge_token: mfaChallenge,
         code: mfaCode.trim(),
       });
       finishLogin(res.data);
@@ -130,7 +125,7 @@ export default function LoginPage() {
             Acesse sua visão consolidada da operação, do caixa, do risco e do financeiro.
           </div>
           <div style={{ height: 16 }} />
-          {mfaChallenge ? (
+          {mfaPending ? (
             <form onSubmit={onSubmitMfa} className="row" style={{ gap: 12 }}>
               <label className="muted" htmlFor="mfa-code">
                 Código do aplicativo autenticador

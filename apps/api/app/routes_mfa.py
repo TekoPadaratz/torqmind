@@ -13,22 +13,40 @@ Setup flow (authenticated user):
   - POST /auth/mfa/disable -> requires a valid code; turns 2FA off
 
 Secrets are never returned after setup confirmation and never logged.
+
+Attempt throttling is Postgres-backed (``auth.security_attempt_buckets``) so it
+is shared across API workers. Successful TOTP codes claim ``totp_last_counter``
+to block replay inside the validity window.
 """
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app import repos_auth, repos_mfa
 from app.config import settings
 from app.deps import _resolve_session, get_current_claims, get_current_claims_allow_password_change
-from app.security import create_access_token, decode_token
+from app.mfa_policy import policy_snapshot
+from app.security import (
+    TOKEN_USE_ACCESS,
+    TOKEN_USE_MFA_CHALLENGE,
+    TOKEN_USE_MFA_SETUP,
+    classify_token_use,
+    create_access_token,
+    decode_token,
+)
+from app.session_cookies import (
+    attach_login_cookies,
+    clear_mfa_challenge_cookie,
+    clear_mfa_setup_cookie,
+    extract_mfa_challenge_token,
+    extract_mfa_setup_token,
+    is_browser_request,
+)
 from app.totp import (
-    decrypt_secret,
     encrypt_secret,
     generate_recovery_codes,
     generate_secret,
@@ -36,80 +54,79 @@ from app.totp import (
     is_totp_configured,
     provisioning_uri,
     qr_svg_data_uri,
-    verify_code,
 )
 
 logger = logging.getLogger("torqmind.mfa")
 
 router = APIRouter(prefix="/auth/mfa", tags=["auth-mfa"])
 
-# Best-effort in-process attempt limiter for the 6-digit challenge. Combined with
-# the 5-minute challenge TTL and the 1e6 code space this throttles brute force.
-_attempts: dict[str, tuple[int, float]] = {}
 
-
-def _too_many_attempts(user_id: str) -> bool:
-    count, started = _attempts.get(user_id, (0, time.time()))
-    window = settings.mfa_challenge_ttl_minutes * 60
-    if time.time() - started > window:
-        _attempts[user_id] = (0, time.time())
-        return False
-    return count >= settings.mfa_max_attempts
-
-
-def _record_attempt(user_id: str) -> None:
-    count, started = _attempts.get(user_id, (0, time.time()))
-    if time.time() - started > settings.mfa_challenge_ttl_minutes * 60:
-        count, started = 0, time.time()
-    _attempts[user_id] = (count + 1, started)
-
-
-def _clear_attempts(user_id: str) -> None:
-    _attempts.pop(user_id, None)
+def _raise_mfa_outcome(outcome: repos_mfa.MfaVerifyOutcome) -> None:
+    if outcome.ok:
+        return
+    if outcome.error == "too_many_attempts":
+        raise HTTPException(
+            status_code=429,
+            detail={"error": "too_many_attempts", "message": "Muitas tentativas. Faça login novamente."},
+        )
+    if outcome.error == "mfa_not_enabled":
+        raise HTTPException(status_code=400, detail={"error": "mfa_not_enabled", "message": "2FA não está ativo."})
+    if outcome.error == "replay":
+        raise HTTPException(status_code=401, detail={"error": "invalid_code", "message": "Código já utilizado. Aguarde o próximo."})
+    raise HTTPException(status_code=401, detail={"error": "invalid_code", "message": "Código inválido."})
 
 
 def issue_mfa_challenge_token(user_id: str, id_empresa: Optional[int], id_filial: Optional[int]) -> str:
     """Short-lived token proving the password step passed; 2FA still pending."""
     payload = {
         "sub": user_id,
-        "scope": "mfa_challenge",
-        "mfa_pending": True,
         "id_empresa": id_empresa,
         "id_filial": id_filial,
     }
-    return create_access_token(payload, minutes=settings.mfa_challenge_ttl_minutes)
+    return create_access_token(
+        payload,
+        minutes=settings.mfa_challenge_ttl_minutes,
+        token_use=TOKEN_USE_MFA_CHALLENGE,
+    )
 
 
 def issue_mfa_setup_token(user_id: str, id_empresa: Optional[int], id_filial: Optional[int]) -> str:
     """Short-lived token for FORCED 2FA setup (totp_required, not yet enabled).
 
-    Authorizes only the setup endpoints (start/confirm); ``mfa_pending=True`` so
-    it is rejected as a normal bearer everywhere else.
+    Authorizes only the setup endpoints (start/confirm); rejected as a normal
+    bearer everywhere else.
     """
     payload = {
         "sub": user_id,
-        "scope": "mfa_setup",
-        "mfa_pending": True,
         "id_empresa": id_empresa,
         "id_filial": id_filial,
     }
-    return create_access_token(payload, minutes=settings.mfa_challenge_ttl_minutes)
+    return create_access_token(
+        payload,
+        minutes=settings.mfa_challenge_ttl_minutes,
+        token_use=TOKEN_USE_MFA_SETUP,
+    )
 
 
-def setup_claims(authorization: Optional[str] = Header(default=None)) -> dict[str, Any]:
-    """Authorize 2FA setup via either a full session OR an mfa_setup token.
-
-    The mfa_setup path lets a ``totp_required`` user complete the mandatory
-    enrollment right after the password step, without a full session.
-    """
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail={"error": "missing_bearer", "message": "Missing bearer token"})
-    token = authorization.split(" ", 1)[1].strip()
+def setup_claims(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Authorize 2FA setup via full session OR mfa_setup cookie/token."""
+    setup_token = extract_mfa_setup_token(request, authorization)
+    token = setup_token
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if not token:
+        # Fall through to access session (cookie/bearer).
+        session = _resolve_session(authorization, request=request)
+        session["mode"] = "session"
+        return session
     try:
         payload = decode_token(token)
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
-    if payload.get("scope") == "mfa_setup":
+    if classify_token_use(payload) == TOKEN_USE_MFA_SETUP:
         uid = str(payload.get("sub") or "").strip()
         if not uid:
             raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
@@ -120,12 +137,24 @@ def setup_claims(authorization: Optional[str] = Header(default=None)) -> dict[st
             "id_filial": payload.get("id_filial"),
             "mode": "setup",
         }
-    session = _resolve_session(authorization)
+    if classify_token_use(payload) == TOKEN_USE_MFA_CHALLENGE:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "mfa_required", "message": "Two-factor authentication required."},
+        )
+    session = _resolve_session(authorization, request=request)
     session["mode"] = "session"
     return session
 
 
-def _issue_session_token(user_id: str, id_empresa: Optional[int], id_filial: Optional[int]) -> dict[str, Any]:
+def _issue_session_token(
+    user_id: str,
+    id_empresa: Optional[int],
+    id_filial: Optional[int],
+    *,
+    response: Optional[Response] = None,
+    request: Optional[Request] = None,
+) -> dict[str, Any]:
     """Build the full session + final access token after a passed 2FA check."""
     session = repos_auth.get_session_context(
         user_id=user_id,
@@ -144,8 +173,8 @@ def _issue_session_token(user_id: str, id_empresa: Optional[int], id_filial: Opt
         "must_change_password": session.get("must_change_password", False),
     }
     token_minutes = 1440 if session.get("user_role") == "tenant_kiosk" else None
-    token = create_access_token(payload, minutes=token_minutes)
-    return {
+    token = create_access_token(payload, minutes=token_minutes, token_use=TOKEN_USE_ACCESS)
+    result = {
         "access_token": token,
         "role": session.get("role"),
         "user_role": session.get("user_role"),
@@ -155,53 +184,57 @@ def _issue_session_token(user_id: str, id_empresa: Optional[int], id_filial: Opt
         "home_path": session.get("home_path"),
         "session": session,
     }
+    if response is not None:
+        csrf = attach_login_cookies(response, access_token=token, access_minutes=token_minutes)
+        result["csrf_token"] = csrf
+        if request is not None and is_browser_request(request) and bool(
+            getattr(settings, "auth_omit_tokens_in_json_for_browser", True)
+        ):
+            result["access_token"] = None
+    return result
 
 
 # ── Verify (login step 2) ────────────────────────────────────
 
 class MfaVerifyRequest(BaseModel):
-    mfa_challenge_token: str = Field(..., min_length=1)
+    mfa_challenge_token: Optional[str] = Field(default=None, min_length=1, max_length=4096)
     code: str = Field(..., min_length=1, max_length=16)
 
 
 @router.post("/verify")
-def mfa_verify(body: MfaVerifyRequest):
+def mfa_verify(body: MfaVerifyRequest, request: Request, response: Response):
     """Exchange a challenge token + TOTP code for a real access token."""
+    challenge = extract_mfa_challenge_token(request, body.mfa_challenge_token)
     try:
-        payload = decode_token(body.mfa_challenge_token)
+        payload = decode_token(challenge)
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "invalid_challenge", "message": "Desafio inválido ou expirado."})
-    if payload.get("scope") != "mfa_challenge" or not payload.get("mfa_pending"):
+    if classify_token_use(payload) != TOKEN_USE_MFA_CHALLENGE:
         raise HTTPException(status_code=401, detail={"error": "invalid_challenge", "message": "Desafio inválido."})
 
     user_id = str(payload.get("sub") or "").strip()
     if not user_id:
         raise HTTPException(status_code=401, detail={"error": "invalid_challenge", "message": "Desafio inválido."})
 
-    if _too_many_attempts(user_id):
-        raise HTTPException(status_code=429, detail={"error": "too_many_attempts", "message": "Muitas tentativas. Faça login novamente."})
+    outcome = repos_mfa.verify_totp_or_recovery(
+        user_id,
+        body.code,
+        purpose="verify",
+        require_enabled=True,
+        allow_recovery=True,
+    )
+    _raise_mfa_outcome(outcome)
 
-    enc = repos_mfa.get_encrypted_secret(user_id, require_enabled=True)
-    if not enc:
-        raise HTTPException(status_code=400, detail={"error": "mfa_not_enabled", "message": "2FA não está ativo."})
-
-    ok = False
     try:
-        ok = verify_code(decrypt_secret(enc), body.code)
-    except Exception:  # noqa: BLE001 — never leak crypto errors
-        logger.warning("TOTP verify failed to decrypt/evaluate for user")
-    if not ok:
-        # Recovery code fallback (one-time).
-        if repos_mfa.consume_recovery_code(user_id, hash_recovery_code(body.code)):
-            ok = True
-    if not ok:
-        _record_attempt(user_id)
-        raise HTTPException(status_code=401, detail={"error": "invalid_code", "message": "Código inválido."})
-
-    _clear_attempts(user_id)
-    repos_mfa.mark_used(user_id)
-    try:
-        return _issue_session_token(user_id, payload.get("id_empresa"), payload.get("id_filial"))
+        result = _issue_session_token(
+            user_id,
+            payload.get("id_empresa"),
+            payload.get("id_filial"),
+            response=response,
+            request=request,
+        )
+        clear_mfa_challenge_cookie(response)
+        return result
     except repos_auth.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
 
@@ -232,31 +265,49 @@ class MfaConfirmRequest(BaseModel):
 
 
 @router.post("/setup/confirm")
-def mfa_setup_confirm(body: MfaConfirmRequest, claims=Depends(setup_claims)):
+def mfa_setup_confirm(
+    body: MfaConfirmRequest,
+    request: Request,
+    response: Response,
+    claims=Depends(setup_claims),
+):
     """Validate the first code, enable 2FA, and return one-time recovery codes.
 
     When invoked through a forced-setup token (``totp_required``), also returns a
     full access token so the user lands logged in right after enrollment.
     """
     user_id = claims["sub"]
-    enc = repos_mfa.get_encrypted_secret(user_id, require_enabled=False)
-    if not enc:
+    outcome = repos_mfa.verify_totp_or_recovery(
+        user_id,
+        body.code,
+        purpose="setup_confirm",
+        require_enabled=False,
+        allow_recovery=False,
+    )
+    if outcome.error == "mfa_not_enabled":
         raise HTTPException(status_code=400, detail={"error": "no_pending_secret", "message": "Inicie a configuração do 2FA primeiro."})
-    try:
-        ok = verify_code(decrypt_secret(enc), body.code)
-    except Exception:  # noqa: BLE001
-        ok = False
-    if not ok:
-        raise HTTPException(status_code=401, detail={"error": "invalid_code", "message": "Código inválido. Tente novamente."})
+    _raise_mfa_outcome(outcome)
 
-    repos_mfa.enable_after_confirm(user_id)
+    if not repos_mfa.enable_after_confirm(user_id, totp_counter=outcome.totp_counter):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "mfa_already_enabled", "message": "2FA já foi confirmado. Faça login novamente."},
+        )
+
     codes = generate_recovery_codes()
     repos_mfa.replace_recovery_codes(user_id, [hash_recovery_code(c) for c in codes])
     result: dict[str, Any] = {"ok": True, "totp_enabled": True, "recovery_codes": codes}
     if claims.get("mode") == "setup":
         # Forced enrollment just completed → issue the final session token.
         try:
-            result["login"] = _issue_session_token(user_id, claims.get("id_empresa"), claims.get("id_filial"))
+            result["login"] = _issue_session_token(
+                user_id,
+                claims.get("id_empresa"),
+                claims.get("id_filial"),
+                response=response,
+                request=request,
+            )
+            clear_mfa_setup_cookie(response)
         except repos_auth.AuthError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
     return result
@@ -270,19 +321,16 @@ class MfaDisableRequest(BaseModel):
 def mfa_disable(body: MfaDisableRequest, claims=Depends(get_current_claims)):
     """Disable the caller's own 2FA after validating a current code."""
     user_id = claims["sub"]
-    enc = repos_mfa.get_encrypted_secret(user_id, require_enabled=True)
-    if not enc:
+    outcome = repos_mfa.verify_totp_or_recovery(
+        user_id,
+        body.code,
+        purpose="disable",
+        require_enabled=True,
+        allow_recovery=True,
+    )
+    _raise_mfa_outcome(outcome)
+    if not repos_mfa.disable(user_id, clear_secret=True):
         raise HTTPException(status_code=400, detail={"error": "mfa_not_enabled", "message": "2FA não está ativo."})
-    ok = False
-    try:
-        ok = verify_code(decrypt_secret(enc), body.code)
-    except Exception:  # noqa: BLE001
-        ok = False
-    if not ok and repos_mfa.consume_recovery_code(user_id, hash_recovery_code(body.code)):
-        ok = True
-    if not ok:
-        raise HTTPException(status_code=401, detail={"error": "invalid_code", "message": "Código inválido."})
-    repos_mfa.disable(user_id, clear_secret=True)
     return {"ok": True, "totp_enabled": False}
 
 
@@ -294,9 +342,11 @@ def mfa_status(claims=Depends(get_current_claims_allow_password_change)):
     saber se MFA é exigido antes de liberar o usuário.
     """
     state = repos_mfa.get_mfa_state(claims["sub"]) or {}
+    snap = policy_snapshot(claims.get("user_role") or claims.get("role"), state)
     return {
         "totp_enabled": bool(state.get("totp_enabled")),
         "totp_required": bool(state.get("totp_required")),
         "mfa_reset_required": bool(state.get("mfa_reset_required")),
         "configured": is_totp_configured(),
+        **snap,
     }

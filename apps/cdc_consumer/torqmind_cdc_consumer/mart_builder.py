@@ -221,14 +221,25 @@ class MartBuilder:
         self._backoff_seconds = 2.0
 
     def _get_client(self) -> clickhouse_connect.driver.client.Client:
-        return clickhouse_connect.get_client(
-            host=self.clickhouse_host,
-            port=self.clickhouse_port,
-            username=self.clickhouse_user,
-            password=self.clickhouse_password,
-            connect_timeout=10,
-            send_receive_timeout=300,
-        )
+        from .config import settings as _settings
+
+        kwargs = {
+            "host": self.clickhouse_host,
+            "port": self.clickhouse_port,
+            "username": self.clickhouse_user,
+            "password": self.clickhouse_password,
+            "connect_timeout": 10,
+            "send_receive_timeout": 300,
+            "secure": bool(getattr(_settings, "clickhouse_secure", False)),
+            "verify": bool(getattr(_settings, "clickhouse_verify", True)),
+        }
+        ca = (getattr(_settings, "clickhouse_ca_cert", None) or "").strip()
+        if ca:
+            kwargs["ca_cert"] = ca
+        server_name = (getattr(_settings, "clickhouse_server_host_name", None) or "").strip()
+        if server_name:
+            kwargs["server_host_name"] = server_name
+        return clickhouse_connect.get_client(**kwargs)
 
     def mark_affected(self, id_empresa: int, id_filial: int, data_key: int, table: str) -> None:
         """Called by CDC consumer after processing each event."""

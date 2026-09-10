@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { apiGet, apiPost, setAuthToken } from "../../lib/api";
-import { getToken, setToken, clearAuth } from "../../lib/auth";
+import { apiGet, apiPost } from "../../lib/api";
+import { markSession, clearAuth } from "../../lib/auth";
 import { loadSession } from "../../lib/session";
 
 export default function TVSalesRankingPage() {
@@ -13,8 +13,6 @@ export default function TVSalesRankingPage() {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   useEffect(() => {
-    const t = getToken();
-    if (t) setAuthToken(t);
     loadSession(router, "product").then((me) => {
       if (me) setSession(me);
     });
@@ -23,12 +21,10 @@ export default function TVSalesRankingPage() {
   const fetchData = useCallback(async () => {
     if (!session) return;
     try {
-      // Refresh token to keep kiosk session alive
+      // Refresh cookie session to keep kiosk alive (preserves absolute session_exp).
       try {
-        const refreshRes = await apiPost("/auth/refresh", {});
-        if (refreshRes?.access_token) {
-          setToken(refreshRes.access_token);
-        }
+        await apiPost("/auth/refresh", {});
+        markSession();
       } catch {}
       const res = await apiGet(`/bi/tv/sales-ranking`);
       setData(res);

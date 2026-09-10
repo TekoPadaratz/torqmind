@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { apiGet, apiPost, setAuthToken } from "../../lib/api";
-import { getToken, setToken, clearAuth } from "../../lib/auth";
+import { apiGet, apiPost } from "../../lib/api";
+import { markSession, clearAuth } from "../../lib/auth";
 import { loadSession } from "../../lib/session";
 import SalesFloorBoard, { SalesFloorHourPoint } from "../../components/SalesFloorBoard";
 
@@ -14,8 +14,6 @@ export default function TVSalesHourlyPage() {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   useEffect(() => {
-    const t = getToken();
-    if (t) setAuthToken(t);
     loadSession(router, "product").then((me) => {
       if (me) setSession(me);
     });
@@ -25,10 +23,8 @@ export default function TVSalesHourlyPage() {
     if (!session) return;
     try {
       try {
-        const refreshRes = await apiPost("/auth/refresh", {});
-        if (refreshRes?.access_token) {
-          setToken(refreshRes.access_token);
-        }
+        await apiPost("/auth/refresh", {});
+        markSession();
       } catch {}
       const res = await apiGet(`/bi/tv/sales-hourly`);
       setData(res);

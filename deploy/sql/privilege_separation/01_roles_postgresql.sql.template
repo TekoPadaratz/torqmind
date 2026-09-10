@@ -1,0 +1,35 @@
+-- ============================================================================
+-- TorqMind privilege separation — PostgreSQL roles (TEMPLATE — not applied)
+-- No passwords in this file. Set them out-of-band:
+--   ALTER ROLE torqmind_api PASSWORD :'api_pass';   -- psql -v api_pass=...
+-- Never commit secrets. Never apply on Hom/Prod without review.
+-- ============================================================================
+
+BEGIN;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'torqmind_api') THEN
+    CREATE ROLE torqmind_api LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'torqmind_ingest') THEN
+    CREATE ROLE torqmind_ingest LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'torqmind_etl') THEN
+    CREATE ROLE torqmind_etl LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'torqmind_auth') THEN
+    CREATE ROLE torqmind_auth LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'torqmind_migrate') THEN
+    CREATE ROLE torqmind_migrate LOGIN NOSUPERUSER CREATEDB NOCREATEROLE NOINHERIT;
+  END IF;
+END $$;
+
+COMMENT ON ROLE torqmind_api IS 'TorqMind API OLTP/BI session role (prepared)';
+COMMENT ON ROLE torqmind_ingest IS 'TorqMind STG ingest role (prepared)';
+COMMENT ON ROLE torqmind_etl IS 'TorqMind ETL/DW/mart mash role (prepared)';
+COMMENT ON ROLE torqmind_auth IS 'TorqMind auth/MFA role (prepared)';
+COMMENT ON ROLE torqmind_migrate IS 'TorqMind schema migrator (prepared)';
+
+COMMIT;

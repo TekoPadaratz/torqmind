@@ -4,10 +4,47 @@ on:
   push:
   pull_request:
 
+# Least privilege — jobs must not write contents or pull packages by default.
 permissions:
   contents: read
 
+concurrency:
+  group: torqmind-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+      - name: Secret scan (redacted; fail closed)
+        run: |
+          set +e
+          bash deploy/scripts/ci-secret-scan.sh | tee /tmp/secret_scan.out
+          code=${PIPESTATUS[0]}
+          set -e
+          status="$(grep -E '^secret_scan_status=' /tmp/secret_scan.out | tail -1 | cut -d= -f2 || true)"
+          echo "classified_status=${status:-unknown} exit=${code}"
+          case "${status}" in
+            scanner_ok_clean)
+              exit 0
+              ;;
+            scanner_ok_findings)
+              echo "::error::Secret scanner reported findings (redacted)."
+              exit 1
+              ;;
+            scanner_unavailable)
+              echo "::error::Secret scanner unavailable — not treating as approval."
+              exit 1
+              ;;
+            *)
+              echo "::error::Secret scan outcome unknown — not treating as approval."
+              exit 1
+              ;;
+          esac
+
   api-static:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -15,8 +52,8 @@ jobs:
       run:
         working-directory: apps/api
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.3.0
         with:
           python-version: '3.12'
           cache: pip
@@ -27,13 +64,19 @@ jobs:
           python -m pip install pytest
       - name: compileall
         run: python -m compileall -q app
-      - name: Static unit tests
+      - name: Static unit tests (hardening + guards)
         run: |
           PYTHONPATH=. python -m unittest \
             app.test_migration_guard_unit \
             app.test_pg_analytical_exceptions_registry \
             app.test_repos_analytics_unit \
             app.test_ci_ephemeral_stack_contract \
+            app.test_session_cookies_unit \
+            app.test_session_mfa_tokens_unit \
+            app.test_ingest_abuse_limits_unit \
+            app.test_db_tls_privilege_unit \
+            app.test_agent_update_unit \
+            app.test_jarvis_branch_scope_unit \
             -q
 
   cdc-consumer:
@@ -43,8 +86,8 @@ jobs:
       run:
         working-directory: apps/cdc_consumer
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.3.0
         with:
           python-version: '3.11'
           cache: pip
@@ -64,8 +107,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-python@v5.3.0
         with:
           python-version: '3.12'
           cache: pip
@@ -73,19 +116,19 @@ jobs:
       - name: Install Agent test deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyyaml requests
-      - name: Agent tests
+          python -m pip install -r apps/agent/requirements.txt
+      - name: Agent tests (incl. Ed25519 update security)
         run: PYTHONPATH=apps/agent python -m unittest discover -s apps/agent/tests -q
 
   web:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v4.2.2
+      - uses: actions/setup-node@v4.1.0
         with:
           node-version: '20'
           cache: npm
@@ -94,8 +137,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: npm audit runtime (critical)
-        # Fail only on real critical vulns. npm registry sometimes returns
-        # 400 "Invalid package tree" / endpoint errors (flake) — non-blocking.
+        # Fail only on real critical vulns. Registry flake ≠ approval.
         run: |
           set +e
           output="$(npm audit --omit=dev --audit-level=critical 2>&1)"
@@ -103,8 +145,8 @@ jobs:
           printf '%s\n' "$output"
           if printf '%s\n' "$output" | grep -Eqi \
             'audit endpoint returned an error|Invalid package tree|EAI_AGAIN|ETIMEDOUT|ENOTFOUND|502 Bad Gateway|503 Service Unavailable|400 Bad Request'; then
-            echo "::warning::npm audit registry unavailable or rejected package tree; treating as non-blocking"
-            exit 0
+            echo "::error::npm audit registry unavailable — not treating as approval"
+            exit 1
           fi
           exit "$code"
 
@@ -147,10 +189,10 @@ jobs:
           --health-retries 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.3.0
         with:
           python-version: '3.12'
           cache: pip
@@ -161,7 +203,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unixodbc unixodbc-dev
           python -m pip install --upgrade pip
-          python -m pip install pytest pyyaml requests
+          python -m pip install pytest pyyaml requests cryptography
           python -m pip install -e apps/api
 
       - name: Assert ephemeral CI database
@@ -204,7 +246,9 @@ jobs:
         run: PYTHONPATH=. python -m unittest app.test_ci_ephemeral_smoke -v
 
       - name: Agent tests
-        run: PYTHONPATH=apps/agent python -m unittest discover -s apps/agent/tests -q
+        run: |
+          python -m pip install -r apps/agent/requirements.txt
+          PYTHONPATH=apps/agent python -m unittest discover -s apps/agent/tests -q
 
       - name: API compileall
         working-directory: apps/api

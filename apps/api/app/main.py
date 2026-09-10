@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
-from collections import defaultdict
-from threading import Lock
 
 # Abort boot before wiring routes if prod/homolog stacks are crossed.
 from app.runtime_guard import assert_runtime_stack_or_exit
@@ -85,9 +82,13 @@ app.add_middleware(
 # ── Force password change middleware ─────────────────────────
 _PASSWORD_CHANGE_EXEMPT = {
     "/auth/login",
+    "/auth/logout",
     "/auth/change-password",
     "/auth/me",
     "/auth/mfa/status",
+    "/auth/mfa/verify",
+    "/auth/mfa/setup/start",
+    "/auth/mfa/setup/confirm",
     "/health",
     "/readyz",
 }
@@ -99,9 +100,18 @@ class ForcePasswordChangeMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS" or path in _PASSWORD_CHANGE_EXEMPT:
             return await call_next(request)
 
+        token = None
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1].strip()
+        else:
+            try:
+                from app.session_cookies import access_cookie_name
+
+                token = (request.cookies.get(access_cookie_name()) or "").strip() or None
+            except Exception:
+                token = None
+        if token:
             try:
                 payload = decode_token(token)
                 if payload.get("must_change_password"):
@@ -121,6 +131,47 @@ class ForcePasswordChangeMiddleware(BaseHTTPMiddleware):
 app.add_middleware(ForcePasswordChangeMiddleware)
 
 
+# ── CSRF + Origin for cookie sessions (Prompt 7) ─────────────
+_CSRF_ORIGIN_EXEMPT_PREFIXES = (
+    "/ingest",
+    "/health",
+    "/readyz",
+)
+_CSRF_ORIGIN_EXEMPT_EXACT = {
+    "/auth/login",
+    "/auth/forgot-password",
+    "/auth/reset-password",
+    "/auth/logout",
+}
+
+
+class CsrfOriginMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+            return await call_next(request)
+        if str(settings.app_env or "").strip().lower() == "test":
+            return await call_next(request)
+        path = request.url.path.rstrip("/") or "/"
+        if path in _CSRF_ORIGIN_EXEMPT_EXACT or any(path.startswith(p) for p in _CSRF_ORIGIN_EXEMPT_PREFIXES):
+            return await call_next(request)
+        if not bool(getattr(settings, "auth_csrf_enforce", True)):
+            return await call_next(request)
+        try:
+            from app.session_cookies import validate_browser_mutation_origin, validate_csrf
+
+            validate_browser_mutation_origin(request)
+            validate_csrf(request)
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict):
+                return JSONResponse(status_code=exc.status_code, content=detail)
+            return JSONResponse(status_code=exc.status_code, content={"error": "forbidden", "message": str(detail)})
+        return await call_next(request)
+
+
+app.add_middleware(CsrfOriginMiddleware)
+
+
 # ── Security headers middleware ────────────────────────────────
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -138,66 +189,51 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-# ── Auth rate limiting (IP-based) ─────────────────────────────
-_login_attempts: dict[str, list[float]] = defaultdict(list)
-_login_lock = Lock()
-_LOGIN_WINDOW_SECONDS = 60
-_LOGIN_MAX_PER_WINDOW = 10
-
-_auth_mail_attempts: dict[str, list[float]] = defaultdict(list)
-_auth_mail_lock = Lock()
-_AUTH_MAIL_WINDOW_SECONDS = 60
-_AUTH_MAIL_MAX_PER_WINDOW = 5
+# ── Auth rate limiting (identity + optional IP via shared buckets) ─
+# IP identity: see app.client_ip — default hops=0 does not trust X-Forwarded-For.
+# Cross-worker state: auth.security_attempt_buckets (migration 155) via security_attempts.
 _AUTH_MAIL_PATHS = {
     "/auth/forgot-password",
     "/auth/reset-password",
 }
 
 
-def _client_ip(request: Request) -> str:
-    """Client IP for rate limits. Prefer X-Forwarded-For (nginx) over the Docker gateway."""
-    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if forwarded:
-        return forwarded
-    return request.client.host if request.client else "unknown"
-
-
 class LoginRateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path.rstrip("/")
+        if str(settings.app_env or "").strip().lower() == "test":
+            return await call_next(request)
+
+        from app.client_ip import client_ip_for_rate_limit
+        from app import security_attempts
+
         if request.method == "POST" and path == "/auth/login":
-            if str(settings.app_env or "").strip().lower() == "test":
-                return await call_next(request)
-            client_ip = _client_ip(request)
-            now = time.time()
-            with _login_lock:
-                attempts = _login_attempts[client_ip]
-                _login_attempts[client_ip] = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
-                if len(_login_attempts[client_ip]) >= _LOGIN_MAX_PER_WINDOW:
-                    return JSONResponse(
-                        status_code=429,
-                        content={"error": "rate_limited", "message": "Muitas tentativas de login. Aguarde 1 minuto."},
-                    )
-                _login_attempts[client_ip].append(now)
+            ip_key = security_attempts.bucket_key(
+                "auth", "login", "ip", client_ip_for_rate_limit(request)
+            )
+            max_n = int(settings.auth_login_ip_max_per_window)
+            window = int(settings.auth_login_ip_window_seconds)
+            if security_attempts.is_rate_limited(ip_key, max_attempts=max_n, window_seconds=window):
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "rate_limited", "message": "Muitas tentativas de login. Aguarde 1 minuto."},
+                )
+            security_attempts.record_attempt(ip_key, window_seconds=window)
         elif request.method == "POST" and path in _AUTH_MAIL_PATHS:
-            if str(settings.app_env or "").strip().lower() == "test":
-                return await call_next(request)
-            client_ip = _client_ip(request)
-            now = time.time()
-            with _auth_mail_lock:
-                attempts = _auth_mail_attempts[client_ip]
-                _auth_mail_attempts[client_ip] = [
-                    t for t in attempts if now - t < _AUTH_MAIL_WINDOW_SECONDS
-                ]
-                if len(_auth_mail_attempts[client_ip]) >= _AUTH_MAIL_MAX_PER_WINDOW:
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": "rate_limited",
-                            "message": "Muitas tentativas de recuperação de senha. Aguarde 1 minuto.",
-                        },
-                    )
-                _auth_mail_attempts[client_ip].append(now)
+            ip_key = security_attempts.bucket_key(
+                "auth", "mail", "ip", client_ip_for_rate_limit(request)
+            )
+            max_n = int(settings.auth_mail_ip_max_per_window)
+            window = int(settings.auth_mail_ip_window_seconds)
+            if security_attempts.is_rate_limited(ip_key, max_attempts=max_n, window_seconds=window):
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": "rate_limited",
+                        "message": "Muitas tentativas de recuperação de senha. Aguarde 1 minuto.",
+                    },
+                )
+            security_attempts.record_attempt(ip_key, window_seconds=window)
         return await call_next(request)
 
 

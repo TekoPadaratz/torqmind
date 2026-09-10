@@ -1,0 +1,9 @@
+-- Debezium / logical replication notes (NO executable resets).
+-- Preserve: replication slot, publication, connector offsets, snapshot policy.
+-- Do NOT run: DROP PUBLICATION, DROP SLOT, connector recreate, second prod consumer.
+
+-- Typical existing objects (names may differ — verify read-only before any change):
+--   SELECT slot_name, active FROM pg_replication_slots;
+--   SELECT pubname FROM pg_publication;
+-- Replication role (if separating later) needs REPLICATION + SELECT on published tables only.
+-- Dual-run of a second CDC consumer against prod is forbidden in this hardening sequence.

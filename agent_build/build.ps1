@@ -48,10 +48,13 @@ python -m PyInstaller `
   --hidden-import agent.runtime.scheduler `
   --hidden-import agent.runtime.budget `
   --hidden-import agent.runtime.log_policy `
+  --hidden-import agent.transport `
   --hidden-import agent.update `
   --hidden-import agent.update.manifest `
   --hidden-import agent.update.downloader `
   --hidden-import agent.update.apply `
+  --hidden-import agent.update.policy `
+  --hidden-import agent.update.signing `
   --hidden-import agent.extractors `
   --hidden-import agent.extractors.base `
   --hidden-import agent.extractors.xpert `

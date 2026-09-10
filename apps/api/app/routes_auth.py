@@ -1,21 +1,56 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app import repos_auth
 from app.config import settings
-from app.deps import get_current_claims, get_current_claims_allow_password_change
+from app.deps import get_current_claims, get_current_claims_allow_password_change, resolve_access_session
 from app.email_service import send_password_reset_email
 from app.password_policy import policy_message, validate_password
 from app.schemas_auth import LoginRequest, LoginResponse
-from app.security import create_access_token, decode_token, hash_password, verify_password
+from app.security import (
+    TOKEN_USE_ACCESS,
+    create_access_token,
+    hash_password,
+    resolve_session_exp,
+    verify_password,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _maybe_omit_tokens(request: Request, payload: dict) -> dict:
+    from app.session_cookies import is_browser_request
+
+    out = dict(payload)
+    if is_browser_request(request) and bool(getattr(settings, "auth_omit_tokens_in_json_for_browser", True)):
+        out["access_token"] = None
+        out["mfa_challenge_token"] = None
+        out["mfa_setup_token"] = None
+    return out
+
+
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest):
+def login(body: LoginRequest, request: Request, response: Response):
+    from app import security_attempts
+    from app.session_cookies import attach_login_cookies
+
+    # Identity-scoped throttle (shared across workers via security_attempt_buckets).
+    # Does not depend on X-Forwarded-For.
+    ident_key = security_attempts.bucket_key(
+        "auth", "login", "id", security_attempts.identity_hash(body.identifier)
+    )
+    id_max = int(settings.auth_login_identity_max_per_window)
+    id_window = int(settings.auth_login_identity_window_seconds)
+    if str(settings.app_env or "").strip().lower() != "test":
+        if security_attempts.is_rate_limited(ident_key, max_attempts=id_max, window_seconds=id_window):
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "rate_limited", "message": "Muitas tentativas de login. Aguarde 1 minuto."},
+            )
+        security_attempts.record_attempt(ident_key, window_seconds=id_window)
+
     try:
         session = repos_auth.verify_login(
             body.identifier,
@@ -27,9 +62,13 @@ def login(body: LoginRequest):
     except repos_auth.AuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
 
+    if str(settings.app_env or "").strip().lower() != "test":
+        security_attempts.clear_attempts(ident_key)
+
     # Two-factor: if the user has TOTP enabled, do NOT issue a final token yet.
     # Return a short-lived challenge; the client completes via /auth/mfa/verify.
     from app import repos_mfa
+    from app.mfa_policy import effective_totp_required
     from app.routes_mfa import issue_mfa_challenge_token, issue_mfa_setup_token
 
     mfa_state = repos_mfa.get_mfa_state(session["sub"]) or {}
@@ -37,16 +76,31 @@ def login(body: LoginRequest):
         challenge = issue_mfa_challenge_token(
             session["sub"], session.get("id_empresa"), session.get("id_filial")
         )
-        return LoginResponse(mfa_required=True, mfa_challenge_token=challenge)
+        csrf = attach_login_cookies(response, mfa_challenge_token=challenge)
+        return _maybe_omit_tokens(
+            request,
+            LoginResponse(
+                mfa_required=True,
+                mfa_challenge_token=challenge,
+                csrf_token=csrf,
+            ).model_dump(),
+        )
 
-    # Enforced enrollment: account requires 2FA but has not configured it yet.
-    # Issue a setup-scoped token so the client can complete the mandatory
-    # enrollment before receiving a full session.
-    if mfa_state.get("totp_required"):
+    # Enforced enrollment: column totp_required and/or privileged policy flag
+    # (default OFF — does not block existing admins until explicitly enabled).
+    if effective_totp_required(mfa_state, user_role=session.get("user_role")):
         setup_token = issue_mfa_setup_token(
             session["sub"], session.get("id_empresa"), session.get("id_filial")
         )
-        return LoginResponse(mfa_setup_required=True, mfa_setup_token=setup_token)
+        csrf = attach_login_cookies(response, mfa_setup_token=setup_token)
+        return _maybe_omit_tokens(
+            request,
+            LoginResponse(
+                mfa_setup_required=True,
+                mfa_setup_token=setup_token,
+                csrf_token=csrf,
+            ).model_dump(),
+        )
 
     payload = {
         "sub": session["sub"],
@@ -60,44 +114,39 @@ def login(body: LoginRequest):
     }
     # Kiosk sessions last 24h
     token_minutes = 1440 if session.get("user_role") == "tenant_kiosk" else None
-    token = create_access_token(payload, minutes=token_minutes)
-    return LoginResponse(
-        access_token=token,
-        role=session["role"],
-        user_role=session["user_role"],
-        analytics_role=session.get("analytics_role"),
-        id_empresa=session.get("id_empresa"),
-        id_filial=session.get("id_filial"),
-        home_path=session["home_path"],
-        session=session,
+    token = create_access_token(payload, minutes=token_minutes, token_use=TOKEN_USE_ACCESS)
+    csrf = attach_login_cookies(response, access_token=token, access_minutes=token_minutes)
+    return _maybe_omit_tokens(
+        request,
+        LoginResponse(
+            access_token=token,
+            role=session["role"],
+            user_role=session["user_role"],
+            analytics_role=session.get("analytics_role"),
+            id_empresa=session.get("id_empresa"),
+            id_filial=session.get("id_filial"),
+            home_path=session["home_path"],
+            session=session,
+            csrf_token=csrf,
+        ).model_dump(),
     )
 
 
 @router.get("/me")
-def me(authorization: str | None = Header(default=None)):
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail={"error": "missing_bearer", "message": "Missing bearer token"})
+def me(request: Request, authorization: str | None = Header(default=None)):
+    # Same access-token gates as BI dependencies (rejects MFA intermediate tokens,
+    # absolute expiry and password-change revocation). Cookie-first for browsers.
+    session, _payload = resolve_access_session(authorization, request=request)
+    return session
 
-    token = authorization.split(" ", 1)[1].strip()
-    try:
-        payload = decode_token(token)
-    except Exception:
-        raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
 
-    user_id = str(payload.get("sub") or "").strip()
-    if not user_id:
-        raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
+@router.post("/logout")
+def logout(response: Response):
+    """Clear HttpOnly session cookies (revokes browser session material)."""
+    from app.session_cookies import clear_session_cookies
 
-    try:
-        return repos_auth.get_session_context(
-            user_id=user_id,
-            id_empresa=payload.get("id_empresa"),
-            id_filial=payload.get("id_filial"),
-            channel_id=payload.get("channel_id"),
-            include_default_scope=True,
-        )
-    except repos_auth.AuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.as_detail())
+    clear_session_cookies(response)
+    return {"ok": True}
 
 
 # ── Change password ──────────────────────────────────────────
@@ -109,7 +158,12 @@ class ChangePasswordRequest(BaseModel):
 
 
 @router.post("/change-password")
-def change_password(body: ChangePasswordRequest, claims=Depends(get_current_claims_allow_password_change)):
+def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    claims=Depends(get_current_claims_allow_password_change),
+):
     """
     Change user password. Validates current password, updates hash,
     clears must_change_password flag, sets password_changed_at.
@@ -119,21 +173,21 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
 
     # If the user has 2FA enabled, require a valid TOTP (or recovery) code.
     from app import repos_mfa
-    from app.totp import decrypt_secret, hash_recovery_code, verify_code
+    from app.routes_mfa import _raise_mfa_outcome
 
-    enc = repos_mfa.get_encrypted_secret(user_id, require_enabled=True)
-    if enc:
-        code = (body.totp_code or "").strip()
-        ok = False
-        if code:
-            try:
-                ok = verify_code(decrypt_secret(enc), code)
-            except Exception:  # noqa: BLE001
-                ok = False
-            if not ok and repos_mfa.consume_recovery_code(user_id, hash_recovery_code(code)):
-                ok = True
-        if not ok:
+    if repos_mfa.get_encrypted_secret(user_id, require_enabled=True):
+        outcome = repos_mfa.verify_totp_or_recovery(
+            user_id,
+            body.totp_code or "",
+            purpose="change_password",
+            require_enabled=True,
+            allow_recovery=True,
+        )
+        if not outcome.ok and outcome.error == "mfa_not_enabled":
             raise HTTPException(status_code=401, detail={"error": "mfa_required", "message": "Código do autenticador é obrigatório."})
+        if not outcome.ok and outcome.error == "invalid_code" and not (body.totp_code or "").strip():
+            raise HTTPException(status_code=401, detail={"error": "mfa_required", "message": "Código do autenticador é obrigatório."})
+        _raise_mfa_outcome(outcome)
 
     from app.db import get_conn
 
@@ -176,7 +230,8 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
         )
         conn.commit()
 
-    # Issue fresh token — minimal payload (session context is not JWT-safe)
+    # Issue fresh token — minimal payload (session context is not JWT-safe).
+    # Absolute session_exp starts anew after an authenticated password change.
     new_payload = {
         "sub": claims["sub"],
         "email": claims.get("email"),
@@ -187,32 +242,64 @@ def change_password(body: ChangePasswordRequest, claims=Depends(get_current_clai
         "channel_id": claims.get("channel_id"),
         "must_change_password": False,
     }
-    token = create_access_token(new_payload)
+    token = create_access_token(new_payload, token_use=TOKEN_USE_ACCESS)
+    from app.session_cookies import attach_login_cookies
 
-    return {"ok": True, "access_token": token}
+    csrf = attach_login_cookies(response, access_token=token)
+    body_out = {"ok": True, "access_token": token, "csrf_token": csrf}
+    return _maybe_omit_tokens(request, body_out)
 
 
 @router.post("/refresh")
-def refresh_token(claims=Depends(get_current_claims)):
+def refresh_token(
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+):
     """Reissue a fresh access token based on current valid session.
 
-    Kiosk sessions get 24h tokens; other roles get the default TTL.
-    Called periodically by the frontend to keep sessions alive.
+    Preserves absolute ``session_exp`` so refresh cannot extend the wall-clock
+    session indefinitely. Kiosk sessions keep the 24h relative TTL while still
+    capped by absolute expiry. Reloads permissions/state from the database.
     """
-    user_role = claims.get("user_role") or ""
+    session, payload = resolve_access_session(authorization, request=request)
+    if session.get("must_change_password"):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "password_change_required",
+                "message": "You must change your password before accessing this resource.",
+            },
+        )
+
+    user_role = session.get("user_role") or ""
     new_payload = {
-        "sub": claims["sub"],
-        "email": claims.get("email"),
+        "sub": session["sub"],
+        "email": session.get("email"),
         "user_role": user_role,
-        "role": claims.get("role"),
-        "id_empresa": claims.get("id_empresa"),
-        "id_filial": claims.get("id_filial"),
-        "channel_id": claims.get("channel_id"),
-        "must_change_password": False,
+        "role": session.get("role"),
+        "id_empresa": session.get("id_empresa"),
+        "id_filial": session.get("id_filial"),
+        "channel_id": session.get("channel_id"),
+        "must_change_password": bool(session.get("must_change_password")),
     }
     token_minutes = 1440 if user_role == "tenant_kiosk" else None
-    token = create_access_token(new_payload, minutes=token_minutes)
-    return {"ok": True, "access_token": token}
+    try:
+        token = create_access_token(
+            new_payload,
+            minutes=token_minutes,
+            token_use=TOKEN_USE_ACCESS,
+            session_exp=resolve_session_exp(payload, user_role=user_role, relative_minutes=token_minutes),
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "session_expired", "message": "Sessão expirada. Faça login novamente."},
+        )
+    from app.session_cookies import attach_login_cookies
+
+    csrf = attach_login_cookies(response, access_token=token, access_minutes=token_minutes)
+    return _maybe_omit_tokens(request, {"ok": True, "access_token": token, "csrf_token": csrf})
 
 
 # ── Password reset ("esqueci minha senha") ──────────────────
@@ -237,10 +324,10 @@ def _build_reset_url(raw_token: str) -> str:
 
 
 def _client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip() or None
-    return request.client.host if request.client else None
+    """Best-effort peer address for reset audit — see app.client_ip trust model."""
+    from app.client_ip import client_ip_for_rate_limit
+
+    return client_ip_for_rate_limit(request)
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -250,7 +337,27 @@ class ForgotPasswordRequest(BaseModel):
 @router.post("/forgot-password")
 def forgot_password(body: ForgotPasswordRequest, request: Request):
     """Start a password reset. Always returns a generic success (anti-enumeration)."""
+    from app import security_attempts
+
     generic = {"ok": True, "message": _GENERIC_FORGOT_MESSAGE}
+
+    if str(settings.app_env or "").strip().lower() != "test":
+        ident_key = security_attempts.bucket_key(
+            "auth", "mail", "id", security_attempts.identity_hash(body.identifier)
+        )
+        max_n = int(settings.auth_mail_identity_max_per_window)
+        window = int(settings.auth_mail_identity_window_seconds)
+        if security_attempts.is_rate_limited(ident_key, max_attempts=max_n, window_seconds=window):
+            # Same generic body to avoid account enumeration via 429 timing alone is hard;
+            # still return 429 so operators see abuse without revealing existence.
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "rate_limited",
+                    "message": "Muitas tentativas de recuperação de senha. Aguarde 1 minuto.",
+                },
+            )
+        security_attempts.record_attempt(ident_key, window_seconds=window)
 
     user = repos_auth.get_user_by_identifier(body.identifier)
     if not user or not user.get("is_active") or not user.get("email"):
@@ -322,21 +429,28 @@ def reset_password(body: ResetPasswordRequest):
     # If the user has 2FA enabled, a valid TOTP (or recovery) code is required to
     # complete the reset — a leaked reset link alone must not bypass 2FA.
     from app import repos_mfa
-    from app.totp import decrypt_secret, hash_recovery_code, verify_code
+    from app.routes_mfa import _raise_mfa_outcome
 
-    enc = repos_mfa.get_encrypted_secret(str(user["id"]), require_enabled=True)
-    if enc:
-        code = (body.totp_code or "").strip()
-        ok = False
-        if code:
-            try:
-                ok = verify_code(decrypt_secret(enc), code)
-            except Exception:  # noqa: BLE001
-                ok = False
-            if not ok and repos_mfa.consume_recovery_code(str(user["id"]), hash_recovery_code(code)):
-                ok = True
-        if not ok:
-            raise HTTPException(status_code=401, detail={"error": "mfa_required", "message": "Código do autenticador é obrigatório para concluir a redefinição."})
+    uid = str(user["id"])
+    if repos_mfa.get_encrypted_secret(uid, require_enabled=True):
+        outcome = repos_mfa.verify_totp_or_recovery(
+            uid,
+            body.totp_code or "",
+            purpose="reset_password",
+            require_enabled=True,
+            allow_recovery=True,
+        )
+        if not outcome.ok and (
+            outcome.error in {"mfa_not_enabled", "invalid_code"} and not (body.totp_code or "").strip()
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "mfa_required",
+                    "message": "Código do autenticador é obrigatório para concluir a redefinição.",
+                },
+            )
+        _raise_mfa_outcome(outcome)
 
     new_hash = hash_password(body.new_password)
     user_id = repos_auth.reset_password_with_token(body.token, new_hash)

@@ -118,10 +118,10 @@ export default function SalesAbcSection() {
     const fetchParams = async () => {
       try {
         const session = readCachedSession();
-        if (!session?.token) return;
+        if (!session) return;
         const scopeParams = buildScopeParams(scope);
         const resp = await fetch(`/api/bi/params/filial?${scopeParams}`, {
-          headers: { Authorization: `Bearer ${session.token}` },
+          credentials: "include",
         });
         if (resp.ok) {
           const p = await resp.json();
@@ -150,10 +150,16 @@ export default function SalesAbcSection() {
     // Save to backend
     try {
       const session = readCachedSession();
-      if (session?.token && scope.id_filial) {
+      if (session && scope.id_filial) {
+        const { readCsrfToken } = await import("../lib/api");
+        const csrf = readCsrfToken();
         await fetch(`/api/bi/params/filial`, {
           method: "PUT",
-          headers: { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" },
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+          },
           body: JSON.stringify({ ...newParams, id_filial: scope.id_filial }),
         });
       }

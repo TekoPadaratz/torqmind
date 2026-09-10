@@ -1,0 +1,4 @@
+{
+  "keys": [],
+  "_comment": "Offline trust store example. Install real public keys via IT/USB into config.enc or this file beside the agent. Do NOT bootstrap trust over unauthenticated HTTP. Never commit production private keys."
+}

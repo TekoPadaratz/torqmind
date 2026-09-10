@@ -12,7 +12,12 @@ from typing import Any, Iterable
 import psycopg
 
 from app.cash_operational_truth import missing_runtime_relation_columns
-from app.db import _conn_str
+from app.db import build_conninfo as _conn_str_builder
+
+
+def _conn_str() -> str:
+    """Migrator uses purpose=migrate (falls back to DATABASE_URL until separated)."""
+    return _conn_str_builder(purpose="migrate")
 
 EXPECTED_RUNTIME_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("auth", "users", "nome"),

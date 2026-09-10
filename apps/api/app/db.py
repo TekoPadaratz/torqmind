@@ -1,11 +1,19 @@
+"""PostgreSQL connection helpers with purpose-separated pools and TLS preservation.
+
+Prompt 6: DATABASE_URL query TLS options must not be discarded. Credentials are
+passed through ``psycopg.conninfo.make_conninfo`` (no unsafe concatenation).
+TLS enforcement stays OFF by default until infrastructure is ready.
+"""
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import threading
-from typing import Iterator, Optional
-from urllib.parse import urlparse, unquote
+from typing import Any, Iterator, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 import psycopg
+from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
 try:
@@ -15,95 +23,262 @@ except ImportError:  # pragma: no cover - local env may not be updated yet
 
 from app.config import settings
 
+# Keys accepted from DATABASE_URL query string / discrete TLS settings.
+_PG_CONNINFO_SAFE_KEYS = frozenset(
+    {
+        "sslmode",
+        "sslrootcert",
+        "sslcert",
+        "sslkey",
+        "sslcrl",
+        "sslpassword",
+        "channel_binding",
+        "gssencmode",
+        "target_session_attrs",
+        "connect_timeout",
+        "options",
+        "application_name",
+        "keepalives",
+        "keepalives_idle",
+        "keepalives_interval",
+        "keepalives_count",
+        "tcp_user_timeout",
+    }
+)
 
-_pool: ConnectionPool | None = None
+# Logical connection purposes. Distinct env DSNs are optional; without them all
+# purposes share credentials but keep separate pools + application_name so a
+# single POSTGRES_USER change does NOT equal privilege separation.
+DB_PURPOSES = ("api", "ingest", "etl", "migrate", "auth")
+
+_default_purpose: contextvars.ContextVar[str] = contextvars.ContextVar("torqmind_db_purpose", default="api")
+
+_pools: dict[str, ConnectionPool] = {}
 _pool_lock = threading.Lock()
 
 
-def _conn_str() -> str:
-    """Build psycopg connection string.
+@contextlib.contextmanager
+def db_purpose(purpose: str) -> Iterator[str]:
+    """Bind default ``get_conn`` purpose for the current context (ETL jobs, etc.)."""
+    normalized = (purpose or "api").strip().lower() or "api"
+    if normalized not in DB_PURPOSES:
+        normalized = "api"
+    token = _default_purpose.set(normalized)
+    try:
+        yield normalized
+    finally:
+        _default_purpose.reset(token)
 
-    PT-BR:
-    - Em Docker, preferimos DATABASE_URL para garantir que API/CLI usem o mesmo destino.
-    - Se não existir, usamos PG_*.
 
-    EN:
-    - In Docker, we prefer DATABASE_URL so API/CLI point to the same database.
-    - Fallback to PG_* when DATABASE_URL is not set.
-    """
+def _first_query_value(qs: dict[str, list[str]], key: str) -> Optional[str]:
+    values = qs.get(key) or qs.get(key.lower()) or qs.get(key.upper())
+    if not values:
+        return None
+    return values[0]
 
+
+def _tls_kwargs_from_settings() -> dict[str, str]:
+    """Discrete PG_* TLS settings (do not enable TLS unless explicitly set)."""
+    out: dict[str, str] = {}
+    sslmode = (getattr(settings, "pg_sslmode", None) or "").strip()
+    if sslmode:
+        out["sslmode"] = sslmode
+    for attr, key in (
+        ("pg_sslrootcert", "sslrootcert"),
+        ("pg_sslcert", "sslcert"),
+        ("pg_sslkey", "sslkey"),
+        ("pg_sslcrl", "sslcrl"),
+    ):
+        value = (getattr(settings, attr, None) or "").strip()
+        if value:
+            out[key] = value
+    return out
+
+
+def _database_url_for_purpose(purpose: str) -> Optional[str]:
+    purpose = (purpose or "api").strip().lower() or "api"
+    # Prefer purpose-specific URL when present (gradual separation).
+    attr = f"database_url_{purpose}"
+    specific = getattr(settings, attr, None)
+    if specific and str(specific).strip():
+        return str(specific).strip()
+    if purpose == "api" and settings.database_url:
+        return str(settings.database_url).strip()
+    # Fallback chain: purpose → api → generic database_url
     if settings.database_url:
-        parsed = urlparse(settings.database_url)
-        if parsed.scheme.startswith("postgresql"):
-            user = unquote(parsed.username or settings.pg_user)
-            password = unquote(parsed.password or settings.pg_password)
-            host = parsed.hostname or settings.pg_host
-            port = parsed.port or settings.pg_port
-            dbname = (parsed.path or "").lstrip("/") or settings.pg_database
-            return f"host={host} port={port} dbname={dbname} user={user} password={password}"
+        return str(settings.database_url).strip()
+    return None
 
-    return (
-        f"host={settings.pg_host} port={settings.pg_port} dbname={settings.pg_database} "
-        f"user={settings.pg_user} password={settings.pg_password}"
-    )
+
+def _discrete_user_for_purpose(purpose: str) -> tuple[str, str]:
+    """Return (user, password) for purpose-specific discrete env, else defaults."""
+    purpose = (purpose or "api").strip().lower() or "api"
+    user_attr = f"pg_user_{purpose}"
+    pass_attr = f"pg_password_{purpose}"
+    user = (getattr(settings, user_attr, None) or "").strip() or settings.pg_user
+    password = getattr(settings, pass_attr, None)
+    if password is None or str(password) == "":
+        password = settings.pg_password
+    return str(user), str(password)
+
+
+def build_conninfo(
+    *,
+    purpose: str = "api",
+    application_name: Optional[str] = None,
+    database_url: Optional[str] = None,
+    overrides: Optional[dict[str, Any]] = None,
+) -> str:
+    """Build a libpq conninfo string preserving TLS options and escaping secrets.
+
+    ``overrides`` is for tests (e.g. force sslmode / sslrootcert).
+    """
+    purpose = (purpose or "api").strip().lower() or "api"
+    if purpose not in DB_PURPOSES:
+        purpose = "api"
+
+    kwargs: dict[str, Any] = {}
+    url = database_url if database_url is not None else _database_url_for_purpose(purpose)
+
+    if url:
+        parsed = urlparse(url)
+        if not parsed.scheme.startswith("postgresql"):
+            raise ValueError(f"Unsupported database URL scheme: {parsed.scheme!r}")
+        user_default, password_default = _discrete_user_for_purpose(purpose)
+        kwargs["host"] = parsed.hostname or settings.pg_host
+        kwargs["port"] = parsed.port or settings.pg_port
+        kwargs["dbname"] = (parsed.path or "").lstrip("/") or settings.pg_database
+        kwargs["user"] = unquote(parsed.username) if parsed.username else user_default
+        kwargs["password"] = unquote(parsed.password) if parsed.password is not None else password_default
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        for key in _PG_CONNINFO_SAFE_KEYS:
+            value = _first_query_value(qs, key)
+            if value is not None and value != "":
+                kwargs[key] = value
+    else:
+        user, password = _discrete_user_for_purpose(purpose)
+        kwargs["host"] = settings.pg_host
+        kwargs["port"] = settings.pg_port
+        kwargs["dbname"] = settings.pg_database
+        kwargs["user"] = user
+        kwargs["password"] = password
+
+    # Discrete TLS settings fill gaps but do not override explicit URL params.
+    for key, value in _tls_kwargs_from_settings().items():
+        kwargs.setdefault(key, value)
+
+    app_name = application_name or f"torqmind-{purpose}"
+    kwargs.setdefault("application_name", app_name)
+
+    if overrides:
+        for key, value in overrides.items():
+            if value is None:
+                continue
+            if key in _PG_CONNINFO_SAFE_KEYS or key in {
+                "host",
+                "port",
+                "dbname",
+                "user",
+                "password",
+            }:
+                kwargs[key] = value
+
+    return make_conninfo(**kwargs)
+
+
+def _conn_str(purpose: str = "api") -> str:
+    return build_conninfo(purpose=purpose)
+
+
+def redacted_conn_summary(purpose: str = "api", *, conninfo: Optional[str] = None) -> dict[str, Any]:
+    """Identify the effective connection target without exposing secrets."""
+    info = conninfo or build_conninfo(purpose=purpose)
+    # Parse back via make_conninfo reverse is awkward; use libpq parse.
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        raw = conninfo_to_dict(info)
+    except Exception:
+        return {"purpose": purpose, "error": "unparseable_conninfo"}
+    return {
+        "purpose": purpose,
+        "host": raw.get("host"),
+        "port": raw.get("port"),
+        "dbname": raw.get("dbname"),
+        "user": raw.get("user"),
+        "sslmode": raw.get("sslmode") or "",
+        "sslrootcert_set": bool(raw.get("sslrootcert")),
+        "application_name": raw.get("application_name"),
+        "password_set": bool(raw.get("password")),
+    }
 
 
 def _sql_quote(value: str) -> str:
-    """Very small helper to safely quote a string literal for SQL.
-
-    PT-BR: Escapa aspas simples para evitar quebrar o SQL.
-    EN: Escapes single quotes so the SQL string literal stays valid.
-    """
-
+    """Escape single quotes for SET literals (role names / session GUCs)."""
     return value.replace("'", "''")
 
 
-def _get_pool() -> ConnectionPool | None:
+def _get_pool(purpose: str = "api") -> ConnectionPool | None:
     if ConnectionPool is None:
         return None
 
-    global _pool
-    if _pool is not None:
-        return _pool
+    purpose = (purpose or "api").strip().lower() or "api"
+    if purpose not in DB_PURPOSES:
+        purpose = "api"
+
+    existing = _pools.get(purpose)
+    if existing is not None:
+        return existing
 
     with _pool_lock:
-        if _pool is None:
-            _pool = ConnectionPool(
-                conninfo=_conn_str(),
-                min_size=max(1, int(settings.db_pool_min_size)),
-                max_size=max(1, int(settings.db_pool_max_size)),
-                timeout=max(1, int(settings.db_pool_timeout_seconds)),
-                max_idle=max(30, int(settings.db_pool_max_idle_seconds)),
-                kwargs={"row_factory": dict_row},
-                open=True,
-            )
-    return _pool
+        existing = _pools.get(purpose)
+        if existing is not None:
+            return existing
+        pool = ConnectionPool(
+            conninfo=_conn_str(purpose),
+            min_size=max(1, int(settings.db_pool_min_size)),
+            max_size=max(1, int(settings.db_pool_max_size)),
+            timeout=max(1, int(settings.db_pool_timeout_seconds)),
+            max_idle=max(30, int(settings.db_pool_max_idle_seconds)),
+            kwargs={"row_factory": dict_row},
+            open=True,
+        )
+        _pools[purpose] = pool
+        return pool
 
 
-@contextlib.contextmanager
+def reset_pools_for_tests() -> None:
+    """Close purpose pools (unit tests only)."""
+    with _pool_lock:
+        for purpose, pool in list(_pools.items()):
+            try:
+                pool.close()
+            except Exception:
+                pass
+            _pools.pop(purpose, None)
+
+
 def get_conn(
     role: Optional[str] = None,
     tenant_id: Optional[int] = None,
     branch_id: Optional[int] = None,
+    *,
+    purpose: Optional[str] = None,
 ) -> Iterator[psycopg.Connection]:
     """Open a Postgres connection and set session variables used for scope.
 
-    PT-BR:
-    - Usamos SET (escopo de sessão), e NÃO SET LOCAL.
-    - SET LOCAL zera após COMMIT e quebra fluxos CLI/ETL que fazem commit no meio.
-    - No finally fazemos RESET explícito para evitar vazamento de contexto no futuro
-      caso o projeto migre para pool de conexões.
-
-    EN:
-    - We use session-level SET, NOT SET LOCAL.
-    - SET LOCAL is cleared after COMMIT and breaks CLI/ETL flows that commit mid-run.
-    - We explicitly RESET in finally to avoid context leakage if pooling is introduced.
+    ``purpose`` selects which pool/DSN to use (api|ingest|etl|migrate|auth).
+    When omitted, uses :func:`db_purpose` context or default ``api``.
+    Without purpose-specific env, all purposes share the same credentials —
+    changing POSTGRES_USER alone does not separate privileges.
     """
 
-    pool = _get_pool()
+    resolved = (purpose or _default_purpose.get() or "api").strip().lower() or "api"
+    if resolved not in DB_PURPOSES:
+        resolved = "api"
+    pool = _get_pool(resolved)
 
     def _set_scope(conn: psycopg.Connection) -> None:
-        """Set session-level scope variables. Always reset first to avoid leakage."""
         conn.execute("RESET app.role; RESET app.tenant_id; RESET app.branch_id")
         conn.execute("SET lock_timeout = '10s'")
         conn.execute("SET statement_timeout = '55s'")
@@ -115,7 +290,6 @@ def get_conn(
             conn.execute(f"SET app.branch_id = {int(branch_id)}")
 
     def _reset_scope(conn: psycopg.Connection) -> None:
-        """Reset all scope variables. Separate statements for robustness."""
         try:
             conn.execute("RESET app.role")
         except Exception:
@@ -130,7 +304,7 @@ def get_conn(
             pass
 
     if pool is None:
-        conn = psycopg.connect(_conn_str(), row_factory=dict_row)
+        conn = psycopg.connect(_conn_str(resolved), row_factory=dict_row)
         try:
             _set_scope(conn)
             yield conn
@@ -145,3 +319,7 @@ def get_conn(
             yield conn
         finally:
             _reset_scope(conn)
+
+
+# Re-bind as contextmanager after defining the generator body above.
+get_conn = contextlib.contextmanager(get_conn)  # type: ignore[misc]

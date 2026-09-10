@@ -16,6 +16,8 @@ from typing import Callable, List
 
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
+# UTF-8 byte cap (Argon2id). Also blocks silent bcrypt 72-byte truncation on new hashes.
+PASSWORD_MAX_BYTES = 256
 
 # Cada regra: (chave estável, descrição pt-br para o usuário, verificação).
 _RULES: List[tuple[str, str, Callable[[str], bool]]] = [
@@ -33,6 +35,8 @@ def validate_password(password: str) -> List[str]:
     errors = [desc for _key, desc, check in _RULES if not check(pw)]
     if len(pw) > PASSWORD_MAX_LENGTH:
         errors.append(f"No máximo {PASSWORD_MAX_LENGTH} caracteres")
+    if len(pw.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        errors.append(f"No máximo {PASSWORD_MAX_BYTES} bytes (UTF-8)")
     return errors
 
 

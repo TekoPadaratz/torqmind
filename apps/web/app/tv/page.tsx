@@ -1,8 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { setAuthToken } from "../lib/api";
-import { getToken, clearAuth } from "../lib/auth";
+import { clearAuth } from "../lib/auth";
 import { loadSession } from "../lib/session";
 import Link from "next/link";
 
@@ -16,8 +15,6 @@ export default function TVIndexPage() {
   const [session, setSession] = useState<any>(null);
 
   useEffect(() => {
-    const t = getToken();
-    if (t) setAuthToken(t);
     loadSession(router, "product").then((me) => {
       if (me) setSession(me);
     });

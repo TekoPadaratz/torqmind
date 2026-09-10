@@ -1439,6 +1439,15 @@
       "sha256_utf8_normalized": "c99de3b825ce6bc212f2221987b368ceb4b9d5e3604504fe8c6cc081ae4c1174",
       "kind": "incremental",
       "historical_duplicate": false
+    },
+    {
+      "filename": "155_mfa_security_attempts_totp_counter.sql",
+      "prefix": "155",
+      "encoding": "utf-8",
+      "sha256_raw": "42f903bd06bbc7088ceeeab5db59646dcc10cc55ee652f93424cd4299057801c",
+      "sha256_utf8_normalized": "42f903bd06bbc7088ceeeab5db59646dcc10cc55ee652f93424cd4299057801c",
+      "kind": "incremental",
+      "historical_duplicate": false
     }
   ]
 }

@@ -13,7 +13,14 @@ from app.business_time import business_clock_payload, resolve_business_date
 from app.db_compat import SNAPSHOT_FALLBACK_ERRORS
 from app.deps import get_current_claims
 from app.permissions import require_screen, redact_sensitive, require_not_kiosk, can_access_screen
-from app.scope import resolve_scope, resolve_scope_filters, accessible_branch_ids, primary_branch_id, materialize_branch_query_targets
+from app.scope import (
+    resolve_scope,
+    resolve_scope_filters,
+    accessible_branch_ids,
+    primary_branch_id,
+    materialize_branch_query_targets,
+    branch_scope_as_ids,
+)
 from app import repos_analytics as repos_mart
 from app import repos_auth
 from app.services import snapshot_cache
@@ -1079,16 +1086,28 @@ def dashboard_overview(
     as_of = resolve_business_date(dt_ref, tenant)
 
     if compact:
+        jarvis_scope = _jarvis_scope_arg(filial)
+        jarvis_payload = (
+            _empty_jarvis_briefing(as_of)
+            if jarvis_scope == []
+            else repos_mart.jarvis_briefing(role, tenant, jarvis_scope, dt_ref=as_of)
+        )
         payload = {
             "insights_generated": repos_mart.risk_insights(role, tenant, filial, dt_ini, dt_fim, limit=20),
             "risk": {
                 "kpis": repos_mart.risk_kpis(role, tenant, filial, dt_ini, dt_fim),
                 "window": repos_mart.risk_data_window(role, tenant, filial),
             },
-            "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
+            "jarvis": jarvis_payload,
         }
         return redact_sensitive(payload, claims)
 
+    jarvis_scope = _jarvis_scope_arg(filial)
+    jarvis_payload = (
+        _empty_jarvis_briefing(as_of)
+        if jarvis_scope == []
+        else repos_mart.jarvis_briefing(role, tenant, jarvis_scope, dt_ref=as_of)
+    )
     payload = {
         "kpis": repos_mart.dashboard_kpis(role, tenant, filial, dt_ini, dt_fim),
         "by_day": repos_mart.dashboard_series(role, tenant, filial, dt_ini, dt_fim),
@@ -1103,7 +1122,7 @@ def dashboard_overview(
         },
         "operational_score": repos_mart.operational_score(role, tenant, filial, dt_ini, dt_fim),
         "health_score": repos_mart.health_score_latest(role, tenant, filial, as_of=as_of),
-        "jarvis": repos_mart.jarvis_briefing(role, tenant, filial, dt_ref=as_of),
+        "jarvis": jarvis_payload,
         "notifications_unread": repos_mart.notifications_unread_count(role, tenant, filial),
     }
     return redact_sensitive(payload, claims)
@@ -3248,6 +3267,43 @@ def manager_commissions_overrides_save(
 # Jarvis briefing
 # ------------------------
 
+def _empty_jarvis_briefing(dt_ref: date) -> Dict[str, Any]:
+    """Resposta vazia quando o usuário não tem filial no escopo (nunca = todas)."""
+    return {
+        "title": "Copiloto operacional",
+        "data_ref": dt_ref.isoformat(),
+        "status": "ok",
+        "headline": "Nenhuma filial acessível no escopo atual.",
+        "summary": "Ajuste o escopo de filiais ou solicite acesso ao administrador.",
+        "priority": "Acompanhar",
+        "impact_value": 0.0,
+        "impact_label": "Sem exposição no escopo",
+        "problem": "Escopo sem filiais autorizadas.",
+        "cause": "Lista de filiais vazia ou sem permissão.",
+        "action": "Selecionar uma filial autorizada.",
+        "confidence_label": "Baixa",
+        "confidence_level": "low",
+        "confidence_reason": "Sem filiais no escopo.",
+        "data_freshness": {},
+        "primary_kind": None,
+        "primary_shortcut": None,
+        "evidence": [],
+        "secondary_focus": [],
+        "signals": {},
+        "highlights": [],
+        "scope_denied": True,
+        "id_filiais": [],
+    }
+
+
+def _jarvis_scope_arg(filial_scope: Optional[int | List[int]]) -> List[int] | int:
+    """Preserva conjunto autorizado; 1 filial → int; N → list; vazio → list vazia."""
+    ids = branch_scope_as_ids(filial_scope)
+    if len(ids) == 1:
+        return ids[0]
+    return ids
+
+
 @router.get("/jarvis/briefing")
 def jarvis_briefing(
     dt_ref: date,
@@ -3259,7 +3315,13 @@ def jarvis_briefing(
 ):
     role = claims["role"]
     tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return redact_sensitive(repos_mart.jarvis_briefing(role, tenant, primary_branch_id(filial_scope), dt_ref=dt_ref), claims)
+    scope_arg = _jarvis_scope_arg(filial_scope)
+    if scope_arg == []:
+        return redact_sensitive(_empty_jarvis_briefing(dt_ref), claims)
+    payload = repos_mart.jarvis_briefing(role, tenant, scope_arg, dt_ref=dt_ref)
+    if isinstance(payload, dict):
+        payload = {**payload, "id_filiais": branch_scope_as_ids(filial_scope), "scope_denied": False}
+    return redact_sensitive(payload, claims)
 
 
 @router.post("/jarvis/generate")
@@ -3279,12 +3341,14 @@ def jarvis_generate(
     except repos_auth.AuthError as exc:
         _raise_auth_error(exc)
     tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    filial = primary_branch_id(filial_scope)
-    stats = generate_jarvis_ai_plans(role, tenant, filial, dt_ref=dt_ref, limit=limit, force=force)
+    scope_arg = _jarvis_scope_arg(filial_scope)
+    branch_ids = branch_scope_as_ids(filial_scope)
+    stats = generate_jarvis_ai_plans(role, tenant, scope_arg, dt_ref=dt_ref, limit=limit, force=force)
     return {
         "ok": True,
         "id_empresa": tenant,
-        "id_filial": filial,
+        "id_filial": branch_ids[0] if len(branch_ids) == 1 else None,
+        "id_filiais": branch_ids,
         "dt_ref": dt_ref.isoformat(),
         "stats": stats,
     }
@@ -3307,7 +3371,8 @@ def admin_ai_usage(
         _raise_auth_error(exc)
 
     tenant, filial_scope, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais)
-    return ai_usage_summary(role, tenant, primary_branch_id(filial_scope), days=days)
+    scope_arg = _jarvis_scope_arg(filial_scope)
+    return ai_usage_summary(role, tenant, scope_arg, days=days)
 
 
 @router.post("/admin/telegram/test")

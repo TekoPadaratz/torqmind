@@ -59,8 +59,9 @@ class CiEphemeralStackContractTest(unittest.TestCase):
         source = (repo_root() / "apps" / "api" / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn('str(settings.app_env or "").strip().lower() == "test"', source)
         self.assertIn('status_code=429', source)
-        self.assertIn("def _client_ip", source)
-        self.assertIn("x-forwarded-for", source)
+        self.assertIn("client_ip_for_rate_limit", source)
+        self.assertIn("security_attempts", source)
+        self.assertIn("x-forwarded-for", (repo_root() / "apps" / "api" / "app" / "client_ip.py").read_text(encoding="utf-8"))
 
     def test_etl_skips_placeholder_tenants_and_api_uses_workers(self) -> None:
         orchestrator = (repo_root() / "apps" / "api" / "app" / "services" / "etl_orchestrator.py").read_text(

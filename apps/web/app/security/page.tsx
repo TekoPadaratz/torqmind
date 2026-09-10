@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import AppNav from "../components/AppNav";
-import { api, apiGet, apiPost, setAuthToken } from "../lib/api";
-import { getToken, setToken } from "../lib/auth";
+import { apiGet, apiPost } from "../lib/api";
+import { markSession } from "../lib/auth";
 import { extractApiError } from "../lib/errors";
+import { cacheSession } from "../lib/session";
 
 type Status = {
   totp_enabled: boolean;
@@ -20,8 +21,6 @@ type SetupData = {
   issuer: string;
   account: string;
 };
-
-const SETUP_TOKEN_KEY = "torqmind.mfa_setup";
 
 export default function SecurityPage() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -39,14 +38,8 @@ export default function SecurityPage() {
   const [disableCode, setDisableCode] = useState("");
   const [showDisable, setShowDisable] = useState(false);
 
-  // Forced enrollment via setup token (from login redirect)
+  // Forced enrollment via HttpOnly mfa_setup cookie (from login redirect)
   const [forced, setForced] = useState(false);
-  const [setupToken, setSetupToken] = useState<string | null>(null);
-
-  const authHeaders = useCallback(() => {
-    if (forced && setupToken) return { headers: { Authorization: `Bearer ${setupToken}` } };
-    return undefined;
-  }, [forced, setupToken]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -62,30 +55,22 @@ export default function SecurityPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const isForced = params.get("setup") === "1";
-    const stored = typeof window !== "undefined" ? sessionStorage.getItem(SETUP_TOKEN_KEY) : null;
-    if (isForced && stored) {
+    if (isForced) {
       setForced(true);
-      setSetupToken(stored);
       setLoading(false);
-      // Forced enrollment: jump straight into setup.
-      void startSetup(stored);
+      void startSetup();
       return;
     }
-    const t = getToken();
-    if (t) setAuthToken(t);
     void loadStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function startSetup(tokenOverride?: string) {
+  async function startSetup() {
     setError(null);
     setInfo(null);
     setBusy(true);
     try {
-      const cfg = tokenOverride
-        ? { headers: { Authorization: `Bearer ${tokenOverride}` } }
-        : authHeaders();
-      const data = await apiPost("/auth/mfa/setup/start", {}, cfg);
+      const data = await apiPost("/auth/mfa/setup/start", {});
       setSetupData(data);
       setRecoveryCodes(null);
       setSetupCode("");
@@ -101,14 +86,13 @@ export default function SecurityPage() {
     setError(null);
     setBusy(true);
     try {
-      const data = await apiPost("/auth/mfa/setup/confirm", { code: setupCode.trim() }, authHeaders());
+      const data = await apiPost("/auth/mfa/setup/confirm", { code: setupCode.trim() });
       setRecoveryCodes(data?.recovery_codes || []);
       setSetupData(null);
       setInfo("Autenticação em dois fatores ativada com sucesso.");
-      // Forced enrollment returns a full session token → complete login.
-      if (forced && data?.login?.access_token) {
-        setToken(data.login.access_token);
-        sessionStorage.removeItem(SETUP_TOKEN_KEY);
+      if (forced && data?.login) {
+        markSession();
+        if (data.login.session) cacheSession(data.login.session);
       }
       if (!forced) await loadStatus();
     } catch (err: any) {
@@ -136,7 +120,7 @@ export default function SecurityPage() {
   }
 
   function finishForced() {
-    sessionStorage.removeItem(SETUP_TOKEN_KEY);
+    markSession();
     void apiGet("/auth/me")
       .then((me) => {
         window.location.href = me?.home_path || me?.default_route || "/sales";
