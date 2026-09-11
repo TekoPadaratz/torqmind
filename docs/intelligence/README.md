@@ -10,7 +10,8 @@ Branch de entrega: `codex/torqmind-intelligence-deterministic-ptbr-2026-08-27`
 | **TorqMind Intelligence** | **Atual** | Assistente determinístico (sem LLM) no produto |
 | **Jarvis** | **Atual (opcional)** | `/bi/jarvis/*` + `services/jarvis_ai.py` — OpenAI quando configurado, com fallback local |
 | Capacidades agentic futuras | **Planejado** | Não confundir com Intelligence/Jarvis atuais |
-| **Phase 3 (jornada investigativa)** | **Em evolução** | Dados confiáveis → investigação → evidências → recomendação (somente leitura) |
+| **Phase 3 (jornada investigativa)** | **Integrada (código)** | Investigar → aprofundar → explicar com evidências → recomendar; vendas + carteira; LLM opcional |
+
 
 ## Fechamento pré-Phase 3 (2026-09-11)
 
@@ -18,7 +19,28 @@ Rodada de segurança/desempenho/gráficos/publicação financeira considerada **
 
 > `PHASE3_*.md` / `README_PHASE3_START_HERE.md` na raiz tratam de entrega histórica de **marts ClickHouse** — não são a lei da Phase 3 investigativa atual.
 
-## Phase 3 — primeira jornada entregue
+## Phase 3 — jornada investigativa integrada
+
+**Status:** implementada no código (vendas + carteira CAP/CAR + continuidade no Assistente).
+
+### Onde acessar
+- Tela `/sales` → card **Investigar variação de vendas** (sob demanda).
+- Assistente TorqMind (bolha) → chips **Investigar vendas** / **Investigar carteira** ou linguagem natural.
+- APIs: `GET /bi/sales/investigate-variation`, `GET /bi/finance/investigate-portfolio`.
+
+### Contratos
+- **Núcleo determinístico** permanece em Intelligence (`process_message` + tools allowlisted).
+- Decomposições filial/grupo/hora são **visões alternativas** da mesma variação — não somar entre dimensões (`additive_warning` + `dimension_views`).
+- 2º domínio: snapshot CAP/CAR em `mart_finance_titles_rt` (sem série histórica inventada).
+- Follow-ups (“qual filial…”, “e o grupo…”, títulos vencidos) reexecutam capacidade com **escopo vigente**; mudança de filial/permissão/período invalida contexto.
+- Jarvis opcional: narrativa via OpenAI Responses **somente** a partir do pack de evidências; números não sustentados são rejeitados. Sem chave → modo determinístico explícito.
+- Proibido: SQL livre do modelo, mutações, agents em background, histórico como prova de autorização.
+
+### Validação Jarvis
+- Hom: validar com `OPENAI_API_KEY` real se presente.
+- Prod: tipicamente sem chave → determinístico (não declarar “LLM validada em Prod” só por Hom).
+
+## Phase 3 — primeira jornada (base `937688a`)
 
 **Investigar variação de vendas** (somente leitura):
 
@@ -45,7 +67,8 @@ UI (IntelligenceHost)
   → evidências + deep link PRODUCT_LINKS
 ```
 
-Jarvis (`/bi/jarvis/*`, `services/jarvis_ai.py`) permanece intacto e **não** é chamado pelo assistente.
+Jarvis (`/bi/jarvis/*`, `services/jarvis_ai.py`) permanece como superfície própria.
+A investigação Phase 3 pode usar narrativa opcional (httpx → OpenAI) **sem** importar o pacote `openai` no núcleo Intelligence; falha → texto determinístico.
 
 ## Feature flag
 

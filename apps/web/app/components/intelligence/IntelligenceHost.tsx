@@ -79,6 +79,14 @@ export default function IntelligenceHost() {
   const [listening, setListening] = useState(false);
   const [voiceDraft, setVoiceDraft] = useState('');
   const [speakReplies, setSpeakReplies] = useState(true);
+  const [investigationMeta, setInvestigationMeta] = useState<{
+    used_llm?: boolean;
+    llm_reason?: string | null;
+    latency_ms?: number | null;
+    additive_warning?: string | null;
+  } | null>(null);
+  const requestSeq = useRef(0);
+  const sendRef = useRef<(text: string, options?: { speakReply?: boolean }) => Promise<void>>(async () => undefined);
 
   const scopePayload = useMemo(() => {
     const idEmpresa =
@@ -96,8 +104,12 @@ export default function IntelligenceHost() {
       id_filial?: number;
       id_filiais?: number[];
       branch_scope?: string;
+      dt_ini?: string;
+      dt_fim?: string;
     } = {};
     if (idEmpresa != null) body.id_empresa = idEmpresa;
+    if (scope.dt_ini) body.dt_ini = String(scope.dt_ini).slice(0, 10);
+    if (scope.dt_fim) body.dt_fim = String(scope.dt_fim).slice(0, 10);
 
     if (branchScopeAll || filiais.length > 1) {
       body.branch_scope = 'all';
@@ -108,7 +120,24 @@ export default function IntelligenceHost() {
       body.id_filial = filiais[0];
     }
     return body;
-  }, [scope.id_empresa, scope.id_filial, scope.id_filiais, scope.branch_scope]);
+  }, [scope.id_empresa, scope.id_filial, scope.id_filiais, scope.branch_scope, scope.dt_ini, scope.dt_fim]);
+
+  const scopeLabel = useMemo(() => {
+    const bits: string[] = [];
+    if (scopePayload.dt_ini && scopePayload.dt_fim) {
+      bits.push(`${scopePayload.dt_ini} → ${scopePayload.dt_fim}`);
+    }
+    if (scopePayload.branch_scope === 'all') {
+      bits.push(
+        scopePayload.id_filiais?.length
+          ? `${scopePayload.id_filiais.length} filiais`
+          : 'todas as filiais'
+      );
+    } else if (scopePayload.id_filial != null) {
+      bits.push(`filial ${scopePayload.id_filial}`);
+    }
+    return bits.join(' · ') || 'escopo da tela';
+  }, [scopePayload]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (pathname === '/' || pathname.startsWith('/tv') || pathname.startsWith('/login')) {
@@ -274,9 +303,11 @@ export default function IntelligenceHost() {
 
   const send = async (text: string, options?: { speakReply?: boolean }) => {
     const cleaned = text.trim();
-    if (!cleaned || busy || !enabled) return;
+    if (!cleaned || !enabled) return;
+    const seq = ++requestSeq.current;
     setBusy(true);
     setError(null);
+    setInvestigationMeta(null);
     setMessages((prev) => [...prev, { role: 'user', text: cleaned }]);
     setDraft('');
     setVoiceDraft('');
@@ -286,6 +317,7 @@ export default function IntelligenceHost() {
         text: cleaned,
         ...scopePayload,
       });
+      if (seq !== requestSeq.current) return;
       const answerText = String(resp?.answer_text || '').trim();
       const optionsList = Array.isArray(resp?.clarification_options) ? resp.clarification_options : [];
       const clarificationKind = resp?.clarification_kind ? String(resp.clarification_kind) : undefined;
@@ -293,6 +325,15 @@ export default function IntelligenceHost() {
         ? resp.suggestions.map((s: unknown) => String(s)).filter(Boolean)
         : [];
       const deepLink = resp?.deep_link ? String(resp.deep_link) : undefined;
+      const inv = resp?.investigation;
+      if (inv && typeof inv === 'object') {
+        setInvestigationMeta({
+          used_llm: Boolean(inv.used_llm),
+          llm_reason: inv.llm_reason ? String(inv.llm_reason) : null,
+          latency_ms: typeof inv.latency_ms === 'number' ? inv.latency_ms : null,
+          additive_warning: inv.additive_warning ? String(inv.additive_warning) : null,
+        });
+      }
       if (!answerText) {
         const fallback = 'Não consegui montar uma resposta agora. Tente reformular a pergunta.';
         setMessages((prev) => [...prev, { role: 'assistant', text: fallback }]);
@@ -312,6 +353,7 @@ export default function IntelligenceHost() {
         if (options?.speakReply && speakReplies) speak(answerText);
       }
     } catch (err: any) {
+      if (seq !== requestSeq.current) return;
       const detail = err?.response?.data?.detail;
       const status = err?.response?.status;
       const msg =
@@ -326,9 +368,23 @@ export default function IntelligenceHost() {
       ]);
       setError(null);
     } finally {
-      setBusy(false);
+      if (seq === requestSeq.current) setBusy(false);
     }
   };
+  sendRef.current = send;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onAsk = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ text?: string }>).detail;
+      const text = String(detail?.text || '').trim();
+      if (!text) return;
+      setOpen(true);
+      void sendRef.current(text);
+    };
+    window.addEventListener('torqmind:intelligence-ask', onAsk as EventListener);
+    return () => window.removeEventListener('torqmind:intelligence-ask', onAsk as EventListener);
+  }, []);
 
   const stopListening = useCallback(() => {
     stopVoiceRef.current?.();
@@ -419,9 +475,27 @@ export default function IntelligenceHost() {
               </button>
             </header>
 
+            <div className="tmIntelScope" title="Escopo vigente da tela — revalidado a cada pergunta">
+              Escopo: {scopeLabel}
+            </div>
+
             <div className="tmIntelChips">
               <button type="button" className="tmIntelChip" onClick={() => send('O que posso perguntar?')}>
                 O que posso perguntar?
+              </button>
+              <button
+                type="button"
+                className="tmIntelChip"
+                onClick={() => send('Investigar variação de vendas')}
+              >
+                Investigar vendas
+              </button>
+              <button
+                type="button"
+                className="tmIntelChip"
+                onClick={() => send('Investigar carteira a receber/pagar')}
+              >
+                Investigar carteira
               </button>
               {suggestionChips.map((chip) => (
                 <button key={chip} type="button" className="tmIntelChip" onClick={() => send(String(chip))}>
@@ -498,6 +572,19 @@ export default function IntelligenceHost() {
             ) : null}
 
             {error ? <div className="tmIntelError">{error}</div> : null}
+            {investigationMeta ? (
+              <div className="tmIntelMeta">
+                {investigationMeta.latency_ms != null
+                  ? `Consulta ${investigationMeta.latency_ms} ms`
+                  : 'Consulta concluída'}
+                {' · '}
+                {investigationMeta.used_llm
+                  ? 'explicação Jarvis ativa'
+                  : `modo determinístico${
+                      investigationMeta.llm_reason ? ` (${investigationMeta.llm_reason})` : ''
+                    }`}
+              </div>
+            ) : null}
 
             <form
               className="tmIntelComposer"
@@ -631,6 +718,15 @@ export default function IntelligenceHost() {
           line-height: 1;
           font-size: 1.2rem;
           cursor: pointer;
+        }
+        .tmIntelScope {
+          font-size: 0.72rem;
+          opacity: 0.78;
+          margin-top: -4px;
+        }
+        .tmIntelMeta {
+          font-size: 0.72rem;
+          opacity: 0.75;
         }
         .tmIntelChips {
           display: flex;

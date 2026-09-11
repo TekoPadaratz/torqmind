@@ -1335,6 +1335,26 @@ def sales_investigate_variation(
     return redact_sensitive(payload, claims)
 
 
+@router.get("/finance/investigate-portfolio")
+def finance_investigate_portfolio(
+    tipo: Optional[int] = Query(None, ge=0, le=1),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("finance")),
+):
+    """Investigação sob demanda da carteira CAP/CAR (snapshot mart)."""
+    role = claims["role"]
+    tenant, filial, _ = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    payload = repos_mart.finance_portfolio_investigation(
+        role, tenant, filial, tipo=tipo
+    )
+    return redact_sensitive(payload, claims)
+
+
 @router.get("/sales/abc-curve")
 def sales_abc_curve(
     dt_ini: date,

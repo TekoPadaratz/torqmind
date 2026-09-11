@@ -183,12 +183,17 @@ def _contribution_factors(
     rows: List[Dict[str, Any]],
     *,
     total_delta: float,
-) -> List[Dict[str, Any]]:
+    limit: int = TOP_FACTORS,
+) -> Dict[str, Any]:
+    """Uma visão dimensional isolada — não some com outras dimensões."""
+    prepared = [r for r in rows if abs(float(r.get("delta") or 0)) >= 0.01]
+    prepared.sort(key=lambda x: abs(float(x["delta"])), reverse=True)
+    shown = prepared[:limit]
+    hidden = prepared[limit:]
+    residual = round(sum(float(r["delta"]) for r in hidden), 2) if hidden else 0.0
     factors: List[Dict[str, Any]] = []
-    for row in rows[:TOP_FACTORS]:
+    for row in shown:
         delta = float(row["delta"])
-        if abs(delta) < 0.01:
-            continue
         share = None
         if abs(total_delta) >= 0.01:
             share = round((delta / total_delta) * 100.0, 1)
@@ -211,11 +216,28 @@ def _contribution_factors(
                     "key": row["key"],
                     "source": _source_for_dimension(dimension),
                 },
-                # Contribuição observada ≠ causa comprovada.
                 "causality": "not_proven",
             }
         )
-    return factors
+    shown_sum = round(sum(float(f["delta"]) for f in factors), 2)
+    return {
+        "dimension": dimension,
+        "note": (
+            f"Visão por {dimension}: decomposição alternativa da mesma variação total. "
+            "Não some com outras dimensões."
+        ),
+        "items": factors,
+        "truncated": bool(hidden),
+        "shown_count": len(factors),
+        "hidden_count": len(hidden),
+        "residual_delta": residual if hidden else 0.0,
+        "shown_delta_sum": shown_sum,
+        "reconciles_to_total": (
+            abs(shown_sum + residual - float(total_delta)) < 0.05
+            if abs(total_delta) >= 0.01
+            else None
+        ),
+    }
 
 
 def _source_for_dimension(dimension: str) -> str:
@@ -375,16 +397,23 @@ def investigate_sales_variation(
             "O período selecionado não tem dados publicados na mart (não confundir com R$ 0)."
         )
 
+    warnings.append(
+        "Mesma duração civil ≠ garantia de comparabilidade comercial "
+        "(calendário, feriados e mix podem diferir)."
+    )
+
     cur_fat = current["faturamento"] if current["has_data"] else None
     pri_fat = prior["faturamento"] if prior["has_data"] else None
     if cur_fat is None or pri_fat is None:
         delta = None
         delta_pct = None
+    elif abs(pri_fat) < 0.01:
+        delta = round(cur_fat - pri_fat, 2)
+        delta_pct = None
+        warnings.append("Base de comparação ≈ R$ 0; percentual omitido (denominador zero).")
     else:
         delta = round(cur_fat - pri_fat, 2)
-        delta_pct = (
-            round((delta / pri_fat) * 100.0, 2) if abs(pri_fat) >= 0.01 else None
-        )
+        delta_pct = round((delta / pri_fat) * 100.0, 2)
 
     totals = {
         "current_faturamento": cur_fat,
@@ -397,25 +426,20 @@ def investigate_sales_variation(
         "prior_has_data": prior["has_data"],
     }
 
+    dimension_views: Dict[str, Any] = {}
     factors: List[Dict[str, Any]] = []
     if delta is not None:
-        fil_delta = _delta_map(
-            fil_cur,
-            fil_pri,
-            key="id_filial",
-            label_key=None,
-        )
+        fil_delta = _delta_map(fil_cur, fil_pri, key="id_filial", label_key=None)
         for row in fil_delta:
             row["label"] = f"Filial {row['key']}"
-        factors.extend(_contribution_factors("filial", fil_delta, total_delta=delta))
+        view_fil = _contribution_factors("filial", fil_delta, total_delta=delta)
+        dimension_views["filial"] = view_fil
 
         grp_delta = _delta_map(
-            grp_cur,
-            grp_pri,
-            key="id_grupo_produto",
-            label_key="grupo_nome",
+            grp_cur, grp_pri, key="id_grupo_produto", label_key="grupo_nome"
         )
-        factors.extend(_contribution_factors("grupo", grp_delta, total_delta=delta))
+        view_grp = _contribution_factors("grupo", grp_delta, total_delta=delta)
+        dimension_views["grupo"] = view_grp
 
         hr_delta = _delta_map(hr_cur, hr_pri, key="hora", label_key=None)
         for row in hr_delta:
@@ -424,12 +448,11 @@ def investigate_sales_variation(
                 row["label"] = f"{h:02d}h"
             except (TypeError, ValueError):
                 row["label"] = f"Hora {row['key']}"
-        factors.extend(_contribution_factors("hora", hr_delta, total_delta=delta))
+        view_hr = _contribution_factors("hora", hr_delta, total_delta=delta)
+        dimension_views["hora"] = view_hr
 
-        # Ordena contribuições por |delta| e limita; hipóteses depois.
-        contrib = [f for f in factors if f.get("kind") == "contribution"]
-        contrib.sort(key=lambda x: abs(float(x.get("delta") or 0)), reverse=True)
-        factors = contrib[:12] + _hypotheses_from_playbook()
+        # Fatores "principais" = só visão filial (não misturar dimensões).
+        factors = list(view_fil.get("items") or []) + _hypotheses_from_playbook()
     else:
         factors = _hypotheses_from_playbook()
 
@@ -440,14 +463,28 @@ def investigate_sales_variation(
         freshness_ts = str(last_updated) if last_updated else None
 
     headline = _headline(totals, comparison)
+    follow_ups = [
+        "Qual filial mais contribuiu?",
+        "Detalhe por grupo de produto",
+        "E nos horários de pico?",
+        "Investigar carteira a receber/pagar",
+    ]
 
     return {
         "status": "ok",
+        "domain": "sales_variation",
         "headline": headline,
         "comparison": comparison,
         "totals": totals,
+        "dimension_views": dimension_views,
+        "additive_warning": (
+            "Filial, grupo e hora são visões alternativas da mesma variação. "
+            "Não some contribuições entre dimensões."
+        ),
         "factors": factors,
+        "hypotheses": [f for f in factors if f.get("kind") == "hypothesis"],
         "next_checks": _next_checks(),
+        "follow_ups": follow_ups,
         "warnings": [w for w in warnings if w],
         "freshness": {
             "mode": "realtime",
@@ -456,11 +493,18 @@ def investigate_sales_variation(
         },
         "legend": {
             "contribution": (
-                "Contribuição quantitativa observada na decomposição "
+                "Contribuição quantitativa na visão dimensional "
                 "(não prova causa)."
             ),
             "hypothesis": "Hipótese operacional sugerida para verificação.",
+            "recommendation": "Orientação ao usuário — não executa ação de negócio.",
             "proven_cause": "Não emitido nesta jornada — dados insuficientes para causalidade.",
+        },
+        "scope": {
+            "id_empresa": int(id_empresa),
+            "id_filial": id_filial,
+            "dt_ini": dt_ini.isoformat(),
+            "dt_fim": dt_fim.isoformat(),
         },
     }
 

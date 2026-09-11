@@ -25,9 +25,100 @@ def load_catalog() -> dict[str, Any]:
     return data
 
 
+# Phase 3 — intents investigativos (código; não duplicar catálogo histórico de marts).
+_PHASE3_INTENTS: list[dict[str, Any]] = [
+    {
+        "version": "1",
+        "intent_id": "sales.investigate_variation",
+        "domain": "vendas",
+        "subdomain": "investigate",
+        "synonyms": [
+            "investigar variação de vendas",
+            "por que caiu o faturamento",
+            "investigar queda de vendas",
+            "decompor variação de vendas",
+            "comparar vendas com período anterior",
+        ],
+        "tool": "sales.investigate_variation",
+        "screen_key": "sales",
+        "deep_link_key": "/sales",
+        "required_slots": ["period"],
+        "optional_slots": ["id_filial"],
+        "allowed_roles": ["platform_master", "owner", "tenant_manager", "tenant_viewer"],
+        "forbidden_roles": ["tenant_kiosk"],
+        "hidden_from_kiosk": True,
+        "requires_sensitive_role": False,
+        "unsupported": False,
+        "max_period_days": 90,
+        "follow_ups": [
+            "Qual filial mais contribuiu?",
+            "Detalhe por grupo de produto",
+            "Investigar carteira a receber/pagar",
+        ],
+        "templates": {
+            "answer": "{metric_label}",
+            "forbidden": "Sem permissão para investigar vendas.",
+            "unsupported": "Investigação indisponível.",
+            "no_data": "Sem dados publicados para investigar.",
+            "clarification": "Confirme o período para investigar.",
+            "stale": "Dados desatualizados.",
+        },
+        "metric": "variacao_vendas",
+        "unit": "BRL",
+        "source": "torqmind_mart_rt.sales_daily_rt",
+    },
+    {
+        "version": "1",
+        "intent_id": "finance.investigate_portfolio",
+        "domain": "financeiro",
+        "subdomain": "investigate",
+        "synonyms": [
+            "investigar carteira",
+            "investigar contas a receber",
+            "investigar contas a pagar",
+            "concentração da carteira",
+            "títulos vencidos concentrados",
+        ],
+        "tool": "finance.investigate_portfolio",
+        "screen_key": "finance",
+        "deep_link_key": "/finance",
+        "required_slots": [],
+        "optional_slots": ["id_filial", "period"],
+        "allowed_roles": ["platform_master", "owner", "tenant_manager", "tenant_viewer"],
+        "forbidden_roles": ["tenant_kiosk"],
+        "hidden_from_kiosk": True,
+        "requires_sensitive_role": False,
+        "unsupported": False,
+        "max_period_days": 90,
+        "follow_ups": [
+            "Quais títulos vencidos concentram o risco?",
+            "Investigar variação de vendas",
+        ],
+        "templates": {
+            "answer": "{metric_label}",
+            "forbidden": "Sem permissão para investigar financeiro.",
+            "unsupported": "Investigação indisponível.",
+            "no_data": "Sem títulos abertos publicados.",
+            "clarification": "Confirme o escopo.",
+            "stale": "Dados desatualizados.",
+        },
+        "metric": "carteira_aberta",
+        "unit": "BRL",
+        "source": "torqmind_mart_rt.mart_finance_titles_rt",
+    },
+]
+
+
 def list_intents() -> list[dict[str, Any]]:
-    """Return all intent records from the catalog."""
-    return list(load_catalog().get("intents") or [])
+    """Return all intent records from the catalog (+ Phase 3 extras)."""
+    base = list(load_catalog().get("intents") or [])
+    seen = {str(i.get("intent_id")) for i in base}
+    for extra in _PHASE3_INTENTS:
+        iid = str(extra.get("intent_id"))
+        if iid not in seen:
+            base.append(extra)
+            seen.add(iid)
+    return base
 
 
 def get_intent(intent_id: str) -> Optional[dict[str, Any]]:

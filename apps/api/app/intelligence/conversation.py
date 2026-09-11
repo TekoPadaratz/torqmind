@@ -15,6 +15,7 @@ OPAQUE_KEYS = (
     "last_slots",
     "last_period",
     "last_entities",
+    "last_investigation",
 )
 
 
@@ -25,6 +26,7 @@ def empty_context() -> dict[str, Any]:
         "last_slots": {},
         "last_period": None,
         "last_entities": [],
+        "last_investigation": None,
         "permission_hash": "",
         "branch_scope": [],
     }
@@ -69,6 +71,7 @@ def update_after_turn(
     period: dict[str, Any] | None,
     entities: list[Any] | None,
     pending: dict[str, Any] | None,
+    last_investigation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ctx = normalize_context(context)
     ctx["last_intent"] = intent_id
@@ -76,4 +79,6 @@ def update_after_turn(
     ctx["last_period"] = json_ready(period)
     ctx["last_entities"] = json_ready(list(entities or []))
     ctx["pending_disambiguation"] = json_ready(pending)
+    if last_investigation is not None:
+        ctx["last_investigation"] = json_ready(last_investigation)
     return ctx

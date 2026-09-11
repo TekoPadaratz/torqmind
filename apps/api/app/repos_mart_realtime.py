@@ -957,6 +957,21 @@ def sales_variation_investigation(
     )
 
 
+def finance_portfolio_investigation(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date | None = None,
+    dt_fim: date | None = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Phase 3 — investigação de carteira CAP/CAR (snapshot mart)."""
+    from app.services.finance_portfolio_investigate import investigate_finance_portfolio
+
+    del dt_ini, dt_fim  # snapshot atual; período opcional ignorado
+    return investigate_finance_portfolio(role, id_empresa, id_filial, **kwargs)
+
+
 def sales_by_hour(
     role: str,
     id_empresa: int,
@@ -7299,6 +7314,7 @@ REALTIME_FUNCTIONS = {
     "dashboard_home_bundle",
     "sales_overview_bundle",
     "sales_variation_investigation",
+    "finance_portfolio_investigation",
     "sales_abc_curve",
     "sales_by_hour",
     "sales_top_products",

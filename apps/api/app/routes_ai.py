@@ -45,6 +45,9 @@ class PostMessageBody(BaseModel):
     id_filial: Optional[int] = None
     id_filiais: Optional[list[int]] = None
     branch_scope: Optional[str] = None
+    # Período vigente da tela (America/Sao_Paulo, ISO date) — opcional.
+    dt_ini: Optional[str] = None
+    dt_fim: Optional[str] = None
 
 
 class FeedbackBody(BaseModel):
@@ -327,6 +330,9 @@ async def ai_post_message(
             context = json.loads(context)
         except Exception:
             context = {}
+
+    if body.dt_ini and body.dt_fim:
+        scope = {**scope, "dt_ini": str(body.dt_ini)[:10], "dt_fim": str(body.dt_fim)[:10]}
 
     try:
         result = process_message(scoped, body.text, conversation_context=context, scope=scope)

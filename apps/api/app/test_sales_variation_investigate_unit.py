@@ -63,7 +63,6 @@ def test_no_data_is_not_zero_variation():
 
 def test_decomposition_labels_contribution_not_cause():
     def _totals(_e, _f, dt_ini, dt_fim):
-        # current week higher
         if dt_ini >= date(2026, 9, 5):
             return {
                 "faturamento": 1000.0,
@@ -120,13 +119,95 @@ def test_decomposition_labels_contribution_not_cause():
     assert out["totals"]["delta"] == 200.0
     assert out["comparison"]["basis"] == "prior_equal_length"
     assert out["comparison"]["period_incomplete"] is True
+    assert "filial" in out["dimension_views"]
+    assert "grupo" in out["dimension_views"]
+    assert "hora" in out["dimension_views"]
+    assert out["additive_warning"]
     contrib = [f for f in out["factors"] if f["kind"] == "contribution"]
     hypo = [f for f in out["factors"] if f["kind"] == "hypothesis"]
     assert contrib
+    assert all(f.get("dimension") == "filial" for f in contrib)
     assert all(f.get("causality") == "not_proven" for f in contrib)
     assert hypo
     assert all(f.get("causality") == "hypothesis" for f in hypo)
     assert "proven_cause" in out["legend"]
+
+
+def test_zero_prior_denominator_omits_pct():
+    with (
+        patch.object(
+            svi,
+            "_totals",
+            side_effect=lambda *_a, **_k: {
+                "faturamento": 100.0 if _a[2] >= date(2026, 9, 5) else 0.0,
+                "qtd_vendas": 1,
+                "valor_cancelado": 0.0,
+                "has_data": True,
+                "n_rows": 1,
+                "last_updated": None,
+            },
+        ),
+        patch.object(svi, "_by_filial", return_value=[]),
+        patch.object(svi, "_by_group", return_value=[]),
+        patch.object(svi, "_by_hour", return_value=[]),
+    ):
+        out = svi.investigate_sales_variation(
+            "owner", 1, None, date(2026, 9, 5), date(2026, 9, 11), as_of=date(2026, 9, 11)
+        )
+    assert out["totals"]["delta"] == 100.0
+    assert out["totals"]["delta_pct"] is None
+    assert any("denominador zero" in w.lower() or "≈ r$ 0" in w.lower() for w in out["warnings"])
+
+
+def test_dimension_views_are_alternative_not_additive():
+    """Contribuições por dimensão não devem ser somadas entre si."""
+    with (
+        patch.object(
+            svi,
+            "_totals",
+            side_effect=lambda *_a, **_k: {
+                "faturamento": 300.0 if _a[2] >= date(2026, 9, 5) else 0.0,
+                "qtd_vendas": 3,
+                "valor_cancelado": 0.0,
+                "has_data": True,
+                "n_rows": 3,
+                "last_updated": None,
+            },
+        ),
+        patch.object(
+            svi,
+            "_by_filial",
+            side_effect=lambda *_a, **_k: (
+                [
+                    {"id_filial": 1, "faturamento": 100},
+                    {"id_filial": 2, "faturamento": 200},
+                ]
+                if _a[2] >= date(2026, 9, 5)
+                else []
+            ),
+        ),
+        patch.object(
+            svi,
+            "_by_group",
+            side_effect=lambda *_a, **_k: (
+                [
+                    {"id_grupo_produto": 1, "grupo_nome": "A", "faturamento": 150},
+                    {"id_grupo_produto": 2, "grupo_nome": "B", "faturamento": 150},
+                ]
+                if _a[2] >= date(2026, 9, 5)
+                else []
+            ),
+        ),
+        patch.object(svi, "_by_hour", return_value=[]),
+    ):
+        out = svi.investigate_sales_variation(
+            "owner", 1, None, date(2026, 9, 5), date(2026, 9, 11), as_of=date(2026, 9, 11)
+        )
+    fil_sum = sum(i["delta"] for i in out["dimension_views"]["filial"]["items"])
+    grp_sum = sum(i["delta"] for i in out["dimension_views"]["grupo"]["items"])
+    assert abs(fil_sum - 300) < 0.05
+    assert abs(grp_sum - 300) < 0.05
+    assert abs(fil_sum + grp_sum - 600) < 0.05
 
 
 def test_incomplete_period_warning_present():

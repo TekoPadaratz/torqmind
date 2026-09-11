@@ -350,6 +350,28 @@ def _playbook_handler(playbook_id: str) -> Callable[..., Any]:
     return _run
 
 
+def _handler_sales_investigate(args: dict[str, Any], claims: dict[str, Any], scope: dict[str, Any]) -> Any:
+    from app.services.sales_variation_investigate import investigate_sales_variation
+
+    return investigate_sales_variation(
+        _role(claims),
+        int(scope["id_empresa"]),
+        scope.get("id_filial"),
+        args.get("dt_ini"),
+        args.get("dt_fim"),
+    )
+
+
+def _handler_finance_investigate(args: dict[str, Any], claims: dict[str, Any], scope: dict[str, Any]) -> Any:
+    from app.services.finance_portfolio_investigate import investigate_finance_portfolio
+
+    return investigate_finance_portfolio(
+        _role(claims),
+        int(scope["id_empresa"]),
+        scope.get("id_filial"),
+    )
+
+
 _HANDLERS: dict[str, Callable[..., Any]] = {
     "customer_search": _handler_customer_search,
     "unsupported": _handler_unsupported,
@@ -366,6 +388,8 @@ _HANDLERS: dict[str, Callable[..., Any]] = {
     "cheques_or_unsupported": _handler_cheques,
     "open_titles": _handler_open_titles,
     "finance_titles": _handler_finance_titles,
+    "sales_investigate": _handler_sales_investigate,
+    "finance_investigate": _handler_finance_investigate,
     "playbook_revenue_drop": _playbook_handler("revenue_drop"),
     "playbook_delinquency": _playbook_handler("delinquency_priority"),
     "playbook_mix": _playbook_handler("mix_shift"),

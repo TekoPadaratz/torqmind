@@ -56,6 +56,20 @@ TOOLS: dict[str, dict[str, Any]] = {
     "sales.groups": _spec(analytics_fn="sales_top_groups", screens=["sales", "sales.top"]),
     "sales.payments": _spec(analytics_fn="payments_overview", screens=["sales", "cash"]),
     "sales.abc": _spec(analytics_fn="sales_abc_curve", screens=["sales", "sales.abc"]),
+    "sales.investigate_variation": _spec(
+        analytics_fn="sales_variation_investigation",
+        handler="sales_investigate",
+        screens=["sales.overview", "sales.evolution", "sales.hourly", "sales.top"],
+        max_rows=100,
+        timeout_s=20,
+    ),
+    "finance.investigate_portfolio": _spec(
+        analytics_fn="finance_portfolio_investigation",
+        handler="finance_investigate",
+        screens=["finance", "finance.receivable", "finance.payable", "finance.overview"],
+        max_rows=100,
+        timeout_s=20,
+    ),
     "customer.search": _spec(
         analytics_fn="customers_summary_paginated",
         handler="customer_search",

@@ -17,52 +17,57 @@ type Factor = {
   causality?: string;
 };
 
+type DimensionView = {
+  dimension?: string;
+  note?: string;
+  items?: Factor[];
+  truncated?: boolean;
+  shown_count?: number;
+  hidden_count?: number;
+  residual_delta?: number;
+};
+
 type InvestigationPayload = {
   status?: string;
   headline?: string;
   message?: string;
+  domain?: string;
   comparison?: {
     basis_label?: string;
-    current?: { label?: string; days?: number };
-    prior?: { label?: string; days?: number };
+    current?: { label?: string };
+    prior?: { label?: string };
     period_incomplete?: boolean;
-    compatible?: boolean;
-    compatible_note?: string;
-    incomplete_note?: string;
   };
   totals?: {
     current_faturamento?: number | null;
     prior_faturamento?: number | null;
     delta?: number | null;
     delta_pct?: number | null;
-    current_has_data?: boolean;
-    prior_has_data?: boolean;
   } | null;
+  dimension_views?: Record<string, DimensionView>;
+  additive_warning?: string;
   factors?: Factor[];
   next_checks?: Array<{ title?: string; screen?: string }>;
+  follow_ups?: string[];
   warnings?: string[];
   legend?: Record<string, string>;
-  freshness?: { last_updated?: string | null; source?: string };
+  freshness?: { last_updated?: string | null };
 };
 
 type Props = {
   scope: ScopeQuery;
   enabled: boolean;
+  onAskAssistant?: (text: string) => void;
 };
 
-function kindLabel(kind: string | undefined): string {
-  if (kind === "contribution") return "Contribuição";
-  if (kind === "hypothesis") return "Hipótese";
-  return kind || "Fator";
-}
-
-export default function SalesVariationInvestigate({ scope, enabled }: Props) {
+export default function SalesVariationInvestigate({ scope, enabled, onAskAssistant }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<InvestigationPayload | null>(null);
   const [scopeKey, setScopeKey] = useState("");
   const requestSeq = useRef(0);
+  const startedAt = useRef(0);
 
   useEffect(() => {
     if (!open || !enabled) return;
@@ -72,6 +77,7 @@ export default function SalesVariationInvestigate({ scope, enabled }: Props) {
     setData(null);
     setError(null);
     setLoading(true);
+    startedAt.current = performance.now();
     const seq = ++requestSeq.current;
     const controller = new AbortController();
 
@@ -96,7 +102,7 @@ export default function SalesVariationInvestigate({ scope, enabled }: Props) {
     return () => {
       controller.abort();
     };
-    }, [open, enabled, scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial, scope.id_filiais_key, scope.scope_key]);
+  }, [open, enabled, scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial, scope.id_filiais_key, scope.scope_key]);
 
   if (!enabled) return null;
 
@@ -109,32 +115,21 @@ export default function SalesVariationInvestigate({ scope, enabled }: Props) {
         <div>
           <h2 style={{ margin: 0 }}>Investigar variação de vendas</h2>
           <p className="muted" style={{ margin: "4px 0 0", fontSize: 13, maxWidth: 640 }}>
-            Compara o período e as filiais selecionados com a janela anterior de mesma duração.
-            Mostra contribuições observadas e hipóteses — sem inventar causa.
+            Compara o período/filiais selecionados com a janela anterior de mesma duração civil.
+            Filial, grupo e hora são visões alternativas — não some entre dimensões.
           </p>
         </div>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-        >
+        <button type="button" className="btn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
           {open ? "Ocultar investigação" : "Investigar agora"}
         </button>
       </div>
 
       {open ? (
         <div style={{ marginTop: 16 }}>
-          {loading || stale ? (
-            <p className="muted">Analisando variação no escopo atual…</p>
-          ) : null}
-
+          {loading || stale ? <p className="muted">Analisando variação no escopo atual…</p> : null}
           {error && !loading ? (
             <div style={{ display: "grid", gap: 8 }}>
               <EmptyState title="Não foi possível investigar." detail={error} />
-              <button type="button" className="btn" onClick={() => setOpen(false)}>
-                Fechar
-              </button>
               <button
                 type="button"
                 className="btn"
@@ -147,33 +142,36 @@ export default function SalesVariationInvestigate({ scope, enabled }: Props) {
               </button>
             </div>
           ) : null}
-
-          {!loading && !stale && !error && data ? (
-            <InvestigationBody data={data} />
-          ) : null}
+          {!loading && !stale && !error && data ? <InvestigationBody data={data} onAsk={onAskAssistant} /> : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-function InvestigationBody({ data }: { data: InvestigationPayload }) {
-  if (data.status === "no_data" || data.status === "unavailable" || data.status === "forbidden_scope" || data.status === "period_too_long") {
+function InvestigationBody({
+  data,
+  onAsk,
+}: {
+  data: InvestigationPayload;
+  onAsk?: (text: string) => void;
+}) {
+  if (
+    data.status === "no_data" ||
+    data.status === "unavailable" ||
+    data.status === "forbidden_scope" ||
+    data.status === "period_too_long"
+  ) {
     return (
       <EmptyState
         title={data.message || "Investigação indisponível."}
-        detail={
-          data.status === "no_data"
-            ? "Ausência de publicação não é tratada como R$ 0."
-            : data.comparison?.basis_label
-        }
+        detail={data.comparison?.basis_label}
       />
     );
   }
 
   const totals = data.totals;
-  const contributions = (data.factors || []).filter((f) => f.kind === "contribution");
-  const hypotheses = (data.factors || []).filter((f) => f.kind === "hypothesis");
+  const views = data.dimension_views || {};
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -182,12 +180,14 @@ function InvestigationBody({ data }: { data: InvestigationPayload }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
         <Kpi label="Período atual" value={fmtMoney(totals?.current_faturamento)} hint={data.comparison?.current?.label} />
         <Kpi label="Base de comparação" value={fmtMoney(totals?.prior_faturamento)} hint={data.comparison?.prior?.label} />
-        <Kpi
-          label="Variação"
-          value={fmtDelta(totals?.delta, totals?.delta_pct)}
-          hint={data.comparison?.basis_label}
-        />
+        <Kpi label="Variação" value={fmtDelta(totals?.delta, totals?.delta_pct)} hint={data.comparison?.basis_label} />
       </div>
+
+      {data.additive_warning ? (
+        <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+          {data.additive_warning}
+        </p>
+      ) : null}
 
       {(data.warnings || []).length ? (
         <ul className="muted" style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
@@ -197,56 +197,36 @@ function InvestigationBody({ data }: { data: InvestigationPayload }) {
         </ul>
       ) : null}
 
-      {contributions.length ? (
-        <section>
-          <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Fatores observados (contribuição)</h3>
-          <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
-            {data.legend?.contribution || "Contribuição quantitativa — não prova causa."}
-          </p>
-          <div className="tableScroll">
-            <table className="table compact" style={{ width: "100%" }}>
-              <thead>
-                <tr>
-                  <th>Dimensão</th>
-                  <th>Fator</th>
-                  <th>Delta</th>
-                  <th>% da variação</th>
-                </tr>
-              </thead>
-              <tbody>
-                {contributions.map((f, idx) => (
-                  <tr key={`${f.dimension}-${f.label}-${idx}`}>
-                    <td>{f.dimension || "—"}</td>
-                    <td>{f.label || f.summary}</td>
-                    <td>{fmtMoney(f.delta)}</td>
-                    <td>
-                      {f.share_of_total_delta_pct == null
-                        ? "—"
-                        : `${f.share_of_total_delta_pct > 0 ? "+" : ""}${f.share_of_total_delta_pct}%`}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
+      {(["filial", "grupo", "hora"] as const).map((dim) => {
+        const view = views[dim];
+        if (!view?.items?.length) return null;
+        return (
+          <section key={dim}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>
+              Visão por {dim}{" "}
+              <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
+                (contribuição — não causa)
+              </span>
+            </h3>
+            {view.note ? (
+              <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
+                {view.note}
+              </p>
+            ) : null}
+            <DimensionTable view={view} />
+          </section>
+        );
+      })}
 
-      {hypotheses.length ? (
+      {(data.factors || []).some((f) => f.kind === "hypothesis") ? (
         <section>
           <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Hipóteses para verificar</h3>
-          <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
-            {data.legend?.hypothesis || "Hipótese — não é causa comprovada."}
-          </p>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {hypotheses.map((h, idx) => (
-              <li key={`${h.label}-${idx}`}>
-                <span className="muted" style={{ fontSize: 11, marginRight: 6 }}>
-                  [{kindLabel(h.kind)}]
-                </span>
-                {h.summary || h.label}
-              </li>
-            ))}
+            {(data.factors || [])
+              .filter((f) => f.kind === "hypothesis")
+              .map((h, idx) => (
+                <li key={`${h.label}-${idx}`}>{h.summary || h.label}</li>
+              ))}
           </ul>
         </section>
       ) : null}
@@ -265,12 +245,65 @@ function InvestigationBody({ data }: { data: InvestigationPayload }) {
         </section>
       ) : null}
 
+      {(data.follow_ups || []).length ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {data.follow_ups!.map((q) => (
+            <button
+              key={q}
+              type="button"
+              className="btn"
+              style={{ fontSize: 12 }}
+              onClick={() => onAsk?.(q)}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {data.freshness?.last_updated ? (
         <p className="muted" style={{ margin: 0, fontSize: 12 }}>
           Última publicação na mart: {data.freshness.last_updated}
         </p>
       ) : null}
     </div>
+  );
+}
+
+function DimensionTable({ view }: { view: DimensionView }) {
+  return (
+    <>
+      <div className="tableScroll">
+        <table className="table compact" style={{ width: "100%" }}>
+          <thead>
+            <tr>
+              <th>Fator</th>
+              <th>Delta</th>
+              <th>% da variação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(view.items || []).map((f, idx) => (
+              <tr key={`${f.label}-${idx}`}>
+                <td>{f.label || f.summary}</td>
+                <td>{fmtMoney(f.delta)}</td>
+                <td>
+                  {f.share_of_total_delta_pct == null
+                    ? "—"
+                    : `${f.share_of_total_delta_pct > 0 ? "+" : ""}${f.share_of_total_delta_pct}%`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {view.truncated ? (
+        <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
+          Ranking truncado: {view.shown_count} exibidos, {view.hidden_count} ocultos
+          {view.residual_delta != null ? ` · residual R$ ${Number(view.residual_delta).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}.
+        </p>
+      ) : null}
+    </>
   );
 }
 

@@ -275,7 +275,16 @@ export default function SalesPage() {
         ) : data ? (
           <>
             <div style={{ marginTop: 12 }}>
-              <SalesVariationInvestigate scope={scope} enabled={canSeeOverview} />
+              <SalesVariationInvestigate
+                scope={scope}
+                enabled={canSeeOverview}
+                onAskAssistant={(text) => {
+                  if (typeof window === 'undefined') return;
+                  window.dispatchEvent(
+                    new CustomEvent('torqmind:intelligence-ask', { detail: { text } })
+                  );
+                }}
+              />
             </div>
             <div className="bi-grid" style={{ marginTop: 12 }}>
               {canSeeOverview ? (
