@@ -37,8 +37,8 @@ Rodada de segurança/desempenho/gráficos/publicação financeira considerada **
 - Proibido: SQL livre do modelo, mutações, agents em background, histórico como prova de autorização.
 
 ### Validação Jarvis
-- Hom: validar com `OPENAI_API_KEY` real se presente.
-- Prod: tipicamente sem chave → determinístico (não declarar “LLM validada em Prod” só por Hom).
+- Hom/Prod: `OPENAI_API_KEY` **vazio** nos env atuais → narrativa permanece em modo determinístico (`openai_not_configured`). Integração de código pronta; **LLM real não validada** sem chave autorizada.
+- Não contratar/habilitar provedor nesta entrega.
 
 ## Phase 3 — primeira jornada (base `937688a`)
 
