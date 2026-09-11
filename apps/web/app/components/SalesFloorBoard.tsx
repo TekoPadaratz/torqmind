@@ -156,7 +156,7 @@ export default function SalesFloorBoard({
           <div className="salesFloorEmpty">Sem vendas por hora neste período ainda.</div>
         ) : null}
         <div className="salesFloorChartWrap">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height={260}>
             <BarChart data={hours} margin={{ top: 8, right: 8, left: 4, bottom: 0 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
               <XAxis dataKey="hora" stroke="var(--muted)" tick={{ fontSize: 12 }} interval={1} />

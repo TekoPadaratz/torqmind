@@ -65,7 +65,7 @@ export default function SalesPage() {
   const grupoFilterKey = selectedGrupoIds.length
     ? [...selectedGrupoIds].sort((a, b) => a - b).join(",")
     : "";
-  const { claims, data, error, loading, pendingUnavailable } =
+  const { claims, data, error, loading, pendingUnavailable, retry } =
     useBiScopeData<any>({
       moduleKey: grupoFilterKey ? `sales_overview:g:${grupoFilterKey}` : "sales_overview",
       scope,
@@ -207,12 +207,15 @@ export default function SalesPage() {
       <div>
         <AppNav title="Vendas" userLabel={userLabel} />
         <div className="container">
-          {error ? (
+          {error && !data ? (
             <div className="card errorCard" style={{ marginTop: 12 }}>
-              {error}
+              <div>{error}</div>
+              <button className="btn" type="button" onClick={retry} style={{ marginTop: 12 }}>
+                Tentar novamente
+              </button>
             </div>
           ) : null}
-          {!data ? (
+          {!data && !error ? (
             <div style={{ marginTop: 12 }}>
               <ScopeTransitionState
                 mode={pendingUnavailable ? "unavailable" : "loading"}
@@ -220,9 +223,10 @@ export default function SalesPage() {
                 detail={transitionCopy.detail}
                 metrics={3}
                 panels={1}
+                onRetry={pendingUnavailable ? retry : undefined}
               />
             </div>
-          ) : (
+          ) : data ? (
             <SalesFloorBoard
               embedded
               title="Vendas"
@@ -238,7 +242,7 @@ export default function SalesPage() {
               hours={hourAgg}
               loading={loading}
             />
-          )}
+          ) : null}
         </div>
       </div>
     );
@@ -250,10 +254,13 @@ export default function SalesPage() {
       <div className="container">
         {error ? (
           <div className="card errorCard" style={{ marginTop: 12 }}>
-            {error}
+            <div>{error}</div>
+            <button className="btn" type="button" onClick={retry} style={{ marginTop: 12 }}>
+              Tentar novamente
+            </button>
           </div>
         ) : null}
-        {!data ? (
+        {!data && !error ? (
           <div style={{ marginTop: 12 }}>
             <ScopeTransitionState
               mode={pendingUnavailable ? "unavailable" : "loading"}
@@ -261,9 +268,10 @@ export default function SalesPage() {
               detail={transitionCopy.detail}
               metrics={5}
               panels={4}
+              onRetry={pendingUnavailable ? retry : undefined}
             />
           </div>
-        ) : (
+        ) : data ? (
           <>
             <div className="bi-grid" style={{ marginTop: 12 }}>
               {canSeeOverview ? (
@@ -342,8 +350,9 @@ export default function SalesPage() {
                     detail="A evolução mensal aparece assim que houver meses comerciais válidos no histórico."
                   />
                 ) : null}
-                <div className="chartWrap">
-                  <ResponsiveContainer width="100%" height="100%">
+                {hasEvolution ? (
+                <div className="chartWrap" style={{ height: 260 }}>
+                  <ResponsiveContainer width="100%" height={260}>
                     <BarChart data={evolutionSeries}>
                       <CartesianGrid
                         stroke="rgba(255,255,255,0.08)"
@@ -398,6 +407,7 @@ export default function SalesPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                ) : null}
               </div>
               ) : null}
 
@@ -410,8 +420,9 @@ export default function SalesPage() {
                     detail="A distribuição por hora aparece quando existem vendas normais no período."
                   />
                 ) : null}
-                <div className="chartWrap">
-                  <ResponsiveContainer width="100%" height="100%">
+                {hasHourValues ? (
+                <div className="chartWrap" style={{ height: 260 }}>
+                  <ResponsiveContainer width="100%" height={260}>
                     <BarChart data={hourAgg}>
                       <CartesianGrid
                         stroke="rgba(255,255,255,0.08)"
@@ -434,6 +445,7 @@ export default function SalesPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                ) : null}
               </div>
               ) : null}
 
@@ -570,7 +582,7 @@ export default function SalesPage() {
               ) : null}
             </div>
           </>
-        )}
+        ) : null}
       </div>
     </div>
   );

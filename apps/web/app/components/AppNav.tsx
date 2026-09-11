@@ -548,7 +548,7 @@ export default function AppNav({
     const nextUrl = query ? `${pathname}?${query}` : pathname;
 
     startScopeTransition(nextScope, pathname);
-    prefetchProductScope(nextScope, router);
+    prefetchProductScope(nextScope, router, { pathname });
     startTransition(() => {
       router.replace(nextUrl);
     });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { extractApiError } from './errors';
@@ -44,9 +44,14 @@ export function useBiScopeData<T>({
   const [loading, setLoading] = useState(true);
   const [pendingUnavailable, setPendingUnavailable] = useState(false);
   const [error, setError] = useState('');
+  const [reloadToken, setReloadToken] = useState(0);
+
+  const retry = useCallback(() => {
+    setReloadToken((token) => token + 1);
+  }, []);
 
   useEffect(() => {
-    const requestToken = `${moduleKey}:${scope.scope_key}:${scope.scope_epoch}`;
+    const requestToken = `${moduleKey}:${scope.scope_key}:${scope.scope_epoch}:${reloadToken}`;
     activeRequestRef.current = requestToken;
 
     const controller = new AbortController();
@@ -146,6 +151,7 @@ export function useBiScopeData<T>({
     errorMessage,
     keepPreviousData,
     moduleKey,
+    reloadToken,
     requestTimeoutMs,
     router,
     scope,
@@ -159,5 +165,6 @@ export function useBiScopeData<T>({
     error,
     loading,
     pendingUnavailable,
+    retry,
   };
 }

@@ -239,8 +239,25 @@ async function runPrefetchQueue(tasks: Array<() => Promise<void>>, concurrency =
   await Promise.allSettled(workers);
 }
 
-export function prefetchProductScope(scope: ScopeLike, router?: { prefetch?: (href: string) => void }) {
+const PATH_OWNED_PREFETCH_MODULES: Record<string, string[]> = {
+  '/sales': ['sales_overview'],
+  '/sales/abc': ['sales_overview'],
+  '/cash': ['cash_overview'],
+  '/fraud': ['fraud_overview'],
+  '/customers': ['customers_overview'],
+  '/finance': ['finance_overview'],
+  '/goals': ['goals_overview'],
+  '/pricing': ['pricing_competitor_overview'],
+};
+
+export function prefetchProductScope(
+  scope: ScopeLike,
+  router?: { prefetch?: (href: string) => void },
+  options?: { pathname?: string | null },
+) {
   const normalized = normalizeScope(scope);
+  const pathname = String(options?.pathname || '');
+  const skipModules = new Set(PATH_OWNED_PREFETCH_MODULES[pathname] || []);
 
   activePrefetchController?.abort();
   activePrefetchController = new AbortController();
@@ -254,6 +271,7 @@ export function prefetchProductScope(scope: ScopeLike, router?: { prefetch?: (hr
 
   const tasks = PREFETCH_DEFINITIONS
     .map((definition) => {
+      if (skipModules.has(definition.moduleKey)) return null;
       const requestUrl = definition.buildUrl(normalized);
       if (!requestUrl) return null;
       return async () => {
@@ -272,5 +290,6 @@ export function prefetchProductScope(scope: ScopeLike, router?: { prefetch?: (hr
     })
     .filter(Boolean) as Array<() => Promise<void>>;
 
-  void runPrefetchQueue(tasks, 3);
+  // Concurrency 2: reduz contensão CH/API no hot path após troca de escopo.
+  void runPrefetchQueue(tasks, 2);
 }

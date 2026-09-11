@@ -478,7 +478,7 @@ export default function SalesAbcSection() {
           ))}
         </div>
         <div style={{ height: 300, marginTop: 12 }}>
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height={300}>
             <ComposedChart data={chartItems} margin={{ top: 5, right: 40, bottom: 60, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis
