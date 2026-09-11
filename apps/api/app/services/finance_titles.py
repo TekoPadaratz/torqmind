@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.db import get_conn
 from app.db_clickhouse import execute_command, insert_batch
@@ -12,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 MART_TABLE = "torqmind_mart_rt.mart_finance_titles_rt"
 DEFAULT_DAYS = 180
+# Confirmação de cobertura STG efetivamente lida (não o horário do INSERT no CH).
+FINANCE_TITLES_COVER_DATASET = "finance_titles_publish"
 
 # Xpert: DELETAR=1 remove o título; não pode aparecer como aberto.
 _NOT_DELETED = (
@@ -24,8 +27,116 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@dataclass(frozen=True)
+class FinanceStgCoverage:
+    """Probe de cobertura STG para CAP/CAR.
+
+    ok=False → falha de consulta (não confundir com STG vazio).
+    empty=True + ok → não há received_at nas quatro tabelas.
+    covered_through → limite superior da leitura: max(received_at) ou
+    clock_timestamp() do snapshot quando vazio (para não “perder” chegada
+    durante a publicação).
+    """
+
+    ok: bool
+    empty: bool
+    max_received_at: Optional[datetime]
+    covered_through: Optional[datetime]
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class FinanceTitlesPublishResult:
+    inserted: int
+    covered_through: Optional[datetime]
+    confirmed: bool
+    empty: bool = False
+    error: str = ""
+
+
+def probe_finance_stg_coverage(conn: Any, id_empresa: int) -> FinanceStgCoverage:
+    """Lê max(received_at) + clock no mesmo snapshot da conexão."""
+    try:
+        row = conn.execute(
+            """
+            SELECT
+              greatest(
+                (SELECT max(received_at) FROM stg.contasreceber WHERE id_empresa = %s),
+                (SELECT max(received_at) FROM stg.contaspagar WHERE id_empresa = %s),
+                (SELECT max(received_at) FROM stg.contasreceberbaixa WHERE id_empresa = %s),
+                (SELECT max(received_at) FROM stg.contaspagarbaixa WHERE id_empresa = %s)
+              ) AS stg_max,
+              clock_timestamp() AS read_started_at
+            """,
+            (int(id_empresa), int(id_empresa), int(id_empresa), int(id_empresa)),
+        ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        return FinanceStgCoverage(
+            ok=False,
+            empty=False,
+            max_received_at=None,
+            covered_through=None,
+            error=str(exc)[:200],
+        )
+
+    raw_max = (row or {}).get("stg_max")
+    raw_clock = (row or {}).get("read_started_at")
+    stg_max = _as_utc(raw_max)
+    read_started = _as_utc(raw_clock) or _now()
+    if stg_max is None:
+        return FinanceStgCoverage(
+            ok=True,
+            empty=True,
+            max_received_at=None,
+            covered_through=read_started,
+        )
+    return FinanceStgCoverage(
+        ok=True,
+        empty=False,
+        max_received_at=stg_max,
+        covered_through=stg_max,
+    )
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    return None
+
+
+def read_finance_titles_cover_watermark(conn: Any, id_empresa: int) -> tuple[bool, Optional[datetime]]:
+    """(ok, covered_through). ok=False se a leitura do watermark falhar."""
+    try:
+        row = conn.execute(
+            """
+            SELECT last_ingested_at
+            FROM etl.watermark
+            WHERE id_empresa = %s AND dataset = %s
+            """,
+            (int(id_empresa), FINANCE_TITLES_COVER_DATASET),
+        ).fetchone()
+    except Exception:
+        return False, None
+    if not row:
+        return True, None
+    return True, _as_utc((row or {}).get("last_ingested_at"))
+
+
+def confirm_finance_titles_cover(conn: Any, id_empresa: int, covered_through: datetime) -> None:
+    """Persiste o limite STG coberto só após publish CH bem-sucedido."""
+    conn.execute(
+        "SELECT etl.set_watermark(%s, %s, %s, NULL::bigint)",
+        (int(id_empresa), FINANCE_TITLES_COVER_DATASET, covered_through),
+    )
+    conn.commit()
+
+
 def fetch_finance_titles(
-    role: str, id_empresa: int, days: int = DEFAULT_DAYS
+    role: str, id_empresa: int, days: int = DEFAULT_DAYS, *, conn: Any = None
 ) -> List[Dict[str, Any]]:
     """Lê títulos alinhados ao Xpert Não Pagas/Não Recebidas (DTAPGTO IS NULL).
 
@@ -36,10 +147,7 @@ def fetch_finance_titles(
     Pagos recentes entram como tombstone (`status=pago`) para curar fantasma no CH.
     """
     days = max(7, min(int(days), 366))
-    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
-        conn.execute("SET LOCAL statement_timeout = 0")
-        rows = conn.execute(
-            f"""
+    sql = f"""
             WITH baixa_receber AS (
               SELECT
                 id_empresa, id_db,
@@ -188,59 +296,125 @@ def fetch_finance_titles(
                 )
               )
             ORDER BY id_filial ASC, dt_vencimento DESC, entidade_nome ASC, id_titulo ASC
-            """,
-            [id_empresa, id_empresa, id_empresa, id_empresa, days],
-        ).fetchall()
+            """
+    params = [id_empresa, id_empresa, id_empresa, id_empresa, days]
+    if conn is not None:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as owned:
+        owned.execute("SET LOCAL statement_timeout = 0")
+        rows = owned.execute(sql, params).fetchall()
     return [dict(row) for row in rows]
 
 
 def publish_finance_titles(
     role: str, id_empresa: int, days: int = DEFAULT_DAYS
-) -> int:
+) -> FinanceTitlesPublishResult:
     """Republica títulos financeiros no ClickHouse (replace por empresa).
 
     DELETE + INSERT evita fantasma aberto quando o título sumiu/foi pago no STG
     e a ReplacingMergeTree ainda servia a versão antiga.
+
+    Confirmação de cobertura: só após CH ok, grava em ``etl.watermark`` o
+    ``covered_through`` capturado **antes** do fetch (mesmo snapshot). Assim
+    uma baixa que chega durante o publish permanece pendente no próximo ciclo
+    (stg_max > covered_through), em vez de ser mascarada por ``published_at=now()``.
     """
-    rows = fetch_finance_titles(role, id_empresa, days=days)
-    execute_command(
-        f"""
-        ALTER TABLE {MART_TABLE}
-        DELETE WHERE id_empresa = {{id_empresa:Int32}}
-        SETTINGS mutations_sync = 1
-        """,
-        {"id_empresa": int(id_empresa)},
-    )
-    published_at = _now()
-    payload = [
-        {
-            "id_empresa": int(row["id_empresa"]),
-            "id_filial": int(row["id_filial"]),
-            "tipo_titulo": int(row["tipo_titulo"]),
-            "id_titulo": int(row["id_titulo"]),
-            "id_db": int(row["id_db"]),
-            "id_entidade": int(row.get("id_entidade") or 0),
-            "entidade_nome": str(row.get("entidade_nome") or ""),
-            "nro_documento": str(row.get("nro_documento") or ""),
-            "dt_lancamento": row.get("dt_lancamento"),
-            "dt_vencimento": row["dt_vencimento"],
-            "valor": row.get("valor") or 0,
-            "valor_pago": row.get("valor_pago") or 0,
-            "valor_aberto": row.get("valor_aberto") or 0,
-            "status": str(row["status"]),
-            "published_at": published_at,
-        }
-        for row in rows
-    ]
-    inserted = insert_batch(
-        MART_TABLE,
-        payload,
-        order_by=["id_empresa", "tipo_titulo", "id_filial", "id_db", "id_titulo"],
-    )
+    with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+        conn.execute("SET LOCAL statement_timeout = 0")
+        # Cobertura capturada ANTES do fetch na mesma conexão. O watermark
+        # confirmado é esse limite (não published_at do CH): baixa com
+        # received_at > covered_through permanece pendente no próximo ciclo.
+        coverage = probe_finance_stg_coverage(conn, id_empresa)
+        if not coverage.ok or coverage.covered_through is None:
+            return FinanceTitlesPublishResult(
+                inserted=0,
+                covered_through=None,
+                confirmed=False,
+                empty=False,
+                error=coverage.error or "finance STG coverage probe failed",
+            )
+        rows = fetch_finance_titles(role, id_empresa, days=days, conn=conn)
+
+    try:
+        execute_command(
+            f"""
+            ALTER TABLE {MART_TABLE}
+            DELETE WHERE id_empresa = {{id_empresa:Int32}}
+            SETTINGS mutations_sync = 1
+            """,
+            {"id_empresa": int(id_empresa)},
+        )
+        published_at = _now()
+        payload = [
+            {
+                "id_empresa": int(row["id_empresa"]),
+                "id_filial": int(row["id_filial"]),
+                "tipo_titulo": int(row["tipo_titulo"]),
+                "id_titulo": int(row["id_titulo"]),
+                "id_db": int(row["id_db"]),
+                "id_entidade": int(row.get("id_entidade") or 0),
+                "entidade_nome": str(row.get("entidade_nome") or ""),
+                "nro_documento": str(row.get("nro_documento") or ""),
+                "dt_lancamento": row.get("dt_lancamento"),
+                "dt_vencimento": row["dt_vencimento"],
+                "valor": row.get("valor") or 0,
+                "valor_pago": row.get("valor_pago") or 0,
+                "valor_aberto": row.get("valor_aberto") or 0,
+                "status": str(row["status"]),
+                "published_at": published_at,
+            }
+            for row in rows
+        ]
+        inserted = insert_batch(
+            MART_TABLE,
+            payload,
+            order_by=["id_empresa", "tipo_titulo", "id_filial", "id_db", "id_titulo"],
+        )
+    except Exception as exc:  # noqa: BLE001 — não confirma cobertura se CH falhou
+        logger.warning(
+            "finance titles publish interrupted empresa=%s: %s",
+            id_empresa,
+            str(exc)[:200],
+        )
+        return FinanceTitlesPublishResult(
+            inserted=0,
+            covered_through=coverage.covered_through,
+            confirmed=False,
+            empty=coverage.empty,
+            error=str(exc)[:200],
+        )
+
+    # Só confirma depois do CH completar (inclui republicação vazia legítima).
+    try:
+        with get_conn(role=role, tenant_id=id_empresa, branch_id=None) as conn:
+            confirm_finance_titles_cover(conn, id_empresa, coverage.covered_through)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "finance titles cover confirm failed empresa=%s: %s",
+            id_empresa,
+            str(exc)[:200],
+        )
+        return FinanceTitlesPublishResult(
+            inserted=int(inserted),
+            covered_through=coverage.covered_through,
+            confirmed=False,
+            empty=len(payload) == 0,
+            error=f"cover confirm failed: {str(exc)[:160]}",
+        )
+
     logger.info(
-        "finance titles publish empresa=%s rows=%s inserted=%s",
+        "finance titles publish empresa=%s rows=%s inserted=%s covered_through=%s empty=%s",
         id_empresa,
         len(payload),
         inserted,
+        coverage.covered_through.isoformat(),
+        coverage.empty,
     )
-    return inserted
+    return FinanceTitlesPublishResult(
+        inserted=int(inserted),
+        covered_through=coverage.covered_through,
+        confirmed=True,
+        empty=len(payload) == 0,
+    )

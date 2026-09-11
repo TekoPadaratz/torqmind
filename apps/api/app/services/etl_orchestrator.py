@@ -1082,49 +1082,17 @@ def _publish_finance_despesas_marts(tenant_id: int) -> int:
 
 
 def _publish_finance_titles_mart(tenant_id: int) -> int:
-    """Republica grid CAP/CAR (mart_finance_titles_rt) após mudança financeira."""
+    """Republica grid CAP/CAR (mart_finance_titles_rt) após mudança financeira.
+
+    Só conta como sucesso se a cobertura STG foi confirmada em ``etl.watermark``.
+    Publicação interrompida / confirm falhou → exceção (pendência permanece).
+    """
     from app.services.finance_titles import publish_finance_titles
 
-    return int(publish_finance_titles("platform_master", int(tenant_id), days=120) or 0)
-
-
-def _finance_stg_max_received_at(conn, tenant_id: int) -> datetime | None:
-    """Instante mais recente em que títulos/baixas chegaram no STG (UTC)."""
-    try:
-        row = conn.execute(
-            """
-            SELECT greatest(
-              (SELECT max(received_at) FROM stg.contasreceber WHERE id_empresa = %s),
-              (SELECT max(received_at) FROM stg.contaspagar WHERE id_empresa = %s),
-              (SELECT max(received_at) FROM stg.contasreceberbaixa WHERE id_empresa = %s),
-              (SELECT max(received_at) FROM stg.contaspagarbaixa WHERE id_empresa = %s)
-            ) AS mx
-            """,
-            (int(tenant_id), int(tenant_id), int(tenant_id), int(tenant_id)),
-        ).fetchone()
-    except Exception:
-        return None
-    return _as_utc_datetime((row or {}).get("mx"))
-
-
-def _finance_titles_mart_max_published_at(tenant_id: int) -> datetime | None:
-    """Última publicação da mart de títulos no ClickHouse (por empresa)."""
-    try:
-        from app.db_clickhouse import query_dict
-
-        rows = query_dict(
-            """
-            SELECT max(published_at) AS mx
-            FROM torqmind_mart_rt.mart_finance_titles_rt
-            WHERE id_empresa = {id_empresa:Int32}
-            """,
-            parameters={"id_empresa": int(tenant_id)},
-        )
-    except Exception:
-        return None
-    if not rows:
-        return None
-    return _as_utc_datetime((rows[0] or {}).get("mx"))
+    result = publish_finance_titles("platform_master", int(tenant_id), days=120)
+    if not result.confirmed:
+        raise RuntimeError(result.error or "finance_titles publish not confirmed")
+    return int(result.inserted)
 
 
 def _finance_titles_publish_pending(
@@ -1135,18 +1103,34 @@ def _finance_titles_publish_pending(
 ) -> bool:
     """True se a mart CAP/CAR precisa republicar.
 
-    Cobre o caso em que load_fact_financeiro já avançou o watermark (ciclo
-    seguinte com fact_financeiro=0) mas o publish anterior morreu por timeout.
+    Recuperação baseada no limite STG **confirmado** (``etl.watermark`` dataset
+    ``finance_titles_publish``), não em ``CH.max(published_at)`` — este último
+    mascara baixa chegada durante o publish (clock pós-leitura).
+
+    - ``finance_changed`` → pendente
+    - falha de probe STG ou de leitura do watermark → pendente (nunca “sem pendência”)
+    - nunca confirmou cobertura → pendente (inclui 1ª publicação vazia legítima)
+    - ``stg.max(received_at) > covered_through`` → pendente
     """
     if finance_changed:
         return True
-    stg_max = _finance_stg_max_received_at(conn, tenant_id)
-    if stg_max is None:
-        return False
-    published_max = _finance_titles_mart_max_published_at(tenant_id)
-    if published_max is None:
+    from app.services.finance_titles import (
+        probe_finance_stg_coverage,
+        read_finance_titles_cover_watermark,
+    )
+
+    coverage = probe_finance_stg_coverage(conn, tenant_id)
+    if not coverage.ok:
         return True
-    return stg_max > published_max
+    wm_ok, covered_through = read_finance_titles_cover_watermark(conn, tenant_id)
+    if not wm_ok:
+        return True
+    if covered_through is None:
+        return True
+    if coverage.max_received_at is None:
+        # STG sem received_at; cobertura já confirmada (ex.: publish vazio).
+        return False
+    return coverage.max_received_at > covered_through
 
 
 def _run_finance_titles_publish_if_needed(
@@ -1161,8 +1145,8 @@ def _run_finance_titles_publish_if_needed(
 ) -> bool:
     """Publica titles quando há mudança no ciclo ou pendência STG→mart.
 
-    Retorna True se publicou (ou tentou com sucesso). Falha fica em sink sem
-    derrubar o ciclo — a pendência permanece para a próxima tentativa.
+    Retorna True se publicou com confirmação de cobertura. Falha / interrupção
+    fica em sink sem derrubar o ciclo — a pendência permanece.
     """
     if not _finance_titles_publish_pending(
         conn, tenant_id, finance_changed=finance_changed

@@ -34,6 +34,16 @@ cd "$ROOT"
 .venv/bin/python - <<PY
 from app.services.finance_titles import publish_finance_titles
 import json
-n = publish_finance_titles("${ROLE}", int("${EMPRESA}"), days=int("${DAYS}"))
-print(json.dumps({"ok": True, "inserted": n, "id_empresa": int("${EMPRESA}")}))
+r = publish_finance_titles("${ROLE}", int("${EMPRESA}"), days=int("${DAYS}"))
+print(json.dumps({
+    "ok": bool(r.confirmed),
+    "inserted": int(r.inserted),
+    "confirmed": bool(r.confirmed),
+    "empty": bool(r.empty),
+    "covered_through": r.covered_through.isoformat() if r.covered_through else None,
+    "error": r.error or None,
+    "id_empresa": int("${EMPRESA}"),
+}))
+if not r.confirmed:
+    raise SystemExit(1)
 PY

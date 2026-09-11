@@ -979,6 +979,7 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertTrue(result["meta"]["refresh_domains"]["risk"])
         self.assertFalse(result["meta"]["refresh_domains"]["sales"])
 
+    @patch("app.services.etl_orchestrator._finance_titles_publish_pending", return_value=False)
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
@@ -987,6 +988,7 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_logged_step,
         mock_log_instant,
         _mock_stage_summary,
+        _mock_finance_pending,
     ) -> None:
         step_order: list[str] = []
 
@@ -1030,8 +1032,6 @@ class EtlOrchestrationTest(unittest.TestCase):
         skipped_reasons = [call.kwargs["meta"]["reason"] for call in mock_log_instant.call_args_list]
         self.assertIn("track_excludes_step", skipped_reasons)
 
-    @patch("app.services.etl_orchestrator._finance_stg_max_received_at", return_value=None)
-    @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at", return_value=None)
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
@@ -1040,8 +1040,6 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_logged_step,
         mock_log_instant,
         _mock_stage_summary,
-        _mock_ch_pub,
-        _mock_stg_max,
     ) -> None:
         step_order: list[str] = []
 
@@ -1080,8 +1078,6 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertTrue(result["finance_titles_published"])
 
     @patch("app.services.etl_orchestrator._publish_finance_titles_mart", return_value=3)
-    @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at", return_value=None)
-    @patch("app.services.etl_orchestrator._finance_stg_max_received_at", return_value=None)
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
@@ -1090,8 +1086,6 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_logged_step,
         _mock_log_instant,
         _mock_stage_summary,
-        _mock_stg,
-        _mock_ch,
         mock_publish,
     ) -> None:
         step_order: list[str] = []
@@ -1120,8 +1114,8 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_publish.assert_not_called()
 
     @patch("app.services.etl_orchestrator._publish_finance_titles_mart", return_value=9)
-    @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at")
-    @patch("app.services.etl_orchestrator._finance_stg_max_received_at")
+    @patch("app.services.finance_titles.read_finance_titles_cover_watermark")
+    @patch("app.services.finance_titles.probe_finance_stg_coverage")
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
@@ -1130,20 +1124,24 @@ class EtlOrchestrationTest(unittest.TestCase):
         mock_logged_step,
         mock_log_instant,
         _mock_stage_summary,
-        mock_stg_max,
-        mock_ch_pub,
+        mock_probe,
+        mock_cover_wm,
         mock_publish,
     ) -> None:
-        """STG ahead of mart → publish even when fact_financeiro=0 (watermark already advanced).
+        """STG ahead of cover watermark → publish even when fact_financeiro=0.
 
         Unrelated customer snapshot failure must not clear the pending need.
         """
         from datetime import datetime, timezone
 
+        from app.services.finance_titles import FinanceStgCoverage
+
         stg_ts = datetime(2026, 9, 11, 17, 20, tzinfo=timezone.utc)
-        old_pub = datetime(2026, 9, 11, 16, 0, tzinfo=timezone.utc)
-        mock_stg_max.return_value = stg_ts
-        mock_ch_pub.return_value = old_pub
+        covered = datetime(2026, 9, 11, 16, 0, tzinfo=timezone.utc)
+        mock_probe.return_value = FinanceStgCoverage(
+            ok=True, empty=False, max_received_at=stg_ts, covered_through=stg_ts
+        )
+        mock_cover_wm.return_value = (True, covered)
 
         step_order: list[str] = []
 
@@ -1176,14 +1174,24 @@ class EtlOrchestrationTest(unittest.TestCase):
         self.assertEqual(step_order[0], "finance_titles_publish")
         mock_publish.assert_called()
 
-    def test_finance_titles_publish_pending_true_when_stg_ahead(self) -> None:
+    def test_finance_titles_publish_pending_true_when_stg_ahead_of_cover(self) -> None:
         from datetime import datetime, timezone
 
+        from app.services.finance_titles import FinanceStgCoverage
+
         stg_ts = datetime(2026, 9, 11, 18, 0, tzinfo=timezone.utc)
-        pub_ts = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
+        covered = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
         with (
-            patch.object(etl_orchestrator, "_finance_stg_max_received_at", return_value=stg_ts),
-            patch.object(etl_orchestrator, "_finance_titles_mart_max_published_at", return_value=pub_ts),
+            patch(
+                "app.services.finance_titles.probe_finance_stg_coverage",
+                return_value=FinanceStgCoverage(
+                    ok=True, empty=False, max_received_at=stg_ts, covered_through=stg_ts
+                ),
+            ),
+            patch(
+                "app.services.finance_titles.read_finance_titles_cover_watermark",
+                return_value=(True, covered),
+            ),
         ):
             self.assertTrue(
                 etl_orchestrator._finance_titles_publish_pending(
@@ -1191,16 +1199,75 @@ class EtlOrchestrationTest(unittest.TestCase):
                 )
             )
 
-    def test_finance_titles_publish_pending_false_when_mart_caught_up(self) -> None:
+    def test_finance_titles_publish_pending_false_when_cover_caught_up(self) -> None:
         from datetime import datetime, timezone
 
+        from app.services.finance_titles import FinanceStgCoverage
+
         stg_ts = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
-        pub_ts = datetime(2026, 9, 11, 18, 0, tzinfo=timezone.utc)
+        covered = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
         with (
-            patch.object(etl_orchestrator, "_finance_stg_max_received_at", return_value=stg_ts),
-            patch.object(etl_orchestrator, "_finance_titles_mart_max_published_at", return_value=pub_ts),
+            patch(
+                "app.services.finance_titles.probe_finance_stg_coverage",
+                return_value=FinanceStgCoverage(
+                    ok=True, empty=False, max_received_at=stg_ts, covered_through=stg_ts
+                ),
+            ),
+            patch(
+                "app.services.finance_titles.read_finance_titles_cover_watermark",
+                return_value=(True, covered),
+            ),
         ):
             self.assertFalse(
+                etl_orchestrator._finance_titles_publish_pending(
+                    _DummyConn(), 1, finance_changed=False
+                )
+            )
+
+    def test_finance_titles_publish_pending_true_when_stg_probe_fails(self) -> None:
+        from app.services.finance_titles import FinanceStgCoverage
+
+        with (
+            patch(
+                "app.services.finance_titles.probe_finance_stg_coverage",
+                return_value=FinanceStgCoverage(
+                    ok=False,
+                    empty=False,
+                    max_received_at=None,
+                    covered_through=None,
+                    error="timeout",
+                ),
+            ),
+            patch(
+                "app.services.finance_titles.read_finance_titles_cover_watermark",
+                return_value=(True, None),
+            ),
+        ):
+            self.assertTrue(
+                etl_orchestrator._finance_titles_publish_pending(
+                    _DummyConn(), 1, finance_changed=False
+                )
+            )
+
+    def test_finance_titles_publish_pending_true_when_never_confirmed(self) -> None:
+        from datetime import datetime, timezone
+
+        from app.services.finance_titles import FinanceStgCoverage
+
+        stg_ts = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
+        with (
+            patch(
+                "app.services.finance_titles.probe_finance_stg_coverage",
+                return_value=FinanceStgCoverage(
+                    ok=True, empty=False, max_received_at=stg_ts, covered_through=stg_ts
+                ),
+            ),
+            patch(
+                "app.services.finance_titles.read_finance_titles_cover_watermark",
+                return_value=(True, None),
+            ),
+        ):
+            self.assertTrue(
                 etl_orchestrator._finance_titles_publish_pending(
                     _DummyConn(), 1, finance_changed=False
                 )
