@@ -79,19 +79,22 @@ export default function TeamCostSection({ anoMes }: Props) {
 
   useEffect(() => {
     const controller = new AbortController();
+    const requestAnoMes = anoMes;
     const load = async () => {
       setLoading(true);
       setError("");
       setSaveError("");
+      setData(null);
       try {
         const params = buildScopeParams(scope);
-        params.set("ano_mes", String(anoMes));
+        params.set("ano_mes", String(requestAnoMes));
         params.set("page", String(page));
         params.set("page_size", String(PAGE_SIZE));
         if (debouncedQ) params.set("q", debouncedQ);
         const payload = await apiGet(`/bi/team/employee-cost?${params.toString()}`, {
           signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         setData(payload);
         const next: Record<string, DraftPair> = {};
         for (const row of (payload?.items || []) as EmployeeRow[]) {
@@ -103,9 +106,10 @@ export default function TeamCostSection({ anoMes }: Props) {
         setDrafts(next);
       } catch (err: any) {
         if (err?.name === "AbortError" || err?.code === "ERR_CANCELED") return;
+        if (controller.signal.aborted) return;
         setError(extractApiError(err, "Falha ao carregar custo da equipe"));
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
     load();

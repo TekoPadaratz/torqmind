@@ -84,28 +84,32 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
   useEffect(() => {
     if (!scope.ready) return;
     const controller = new AbortController();
+    const requestAnoMes = anoMes;
     const load = async () => {
       setLoading(true);
       setError("");
+      // Limpa payload do mês anterior imediatamente — evita misturar competência
+      // e deixa claro que a troca está em andamento.
+      setData(null);
+      setSelectedByFilial({});
       try {
-        // Escopo de filial/empresa da sidebar + competência do seletor de mês.
-        // Não misturar dt_ini/dt_fim do BI geral (pode ser outro recorte).
         const params = buildScopeParams(scope);
         params.delete("dt_ini");
         params.delete("dt_fim");
         params.delete("dt_ref");
-        params.set("ano_mes", String(anoMes));
+        params.set("ano_mes", String(requestAnoMes));
         const payload = await apiGet(`/bi/team/fuel-employees?${params.toString()}`, {
           signal: controller.signal,
         });
+        if (controller.signal.aborted) return;
         setData(payload as Payload);
-        setSelectedByFilial({});
       } catch (err: unknown) {
         if ((err as { name?: string; code?: string })?.name === "AbortError") return;
         if ((err as { code?: string })?.code === "ERR_CANCELED") return;
+        if (controller.signal.aborted) return;
         setError(extractApiError(err, "Falha ao carregar abastecimentos"));
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
     void load();
@@ -121,11 +125,17 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
     return `${fmt(data.dt_ini)} — ${fmt(data.dt_fim)}`;
   }, [data?.dt_ini, data?.dt_fim]);
 
+  const anoMesLabel = useMemo(() => {
+    const y = Math.floor(anoMes / 100);
+    const m = anoMes % 100;
+    return `${String(m).padStart(2, "0")}/${y}`;
+  }, [anoMes]);
+
   if (!scope.ready || (loading && !data)) {
     return (
       <div className="card col-12" style={{ marginBottom: 12 }}>
         <div className="muted" style={{ padding: 16 }}>
-          Carregando abastecimentos…
+          Atualizando abastecimentos de {anoMesLabel}…
         </div>
       </div>
     );

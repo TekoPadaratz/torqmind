@@ -94,12 +94,13 @@ PHASE_SQL_STEPS: tuple[tuple[str, str], ...] = (
     ("dim_funcionarios", "SELECT etl.load_dim_funcionarios(%s) AS rows"),
     ("dim_usuario_caixa", "SELECT etl.load_dim_usuario_caixa(%s) AS rows"),
     ("dim_clientes", "SELECT etl.load_dim_clientes(%s) AS rows"),
+    # Financeiro cedo: CAP/CAR não pode esperar fact_venda/item (path que estoura os 900s).
+    ("fact_financeiro", "SELECT etl.load_fact_financeiro(%s) AS rows"),
     ("fact_comprovante", "SELECT etl.load_fact_comprovante(%s) AS rows"),
     ("fact_caixa_turno", "SELECT etl.load_fact_caixa_turno(%s) AS rows"),
     ("fact_pagamento_comprovante", "SELECT etl.load_fact_pagamento_comprovante(%s) AS rows"),
     ("fact_venda", "SELECT etl.load_fact_venda(%s) AS rows"),
     ("fact_venda_item", "SELECT etl.load_fact_venda_item(%s) AS rows"),
-    ("fact_financeiro", "SELECT etl.load_fact_financeiro(%s) AS rows"),
     ("fact_estoque_atual", "SELECT etl.load_fact_estoque_atual(%s) AS rows"),
 )
 
@@ -802,7 +803,8 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dic
                     "fact_venda_item",
                 )
             ),
-            "finance": int(meta.get("fact_financeiro", 0) or 0) > 0,
+            "finance": int(meta.get("fact_financeiro", 0) or 0) > 0
+            or bool(meta.get("finance_titles_pending")),
             "risk": False,
             "payments": any(
                 int(meta.get(key, 0) or 0) > 0 for key in ("fact_pagamento_comprovante", "fact_comprovante")
@@ -839,7 +841,8 @@ def _phase_domains(meta: dict[str, Any], *, force_full: bool, track: str) -> dic
             int(meta.get(key, 0) or 0) > 0
             for key in ("dim_clientes", "fact_comprovante", "fact_venda", "fact_venda_item")
         ),
-        "finance": int(meta.get("fact_financeiro", 0) or 0) > 0,
+        "finance": int(meta.get("fact_financeiro", 0) or 0) > 0
+        or bool(meta.get("finance_titles_pending")),
         "risk": risk_changed or int(meta.get("dim_funcionarios", 0) or 0) > 0,
         "payments": any(int(meta.get(key, 0) or 0) > 0 for key in ("fact_pagamento_comprovante", "fact_comprovante")),
         "cash": any(
@@ -1083,6 +1086,119 @@ def _publish_finance_titles_mart(tenant_id: int) -> int:
     from app.services.finance_titles import publish_finance_titles
 
     return int(publish_finance_titles("platform_master", int(tenant_id), days=120) or 0)
+
+
+def _finance_stg_max_received_at(conn, tenant_id: int) -> datetime | None:
+    """Instante mais recente em que títulos/baixas chegaram no STG (UTC)."""
+    try:
+        row = conn.execute(
+            """
+            SELECT greatest(
+              (SELECT max(received_at) FROM stg.contasreceber WHERE id_empresa = %s),
+              (SELECT max(received_at) FROM stg.contaspagar WHERE id_empresa = %s),
+              (SELECT max(received_at) FROM stg.contasreceberbaixa WHERE id_empresa = %s),
+              (SELECT max(received_at) FROM stg.contaspagarbaixa WHERE id_empresa = %s)
+            ) AS mx
+            """,
+            (int(tenant_id), int(tenant_id), int(tenant_id), int(tenant_id)),
+        ).fetchone()
+    except Exception:
+        return None
+    return _as_utc_datetime((row or {}).get("mx"))
+
+
+def _finance_titles_mart_max_published_at(tenant_id: int) -> datetime | None:
+    """Última publicação da mart de títulos no ClickHouse (por empresa)."""
+    try:
+        from app.db_clickhouse import query_dict
+
+        rows = query_dict(
+            """
+            SELECT max(published_at) AS mx
+            FROM torqmind_mart_rt.mart_finance_titles_rt
+            WHERE id_empresa = {id_empresa:Int32}
+            """,
+            parameters={"id_empresa": int(tenant_id)},
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return _as_utc_datetime((rows[0] or {}).get("mx"))
+
+
+def _finance_titles_publish_pending(
+    conn,
+    tenant_id: int,
+    *,
+    finance_changed: bool = False,
+) -> bool:
+    """True se a mart CAP/CAR precisa republicar.
+
+    Cobre o caso em que load_fact_financeiro já avançou o watermark (ciclo
+    seguinte com fact_financeiro=0) mas o publish anterior morreu por timeout.
+    """
+    if finance_changed:
+        return True
+    stg_max = _finance_stg_max_received_at(conn, tenant_id)
+    if stg_max is None:
+        return False
+    published_max = _finance_titles_mart_max_published_at(tenant_id)
+    if published_max is None:
+        return True
+    return stg_max > published_max
+
+
+def _run_finance_titles_publish_if_needed(
+    conn,
+    tenant_id: int,
+    *,
+    ref_date: date,
+    stage: str,
+    finance_changed: bool,
+    progress_callback: ProgressCallback | None,
+    sink: dict[str, Any],
+) -> bool:
+    """Publica titles quando há mudança no ciclo ou pendência STG→mart.
+
+    Retorna True se publicou (ou tentou com sucesso). Falha fica em sink sem
+    derrubar o ciclo — a pendência permanece para a próxima tentativa.
+    """
+    if not _finance_titles_publish_pending(
+        conn, tenant_id, finance_changed=finance_changed
+    ):
+        return False
+    try:
+        rows_ft, step_ms_ft = _run_logged_count_step(
+            conn,
+            tenant_id,
+            "finance_titles_publish",
+            stage=stage,
+            ref_date=ref_date,
+            operation=lambda: _publish_finance_titles_mart(tenant_id),
+            meta={
+                "priority": "finance_path_min",
+                "finance_changed": bool(finance_changed),
+                "pending_recovery": not bool(finance_changed),
+            },
+            progress_callback=progress_callback,
+        )
+        sink["finance_titles_published"] = True
+        sink["finance_titles_rows"] = rows_ft
+        sink["finance_titles_ms"] = step_ms_ft
+        sink["finance_titles_pending"] = False
+        return True
+    except Exception as exc:  # noqa: BLE001 — publish não pode abortar o ETL
+        sink["finance_titles_error"] = str(exc)[:200]
+        sink["finance_titles_pending"] = True
+        sink["finance_titles_published"] = False
+        logger.warning(
+            "finance_titles_publish failed tenant=%s stage=%s: %s",
+            tenant_id,
+            stage,
+            str(exc)[:200],
+        )
+        return False
 
 
 # Janela curta no ciclo (30 min): purge+reinsert só dos últimos N dias — cobre a
@@ -2033,6 +2149,19 @@ def _run_tenant_phase(
                 )
                 meta[step_name] = rows
                 meta[f"{step_name}_ms"] = step_ms
+                # CAP/CAR: publica assim que o financeiro carrega — não espera
+                # fact_venda/item nem post_refresh de clientes. Se o shell matar
+                # o processo depois, o próximo ciclo recupera via STG>published_at.
+                if step_name == "fact_financeiro":
+                    _run_finance_titles_publish_if_needed(
+                        conn,
+                        tenant_id,
+                        ref_date=ref_date,
+                        stage="phase",
+                        finance_changed=int(rows or 0) > 0,
+                        progress_callback=progress_callback,
+                        sink=meta,
+                    )
 
         risk_inputs_changed = any(
             int(meta.get(key, 0) or 0) > 0
@@ -2310,6 +2439,19 @@ def _run_tenant_post_refresh(
         )
 
     try:
+        # CAP/CAR primeiro no pós-refresh: cobre pendência se o publish da phase
+        # falhou ou o ciclo anterior morreu após avançar o watermark financeiro.
+        if runs_operational:
+            _run_finance_titles_publish_if_needed(
+                conn,
+                tenant_id,
+                ref_date=ref_date,
+                stage="post_refresh",
+                finance_changed=finance_changed,
+                progress_callback=progress_callback,
+                sink=post_meta,
+            )
+
         if (
             runs_operational
             and customer_sales_start is not None
@@ -2425,28 +2567,6 @@ def _run_tenant_post_refresh(
                 "customer_churn_risk_snapshot",
                 "no_window" if runs_operational else "track_excludes_step",
             )
-
-        # Publish finance titles as soon as STG finance changed — BEFORE slow
-        # aging/delinquency. Those steps often take 2–4+ minutes; if the pipeline
-        # later hits PIPELINE_TIMEOUT, titles would otherwise stay stale until the
-        # next successful cycle or reconcile window.
-        if runs_operational and finance_changed:
-            try:
-                rows_ft, step_ms_ft = _run_logged_count_step(
-                    conn,
-                    tenant_id,
-                    "finance_titles_publish",
-                    stage="post_refresh",
-                    ref_date=ref_date,
-                    operation=lambda: _publish_finance_titles_mart(tenant_id),
-                    meta={"priority": "finance_changed_early"},
-                    progress_callback=progress_callback,
-                )
-                post_meta["finance_titles_published"] = True
-                post_meta["finance_titles_rows"] = rows_ft
-                post_meta["finance_titles_ms"] = step_ms_ft
-            except Exception as exc:
-                post_meta["finance_titles_error"] = str(exc)[:200]
 
         if runs_operational and finance_start is not None and finance_end is not None and finance_start <= finance_end:
             clock_driven = not finance_changed
@@ -2785,6 +2905,8 @@ def _item_post_refresh_meta(item: dict[str, Any]) -> dict[str, Any]:
 
 def _item_needs_post_refresh(item: dict[str, Any]) -> bool:
     if any(item.get("phase_domains", {}).values()):
+        return True
+    if bool((item.get("phase_meta") or {}).get("finance_titles_pending")):
         return True
     clock_meta = item.get("clock_meta") or {}
     if bool(clock_meta.get("clock_cash_notifications")):

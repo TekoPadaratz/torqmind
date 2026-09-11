@@ -1013,14 +1013,18 @@ class EtlOrchestrationTest(unittest.TestCase):
         skipped_reasons = [call.kwargs["meta"]["reason"] for call in mock_log_instant.call_args_list]
         self.assertIn("track_excludes_step", skipped_reasons)
 
+    @patch("app.services.etl_orchestrator._finance_stg_max_received_at", return_value=None)
+    @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at", return_value=None)
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
-    def test_finance_titles_publish_runs_before_aging_when_finance_changed(
+    def test_finance_titles_publish_runs_before_customer_steps_when_finance_changed(
         self,
         mock_logged_step,
         mock_log_instant,
         _mock_stage_summary,
+        _mock_ch_pub,
+        _mock_stg_max,
     ) -> None:
         step_order: list[str] = []
 
@@ -1045,27 +1049,111 @@ class EtlOrchestrationTest(unittest.TestCase):
         )
 
         self.assertIn("finance_titles_publish", step_order)
+        self.assertEqual(step_order[0], "finance_titles_publish")
+        self.assertIn("customer_screen_summary", step_order)
         self.assertIn("finance_aging_snapshot", step_order)
-        self.assertIn("customer_delinquency_summary", step_order)
+        self.assertLess(
+            step_order.index("finance_titles_publish"),
+            step_order.index("customer_screen_summary"),
+        )
         self.assertLess(
             step_order.index("finance_titles_publish"),
             step_order.index("finance_aging_snapshot"),
         )
-        self.assertLess(
-            step_order.index("finance_titles_publish"),
-            step_order.index("customer_delinquency_summary"),
-        )
         self.assertTrue(result["finance_titles_published"])
-        titles_calls = [
-            call
-            for call in mock_logged_step.call_args_list
-            if call.args[2] == "finance_titles_publish"
-        ]
-        self.assertEqual(len(titles_calls), 1)
-        self.assertEqual(
-            (titles_calls[0].kwargs.get("meta") or {}).get("priority"),
-            "finance_changed_early",
-        )
+
+    @patch("app.services.etl_orchestrator._publish_finance_titles_mart", return_value=9)
+    @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at")
+    @patch("app.services.etl_orchestrator._finance_stg_max_received_at")
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    def test_finance_titles_pending_survives_unrelated_step_failure(
+        self,
+        mock_logged_step,
+        mock_log_instant,
+        _mock_stage_summary,
+        mock_stg_max,
+        mock_ch_pub,
+        mock_publish,
+    ) -> None:
+        """STG ahead of mart → publish even when fact_financeiro=0 (watermark already advanced).
+
+        Unrelated customer snapshot failure must not clear the pending need.
+        """
+        from datetime import datetime, timezone
+
+        stg_ts = datetime(2026, 9, 11, 17, 20, tzinfo=timezone.utc)
+        old_pub = datetime(2026, 9, 11, 16, 0, tzinfo=timezone.utc)
+        mock_stg_max.return_value = stg_ts
+        mock_ch_pub.return_value = old_pub
+
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **kwargs):
+            step_order.append(step_name)
+            if step_name == "customer_sales_daily_snapshot":
+                raise RuntimeError("unrelated customer snapshot failed")
+            if step_name == "finance_titles_publish":
+                return kwargs.get("operation")() if callable(kwargs.get("operation")) else 9, 10
+            return 1, 10
+
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        with self.assertRaises(RuntimeError):
+            etl_orchestrator._run_tenant_post_refresh(
+                _DummyConn(),
+                1,
+                {
+                    "fact_financeiro": 0,
+                    "fact_venda": 1,
+                    "finance_titles_pending": True,
+                },
+                date(2026, 9, 11),
+                False,
+                3,
+                track=etl_orchestrator.TRACK_OPERATIONAL,
+            )
+
+        self.assertIn("finance_titles_publish", step_order)
+        self.assertEqual(step_order[0], "finance_titles_publish")
+        mock_publish.assert_called()
+
+    def test_finance_titles_publish_pending_true_when_stg_ahead(self) -> None:
+        from datetime import datetime, timezone
+
+        stg_ts = datetime(2026, 9, 11, 18, 0, tzinfo=timezone.utc)
+        pub_ts = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
+        with (
+            patch.object(etl_orchestrator, "_finance_stg_max_received_at", return_value=stg_ts),
+            patch.object(etl_orchestrator, "_finance_titles_mart_max_published_at", return_value=pub_ts),
+        ):
+            self.assertTrue(
+                etl_orchestrator._finance_titles_publish_pending(
+                    _DummyConn(), 1, finance_changed=False
+                )
+            )
+
+    def test_finance_titles_publish_pending_false_when_mart_caught_up(self) -> None:
+        from datetime import datetime, timezone
+
+        stg_ts = datetime(2026, 9, 11, 17, 0, tzinfo=timezone.utc)
+        pub_ts = datetime(2026, 9, 11, 18, 0, tzinfo=timezone.utc)
+        with (
+            patch.object(etl_orchestrator, "_finance_stg_max_received_at", return_value=stg_ts),
+            patch.object(etl_orchestrator, "_finance_titles_mart_max_published_at", return_value=pub_ts),
+        ):
+            self.assertFalse(
+                etl_orchestrator._finance_titles_publish_pending(
+                    _DummyConn(), 1, finance_changed=False
+                )
+            )
+
+    def test_phase_sql_steps_loads_financeiro_before_heavy_sales(self) -> None:
+        names = [name for name, _ in etl_orchestrator.PHASE_SQL_STEPS]
+        self.assertLess(names.index("fact_financeiro"), names.index("fact_venda"))
+        self.assertLess(names.index("fact_financeiro"), names.index("fact_venda_item"))
+        self.assertLess(names.index("dim_clientes"), names.index("fact_financeiro"))
 
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
