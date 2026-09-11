@@ -63,9 +63,15 @@ def resolve_access_session(
     authorization: Optional[str] = None,
     *,
     request: Optional[Request] = None,
-    include_default_scope: bool = True,
+    include_default_scope: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Decode an access token, enforce revocation/absolute expiry, reload live session."""
+    """Decode an access token, enforce revocation/absolute expiry, reload live session.
+
+    ``include_default_scope`` defaults False so BI/deps hot paths skip mart/PG
+    product-scope bootstrap. Login uses ``verify_login(..., True)``; ``/auth/me``,
+    ``/auth/refresh`` and MFA completion pass True explicitly when the FE needs
+    ``default_scope``.
+    """
     if request is not None:
         payload = decode_request_payload(request, authorization)
     else:
@@ -107,8 +113,20 @@ def resolve_access_session(
     return session, payload
 
 
-def _resolve_session(authorization: Optional[str] = None, request: Optional[Request] = None) -> dict[str, Any]:
-    session, _payload = resolve_access_session(authorization, request=request)
+def _resolve_session(
+    authorization: Optional[str] = None,
+    request: Optional[Request] = None,
+    *,
+    include_default_scope: bool = False,
+) -> dict[str, Any]:
+    # Hot-path BI deps skip product-scope defaults: that path used to MAX-scan
+    # dw.fact_* on every authenticated request (~seconds under ETL IO).
+    # Login /auth/me still request include_default_scope=True explicitly.
+    session, _payload = resolve_access_session(
+        authorization,
+        request=request,
+        include_default_scope=include_default_scope,
+    )
     return session
 
 
@@ -117,7 +135,7 @@ def get_current_claims(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Standard dependency — blocks if user must change password."""
-    session = _resolve_session(authorization, request=request)
+    session = _resolve_session(authorization, request=request, include_default_scope=False)
     if session.get("must_change_password"):
         raise HTTPException(
             status_code=403,
@@ -134,7 +152,7 @@ def get_current_claims_allow_password_change(
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Variant used by /auth/change-password — does NOT block on must_change_password."""
-    return _resolve_session(authorization, request=request)
+    return _resolve_session(authorization, request=request, include_default_scope=False)
 
 
 # Re-export token constants for callers that need MFA enrollment checks.

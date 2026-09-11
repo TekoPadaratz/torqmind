@@ -152,8 +152,36 @@ class DepsAccessGateUnitTest(unittest.TestCase):
         with patch.object(deps.repos_auth, "get_session_context", return_value=session) as get_session:
             out, payload = deps.resolve_access_session(f"Bearer {token}")
         get_session.assert_called_once()
+        self.assertEqual(get_session.call_args.kwargs.get("include_default_scope"), False)
         self.assertEqual(out["allowed_screens"], ["dashboard_home"])
         self.assertEqual(classify_token_use(payload), TOKEN_USE_ACCESS)
+
+    def test_resolve_access_session_default_skips_product_scope(self) -> None:
+        uid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+        token = create_access_token({"sub": uid, "user_role": "tenant_admin"}, token_use=TOKEN_USE_ACCESS)
+        session = {"sub": uid, "must_change_password": False, "password_changed_at": None}
+        with patch.object(deps.repos_auth, "get_session_context", return_value=session) as get_session:
+            deps.resolve_access_session(f"Bearer {token}")
+        self.assertEqual(get_session.call_args.kwargs.get("include_default_scope"), False)
+
+    def test_get_current_claims_skips_product_scope_hotpath(self) -> None:
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        session = {
+            "sub": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            "must_change_password": False,
+            "allowed_screens": ["dashboard_home"],
+        }
+        with patch.object(
+            deps,
+            "resolve_access_session",
+            return_value=(session, {"token_use": TOKEN_USE_ACCESS}),
+        ) as resolve:
+            out = deps.get_current_claims(request, authorization="Bearer x")
+        resolve.assert_called_once()
+        self.assertEqual(resolve.call_args.kwargs.get("include_default_scope"), False)
+        self.assertEqual(out["allowed_screens"], ["dashboard_home"])
 
     def test_missing_bearer(self) -> None:
         with self.assertRaises(HTTPException) as exc:

@@ -43,7 +43,8 @@ from app.usernames import (
 
 LOCK_AFTER_FAILURES = 5
 LOCK_WINDOW_MINUTES = 15
-PRODUCT_SCOPE_CACHE_TTL_SECONDS = 60.0
+# Session bootstrap only (login /auth/me). BI hot path skips this via deps.
+PRODUCT_SCOPE_CACHE_TTL_SECONDS = 300.0
 DUMMY_PASSWORD_HASH = "$2b$12$TpwRPxMEpx/YoXq784S/Ue136/CMtKT9iNZivMWqAcEPOeUAOX7oW"
 
 _product_scope_cache: dict[tuple[int, int | None], tuple[float, dict[str, Any]]] = {}
@@ -490,6 +491,49 @@ def _list_active_product_companies(
     ]
 
 
+def _latest_operational_data_key_from_mart(
+    tenant_id: int,
+    branch_id: int | None,
+) -> tuple[Optional[int], Optional[str]]:
+    """Latest operational day from ClickHouse mart (not PG ``dw.fact_*``).
+
+    ``/bi/*`` dates come from query params + ``business_today``; this value is
+    session metadata (``latest_operational_dt``). Scanning PG facts under ETL IO
+    caused intermittent multi-second stalls on every authenticated request.
+    """
+    try:
+        from app.db_clickhouse import query_dict
+    except Exception:
+        return None, None
+
+    params: dict[str, Any] = {"id_empresa": int(tenant_id)}
+    filial_sql = ""
+    if branch_id is not None:
+        filial_sql = "AND id_filial = {id_filial:Int32}"
+        params["id_filial"] = int(branch_id)
+
+    sql = f"""
+        SELECT max(data_key) AS latest_data_key
+        FROM torqmind_mart_rt.sales_daily_rt FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          {filial_sql}
+    """
+    try:
+        rows = query_dict(sql, parameters=params, tenant_id=int(tenant_id))
+    except Exception:
+        return None, None
+    if not rows:
+        return None, None
+    raw = rows[0].get("latest_data_key")
+    if raw is None:
+        return None, None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, None
+    return (value if value > 0 else None), "sales_daily_rt"
+
+
 def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[str, Any]:
     cache_key = (int(tenant_id), int(branch_id) if branch_id is not None else None)
     now_monotonic = time.monotonic()
@@ -497,13 +541,7 @@ def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[
     if cached and (now_monotonic - cached[0]) <= PRODUCT_SCOPE_CACHE_TTL_SECONDS:
         return dict(cached[1])
 
-    where_filial = " AND id_filial = %s " if branch_id is not None else ""
     current_date = business_today(tenant_id)
-    current_date_key = int(current_date.strftime("%Y%m%d"))
-    branch_params: list[Any] = [] if branch_id is None else [branch_id]
-    latest_params: list[Any] = [tenant_id] + branch_params
-    finance_params: list[Any] = [tenant_id, current_date_key] + branch_params
-    cash_params: list[Any] = [tenant_id, current_date_key] + branch_params
 
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
         tenant_row = conn.execute(
@@ -514,79 +552,17 @@ def _load_product_scope_defaults(tenant_id: int, branch_id: int | None) -> dict[
             """,
             (tenant_id,),
         ).fetchone()
-        latest_row = conn.execute(
-            f"""
-            WITH candidates AS (
-              SELECT
-                MAX(data_key) AS latest_data_key,
-                'fact_venda' AS source,
-                10 AS priority
-              FROM dw.fact_venda
-              WHERE id_empresa = %s
-                AND data_key IS NOT NULL
-                {where_filial}
-              UNION ALL
-              SELECT
-                MAX(data_key) AS latest_data_key,
-                'fact_comprovante' AS source,
-                20 AS priority
-              FROM dw.fact_comprovante
-              WHERE id_empresa = %s
-                AND data_key IS NOT NULL
-                {where_filial}
-              UNION ALL
-              SELECT
-                MAX(data_key) AS latest_data_key,
-                'fact_pagamento_comprovante' AS source,
-                30 AS priority
-              FROM dw.fact_pagamento_comprovante
-              WHERE id_empresa = %s
-                AND data_key IS NOT NULL
-                {where_filial}
-              UNION ALL
-              SELECT
-                MAX(COALESCE(data_key_pgto, data_key_venc, data_key_emissao)) AS latest_data_key,
-                'fact_financeiro' AS source,
-                40 AS priority
-              FROM dw.fact_financeiro
-              WHERE id_empresa = %s
-                AND COALESCE(data_key_pgto, data_key_venc, data_key_emissao) IS NOT NULL
-                AND COALESCE(data_key_pgto, data_key_venc, data_key_emissao) <= %s
-                {where_filial}
-              UNION ALL
-              SELECT
-                MAX(COALESCE(data_key_fechamento, data_key_abertura)) AS latest_data_key,
-                'fact_caixa_turno' AS source,
-                50 AS priority
-              FROM dw.fact_caixa_turno
-              WHERE id_empresa = %s
-                AND COALESCE(data_key_fechamento, data_key_abertura) IS NOT NULL
-                AND COALESCE(data_key_fechamento, data_key_abertura) <= %s
-                {where_filial}
-            )
-            SELECT
-              latest_data_key,
-              source
-            FROM candidates
-            WHERE latest_data_key IS NOT NULL
-            ORDER BY latest_data_key DESC, priority
-            LIMIT 1
-            """,
-            latest_params
-            + latest_params
-            + latest_params
-            + finance_params
-            + cash_params,
-        ).fetchone()
+
+    latest_data_key, latest_source = _latest_operational_data_key_from_mart(tenant_id, branch_id)
+    latest_dt_ref = _date_key_to_date(latest_data_key) if latest_data_key is not None else None
 
     default_days = int((tenant_row or {}).get("default_product_scope_days") or 1)
-    latest_dt_ref = _date_key_to_date(latest_row.get("latest_data_key")) if latest_row else None
     result = {
         "default_product_scope_days": max(default_days, 1),
         "latest_dt_ref": latest_dt_ref or current_date,
         "current_date": current_date,
         "has_operational_data": latest_dt_ref is not None,
-        "latest_source": latest_row.get("source") if latest_row else None,
+        "latest_source": latest_source,
     }
     _product_scope_cache[cache_key] = (now_monotonic, dict(result))
     return result
