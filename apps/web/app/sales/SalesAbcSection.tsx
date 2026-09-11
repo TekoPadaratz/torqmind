@@ -89,6 +89,9 @@ interface AbcData {
   summary: AbcSummary;
   chart_data: AbcChartItem[];
   ranking: AbcRankingItem[];
+  ranking_returned?: number;
+  ranking_limit?: number;
+  ranking_capped?: boolean;
   insights: Array<{ type: string; text: string } | string>;
   thresholds: { a: number; b: number; c: number };
   groups?: Array<{ id_grupo_produto: number; grupo_nome: string; faturamento: number }>;
@@ -534,7 +537,14 @@ export default function SalesAbcSection() {
 
       {/* Ranking Table */}
       <div className="card col-12">
-        <h2>Ranking completo</h2>
+        <h2>{data.ranking_capped ? "Ranking (top produtos)" : "Ranking completo"}</h2>
+        {data.ranking_capped ? (
+          <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+            Totais e classes ABC usam os {summary.total_produtos.toLocaleString("pt-BR")} produtos.
+            A lista e a busca cobrem os {(data.ranking_returned ?? data.ranking.length).toLocaleString("pt-BR")} primeiros
+            {typeof data.ranking_limit === "number" ? ` (limite ${data.ranking_limit.toLocaleString("pt-BR")})` : ""}.
+          </div>
+        ) : null}
         <div style={{ marginTop: 12 }}>
           <GridSearchInput value={query} onChange={setQuery} />
         </div>

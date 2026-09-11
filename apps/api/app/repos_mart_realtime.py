@@ -1365,10 +1365,16 @@ def sales_abc_curve(
         total_faturamento=total_faturamento,
     )
 
+    ranking_returned = len(ranking)
+    ranking_capped = total_produtos > ranking_returned
+
     return {
         "summary": summary,
         "chart_data": chart_data,
         "ranking": ranking,
+        "ranking_returned": ranking_returned,
+        "ranking_limit": _ABC_RANKING_CAP,
+        "ranking_capped": ranking_capped,
         "insights": insights,
         "thresholds": {"a": threshold_a, "b": threshold_b, "c": 100},
         "sort_by": sort_by,
@@ -1400,6 +1406,9 @@ def _abc_empty_response(
         },
         "chart_data": [],
         "ranking": [],
+        "ranking_returned": 0,
+        "ranking_limit": _ABC_RANKING_CAP,
+        "ranking_capped": False,
         "insights": [],
         "thresholds": {"a": 80, "b": 95, "c": 100},
         "groups": groups or [],

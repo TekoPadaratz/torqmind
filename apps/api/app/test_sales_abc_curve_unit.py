@@ -30,6 +30,9 @@ class SalesAbcCurveRankingCapUnitTest(unittest.TestCase):
         self.assertTrue(out.get("empty"))
         self.assertEqual(out["ranking"], [])
         self.assertEqual(out["summary"]["total_produtos"], 0)
+        self.assertEqual(out["ranking_returned"], 0)
+        self.assertEqual(out["ranking_limit"], 5000)
+        self.assertFalse(out["ranking_capped"])
 
     def test_abc_summary_uses_full_set_window_not_capped_row_count(self) -> None:
         ranking_rows = [
@@ -77,6 +80,56 @@ class SalesAbcCurveRankingCapUnitTest(unittest.TestCase):
         self.assertEqual(out["summary"]["total_produtos"], 6000)
         self.assertEqual(out["summary"]["classe_c_count"], 5999)
         self.assertEqual(len(out["ranking"]), 1)
+        self.assertEqual(out["ranking_returned"], 1)
+        self.assertEqual(out["ranking_limit"], 5000)
+        self.assertTrue(out["ranking_capped"])
+
+    def test_abc_ranking_not_capped_when_full_set_fits(self) -> None:
+        ranking_rows = [
+            {
+                "id_produto": 1,
+                "nome_produto": "Prod A",
+                "nome_grupo": "Loja",
+                "unidade": "UN",
+                "quantity_kind": "unit",
+                "faturamento": 100.0,
+                "qtd": 1.0,
+                "custo_total": 40.0,
+                "margem": 60.0,
+                "valor_unitario_medio": 100.0,
+                "participacao_pct": 100.0,
+                "acumulado_pct": 100.0,
+                "classe_abc": "A",
+                "posicao": 1,
+                "total_produtos": 1,
+                "total_faturamento": 100.0,
+                "total_metric": 100.0,
+                "classe_a_count": 1,
+                "classe_b_count": 0,
+                "classe_c_count": 0,
+                "metric_a": 100.0,
+                "metric_b": 0.0,
+                "metric_c": 0.0,
+            }
+        ]
+
+        def _qd(sql, parameters=None, **kwargs):
+            if "sales_products_rt" in sql and "id_grupo_produto" in sql and "GROUP BY id_grupo_produto" in sql:
+                return []
+            return ranking_rows
+
+        with patch.object(repos_mart_realtime, "query_dict", side_effect=_qd):
+            out = repos_mart_realtime.sales_abc_curve(
+                "owner",
+                1,
+                None,
+                date(2026, 9, 1),
+                date(2026, 9, 10),
+            )
+
+        self.assertFalse(out["ranking_capped"])
+        self.assertEqual(out["ranking_returned"], 1)
+        self.assertEqual(out["ranking_limit"], 5000)
 
 
 if __name__ == "__main__":
