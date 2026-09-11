@@ -1108,6 +1108,11 @@ def sales_ticket_combustivel(
 # CURVA ABC DE PRODUTOS
 # ================================================================
 
+# Cap ranking payload shipped to the API/UI. Chart uses top 40; ABC class
+# thresholds and summary totals remain computed over the full product set.
+_ABC_RANKING_CAP = 5000
+
+
 def sales_abc_curve(
     role: str,
     id_empresa: int,
@@ -1123,9 +1128,10 @@ def sales_abc_curve(
 ) -> Dict[str, Any]:
     """ABC curve analysis for products sold in period.
 
-    Returns executive summary, chart data, full ranking and auto-insights.
+    Returns executive summary, chart data, ranking (capped) and auto-insights.
     Classification is computed at query time using window functions so it
-    adapts to whatever date/branch filter the user selects.
+    adapts to whatever date/branch filter the user selects. Totals / A-B-C
+    cutoffs use the full product set; only the ranking list is capped.
     """
     filial = _branch_clause("id_filial", id_filial)
     date_range = _date_range_filter(dt_ini, dt_fim)
@@ -1149,53 +1155,82 @@ def sales_abc_curve(
     sort_col_map = {"faturamento": "fat", "quantidade": "qty", "lucro": "mrg"}
     sort_col = sort_col_map.get(sort_by, "fat")
 
-    # Query with ranking, cumulative % and ABC classification
+    # Full-set classification in SQL; outer WHERE caps ranking payload only.
+    # Window totals (_total_*) are computed before the ranking cap filter.
     rows = query_dict(f"""
         SELECT
-            ranked.id_produto,
-            ranked.nome_produto,
-            ranked.nome_grupo,
+            classified.id_produto,
+            classified.nome_produto,
+            classified.nome_grupo,
             meta.unidade AS unidade,
-            {_sales_quantity_kind_sql('ranked.nome_produto', 'ranked.nome_grupo')} AS quantity_kind,
-            ranked.fat AS faturamento,
-            ranked.qty AS qtd,
-            ranked.cost AS custo_total,
-            ranked.mrg AS margem,
-            ranked.avg_price AS valor_unitario_medio,
-            ranked.participacao_pct,
-            ranked.acumulado_pct,
-            multiIf(
-                ranked.acumulado_pct <= {threshold_a}, 'A',
-                ranked.acumulado_pct <= {threshold_b}, 'B',
-                'C'
-            ) AS classe_abc,
-            ranked.posicao
+            {_sales_quantity_kind_sql('classified.nome_produto', 'classified.nome_grupo')} AS quantity_kind,
+            classified.fat AS faturamento,
+            classified.qty AS qtd,
+            classified.cost AS custo_total,
+            classified.mrg AS margem,
+            classified.avg_price AS valor_unitario_medio,
+            classified.participacao_pct,
+            classified.acumulado_pct,
+            classified.classe_abc,
+            classified.posicao,
+            classified._total_produtos AS total_produtos,
+            classified._total_faturamento AS total_faturamento,
+            classified._total_metric AS total_metric,
+            classified._classe_a_count AS classe_a_count,
+            classified._classe_b_count AS classe_b_count,
+            classified._classe_c_count AS classe_c_count,
+            classified._metric_a AS metric_a,
+            classified._metric_b AS metric_b,
+            classified._metric_c AS metric_c
         FROM (
             SELECT
                 *,
-                row_number() OVER (ORDER BY {sort_col} DESC, id_produto ASC) AS posicao,
-                toFloat64({sort_col}) / nullIf(toFloat64(sum({sort_col}) OVER ()), 0) * 100 AS participacao_pct,
-                toFloat64(sum({sort_col}) OVER (ORDER BY {sort_col} DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
-                    / nullIf(toFloat64(sum({sort_col}) OVER ()), 0) * 100 AS acumulado_pct
+                count() OVER () AS _total_produtos,
+                sum(fat) OVER () AS _total_faturamento,
+                sum({sort_col}) OVER () AS _total_metric,
+                countIf(classe_abc = 'A') OVER () AS _classe_a_count,
+                countIf(classe_abc = 'B') OVER () AS _classe_b_count,
+                countIf(classe_abc = 'C') OVER () AS _classe_c_count,
+                sumIf({sort_col}, classe_abc = 'A') OVER () AS _metric_a,
+                sumIf({sort_col}, classe_abc = 'B') OVER () AS _metric_b,
+                sumIf({sort_col}, classe_abc = 'C') OVER () AS _metric_c
             FROM (
                 SELECT
-                    id_produto,
-                    nome_produto,
-                    nome_grupo,
-                    toFloat64(sum(faturamento)) AS fat,
-                    toFloat64(sum(qtd)) AS qty,
-                    toFloat64(sum(custo_total)) AS cost,
-                    toFloat64(sum(faturamento)) - toFloat64(sum(custo_total)) AS mrg,
-                    if(sum(qtd) > 0, toFloat64(sum(faturamento)) / toFloat64(sum(qtd)), 0) AS avg_price
-                FROM {MART_RT_DB}.sales_products_rt FINAL
-                WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}{group_filter}
-                GROUP BY id_produto, nome_produto, nome_grupo
-                HAVING sum(faturamento) > 0
+                    *,
+                    multiIf(
+                        acumulado_pct <= {threshold_a}, 'A',
+                        acumulado_pct <= {threshold_b}, 'B',
+                        'C'
+                    ) AS classe_abc
+                FROM (
+                    SELECT
+                        *,
+                        row_number() OVER (ORDER BY {sort_col} DESC, id_produto ASC) AS posicao,
+                        toFloat64({sort_col}) / nullIf(toFloat64(sum({sort_col}) OVER ()), 0) * 100 AS participacao_pct,
+                        toFloat64(sum({sort_col}) OVER (ORDER BY {sort_col} DESC, id_produto ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))
+                            / nullIf(toFloat64(sum({sort_col}) OVER ()), 0) * 100 AS acumulado_pct
+                    FROM (
+                        SELECT
+                            id_produto,
+                            nome_produto,
+                            nome_grupo,
+                            toFloat64(sum(faturamento)) AS fat,
+                            toFloat64(sum(qtd)) AS qty,
+                            toFloat64(sum(custo_total)) AS cost,
+                            toFloat64(sum(faturamento)) - toFloat64(sum(custo_total)) AS mrg,
+                            if(sum(qtd) > 0, toFloat64(sum(faturamento)) / toFloat64(sum(qtd)), 0) AS avg_price
+                        FROM {MART_RT_DB}.sales_products_rt FINAL
+                        WHERE id_empresa = {{id_empresa:Int32}} {date_range} {filial}{fuel_filter}{group_filter}
+                        GROUP BY id_produto, nome_produto, nome_grupo
+                        HAVING sum(faturamento) > 0
+                    )
+                )
             )
-        ) AS ranked
+        ) AS classified
         LEFT JOIN ({product_meta_sql}) AS meta
-            ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = ranked.id_produto
-        ORDER BY ranked.posicao ASC
+            ON meta.id_empresa = {{id_empresa:Int32}} AND meta.id_produto = classified.id_produto
+        WHERE classified.posicao <= {_ABC_RANKING_CAP}
+        ORDER BY classified.posicao ASC
     """, parameters={"id_empresa": id_empresa})
 
     # Grupos disponiveis no periodo/escopo (respeita exclude_fuel) para o seletor.
@@ -1223,24 +1258,26 @@ def sales_abc_curve(
     if not rows:
         return _abc_empty_response(available_groups, selected_groups)
 
-    # Determine the metric field for sort_by
-    metric_field_map = {"faturamento": "faturamento", "quantidade": "qtd", "lucro": "margem"}
-    metric_field = metric_field_map.get(sort_by, "faturamento")
-
-    # Build response sections
-    total_faturamento = sum(float(r.get("faturamento") or 0) for r in rows)
-    total_metric = sum(float(r.get(metric_field) or 0) for r in rows)
-    class_a = [r for r in rows if r.get("classe_abc") == "A"]
-    class_b = [r for r in rows if r.get("classe_abc") == "B"]
-    class_c = [r for r in rows if r.get("classe_abc") == "C"]
-
-    metric_a = sum(float(r.get(metric_field) or 0) for r in class_a)
-    metric_b = sum(float(r.get(metric_field) or 0) for r in class_b)
-    metric_c = sum(float(r.get(metric_field) or 0) for r in class_c)
+    # Summary totals / class counts come from full-set windows (not capped rows).
+    s0 = rows[0]
+    total_produtos = int(s0.get("total_produtos") or 0)
+    total_faturamento = float(s0.get("total_faturamento") or 0)
+    total_metric = float(s0.get("total_metric") or 0)
+    classe_a_count = int(s0.get("classe_a_count") or 0)
+    classe_b_count = int(s0.get("classe_b_count") or 0)
+    classe_c_count = int(s0.get("classe_c_count") or 0)
+    metric_a = float(s0.get("metric_a") or 0)
+    metric_b = float(s0.get("metric_b") or 0)
+    metric_c = float(s0.get("metric_c") or 0)
 
     pct_a = (metric_a / total_metric * 100) if total_metric > 0 else 0
     pct_b = (metric_b / total_metric * 100) if total_metric > 0 else 0
     pct_c = (metric_c / total_metric * 100) if total_metric > 0 else 0
+
+    # Placeholder lists sized to full-set counts (insights use len/truthiness only).
+    class_a = [{}] * classe_a_count
+    class_b = [{}] * classe_b_count
+    class_c = [{}] * classe_c_count
 
     leader = rows[0] if rows else {}
     leader_pct = float(leader.get("participacao_pct") or 0)
@@ -1251,22 +1288,22 @@ def sales_abc_curve(
     if top5_pct >= 70:
         concentration = "high"
         concentration_text = f"Alta concentração: 5 produtos representam {top5_pct:.1f}% do {metric_label}."
-    elif len(class_c) > 50 and pct_c < 10:
+    elif classe_c_count > 50 and pct_c < 10:
         concentration = "dispersed"
-        concentration_text = f"Mix pulverizado: Classe C tem {len(class_c)} produtos com apenas {pct_c:.1f}% do {metric_label}."
+        concentration_text = f"Mix pulverizado: Classe C tem {classe_c_count} produtos com apenas {pct_c:.1f}% do {metric_label}."
     else:
         concentration = "healthy"
         concentration_text = "Concentração saudável do portfólio de produtos."
 
     # Executive summary
     summary = {
-        "total_produtos": len(rows),
+        "total_produtos": total_produtos,
         "total_faturamento": total_faturamento,
-        "classe_a_count": len(class_a),
+        "classe_a_count": classe_a_count,
         "classe_a_pct": round(pct_a, 1),
-        "classe_b_count": len(class_b),
+        "classe_b_count": classe_b_count,
         "classe_b_pct": round(pct_b, 1),
-        "classe_c_count": len(class_c),
+        "classe_c_count": classe_c_count,
         "classe_c_pct": round(pct_c, 1),
         "produto_lider": leader.get("nome_produto") or "",
         "produto_lider_pct": round(leader_pct, 1),
@@ -1292,7 +1329,7 @@ def sales_abc_curve(
         for r in rows[:40]
     ]
 
-    # Full ranking for table
+    # Ranking for table (capped server-side)
     ranking = [
         {
             "posicao": int(r.get("posicao") or 0),
