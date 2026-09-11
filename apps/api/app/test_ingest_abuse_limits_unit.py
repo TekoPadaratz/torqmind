@@ -141,6 +141,55 @@ class IngestStreamLimitTests(unittest.IsolatedAsyncioTestCase):
                 # incomplete JSON at EOF → 400 invalid NDJSON (honest disconnect handling)
                 await _collect(req)
 
+    async def test_multiline_block_under_sum_of_lines_ok(self) -> None:
+        """max_line applies per line / incomplete fragment — not to a multi-line buffer."""
+        lines = [json.dumps({"i": i}, ensure_ascii=False).encode() + b"\n" for i in range(5)]
+        body = b"".join(lines)
+        # Sum of lines >> max_line, but each complete line fits.
+        self.assertGreater(len(body), 40)
+        req = _FakeRequest([body])
+        with patch.object(settings, "ingest_max_line_bytes", 40):
+            rows = await _collect(req)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(rows[0], {"i": 0})
+
+    async def test_same_ndjson_chunk_splits_equivalent(self) -> None:
+        ndjson = b"".join(json.dumps({"k": i}).encode() + b"\n" for i in (1, 2, 3))
+        expected = [{"k": 1}, {"k": 2}, {"k": 3}]
+        splits = [
+            [ndjson],
+            [ndjson[:7], ndjson[7:18], ndjson[18:]],
+            [ndjson[i : i + 5] for i in range(0, len(ndjson), 5)],
+            [bytes([b]) for b in ndjson],
+        ]
+        for chunks in splits:
+            with self.subTest(n_chunks=len(chunks)):
+                rows = await _collect(_FakeRequest(chunks))
+                self.assertEqual(rows, expected)
+
+    async def test_gzip_valid_batches_chunk_splits(self) -> None:
+        raw = b"".join(json.dumps({"g": i}).encode() + b"\n" for i in (10, 20))
+        compressed = gzip.compress(raw)
+        expected = [{"g": 10}, {"g": 20}]
+        cases = [
+            [compressed],
+            [compressed[:8], compressed[8:20], compressed[20:]],
+            [compressed[i : i + 11] for i in range(0, len(compressed), 11)],
+        ]
+        for chunks in cases:
+            with self.subTest(n_chunks=len(chunks)):
+                req = _FakeRequest(chunks, headers={"content-encoding": "gzip"})
+                rows = await _collect(req, is_gzip=True)
+                self.assertEqual(rows, expected)
+
+    async def test_complete_line_over_max_rejected(self) -> None:
+        huge_line = (b'{"x":"' + (b"Z" * 200) + b'"}\n')
+        req = _FakeRequest([huge_line])
+        with patch.object(settings, "ingest_max_line_bytes", 50):
+            with self.assertRaises(IngestStreamLimitError) as ctx:
+                await _collect(req)
+        self.assertEqual(ctx.exception.detail["error"], "ingest_line_too_large")
+
 
 if __name__ == "__main__":
     unittest.main()

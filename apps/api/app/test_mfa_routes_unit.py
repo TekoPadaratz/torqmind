@@ -130,6 +130,15 @@ def test_full_mfa_verify_issues_token(client, key, monkeypatch):
     monkeypatch.setattr(repos_mfa, "consume_recovery_code", lambda u, h: False)
     monkeypatch.setattr(
         repos_auth,
+        "get_user_by_id",
+        lambda u: {
+            "id": uid,
+            "is_active": True,
+            "password_changed_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        repos_auth,
         "get_session_context",
         lambda **k: {
             "sub": uid,
@@ -154,7 +163,7 @@ def test_full_mfa_verify_issues_token(client, key, monkeypatch):
 
 
 def test_mfa_verify_wrong_code_fails(client, key, monkeypatch):
-    from app import repos_mfa
+    from app import repos_auth, repos_mfa
     from app.routes_mfa import issue_mfa_challenge_token
 
     uid = "44444444-4444-4444-4444-444444444444"
@@ -162,6 +171,11 @@ def test_mfa_verify_wrong_code_fails(client, key, monkeypatch):
     enc = totp.encrypt_secret(secret)
     monkeypatch.setattr(repos_mfa, "get_encrypted_secret", lambda u, require_enabled: enc)
     monkeypatch.setattr(repos_mfa, "consume_recovery_code", lambda u, h: False)
+    monkeypatch.setattr(
+        repos_auth,
+        "get_user_by_id",
+        lambda u: {"id": uid, "is_active": True, "password_changed_at": None},
+    )
 
     challenge = issue_mfa_challenge_token(uid, 1, None)
     good = totp.now_code(secret)
@@ -169,3 +183,71 @@ def test_mfa_verify_wrong_code_fails(client, key, monkeypatch):
     resp = client.post("/auth/mfa/verify", json={"mfa_challenge_token": challenge, "code": wrong})
     assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "invalid_code"
+
+
+def test_mfa_verify_rejects_challenge_after_password_change(client, key, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app import repos_auth, repos_mfa
+    from app.routes_mfa import issue_mfa_challenge_token
+
+    uid = "77777777-7777-7777-7777-777777777777"
+    secret = totp.generate_secret()
+    enc = totp.encrypt_secret(secret)
+    monkeypatch.setattr(repos_mfa, "get_encrypted_secret", lambda u, require_enabled: enc)
+    monkeypatch.setattr(
+        repos_auth,
+        "get_user_by_id",
+        lambda u: {
+            "id": uid,
+            "is_active": True,
+            "password_changed_at": datetime.now(timezone.utc) + timedelta(seconds=30),
+        },
+    )
+
+    challenge = issue_mfa_challenge_token(uid, 1, None)
+    good = totp.now_code(secret)
+    resp = client.post("/auth/mfa/verify", json={"mfa_challenge_token": challenge, "code": good})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "token_revoked"
+
+
+def test_mfa_setup_rejects_token_after_password_change(client, key, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app import repos_auth
+    from app.routes_mfa import issue_mfa_setup_token
+
+    uid = "88888888-8888-8888-8888-888888888888"
+    monkeypatch.setattr(
+        repos_auth,
+        "get_user_by_id",
+        lambda u: {
+            "id": uid,
+            "is_active": True,
+            "password_changed_at": datetime.now(timezone.utc) + timedelta(seconds=30),
+        },
+    )
+    token = issue_mfa_setup_token(uid, 1, None)
+    resp = client.post("/auth/mfa/setup/start", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "token_revoked"
+
+
+def test_mfa_setup_start_ok_when_password_unchanged(client, key, monkeypatch):
+    from app import repos_auth, repos_mfa
+    from app.routes_mfa import issue_mfa_setup_token
+
+    uid = "99999999-9999-9999-9999-999999999999"
+    monkeypatch.setattr(
+        repos_auth,
+        "get_user_by_id",
+        lambda u: {"id": uid, "email": "ok@example.com", "is_active": True, "password_changed_at": None},
+    )
+    monkeypatch.setattr(repos_mfa, "stage_secret", lambda u, enc: None)
+    token = issue_mfa_setup_token(uid, 1, None)
+    resp = client.post("/auth/mfa/setup/start", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("otpauth_uri")
+    assert body.get("secret")

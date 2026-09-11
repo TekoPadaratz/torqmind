@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { AxiosHeaders } from "axios";
 import type { AxiosRequestConfig } from "axios";
 import { resolveBrowserApiBaseURL } from "./api-base-client.mjs";
 import { isRequestCanceled as isRequestCanceledBase } from "./request-cancel.mjs";
@@ -25,19 +25,18 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  const headers = AxiosHeaders.from(config.headers ?? {});
   // Browser session is cookie-only — never send Authorization from localStorage.
-  if (config.headers) {
-    delete (config.headers as any).Authorization;
-    delete (config.headers as any).authorization;
-  }
+  headers.delete("Authorization");
+  headers.delete("authorization");
   const method = (config.method || "get").toUpperCase();
   if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
     const csrf = readCsrfToken();
     if (csrf) {
-      config.headers = config.headers || {};
-      (config.headers as any)["X-CSRF-Token"] = csrf;
+      headers.set("X-CSRF-Token", csrf);
     }
   }
+  config.headers = headers;
   return config;
 });
 

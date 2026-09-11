@@ -130,6 +130,7 @@ def setup_claims(
         uid = str(payload.get("sub") or "").strip()
         if not uid:
             raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
+        _assert_intermediate_mfa_still_valid(payload)
         return {
             "sub": uid,
             "email": payload.get("email"),
@@ -145,6 +146,40 @@ def setup_claims(
     session = _resolve_session(authorization, request=request)
     session["mode"] = "session"
     return session
+
+
+def _assert_intermediate_mfa_still_valid(payload: dict[str, Any]) -> None:
+    """Reject MFA challenge/setup tokens after password change or for inactive users.
+
+    Must run before consuming TOTP/recovery codes, mutating MFA state, or issuing
+    a full session.
+    """
+    from app.security import assert_not_revoked_by_password_change
+
+    uid = str(payload.get("sub") or "").strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail={"error": "invalid_token", "message": "Invalid token"})
+    try:
+        user = repos_auth.get_user_by_id(uid)
+    except Exception:
+        user = None
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_session", "message": "Sessão inválida."},
+        )
+    if user.get("is_active") is False:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "user_inactive", "message": "Usuário inativo."},
+        )
+    try:
+        assert_not_revoked_by_password_change(payload, user.get("password_changed_at"))
+    except ValueError:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "token_revoked", "message": "Sessão invalidada. Faça login novamente."},
+        )
 
 
 def _issue_session_token(
@@ -215,6 +250,9 @@ def mfa_verify(body: MfaVerifyRequest, request: Request, response: Response):
     user_id = str(payload.get("sub") or "").strip()
     if not user_id:
         raise HTTPException(status_code=401, detail={"error": "invalid_challenge", "message": "Desafio inválido."})
+
+    # Revocation / active-user gate before consuming codes or minting a session.
+    _assert_intermediate_mfa_still_valid(payload)
 
     outcome = repos_mfa.verify_totp_or_recovery(
         user_id,

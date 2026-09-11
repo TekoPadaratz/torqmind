@@ -1072,7 +1072,10 @@ async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterat
     """Parse NDJSON from the request body with streaming size/time/record limits.
 
     Limits are enforced while reading chunks — the full body is never buffered
-    solely to measure size. Partial lines across chunk boundaries are preserved.
+    solely to measure size. ``ingest_max_line_bytes`` applies to each complete
+    line and to the incomplete trailing fragment — never to a multi-line block.
+    Gzip is expanded in bounded steps so a small wire chunk cannot allocate an
+    unbounded decoded buffer before checks run.
     """
     import time as _time
 
@@ -1089,8 +1092,10 @@ async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterat
     max_seconds = float(settings.ingest_max_seconds)
     max_ratio = float(settings.ingest_max_gzip_expansion_ratio)
     decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS) if is_gzip else None
+    # Bound each zlib output step (avoids one huge alloc before ratio/budget checks).
+    gzip_step = max(1024, min(64 * 1024, max_line if max_line > 0 else 64 * 1024))
 
-    def _check_budgets(partial_line: bytes = b"") -> None:
+    def _check_time_wire_decoded() -> None:
         elapsed = _time.monotonic() - started
         if elapsed > max_seconds:
             raise IngestStreamLimitError(
@@ -1108,15 +1113,17 @@ async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterat
                 "ingest_decoded_too_large",
                 f"Decoded body exceeded {max_decoded} bytes.",
             )
-        if len(partial_line) > max_line:
-            raise IngestStreamLimitError(
-                "ingest_line_too_large",
-                f"NDJSON line exceeded {max_line} bytes before newline.",
-            )
         if is_gzip and decoded_bytes > 64 * 1024 and wire_bytes > 0 and decoded_bytes > wire_bytes * max_ratio:
             raise IngestStreamLimitError(
                 "ingest_gzip_bomb",
                 "Gzip expansion ratio exceeded safe limit.",
+            )
+
+    def _check_incomplete_fragment(partial: bytes) -> None:
+        if len(partial) > max_line:
+            raise IngestStreamLimitError(
+                "ingest_line_too_large",
+                f"NDJSON line exceeded {max_line} bytes before newline.",
             )
 
     def flush_lines(chunk_buffer: bytes) -> Tuple[List[bytes], bytes]:
@@ -1150,23 +1157,51 @@ async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterat
             raise HTTPException(status_code=400, detail=f"Invalid NDJSON at line {line_no}: line is not an object")
         return obj
 
+    def expand_gzip(wire_chunk: bytes) -> bytes:
+        """Decompress ``wire_chunk`` in bounded steps; update ``decoded_bytes`` as we go."""
+        nonlocal decoded_bytes
+        pieces: List[bytes] = []
+        pending = wire_chunk
+        while True:
+            room = max_decoded - decoded_bytes
+            if room <= 0:
+                raise IngestStreamLimitError(
+                    "ingest_decoded_too_large",
+                    f"Decoded body exceeded {max_decoded} bytes.",
+                )
+            step = min(gzip_step, room)
+            try:
+                piece = decompressor.decompress(pending, max_length=step)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}") from exc
+            pending = b""
+            if piece:
+                pieces.append(piece)
+                decoded_bytes += len(piece)
+                _check_time_wire_decoded()
+            unconsumed = decompressor.unconsumed_tail
+            if unconsumed:
+                pending = unconsumed
+                continue
+            break
+        return b"".join(pieces)
+
     async for chunk in request.stream():
         if not chunk:
             continue
         wire_bytes += len(chunk)
-        _check_budgets(buffer)
+        _check_time_wire_decoded()
         if decompressor is not None:
-            try:
-                chunk = decompressor.decompress(chunk)
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}")
+            chunk = expand_gzip(chunk)
+        else:
+            decoded_bytes += len(chunk)
+            _check_time_wire_decoded()
         if not chunk:
-            _check_budgets(buffer)
+            _check_incomplete_fragment(buffer)
             continue
-        decoded_bytes += len(chunk)
         buffer += chunk
-        _check_budgets(buffer)
         lines, buffer = flush_lines(buffer)
+        _check_incomplete_fragment(buffer)
         for raw_line in lines:
             obj = emit_line(raw_line)
             if obj is not None:
@@ -1176,11 +1211,18 @@ async def _stream_ndjson_objects(request: Request, is_gzip: bool) -> AsyncIterat
         try:
             tail = decompressor.flush()
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}")
+            raise HTTPException(status_code=400, detail=f"Invalid gzip body: {exc}") from exc
         if tail:
             decoded_bytes += len(tail)
+            _check_time_wire_decoded()
             buffer += tail
-            _check_budgets(buffer)
+
+    lines, buffer = flush_lines(buffer)
+    _check_incomplete_fragment(buffer)
+    for raw_line in lines:
+        obj = emit_line(raw_line)
+        if obj is not None:
+            yield obj
 
     if buffer.strip():
         obj = emit_line(buffer)

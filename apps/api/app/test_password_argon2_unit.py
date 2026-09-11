@@ -117,5 +117,123 @@ class Argon2idHashTests(unittest.TestCase):
         )
 
 
+class ConditionalArgon2UpgradeTests(unittest.TestCase):
+    """Login must not overwrite a concurrent password reset with a stale bcrypt upgrade."""
+
+    def test_upgrade_skipped_when_hash_changed_concurrently(self) -> None:
+        from unittest.mock import patch
+
+        from app import repos_auth
+        from app.security import PasswordCheck
+
+        old_digest = "$2b$12$legacyhashplaceholderxxxxxxxxxxxxxuYYYYYYYYYYYYYYYYYYY"
+        pw = "LegacyOk1!"
+        uid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        user = {
+            "id": uid,
+            "email": "u@example.com",
+            "username": "u",
+            "password_hash": old_digest,
+            "is_active": True,
+            "nome": "U",
+            "role": "tenant_admin",
+            "must_change_password": False,
+            "locked_until": None,
+            "password_changed_at": None,
+        }
+        check = PasswordCheck(
+            ok=True,
+            scheme="bcrypt",
+            upgradeable_to_argon2=True,
+            ambiguous_bcrypt_long=False,
+        )
+
+        with patch.object(repos_auth, "get_user_by_identifier", return_value=dict(user)):
+            with patch.object(repos_auth, "verify_password_detailed", return_value=check):
+                with patch.object(repos_auth, "hash_password", return_value="$argon2id$new"):
+                    with patch.object(repos_auth, "_upgrade_password_hash", return_value=False) as upgrade:
+                        with patch.object(repos_auth, "_list_user_access_rows", return_value=[]):
+                            with patch.object(repos_auth, "_build_session_context", return_value={"sub": uid}):
+                                with patch.object(repos_auth, "_record_successful_login"):
+                                    with self.assertRaises(repos_auth.AuthError) as ctx:
+                                        repos_auth.verify_login("u@example.com", pw)
+        self.assertEqual(ctx.exception.error, "credentials_changed")
+        upgrade.assert_called_once()
+        self.assertEqual(upgrade.call_args.kwargs.get("expected_old_hash"), old_digest)
+
+    def test_upgrade_succeeds_when_hash_still_matches(self) -> None:
+        from unittest.mock import patch
+
+        from app import repos_auth
+        from app.security import PasswordCheck
+
+        old_digest = "$2b$12$legacyhashplaceholderxxxxxxxxxxxxxuZZZZZZZZZZZZZZZZZZZ"
+        pw = "LegacyOk2!"
+        uid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        user = {
+            "id": uid,
+            "email": "v@example.com",
+            "username": "v",
+            "password_hash": old_digest,
+            "is_active": True,
+            "nome": "V",
+            "role": "tenant_admin",
+            "must_change_password": False,
+            "locked_until": None,
+            "password_changed_at": None,
+        }
+        check = PasswordCheck(
+            ok=True,
+            scheme="bcrypt",
+            upgradeable_to_argon2=True,
+            ambiguous_bcrypt_long=False,
+        )
+
+        with patch.object(repos_auth, "get_user_by_identifier", return_value=dict(user)):
+            with patch.object(repos_auth, "verify_password_detailed", return_value=check):
+                with patch.object(repos_auth, "hash_password", return_value="$argon2id$new"):
+                    with patch.object(repos_auth, "_upgrade_password_hash", return_value=True) as upgrade:
+                        with patch.object(repos_auth, "_list_user_access_rows", return_value=[]):
+                            with patch.object(
+                                repos_auth,
+                                "_build_session_context",
+                                return_value={"sub": uid, "email": "v@example.com"},
+                            ):
+                                with patch.object(repos_auth, "_record_successful_login"):
+                                    session = repos_auth.verify_login("v@example.com", pw)
+        self.assertEqual(session["sub"], uid)
+        upgrade.assert_called_once()
+        self.assertEqual(upgrade.call_args.kwargs.get("expected_old_hash"), old_digest)
+
+
+class ConditionalUpgradeSqlRaceTests(unittest.TestCase):
+    """Conditional UPDATE race — no Argon2 dependency."""
+
+    def test_login_vs_reset_race_controlled(self) -> None:
+        """Simulated race: reset updates hash between verify and upgrade UPDATE."""
+        from unittest.mock import MagicMock, patch
+
+        from app import repos_auth
+
+        bcrypt_only = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        pw = "RacePass1!"
+        old_digest = bcrypt_only.hash(pw)
+        new_digest = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$bm90LWEtcmVhbC1oYXNo"
+        uid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchone.return_value = None  # no RETURNING row
+
+        with patch.object(repos_auth, "get_conn", return_value=conn):
+            ok = repos_auth._upgrade_password_hash(uid, new_digest, expected_old_hash=old_digest)
+        self.assertFalse(ok)
+        sql = conn.execute.call_args.args[0]
+        self.assertIn("password_hash = %s", sql)
+        self.assertIn("AND password_hash = %s", sql)
+        self.assertEqual(conn.execute.call_args.args[1], (new_digest, uid, old_digest))
+
+
 if __name__ == "__main__":
     unittest.main()

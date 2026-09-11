@@ -156,7 +156,7 @@ export default function LoginPage() {
               <button
                 type="button"
                 className="muted"
-                onClick={() => { setMfaChallenge(null); setMfaCode(""); setError(null); }}
+                onClick={() => { setMfaPending(false); setMfaCode(""); setError(null); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13 }}
               >
                 Voltar

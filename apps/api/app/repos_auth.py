@@ -697,19 +697,27 @@ def _force_must_change_password(user_id: str) -> None:
         conn.commit()
 
 
-def _upgrade_password_hash(user_id: str, new_hash: str) -> None:
-    """In-place hash upgrade after a successful unambiguous verify (no credential reset)."""
+def _upgrade_password_hash(user_id: str, new_hash: str, *, expected_old_hash: str) -> bool:
+    """Upgrade hash only if the verified legacy digest is still current.
+
+    Returns True when the row was updated. False means a concurrent password
+    change/reset already replaced ``expected_old_hash`` — callers must not
+    authenticate on the stale credential.
+    """
     with get_conn(role="MASTER", tenant_id=None, branch_id=None) as conn:
-        conn.execute(
+        row = conn.execute(
             """
             UPDATE auth.users
             SET password_hash = %s,
                 updated_at = now()
             WHERE id = %s::uuid
+              AND password_hash = %s
+            RETURNING id
             """,
-            (new_hash, user_id),
-        )
+            (new_hash, user_id, expected_old_hash),
+        ).fetchone()
         conn.commit()
+        return row is not None
 
 
 def _user_now() -> tuple[date, datetime]:
@@ -1159,11 +1167,19 @@ def verify_login(
         _force_must_change_password(user_id)
         user["must_change_password"] = True
     elif check.upgradeable_to_argon2:
+        old_hash = str(user["password_hash"] or "")
         try:
-            _upgrade_password_hash(user_id, hash_password(password))
+            new_hash = hash_password(password)
+            upgraded = _upgrade_password_hash(user_id, new_hash, expected_old_hash=old_hash)
         except Exception:
-            # Login still succeeds on the verified legacy hash.
-            pass
+            upgraded = False
+        if not upgraded:
+            # Concurrent reset/change won the race — do not keep a session on the old secret.
+            raise AuthError(
+                401,
+                "credentials_changed",
+                "Credenciais foram alteradas. Faça login novamente.",
+            )
 
     session = _build_session_context(
         user,
