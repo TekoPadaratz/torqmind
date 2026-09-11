@@ -46,11 +46,7 @@ ROUTE_SNAPSHOT_FALLBACK_ERRORS = SNAPSHOT_FALLBACK_ERRORS + (TimeoutError,)
 
 
 def _normalize_branch_scope(branch_scope: Optional[int | List[int]]) -> List[int]:
-    if isinstance(branch_scope, list):
-        return [int(value) for value in branch_scope if value is not None]
-    if branch_scope is None:
-        return []
-    return [int(branch_scope)]
+    return snapshot_cache.normalize_branch_ids(branch_scope)
 
 
 def _build_snapshot_context(
@@ -64,7 +60,7 @@ def _build_snapshot_context(
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "dt_ref": dt_ref.isoformat() if dt_ref else None,
-        "branch_ids": _normalize_branch_scope(branch_scope),
+        **snapshot_cache.branch_fields_for_context(branch_scope),
     }
     if extra:
         context.update(extra)
@@ -141,16 +137,22 @@ def _with_cached_response(
 ) -> Dict[str, Any]:
     """Snapshot cache keyed by effective filial scope (2º retorno de resolve_scope_filters).
 
-    Passar o 3º retorno (filiais *solicitadas*, muitas vezes ``None``) colapsava
-    escopo empresa-wide e escopo vazio na mesma assinatura ``branch_ids=[]``.
+    Empty authorized scope never reads/reuses snapshots. Compatible fallback
+    requires exact ``branch_ids`` equality in ``scope_context`` — ``id_filial IS
+    NULL`` alone is not proof of compatibility.
     """
     context = _build_snapshot_context(dt_ini, dt_fim, dt_ref, branch_scope, extra_context)
     scope_signature = snapshot_cache.build_scope_signature(context)
     branch_for_cache = primary_branch_id(branch_scope)
+    empty_branch_scope = snapshot_cache.is_empty_branch_scope(branch_scope)
 
     def safe_read_snapshot_record() -> Optional[Dict[str, Any]]:
+        if empty_branch_scope:
+            return None
         try:
-            return snapshot_cache.read_snapshot_record(role, tenant_id, branch_for_cache, scope_key, scope_signature)
+            record = snapshot_cache.read_snapshot_record(
+                role, tenant_id, branch_for_cache, scope_key, scope_signature
+            )
         except ROUTE_SNAPSHOT_FALLBACK_ERRORS as exc:
             logger.warning(
                 "Snapshot cache unavailable for %s tenant=%s while reading: %s",
@@ -160,10 +162,27 @@ def _with_cached_response(
                 exc_info=exc,
             )
             return None
+        if record and record.get("scope_context") is not None:
+            if not snapshot_cache.record_matches_effective_branch_scope(record, context):
+                logger.warning(
+                    "Rejected snapshot exact-hit with mismatched branch scope for %s tenant=%s",
+                    scope_key,
+                    tenant_id,
+                )
+                return None
+        return record
 
     def safe_read_latest_compatible_snapshot_record() -> Optional[Dict[str, Any]]:
+        if empty_branch_scope:
+            return None
         try:
-            return snapshot_cache.read_latest_compatible_snapshot_record(role, tenant_id, branch_for_cache, scope_key)
+            return snapshot_cache.read_latest_compatible_snapshot_record(
+                role,
+                tenant_id,
+                branch_for_cache,
+                scope_key,
+                expected_context=context,
+            )
         except ROUTE_SNAPSHOT_FALLBACK_ERRORS as exc:
             logger.warning(
                 "Compatible snapshot cache unavailable for %s tenant=%s while reading: %s",
@@ -195,6 +214,8 @@ def _with_cached_response(
             }
 
     def safe_write_snapshot(payload: Dict[str, Any]) -> Optional[Any]:
+        if empty_branch_scope:
+            return None
         try:
             return snapshot_cache.write_snapshot(
                 role,
@@ -232,6 +253,54 @@ def _with_cached_response(
             "context": context,
         }
         return annotated
+
+    def empty_scope_payload() -> Dict[str, Any]:
+        if safe_fallback is not None:
+            payload = safe_fallback()
+            fallback_overrides = (
+                payload.pop("_fallback_meta", {}) if isinstance(payload.get("_fallback_meta"), dict) else {}
+            )
+            payload = attach_scope_meta(payload, matched_signature=None, exact_scope_match=True)
+            payload["_snapshot_cache"] = {
+                "source": "fallback",
+                "scope_key": scope_key,
+                "mode": "empty_branch_scope",
+                "reason": "no_authorized_branches",
+                "signature": scope_signature,
+                "matched_signature": None,
+                "exact_scope_match": True,
+                "updated_at": None,
+                "age_seconds": None,
+                "busy_reasons": [],
+                "message": "Escopo sem filiais autorizadas — sem reaproveitamento de snapshot.",
+                **fallback_overrides,
+            }
+            return payload
+        return {
+            "data_state": "empty_scope",
+            "_scope": {
+                "route_key": scope_key,
+                "signature": scope_signature,
+                "matched_signature": None,
+                "exact_scope_match": True,
+                "tenant_id": tenant_id,
+                "branch_scope": [],
+                "context": context,
+            },
+            "_snapshot_cache": {
+                "source": "none",
+                "scope_key": scope_key,
+                "mode": "empty_branch_scope",
+                "reason": "no_authorized_branches",
+                "signature": scope_signature,
+                "matched_signature": None,
+                "exact_scope_match": True,
+                "message": "Escopo sem filiais autorizadas — sem reaproveitamento de snapshot.",
+            },
+        }
+
+    if empty_branch_scope:
+        return empty_scope_payload()
 
     bypass_snapshot = snapshot_cache.route_snapshot_is_bypassed(scope_key)
     if bypass_snapshot:
@@ -387,6 +456,15 @@ def _with_cached_response(
         )
 
     compatible_record = safe_read_latest_compatible_snapshot_record() if protect_reads else None
+    if compatible_record is not None and not snapshot_cache.record_matches_effective_branch_scope(
+        compatible_record, context
+    ):
+        logger.warning(
+            "Rejected compatible snapshot with mismatched branch scope for %s tenant=%s",
+            scope_key,
+            tenant_id,
+        )
+        compatible_record = None
     if compatible_record is not None:
         return build_cached_payload(
             compatible_record,

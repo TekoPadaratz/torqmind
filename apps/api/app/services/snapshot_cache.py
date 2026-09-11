@@ -20,6 +20,11 @@ from app.services.etl_orchestrator import (
 
 SNAPSHOT_TABLE = "app.snapshot_cache"
 
+# Bump when snapshot scope identity changes. v2 distinguishes empty [] from
+# legacy unscoped None (both previously serialized as branch_ids=[]).
+SCOPE_CONTEXT_VERSION = 2
+COMPATIBLE_SNAPSHOT_SCAN_LIMIT = 50
+
 logger = logging.getLogger(__name__)
 
 _refresh_lock = threading.Lock()
@@ -103,6 +108,89 @@ def build_scope_signature(context: Dict[str, Any]) -> str:
     return json.dumps(context, sort_keys=True, default=str)
 
 
+def branch_scope_kind(branch_scope: Any) -> str:
+    """Classify effective filial scope for snapshot identity.
+
+    ``empty`` — authorized set is empty (must never serve/reuse snapshots).
+    ``unscoped`` — explicit None (legacy tenant-wide marker; not empty).
+    ``single`` / ``multi`` — concrete authorized ids.
+    """
+    if isinstance(branch_scope, list) and len(branch_scope) == 0:
+        return "empty"
+    if branch_scope is None:
+        return "unscoped"
+    if isinstance(branch_scope, list):
+        return "multi"
+    return "single"
+
+
+def is_empty_branch_scope(branch_scope: Any) -> bool:
+    return branch_scope_kind(branch_scope) == "empty"
+
+
+def normalize_branch_ids(branch_scope: Any) -> list[int]:
+    if isinstance(branch_scope, list):
+        return sorted({int(value) for value in branch_scope if value is not None})
+    if branch_scope is None:
+        return []
+    return [int(branch_scope)]
+
+
+def branch_fields_for_context(branch_scope: Any) -> Dict[str, Any]:
+    kind = branch_scope_kind(branch_scope)
+    return {
+        "scope_v": SCOPE_CONTEXT_VERSION,
+        "branch_scope_kind": kind,
+        "branch_ids": normalize_branch_ids(branch_scope),
+    }
+
+
+def extract_branch_ids_from_context(context: Any) -> Optional[list[int]]:
+    """Return concrete branch ids when the stored context is unambiguous.
+
+    Legacy rows with ``branch_ids: []`` and no ``branch_scope_kind`` are
+    ambiguous (historical None and empty shared that shape) → ``None``.
+    """
+    if not isinstance(context, dict):
+        return None
+    kind = context.get("branch_scope_kind")
+    raw = context.get("branch_ids")
+    if kind == "empty":
+        return []
+    if kind == "unscoped":
+        return None
+    if not isinstance(raw, list):
+        return None
+    ids = sorted({int(value) for value in raw if value is not None})
+    if kind in {"single", "multi"}:
+        return ids
+    # Legacy without kind: only trust non-empty explicit id lists.
+    if kind is None and ids:
+        return ids
+    return None
+
+
+def contexts_share_effective_branches(expected: Dict[str, Any], stored: Any) -> bool:
+    """Exact authorized branch-set equality — never widen or shrink aggregates."""
+    if not isinstance(expected, dict):
+        return False
+    if expected.get("branch_scope_kind") == "empty":
+        return False
+    if isinstance(stored, dict) and stored.get("branch_scope_kind") == "empty":
+        return False
+    left = extract_branch_ids_from_context(expected)
+    right = extract_branch_ids_from_context(stored)
+    if left is None or right is None:
+        return False
+    return left == right
+
+
+def record_matches_effective_branch_scope(record: Optional[Dict[str, Any]], expected_context: Dict[str, Any]) -> bool:
+    if not record:
+        return False
+    return contexts_share_effective_branches(expected_context, record.get("scope_context"))
+
+
 def route_snapshot_is_bypassed(snapshot_key: str) -> bool:
     if snapshot_key in ROUTE_SNAPSHOT_BYPASS_KEYS:
         return True
@@ -169,26 +257,37 @@ def read_latest_compatible_snapshot_record(
     tenant_id: int,
     branch_id: Optional[int],
     snapshot_key: str,
+    expected_context: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    branch_sql = "AND id_filial IS NULL" if branch_id is None else "AND id_filial = %s"
-    params: list[Any] = [snapshot_key, tenant_id]
-    if branch_id is not None:
-        params.append(branch_id)
+    """Latest snapshot for the same tenant whose *effective* branch set matches.
+
+    Does **not** treat ``id_filial IS NULL`` as proof of compatibility: multi-branch
+    and empty scopes both historically used NULL. Filters candidates by
+    ``scope_context.branch_ids`` / ``branch_scope_kind``.
+    Empty / ambiguous expected scopes never match.
+    """
+    if expected_context.get("branch_scope_kind") == "empty":
+        return None
+    if extract_branch_ids_from_context(expected_context) is None:
+        return None
+
     sql = f"""
       SELECT snapshot_data, scope_context, updated_at, scope_signature, id_filial
       FROM {SNAPSHOT_TABLE}
       WHERE snapshot_key = %s
         AND id_empresa = %s
-        {branch_sql}
       ORDER BY updated_at DESC, scope_signature DESC
-      LIMIT 1
+      LIMIT %s
     """
+    params = [snapshot_key, tenant_id, COMPATIBLE_SNAPSHOT_SCAN_LIMIT]
     with get_conn(role=role, tenant_id=tenant_id, branch_id=branch_id) as conn:
-        row = conn.execute(sql, params).fetchone()
-    if not row:
-        return None
-    row_map = dict(row) if not isinstance(row, dict) else row
-    return _snapshot_record_from_row(row_map)
+        rows = conn.execute(sql, params).fetchall() or []
+    for row in rows:
+        row_map = dict(row) if not isinstance(row, dict) else row
+        record = _snapshot_record_from_row(row_map)
+        if record_matches_effective_branch_scope(record, expected_context):
+            return record
+    return None
 
 
 def read_snapshot(

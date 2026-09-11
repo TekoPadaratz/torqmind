@@ -351,6 +351,13 @@ class SnapshotCacheTests(unittest.TestCase):
         compatible_record = {
             "snapshot_data": {"kpis": {"cancelamentos": 7}},
             "scope_signature": "compatible-scope",
+            "scope_context": {
+                "scope_v": 2,
+                "branch_scope_kind": "single",
+                "branch_ids": [10],
+                "dt_ini": "2026-03-01",
+                "dt_fim": "2026-03-09",
+            },
             "updated_at": datetime(2026, 3, 27, 8, 0, tzinfo=timezone.utc),
         }
         compute = MagicMock(side_effect=AssertionError("live compute should stay blocked during protected reads"))

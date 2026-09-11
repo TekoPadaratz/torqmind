@@ -27,7 +27,7 @@ Listas abaixo registram débitos; **não** comprovam, sozinhas, que Prompts 3 e 
 
 ## Escopo vazio → todas (P1 residual)
 
-- **Implementado, revisão integrada e validação pendentes** (realtime `[]`≠`None`; cache BI usa escopo efetivo; `materialize` vazio ≠ `(None,None)`).
+- **Implementado, revisão integrada e validação pendentes** (realtime `[]`≠`None`; cache BI usa escopo efetivo + validação de `scope_context`; `materialize` vazio ≠ `(None,None)`; assinatura `scope_v=2`).
 - Ainda **não mergeado/implantado**; CI + revisão humana. **Não** declarar P1 encerrado só por unit local.
 - Consumidores/rotas não cobertos pelos novos testes: ver relatório da correção.
 

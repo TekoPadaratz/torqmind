@@ -191,19 +191,18 @@ class CacheSignatureIsolationTest(unittest.TestCase):
         empty_ctx = routes_bi._build_snapshot_context(dt, dt, dt, [])
         global_ctx = routes_bi._build_snapshot_context(dt, dt, dt, [FILIAL_A, FILIAL_B])
         single_ctx = routes_bi._build_snapshot_context(dt, dt, dt, FILIAL_A)
+        unscoped_ctx = routes_bi._build_snapshot_context(dt, dt, dt, None)
 
         empty_sig = snapshot_cache.build_scope_signature(empty_ctx)
         global_sig = snapshot_cache.build_scope_signature(global_ctx)
         single_sig = snapshot_cache.build_scope_signature(single_ctx)
+        unscoped_sig = snapshot_cache.build_scope_signature(unscoped_ctx)
         self.assertNotEqual(empty_sig, global_sig)
         self.assertNotEqual(empty_sig, single_sig)
         self.assertNotEqual(global_sig, single_sig)
-        none_ctx = routes_bi._build_snapshot_context(dt, dt, dt, None)
-        self.assertEqual(
-            snapshot_cache.build_scope_signature(none_ctx),
-            empty_sig,
-            "None still normalizes to [] — callers must pass effective filial, not requested=None",
-        )
+        # v2: empty [] must not collide with legacy unscoped None.
+        self.assertNotEqual(empty_sig, unscoped_sig)
+        self.assertEqual(empty_ctx["scope_v"], snapshot_cache.SCOPE_CONTEXT_VERSION)
 
 
 class DashboardHomeCacheUsesEffectiveScopeTest(unittest.TestCase):
