@@ -1,0 +1,9 @@
+# Recovery image: pre-hardening API code + dual password verify (bcrypt + Argon2id).
+# Use when rolling back app behavior after some passwords were upgraded to Argon2.
+# Does NOT restore DB data. Does NOT drop columns/hashes.
+FROM torqmind-api:homolog-pre-hardening-20260910-4b2c390
+
+USER root
+RUN pip install --no-cache-dir "argon2-cffi>=23.1.0"
+# Overlay dual-scheme verifier from the hardening tree (build context = repo root).
+COPY apps/api/app/security.py /app/app/security.py
