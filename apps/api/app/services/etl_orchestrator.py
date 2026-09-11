@@ -2426,6 +2426,28 @@ def _run_tenant_post_refresh(
                 "no_window" if runs_operational else "track_excludes_step",
             )
 
+        # Publish finance titles as soon as STG finance changed — BEFORE slow
+        # aging/delinquency. Those steps often take 2–4+ minutes; if the pipeline
+        # later hits PIPELINE_TIMEOUT, titles would otherwise stay stale until the
+        # next successful cycle or reconcile window.
+        if runs_operational and finance_changed:
+            try:
+                rows_ft, step_ms_ft = _run_logged_count_step(
+                    conn,
+                    tenant_id,
+                    "finance_titles_publish",
+                    stage="post_refresh",
+                    ref_date=ref_date,
+                    operation=lambda: _publish_finance_titles_mart(tenant_id),
+                    meta={"priority": "finance_changed_early"},
+                    progress_callback=progress_callback,
+                )
+                post_meta["finance_titles_published"] = True
+                post_meta["finance_titles_rows"] = rows_ft
+                post_meta["finance_titles_ms"] = step_ms_ft
+            except Exception as exc:
+                post_meta["finance_titles_error"] = str(exc)[:200]
+
         if runs_operational and finance_start is not None and finance_end is not None and finance_start <= finance_end:
             clock_driven = not finance_changed
             rows, step_ms = _run_logged_count_step(
@@ -2473,23 +2495,6 @@ def _run_tenant_post_refresh(
             post_meta["customer_delinquency_refreshed"] = True
             post_meta["customer_delinquency_rows"] = rows
             post_meta["customer_delinquency_ms"] = step_ms
-            if finance_changed:
-                try:
-                    rows_ft, step_ms_ft = _run_logged_count_step(
-                        conn,
-                        tenant_id,
-                        "finance_titles_publish",
-                        stage="post_refresh",
-                        ref_date=ref_date,
-                        operation=lambda: _publish_finance_titles_mart(tenant_id),
-                        meta={},
-                        progress_callback=progress_callback,
-                    )
-                    post_meta["finance_titles_published"] = True
-                    post_meta["finance_titles_rows"] = rows_ft
-                    post_meta["finance_titles_ms"] = step_ms_ft
-                except Exception as exc:
-                    post_meta["finance_titles_error"] = str(exc)[:200]
         else:
             post_meta["customer_delinquency_skipped"] = True
 

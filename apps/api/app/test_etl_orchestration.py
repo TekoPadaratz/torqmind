@@ -1016,6 +1016,60 @@ class EtlOrchestrationTest(unittest.TestCase):
     @patch("app.services.etl_orchestrator._log_stage_summary")
     @patch("app.services.etl_orchestrator._log_instant_step")
     @patch("app.services.etl_orchestrator._run_logged_count_step")
+    def test_finance_titles_publish_runs_before_aging_when_finance_changed(
+        self,
+        mock_logged_step,
+        mock_log_instant,
+        _mock_stage_summary,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 5, 50
+
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        meta = {
+            "fact_financeiro": 3,
+            "fact_venda": 0,
+        }
+        result = etl_orchestrator._run_tenant_post_refresh(
+            _DummyConn(),
+            1,
+            meta,
+            date(2026, 9, 11),
+            False,
+            3,
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+        )
+
+        self.assertIn("finance_titles_publish", step_order)
+        self.assertIn("finance_aging_snapshot", step_order)
+        self.assertIn("customer_delinquency_summary", step_order)
+        self.assertLess(
+            step_order.index("finance_titles_publish"),
+            step_order.index("finance_aging_snapshot"),
+        )
+        self.assertLess(
+            step_order.index("finance_titles_publish"),
+            step_order.index("customer_delinquency_summary"),
+        )
+        self.assertTrue(result["finance_titles_published"])
+        titles_calls = [
+            call
+            for call in mock_logged_step.call_args_list
+            if call.args[2] == "finance_titles_publish"
+        ]
+        self.assertEqual(len(titles_calls), 1)
+        self.assertEqual(
+            (titles_calls[0].kwargs.get("meta") or {}).get("priority"),
+            "finance_changed_early",
+        )
+
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
     def test_risk_post_refresh_uses_exact_risk_delta_window_for_health_score(
         self,
         mock_logged_step,

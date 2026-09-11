@@ -19,6 +19,9 @@ CURRENT_DB = "torqmind_current"
 # 1) FUNCAO/CARGO/DESCRFUNCAO do Xpert contém "frentista"; OU
 # 2) vendedor elegível de comissão com qtd_abastecimentos > 0 no período
 #    (proxy operacional: vende combustível / grupo combustível).
+# qtd_abastecimentos = count de itens combustível no período (raw CH),
+# independente dos grupos da config de comissão (combustível costuma
+# ficar fora da elegibilidade e ainda assim precisa aparecer na coluna).
 # Média e highlight usam SOMENTE is_frentista=True.
 _FRENTISTA_FUNCAO_RE = re.compile(r"frentista", re.IGNORECASE)
 _COMBUSTIVEL_EXCLUDES = (
@@ -274,17 +277,37 @@ def _filter_sales_for_config(
                 "venda_total": 0.0,
                 "quantidade_vendas": 0.0,
                 "qtd_itens": 0,
-                "qtd_abastecimentos": 0,
             }
             agg[key] = slot
         slot["venda_total"] += float(r.get("venda_total") or 0)
         slot["quantidade_vendas"] += float(r.get("quantidade_vendas") or 0)
         qtd_itens = int(r.get("qtd_itens") or 0)
         slot["qtd_itens"] += qtd_itens
-        # Qtd abastecimentos = count de itens combustível (NÃO litros).
-        if is_combustivel_grupo_nome(str(r.get("nome_grupo_produto") or "")):
-            slot["qtd_abastecimentos"] += qtd_itens
+        # Abastecimentos NÃO são somados aqui: grupos da config frequentemente
+        # excluem COMBUSTÍVEIS. Ver ``_abastecimentos_by_funcionario``.
     return list(agg.values())
+
+
+def _abastecimentos_by_funcionario(
+    raw_rows: Sequence[Dict[str, Any]],
+    *,
+    excluded_funcionario_ids: Optional[set[int]] = None,
+) -> Dict[int, int]:
+    """Count fuel line-items per seller from raw CH rows (not commission groups).
+
+    Same commercial fuel detection as team fuel ranking
+    (``is_combustivel_grupo_nome``). Does not require COMBUSTÍVEIS in config.
+    """
+    func_excludes = excluded_funcionario_ids or set()
+    out: Dict[int, int] = defaultdict(int)
+    for r in raw_rows:
+        fid = int(r.get("id_funcionario") or 0)
+        if fid <= 0 or (func_excludes and fid in func_excludes):
+            continue
+        if not is_combustivel_grupo_nome(str(r.get("nome_grupo_produto") or "")):
+            continue
+        out[fid] += int(r.get("qtd_itens") or 0)
+    return dict(out)
 
 
 def _tier_min_qty(tier: Dict[str, Any]) -> float:
@@ -1177,6 +1200,11 @@ def calculate_commission_results(
             },
         )
 
+    abast_by_emp = _abastecimentos_by_funcionario(
+        sales_rows or [],
+        excluded_funcionario_ids=excluded_func_ids,
+    )
+
     employees: Dict[int, Dict[str, Any]] = {}
     for r in rows:
         emp_id = int(r["id_funcionario"])
@@ -1190,11 +1218,11 @@ def calculate_commission_results(
             }
         employees[emp_id]["venda_elegivel"] += float(r["venda_total"] or 0)
         employees[emp_id]["quantidade_vendas"] += float(r["quantidade_vendas"] or 0)
-        employees[emp_id]["qtd_abastecimentos"] += int(r.get("qtd_abastecimentos") or 0)
 
     for emp in employees.values():
+        emp_id = int(emp["id_funcionario"])
         emp["quantidade_vendas"] = round(float(emp["quantidade_vendas"] or 0), 4)
-        emp["qtd_abastecimentos"] = int(emp.get("qtd_abastecimentos") or 0)
+        emp["qtd_abastecimentos"] = int(abast_by_emp.get(emp_id) or 0)
 
     employee_list = sorted(employees.values(), key=lambda e: e["venda_elegivel"], reverse=True)
 
