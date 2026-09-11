@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+from typing import Any
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, TopicPartition
 
@@ -23,14 +24,40 @@ _recovered_assignment_keys: set[tuple[str, int]] = set()
 
 
 class MartRefreshWorker:
-    """Runs mart refreshes off the consumer hot path."""
+    """Runs mart refreshes off the consumer hot path.
 
-    def __init__(self, mart_builder: MartBuilder) -> None:
+    Eventos novos acordam o worker imediatamente. Pendências retidas no builder
+    (``retry_marts``) também disparam nova tentativa — mas só após um backoff
+    limitado a falhas persistentes. Ciclos saudáveis não ganham intervalo global.
+    A pausa vive nesta thread; a ingestão Kafka não bloqueia.
+    """
+
+    # Poll curto só para perceber stop/eventos; NÃO é o intervalo de retry.
+    _POLL_SECONDS = 1.0
+    # Backoff só quando há trabalho pendente no builder sem eventos novos.
+    _RETRY_BASE_SECONDS = 15.0
+    _RETRY_MAX_SECONDS = 120.0
+
+    def __init__(
+        self,
+        mart_builder: MartBuilder,
+        *,
+        clock: Any = time.monotonic,
+        retry_base_seconds: float = _RETRY_BASE_SECONDS,
+        retry_max_seconds: float = _RETRY_MAX_SECONDS,
+        poll_seconds: float = _POLL_SECONDS,
+    ) -> None:
         self._mart_builder = mart_builder
         self._pending: set[tuple[int, int, int, str]] = set()
         self._pending_lock = threading.Lock()
         self._wake_event = threading.Event()
         self._stop_event = threading.Event()
+        self._clock = clock
+        self._retry_base_seconds = float(retry_base_seconds)
+        self._retry_max_seconds = float(retry_max_seconds)
+        self._poll_seconds = float(poll_seconds)
+        self._retry_not_before = 0.0
+        self._retry_streak = 0
         self._thread = threading.Thread(
             target=self._run,
             name="mart-refresh-worker",
@@ -68,9 +95,78 @@ class MartRefreshWorker:
         with self._pending_lock:
             return bool(self._pending)
 
+    def _builder_has_retained_work(self) -> bool:
+        return bool(self._mart_builder.state.has_work)
+
+    def _retry_delay(self) -> float:
+        """Espera só para falha persistente: 15s, 30s, 60s… até o teto."""
+        exp = max(0, self._retry_streak - 1)
+        return min(self._retry_max_seconds, self._retry_base_seconds * (2 ** exp))
+
+    def _wait_timeout(self) -> float:
+        """Timeout do Event.wait: poll curto, ou até o próximo retry agendado."""
+        if self._stop_event.is_set():
+            return 0.0
+        if not self._builder_has_retained_work():
+            return self._poll_seconds
+        remaining = self._retry_not_before - self._clock()
+        if remaining <= 0:
+            return 0.0
+        return min(self._poll_seconds, remaining)
+
+    def _schedule_retained_retry(self) -> None:
+        self._retry_streak += 1
+        delay = self._retry_delay()
+        self._retry_not_before = self._clock() + delay
+        logger.info(
+            "mart_retry_scheduled",
+            retry_pending=sorted(self._mart_builder.state.retry_marts),
+            delay_seconds=round(delay, 1),
+            streak=self._retry_streak,
+        )
+
+    def _clear_retry_schedule(self) -> None:
+        self._retry_streak = 0
+        self._retry_not_before = 0.0
+
+    def _log_refresh_results(self, results: list) -> None:
+        if not results:
+            return
+        refreshed = [r.mart_name for r in results if r.error is None]
+        errors = [r for r in results if r.error is not None]
+        pending = sorted(self._mart_builder.state.retry_marts)
+        if refreshed and not errors:
+            logger.info("marts_refreshed", marts=refreshed)
+        elif refreshed:
+            # Ciclo parcial nunca é logado como sucesso completo.
+            logger.warning(
+                "marts_refreshed_partial",
+                marts=refreshed,
+                retry_pending=pending,
+            )
+        if errors:
+            logger.warning(
+                "mart_refresh_partial_failure",
+                failed=[r.mart_name for r in errors],
+                retry_pending=pending,
+                error=errors[0].error[:200] if errors else "",
+            )
+
+    def _run_refresh_cycle(self) -> None:
+        try:
+            results = self._mart_builder.refresh_if_needed()
+            self._log_refresh_results(results)
+        except Exception as e:
+            logger.warning("mart_refresh_failed", error=str(e)[:200])
+
+        if self._builder_has_retained_work():
+            self._schedule_retained_retry()
+        else:
+            self._clear_retry_schedule()
+
     def _run(self) -> None:
         while True:
-            self._wake_event.wait(timeout=1.0)
+            self._wake_event.wait(timeout=self._wait_timeout())
             self._wake_event.clear()
 
             pending = self._drain_pending()
@@ -82,23 +178,18 @@ class MartRefreshWorker:
                         data_key=data_key,
                         table=table,
                     )
+                # Evento novo: ciclo imediato — sem esperar o backoff de retry.
+                self._run_refresh_cycle()
+            elif (
+                self._builder_has_retained_work()
+                and self._clock() >= self._retry_not_before
+                and not self._stop_event.is_set()
+            ):
+                # Sem eventos novos: retenta o trabalho retido após o backoff.
+                self._run_refresh_cycle()
 
-                try:
-                    results = self._mart_builder.refresh_if_needed()
-                    if results:
-                        refreshed = [r.mart_name for r in results if r.error is None]
-                        errors = [r for r in results if r.error is not None]
-                        if refreshed:
-                            logger.info("marts_refreshed", marts=refreshed)
-                        if errors:
-                            logger.warning(
-                                "mart_refresh_partial_failure",
-                                failed=[r.mart_name for r in errors],
-                                error=errors[0].error[:200] if errors else "",
-                            )
-                except Exception as e:
-                    logger.warning("mart_refresh_failed", error=str(e)[:200])
-
+            # Shutdown controlado: drena eventos Kafka já marcados, mas não fica
+            # preso em retry_marts (pendência em memória; próximo start recomeça).
             if self._stop_event.is_set() and not self._has_pending():
                 break
 
