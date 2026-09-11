@@ -1,9 +1,11 @@
 # Recovery image: pre-hardening API + dual password verify (bcrypt + Argon2id).
 # Does NOT restore DB data. Does NOT drop columns/hashes.
 #
-# IMPORTANT: the API image installs the package into site-packages via
-# ``pip install .``. Overlay MUST update that copy too — /app/app alone may
-# not be what ``import app.security`` loads depending on PYTHONPATH.
+# Overlay is password-verify only (+ /auth/me MFA gate). It must NOT replace
+# create_access_token with the post-hardening module (token_use=access default
+# strips mfa_pending/scope and turns challenge tokens into access tokens).
+#
+# IMPORTANT: pip install . may load site-packages/app — overlay both trees.
 #
 # Build (repo root as context):
 #   docker build -f deploy/docker/Dockerfile.api-rollback-dual-verify \
@@ -17,8 +19,8 @@ FROM ${BASE_IMAGE}
 
 USER root
 RUN pip install --no-cache-dir "argon2-cffi>=23.1.0"
-COPY apps/api/app/security.py /tmp/security_overlay.py
-COPY deploy/docker/overlay_security.sh /tmp/overlay_security.sh
-RUN chmod +x /tmp/overlay_security.sh \
- && /tmp/overlay_security.sh /tmp/security_overlay.py \
- && rm -f /tmp/security_overlay.py /tmp/overlay_security.sh
+COPY deploy/docker/security_dual_verify.py /tmp/security_dual_verify.py
+COPY deploy/docker/overlay_recovery.sh /tmp/overlay_recovery.sh
+RUN chmod +x /tmp/overlay_recovery.sh \
+ && /tmp/overlay_recovery.sh /tmp/security_dual_verify.py \
+ && rm -f /tmp/security_dual_verify.py /tmp/overlay_recovery.sh
