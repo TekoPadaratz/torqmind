@@ -2441,13 +2441,14 @@ def _run_tenant_post_refresh(
     try:
         # CAP/CAR primeiro no pós-refresh: cobre pendência se o publish da phase
         # falhou ou o ciclo anterior morreu após avançar o watermark financeiro.
-        if runs_operational:
+        # Se a phase já publicou neste ciclo, não republicar (evita DELETE+INSERT duplo).
+        if runs_operational and not bool(meta.get("finance_titles_published")):
             _run_finance_titles_publish_if_needed(
                 conn,
                 tenant_id,
                 ref_date=ref_date,
                 stage="post_refresh",
-                finance_changed=finance_changed,
+                finance_changed=finance_changed and not bool(meta.get("finance_titles_published")),
                 progress_callback=progress_callback,
                 sink=post_meta,
             )

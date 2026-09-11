@@ -1062,6 +1062,46 @@ class EtlOrchestrationTest(unittest.TestCase):
         )
         self.assertTrue(result["finance_titles_published"])
 
+    @patch("app.services.etl_orchestrator._publish_finance_titles_mart", return_value=3)
+    @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at", return_value=None)
+    @patch("app.services.etl_orchestrator._finance_stg_max_received_at", return_value=None)
+    @patch("app.services.etl_orchestrator._log_stage_summary")
+    @patch("app.services.etl_orchestrator._log_instant_step")
+    @patch("app.services.etl_orchestrator._run_logged_count_step")
+    def test_post_refresh_skips_titles_when_phase_already_published(
+        self,
+        mock_logged_step,
+        _mock_log_instant,
+        _mock_stage_summary,
+        _mock_stg,
+        _mock_ch,
+        mock_publish,
+    ) -> None:
+        step_order: list[str] = []
+
+        def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
+            step_order.append(step_name)
+            return 1, 10
+
+        mock_logged_step.side_effect = _logged_step_side_effect
+
+        etl_orchestrator._run_tenant_post_refresh(
+            _DummyConn(),
+            1,
+            {
+                "fact_financeiro": 5,
+                "finance_titles_published": True,
+                "finance_titles_pending": False,
+            },
+            date(2026, 9, 11),
+            False,
+            3,
+            track=etl_orchestrator.TRACK_OPERATIONAL,
+        )
+
+        self.assertNotIn("finance_titles_publish", step_order)
+        mock_publish.assert_not_called()
+
     @patch("app.services.etl_orchestrator._publish_finance_titles_mart", return_value=9)
     @patch("app.services.etl_orchestrator._finance_titles_mart_max_published_at")
     @patch("app.services.etl_orchestrator._finance_stg_max_received_at")
