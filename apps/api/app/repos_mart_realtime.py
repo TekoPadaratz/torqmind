@@ -34,12 +34,19 @@ def _realtime_source() -> str:
 
 
 def _branch_ids(id_filial: Any) -> Optional[List[int]]:
-    """Parse id_filial into a list of branch IDs (mirrors repos_mart_clickhouse)."""
+    """Parse id_filial into branch IDs for ClickHouse filters.
+
+    Semantics (must stay aligned with ``repos_mart_clickhouse._branch_ids``):
+    - ``None`` / ``-1`` → ``None`` → caller omits filial filter (tenant-wide,
+      only when the route already authorized that widening).
+    - ``[]`` / empty iterable → ``[]`` → deny (``AND 0``), never widen to all.
+    - one or many positive ids → concrete IN / equality filter.
+    """
     if id_filial is None or id_filial == -1:
         return None
     if isinstance(id_filial, (list, tuple, set)):
         values = sorted({int(v) for v in id_filial if v is not None and int(v) != -1})
-        return values if values else None
+        return values
     value = int(id_filial)
     return None if value == -1 else [value]
 

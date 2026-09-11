@@ -227,7 +227,11 @@ def materialize_branch_query_targets(
     branch_scope: Optional[int | list[int]],
     branch_ids: Optional[list[int]],
 ) -> tuple[Optional[int], Optional[list[int]]]:
-    """Normaliza escopo de filial para endpoints BI (id_filial único ou id_filiais)."""
+    """Normaliza escopo de filial para endpoints BI (id_filial único ou id_filiais).
+
+    Escopo vazio ⇒ ``(None, [])`` — nunca ``(None, None)``, que consumidores
+    podem ler como “sem preferência / todas”.
+    """
     ids: list[int] = []
     if branch_ids:
         ids = sorted({int(b) for b in branch_ids if int(b) > 0})
@@ -240,4 +244,4 @@ def materialize_branch_query_targets(
         return ids[0], None
     if ids:
         return None, ids
-    return None, None
+    return None, []

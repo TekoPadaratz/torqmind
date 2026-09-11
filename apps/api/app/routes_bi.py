@@ -139,6 +139,11 @@ def _with_cached_response(
     extra_context: Optional[Dict[str, Any]] = None,
     safe_fallback: Optional[Callable[[], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    """Snapshot cache keyed by effective filial scope (2º retorno de resolve_scope_filters).
+
+    Passar o 3º retorno (filiais *solicitadas*, muitas vezes ``None``) colapsava
+    escopo empresa-wide e escopo vazio na mesma assinatura ``branch_ids=[]``.
+    """
     context = _build_snapshot_context(dt_ini, dt_fim, dt_ref, branch_scope, extra_context)
     scope_signature = snapshot_cache.build_scope_signature(context)
     branch_for_cache = primary_branch_id(branch_scope)
@@ -1146,12 +1151,12 @@ def dashboard_home(
         scope_key="dashboard_home",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=as_of,
         compute=lambda: repos_mart.dashboard_home_bundle(role, tenant, filial, dt_ini=dt_ini, dt_fim=dt_fim, dt_ref=as_of),
-        safe_fallback=lambda: _safe_dashboard_home_payload(tenant, branch_scope, dt_ini, dt_fim, as_of),
+        safe_fallback=lambda: _safe_dashboard_home_payload(tenant, filial, dt_ini, dt_fim, as_of),
     ), claims)
 
 
@@ -1202,7 +1207,7 @@ def sales_overview(
         scope_key="sales_overview",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=as_of,
@@ -1490,7 +1495,7 @@ def fraud_overview(
         scope_key="fraud_overview",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=as_of,
@@ -1648,7 +1653,7 @@ def customers_overview(
         scope_key="customers_overview",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=as_of,
@@ -1938,7 +1943,7 @@ def finance_overview(
         scope_key="finance_overview",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=as_of,
@@ -2192,7 +2197,7 @@ def cash_overview(
         scope_key="cash_overview",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=None,
@@ -2577,7 +2582,7 @@ def goals_overview(
         scope_key="goals_overview",
         role=role,
         tenant_id=tenant,
-        branch_scope=branch_scope,
+        branch_scope=filial,
         dt_ini=dt_ini,
         dt_fim=dt_fim,
         dt_ref=as_of,

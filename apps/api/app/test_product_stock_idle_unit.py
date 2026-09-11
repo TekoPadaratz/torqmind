@@ -36,6 +36,12 @@ def test_materialize_branch_query_targets_single():
     assert filiais is None
 
 
+def test_materialize_branch_query_targets_empty():
+    filial, filiais = materialize_branch_query_targets([], None)
+    assert filial is None
+    assert filiais == []
+
+
 @patch("app.repos_product_management.query_dict")
 def test_list_product_stock_idle_maps_rows(mock_qd):
     mock_qd.side_effect = [

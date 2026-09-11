@@ -203,11 +203,16 @@ def _json_obj(value: Any) -> Dict[str, Any]:
 
 
 def _branch_ids(id_filial: Any) -> Optional[List[int]]:
+    """Parse branch scope for ClickHouse filters.
+
+    ``None``/``-1`` → no filial predicate (tenant-wide, only after auth widened).
+    Empty list → empty list (deny via ``_branch_clause``), never widen to all.
+    """
     if id_filial is None or id_filial == -1:
         return None
     if isinstance(id_filial, (list, tuple, set)):
         values = sorted({int(value) for value in id_filial if value is not None and int(value) != -1})
-        return values if values else []
+        return values
     value = int(id_filial)
     return None if value == -1 else [value]
 
