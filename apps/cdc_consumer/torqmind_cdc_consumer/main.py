@@ -88,12 +88,21 @@ class MartRefreshWorker:
                     if results:
                         refreshed = [r.mart_name for r in results if r.error is None]
                         errors = [r for r in results if r.error is not None]
-                        if refreshed:
+                        pending = sorted(self._mart_builder.state.retry_marts)
+                        if refreshed and not errors:
                             logger.info("marts_refreshed", marts=refreshed)
+                        elif refreshed:
+                            # Ciclo parcial nunca é logado como sucesso completo.
+                            logger.warning(
+                                "marts_refreshed_partial",
+                                marts=refreshed,
+                                retry_pending=pending,
+                            )
                         if errors:
                             logger.warning(
                                 "mart_refresh_partial_failure",
                                 failed=[r.mart_name for r in errors],
+                                retry_pending=pending,
                                 error=errors[0].error[:200] if errors else "",
                             )
                 except Exception as e:

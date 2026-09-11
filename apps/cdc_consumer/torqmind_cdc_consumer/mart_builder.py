@@ -144,6 +144,9 @@ class BuilderState:
     affected_empresas: set[int] = field(default_factory=set)
     affected_filiais: set[tuple[int, int]] = field(default_factory=set)
     affected_tables: set[str] = field(default_factory=set)
+    # Marts que falharam e aguardam nova tentativa. Rodam no próximo ciclo mesmo
+    # que os eventos novos não disparem a tabela de origem delas.
+    retry_marts: set[str] = field(default_factory=set)
 
     def mark(self, id_empresa: int, id_filial: int, data_key: int, table: str) -> None:
         if data_key > 0:
@@ -153,6 +156,11 @@ class BuilderState:
         self.affected_tables.add(table)
 
     def clear(self) -> None:
+        """Descarta o lote do ciclo.
+
+        ``retry_marts`` não é limpo aqui: pendência de mart que falhou pertence
+        ao ciclo seguinte e é definida explicitamente por ``refresh_if_needed``.
+        """
         self.affected_data_keys.clear()
         self.affected_empresas.clear()
         self.affected_filiais.clear()
@@ -160,7 +168,7 @@ class BuilderState:
 
     @property
     def has_work(self) -> bool:
-        return bool(self.affected_data_keys or self.affected_tables)
+        return bool(self.affected_data_keys or self.affected_tables or self.retry_marts)
 
 
 class MartBuilder:
@@ -219,6 +227,9 @@ class MartBuilder:
         self._consecutive_failures = 0
         self._max_consecutive_failures = 5
         self._backoff_seconds = 2.0
+        # Linhas confirmadas na mart por empresa no ciclo corrente ({mart: {empresa: rows}}).
+        # Preenchido pelos contadores pós-INSERT e consumido por _log_publications.
+        self._cycle_rows_by_empresa: dict[str, dict[int, int]] = {}
 
     def _get_client(self) -> clickhouse_connect.driver.client.Client:
         from .config import settings as _settings
@@ -245,8 +256,44 @@ class MartBuilder:
         """Called by CDC consumer after processing each event."""
         self.state.mark(id_empresa, id_filial, data_key, table)
 
+    def _run_mart_step(
+        self,
+        results: list[MartRefreshResult],
+        retry_marts: set[str],
+        mart_name: str,
+        triggered: bool,
+        fn: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Roda o refresh de uma mart isolado das demais.
+
+        As marts realtime são independentes entre si: todas leem
+        ``torqmind_current.*_slim`` (+ dims) e nenhuma lê outra mart. Por isso a
+        falha de uma (ex.: MEMORY_LIMIT_EXCEEDED em ``mart_antifraude_eventos``)
+        não invalida as seguintes e a cadeia continua.
+
+        A exceção é registrada como erro explícito no resultado — nunca
+        convertida em sucesso — e a mart entra em ``state.retry_marts`` para nova
+        tentativa no próximo ciclo. ``triggered`` é a condição normal por tabela
+        de origem; uma mart pendente roda mesmo sem esse gatilho.
+        """
+        if not triggered and mart_name not in retry_marts:
+            return
+        try:
+            results.append(fn(*args, **kwargs))
+        except Exception as exc:
+            logger.error(f"Mart refresh failed: mart={mart_name} error={exc}")
+            results.append(MartRefreshResult(mart_name=mart_name, error=str(exc)))
+
     def refresh_if_needed(self) -> list[MartRefreshResult]:
-        """Called after CDC consumer flush. Refreshes affected marts with backoff."""
+        """Called after CDC consumer flush. Refreshes affected marts with backoff.
+
+        Falha de uma mart não impede as independentes seguintes. O lote
+        (data_keys/empresas/tabelas) só é descartado quando não sobrou mart
+        pendente; caso contrário fica retido para nova tentativa no próximo
+        flush, sem loop de retry dentro do mesmo ciclo.
+        """
         if not self.enabled or not self.state.has_work:
             return []
 
@@ -259,15 +306,25 @@ class MartBuilder:
             )
             time.sleep(min(backoff, 120))
 
-        results = []
+        results: list[MartRefreshResult] = []
         data_keys = list(self.state.affected_data_keys)
-        tables = self.state.affected_tables
+        tables = set(self.state.affected_tables)
+        empresas = set(self.state.affected_empresas)
+        filiais = set(self.state.affected_filiais)
+        retry_marts = set(self.state.retry_marts)
+        self._cycle_rows_by_empresa = {}
+        cycle_error = False
+
+        def step(mart_name: str, triggered: bool, fn: Any, *args: Any, **kwargs: Any) -> None:
+            self._run_mart_step(results, retry_marts, mart_name, triggered, fn, *args, **kwargs)
 
         try:
             client = self._get_client()
             try:
                 if self.source == "stg":
-                    # Step 1: Populate slim tables for affected data_keys
+                    # Step 1: Populate slim tables for affected data_keys.
+                    # Slim é dependência real de todas as marts: falha aqui aborta
+                    # o ciclo (mart não pode publicar sobre slim desatualizada).
                     if tables & {"comprovantes", "itenscomprovantes", "formas_pgto_comprovantes", "payment_type_map", "turnos"}:
                         self._populate_slim_comprovantes(client, data_keys)
                         self._populate_slim_itens(client, data_keys)
@@ -276,75 +333,120 @@ class MartBuilder:
                     if tables & {"nfe"}:
                         self._populate_slim_nfe(client, data_keys)
 
-                    # Step 2: Build marts from slim tables
-                    if tables & {"comprovantes", "itenscomprovantes"}:
-                        results.append(self._refresh_sales_daily_stg(client, data_keys))
-                        results.append(self._refresh_sales_hourly_stg(client, data_keys))
-                        results.append(self._refresh_dashboard_home_stg(client, data_keys))
-                        results.append(self._refresh_sales_products_stg(client, data_keys))
-                        results.append(self._refresh_team_fuel_employee_daily_stg(client, data_keys))
-                        results.append(self._refresh_sales_groups_stg(client, data_keys))
-                        results.append(self._refresh_fraud_daily_stg(client, data_keys))
-                        results.append(self._refresh_risk_recent_events_stg(client))
-                        results.append(self._refresh_antifraude_eventos_stg(client, data_keys))
+                    # Step 2: Build marts from slim tables (ordem preservada)
+                    sales_src = bool(tables & {"comprovantes", "itenscomprovantes"})
+                    step("sales_daily_rt", sales_src, self._refresh_sales_daily_stg, client, data_keys)
+                    step("sales_hourly_rt", sales_src, self._refresh_sales_hourly_stg, client, data_keys)
+                    step("dashboard_home_rt", sales_src, self._refresh_dashboard_home_stg, client, data_keys)
+                    step("sales_products_rt", sales_src, self._refresh_sales_products_stg, client, data_keys)
+                    step("team_fuel_employee_daily_rt", sales_src, self._refresh_team_fuel_employee_daily_stg, client, data_keys)
+                    step("sales_groups_rt", sales_src, self._refresh_sales_groups_stg, client, data_keys)
+                    step("fraud_daily_rt", sales_src, self._refresh_fraud_daily_stg, client, data_keys)
+                    step("risk_recent_events_rt", sales_src, self._refresh_risk_recent_events_stg, client)
+                    step("mart_antifraude_eventos", sales_src, self._refresh_antifraude_eventos_stg, client, data_keys)
 
-                    if tables & {"comprovantes", "nfe"}:
-                        results.append(self._refresh_nfe_inutilizations_rt_stg(client, data_keys))
-
-                    if tables & {"formas_pgto_comprovantes", "payment_type_map"}:
-                        results.append(self._refresh_payments_by_type_stg(client, data_keys))
-
-                    if tables & {"controle_troca_pgto", "movlctoscancelados"}:
-                        results.append(self._refresh_troca_forma_pgto_stg(client, data_keys))
-
-                    if tables & {"turnos", "usuarios", "comprovantes"}:
-                        results.append(self._refresh_cash_overview_stg(client, data_keys))
-
-                    if tables & {"financeiro", "contaspagar", "contasreceber", "contasreceberbaixa", "contaspagarbaixa"}:
-                        results.append(self._refresh_finance_overview_stg(client))
-
-                    if tables & {"comprovantes", "entidades"}:
-                        results.append(self._refresh_mart_clientes_resumo_stg(client))
+                    step(
+                        "nfe_inutilizations_rt",
+                        bool(tables & {"comprovantes", "nfe"}),
+                        self._refresh_nfe_inutilizations_rt_stg, client, data_keys,
+                    )
+                    step(
+                        "payments_by_type_rt",
+                        bool(tables & {"formas_pgto_comprovantes", "payment_type_map"}),
+                        self._refresh_payments_by_type_stg, client, data_keys,
+                    )
+                    step(
+                        "mart_troca_forma_pgto_rt",
+                        bool(tables & {"controle_troca_pgto", "movlctoscancelados"}),
+                        self._refresh_troca_forma_pgto_stg, client, data_keys,
+                    )
+                    step(
+                        "cash_overview_rt",
+                        bool(tables & {"turnos", "usuarios", "comprovantes"}),
+                        self._refresh_cash_overview_stg, client, data_keys,
+                    )
+                    step(
+                        "finance_overview_rt",
+                        bool(tables & {"financeiro", "contaspagar", "contasreceber", "contasreceberbaixa", "contaspagarbaixa"}),
+                        self._refresh_finance_overview_stg, client,
+                    )
+                    step(
+                        "mart_clientes_resumo",
+                        bool(tables & {"comprovantes", "entidades"}),
+                        self._refresh_mart_clientes_resumo_stg, client,
+                    )
                 else:
                     # DW-origin path (already typed, no slim needed)
-                    if tables & {"fact_venda", "fact_venda_item", "fact_comprovante"}:
-                        results.append(self._refresh_sales_daily_dw(client, data_keys))
-                        results.append(self._refresh_sales_hourly_dw(client, data_keys))
-                        results.append(self._refresh_dashboard_home_dw(client, data_keys))
+                    venda_src = bool(tables & {"fact_venda", "fact_venda_item", "fact_comprovante"})
+                    step("sales_daily_rt", venda_src, self._refresh_sales_daily_dw, client, data_keys)
+                    step("sales_hourly_rt", venda_src, self._refresh_sales_hourly_dw, client, data_keys)
+                    step("dashboard_home_rt", venda_src, self._refresh_dashboard_home_dw, client, data_keys)
 
-                    if tables & {"fact_venda_item"}:
-                        results.append(self._refresh_sales_products_dw(client, data_keys))
-                        results.append(self._refresh_sales_groups_dw(client, data_keys))
+                    item_src = bool(tables & {"fact_venda_item"})
+                    step("sales_products_rt", item_src, self._refresh_sales_products_dw, client, data_keys)
+                    step("sales_groups_rt", item_src, self._refresh_sales_groups_dw, client, data_keys)
 
-                    if tables & {"fact_pagamento_comprovante"}:
-                        results.append(self._refresh_payments_by_type_dw(client, data_keys))
+                    step(
+                        "payments_by_type_rt",
+                        bool(tables & {"fact_pagamento_comprovante"}),
+                        self._refresh_payments_by_type_dw, client, data_keys,
+                    )
+                    step(
+                        "cash_overview_rt",
+                        bool(tables & {"fact_caixa_turno"}),
+                        self._refresh_cash_overview_dw, client, data_keys,
+                    )
 
-                    if tables & {"fact_caixa_turno"}:
-                        results.append(self._refresh_cash_overview_dw(client, data_keys))
+                    risco_src = bool(tables & {"fact_risco_evento"})
+                    step("fraud_daily_rt", risco_src, self._refresh_fraud_daily_dw, client, data_keys)
+                    step("risk_recent_events_rt", risco_src, self._refresh_risk_recent_events_dw, client)
 
-                    if tables & {"fact_risco_evento"}:
-                        results.append(self._refresh_fraud_daily_dw(client, data_keys))
-                        results.append(self._refresh_risk_recent_events_dw(client))
+                    step(
+                        "finance_overview_rt",
+                        bool(tables & {"fact_financeiro"}),
+                        self._refresh_finance_overview_dw, client,
+                    )
 
-                    if tables & {"fact_financeiro"}:
-                        results.append(self._refresh_finance_overview_dw(client))
-
-                # Log publication
-                id_empresa = next(iter(self.state.affected_empresas), 0)
-                self._log_publications(client, results, id_empresa=id_empresa, data_keys=data_keys)
+                # Log publication — só marts sem erro, por empresa realmente publicada
+                self._log_publications(
+                    client,
+                    results,
+                    data_keys=data_keys,
+                    empresas=empresas,
+                    rows_by_empresa=self._cycle_rows_by_empresa,
+                )
                 self._update_source_freshness(client)
-                self._consecutive_failures = 0  # Reset on success
 
             finally:
                 client.close()
         except Exception as e:
-            self._consecutive_failures += 1
+            cycle_error = True
             logger.error(
-                f"Mart builder refresh failed (attempt {self._consecutive_failures}): {e}"
+                f"Mart builder refresh failed (attempt {self._consecutive_failures + 1}): {e}"
             )
             results.append(MartRefreshResult(mart_name="__global__", error=str(e)))
 
+        published = {r.mart_name for r in results if r.error is None}
+        failed = {r.mart_name for r in results if r.error is not None and r.mart_name != "__global__"}
+        # Mart pendente continua pendente até publicar com sucesso.
+        pending_marts = (retry_marts | failed) - published
+
+        if cycle_error or (failed and not published):
+            # Ciclo sem nenhuma publicação conta para o circuit breaker.
+            self._consecutive_failures += 1
+        else:
+            self._consecutive_failures = 0
+
         self.state.clear()
+        self.state.retry_marts = pending_marts
+        if cycle_error or pending_marts:
+            # Nenhum dia/chave pendente é descartado por causa de falha.
+            self.state.affected_data_keys |= {int(k) for k in data_keys}
+            self.state.affected_empresas |= empresas
+            self.state.affected_filiais |= filiais
+            if cycle_error:
+                # Slim/cliente falhou: nada rodou com garantia — repete a cadeia.
+                self.state.affected_tables |= tables
         return results
 
     def _validate_slim_exists(self, client: Any, id_empresa: int, from_key: int, to_key: int, filial_filter: str) -> None:
@@ -1129,38 +1231,45 @@ class MartBuilder:
             return "1 = 1"
         return f"{prefix}data_key IN ({keys})"
 
+    def _count_rows_by_empresa(self, client: Any, mart_table: str, where: str) -> int:
+        """count() por empresa na mart após o INSERT.
+
+        Retorna o total e guarda a quebra em ``_cycle_rows_by_empresa`` para o log
+        de publicação atribuir a mart às empresas realmente publicadas.
+        """
+        try:
+            result = client.query(
+                f"SELECT id_empresa, count() FROM {self.mart_rt_db}.{mart_table} "
+                f"WHERE {where} GROUP BY id_empresa"
+            )
+            by_empresa = {int(row[0]): int(row[1]) for row in (result.result_rows or [])}
+        except Exception:
+            return 0
+        self._cycle_rows_by_empresa[mart_table] = by_empresa
+        return sum(by_empresa.values())
+
     def _insert_and_count(self, client: Any, mart_table: str, sql: str, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None) -> int:
         """Execute INSERT INTO mart and return actual rows written for the scoped tenant."""
         client.command(sql, settings=self._query_settings)
         keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
         if not keys_str:
             return 0
-        try:
-            where = f"data_key IN ({keys_str})"
-            if id_empresa:
-                where += f" AND id_empresa = {int(id_empresa)}"
-            if id_filial:
-                where += f" AND id_filial = {int(id_filial)}"
-            result = client.query(
-                f"SELECT count() FROM {self.mart_rt_db}.{mart_table} WHERE {where}"
-            )
-            return int(result.result_rows[0][0]) if result.result_rows else 0
-        except Exception:
-            return 0
+        where = f"data_key IN ({keys_str})"
+        if id_empresa:
+            where += f" AND id_empresa = {int(id_empresa)}"
+        if id_filial:
+            where += f" AND id_filial = {int(id_filial)}"
+        return self._count_rows_by_empresa(client, mart_table, where)
 
     def _insert_and_count_nokey(self, client: Any, mart_table: str, sql: str, id_empresa: int = 0, id_filial: Optional[int] = None) -> int:
         """Execute INSERT INTO mart and return actual rows written (for tables without data_key)."""
         client.command(sql, settings=self._query_settings)
-        try:
-            where = "1=1"
-            if id_empresa:
-                where = f"id_empresa = {int(id_empresa)}"
-            if id_filial:
-                where += f" AND id_filial = {int(id_filial)}"
-            result = client.query(f"SELECT count() FROM {self.mart_rt_db}.{mart_table} WHERE {where}")
-            return int(result.result_rows[0][0]) if result.result_rows else 0
-        except Exception:
-            return 0
+        where = "1=1"
+        if id_empresa:
+            where = f"id_empresa = {int(id_empresa)}"
+        if id_filial:
+            where += f" AND id_filial = {int(id_filial)}"
+        return self._count_rows_by_empresa(client, mart_table, where)
 
     def _refresh_sales_daily_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
         """Sales daily from deduplicated slim tables. No payload, no JSONExtract.
@@ -2129,15 +2238,15 @@ class MartBuilder:
         """
         result = client.command(sql)
         rows = _parse_insert_count(result) if result else 0
-        # Get actual count as fallback
+        # Conta por empresa (também alimenta a atribuição do log de publicação).
+        count_where = "1=1"
+        if id_empresa:
+            count_where += f" AND id_empresa = {int(id_empresa)}"
+        if id_filial:
+            count_where += f" AND id_filial = {int(id_filial)}"
+        counted = self._count_rows_by_empresa(client, "mart_clientes_resumo", count_where)
         if rows == 0:
-            count_where = "WHERE 1=1"
-            if id_empresa:
-                count_where += f" AND id_empresa = {int(id_empresa)}"
-            if id_filial:
-                count_where += f" AND id_filial = {int(id_filial)}"
-            count_result = client.query(f"SELECT count() FROM {self.mart_rt_db}.mart_clientes_resumo {count_where}")
-            rows = int(count_result.result_rows[0][0]) if count_result.result_rows else 0
+            rows = counted
         return MartRefreshResult("mart_clientes_resumo", rows, int((time.time() - t0) * 1000))
 
     def _refresh_dashboard_home_stg(self, client: Any, data_keys: list[int], id_empresa: int = 0, id_filial: Optional[int] = None, skip_delete: bool = False) -> MartRefreshResult:
@@ -2574,8 +2683,18 @@ class MartBuilder:
         results: list[MartRefreshResult],
         id_empresa: int = 0,
         data_keys: Optional[list[int]] = None,
+        rows_by_empresa: Optional[dict[str, dict[int, int]]] = None,
+        empresas: Optional[set[int]] = None,
     ) -> None:
-        """Log successful publications to mart_publication_log with real values."""
+        """Log successful publications to mart_publication_log with real values.
+
+        Só entram marts sem erro. A atribuição por empresa vem de
+        ``rows_by_empresa`` (contagem real pós-INSERT): um ciclo que publica duas
+        empresas gera uma linha por empresa, e uma mart que falhou não é
+        registrada. Sem essa quebra (backfill com empresa explícita, caminho DW
+        sem contagem), cai para ``id_empresa``/``empresas`` afetadas — nunca para
+        uma empresa arbitrária do conjunto.
+        """
         from datetime import date as _date
         successful = [r for r in results if r.error is None]
         if not successful:
@@ -2604,17 +2723,41 @@ class MartBuilder:
             window_start = _date.today()
             window_end = _date.today()
 
+        # Log é best-effort: erro aqui não invalida marts já publicadas.
         try:
+            by_mart = rows_by_empresa or {}
+            if id_empresa:
+                fallback_empresas = [int(id_empresa)]
+            else:
+                fallback_empresas = sorted({int(e) for e in (empresas or set()) if int(e) > 0})
+
             rows = []
             for r in successful:
-                rows.append([
-                    r.mart_name,
-                    id_empresa,
-                    window_start,
-                    window_end,
-                    r.rows_written or 0,
-                    r.duration_ms or 0,
-                ])
+                breakdown = {
+                    int(e): int(n)
+                    for e, n in (by_mart.get(r.mart_name) or {}).items()
+                    if int(e) > 0
+                }
+                if breakdown:
+                    for empresa, mart_rows in sorted(breakdown.items()):
+                        rows.append([r.mart_name, empresa, window_start, window_end, mart_rows, r.duration_ms or 0])
+                    continue
+                # Sem contagem por empresa: só registra empresa real; rows_written
+                # apenas quando o escopo do ciclo é de uma única empresa.
+                single_scope = len(fallback_empresas) == 1
+                for empresa in fallback_empresas:
+                    rows.append([
+                        r.mart_name,
+                        empresa,
+                        window_start,
+                        window_end,
+                        (r.rows_written or 0) if single_scope else 0,
+                        r.duration_ms or 0,
+                    ])
+
+            if not rows:
+                return
+
             client.insert(
                 f"{self.mart_rt_db}.mart_publication_log",
                 rows,
