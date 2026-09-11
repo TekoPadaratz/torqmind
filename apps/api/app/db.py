@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import re
 import threading
 from typing import Any, Iterator, Optional
 from urllib.parse import parse_qs, unquote, urlparse
@@ -190,6 +191,28 @@ def _conn_str(purpose: str = "api") -> str:
     return build_conninfo(purpose=purpose)
 
 
+_CONNINFO_SECRET_KEYS = frozenset({"password", "passwd", "pwd", "sslpassword"})
+
+
+def redact_conninfo_text(value: str) -> str:
+    """Strip secret key=value pairs from a libpq conninfo / DSN-like string.
+
+    Safe for logs and AssertionError messages. Never round-trip into ``connect``.
+    """
+    text = value or ""
+    # URL form: scheme://user:password@host
+    text = re.sub(r"(://[^:/?#\s]+):([^@/\s]+)@", r"\1:***@", text)
+    # libpq key=value (handles simple and single-quoted values)
+    for key in _CONNINFO_SECRET_KEYS:
+        text = re.sub(
+            rf"\b{key}=(?:'(?:\\'|[^'])*'|[^\s]+)",
+            f"{key}=***",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+
 def redacted_conn_summary(purpose: str = "api", *, conninfo: Optional[str] = None) -> dict[str, Any]:
     """Identify the effective connection target without exposing secrets."""
     info = conninfo or build_conninfo(purpose=purpose)
@@ -211,6 +234,30 @@ def redacted_conn_summary(purpose: str = "api", *, conninfo: Optional[str] = Non
         "application_name": raw.get("application_name"),
         "password_set": bool(raw.get("password")),
     }
+
+
+def assert_db_target(
+    *,
+    purpose: str = "api",
+    expected_dbname: str,
+    expected_host: Optional[str] = None,
+    conninfo: Optional[str] = None,
+) -> dict[str, Any]:
+    """Assert migrate/API target using a redacted summary only (never raise secrets)."""
+    summary = redacted_conn_summary(purpose=purpose, conninfo=conninfo)
+    dbname = summary.get("dbname")
+    host = summary.get("host")
+    if dbname != expected_dbname:
+        raise AssertionError(
+            f"unexpected dbname purpose={purpose} got={dbname!r} expected={expected_dbname!r} "
+            f"host={host!r} user={summary.get('user')!r}"
+        )
+    if expected_host is not None and host != expected_host:
+        raise AssertionError(
+            f"unexpected host purpose={purpose} got={host!r} expected={expected_host!r} "
+            f"dbname={dbname!r} user={summary.get('user')!r}"
+        )
+    return summary
 
 
 def _sql_quote(value: str) -> str:

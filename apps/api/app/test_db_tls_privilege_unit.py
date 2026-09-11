@@ -11,7 +11,13 @@ from psycopg.conninfo import conninfo_to_dict
 
 from app import db as db_mod
 from app import db_clickhouse
-from app.db import build_conninfo, db_purpose, redacted_conn_summary
+from app.db import (
+    assert_db_target,
+    build_conninfo,
+    db_purpose,
+    redact_conninfo_text,
+    redacted_conn_summary,
+)
 
 
 class ConninfoTlsTests(unittest.TestCase):
@@ -65,6 +71,29 @@ class ConninfoTlsTests(unittest.TestCase):
         self.assertTrue(summary["password_set"])
         self.assertNotIn("secret", str(summary))
         self.assertEqual(summary["sslmode"], "require")
+
+    def test_redact_conninfo_text_strips_url_and_libpq_secrets(self) -> None:
+        url = "postgresql://app:SuperSecretPass@db.example:5432/torqmind_homolog"
+        redacted = redact_conninfo_text(url)
+        self.assertNotIn("SuperSecretPass", redacted)
+        self.assertIn(":***@", redacted)
+        libpq = "host=db.example port=5432 dbname=torqmind user=torqmind password=SuperSecretPass application_name=x"
+        libpq_redacted = redact_conninfo_text(libpq)
+        self.assertNotIn("SuperSecretPass", libpq_redacted)
+        self.assertIn("password=***", libpq_redacted)
+        # Mimic the deploy AssertionError path: message must stay redacted.
+        try:
+            raise AssertionError(redact_conninfo_text(libpq))
+        except AssertionError as exc:
+            self.assertNotIn("SuperSecretPass", str(exc))
+
+    def test_assert_db_target_messages_are_redacted(self) -> None:
+        url = "postgresql://u:leak-me-now@localhost:5432/wrong_db"
+        info = build_conninfo(database_url=url)
+        with self.assertRaises(AssertionError) as ctx:
+            assert_db_target(purpose="migrate", expected_dbname="torqmind_homolog", conninfo=info)
+        self.assertNotIn("leak-me-now", str(ctx.exception))
+        self.assertIn("wrong_db", str(ctx.exception))
 
     def test_invalid_ca_path_still_builds_conninfo(self) -> None:
         url = "postgresql://u:p@127.0.0.1:1/db?sslmode=verify-full&sslrootcert=/no/such/ca.pem"

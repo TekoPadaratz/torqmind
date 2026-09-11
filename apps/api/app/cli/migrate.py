@@ -669,6 +669,23 @@ def main() -> None:
     print(f"Using migrations from: {migrations_dir}")
     validate_migration_chain(migrations_dir)
 
+    try:
+        from app.db import redacted_conn_summary
+
+        summary = redacted_conn_summary(purpose="migrate")
+        print(
+            "migrate_target",
+            f"host={summary.get('host')}",
+            f"dbname={summary.get('dbname')}",
+            f"user={summary.get('user')}",
+            f"app={summary.get('application_name')}",
+            f"password_set={summary.get('password_set')}",
+        )
+    except Exception as exc:  # noqa: BLE001 — never block migrate on summary failure
+        from app.db import redact_conninfo_text
+
+        print("migrate_target_summary_unavailable", redact_conninfo_text(str(exc))[:160])
+
     if not args.verify_only:
         result = apply_migrations(migrations_dir, baseline_current=args.baseline_current)
         _print_summary(result)

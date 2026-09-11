@@ -1,9 +1,26 @@
-# Recovery image: pre-hardening API code + dual password verify (bcrypt + Argon2id).
-# Use when rolling back app behavior after some passwords were upgraded to Argon2.
+# Recovery image: pre-hardening API + dual password verify (bcrypt + Argon2id).
 # Does NOT restore DB data. Does NOT drop columns/hashes.
-FROM torqmind-api:homolog-pre-hardening-20260910-4b2c390
+#
+# Overlay is password-verify only (+ /auth/me MFA gate). It must NOT replace
+# create_access_token with the post-hardening module (token_use=access default
+# strips mfa_pending/scope and turns challenge tokens into access tokens).
+#
+# IMPORTANT: pip install . may load site-packages/app — overlay both trees.
+#
+# Build (repo root as context):
+#   docker build -f deploy/docker/Dockerfile.api-rollback-dual-verify \
+#     --build-arg BASE_IMAGE=torqmind-api:homolog-pre-hardening-20260910-4b2c390 \
+#     -t torqmind-api:homolog-rollback-dual-verify .
+#   docker build -f deploy/docker/Dockerfile.api-rollback-dual-verify \
+#     --build-arg BASE_IMAGE=torqmind-api:prod-pre-hardening-20260910 \
+#     -t torqmind-api:prod-rollback-dual-verify .
+ARG BASE_IMAGE=torqmind-api:homolog-pre-hardening-20260910-4b2c390
+FROM ${BASE_IMAGE}
 
 USER root
 RUN pip install --no-cache-dir "argon2-cffi>=23.1.0"
-# Overlay dual-scheme verifier from the hardening tree (build context = repo root).
-COPY apps/api/app/security.py /app/app/security.py
+COPY deploy/docker/security_dual_verify.py /tmp/security_dual_verify.py
+COPY deploy/docker/overlay_recovery.sh /tmp/overlay_recovery.sh
+RUN chmod +x /tmp/overlay_recovery.sh \
+ && /tmp/overlay_recovery.sh /tmp/security_dual_verify.py \
+ && rm -f /tmp/security_dual_verify.py /tmp/overlay_recovery.sh
