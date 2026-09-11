@@ -73,18 +73,32 @@ def _sales_exit_cancel_cfop_pred(alias: str = "i") -> str:
     return f"coalesce({alias}.cfop, 0) > 5000 AND coalesce({alias}.cfop, 0) NOT IN ({excl})"
 
 
-def _has_sales_exit_item_pred(current_db: str, alias: str = "c") -> str:
+def _has_sales_exit_item_pred(
+    current_db: str,
+    alias: str = "c",
+    *,
+    data_keys: list[int] | None = None,
+) -> str:
     """Comprovante cancelado só entra no antifraude se tiver item de venda/saída.
 
     ClickHouse não aceita EXISTS correlacionado com coluna do escopo pai
     (UNSUPPORTED_METHOD). Usar IN por tupla natural key.
+
+    When data_keys is provided, restrict the item semi-join to that batch
+    (same data_key window as the parent comprovantes scan).
     """
+    key_pred = ""
+    if data_keys:
+        keys = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+        if keys:
+            key_pred = f" AND i.data_key IN ({keys})"
     return (
         f"({alias}.id_empresa, {alias}.id_filial, {alias}.id_db, {alias}.id_comprovante) IN ("
         f"SELECT i.id_empresa, i.id_filial, i.id_db, i.id_comprovante "
         f"FROM {current_db}.stg_itenscomprovantes_slim AS i FINAL "
         f"WHERE i.is_deleted = 0 "
         f"AND {_sales_exit_cancel_cfop_pred('i')}"
+        f"{key_pred}"
         f")"
     )
 
@@ -1178,8 +1192,13 @@ class MartBuilder:
     def _exclude_central_mirror(self, alias: str = "c") -> str:
         return _exclude_central_mirror_pred(self.current_db, alias)
 
-    def _has_sales_exit_item(self, alias: str = "c") -> str:
-        return _has_sales_exit_item_pred(self.current_db, alias)
+    def _has_sales_exit_item(
+        self,
+        alias: str = "c",
+        *,
+        data_keys: list[int] | None = None,
+    ) -> str:
+        return _has_sales_exit_item_pred(self.current_db, alias, data_keys=data_keys)
 
     def _json_decimal_or_null(self, alias: str, key: str, scale: int) -> str:
         return (
@@ -1202,13 +1221,43 @@ class MartBuilder:
             f"toDecimal64(0, 2))"
         )
 
-    def _nfe_latest_status_cte(self, alias: str = "nfe_latest") -> str:
-        """CTE: latest NFE status per comprovante (by source_ts_ms).
+    def _nfe_latest_status_cte(
+        self,
+        alias: str = "nfe_latest",
+        *,
+        data_keys: list[int] | None = None,
+        id_empresa: int = 0,
+        id_filial: Optional[int] = None,
+    ) -> str:
+        """Latest NFE status per comprovante.
 
-        Returns (id_empresa, id_filial, id_db, id_comprovante, nfe_status).
-        Used to classify: status=4 → real cancellation, status=5 → voided/inutilized.
-        If stg_nfe_slim doesn't exist, returns empty result (safe LEFT JOIN).
+        When data_keys is provided, restrict to NFs linked to comprovantes in that
+        batch (NK join via stg_comprovantes_slim). Do NOT filter by NF emission date —
+        comprovante.data_key and NF date can differ.
         """
+        where = "n.is_deleted = 0"
+        if data_keys:
+            keys = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
+            if keys:
+                emp = f" AND c.id_empresa = {int(id_empresa)}" if id_empresa else ""
+                fil = f" AND c.id_filial = {int(id_filial)}" if id_filial else ""
+                return f"""
+        {alias} AS (
+            SELECT
+                n.id_empresa, n.id_filial, n.id_db, n.id_comprovante,
+                argMax(n.status, n.source_ts_ms) AS nfe_status
+            FROM {self.current_db}.stg_nfe_slim AS n
+            INNER JOIN {self.current_db}.stg_comprovantes_slim AS c
+                ON n.id_empresa = c.id_empresa AND n.id_filial = c.id_filial
+                AND n.id_db = c.id_db AND n.id_comprovante = c.id_comprovante
+            WHERE {where}
+              AND c.is_deleted = 0
+              AND c.data_key IN ({keys})
+              {emp}{fil}
+            GROUP BY n.id_empresa, n.id_filial, n.id_db, n.id_comprovante
+        )
+        """
+        # fallback full (payments / risk without keys)
         return f"""
         {alias} AS (
             SELECT
@@ -1314,7 +1363,11 @@ class MartBuilder:
             self._delete_mart_batch(client, "sales_daily_rt", data_keys, id_empresa, id_filial)
 
         has_nfe = self._nfe_slim_table_exists(client)
-        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_with = (
+            f"WITH {self._nfe_latest_status_cte('nfe_latest', data_keys=data_keys, id_empresa=id_empresa, id_filial=id_filial)}"
+            if has_nfe
+            else ""
+        )
         nfe_join_cancel = (
             f"LEFT JOIN nfe_latest "
             f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
@@ -1770,7 +1823,7 @@ class MartBuilder:
             )
             sql = f"""
             INSERT INTO {self.mart_rt_db}.fraud_daily_rt
-            WITH {self._nfe_latest_status_cte('nfe_latest')}
+            WITH {self._nfe_latest_status_cte('nfe_latest', data_keys=data_keys, id_empresa=id_empresa, id_filial=id_filial)}
             SELECT
                 c.id_empresa, c.id_filial, c.data_key,
                 toDate(toString(c.data_key), '%Y%m%d') AS dt,
@@ -1785,7 +1838,7 @@ class MartBuilder:
                 AND c.id_db = nfe_latest.id_db AND c.id_comprovante = nfe_latest.id_comprovante
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
               AND (nfe_latest.nfe_status IS NULL OR nfe_latest.nfe_status != 5)
-              AND {self._has_sales_exit_item("c")}
+              AND {self._has_sales_exit_item("c", data_keys=data_keys)}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
             """
@@ -1803,7 +1856,7 @@ class MartBuilder:
                 now64(6) AS published_at
             FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
             WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
-              AND {self._has_sales_exit_item("c")}
+              AND {self._has_sales_exit_item("c", data_keys=data_keys)}
               {empresa_filter_c} {filial_filter_c}
             GROUP BY c.id_empresa, c.id_filial, c.data_key
             """
@@ -1862,6 +1915,9 @@ class MartBuilder:
 
         Writes to mart_antifraude_eventos. Excludes NFE status=5.
         Only sales/exit cancellations (not entrada/devolução).
+
+        nro_comprovante is intentionally toInt64(0): API document label
+        (_antifraude_documento) ignores NROCOMPROVANTE — avoid payload JOIN.
         """
         t0 = time.time()
         kf = self._slim_keys_filter(data_keys, "c")
@@ -1871,7 +1927,11 @@ class MartBuilder:
             self._delete_mart_batch(client, "mart_antifraude_eventos", data_keys, id_empresa, id_filial)
 
         has_nfe = self._nfe_slim_table_exists(client)
-        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_with = (
+            f"WITH {self._nfe_latest_status_cte('nfe_latest', data_keys=data_keys, id_empresa=id_empresa, id_filial=id_filial)}"
+            if has_nfe
+            else ""
+        )
         nfe_join = (
             f"LEFT JOIN nfe_latest "
             f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
@@ -1915,7 +1975,7 @@ class MartBuilder:
             toUInt8(toHour(c.dt_evento_local)) AS hora,
             now64(6) AS published_at,
             c.id_comprovante AS id_comprovante,
-            toInt64OrZero(JSONExtractString(p.payload, 'NROCOMPROVANTE')) AS nro_comprovante,
+            toInt64(0) AS nro_comprovante,
             toInt32OrZero(JSONExtractString(t.payload, 'TURNO')) AS turno_numero
         FROM {self.current_db}.stg_comprovantes_slim AS c FINAL
         LEFT JOIN {self.current_db}.stg_usuarios AS u FINAL
@@ -1926,12 +1986,10 @@ class MartBuilder:
             ON c.id_empresa = f.id_empresa AND c.id_filial = f.id_filial
         LEFT JOIN {self.current_db}.stg_turnos AS t FINAL
             ON c.id_empresa = t.id_empresa AND c.id_filial = t.id_filial AND c.id_turno = t.id_turno
-        LEFT JOIN {self.current_db}.stg_comprovantes AS p FINAL
-            ON c.id_empresa = p.id_empresa AND c.id_filial = p.id_filial AND c.id_db = p.id_db AND c.id_comprovante = p.id_comprovante
         {nfe_join}
         WHERE {kf} AND c.is_deleted = 0 AND c.cancelado = 1
           {nfe_filter}
-          AND {self._has_sales_exit_item("c")}
+          AND {self._has_sales_exit_item("c", data_keys=data_keys)}
           {empresa_filter_c} {filial_filter_c}
         """
         rows = self._insert_and_count(client, "mart_antifraude_eventos", sql, data_keys, id_empresa, id_filial)
@@ -2287,7 +2345,11 @@ class MartBuilder:
             self._delete_mart_batch(client, "dashboard_home_rt", data_keys, id_empresa, id_filial)
 
         has_nfe = self._nfe_slim_table_exists(client)
-        nfe_with = f"WITH {self._nfe_latest_status_cte('nfe_latest')}" if has_nfe else ""
+        nfe_with = (
+            f"WITH {self._nfe_latest_status_cte('nfe_latest', data_keys=data_keys, id_empresa=id_empresa, id_filial=id_filial)}"
+            if has_nfe
+            else ""
+        )
         nfe_join_cancel = (
             f"LEFT JOIN nfe_latest "
             f"ON c.id_empresa = nfe_latest.id_empresa AND c.id_filial = nfe_latest.id_filial "
@@ -2368,7 +2430,7 @@ class MartBuilder:
         tz = self._BUSINESS_TZ
         sql = f"""
         INSERT INTO {self.mart_rt_db}.nfe_inutilizations_rt
-        WITH {self._nfe_latest_status_cte('nfe_latest')}
+        WITH {self._nfe_latest_status_cte('nfe_latest', data_keys=data_keys, id_empresa=id_empresa, id_filial=id_filial)}
         SELECT
             c.id_empresa, c.id_filial,
             coalesce(nullIf(JSONExtractString(f.payload, 'NOMEFILIAL'), ''), '') AS filial_nome,
