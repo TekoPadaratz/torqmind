@@ -339,7 +339,11 @@ class MartBuilder:
                     step("sales_hourly_rt", sales_src, self._refresh_sales_hourly_stg, client, data_keys)
                     step("dashboard_home_rt", sales_src, self._refresh_dashboard_home_stg, client, data_keys)
                     step("sales_products_rt", sales_src, self._refresh_sales_products_stg, client, data_keys)
-                    step("team_fuel_employee_daily_rt", sales_src, self._refresh_team_fuel_employee_daily_stg, client, data_keys)
+                    # team_fuel_employee_daily_rt fica fora do ciclo incremental até
+                    # existir backfill da mart: repos_mart_realtime.team_fuel_employees_dashboard
+                    # troca do slim para a mart quando ela tem QUALQUER linha na janela
+                    # pedida, então publicar só os dias novos subestimaria litros das
+                    # janelas longas. Popular via `backfill` e só então reativar aqui.
                     step("sales_groups_rt", sales_src, self._refresh_sales_groups_stg, client, data_keys)
                     step("fraud_daily_rt", sales_src, self._refresh_fraud_daily_stg, client, data_keys)
                     step("risk_recent_events_rt", sales_src, self._refresh_risk_recent_events_stg, client)

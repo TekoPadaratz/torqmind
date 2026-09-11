@@ -31,7 +31,6 @@ STG_CHAIN: tuple[tuple[str, str], ...] = (
     ("sales_hourly_rt", "_refresh_sales_hourly_stg"),
     ("dashboard_home_rt", "_refresh_dashboard_home_stg"),
     ("sales_products_rt", "_refresh_sales_products_stg"),
-    ("team_fuel_employee_daily_rt", "_refresh_team_fuel_employee_daily_stg"),
     ("sales_groups_rt", "_refresh_sales_groups_stg"),
     ("fraud_daily_rt", "_refresh_fraud_daily_stg"),
     ("risk_recent_events_rt", "_refresh_risk_recent_events_stg"),
@@ -286,6 +285,30 @@ class TestHappyPathUnchanged:
         assert mocks["finance_overview_rt"].called
         for mart in ("sales_daily_rt", "mart_antifraude_eventos", "payments_by_type_rt"):
             assert not mocks[mart].called
+
+    def test_team_fuel_mart_stays_out_of_incremental_cycle(self):
+        """Publicar só os dias novos subestimaria litros na tela de Equipe.
+
+        A API troca slim → mart quando a mart tem qualquer linha na janela pedida
+        (repos_mart_realtime.team_fuel_employees_dashboard), então a mart só entra
+        no ciclo depois de backfill.
+        """
+        builder = make_builder()
+        mark_batch(builder)
+
+        with patch.object(builder, "_refresh_team_fuel_employee_daily_stg") as team_fuel:
+            run_cycle(builder)
+
+        assert not team_fuel.called
+
+    def test_team_fuel_refresh_remains_available_for_backfill(self):
+        code = (
+            Path(__file__).parent.parent / "torqmind_cdc_consumer" / "mart_builder.py"
+        ).read_text()
+        assert "def _refresh_team_fuel_employee_daily_stg(" in code
+        backfill_idx = code.index("def backfill(")
+        backfill_body = code[backfill_idx : code.index("\n    def ", backfill_idx + 10)]
+        assert "_refresh_team_fuel_employee_daily_stg" in backfill_body
 
     def test_refresh_chain_uses_isolated_steps(self):
         """Nenhuma chamada de mart direta em results.append dentro de refresh_if_needed."""
