@@ -136,7 +136,12 @@ def login(body: LoginRequest, request: Request, response: Response):
 def me(request: Request, authorization: str | None = Header(default=None)):
     # Same access-token gates as BI dependencies (rejects MFA intermediate tokens,
     # absolute expiry and password-change revocation). Cookie-first for browsers.
-    session, _payload = resolve_access_session(authorization, request=request)
+    # default_scope is required here for FE home/scope bootstrap — not on every BI GET.
+    session, _payload = resolve_access_session(
+        authorization,
+        request=request,
+        include_default_scope=True,
+    )
     return session
 
 
@@ -262,7 +267,12 @@ def refresh_token(
     session indefinitely. Kiosk sessions keep the 24h relative TTL while still
     capped by absolute expiry. Reloads permissions/state from the database.
     """
-    session, payload = resolve_access_session(authorization, request=request)
+    # Refresh re-bootstraps default_scope for the FE (same as /auth/me).
+    session, payload = resolve_access_session(
+        authorization,
+        request=request,
+        include_default_scope=True,
+    )
     if session.get("must_change_password"):
         raise HTTPException(
             status_code=403,
