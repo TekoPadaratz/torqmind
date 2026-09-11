@@ -698,19 +698,48 @@ class TestKioskAllowedTVEndpoints(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRefreshTokenEndpoint(unittest.TestCase):
-    """POST /auth/refresh issues a fresh token."""
+    """POST /auth/refresh issues a fresh token.
 
-    @classmethod
-    def setUpClass(cls):
-        cls.client = TestClient(app)
+    After Prompt 3/7, refresh no longer uses ``Depends(get_current_claims)`` —
+    it calls ``resolve_access_session`` (cookie/bearer + live DB session).
+    Overriding ``get_current_claims`` is obsolete; tests must supply a real
+    access JWT and mock ``get_session_context``.
+    """
+
+    def setUp(self):
+        # Fresh client per test — refresh sets HttpOnly cookies that would
+        # otherwise make "no Authorization" still authenticated.
+        self.client = TestClient(app)
 
     def tearDown(self):
         app.dependency_overrides.pop(get_current_claims, None)
 
+    def _post_refresh(self, claims: dict, *, token_minutes: int | None = None):
+        from app.security import TOKEN_USE_ACCESS, create_access_token
+
+        token = create_access_token(
+            {
+                "sub": claims["sub"],
+                "email": claims.get("email"),
+                "user_role": claims.get("user_role"),
+                "role": claims.get("role"),
+                "id_empresa": claims.get("id_empresa"),
+                "id_filial": claims.get("id_filial"),
+                "channel_id": claims.get("channel_id"),
+                "must_change_password": bool(claims.get("must_change_password")),
+            },
+            minutes=token_minutes,
+            token_use=TOKEN_USE_ACCESS,
+        )
+        with patch("app.deps.repos_auth.get_session_context", return_value=dict(claims)):
+            return self.client.post(
+                "/auth/refresh",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
     def test_refresh_for_kiosk_returns_token(self):
-        app.dependency_overrides[get_current_claims] = lambda: _kiosk_claims()
-        resp = self.client.post("/auth/refresh")
-        self.assertEqual(resp.status_code, 200)
+        resp = self._post_refresh(_kiosk_claims(), token_minutes=1440)
+        self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
         self.assertTrue(body["ok"])
         self.assertIn("access_token", body)
@@ -719,11 +748,11 @@ class TestRefreshTokenEndpoint(unittest.TestCase):
         payload = decode_token(body["access_token"])
         ttl = payload["exp"] - payload["iat"]
         self.assertAlmostEqual(ttl, 1440 * 60, delta=5)
+        self.assertIn("session_exp", payload)
 
     def test_refresh_for_owner_returns_default_ttl(self):
-        app.dependency_overrides[get_current_claims] = lambda: _owner_claims()
-        resp = self.client.post("/auth/refresh")
-        self.assertEqual(resp.status_code, 200)
+        resp = self._post_refresh(_owner_claims())
+        self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
         self.assertTrue(body["ok"])
         from app.security import decode_token
@@ -731,9 +760,9 @@ class TestRefreshTokenEndpoint(unittest.TestCase):
         ttl = payload["exp"] - payload["iat"]
         from app.config import settings
         self.assertAlmostEqual(ttl, settings.api_access_token_minutes * 60, delta=5)
+        self.assertIn("session_exp", payload)
 
     def test_refresh_without_token_401(self):
-        app.dependency_overrides.pop(get_current_claims, None)
         resp = self.client.post("/auth/refresh")
         self.assertEqual(resp.status_code, 401)
 
