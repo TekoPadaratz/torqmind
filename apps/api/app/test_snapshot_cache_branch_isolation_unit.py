@@ -78,7 +78,7 @@ class CachedResponseBranchIsolationTest(unittest.TestCase):
             captured_kwargs["tenant_id"] = tenant_id
             captured_kwargs["expected_context"] = expected_context
             for row in rows_for_compatible:
-                if snapshot_cache.record_matches_effective_branch_scope(row, expected_context):
+                if snapshot_cache.record_is_compatible_for_fallback(row, expected_context):
                     return row
             return None
 
@@ -326,6 +326,201 @@ class CachedResponseBranchIsolationTest(unittest.TestCase):
         self.assertIsNotNone(hit)
         self.assertTrue(hit["snapshot_data"]["kpis"].get("good"))
         self.assertFalse(hit["snapshot_data"]["kpis"].get("bad"))
+
+
+class CachedResponseBusinessFilterCompatTest(unittest.TestCase):
+    """Compatible fallback must match business filters, not only branches."""
+
+    def _run_sales_protected(self, *, id_grupos, rows_for_compatible, safe_fallback=None):
+        compute = MagicMock(side_effect=AssertionError("compute must not run under protect_reads"))
+
+        def fake_compatible(role, tenant_id, branch_id, snapshot_key, expected_context):
+            for row in rows_for_compatible:
+                if snapshot_cache.record_is_compatible_for_fallback(row, expected_context):
+                    return row
+            return None
+
+        with (
+            patch.object(routes_bi.snapshot_cache, "read_snapshot_record", return_value=None),
+            patch.object(
+                routes_bi.snapshot_cache,
+                "read_latest_compatible_snapshot_record",
+                side_effect=fake_compatible,
+            ),
+            patch.object(
+                routes_bi.snapshot_cache,
+                "get_hot_route_guard",
+                return_value={"protect_reads": True, "reasons": ["etl_running"], "etl_running": True},
+            ),
+            patch.object(routes_bi.snapshot_cache, "route_snapshot_is_bypassed", return_value=False),
+        ):
+            payload = routes_bi._with_cached_response(
+                scope_key="sales_overview",
+                role="MASTER",
+                tenant_id=1,
+                branch_scope=[FILIAL_A, FILIAL_B],
+                dt_ini=DT_INI,
+                dt_fim=DT_FIM,
+                dt_ref=DT_REF,
+                compute=compute,
+                extra_context={"module": "sales", "id_grupos": list(id_grupos)},
+                safe_fallback=safe_fallback
+                or (lambda: {"produtos": [], "source": "fallback", "id_grupos_meta": list(id_grupos)}),
+            )
+        compute.assert_not_called()
+        return payload
+
+    def test_same_branches_different_id_grupos_rejected(self) -> None:
+        stored = _record(
+            {"produtos": [{"grupo": 20, "nome": "Grupo20"}], "kpis": {"from": "g20"}},
+            {
+                "scope_v": 2,
+                "branch_scope_kind": "multi",
+                "branch_ids": [FILIAL_A, FILIAL_B],
+                "dt_ini": DT_INI.isoformat(),
+                "dt_fim": "2026-09-05",
+                "dt_ref": DT_REF.isoformat(),
+                "module": "sales",
+                "id_grupos": [20],
+            },
+            sig="sales-g20",
+        )
+        payload = self._run_sales_protected(
+            id_grupos=[10],
+            rows_for_compatible=[stored],
+            safe_fallback=lambda: {"produtos": [], "kpis": {"from": "fallback"}, "requested_grupos": [10]},
+        )
+        self.assertEqual(payload["kpis"]["from"], "fallback")
+        self.assertEqual(payload.get("requested_grupos"), [10])
+        self.assertNotEqual(payload["_snapshot_cache"].get("source"), "snapshot")
+        self.assertNotIn({"grupo": 20, "nome": "Grupo20"}, payload.get("produtos") or [])
+
+    def test_same_branches_same_id_grupos_different_dates_accepted(self) -> None:
+        stored = _record(
+            {"produtos": [{"grupo": 10}], "kpis": {"from": "g10-stale"}},
+            {
+                "scope_v": 2,
+                "branch_scope_kind": "multi",
+                "branch_ids": [FILIAL_A, FILIAL_B],
+                "dt_ini": DT_INI.isoformat(),
+                "dt_fim": "2026-09-05",
+                "dt_ref": "2026-09-05",
+                "module": "sales",
+                "id_grupos": [10],
+            },
+            sig="sales-g10-older",
+        )
+        payload = self._run_sales_protected(id_grupos=[10], rows_for_compatible=[stored])
+        self.assertEqual(payload["kpis"]["from"], "g10-stale")
+        self.assertEqual(payload["_snapshot_cache"]["mode"], "protected_stale_snapshot")
+        self.assertFalse(payload["_snapshot_cache"]["exact_scope_match"])
+
+    def test_legacy_sales_without_id_grupos_rejected(self) -> None:
+        legacy = _record(
+            {"produtos": [{"grupo": 99}], "kpis": {"from": "legacy"}},
+            {
+                "scope_v": 2,
+                "branch_scope_kind": "multi",
+                "branch_ids": [FILIAL_A, FILIAL_B],
+                "module": "sales",
+                # missing id_grupos — cannot prove filter compatibility
+            },
+            sig="sales-legacy",
+        )
+        payload = self._run_sales_protected(
+            id_grupos=[10],
+            rows_for_compatible=[legacy],
+            safe_fallback=lambda: {"kpis": {"from": "fallback"}},
+        )
+        self.assertEqual(payload["kpis"]["from"], "fallback")
+
+    def test_finance_include_flags_must_match(self) -> None:
+        stored = _record(
+            {"kpis": {"from": "no-series"}},
+            {
+                "scope_v": 2,
+                "branch_scope_kind": "multi",
+                "branch_ids": [FILIAL_A, FILIAL_B],
+                "include_series": False,
+                "include_payments": True,
+                "include_operational": True,
+            },
+            sig="fin-no-series",
+        )
+        compute = MagicMock(side_effect=AssertionError("no compute"))
+
+        def fake_compatible(role, tenant_id, branch_id, snapshot_key, expected_context):
+            if snapshot_cache.record_is_compatible_for_fallback(stored, expected_context):
+                return stored
+            return None
+
+        with (
+            patch.object(routes_bi.snapshot_cache, "read_snapshot_record", return_value=None),
+            patch.object(
+                routes_bi.snapshot_cache,
+                "read_latest_compatible_snapshot_record",
+                side_effect=fake_compatible,
+            ),
+            patch.object(
+                routes_bi.snapshot_cache,
+                "get_hot_route_guard",
+                return_value={"protect_reads": True, "reasons": ["etl_running"], "etl_running": True},
+            ),
+            patch.object(routes_bi.snapshot_cache, "route_snapshot_is_bypassed", return_value=False),
+        ):
+            payload = routes_bi._with_cached_response(
+                scope_key="finance_overview",
+                role="MASTER",
+                tenant_id=1,
+                branch_scope=[FILIAL_A, FILIAL_B],
+                dt_ini=DT_INI,
+                dt_fim=DT_FIM,
+                dt_ref=DT_REF,
+                compute=compute,
+                extra_context={
+                    "include_series": True,
+                    "include_payments": True,
+                    "include_operational": True,
+                },
+                safe_fallback=lambda: {"kpis": {"from": "fallback"}},
+            )
+        self.assertEqual(payload["kpis"]["from"], "fallback")
+
+    def test_fraud_contract_version_must_match(self) -> None:
+        stored = _record(
+            {"kpis": {"from": "v2"}},
+            {
+                "scope_v": 2,
+                "branch_scope_kind": "multi",
+                "branch_ids": [FILIAL_A, FILIAL_B],
+                "module": "fraud",
+                "contract_version": 2,
+                "sections": ["risco"],
+            },
+            sig="fraud-v2",
+        )
+        expected = routes_bi._build_snapshot_context(
+            DT_INI,
+            DT_FIM,
+            DT_REF,
+            [FILIAL_A, FILIAL_B],
+            {"module": "fraud", "contract_version": 3, "sections": ["risco"]},
+        )
+        self.assertFalse(snapshot_cache.contexts_are_compatible_for_fallback(expected, stored["scope_context"]))
+        expected_ok = dict(expected)
+        expected_ok["contract_version"] = 2
+        self.assertTrue(
+            snapshot_cache.contexts_are_compatible_for_fallback(expected_ok, stored["scope_context"])
+        )
+
+    def test_missing_scope_v_rejected_even_with_same_branches(self) -> None:
+        expected = routes_bi._build_snapshot_context(DT_INI, DT_FIM, DT_REF, [FILIAL_A, FILIAL_B])
+        legacy = {
+            "branch_scope_kind": "multi",
+            "branch_ids": [FILIAL_A, FILIAL_B],
+            "dt_ini": DT_INI.isoformat(),
+        }
+        self.assertFalse(snapshot_cache.contexts_are_compatible_for_fallback(expected, legacy))
 
 
 if __name__ == "__main__":

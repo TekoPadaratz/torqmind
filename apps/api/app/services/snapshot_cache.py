@@ -25,6 +25,11 @@ SNAPSHOT_TABLE = "app.snapshot_cache"
 SCOPE_CONTEXT_VERSION = 2
 COMPATIBLE_SNAPSHOT_SCAN_LIMIT = 50
 
+# Only these keys may differ between request and reused compatible snapshot.
+# All other scope_context fields (branches, filters, contract version, …)
+# must match exactly after normalization — no silent widen/omit.
+TEMPORAL_COMPATIBLE_CONTEXT_KEYS = frozenset({"dt_ini", "dt_fim", "dt_ref"})
+
 logger = logging.getLogger(__name__)
 
 _refresh_lock = threading.Lock()
@@ -185,10 +190,77 @@ def contexts_share_effective_branches(expected: Dict[str, Any], stored: Any) -> 
     return left == right
 
 
+def _normalize_filter_value(value: Any) -> Any:
+    """Stable compare for business filters (lists of ids, nested dicts, scalars)."""
+    if isinstance(value, dict):
+        return {str(key): _normalize_filter_value(item) for key, item in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (list, tuple)):
+        items = [_normalize_filter_value(item) for item in value]
+        try:
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        except TypeError:
+            return items
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return value
+
+
+def fallback_identity_context(context: Any) -> Optional[Dict[str, Any]]:
+    """Non-temporal identity required to reuse a compatible snapshot.
+
+    Inventory of cached-route context fields (beyond base dates/branches):
+    - sales_overview: ``module``, ``id_grupos``
+    - fraud_overview: ``module``, ``contract_version``, ``sections``, optional
+      ``credito_risco`` / ``credito_q`` / ``troca_only_suspeita`` / ``troca_forma_nova``
+    - customers_overview: ``feature``
+    - finance_overview: ``include_series`` / ``include_payments`` / ``include_operational``
+    - cash_overview: ``module``, ``contract_version``
+    - goals_overview: ``goal_date``
+    - dashboard_home: base fields only
+
+    Rejects missing ``scope_v``, empty/ambiguous branch sets, and any context
+    that cannot prove equality of the non-temporal identity.
+    """
+    if not isinstance(context, dict):
+        return None
+    if context.get("scope_v") != SCOPE_CONTEXT_VERSION:
+        return None
+    if context.get("branch_scope_kind") == "empty":
+        return None
+    if extract_branch_ids_from_context(context) is None:
+        return None
+    identity: Dict[str, Any] = {}
+    for key, value in context.items():
+        if key in TEMPORAL_COMPATIBLE_CONTEXT_KEYS:
+            continue
+        identity[str(key)] = _normalize_filter_value(value)
+    return identity
+
+
+def contexts_are_compatible_for_fallback(expected: Dict[str, Any], stored: Any) -> bool:
+    """Compatible stale fallback: same branches + business filters; dates may differ."""
+    left = fallback_identity_context(expected)
+    right = fallback_identity_context(stored)
+    if left is None or right is None:
+        return False
+    return left == right
+
+
 def record_matches_effective_branch_scope(record: Optional[Dict[str, Any]], expected_context: Dict[str, Any]) -> bool:
+    """Backward-compatible name — full fallback compatibility (branches + filters)."""
+    return record_is_compatible_for_fallback(record, expected_context)
+
+
+def record_is_compatible_for_fallback(
+    record: Optional[Dict[str, Any]], expected_context: Dict[str, Any]
+) -> bool:
     if not record:
         return False
-    return contexts_share_effective_branches(expected_context, record.get("scope_context"))
+    return contexts_are_compatible_for_fallback(expected_context, record.get("scope_context"))
 
 
 def route_snapshot_is_bypassed(snapshot_key: str) -> bool:
@@ -259,16 +331,14 @@ def read_latest_compatible_snapshot_record(
     snapshot_key: str,
     expected_context: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """Latest snapshot for the same tenant whose *effective* branch set matches.
+    """Latest snapshot for the same tenant with compatible non-temporal identity.
 
-    Does **not** treat ``id_filial IS NULL`` as proof of compatibility: multi-branch
-    and empty scopes both historically used NULL. Filters candidates by
-    ``scope_context.branch_ids`` / ``branch_scope_kind``.
-    Empty / ambiguous expected scopes never match.
+    Does **not** treat ``id_filial IS NULL`` as proof of compatibility. Candidates
+    must match authorized branches **and** business filters / ``scope_v`` in
+    ``scope_context``. Only ``dt_ini`` / ``dt_fim`` / ``dt_ref`` may differ
+    (protected stale window). Empty / ambiguous / under-specified contexts never match.
     """
-    if expected_context.get("branch_scope_kind") == "empty":
-        return None
-    if extract_branch_ids_from_context(expected_context) is None:
+    if fallback_identity_context(expected_context) is None:
         return None
 
     sql = f"""
@@ -285,7 +355,7 @@ def read_latest_compatible_snapshot_record(
     for row in rows:
         row_map = dict(row) if not isinstance(row, dict) else row
         record = _snapshot_record_from_row(row_map)
-        if record_matches_effective_branch_scope(record, expected_context):
+        if record_is_compatible_for_fallback(record, expected_context):
             return record
     return None
 

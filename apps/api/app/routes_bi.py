@@ -138,8 +138,9 @@ def _with_cached_response(
     """Snapshot cache keyed by effective filial scope (2º retorno de resolve_scope_filters).
 
     Empty authorized scope never reads/reuses snapshots. Compatible fallback
-    requires exact ``branch_ids`` equality in ``scope_context`` — ``id_filial IS
-    NULL`` alone is not proof of compatibility.
+    requires exact non-temporal ``scope_context`` identity (branches + business
+    filters + ``scope_v``); only ``dt_ini``/``dt_fim``/``dt_ref`` may differ.
+    ``id_filial IS NULL`` alone is not proof of compatibility.
     """
     context = _build_snapshot_context(dt_ini, dt_fim, dt_ref, branch_scope, extra_context)
     scope_signature = snapshot_cache.build_scope_signature(context)
@@ -163,9 +164,9 @@ def _with_cached_response(
             )
             return None
         if record and record.get("scope_context") is not None:
-            if not snapshot_cache.record_matches_effective_branch_scope(record, context):
+            if not snapshot_cache.record_is_compatible_for_fallback(record, context):
                 logger.warning(
-                    "Rejected snapshot exact-hit with mismatched branch scope for %s tenant=%s",
+                    "Rejected snapshot exact-hit with incompatible scope_context for %s tenant=%s",
                     scope_key,
                     tenant_id,
                 )
@@ -456,11 +457,11 @@ def _with_cached_response(
         )
 
     compatible_record = safe_read_latest_compatible_snapshot_record() if protect_reads else None
-    if compatible_record is not None and not snapshot_cache.record_matches_effective_branch_scope(
+    if compatible_record is not None and not snapshot_cache.record_is_compatible_for_fallback(
         compatible_record, context
     ):
         logger.warning(
-            "Rejected compatible snapshot with mismatched branch scope for %s tenant=%s",
+            "Rejected compatible snapshot with incompatible scope_context for %s tenant=%s",
             scope_key,
             tenant_id,
         )
