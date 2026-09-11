@@ -227,9 +227,12 @@ class MartBuilder:
         self._consecutive_failures = 0
         self._max_consecutive_failures = 5
         self._backoff_seconds = 2.0
-        # Linhas confirmadas na mart por empresa no ciclo corrente ({mart: {empresa: rows}}).
-        # Preenchido pelos contadores pós-INSERT e consumido por _log_publications.
-        self._cycle_rows_by_empresa: dict[str, dict[int, int]] = {}
+        # Contagem pós-INSERT por mart no ciclo corrente.
+        # Valor: dict[int,int] = contagem válida (pode ser {} = zero linhas);
+        #        None = contagem indisponível (erro de telemetria).
+        # Mart ausente = contagem não tentada (ex.: caminho DW).
+        self._cycle_rows_by_empresa: dict[str, Optional[dict[int, int]]] = {}
+        self._cycle_count_errors: list[str] = []
 
     def _get_client(self) -> clickhouse_connect.driver.client.Client:
         from .config import settings as _settings
@@ -313,6 +316,7 @@ class MartBuilder:
         filiais = set(self.state.affected_filiais)
         retry_marts = set(self.state.retry_marts)
         self._cycle_rows_by_empresa = {}
+        self._cycle_count_errors = []
         cycle_error = False
 
         def step(mart_name: str, triggered: bool, fn: Any, *args: Any, **kwargs: Any) -> None:
@@ -411,7 +415,7 @@ class MartBuilder:
                         self._refresh_finance_overview_dw, client,
                     )
 
-                # Log publication — só marts sem erro, por empresa realmente publicada
+                # Log publication — só marts sem erro, com contagem válida ou escopo comprovado.
                 self._log_publications(
                     client,
                     results,
@@ -419,7 +423,11 @@ class MartBuilder:
                     empresas=empresas,
                     rows_by_empresa=self._cycle_rows_by_empresa,
                 )
-                self._update_source_freshness(client)
+                # source_freshness reflete CDC (cdc_table_state), não o log de mart.
+                # Só atualiza quando houve ao menos uma mart publicada sem erro —
+                # ciclo 100% falho não deve mover o ponteiro de frescor.
+                if any(r.error is None for r in results):
+                    self._update_source_freshness(client)
 
             finally:
                 client.close()
@@ -1238,16 +1246,26 @@ class MartBuilder:
     def _count_rows_by_empresa(self, client: Any, mart_table: str, where: str) -> int:
         """count() por empresa na mart após o INSERT.
 
-        Retorna o total e guarda a quebra em ``_cycle_rows_by_empresa`` para o log
-        de publicação atribuir a mart às empresas realmente publicadas.
+        Três estados distintos:
+        - contagem válida com linhas → ``_cycle_rows_by_empresa[mart] = {emp: n, ...}``
+        - contagem válida igual a zero → ``_cycle_rows_by_empresa[mart] = {}``
+        - contagem indisponível (erro) → ``_cycle_rows_by_empresa[mart] = None``
+
+        Falha de telemetria NÃO desfaz o INSERT e NÃO marca a mart como falha de
+        publicação; só impede atribuir empresas no log.
         """
         try:
             result = client.query(
                 f"SELECT id_empresa, count() FROM {self.mart_rt_db}.{mart_table} "
                 f"WHERE {where} GROUP BY id_empresa"
             )
-            by_empresa = {int(row[0]): int(row[1]) for row in (result.result_rows or [])}
-        except Exception:
+            by_empresa = {int(row[0]): int(row[1]) for row in (result.result_rows or []) if int(row[0]) > 0}
+        except Exception as e:
+            logger.warning(
+                f"Mart row count unavailable (telemetry): mart={mart_table} error={e}"
+            )
+            self._cycle_rows_by_empresa[mart_table] = None
+            self._cycle_count_errors.append(mart_table)
             return 0
         self._cycle_rows_by_empresa[mart_table] = by_empresa
         return sum(by_empresa.values())
@@ -1257,6 +1275,8 @@ class MartBuilder:
         client.command(sql, settings=self._query_settings)
         keys_str = ",".join(str(int(k)) for k in sorted(set(data_keys)) if int(k) > 0)
         if not keys_str:
+            # INSERT rodou sem filtro de data_key útil — contagem válida vazia.
+            self._cycle_rows_by_empresa[mart_table] = {}
             return 0
         where = f"data_key IN ({keys_str})"
         if id_empresa:
@@ -2687,17 +2707,22 @@ class MartBuilder:
         results: list[MartRefreshResult],
         id_empresa: int = 0,
         data_keys: Optional[list[int]] = None,
-        rows_by_empresa: Optional[dict[str, dict[int, int]]] = None,
+        rows_by_empresa: Optional[dict[str, Optional[dict[int, int]]]] = None,
         empresas: Optional[set[int]] = None,
     ) -> None:
         """Log successful publications to mart_publication_log with real values.
 
-        Só entram marts sem erro. A atribuição por empresa vem de
-        ``rows_by_empresa`` (contagem real pós-INSERT): um ciclo que publica duas
-        empresas gera uma linha por empresa, e uma mart que falhou não é
-        registrada. Sem essa quebra (backfill com empresa explícita, caminho DW
-        sem contagem), cai para ``id_empresa``/``empresas`` afetadas — nunca para
-        uma empresa arbitrária do conjunto.
+        Só entram marts sem erro de INSERT. Atribuição por empresa:
+
+        - Contagem válida com linhas → uma linha por empresa retornada.
+        - Contagem válida igual a zero → registra o escopo comprovado da operação
+          (``id_empresa`` explícito ou empresas do ciclo) com ``rows_written=0``.
+          Zero linhas ≠ falha.
+        - Contagem indisponível (``None``) → NÃO usa empresas afetadas como prova;
+          registra o erro de telemetria e omite a mart do log de publicação.
+          O INSERT bem-sucedido não é desfeito nem reexecutado.
+        - Contagem não tentada (mart ausente no mapa) → só registra se houver
+          ``id_empresa`` explícito (backfill); nunca inventa a partir do conjunto.
         """
         from datetime import date as _date
         successful = [r for r in results if r.error is None]
@@ -2729,33 +2754,61 @@ class MartBuilder:
 
         # Log é best-effort: erro aqui não invalida marts já publicadas.
         try:
-            by_mart = rows_by_empresa or {}
+            by_mart = rows_by_empresa if rows_by_empresa is not None else {}
             if id_empresa:
-                fallback_empresas = [int(id_empresa)]
+                proven_scope = [int(id_empresa)]
             else:
-                fallback_empresas = sorted({int(e) for e in (empresas or set()) if int(e) > 0})
+                proven_scope = sorted({int(e) for e in (empresas or set()) if int(e) > 0})
 
             rows = []
             for r in successful:
-                breakdown = {
-                    int(e): int(n)
-                    for e, n in (by_mart.get(r.mart_name) or {}).items()
-                    if int(e) > 0
-                }
+                if r.mart_name not in by_mart:
+                    # Contagem não tentada (ex.: DW): só com escopo explícito.
+                    if id_empresa > 0:
+                        rows.append([
+                            r.mart_name,
+                            int(id_empresa),
+                            window_start,
+                            window_end,
+                            r.rows_written or 0,
+                            r.duration_ms or 0,
+                        ])
+                    continue
+
+                breakdown = by_mart[r.mart_name]
+                if breakdown is None:
+                    # Contagem indisponível — telemetria falhou; não inventar empresas.
+                    logger.warning(
+                        f"Skipping mart_publication_log for {r.mart_name}: "
+                        f"row count unavailable (INSERT succeeded; not re-run)"
+                    )
+                    continue
+
                 if breakdown:
                     for empresa, mart_rows in sorted(breakdown.items()):
-                        rows.append([r.mart_name, empresa, window_start, window_end, mart_rows, r.duration_ms or 0])
+                        rows.append([
+                            r.mart_name,
+                            empresa,
+                            window_start,
+                            window_end,
+                            mart_rows,
+                            r.duration_ms or 0,
+                        ])
                     continue
-                # Sem contagem por empresa: só registra empresa real; rows_written
-                # apenas quando o escopo do ciclo é de uma única empresa.
-                single_scope = len(fallback_empresas) == 1
-                for empresa in fallback_empresas:
+
+                # Contagem válida = zero linhas: registra escopo comprovado, não infere falha.
+                if not proven_scope:
+                    logger.info(
+                        f"Publication empty with no proven empresa scope: mart={r.mart_name}"
+                    )
+                    continue
+                for empresa in proven_scope:
                     rows.append([
                         r.mart_name,
                         empresa,
                         window_start,
                         window_end,
-                        (r.rows_written or 0) if single_scope else 0,
+                        0,
                         r.duration_ms or 0,
                     ])
 

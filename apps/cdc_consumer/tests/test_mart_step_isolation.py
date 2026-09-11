@@ -16,6 +16,7 @@ Invariantes:
 
 from __future__ import annotations
 
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -324,7 +325,7 @@ class TestHappyPathUnchanged:
 
 
 class TestPublicationPerEmpresa:
-    """mart_publication_log: uma linha por (mart, empresa) realmente publicada."""
+    """mart_publication_log: contagem válida vs zero vs indisponível."""
 
     def _rows(self, client: MagicMock) -> list[list]:
         assert client.insert.called
@@ -369,7 +370,7 @@ class TestPublicationPerEmpresa:
         assert logged == {"sales_daily_rt"}
 
     def test_empresa_without_rows_in_mart_is_not_logged(self):
-        """Empresa afetada mas sem linha publicada na mart não vira sucesso."""
+        """Contagem válida com linhas: só empresas retornadas — não inventa a ausente."""
         builder = make_builder()
         client = MagicMock()
         results = [MartRefreshResult("sales_daily_rt", 12, 500)]
@@ -384,8 +385,74 @@ class TestPublicationPerEmpresa:
 
         assert [(r[0], r[1]) for r in self._rows(client)] == [("sales_daily_rt", 8)]
 
-    def test_no_arbitrary_empresa_from_set(self):
-        """Sem quebra por empresa, registra todas as afetadas — não uma arbitrária."""
+    def test_valid_empty_count_uses_proven_scope_two_empresas(self):
+        """Contagem válida = {} → registra escopo comprovado com rows_written=0."""
+        builder = make_builder()
+        client = MagicMock()
+        results = [MartRefreshResult("sales_daily_rt", 0, 500)]
+
+        builder._log_publications(
+            client,
+            results,
+            data_keys=[20260911],
+            empresas={1, 8},
+            rows_by_empresa={"sales_daily_rt": {}},
+        )
+
+        rows = self._rows(client)
+        assert sorted((r[1], r[4]) for r in rows) == [(1, 0), (8, 0)]
+
+    def test_count_unavailable_does_not_use_affected_empresas(self):
+        """Contagem None: não prova publicação com empresas afetadas."""
+        builder = make_builder()
+        client = MagicMock()
+        results = [MartRefreshResult("sales_daily_rt", 0, 500)]
+
+        with patch("torqmind_cdc_consumer.mart_builder.logger") as mock_logger:
+            builder._log_publications(
+                client,
+                results,
+                data_keys=[20260911],
+                empresas={1, 8},
+                rows_by_empresa={"sales_daily_rt": None},
+            )
+
+        assert not client.insert.called
+        assert any(
+            "row count unavailable" in str(c)
+            for c in mock_logger.warning.call_args_list
+        )
+
+    def test_count_unavailable_does_not_undo_successful_insert(self):
+        """Falha de telemetria não marca a mart como erro nem reexecuta INSERT."""
+        builder = make_builder()
+        client = MagicMock()
+        client.query.side_effect = RuntimeError("count failed")
+
+        total = builder._insert_and_count(client, "sales_daily_rt", "INSERT ...", [20260911])
+
+        assert total == 0
+        assert builder._cycle_rows_by_empresa["sales_daily_rt"] is None
+        assert client.command.called  # INSERT ocorreu
+        assert client.command.call_count == 1  # sem reexecução
+
+    def test_no_id_empresa_zero_and_no_insert_when_unattributable(self):
+        builder = make_builder()
+        client = MagicMock()
+        results = [MartRefreshResult("sales_daily_rt", 5, 500)]
+
+        builder._log_publications(
+            client,
+            results,
+            data_keys=[20260911],
+            empresas={0},
+            rows_by_empresa={},  # contagem não tentada + sem escopo
+        )
+
+        assert not client.insert.called
+
+    def test_missing_count_without_explicit_empresa_is_not_logged(self):
+        """Contagem não tentada + várias empresas afetadas ≠ prova de publicação."""
         builder = make_builder()
         client = MagicMock()
         results = [MartRefreshResult("sales_daily_rt", 0, 500)]
@@ -398,22 +465,25 @@ class TestPublicationPerEmpresa:
             rows_by_empresa={},
         )
 
-        assert sorted(r[1] for r in self._rows(client)) == [1, 8]
+        assert not client.insert.called
 
-    def test_no_id_empresa_zero_and_no_insert_when_unattributable(self):
+    def test_backfill_explicit_empresa_without_count_still_logs(self):
         builder = make_builder()
         client = MagicMock()
-        results = [MartRefreshResult("sales_daily_rt", 5, 500)]
+        results = [MartRefreshResult("sales_daily_rt", 50, 100)]
 
         builder._log_publications(
             client,
             results,
+            id_empresa=1,
             data_keys=[20260911],
-            empresas={0},
             rows_by_empresa={},
         )
 
-        assert not client.insert.called
+        rows = self._rows(client)
+        assert len(rows) == 1
+        assert rows[0][1] == 1
+        assert rows[0][4] == 50
 
     def test_refresh_cycle_does_not_use_next_iter_empresa(self):
         code = (
@@ -423,6 +493,56 @@ class TestPublicationPerEmpresa:
         body = code[idx : code.index("\n    def ", idx + 10)]
         assert "next(iter(self.state.affected_empresas)" not in body
         assert "rows_by_empresa=" in body
+
+    def test_freshness_not_updated_when_all_marts_fail(self):
+        """Ciclo 100% falho não move source_freshness (frescor falso)."""
+        builder = make_builder()
+        mark_batch(builder)
+        failing = {mart: RuntimeError(OOM_ERROR) for mart, _ in STG_CHAIN}
+        client = MagicMock()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(builder, "_get_client", return_value=client))
+            for name in SLIM_METHODS:
+                stack.enter_context(patch.object(builder, name))
+            for mart_name, method in STG_CHAIN:
+                stack.enter_context(
+                    patch.object(builder, method, side_effect=failing[mart_name])
+                )
+            freshness = stack.enter_context(patch.object(builder, "_update_source_freshness"))
+            stack.enter_context(patch.object(builder, "_log_publications"))
+            stack.enter_context(patch("torqmind_cdc_consumer.mart_builder.time.sleep"))
+            builder.refresh_if_needed()
+
+        freshness.assert_not_called()
+
+    def test_freshness_updated_when_at_least_one_mart_succeeds(self):
+        builder = make_builder()
+        mark_batch(builder)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(builder, "_get_client", return_value=MagicMock()))
+            for name in SLIM_METHODS:
+                stack.enter_context(patch.object(builder, name))
+            for mart_name, method in STG_CHAIN:
+                if mart_name == "mart_antifraude_eventos":
+                    stack.enter_context(
+                        patch.object(builder, method, side_effect=RuntimeError(OOM_ERROR))
+                    )
+                else:
+                    stack.enter_context(
+                        patch.object(
+                            builder,
+                            method,
+                            return_value=MartRefreshResult(mart_name, 7, 11),
+                        )
+                    )
+            freshness = stack.enter_context(patch.object(builder, "_update_source_freshness"))
+            stack.enter_context(patch.object(builder, "_log_publications"))
+            stack.enter_context(patch("torqmind_cdc_consumer.mart_builder.time.sleep"))
+            builder.refresh_if_needed()
+
+        freshness.assert_called_once()
 
 
 class TestRowsByEmpresaCounting:
@@ -441,13 +561,24 @@ class TestRowsByEmpresaCounting:
         assert "GROUP BY id_empresa" in query_sql
         assert "data_key IN (20260911)" in query_sql
 
-    def test_count_failure_does_not_break_refresh(self):
+    def test_valid_empty_count_is_empty_dict_not_none(self):
+        builder = make_builder()
+        client = MagicMock()
+        client.query.return_value = MagicMock(result_rows=[])
+
+        total = builder._insert_and_count(client, "sales_daily_rt", "INSERT ...", [20260911])
+
+        assert total == 0
+        assert builder._cycle_rows_by_empresa["sales_daily_rt"] == {}
+
+    def test_count_failure_marks_unavailable_not_empty(self):
         builder = make_builder()
         client = MagicMock()
         client.query.side_effect = RuntimeError("count failed")
 
         assert builder._insert_and_count(client, "sales_daily_rt", "INSERT ...", [20260911]) == 0
-        assert "sales_daily_rt" not in builder._cycle_rows_by_empresa
+        assert builder._cycle_rows_by_empresa["sales_daily_rt"] is None
+        assert "sales_daily_rt" in builder._cycle_count_errors
 
     def test_cycle_breakdown_is_reset_between_cycles(self):
         builder = make_builder()
@@ -457,6 +588,7 @@ class TestRowsByEmpresaCounting:
         run_cycle(builder)
 
         assert builder._cycle_rows_by_empresa == {}
+        assert builder._cycle_count_errors == []
 
 
 class TestWorkerLogging:
@@ -466,11 +598,242 @@ class TestWorkerLogging:
         main_code = (
             Path(__file__).parent.parent / "torqmind_cdc_consumer" / "main.py"
         ).read_text()
-        idx = main_code.index("results = self._mart_builder.refresh_if_needed()")
-        body = main_code[idx : idx + 1200]
-        assert 'if refreshed and not errors:' in body
-        assert 'marts_refreshed_partial' in body
-        assert 'retry_pending' in body
+        idx = main_code.index("def _log_refresh_results(")
+        body = main_code[idx : idx + 900]
+        assert "if refreshed and not errors:" in body
+        assert "marts_refreshed_partial" in body
+        assert "retry_pending" in body
+
+
+class TestMartRefreshWorkerRetry:
+    """Worker real: retenta pendência sem eventos novos, com backoff e shutdown."""
+
+    def _make_worker(self, builder, clock, **kwargs):
+        from torqmind_cdc_consumer.main import MartRefreshWorker
+
+        return MartRefreshWorker(
+            builder,
+            clock=clock,
+            retry_base_seconds=kwargs.get("retry_base_seconds", 10.0),
+            retry_max_seconds=kwargs.get("retry_max_seconds", 120.0),
+            poll_seconds=kwargs.get("poll_seconds", 1.0),
+        )
+
+    def test_failed_batch_retries_without_new_events_then_clears(self):
+        """Último lote falha → nenhum evento novo → nova tentativa → sucesso limpa."""
+        builder = make_builder()
+        clock = {"t": 1000.0}
+
+        def now():
+            return clock["t"]
+
+        worker = self._make_worker(builder, now, retry_base_seconds=10.0)
+        calls = {"n": 0}
+
+        def refresh():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Espelha refresh_if_needed após falha parcial: clear + retry_marts + keys.
+                builder.state.clear()
+                builder.state.retry_marts = {"mart_antifraude_eventos"}
+                builder.state.affected_data_keys = {20260911}
+                builder.state.affected_empresas = {1}
+                return [MartRefreshResult("mart_antifraude_eventos", error=OOM_ERROR)]
+            builder.state.clear()
+            builder.state.retry_marts = set()
+            return [MartRefreshResult("mart_antifraude_eventos", 3, 10)]
+
+        with patch.object(builder, "refresh_if_needed", side_effect=refresh):
+            worker.start()
+            try:
+                worker.mark_affected(1, 10, 20260911, "comprovantes")
+                worker.request_refresh()
+                # Espera o primeiro ciclo processar.
+                deadline = time.time() + 2.0
+                while calls["n"] < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert calls["n"] == 1
+                assert builder.state.retry_marts == {"mart_antifraude_eventos"}
+                assert worker._retry_streak == 1
+                assert worker._retry_not_before == 1010.0  # 1000 + 10s
+
+                # Sem eventos novos: antes do backoff, não retenta.
+                clock["t"] = 1005.0
+                worker.request_refresh()  # wake sem pending
+                time.sleep(0.05)
+                assert calls["n"] == 1
+
+                # Após o backoff: retenta sozinho.
+                clock["t"] = 1010.0
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while calls["n"] < 2 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert calls["n"] == 2
+                assert builder.state.retry_marts == set()
+                assert worker._retry_streak == 0
+            finally:
+                worker.stop()
+
+    def test_persistent_failure_backs_off_without_aggressive_loop(self):
+        builder = make_builder()
+        clock = {"t": 0.0}
+
+        def now():
+            return clock["t"]
+
+        worker = self._make_worker(
+            builder, now, retry_base_seconds=10.0, retry_max_seconds=40.0, poll_seconds=0.05
+        )
+
+        def refresh():
+            builder.state.clear()
+            builder.state.retry_marts = {"mart_antifraude_eventos"}
+            builder.state.affected_data_keys = {20260911}
+            return [MartRefreshResult("mart_antifraude_eventos", error=OOM_ERROR)]
+
+        with patch.object(builder, "refresh_if_needed", side_effect=refresh) as mock_refresh:
+            worker.start()
+            try:
+                worker.mark_affected(1, 10, 20260911, "comprovantes")
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while mock_refresh.call_count < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert mock_refresh.call_count == 1
+                assert worker._retry_not_before == 10.0
+
+                # Avança só 5s — ainda dentro do backoff.
+                clock["t"] = 5.0
+                for _ in range(5):
+                    worker.request_refresh()
+                    time.sleep(0.02)
+                assert mock_refresh.call_count == 1
+
+                # Segunda tentativa após 10s; streak sobe e delay dobra.
+                clock["t"] = 10.0
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while mock_refresh.call_count < 2 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert mock_refresh.call_count == 2
+                assert worker._retry_streak == 2
+                assert worker._retry_not_before == 30.0  # 10 + 20
+
+                # Terceira só após o novo backoff — sem loop a cada poll.
+                clock["t"] = 20.0
+                worker.request_refresh()
+                time.sleep(0.05)
+                assert mock_refresh.call_count == 2
+            finally:
+                worker.stop()
+
+    def test_new_events_bypass_retry_backoff(self):
+        """Chegada de eventos novos não espera o backoff de retry."""
+        builder = make_builder()
+        clock = {"t": 0.0}
+
+        def now():
+            return clock["t"]
+
+        worker = self._make_worker(
+            builder, now, retry_base_seconds=60.0, retry_max_seconds=120.0
+        )
+        calls = []
+
+        def refresh():
+            calls.append(clock["t"])
+            builder.state.clear()
+            builder.state.retry_marts = {"mart_antifraude_eventos"}
+            builder.state.affected_data_keys = {20260911}
+            return [MartRefreshResult("mart_antifraude_eventos", error=OOM_ERROR)]
+
+        with patch.object(builder, "refresh_if_needed", side_effect=refresh):
+            worker.start()
+            try:
+                worker.mark_affected(1, 10, 20260911, "comprovantes")
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while len(calls) < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert calls == [0.0]
+                assert worker._retry_not_before == 60.0
+
+                # Novo evento bem antes do backoff — ciclo imediato.
+                clock["t"] = 5.0
+                worker.mark_affected(1, 10, 20260911, "comprovantes")
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while len(calls) < 2 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert calls == [0.0, 5.0]
+            finally:
+                worker.stop()
+
+    def test_shutdown_exits_with_retained_retry_pending(self):
+        builder = make_builder()
+        clock = {"t": 0.0}
+
+        def now():
+            return clock["t"]
+
+        worker = self._make_worker(builder, now, retry_base_seconds=60.0)
+
+        def refresh():
+            builder.state.clear()
+            builder.state.retry_marts = {"mart_antifraude_eventos"}
+            builder.state.affected_data_keys = {20260911}
+            return [MartRefreshResult("mart_antifraude_eventos", error=OOM_ERROR)]
+
+        with patch.object(builder, "refresh_if_needed", side_effect=refresh):
+            worker.start()
+            worker.mark_affected(1, 10, 20260911, "comprovantes")
+            worker.request_refresh()
+            deadline = time.time() + 2.0
+            while worker._retry_streak < 1 and time.time() < deadline:
+                time.sleep(0.01)
+            assert builder.state.retry_marts == {"mart_antifraude_eventos"}
+
+            t0 = time.time()
+            worker.stop()
+            assert time.time() - t0 < 2.0
+            assert not worker._thread.is_alive()
+
+    def test_healthy_cycle_has_no_retry_interval(self):
+        builder = make_builder()
+        clock = {"t": 0.0}
+
+        def now():
+            return clock["t"]
+
+        worker = self._make_worker(builder, now, retry_base_seconds=60.0)
+
+        def refresh():
+            builder.state.clear()
+            builder.state.retry_marts = set()
+            return [MartRefreshResult("sales_daily_rt", 1, 5)]
+
+        with patch.object(builder, "refresh_if_needed", side_effect=refresh) as mock_refresh:
+            worker.start()
+            try:
+                worker.mark_affected(1, 10, 20260911, "comprovantes")
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while mock_refresh.call_count < 1 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert worker._retry_streak == 0
+                assert worker._retry_not_before == 0.0
+
+                clock["t"] = 0.5
+                worker.mark_affected(1, 10, 20260912, "comprovantes")
+                worker.request_refresh()
+                deadline = time.time() + 2.0
+                while mock_refresh.call_count < 2 and time.time() < deadline:
+                    time.sleep(0.01)
+                assert mock_refresh.call_count == 2
+                assert worker._retry_streak == 0
+            finally:
+                worker.stop()
 
 
 if __name__ == "__main__":  # pragma: no cover
