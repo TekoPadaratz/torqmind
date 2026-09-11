@@ -50,7 +50,7 @@ def investigate_finance_portfolio(
             f"""
             SELECT
               count() AS n_titulos,
-              sum(valor_aberto) AS valor_aberto,
+              sum(valor_aberto) AS total_aberto,
               sumIf(valor_aberto, status = 'vencido') AS vencido,
               sumIf(valor_aberto, status = 'a_vencer') AS a_vencer,
               sumIf(valor_aberto, tipo_titulo = 1) AS receber_aberto,
@@ -69,7 +69,7 @@ def investigate_finance_portfolio(
             f"""
             SELECT
               id_filial,
-              sum(valor_aberto) AS valor_aberto,
+              sum(valor_aberto) AS total_aberto,
               count() AS n_titulos,
               sumIf(valor_aberto, status = 'vencido') AS vencido
             FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
@@ -78,7 +78,7 @@ def investigate_finance_portfolio(
               {branch_clause}
               {tipo_filter}
             GROUP BY id_filial
-            ORDER BY valor_aberto DESC
+            ORDER BY total_aberto DESC
             LIMIT {{lim:Int32}}
             """,
             parameters={**params, "lim": TOP_N},
@@ -87,7 +87,7 @@ def investigate_finance_portfolio(
             f"""
             SELECT
               status,
-              sum(valor_aberto) AS valor_aberto,
+              sum(valor_aberto) AS total_aberto,
               count() AS n_titulos
             FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
             WHERE id_empresa = {{id_empresa:Int32}}
@@ -95,7 +95,7 @@ def investigate_finance_portfolio(
               {branch_clause}
               {tipo_filter}
             GROUP BY status
-            ORDER BY valor_aberto DESC
+            ORDER BY total_aberto DESC
             """,
             parameters=params,
         )
@@ -144,14 +144,14 @@ def investigate_finance_portfolio(
             },
         }
 
-    aberto = _as_float(tot.get("valor_aberto"))
+    aberto = _as_float(tot.get("total_aberto"))
     vencido = _as_float(tot.get("vencido"))
     receber = _as_float(tot.get("receber_aberto"))
     pagar = _as_float(tot.get("pagar_aberto"))
 
     factors: List[Dict[str, Any]] = []
     for row in by_filial:
-        val = _as_float(row.get("valor_aberto"))
+        val = _as_float(row.get("total_aberto"))
         share = round((val / aberto) * 100.0, 1) if aberto >= 0.01 else None
         factors.append(
             {
@@ -182,9 +182,9 @@ def investigate_finance_portfolio(
                 "kind": "contribution",
                 "dimension": "status",
                 "label": str(r.get("status") or "—"),
-                "delta": _as_float(r.get("valor_aberto")),
+                "delta": _as_float(r.get("total_aberto")),
                 "summary": (
-                    f"{r.get('status')}: R$ {_as_float(r.get('valor_aberto')):,.2f} "
+                    f"{r.get('status')}: R$ {_as_float(r.get('total_aberto')):,.2f} "
                     f"({int(r.get('n_titulos') or 0)} títulos)"
                 ),
                 "causality": "not_proven",

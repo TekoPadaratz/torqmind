@@ -71,7 +71,7 @@ def test_finance_snapshot_ok():
     totals = [
         {
             "n_titulos": 10,
-            "valor_aberto": 1000.0,
+            "total_aberto": 1000.0,
             "vencido": 400.0,
             "a_vencer": 600.0,
             "receber_aberto": 700.0,
@@ -80,8 +80,8 @@ def test_finance_snapshot_ok():
             "last_updated": None,
         }
     ]
-    by_filial = [{"id_filial": 1, "valor_aberto": 700.0, "n_titulos": 7, "vencido": 300.0}]
-    by_status = [{"status": "vencido", "valor_aberto": 400.0, "n_titulos": 4}]
+    by_filial = [{"id_filial": 1, "total_aberto": 700.0, "n_titulos": 7, "vencido": 300.0}]
+    by_status = [{"status": "vencido", "total_aberto": 400.0, "n_titulos": 4}]
     titles = [
         {
             "id_filial": 1,
