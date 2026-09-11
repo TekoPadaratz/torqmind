@@ -815,6 +815,8 @@ class EtlOrchestrationTest(unittest.TestCase):
 
         def _logged_step_side_effect(_conn, _tenant_id, step_name, **_kwargs):
             step_order.append(step_name)
+            if step_name == "finance_titles_publish":
+                return 1, 10
             return manual_counts[step_name], manual_counts[step_name] * 10
 
         mock_step_skip_meta.return_value = None
@@ -827,7 +829,13 @@ class EtlOrchestrationTest(unittest.TestCase):
             date(2026, 3, 23),
         )
 
-        self.assertEqual(step_order, [name for name, _query in etl_orchestrator.PHASE_SQL_STEPS] + ["risk_events"])
+        expected = []
+        for name, _query in etl_orchestrator.PHASE_SQL_STEPS:
+            expected.append(name)
+            if name == "fact_financeiro":
+                expected.append("finance_titles_publish")
+        expected.append("risk_events")
+        self.assertEqual(step_order, expected)
         for step_name, expected_rows in manual_counts.items():
             self.assertEqual(result["meta"][step_name], expected_rows)
         self.assertTrue(result["meta"]["refresh_domains"]["sales"])
@@ -876,10 +884,14 @@ class EtlOrchestrationTest(unittest.TestCase):
             track=etl_orchestrator.TRACK_OPERATIONAL,
         )
 
-        self.assertEqual(
-            step_order,
-            [name for name, _query in etl_orchestrator.PHASE_SQL_STEPS if name != "fact_estoque_atual"],
-        )
+        expected = []
+        for name, _query in etl_orchestrator.PHASE_SQL_STEPS:
+            if name == "fact_estoque_atual":
+                continue
+            expected.append(name)
+            if name == "fact_financeiro":
+                expected.append("finance_titles_publish")
+        self.assertEqual(step_order, expected)
         self.assertEqual(result["meta"]["fact_estoque_atual"], 0)
         self.assertTrue(result["meta"]["fact_estoque_atual_skipped"])
         self.assertEqual(result["meta"]["fact_estoque_atual_skip_reason"], "function_not_installed")
@@ -919,7 +931,12 @@ class EtlOrchestrationTest(unittest.TestCase):
             track=etl_orchestrator.TRACK_OPERATIONAL,
         )
 
-        self.assertEqual(step_order, [name for name, _query in etl_orchestrator.PHASE_SQL_STEPS])
+        expected = []
+        for name, _query in etl_orchestrator.PHASE_SQL_STEPS:
+            expected.append(name)
+            if name == "fact_financeiro":
+                expected.append("finance_titles_publish")
+        self.assertEqual(step_order, expected)
         self.assertEqual(result["track"], etl_orchestrator.TRACK_OPERATIONAL)
         self.assertEqual(result["meta"]["track"], etl_orchestrator.TRACK_OPERATIONAL)
         self.assertTrue(result["meta"]["risk_events_skipped"])
