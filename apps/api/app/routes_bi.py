@@ -1296,6 +1296,45 @@ def sales_overview(
     ), claims)
 
 
+@router.get("/sales/investigate-variation")
+def sales_investigate_variation(
+    dt_ini: date,
+    dt_fim: date,
+    dt_ref: Optional[date] = Query(None, description="Reference date used as simulated 'today'"),
+    id_filial: Optional[int] = Query(None),
+    id_filiais: Optional[List[int]] = Query(None),
+    id_empresa: Optional[int] = Query(None, description="Only used by MASTER"),
+    claims=Depends(get_current_claims),
+    _screen=Depends(require_screen("sales")),
+):
+    """Investigação sob demanda: variação vs período anterior de mesma duração.
+
+    Não entra no carregamento obrigatório do overview. Somente leitura CH mart.
+    """
+    from app.permissions import can_access_screen
+
+    role = claims["role"]
+    tenant, filial, _branch_scope = resolve_scope_filters(
+        claims, id_empresa_q=id_empresa, id_filial_q=id_filial, id_filiais_q=id_filiais
+    )
+    as_of = resolve_business_date(dt_ref, tenant)
+
+    if not any(can_access_screen(claims, panel) for panel in _SALES_OVERVIEW_PANELS):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "screen_access_denied",
+                "message": "Sem permissão para investigar vendas.",
+                "screen_key": "sales",
+            },
+        )
+
+    payload = repos_mart.sales_variation_investigation(
+        role, tenant, filial, dt_ini, dt_fim, as_of=as_of
+    )
+    return redact_sensitive(payload, claims)
+
+
 @router.get("/sales/abc-curve")
 def sales_abc_curve(
     dt_ini: date,

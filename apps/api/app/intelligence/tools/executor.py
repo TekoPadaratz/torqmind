@@ -310,6 +310,41 @@ def _playbook_handler(playbook_id: str) -> Callable[..., Any]:
         )
         if not result:
             return {"status": "unsupported", "message": "Plano de ação não disponível."}
+
+        # Phase 3: enriquece queda de receita com decomposição quantitativa (sem LLM).
+        if playbook_id == "revenue_drop" and args.get("dt_ini") and args.get("dt_fim"):
+            try:
+                from datetime import date as _date
+
+                dt_ini = args["dt_ini"]
+                dt_fim = args["dt_fim"]
+                if isinstance(dt_ini, str):
+                    dt_ini = _date.fromisoformat(dt_ini[:10])
+                if isinstance(dt_fim, str):
+                    dt_fim = _date.fromisoformat(dt_fim[:10])
+                investigation = _call_analytics(
+                    "sales_variation_investigation",
+                    _role(claims),
+                    int(scope["id_empresa"]),
+                    scope.get("id_filial"),
+                    dt_ini,
+                    dt_fim,
+                )
+                result = dict(result)
+                result["investigation"] = investigation
+                if isinstance(investigation, dict) and investigation.get("headline"):
+                    result["diagnosis"] = investigation["headline"]
+                contrib = [
+                    f.get("summary")
+                    for f in (investigation.get("factors") or [])
+                    if f.get("kind") == "contribution" and f.get("summary")
+                ][:5]
+                if contrib:
+                    # Hipóteses do playbook permanecem rotuladas; contribuições vêm primeiro.
+                    result["observed_contributions"] = contrib
+            except Exception:
+                # Playbook estático continua válido se a mart falhar.
+                pass
         return result
 
     return _run

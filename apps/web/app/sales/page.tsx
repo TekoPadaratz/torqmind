@@ -18,6 +18,7 @@ import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SalesVariationInvestigate from "./SalesVariationInvestigate";
 import { buildUserLabel, formatCurrency } from "../lib/format";
 import { formatSalesQuantity } from "../lib/sales-quantity.mjs";
 import {
@@ -273,6 +274,9 @@ export default function SalesPage() {
           </div>
         ) : data ? (
           <>
+            <div style={{ marginTop: 12 }}>
+              <SalesVariationInvestigate scope={scope} enabled={canSeeOverview} />
+            </div>
             <div className="bi-grid" style={{ marginTop: 12 }}>
               {canSeeOverview ? (
                 <>

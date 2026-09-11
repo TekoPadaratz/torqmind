@@ -10,6 +10,24 @@ Branch de entrega: `codex/torqmind-intelligence-deterministic-ptbr-2026-08-27`
 | **TorqMind Intelligence** | **Atual** | Assistente determinístico (sem LLM) no produto |
 | **Jarvis** | **Atual (opcional)** | `/bi/jarvis/*` + `services/jarvis_ai.py` — OpenAI quando configurado, com fallback local |
 | Capacidades agentic futuras | **Planejado** | Não confundir com Intelligence/Jarvis atuais |
+| **Phase 3 (jornada investigativa)** | **Em evolução** | Dados confiáveis → investigação → evidências → recomendação (somente leitura) |
+
+## Fechamento pré-Phase 3 (2026-09-11)
+
+Rodada de segurança/desempenho/gráficos/publicação financeira considerada **suficiente para avançar**. Pós-deploy `a97aa13`: `finance_titles_publish` publicou 57053 linhas e confirmou `covered_through` em `etl.watermark`; pendência posterior = novas chegadas STG (não exigir `pending=False` permanente). Pendências externas/otimizações residuais **não bloqueiam** Phase 3.
+
+> `PHASE3_*.md` / `README_PHASE3_START_HERE.md` na raiz tratam de entrega histórica de **marts ClickHouse** — não são a lei da Phase 3 investigativa atual.
+
+## Phase 3 — primeira jornada entregue
+
+**Investigar variação de vendas** (somente leitura):
+
+- Entrada: tela `/sales` → “Investigar agora” (sob demanda; não no hot path do overview).
+- API: `GET /bi/sales/investigate-variation` (escopo reautorizado; marts `sales_daily_rt` / `sales_groups_rt` / `sales_hourly_rt`).
+- Compara o período selecionado ao período **imediatamente anterior de mesma duração**.
+- Decompõe contribuições (filial, grupo, hora) vs hipóteses do playbook `revenue_drop`.
+- Não atribui causa comprovada; período incompleto e ausência de dados são avisos honestos (não viram R$ 0).
+- Intelligence: `action.plan_revenue_drop` pode anexar `investigation` quantitativa quando houver `dt_ini`/`dt_fim` (sem LLM obrigatório).
 
 ## O que é
 

@@ -934,6 +934,29 @@ def sales_overview_bundle(
     }
 
 
+def sales_variation_investigation(
+    role: str,
+    id_empresa: int,
+    id_filial: Any,
+    dt_ini: date,
+    dt_fim: date,
+    as_of: Optional[date] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Phase 3 — jornada de investigação de variação de vendas (somente leitura)."""
+    from app.services.sales_variation_investigate import investigate_sales_variation
+
+    return investigate_sales_variation(
+        role,
+        id_empresa,
+        id_filial,
+        dt_ini,
+        dt_fim,
+        as_of=as_of,
+        **kwargs,
+    )
+
+
 def sales_by_hour(
     role: str,
     id_empresa: int,
@@ -7275,6 +7298,7 @@ REALTIME_FUNCTIONS = {
     "dashboard_series",
     "dashboard_home_bundle",
     "sales_overview_bundle",
+    "sales_variation_investigation",
     "sales_abc_curve",
     "sales_by_hour",
     "sales_top_products",
