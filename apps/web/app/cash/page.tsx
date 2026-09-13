@@ -1,18 +1,9 @@
 "use client";
 
 import { useMemo } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import AppNav from "../components/AppNav";
-import ChartTooltip from "../components/ui/ChartTooltip";
+import CategoryRankChart from "../components/ui/CategoryRankChart";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
@@ -133,8 +124,6 @@ export default function CashPage() {
   const { query: caixasQ, setQuery: setCaixasQ, filteredRows: filteredCaixas } = useGridSearch(
     openBoxes as Record<string, unknown>[],
   );
-  const paymentMixChartHeight = Math.max(280, paymentMix.length * 44);
-
   function formatNfeDateTime(item: any) {
     if (item?.data_emissao_nfe) return formatDateTime(item.data_emissao_nfe);
     if (item?.dt) {
@@ -201,45 +190,18 @@ export default function CashPage() {
                     detail="A distribuição por forma aparece quando existem recebimentos conciliados no período."
                   />
                 ) : null}
-                <div
-                  style={{
-                    maxHeight: 520,
-                    overflowY: paymentMix.length > 6 ? "auto" : "visible",
-                    paddingRight: paymentMix.length > 6 ? 6 : 0,
-                  }}
-                >
-                  <div className="chartWrap" style={{ height: paymentMixChartHeight }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={paymentMix} layout="vertical">
-                        <CartesianGrid
-                          stroke="rgba(255,255,255,0.08)"
-                          strokeDasharray="3 3"
-                        />
-                        <XAxis
-                          type="number"
-                          stroke="var(--muted)"
-                          tickFormatter={formatCurrency}
-                        />
-                        <YAxis
-                          dataKey="label"
-                          type="category"
-                          stroke="var(--muted)"
-                          width={220}
-                          tick={{ fontSize: 12 }}
-                          interval={0}
-                        />
-                        <Tooltip
-                          content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
-                        />
-                        <Bar
-                          dataKey="total_valor"
-                          fill="#818cf8"
-                          radius={[0, 6, 6, 0]}
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                <CategoryRankChart
+                  kind="category"
+                  barFill="#818cf8"
+                  axisWidth={168}
+                  rows={paymentMix.map((item: { label?: string; total_valor?: number }, index: number) => ({
+                    id: `${String(item.label || "forma")}:${index}`,
+                    name: String(item.label || "—"),
+                    value: Number(item.total_valor || 0),
+                  }))}
+                  axisFormatter={(value) => formatCurrency(value)}
+                  valueFormatter={(value) => formatCurrency(value)}
+                />
               </div>
 
               <div className="card col-12">

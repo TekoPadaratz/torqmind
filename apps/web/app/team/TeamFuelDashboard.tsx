@@ -1,19 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
+import CategoryRankChart from "../components/ui/CategoryRankChart";
 import EmptyState from "../components/ui/EmptyState";
 import { apiGet } from "../lib/api";
+import { honestPersonName } from "../lib/chart-labels.mjs";
 import { extractApiError } from "../lib/errors";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 
@@ -62,12 +54,6 @@ function fmtLitros(value: number): string {
     return `${(n / 1_000).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} Mil`;
   }
   return n.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
-}
-
-function truncateLabel(label: string, max = 28): string {
-  const t = String(label || "").trim();
-  if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
 }
 
 type Props = {
@@ -181,16 +167,19 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
           filial.ranking.reduce((acc, r) => acc + Number(r.qtd_abastecimentos || 0), 0);
         const selectedNome =
           selectedId != null
-            ? filial.ranking.find((r) => r.id_funcionario === selectedId)?.nome
+            ? honestPersonName(
+                filial.ranking.find((r) => r.id_funcionario === selectedId)?.nome,
+                `Funcionário #${selectedId}`,
+              )
             : null;
         const mix = empDetail?.combustiveis ?? filial.combustiveis ?? [];
         const rankingChart = filial.ranking.map((r) => ({
-          ...r,
-          label: truncateLabel(r.nome, 22),
+          id: r.id_funcionario,
+          name: honestPersonName(r.nome, `Funcionário #${r.id_funcionario}`),
+          value: Number(r.litros || 0),
           selected: selectedId === r.id_funcionario,
-          qtd: Number(r.qtd_abastecimentos || 0),
+          detail: `${Number(r.qtd_abastecimentos || 0).toLocaleString("pt-BR")} abast.`,
         }));
-        const chartHeight = Math.max(280, Math.min(520, rankingChart.length * 36));
 
         return (
           <section
@@ -254,66 +243,22 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
                 <div className="muted" style={{ marginTop: 6 }}>
                   Clique em um funcionário para filtrar o mix de combustíveis.
                 </div>
-                <div className="chartWrap" style={{ height: chartHeight }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={rankingChart}
-                      layout="vertical"
-                      margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-                    >
-                      <CartesianGrid stroke="rgba(255,255,255,0.08)" strokeDasharray="3 3" />
-                      <XAxis
-                        type="number"
-                        stroke="var(--muted)"
-                        tickFormatter={(v) => fmtLitros(Number(v))}
-                      />
-                      <YAxis
-                        type="category"
-                        dataKey="label"
-                        stroke="var(--muted)"
-                        width={140}
-                        tick={{ fontSize: 12 }}
-                        interval={0}
-                      />
-                      <Tooltip
-                        formatter={(value: number, _name, item) => {
-                          const qtd = Number((item?.payload as RankingRow)?.qtd_abastecimentos || 0);
-                          return [
-                            `${fmtLitros(value)} L · ${qtd.toLocaleString("pt-BR")} abast.`,
-                            "Volume",
-                          ];
-                        }}
-                        labelFormatter={(_, payload) =>
-                          String((payload?.[0]?.payload as RankingRow)?.nome || "")
-                        }
-                      />
-                      <Bar
-                        dataKey="litros"
-                        radius={[0, 6, 6, 0]}
-                        cursor="pointer"
-                        onClick={(bar) => {
-                          const id = Number(
-                            (bar as { payload?: RankingRow })?.payload?.id_funcionario || 0,
-                          );
-                          if (id > 0) {
-                            setSelectedByFilial((prev) => ({
-                              ...prev,
-                              [filial.id_filial]:
-                                prev[filial.id_filial] === id ? null : id,
-                            }));
-                          }
-                        }}
-                      >
-                        {rankingChart.map((entry) => (
-                          <Cell
-                            key={entry.id_funcionario}
-                            fill={entry.selected ? BAR_SELECTED : BAR_FILL}
-                          />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
+                <CategoryRankChart
+                  kind="person"
+                  rows={rankingChart}
+                  barFill={BAR_FILL}
+                  selectedFill={BAR_SELECTED}
+                  axisFormatter={(value) => fmtLitros(value)}
+                  valueFormatter={(value) => `${fmtLitros(value)} L`}
+                  onSelect={(id) => {
+                    const next = Number(id);
+                    if (!(next > 0)) return;
+                    setSelectedByFilial((prev) => ({
+                      ...prev,
+                      [filial.id_filial]: prev[filial.id_filial] === next ? null : next,
+                    }));
+                  }}
+                />
               </div>
 
               <div className="card col-12" style={{ margin: 0 }}>

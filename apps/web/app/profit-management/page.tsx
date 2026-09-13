@@ -1,18 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 import AppNav from "../components/AppNav";
+import CategoryRankChart from "../components/ui/CategoryRankChart";
 import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
@@ -253,6 +244,7 @@ export default function ProfitManagementPage() {
     return expenses.categorias
       .filter((c: any) => c.valor > 0)
       .map((c: any) => ({
+        id: String(c.classificacao || c.nome || ""),
         name: CLASSIFICATION_LABELS[c.classificacao] || c.classificacao,
         value: c.valor,
         fill: CLASSIFICATION_COLORS[c.classificacao] || "#94a3b8",
@@ -496,21 +488,13 @@ export default function ProfitManagementPage() {
             {expenseChartData.length > 0 && (
               <div className="card" style={{ marginTop: 16 }}>
                 <div className="sectionEyebrow">Peso das Despesas por Classificação</div>
-                <div style={{ height: 240, marginTop: 8 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={expenseChartData} layout="vertical" margin={{ left: 90 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                      <XAxis type="number" tickFormatter={(v) => formatCurrency(v)} />
-                      <YAxis type="category" dataKey="name" width={90} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v: number) => formatCurrency(v)} />
-                      <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                        {expenseChartData.map((entry: any, idx: number) => (
-                          <Cell key={idx} fill={entry.fill} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
+                <CategoryRankChart
+                  kind="category"
+                  axisWidth={160}
+                  rows={expenseChartData}
+                  axisFormatter={(value) => formatCurrency(value)}
+                  valueFormatter={(value) => formatCurrency(value)}
+                />
                 <div className="calcFootnote">
                   As despesas foram distribuídas conforme vencimento como competência. A baixa é informativa.
                 </div>

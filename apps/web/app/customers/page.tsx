@@ -12,6 +12,7 @@ import {
 } from "recharts";
 
 import AppNav from "../components/AppNav";
+import CategoryRankChart from "../components/ui/CategoryRankChart";
 import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
 import GridPager from "../components/ui/GridPager";
@@ -101,8 +102,9 @@ export default function CustomersPage() {
   const topChart = useMemo(
     () =>
       (data?.top_customers || []).slice(0, 10).map((c: any) => ({
-        cliente: c.cliente_nome || `#ID ${c.id_cliente}`,
-        faturamento: Number(c.faturamento || 0),
+        id: Number(c.id_cliente || 0),
+        name: String(c.cliente_nome || "").trim() || `Cliente #${c.id_cliente}`,
+        value: Number(c.faturamento || 0),
       })),
     [data],
   );
@@ -885,30 +887,14 @@ export default function CustomersPage() {
                     detail="A filial não trouxe clientes nomeados para este período."
                   />
                 ) : null}
-                <div className="chartWrap">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={topChart}>
-                      <CartesianGrid
-                        stroke="rgba(255,255,255,0.08)"
-                        strokeDasharray="3 3"
-                      />
-                      <XAxis dataKey="cliente" stroke="var(--muted)" />
-                      <YAxis
-                        stroke="var(--muted)"
-                        tickFormatter={formatCurrency}
-                        width={112}
-                      />
-                      <Tooltip
-                        content={<ChartTooltip valueFormatter={(value) => formatCurrency(value)} />}
-                      />
-                      <Bar
-                        dataKey="faturamento"
-                        fill="#818cf8"
-                        radius={[6, 6, 0, 0]}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
+                <CategoryRankChart
+                  kind="category"
+                  barFill="#818cf8"
+                  axisWidth={168}
+                  rows={topChart}
+                  axisFormatter={(value) => formatCurrency(value)}
+                  valueFormatter={(value) => formatCurrency(value)}
+                />
               </div>
 
               <div className="card col-5">

@@ -17,6 +17,7 @@ import PortalDropdown from "../components/ui/PortalDropdown";
 import ChartTooltip from "../components/ui/ChartTooltip";
 import GridPager, { useClientPager } from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import { ellipsizeLabel } from "../lib/chart-labels.mjs";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
@@ -483,11 +484,12 @@ export default function SalesAbcSection() {
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis
                 dataKey="nome_produto"
-                tick={{ fill: "var(--muted)", fontSize: 10 }}
-                angle={-45}
+                tick={{ fill: "var(--muted)", fontSize: 11 }}
+                tickFormatter={(value) => ellipsizeLabel(String(value), 16)}
+                angle={-35}
                 textAnchor="end"
                 interval={0}
-                height={80}
+                height={72}
               />
               <YAxis
                 yAxisId="val"
