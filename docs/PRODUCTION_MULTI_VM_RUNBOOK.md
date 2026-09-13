@@ -101,6 +101,10 @@ Only copy the file needed by that server. In production:
 - `CLICKHOUSE_HOST` in `prod.app.env` must be the Analytics private IP or private DNS.
 - `DATABASE_URL` must use the same remote PostgreSQL host.
 - `REALTIME_MARTS_FALLBACK=false` is required for production proof.
+- `WEB_PUBLIC_URL=https://www.torqmind.com.br` (links transacionais: recuperação de senha). Não usar o NAT legado.
+- `APP_CORS_ORIGINS` é allowlist explícita (sem wildcard / sem `APP_CORS_ORIGIN_REGEX` permissivo). Deve incluir `https://www.torqmind.com.br` e `https://torqmind.com.br`. Origens NAT/LAN (`http://redevr.ddns.me:14023`, `http://172.30.0.10`) podem permanecer até haver prova de que não há dependência.
+- Homologação usa `/etc/torqmind/homolog.app.env` com `WEB_PUBLIC_URL=https://hom.torqmind.com.br` e CORS só do Hom — nunca o domínio de Prod.
+- `deploy/scripts/prod-app-up.sh` e `tm_require_prod_runtime_env` recusam `WEB_PUBLIC_URL`/CORS de Prod fora desse contrato. Confirme as duas variáveis no env antes do recreate.
 
 ## One-Command Bootstrap
 

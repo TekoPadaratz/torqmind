@@ -26,9 +26,11 @@ cd /home/tm/apps/torqmind
 docker compose -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env build --no-cache api web
 docker compose -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env up -d --force-recreate api web nginx
 docker compose -f docker-compose.app.yml --env-file /etc/torqmind/prod.app.env ps
-curl -I http://redevr.ddns.me:14023
-curl -I http://redevr.ddns.me:14023/api/health
+curl -fsS http://127.0.0.1/api/health
+curl -fsS -o /dev/null -w '%{http_code}\n' https://www.torqmind.com.br
 ```
+
+Antes do recreate, conferir no env de Prod (sem commitar): `WEB_PUBLIC_URL=https://www.torqmind.com.br` e `APP_CORS_ORIGINS` com `https://www.torqmind.com.br` + `https://torqmind.com.br` (allowlist explícita, sem wildcard). Hom permanece em `https://hom.torqmind.com.br`.
 
 ## Deploy Analytics
 
@@ -42,7 +44,7 @@ ssh tm@172.30.0.9 'cd /home/tm/apps/torqmind && docker compose -f docker-compose
 
 ```bash
 cd /home/tm/apps/torqmind
-ENV_FILE=/etc/torqmind/prod.app.env PUBLIC_URL=http://redevr.ddns.me:14023 ./deploy/scripts/realtime-product-screen-smoke.sh
+ENV_FILE=/etc/torqmind/prod.app.env PUBLIC_URL=https://www.torqmind.com.br ./deploy/scripts/realtime-product-screen-smoke.sh
 ```
 
 Relatório: deploy executado, containers, health, smoke, pendências e handoff Git.

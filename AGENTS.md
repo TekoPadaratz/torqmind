@@ -57,6 +57,8 @@ Após `--force-recreate` de `api` ou `web`, nginx pode ficar com IP antigo dos u
 
 URLs canônicas: `https://www.torqmind.com.br` e `https://hom.torqmind.com.br`. `http://redevr.ddns.me:14023` é NAT legado de diagnóstico, não a URL de produto.
 
+`WEB_PUBLIC_URL` (links de e-mail, ex. recuperação de senha) e `APP_CORS_ORIGINS` (allowlist explícita, sem wildcard): Prod = `https://www.torqmind.com.br` + origens HTTPS `www` e apex; Hom = `https://hom.torqmind.com.br`. Conferir no env antes do recreate (`prod-app-up.sh` recusa Prod desalinhado). Não commitar `/etc/torqmind/*.env`.
+
 Checkout operacional: `/home/tm/torqmind`. Bind mounts ativos em `sql/migrations` e `deploy/nginx/*.conf` — hardening em worktree `/home/tm/worktrees/...`, nunca `git reset --hard` / `git clean -fdx` / force push.
 
 ## Agent / ingest (rede local e recreate da API)

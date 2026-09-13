@@ -15,7 +15,9 @@ Runbook curto para release em producao viva no Ubuntu 24.04 com Docker Compose.
   - `CHANNEL_BOOTSTRAP_EMAIL`
   - `CHANNEL_BOOTSTRAP_PASSWORD`
 - confirmar `INGEST_REQUIRE_KEY=true`
-- deixar `APP_CORS_ORIGINS` e `APP_CORS_ORIGIN_REGEX` vazios se web+api estiverem no mesmo dominio/nginx
+- `WEB_PUBLIC_URL=https://www.torqmind.com.br` em Prod (Hom: `https://hom.torqmind.com.br`); não usar NAT legado
+- `APP_CORS_ORIGINS` allowlist explícita com HTTPS oficiais (`www` + apex em Prod); sem wildcard; `APP_CORS_ORIGIN_REGEX` vazio
+- não remover origens NAT/LAN da allowlist sem verificar dependências (agent, TV, diagnóstico)
 - validar branch/tag da release e registrar hash do commit
 - confirmar se existe janela segura para um smoke com `RUN_ETL=1`
 

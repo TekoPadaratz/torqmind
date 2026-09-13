@@ -79,6 +79,21 @@ class MultiVmDeployContractTest(unittest.TestCase):
         ):
             self.assertIn(f"{key}=", source)
 
+    def test_prod_app_env_example_has_canonical_public_url_and_cors(self) -> None:
+        source = read("deploy/env/prod.app.env.example")
+        self.assertIn("WEB_PUBLIC_URL=https://www.torqmind.com.br", source)
+        self.assertIn("https://www.torqmind.com.br", source)
+        self.assertIn("https://torqmind.com.br", source)
+        self.assertIn("http://redevr.ddns.me:14023", source)
+        self.assertIn("http://172.30.0.10", source)
+        self.assertNotIn("WEB_PUBLIC_URL=http://redevr.ddns.me", source)
+        env_lib = read("deploy/scripts/lib/prod-env.sh")
+        self.assertIn("tm_require_prod_public_urls", env_lib)
+        self.assertIn("https://www.torqmind.com.br", env_lib)
+        up = read("deploy/scripts/prod-app-up.sh")
+        self.assertIn("WEB_PUBLIC_URL", up)
+        self.assertIn("https://www.torqmind.com.br", up)
+
     def test_multivm_scripts_support_dry_run_and_validate_ssh(self) -> None:
         script_dir = repo_root() / "deploy" / "scripts"
         scripts = sorted(script_dir.glob("prod-multivm-*.sh"))

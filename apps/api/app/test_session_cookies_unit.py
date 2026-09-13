@@ -117,3 +117,17 @@ def test_attach_login_sets_csrf(monkeypatch):
     token = sc.attach_login_cookies(response, access_token="access-jwt")
     assert token
     assert response.set_cookie.called
+
+
+def test_allowed_origins_includes_cors_and_web_public_url(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "app_cors_origins",
+        "http://redevr.ddns.me:14023,http://172.30.0.10,https://www.torqmind.com.br,https://torqmind.com.br",
+    )
+    monkeypatch.setattr(settings, "web_public_url", "https://www.torqmind.com.br")
+    origins = sc.allowed_origins()
+    assert "https://www.torqmind.com.br" in origins
+    assert "https://torqmind.com.br" in origins
+    assert "http://redevr.ddns.me:14023" in origins
+    assert "http://172.30.0.10" in origins

@@ -808,8 +808,9 @@ O frontend não deve montar host/porta da API no browser. A estratégia canônic
 
 - `NEXT_PUBLIC_API_BASE_URL`: base pública usada no browser. O valor correto é sempre `/api`.
 - `API_INTERNAL_URL`: URL interna usada pelo container do Next.js em chamadas server-side. Em Docker, o default correto é `http://api:8000`.
-- `APP_CORS_ORIGINS`: origens explícitas permitidas. Em produção atrás do mesmo nginx, deixe vazio e não use localhost.
-- `APP_CORS_ORIGIN_REGEX`: use apenas se realmente houver origem separada; não mantenha wildcard permissivo por inércia.
+- `APP_CORS_ORIGINS`: origens explícitas permitidas (sem wildcard). Em Prod inclua `https://www.torqmind.com.br` e `https://torqmind.com.br`; NAT/LAN legado só permanece se ainda houver dependência. Hom: `https://hom.torqmind.com.br`. Não use localhost em Prod.
+- `APP_CORS_ORIGIN_REGEX`: deixe vazio; não use wildcard permissivo.
+- `WEB_PUBLIC_URL`: base dos links transacionais (recuperação de senha). Prod `https://www.torqmind.com.br`; Hom `https://hom.torqmind.com.br`. Não use o NAT legado.
 
 Regra obrigatória:
 - browser usa somente `/api`

@@ -55,6 +55,16 @@ Xpert → Agent 2.0.4 → API ingest → PG STG
 - `/etc/torqmind/prod.pg.env`
 - `/etc/torqmind/prod.analytics.env`
 - `/etc/torqmind/cluster.env`
+- `/etc/torqmind/homolog.app.env`
+
+URLs públicas (links transacionais + Origin). Sem wildcard. Segredos ficam só no env do host.
+
+| Ambiente | `WEB_PUBLIC_URL` | `APP_CORS_ORIGINS` (mínimo HTTPS) |
+|---|---|---|
+| Prod | `https://www.torqmind.com.br` | `https://www.torqmind.com.br`, `https://torqmind.com.br` |
+| Hom | `https://hom.torqmind.com.br` | `https://hom.torqmind.com.br` (+ localhost Hom se necessário) |
+
+Prod pode manter NAT/LAN legado (`http://redevr.ddns.me:14023`, `http://172.30.0.10`) na allowlist até haver prova de que não há dependência. Não remover sem verificar. Template: `deploy/env/prod.app.env.example`. Verificação no deploy: `deploy/scripts/lib/prod-env.sh` + `prod-app-up.sh`.
 
 ## Provas mínimas
 

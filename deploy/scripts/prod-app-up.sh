@@ -55,18 +55,25 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-docker exec torqmind-api python - <<'PY'
-import os, sys
+docker exec torqmind-api python -c '
+import os
 app_env = os.environ.get("APP_ENV")
 stack = os.environ.get("TORQMIND_STACK")
 url = os.environ.get("DATABASE_URL") or ""
-print(f"APP_ENV={app_env} TORQMIND_STACK={stack}")
-print(f"DATABASE_URL_db={url.rsplit('/',1)[-1].split('?',1)[0]}")
+web = (os.environ.get("WEB_PUBLIC_URL") or "").rstrip("/")
+origins = {item.strip() for item in (os.environ.get("APP_CORS_ORIGINS") or "").split(",") if item.strip()}
+db = url.rsplit("/", 1)[-1].split("?", 1)[0]
+print("APP_ENV=%s TORQMIND_STACK=%s" % (app_env, stack))
+print("DATABASE_URL_db=%s" % db)
+print("WEB_PUBLIC_URL=%s" % web)
 assert app_env == "prod", app_env
 assert stack == "prod", stack
 assert "homolog" not in url.lower(), url
+assert web == "https://www.torqmind.com.br", web
+assert "https://www.torqmind.com.br" in origins, sorted(origins)
+assert "https://torqmind.com.br" in origins, sorted(origins)
 print("GUARD_OK")
-PY
+'
 
 echo "=== Health ==="
 health_code="000"

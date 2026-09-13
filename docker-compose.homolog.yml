@@ -11,7 +11,8 @@
 #     -p torqmind-homolog up -d --force-recreate api web
 #
 # NUNCA aponta para a porta 80, containers de prod, ou o volume torqmind_branding
-# de produção.
+# de produção. WEB_PUBLIC_URL em homolog.app.env deve ser https://hom.torqmind.com.br
+# (não o domínio de Prod). APP_CORS_ORIGINS: allowlist explícita do Hom, sem wildcard.
 
 x-logging: &torqmind-logging
   driver: json-file

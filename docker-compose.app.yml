@@ -72,7 +72,8 @@ services:
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
       BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-America/Sao_Paulo}
       BUSINESS_TENANT_TIMEZONES: ${BUSINESS_TENANT_TIMEZONES:-}
-      # Password reset ("esqueci minha senha")
+      # Password reset ("esqueci minha senha"). Prod: https://www.torqmind.com.br
+      # (não usar NAT legado). Hom: https://hom.torqmind.com.br via homolog.app.env.
       WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:3000}
       PASSWORD_RESET_TOKEN_TTL_MINUTES: ${PASSWORD_RESET_TOKEN_TTL_MINUTES:-30}
       PASSWORD_RESET_LINK_PATH: ${PASSWORD_RESET_LINK_PATH:-/reset-password}

@@ -77,6 +77,33 @@ tm_warn_if_localhost_cors() {
   fi
 }
 
+# URLs públicas e CORS de produção. Hom usa homolog.app.env (https://hom.torqmind.com.br)
+# e nunca passa por este helper. Allowlist explícita — sem wildcard.
+# Origens NAT/LAN legadas podem permanecer até haver prova de que não há dependência.
+tm_require_prod_public_urls() {
+  local web="${WEB_PUBLIC_URL:-}"
+  web="${web%/}"
+  local origins="${APP_CORS_ORIGINS:-}"
+  local regex="${APP_CORS_ORIGIN_REGEX:-}"
+  local needed
+  local csv=",${origins},"
+
+  if [[ "$web" != "https://www.torqmind.com.br" ]]; then
+    echo "WEB_PUBLIC_URL deve ser https://www.torqmind.com.br (links transacionais; nao use NAT legado)." >&2
+    return 1
+  fi
+  if [[ -n "$regex" && "$regex" == *"*"* ]]; then
+    echo "APP_CORS_ORIGIN_REGEX nao pode usar wildcard. Use APP_CORS_ORIGINS com origens explicitas." >&2
+    return 1
+  fi
+  for needed in https://www.torqmind.com.br https://torqmind.com.br; do
+    if [[ "$csv" != *",${needed},"* ]]; then
+      echo "APP_CORS_ORIGINS precisa incluir ${needed} (allowlist HTTPS; nao use wildcard)." >&2
+      return 1
+    fi
+  done
+}
+
 tm_require_prod_runtime_env() {
   local env_file="$1"
   tm_load_env_file "$env_file" || return 1
@@ -105,6 +132,7 @@ tm_require_prod_runtime_env() {
     return 1
   fi
   tm_warn_if_localhost_cors
+  tm_require_prod_public_urls || return 1
 }
 
 # Compose canônico da App VM de produção (api/web/nginx).
