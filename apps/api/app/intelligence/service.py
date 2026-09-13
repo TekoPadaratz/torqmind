@@ -448,13 +448,7 @@ def process_message(
             request_id=request_id,
             answer_id=answer_id,
             conversation_context=update_after_turn(
-                ctx,
-                intent_id=None,
-                slots={},
-                period=None,
-                entities=[],
-                pending=None,
-                last_investigation={},
+                ctx, intent_id=None, slots={}, period=None, entities=[], pending=None
             ),
         )
         return result.to_dict()

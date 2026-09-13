@@ -177,6 +177,8 @@ def detect_followup_action(text: str, last: dict[str, Any] | None) -> Optional[s
         return "filter_tipo_pagar"
     if _FOLLOW_RESTRICT_FILIAL.search(text):
         return "restrict_filial"
+    if re.fullmatch(r"\s*(?:nessa filial\s+)?(?:vr|rede)\s*-?\s*\d{1,4}\s*", text, re.I):
+        return "restrict_filial"
     if _FOLLOW_PRIOR.search(text) and domain == "sales_variation":
         return "sales_shift_prior"
     if _FOLLOW_PRIOR.search(text) and domain == "finance_portfolio":
@@ -465,7 +467,7 @@ def answer_followup(
                 ),
                 "clarification_options": options,
                 "clarification_kind": "restrict_filial",
-                "follow_ups": [opt["label"] for opt in options[:4]],
+                "follow_ups": [],
                 "scope": {**(last.get("params") or {}), "tipo": tipo},
                 "totals": (last.get("summary") or {}).get("totals"),
             }

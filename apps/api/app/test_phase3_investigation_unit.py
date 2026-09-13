@@ -477,6 +477,7 @@ def test_process_message_finance_drill_filial_and_tipo(monkeypatch):
 def test_followup_requires_investigation_domain():
     last_fin = {"domain": "finance_portfolio", "params": {"tipo": 1}}
     assert detect_followup_action("Detalhe por filial da carteira", last_fin) == "drill_filial"
+    assert detect_followup_action("VR 01", last_fin) == "restrict_filial"
     assert detect_followup_action("Detalhe por filial", {}) is None
     assert detect_followup_action("dessa filial", None) is None
 
