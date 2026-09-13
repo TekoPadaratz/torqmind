@@ -101,9 +101,9 @@ export default function CustomersPage() {
 
   const topChart = useMemo(
     () =>
-      (data?.top_customers || []).slice(0, 10).map((c: any) => ({
-        id: Number(c.id_cliente || 0),
-        name: String(c.cliente_nome || "").trim() || `Cliente #${c.id_cliente}`,
+      (data?.top_customers || []).slice(0, 10).map((c: any, index: number) => ({
+        id: Number(c.id_cliente) > 0 ? `${c.id_cliente}:${index}` : `cliente:${index}`,
+        name: String(c.cliente_nome || "").trim() || `Cliente #${c.id_cliente || index + 1}`,
         value: Number(c.faturamento || 0),
       })),
     [data],

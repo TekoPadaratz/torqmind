@@ -90,16 +90,19 @@ export default function CategoryRankChart({
   const [hint, setHint] = useState<HoverHint | null>(null);
 
   const labeled = useMemo(() => {
-    const source = rows.map((row) => ({ id: row.id, name: row.name }));
+    const uniqueRows = rows.map((row, index) => {
+      const base = String(row.id ?? "").trim();
+      return { ...row, chartId: base ? `${base}#${index}` : `row#${index}` };
+    });
+    const source = uniqueRows.map((row) => ({ id: row.chartId, name: row.name }));
     const shorts =
       kind === "person" ? shortPersonLabels(source) : shortCategoryLabels(source, 22);
-    return rows.map((row) => {
-      const key = String(row.id);
+    return uniqueRows.map((row) => {
       const full = String(row.name || "").trim() || (kind === "person" ? "Nome não cadastrado" : "—");
-      const short = String(shorts.get(key) || ellipsizeLabel(full, kind === "person" ? 16 : 22));
+      const short = String(shorts.get(row.chartId) || ellipsizeLabel(full, kind === "person" ? 16 : 22));
       return {
         ...row,
-        rowKey: key,
+        rowKey: row.chartId,
         shortLabel: short,
         fullLabel: full,
       };
