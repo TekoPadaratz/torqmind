@@ -245,10 +245,22 @@ def answer_followup(
     return {"status": "unsupported", "message": "Acompanhamento não disponível para este contexto."}
 
 
+_EMPTY_INVESTIGATION_STATUSES = frozenset(
+    {"period_too_long", "no_data", "unavailable", "forbidden_scope", "validation_failed"}
+)
+
+
 def format_deterministic_answer(result: dict[str, Any]) -> str:
+    status = str(result.get("status") or "")
+    message = str(result.get("message") or "").strip()
+    if status in _EMPTY_INVESTIGATION_STATUSES:
+        return message or "Investigação indisponível."
+
     parts: list[str] = []
     if result.get("headline"):
         parts.append(str(result["headline"]))
+    elif message:
+        parts.append(message)
     cmp_ = result.get("comparison") or {}
     if cmp_.get("basis_label"):
         parts.append(f"Base: {cmp_['basis_label']}")

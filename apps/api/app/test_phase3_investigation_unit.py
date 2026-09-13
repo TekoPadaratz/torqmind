@@ -148,6 +148,17 @@ def test_ungrounded_llm_number_rejected():
     assert narr["reason"] == "ungrounded_number"
 
 
+def test_format_uses_message_for_empty_investigation_status():
+    text = format_deterministic_answer(
+        {
+            "status": "period_too_long",
+            "message": "Período máximo para investigação: 90 dias.",
+        }
+    )
+    assert text == "Período máximo para investigação: 90 dias."
+    assert "Valores calculados deterministicamente" not in text
+
+
 def test_prompt_injection_in_tool_content_ignored_by_format():
     text = format_deterministic_answer(
         {
