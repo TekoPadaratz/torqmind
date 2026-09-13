@@ -223,8 +223,8 @@ def _contribution_factors(
     return {
         "dimension": dimension,
         "note": (
-            f"Visão por {dimension}: decomposição alternativa da mesma variação total. "
-            "Não some com outras dimensões."
+            f"Por {dimension}: a mesma variação vista só por este ângulo. "
+            "Não some com filial, grupo ou hora."
         ),
         "items": factors,
         "truncated": bool(hidden),
@@ -478,8 +478,8 @@ def investigate_sales_variation(
         "totals": totals,
         "dimension_views": dimension_views,
         "additive_warning": (
-            "Filial, grupo e hora são visões alternativas da mesma variação. "
-            "Não some contribuições entre dimensões."
+            "Filial, grupo e hora mostram a mesma variação por ângulos diferentes. "
+            "Não some os três."
         ),
         "factors": factors,
         "hypotheses": [f for f in factors if f.get("kind") == "hypothesis"],

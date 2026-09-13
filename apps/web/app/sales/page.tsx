@@ -466,7 +466,7 @@ export default function SalesPage() {
               <>
               <div className="card col-6">
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline", justifyContent: "space-between" }}>
-                  <h2>Top grupos</h2>
+                  <h2>Principais grupos</h2>
                   <span className="muted" style={{ fontSize: 12 }}>clique para filtrar os produtos →</span>
                 </div>
                 {!loading && !(data?.top_groups || []).length ? (
@@ -535,7 +535,7 @@ export default function SalesPage() {
               </div>
 
               <div className="card col-6">
-                <h2>Top produtos{selectedGrupoIds.length ? ` · ${selectedGrupoIds.length} grupo(s)` : ""}</h2>
+                <h2>Principais produtos{selectedGrupoIds.length ? ` · ${selectedGrupoIds.length} grupo(s)` : ""}</h2>
                 <div style={{ margin: "8px 0" }}>
                   <GridSearchInput value={productsQ} onChange={setProductsQ} />
                 </div>

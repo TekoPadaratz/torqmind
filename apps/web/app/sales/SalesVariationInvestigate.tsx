@@ -236,10 +236,7 @@ function InvestigationBody({
           <h3 style={{ margin: "0 0 8px", fontSize: 14 }}>Próximas verificações</h3>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
             {data.next_checks!.map((c, idx) => (
-              <li key={`${c.title}-${idx}`}>
-                {c.title}
-                {c.screen ? <span className="muted"> → {c.screen}</span> : null}
-              </li>
+              <li key={`${c.title}-${idx}`}>{c.title}</li>
             ))}
           </ul>
         </section>
@@ -263,7 +260,7 @@ function InvestigationBody({
 
       {data.freshness?.last_updated ? (
         <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-          Atualizado em {data.freshness.last_updated}
+          Atualizado em {formatFreshness(data.freshness.last_updated)}
         </p>
       ) : null}
     </div>
@@ -328,6 +325,21 @@ function Kpi({ label, value, hint }: { label: string; value: string; hint?: stri
       ) : null}
     </div>
   );
+}
+
+function formatFreshness(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+    .format(parsed)
+    .replace(", ", " ");
 }
 
 function fmtMoney(value: number | null | undefined): string {

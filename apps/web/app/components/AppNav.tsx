@@ -1024,7 +1024,7 @@ export default function AppNav({
                       />
                       <div>
                         <strong>{branch.nome}</strong>
-                        <span>Escopo operacional disponível para esta empresa.</span>
+                        <span>Filial disponível para esta empresa.</span>
                       </div>
                     </label>
                   );

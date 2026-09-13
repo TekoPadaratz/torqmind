@@ -89,7 +89,7 @@ def _revenue_drop(ctx: dict[str, Any]) -> dict[str, Any]:
                 screen="/sales",
             ),
             _action(
-                "Checar top produtos e rupturas de estoque",
+                "Checar os produtos mais vendidos e rupturas de estoque",
                 owner="Comercial",
                 deadline="24h",
                 effort="baixo",
@@ -98,7 +98,7 @@ def _revenue_drop(ctx: dict[str, Any]) -> dict[str, Any]:
                 screen="/sales",
             ),
             _action(
-                "Validar cancelamentos e operadores outliers",
+                "Validar cancelamentos e operadores fora do padrão",
                 owner="Supervisor",
                 deadline="24h",
                 effort="médio",
@@ -122,7 +122,7 @@ def _delinquency(ctx: dict[str, Any]) -> dict[str, Any]:
         ],
         "actions": [
             _action(
-                "Listar top inadimplentes e acionar cobrança",
+                "Listar os maiores inadimplentes e acionar cobrança",
                 owner="Financeiro",
                 deadline="24h",
                 effort="médio",
