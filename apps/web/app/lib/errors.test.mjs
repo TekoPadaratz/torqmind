@@ -16,6 +16,13 @@ test('extractApiError lê detail.message de objeto FastAPI', () => {
   assert.equal(extractApiError(err, 'fallback'), 'Acesso negado à tela.');
 });
 
+test('extractApiError trata timeout como erro recuperável, não como zero', () => {
+  assert.equal(
+    extractApiError({ code: 'ECONNABORTED', message: 'timeout of 30000ms exceeded' }, 'fallback'),
+    'A consulta demorou demais. Tente de novo ou reduza o período e as filiais.',
+  );
+});
+
 test('coerceDisplayMessage evita objeto cru em JSX', () => {
   assert.equal(coerceDisplayMessage({ message: 'Sem vendas' }), 'Sem vendas');
   assert.equal(coerceDisplayMessage('ok'), 'ok');

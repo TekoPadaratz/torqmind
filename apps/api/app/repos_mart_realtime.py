@@ -4419,7 +4419,7 @@ def customers_rfm_snapshot(role: str, id_empresa: int, id_filial: Any, as_of: da
     return {"clientes_identificados": 0, "ativos_7d": 0, "em_risco_30d": 0, "faturamento_90d": 0.0}
 
 
-def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0, sort_by: str = "gravity") -> Dict[str, Any]:
+def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, as_of: date, *, limit: int = 0, offset: int = 0, sort_by: str = "gravity") -> Dict[str, Any]:
     """Delinquency overview served from the reconciled PostgreSQL mart.
 
     The previous ClickHouse-direct implementation produced two production bugs:
@@ -4440,7 +4440,7 @@ def customers_delinquency_overview(role: str, id_empresa: int, id_filial: Any, a
     Deduplication is therefore enforced at the mart grain, not in the frontend.
     """
     return _pg_customers_delinquency_overview(
-        role, id_empresa, id_filial, as_of, limit=limit, sort_by=sort_by
+        role, id_empresa, id_filial, as_of, limit=limit, offset=offset, sort_by=sort_by
     )
 
 

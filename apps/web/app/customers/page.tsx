@@ -22,6 +22,7 @@ import SortableTh from "../components/ui/SortableTh";
 import { compareGridRows } from "../lib/grid-sort";
 import { useRecordGrid } from "../lib/use-record-grid";
 import { apiGet } from "../lib/api";
+import { extractApiError } from "../lib/errors";
 import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
 import {
   buildModuleLoadingCopy,
@@ -77,19 +78,24 @@ export default function CustomersPage() {
   const [selectedFiliais, setSelectedFiliais] = useState<Set<number>>(new Set());
   const [precoFixoPage, setPrecoFixoPage] = useState(0);
   const [precoFixoLoading, setPrecoFixoLoading] = useState(false);
+  const [precoFixoError, setPrecoFixoError] = useState("");
   const [precoFixoData, setPrecoFixoData] = useState<any>(null);
   const [precoFixoExpanded, setPrecoFixoExpanded] = useState<string | null>(null);
   const [precoFixoDetail, setPrecoFixoDetail] = useState<any>(null);
   const [precoFixoDetailLoading, setPrecoFixoDetailLoading] = useState(false);
+  const [precoFixoDetailError, setPrecoFixoDetailError] = useState("");
   const [precoFixoDetailQ, setPrecoFixoDetailQ] = useState("");
+  const [precoFixoDetailPage, setPrecoFixoDetailPage] = useState(0);
   const [inativosDays, setInativosDays] = useState<15 | 30 | 60>(30);
   const [inativosLoading, setInativosLoading] = useState(false);
+  const [inativosError, setInativosError] = useState("");
   const [inativosData, setInativosData] = useState<any>(null);
-  const { claims, data, error, loading, pendingUnavailable } =
+  const { claims, data, error, loading, pendingUnavailable, retry } =
     useBiScopeData<any>({
       moduleKey: "customers_overview",
       scope,
       errorMessage: "Falha ao carregar clientes",
+      unavailableRetryAttempts: 1,
       buildRequestUrl: (currentScope) =>
         `/bi/customers/overview?${buildScopeParams(currentScope).toString()}`,
     });
@@ -191,28 +197,24 @@ export default function CustomersPage() {
     setPrecoFixoExpanded(null);
     setPrecoFixoDetail(null);
     setPrecoFixoDetailQ("");
+    setPrecoFixoDetailPage(0);
   }, [scope.dt_ini, scope.dt_fim, scope.id_empresa, scope.id_filial, scope.id_filiais]);
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       setPrecoFixoLoading(true);
+      setPrecoFixoError("");
       try {
         const params = buildScopeParams(scope);
         params.set("page", String(precoFixoPage));
         params.set("page_size", "30");
         const res = await apiGet(`/bi/customers/preco-fixo?${params.toString()}`);
         if (!cancelled) setPrecoFixoData(res);
-      } catch {
+      } catch (err) {
         if (!cancelled) {
-          setPrecoFixoData({
-            items: [],
-            total: 0,
-            page: 0,
-            page_size: 30,
-            total_pages: 0,
-            summary: { clientes: 0, desconto_total: 0 },
-          });
+          setPrecoFixoError(extractApiError(err, "Falha ao carregar preço fixo"));
+          setPrecoFixoData(null);
         }
       } finally {
         if (!cancelled) setPrecoFixoLoading(false);
@@ -228,13 +230,20 @@ export default function CustomersPage() {
     let cancelled = false;
     const load = async () => {
       setInativosLoading(true);
+      setInativosError("");
       try {
         const params = buildScopeParams(scope);
         params.set("days_without", String(inativosDays));
         const res = await apiGet(`/bi/customers/preco-fixo/inativos?${params.toString()}`);
-        if (!cancelled) setInativosData(res);
-      } catch {
-        if (!cancelled) setInativosData({ items: [], total: 0, days_without: inativosDays });
+        if (!cancelled) {
+          setInativosError("");
+          setInativosData(res);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setInativosError(extractApiError(err, "Falha ao carregar clientes sem abastecimento"));
+          setInativosData(null);
+        }
       } finally {
         if (!cancelled) setInativosLoading(false);
       }
@@ -245,32 +254,49 @@ export default function CustomersPage() {
     };
   }, [scope, inativosDays]);
 
-  const openPrecoFixoDetail = async (row: any) => {
+  const openPrecoFixoDetail = (row: any) => {
     const key = `${row.id_filial}-${row.id_entidade}`;
     if (precoFixoExpanded === key) {
       setPrecoFixoExpanded(null);
       setPrecoFixoDetail(null);
+      setPrecoFixoDetailPage(0);
       return;
     }
     setPrecoFixoExpanded(key);
-    setPrecoFixoDetailLoading(true);
     setPrecoFixoDetail(null);
     setPrecoFixoDetailQ("");
-    try {
-      const params = buildScopeParams(scope);
-      params.set("id_filial", String(row.id_filial));
-      params.set("id_entidade", String(row.id_entidade));
-      params.set("page", "0");
-      // Exceção: detalhe preço fixo page_size 200 — não cortar grupo/subtotal.
-      params.set("page_size", "200");
-      const res = await apiGet(`/bi/customers/preco-fixo/detail?${params.toString()}`);
-      setPrecoFixoDetail(res);
-    } catch {
-      setPrecoFixoDetail({ items: [], total: 0, summary: { desconto_total: 0 } });
-    } finally {
-      setPrecoFixoDetailLoading(false);
-    }
+    setPrecoFixoDetailPage(0);
   };
+
+  useEffect(() => {
+    if (!precoFixoExpanded) return;
+    const [idFilial, idEntidade] = precoFixoExpanded.split("-");
+    let cancelled = false;
+    const load = async () => {
+      setPrecoFixoDetailLoading(true);
+      setPrecoFixoDetailError("");
+      try {
+        const params = buildScopeParams(scope);
+        params.set("id_filial", String(idFilial));
+        params.set("id_entidade", String(idEntidade));
+        params.set("page", String(precoFixoDetailPage));
+        params.set("page_size", "30");
+        const res = await apiGet(`/bi/customers/preco-fixo/detail?${params.toString()}`);
+        if (!cancelled) setPrecoFixoDetail(res);
+      } catch (err) {
+        if (!cancelled) {
+          setPrecoFixoDetailError(extractApiError(err, "Falha ao carregar o detalhe de preço fixo"));
+          setPrecoFixoDetail(null);
+        }
+      } finally {
+        if (!cancelled) setPrecoFixoDetailLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [precoFixoExpanded, precoFixoDetailPage, scope]);
 
   const precoFixoItems = precoFixoData?.items || [];
   const { query: precoFixoSearch, setQuery: setPrecoFixoSearch, filteredRows: filteredPrecoFixo } =
@@ -342,15 +368,22 @@ export default function CustomersPage() {
     <div>
       <AppNav title="Análise de Clientes" userLabel={userLabel} />
       <div className="container">
-        {error ? <div className="card errorCard">{error}</div> : null}
-        {!data ? (
+        {error ? (
+          <div className="card errorCard" style={{ marginTop: 12 }}>
+            <div>{error}</div>
+            <button className="btn" type="button" onClick={retry} style={{ marginTop: 10 }}>
+              Tentar novamente
+            </button>
+          </div>
+        ) : !data ? (
           <div style={{ marginTop: 12 }}>
             <ScopeTransitionState
               mode={pendingUnavailable ? "unavailable" : "loading"}
               headline={transitionCopy.headline}
               detail={transitionCopy.detail}
               metrics={7}
-              panels={4}
+              panels={2}
+              onRetry={pendingUnavailable ? retry : undefined}
             />
           </div>
         ) : (
@@ -674,8 +707,21 @@ export default function CustomersPage() {
                   onResetOrder={delinquencyGrid.resetOrder}
                   isDefaultOrder={delinquencyGrid.isDefaultOrder}
                 />
+                {delinquency?.customers_capped ? (
+                  <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                    Lista limitada aos {Number(delinquency?.customers?.length || 0).toLocaleString("pt-BR")} clientes de maior gravidade
+                    {delinquency?.customers_total
+                      ? ` (total no filtro: ${Number(delinquency.customers_total).toLocaleString("pt-BR")})`
+                      : ""}
+                    . Os totais dos cartões usam o conjunto completo.
+                  </p>
+                ) : null}
               </div>
+            </div>
+          </>
+        )}
 
+        <div className="bi-grid" style={{ marginTop: 12 }}>
                             <div className="card col-12">
                 <div className="panelHead">
                   <div>
@@ -694,7 +740,11 @@ export default function CustomersPage() {
                   </div>
                   <GridSearchInput value={precoFixoSearch} onChange={setPrecoFixoSearch} />
                 </div>
-                {!precoFixoLoading && precoFixoItems.length === 0 ? (
+                {precoFixoError ? (
+                  <div className="card errorCard" style={{ marginTop: 12 }}>
+                    <div>{precoFixoError}</div>
+                  </div>
+                ) : !precoFixoLoading && precoFixoItems.length === 0 ? (
                   <EmptyState
                     title="Nenhum cliente com preço fixo no período."
                     detail="Quando houver vendas de combustível abaixo do preço da bomba para clientes cadastrados com valor fixo, o acumulado aparece aqui."
@@ -721,7 +771,7 @@ export default function CustomersPage() {
                             return (
                               <Fragment key={key}>
                                 <tr
-                                  onClick={() => void openPrecoFixoDetail(row)}
+                                  onClick={() => openPrecoFixoDetail(row)}
                                   style={{ cursor: "pointer" }}
                                   aria-expanded={open}
                                 >
@@ -736,10 +786,21 @@ export default function CustomersPage() {
                                     <td colSpan={5} style={{ padding: 12, background: "var(--surface-faint)" }}>
                                       {precoFixoDetailLoading ? (
                                         <div className="muted">Carregando detalhe…</div>
+                                      ) : precoFixoDetailError ? (
+                                        <div className="errorCard">{precoFixoDetailError}</div>
                                       ) : !(precoFixoDetail?.items || []).length ? (
                                         <div className="muted">Sem itens no período.</div>
                                       ) : (
                                         <div className="tableScroll">
+                                          <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
+                                            {row.filial_label || "Filial"} · {row.cliente_nome || "Cliente"}
+                                            {precoFixoDetail?.summary?.desconto_total != null
+                                              ? ` · desconto do período ${formatCurrency(precoFixoDetail.summary.desconto_total)}`
+                                              : ""}
+                                            {Number(precoFixoDetail?.total || 0) > 30
+                                              ? ` · ${Number(precoFixoDetail.total).toLocaleString("pt-BR")} itens no grupo`
+                                              : ""}
+                                          </div>
                                           <div style={{ marginBottom: 8 }}>
                                             <GridSearchInput
                                               value={precoFixoDetailQ}
@@ -800,6 +861,28 @@ export default function CustomersPage() {
                                               })}
                                             </tbody>
                                           </table>
+                                          <GridChrome
+                                            page={Number(precoFixoDetail?.page || 0) + 1}
+                                            totalPages={Math.max(1, Number(precoFixoDetail?.total_pages || 1))}
+                                            total={Number(precoFixoDetail?.total || 0)}
+                                            from={
+                                              Number(precoFixoDetail?.total || 0) === 0
+                                                ? 0
+                                                : Number(precoFixoDetail?.page || 0) * 30 + 1
+                                            }
+                                            to={Math.min(
+                                              (Number(precoFixoDetail?.page || 0) + 1) * 30,
+                                              Number(precoFixoDetail?.total || 0),
+                                            )}
+                                            onPrev={() => setPrecoFixoDetailPage((p) => Math.max(0, p - 1))}
+                                            onNext={() =>
+                                              setPrecoFixoDetailPage((p) =>
+                                                Math.min(p + 1, Math.max(0, Number(precoFixoDetail?.total_pages || 1) - 1)),
+                                              )
+                                            }
+                                            onResetOrder={() => undefined}
+                                            isDefaultOrder
+                                          />
                                         </div>
                                       )}
                                     </td>
@@ -854,7 +937,11 @@ export default function CustomersPage() {
                       : `${Number(inativosData?.total || 0)} cliente(s)`}
                   </span>
                 </div>
-                {!inativosLoading && !(inativosData?.items || []).length ? (
+                {inativosError ? (
+                  <div className="card errorCard" style={{ marginTop: 10 }}>
+                    <div>{inativosError}</div>
+                  </div>
+                ) : !inativosLoading && !(inativosData?.items || []).length ? (
                   <EmptyState
                     title="Nenhum alerta neste período."
                     detail="Clientes com preço fixo ativo e abastecimento recente não aparecem aqui."
@@ -902,7 +989,10 @@ export default function CustomersPage() {
                   </div>
                 )}
               </div>
+        </div>
 
+        {data ? (
+          <div className="bi-grid" style={{ marginTop: 12 }}>
 <div className="card col-12">
                 <h2>Clientes em risco de saída</h2>
                 {!loading ? (
@@ -1055,10 +1145,8 @@ export default function CustomersPage() {
                   isDefaultOrder={topCustomersGrid.isDefaultOrder}
                 />
               </div>
-
-            </div>
-          </>
-        )}
+          </div>
+        ) : null}
       </div>
     </div>
   );

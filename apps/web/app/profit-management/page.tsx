@@ -655,6 +655,13 @@ export default function ProfitManagementPage() {
                 onResetOrder={productsGrid.resetOrder}
                 isDefaultOrder={productsGrid.isDefaultOrder}
               />
+              {Number(products?.total || 0) > searchedProducts.length ? (
+                <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                  Lista limitada aos {searchedProducts.length.toLocaleString("pt-BR")} produtos carregados
+                  {` (total no filtro: ${Number(products.total).toLocaleString("pt-BR")})`}.
+                  Os totais da página usam só o que está nesta lista.
+                </p>
+              ) : null}
               {searchedProducts.length === 0 && (
                 <div className="muted" style={{ padding: 16, textAlign: "center" }}>
                   Nenhum produto encontrado com os filtros selecionados.

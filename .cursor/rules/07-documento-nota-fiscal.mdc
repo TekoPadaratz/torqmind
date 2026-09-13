@@ -20,6 +20,8 @@ Em **qualquer** tela TorqMind (Clientes, Antifraude, drill-downs, grids, exports
 - Label = **somente o número** (sem prefixo "Nota", "Cupom", "Comprovante").
 - Sem NF resolvida → exibir `—` (honesto). **Nunca** inventar documento.
 
+Em títulos a receber/pagar o rótulo da coluna é **Documento** (número do título). Não usar “Nro Documento”. Esse campo não substitui a NF da venda.
+
 ## Proibido como documento
 
 - `NROCOMPROVANTE` (número do cupom/comprovante de venda)

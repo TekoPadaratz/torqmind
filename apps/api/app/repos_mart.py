@@ -4701,6 +4701,7 @@ def customers_delinquency_overview(
     as_of: date,
     *,
     limit: int = 0,
+    offset: int = 0,
     sort_by: str = "gravity",
 ) -> Dict[str, Any]:
     """Delinquency overview from mart.customer_delinquency_summary (fast indexed read).
@@ -4766,6 +4767,10 @@ def customers_delinquency_overview(
       ORDER BY {order_clause}
     """
     customers_params = [id_empresa] + branch_params
+    effective_limit = int(limit) if limit and int(limit) > 0 else 2000
+    effective_offset = max(0, int(offset) if offset else 0)
+    customers_sql += " LIMIT %s OFFSET %s"
+    customers_params.extend([effective_limit, effective_offset])
 
     # Total da dívida POR FILIAL (o mesmo cliente pode dever em vários postos).
     by_filial_sql = f"""
@@ -4828,6 +4833,8 @@ def customers_delinquency_overview(
             "customers": [],
             "by_filial": [],
             "dt_ref": as_of.isoformat(),
+            "customers_total": 0,
+            "customers_capped": False,
         }
 
     return {
@@ -4881,6 +4888,8 @@ def customers_delinquency_overview(
         "by_filial": by_filial,
         "sort_by": sort_by,
         "dt_ref": as_of.isoformat(),
+        "customers_total": int(summary_row.get("clientes_em_aberto") or 0),
+        "customers_capped": int(summary_row.get("clientes_em_aberto") or 0) > len(customers),
     }
 
 

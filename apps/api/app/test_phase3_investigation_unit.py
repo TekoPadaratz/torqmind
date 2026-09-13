@@ -419,6 +419,41 @@ def test_process_message_finance_drill_filial_and_tipo(monkeypatch):
     assert seen.get("scope", {}).get("id_filial") == 1
     assert "qual filial" not in (restrict.get("answer_text") or "").lower()
 
+    last_multi = {
+        "domain": "finance_portfolio",
+        "params": {"tipo": 1, "id_empresa": 1},
+        "summary": {
+            "totals": fake["totals"],
+            "dimension_filial_keys": ["5", "4", "1"],
+            "lead_filial": 5,
+        },
+        "follow_ups": fake["follow_ups"],
+    }
+    with (
+        patch("app.intelligence.investigation.run_finance_investigation", side_effect=_run),
+        patch(
+            "app.intelligence.investigation.maybe_narrate_with_jarvis",
+            return_value={"used_llm": False, "text": None, "reason": "openai_not_configured"},
+        ),
+    ):
+        ambiguous = process_message(
+            claims,
+            "dessa filial",
+            conversation_context={"last_investigation": last_multi, "permission_hash": "", "branch_scope": []},
+            scope={"id_empresa": 1, "id_filial": None},
+        )
+    assert ambiguous["status"] == "clarification_required"
+    assert "qual filial" in (ambiguous.get("answer_text") or "").lower()
+    opts = ambiguous.get("clarification_options") or []
+    assert len(opts) >= 2
+
+
+def test_followup_requires_investigation_domain():
+    last_fin = {"domain": "finance_portfolio", "params": {"tipo": 1}}
+    assert detect_followup_action("Detalhe por filial da carteira", last_fin) == "drill_filial"
+    assert detect_followup_action("Detalhe por filial", {}) is None
+    assert detect_followup_action("dessa filial", None) is None
+
 
 def test_unknown_capability_stays_unknown():
     claims = {

@@ -369,12 +369,30 @@ def process_message(
         status = "ok" if inv.get("status") in {None, "ok"} else str(inv.get("status") or "ok")
         if status not in VALID_STATUSES:
             status = "ok" if inv.get("headline") else "unsupported"
+        clarify_opts = list(inv.get("clarification_options") or [])
+        clarify_kind = str(inv.get("clarification_kind") or "") or None
+        pending = None
+        follow_slots: dict[str, Any] = {}
+        if status == "clarification_required" and clarify_opts:
+            pending = {
+                "kind": clarify_kind or "restrict_filial",
+                "intent_id": follow_intent,
+                "options": clarify_opts,
+            }
+            last_tipo = (last_inv.get("params") or {}).get("tipo")
+            if last_tipo in (0, 1):
+                follow_slots["finance_tipo"] = int(last_tipo)
+        keep_last = last_inv if status == "clarification_required" else build_investigation_context(
+            inv, period_ctx if isinstance(period_ctx, dict) else None
+        )
         result = EngineResult(
             status=status if status in VALID_STATUSES else "ok",
             answer_text=answer_text,
             intent_id=follow_intent,
             confidence=0.9,
             suggestions=list(inv.get("follow_ups") or [])[:4],
+            clarification_options=clarify_opts,
+            clarification_kind=clarify_kind,
             deep_link="/sales" if inv.get("domain") == "sales_variation" else "/finance",
             evidence_ids=[eid for eid in [inv.get("evidence_id")] if eid],
             tool_calls_meta=tool_meta,
@@ -385,11 +403,11 @@ def process_message(
                 intent_id="sales.investigate_variation"
                 if inv.get("domain") == "sales_variation"
                 else "finance.investigate_portfolio",
-                slots={},
+                slots=follow_slots,
                 period=period_ctx if isinstance(period_ctx, dict) else None,
                 entities=[],
-                pending=None,
-                last_investigation=build_investigation_context(inv, period_ctx if isinstance(period_ctx, dict) else None),
+                pending=pending,
+                last_investigation=keep_last,
             ),
         )
         out = result.to_dict()
@@ -430,7 +448,13 @@ def process_message(
             request_id=request_id,
             answer_id=answer_id,
             conversation_context=update_after_turn(
-                ctx, intent_id=None, slots={}, period=None, entities=[], pending=None
+                ctx,
+                intent_id=None,
+                slots={},
+                period=None,
+                entities=[],
+                pending=None,
+                last_investigation={},
             ),
         )
         return result.to_dict()
@@ -859,6 +883,7 @@ def process_message(
         period={"dt_ini": period.dt_ini.isoformat(), "dt_fim": period.dt_fim.isoformat(), "label": period.label},
         entities=[],
         pending=None,
+        last_investigation={},
     )
     result = EngineResult(
         status=status,

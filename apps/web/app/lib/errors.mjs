@@ -14,6 +14,10 @@ export function coerceDisplayMessage(value, fallback = '') {
 }
 
 export function extractApiError(err, fallback = 'Falha na requisição') {
+  const code = String(err?.code || '');
+  if (code === 'ECONNABORTED' || /timeout/i.test(String(err?.message || ''))) {
+    return 'A consulta demorou demais. Tente de novo ou reduza o período e as filiais.';
+  }
   const data = err?.response?.data;
   const detail = data?.detail;
 

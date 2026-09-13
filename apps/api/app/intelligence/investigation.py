@@ -168,7 +168,7 @@ def classify_conversation_turn(text: str, last: dict[str, Any] | None) -> str:
 
 
 def detect_followup_action(text: str, last: dict[str, Any] | None) -> Optional[str]:
-    if not last or not isinstance(last, dict):
+    if not last or not isinstance(last, dict) or not last.get("domain"):
         return None
     domain = str(last.get("domain") or "")
     if _FOLLOW_TIPO_RECEBER.search(text) and domain == "finance_portfolio":
@@ -295,6 +295,35 @@ def _last_tipo(last: dict[str, Any]) -> Optional[int]:
     return int(raw) if raw in (0, 1) else None
 
 
+def _unique_filial_keys(last: dict[str, Any]) -> list[int]:
+    keys: list[int] = []
+    seen: set[int] = set()
+    for raw in (last.get("summary") or {}).get("dimension_filial_keys") or []:
+        try:
+            fid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if fid in seen:
+            continue
+        seen.add(fid)
+        keys.append(fid)
+    return keys
+
+
+def _filial_clarify_options(last: dict[str, Any], scope: dict) -> list[dict[str, Any]]:
+    id_empresa = scope.get("id_empresa") or (last.get("params") or {}).get("id_empresa")
+    options: list[dict[str, Any]] = []
+    for fid in _unique_filial_keys(last)[:8]:
+        options.append(
+            {
+                "label": filial_display_name(id_empresa, fid, None),
+                "value": str(fid),
+                "id_filial": fid,
+            }
+        )
+    return options
+
+
 def _resolve_restrict_filial(
     text: str,
     last: dict[str, Any],
@@ -311,18 +340,18 @@ def _resolve_restrict_filial(
         if result.status == "resolved" and result.id_filial:
             hint_id = int(result.id_filial)
     if hint_id is None:
-        candidates = [
-            (last.get("params") or {}).get("focus_filial"),
-            *((last.get("summary") or {}).get("dimension_filial_keys") or [])[:1],
-            (last.get("summary") or {}).get("lead_filial"),
-        ]
-        for raw in candidates:
+        last_params = last.get("params") or {}
+        already = last_params.get("id_filial")
+        keys = _unique_filial_keys(last)
+        if already is not None and (not keys or int(already) in keys or len(keys) <= 1):
             try:
-                hint_id = int(raw) if raw is not None else None
+                hint_id = int(already)
             except (TypeError, ValueError):
                 hint_id = None
-            if hint_id is not None:
-                break
+        elif len(keys) == 1:
+            hint_id = keys[0]
+        else:
+            hint_id = None
     allowed = _allowed_branch_ids(scope, claims)
     if hint_id is None:
         return None
@@ -344,8 +373,6 @@ def _finance_filial_headline(fresh: dict[str, Any], id_empresa: Any) -> tuple[st
             fid = int(key) if key is not None else None
         except (TypeError, ValueError):
             fid = None
-        if focus is None and fid is not None:
-            focus = fid
         name = filial_display_name(id_empresa, fid, item.get("label"))
         lines.append(
             f"{name}: {format_brl(item.get('delta'))} em aberto"
@@ -354,6 +381,12 @@ def _finance_filial_headline(fresh: dict[str, Any], id_empresa: Any) -> tuple[st
     if view.get("truncated"):
         shown = view.get("shown_count") or len(items)
         trunc = f" Mostrando as primeiras {shown} filiais."
+    if len(items) == 1:
+        key = (items[0].get("evidence") or {}).get("key")
+        try:
+            focus = int(key) if key is not None else None
+        except (TypeError, ValueError):
+            focus = None
     return "Carteira por filial: " + " · ".join(lines) + trunc, focus
 
 
@@ -417,9 +450,20 @@ def answer_followup(
     if action == "restrict_filial":
         fid = _resolve_restrict_filial(text, last, claims, scope)
         if fid is None:
+            options = _filial_clarify_options(last, scope)
             return {
-                "status": "validation_failed",
-                "message": "Qual filial você quer restringir? Use o apelido (ex.: VR 01).",
+                "status": "clarification_required",
+                "domain": domain,
+                "headline": "Qual filial você quer ver?",
+                "message": (
+                    "Há mais de uma filial neste recorte. Diga o apelido (ex.: VR 01) "
+                    "ou escolha uma opção — não escolho uma filial sozinho."
+                ),
+                "clarification_options": options,
+                "clarification_kind": "restrict_filial",
+                "follow_ups": [opt["label"] for opt in options[:4]],
+                "scope": {**(last.get("params") or {}), "tipo": tipo},
+                "totals": (last.get("summary") or {}).get("totals"),
             }
         restricted = {**scope, "id_filial": fid, "id_filiais": [fid]}
         if domain == "finance_portfolio":
@@ -447,17 +491,18 @@ def answer_followup(
         headline, focus = _finance_filial_headline(fresh, scope.get("id_empresa"))
         view = ((fresh.get("dimension_views") or {}).get("filial")) or {}
         items = view.get("items") or []
+        explicit_focus = focus if len(items) == 1 else None
         out = {
             **fresh,
             "status": fresh.get("status") or "ok",
             "headline": headline,
             "followup_focus": "filial",
-            "focus_filial": focus,
+            "focus_filial": explicit_focus,
             "factors": items + [f for f in (fresh.get("factors") or []) if f.get("kind") == "hypothesis"],
         }
         scope_out = dict(out.get("scope") or {})
-        if focus is not None:
-            scope_out["focus_filial"] = focus
+        if explicit_focus is not None:
+            scope_out["focus_filial"] = explicit_focus
         scope_out["tipo"] = tipo
         out["scope"] = scope_out
         return out
@@ -534,13 +579,23 @@ def answer_followup(
 
 
 _EMPTY_INVESTIGATION_STATUSES = frozenset(
-    {"period_too_long", "no_data", "unavailable", "forbidden_scope", "validation_failed"}
+    {
+        "period_too_long",
+        "no_data",
+        "unavailable",
+        "forbidden_scope",
+        "validation_failed",
+        "clarification_required",
+    }
 )
 
 
 def format_deterministic_answer(result: dict[str, Any]) -> str:
     status = str(result.get("status") or "")
     message = str(result.get("message") or "").strip()
+    if status == "clarification_required":
+        bits = [str(result.get("headline") or "").strip(), message]
+        return "\n".join(part for part in bits if part) or "Preciso de um detalhe para continuar."
     if status in _EMPTY_INVESTIGATION_STATUSES:
         return message or "Investigação indisponível."
 

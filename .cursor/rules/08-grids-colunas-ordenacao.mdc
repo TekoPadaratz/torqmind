@@ -115,4 +115,4 @@ Não somar identificadores, percentuais, médias, preços unitários, saldos acu
 
 Não substituir um total geral por subtotal de página mantendo o mesmo rótulo.
 
-Agrupamento por filial: paginar o conjunto ou o grupo de forma explícita; não cortar grupos nem duplicar totais de cabeçalho.
+Agrupamento por filial (ou cliente/grupo equivalente): paginar o conjunto filtrado; grupos maiores que uma página continuam na página seguinte com o contexto do grupo visível (filial/cliente/totais do grupo). “Não cortar grupo” não autoriza devolver centenas de linhas sem navegação. Não duplicar totais de cabeçalho do grupo em cada página como se fossem totais novos.

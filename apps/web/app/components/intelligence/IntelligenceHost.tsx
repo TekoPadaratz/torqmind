@@ -42,6 +42,8 @@ function clarificationSendText(kind: string | undefined, opt: ClarificationOptio
       return `Quanto o cliente ${label} está me devendo?`;
     case 'branch':
       return `Faturamento de hoje na ${label}`;
+    case 'restrict_filial':
+      return `nessa filial ${label}`;
     case 'period_year':
       return `Faturamento ${label}`;
     case 'intent':

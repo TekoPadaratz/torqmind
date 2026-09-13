@@ -193,7 +193,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
                   <SortableTh label="Filial" sortKey="filial" ariaSort={ariaSort('filial')} onToggle={toggleSort} />
                   <SortableTh label="Lançamento" sortKey="dt_lancamento" ariaSort={ariaSort('dt_lancamento')} onToggle={toggleSort} />
                   <SortableTh label="Vencimento" sortKey="dt_vencimento" ariaSort={ariaSort('dt_vencimento')} onToggle={toggleSort} />
-                  <SortableTh label="Nro Documento" sortKey="nro_documento" ariaSort={ariaSort('nro_documento')} onToggle={toggleSort} />
+                  <SortableTh label="Documento" sortKey="nro_documento" ariaSort={ariaSort('nro_documento')} onToggle={toggleSort} />
                   <SortableTh label={entidadeLabel} sortKey="entidade_nome" ariaSort={ariaSort('entidade_nome')} onToggle={toggleSort} />
                   <SortableTh label="Valor" sortKey="valor" ariaSort={ariaSort('valor')} onToggle={toggleSort} align="right" />
                   <SortableTh label="Pago" sortKey="valor_pago" ariaSort={ariaSort('valor_pago')} onToggle={toggleSort} align="right" />

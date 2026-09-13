@@ -92,6 +92,31 @@ def consume_pending_disambiguation(
             )
             return parsed, scope_out, True
 
+    if kind == "restrict_filial":
+        pick = matched
+        if not pick and direct:
+            pick = _match_option(direct, options)
+        if pick and (pick.get("id_filial") or pick.get("value")):
+            try:
+                fid = int(pick.get("id_filial") or pick.get("value"))
+            except (TypeError, ValueError):
+                fid = None
+            if fid:
+                scope_out["id_filial"] = fid
+                scope_out["id_filiais"] = [fid]
+                scope_out["branch_scope"] = "selected"
+                if pick.get("label"):
+                    scope_out["filial_label"] = str(pick["label"])
+                slots = dict(last_slots)
+                intent_id = str(last_intent or "finance.investigate_portfolio")
+                parsed = ParseResult(
+                    intent_id=intent_id,
+                    confidence=0.94,
+                    slots=slots,
+                    action="execute",
+                )
+                return parsed, scope_out, True
+
     if kind == "branch":
         pick = matched
         if not pick and direct:
