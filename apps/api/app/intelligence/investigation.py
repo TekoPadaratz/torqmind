@@ -342,12 +342,16 @@ def _resolve_restrict_filial(
     if hint_id is None:
         last_params = last.get("params") or {}
         already = last_params.get("id_filial")
+        if isinstance(already, (list, tuple)):
+            already = already[0] if len(already) == 1 else None
         keys = _unique_filial_keys(last)
-        if already is not None and (not keys or int(already) in keys or len(keys) <= 1):
-            try:
-                hint_id = int(already)
-            except (TypeError, ValueError):
-                hint_id = None
+        already_id = None
+        try:
+            already_id = int(already) if already is not None else None
+        except (TypeError, ValueError):
+            already_id = None
+        if already_id is not None and (not keys or already_id in keys or len(keys) <= 1):
+            hint_id = already_id
         elif len(keys) == 1:
             hint_id = keys[0]
         else:
