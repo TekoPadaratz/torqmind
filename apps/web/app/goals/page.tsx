@@ -482,7 +482,7 @@ export default function GoalsPage() {
             </div>
           <div className="card col-12">
             <div className="panelHead">
-              <h2>Leaderboard detalhado</h2>
+              <h2>Classificação detalhada</h2>
               <span className="muted">Até 15 nomes válidos para acompanhar a disputa completa da equipe.</span>
             </div>
             <GridSearchInput value={leaderboardQ} onChange={setLeaderboardQ} />
@@ -643,9 +643,9 @@ export default function GoalsPage() {
           </div>
 
           <div className="card col-6">
-            <h2>Como a projeção foi calculada</h2>
+            <h2>Leitura da projeção</h2>
             <div className="muted" style={{ marginTop: 8 }}>
-              Base: faturamento acumulado do mês até agora dividido pelos dias corridos do mês observados. A projeção ajustada só altera o restante do mês quando já existe histórico suficiente para capturar diferença por dia da semana.
+              Usa o faturamento do mês até agora e os dias já decorridos. O ajuste para o restante do mês só entra quando há histórico suficiente por dia da semana.
             </div>
             <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
               {(projection.drivers || []).map((driver: string) => (
