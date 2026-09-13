@@ -74,6 +74,23 @@ UI (IntelligenceHost)
 Jarvis (`/bi/jarvis/*`, `services/jarvis_ai.py`) permanece como superfície própria.
 A investigação Phase 3 pode usar narrativa opcional (httpx → OpenAI) **sem** importar o pacote `openai` no núcleo Intelligence; falha → texto determinístico.
 
+## Voz (navegador, sem API paga)
+
+Reconhecimento, envio e síntese são funções distintas. Não há backend de áudio, embeddings nem provedor de TTS.
+
+| Função | Onde | Padrão |
+|---|---|---|
+| Perguntar por voz (STT) | `webkitSpeechRecognition` / `SpeechRecognition`, pt-BR | Microfone; exige `voice_enabled` da API + suporte do browser |
+| Envio | `POST /ai/conversations/{id}/messages` | Texto (digitado ou transcrito) |
+| Ouvir resposta (TTS) | `speechSynthesis` nativa; voz pt-BR se existir | “Ouvir resposta” / “Parar leitura”; “Responder por voz” **desligada** |
+
+- Preferência: `localStorage` `torqmind.assistant.speakReplies` (`1`/`0`), mesmo mecanismo de `torqmind.theme`.
+- Texto falado: `apps/web/app/lib/spoken-answer.mjs` — sem Markdown, URL, UUID ou códigos (`openai_not_configured`); respostas longas = resumo + “Os detalhes estão na tela.”
+- A resposta escrita permanece completa. Histórico restaurado **não** é lido ao abrir o painel.
+- A leitura para antes do microfone, ao fechar o painel, ao trocar empresa ou ao encerrar a sessão. Sem sobreposição; sem contornar bloqueio de reprodução.
+- Sem suporte de síntese: “Este navegador não lê respostas em voz. A resposta escrita continua disponível.”
+- Não promete funcionamento offline: vozes dependem do dispositivo/navegador.
+
 ## Feature flag
 
 - `AI_CHAT_ENABLED` (default `false`)

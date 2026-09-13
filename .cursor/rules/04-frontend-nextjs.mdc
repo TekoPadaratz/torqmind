@@ -84,6 +84,7 @@ O produto fala em **português brasileiro claro, natural e profissional**, compr
 - Mensagem técnica completa fica no diagnóstico; a UI pode mostrar um identificador seguro de atendimento, sem stack
 - Textos do Assistente/Jarvis seguem as mesmas regras
 - Gate: `lib/ui-copy-quality.test.mjs` + `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10
+- Voz do Assistente: reconhecimento (microfone), envio da pergunta e síntese são funções distintas. Síntese = `speechSynthesis` nativa (preferir pt-BR); sem provedor pago nem modelo local. “Responder por voz” começa desligada e persiste em `torqmind.assistant.speakReplies`. Cada resposta tem “Ouvir resposta” / “Parar leitura”. Texto falado via `lib/spoken-answer.mjs` (sem Markdown, URL ou código). Não ler o histórico ao abrir o painel; interromper a leitura antes do microfone, ao fechar, ao trocar empresa ou ao encerrar a sessão. Não contornar bloqueio de reprodução do navegador.
 
 ## Performance
 

@@ -1,4 +1,22 @@
-/** STT/TTS no browser para o Assistente TorqMind (padrão TorqMind-Ops, sem backend de áudio). */
+/** STT/TTS no browser para o Assistente TorqMind (síntese nativa, sem backend de áudio). */
+
+import {
+  browserSpeechSynthesisSupported,
+  pickSpeechVoice,
+  prepareSpokenText,
+} from './spoken-answer.mjs';
+
+export {
+  SPEAK_REPLIES_STORAGE_KEY,
+  SPOKEN_DETAIL_HINT,
+  TTS_BLOCKED_MESSAGE,
+  TTS_UNSUPPORTED_MESSAGE,
+  browserSpeechSynthesisSupported,
+  pickSpeechVoice,
+  prepareSpokenText,
+  readSpeakRepliesPreference,
+  writeSpeakRepliesPreference,
+} from './spoken-answer.mjs';
 
 export type BrowserSpeechRecognition = {
   lang: string;
@@ -40,26 +58,117 @@ export function browserSpeechRecognitionSupported(
   return browserSpeechRecognitionConstructor(scope) !== null;
 }
 
-export function speak(text: string | null | undefined): void {
-  try {
-    if (typeof window === 'undefined' || !text) return;
-    const synth = window.speechSynthesis;
-    if (!synth) return;
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'pt-BR';
-    synth.cancel();
-    synth.speak(utter);
-  } catch {
-    /* TTS best-effort */
+export type SpeakCallbacks = {
+  onStart?: () => void;
+  onEnd?: () => void;
+  onError?: (code: string) => void;
+  onBlocked?: () => void;
+};
+
+let speakGeneration = 0;
+let speakTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearSpeakTimer() {
+  if (speakTimer) {
+    clearTimeout(speakTimer);
+    speakTimer = null;
   }
 }
 
+function preferredVoice(): SpeechSynthesisVoice | null {
+  try {
+    return pickSpeechVoice(window.speechSynthesis?.getVoices?.() || []);
+  } catch {
+    return null;
+  }
+}
+
+/** Pré-carrega a lista de vozes (Chrome entrega vazio até voiceschanged). */
+export function warmSpeechVoices(): () => void {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return () => undefined;
+  const synth = window.speechSynthesis;
+  const warm = () => {
+    try {
+      synth.getVoices();
+    } catch {
+      /* ignore */
+    }
+  };
+  warm();
+  synth.addEventListener?.('voiceschanged', warm);
+  return () => {
+    try {
+      synth.removeEventListener?.('voiceschanged', warm);
+    } catch {
+      /* ignore */
+    }
+  };
+}
+
+/** Interrompe qualquer leitura em curso. Não tenta contornar bloqueio de reprodução. */
 export function stopSpeaking(): void {
+  speakGeneration += 1;
+  clearSpeakTimer();
   try {
     window.speechSynthesis?.cancel();
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Lê o texto preparado com a voz nativa (pt-BR quando houver).
+ * Encadeia após cancel() por limitação do Chromium; se o navegador bloquear, avisa via onBlocked.
+ */
+export function speak(text: string | null | undefined, callbacks?: SpeakCallbacks): void {
+  const spoken = prepareSpokenText(text);
+  if (typeof window === 'undefined' || !spoken) return;
+  if (!browserSpeechSynthesisSupported()) {
+    callbacks?.onBlocked?.();
+    return;
+  }
+
+  const synth = window.speechSynthesis;
+  stopSpeaking();
+  const myGen = ++speakGeneration;
+
+  // Chromium ignora speak() imediato após cancel(); atraso curto não contorna autoplay.
+  speakTimer = setTimeout(() => {
+    if (myGen !== speakGeneration) return;
+    try {
+      const utter = new SpeechSynthesisUtterance(spoken);
+      const voice = preferredVoice();
+      if (voice) {
+        utter.voice = voice;
+        utter.lang = voice.lang || 'pt-BR';
+      } else {
+        utter.lang = 'pt-BR';
+      }
+      utter.rate = 1;
+      utter.onstart = () => {
+        if (myGen === speakGeneration) callbacks?.onStart?.();
+      };
+      utter.onend = () => {
+        if (myGen === speakGeneration) callbacks?.onEnd?.();
+      };
+      utter.onerror = (ev) => {
+        if (myGen !== speakGeneration) return;
+        const code = String((ev as SpeechSynthesisErrorEvent)?.error || 'error');
+        if (code === 'canceled' || code === 'interrupted') {
+          callbacks?.onEnd?.();
+          return;
+        }
+        if (code === 'not-allowed') {
+          callbacks?.onBlocked?.();
+          return;
+        }
+        callbacks?.onError?.(code);
+      };
+      synth.speak(utter);
+    } catch {
+      callbacks?.onBlocked?.();
+    }
+  }, 80);
 }
 
 export type VoiceListenCallbacks = {

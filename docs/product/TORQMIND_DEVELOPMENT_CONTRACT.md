@@ -223,7 +223,7 @@ Referência correta: sales, cash, customers, finance, fraud, goals, profit-manag
 **Língua:** português brasileiro claro, natural e profissional. Frases curtas. Palavras do posto: vendas, recebimentos, despesas, equipe, período, filiais. Evitar inglês com equivalente óbvio. Manter termos consolidados (ticket médio, margem, NFC-e). Botões nomeiam a ação. Tom sóbrio — sem jargão, debug ou infantilização.
 
 **Copy de status/frescor:** `lib/reading-copy.mjs` (“Base pronta…”, “Atualizado em…”, “Em atualização…”).  
-**Gate:** `lib/ui-copy-quality.test.mjs` — deve continuar passando. Textos do Assistente/Jarvis seguem este contrato.
+**Gate:** `lib/ui-copy-quality.test.mjs` — deve continuar passando. Textos do Assistente/Jarvis seguem este contrato. A versão falada do Assistente (`lib/spoken-answer.mjs`) também: sem Markdown, URL ou código; números e avisos permanecem.
 
 ### Termos proibidos na UI (lista normativa)
 

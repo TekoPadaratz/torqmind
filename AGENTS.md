@@ -203,7 +203,8 @@ fórmula, pipeline, debug, código interno (`openai_not_configured`) ou nota de
 engenharia na tela (“custo = …”, “publicado da mart…”). Inglês só quando não
 houver equivalente de negócio (ticket médio e margem podem ficar). O cliente
 vê título, KPIs, dados e avisos que mudam a decisão; o Assistente segue a
-mesma regra. Detalhe: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10 e
+mesma regra (voz nativa do navegador: `docs/intelligence/README.md` § Voz).
+Detalhe: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10 e
 `.cursor/rules/04-frontend-nextjs.mdc`.
 
 ## Estilo de trabalho

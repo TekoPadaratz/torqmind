@@ -10,10 +10,17 @@ import { getClaims, hasSession, requireAuth } from '../../lib/auth';
 import { useScopeQuery } from '../../lib/scope';
 import { canAccessScreenKey, readCachedSession } from '../../lib/session';
 import {
+  TTS_BLOCKED_MESSAGE,
+  TTS_UNSUPPORTED_MESSAGE,
   browserSpeechRecognitionSupported,
+  browserSpeechSynthesisSupported,
+  prepareSpokenText,
+  readSpeakRepliesPreference,
   speak,
   startVoiceListening,
   stopSpeaking,
+  warmSpeechVoices,
+  writeSpeakRepliesPreference,
 } from '../../lib/voice-assistant';
 
 type Capability = { intent_id?: string; label?: string; examples?: string[] };
@@ -76,11 +83,15 @@ export default function IntelligenceHost() {
   const [enabled, setEnabled] = useState(true);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
+  const [ttsSupported, setTtsSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceDraft, setVoiceDraft] = useState('');
-  const [speakReplies, setSpeakReplies] = useState(true);
+  const [speakReplies, setSpeakReplies] = useState(false);
+  const [speakingIdx, setSpeakingIdx] = useState<number | null>(null);
+  const [speakHint, setSpeakHint] = useState<string | null>(null);
   const requestSeq = useRef(0);
-  const sendRef = useRef<(text: string, options?: { speakReply?: boolean }) => Promise<void>>(async () => undefined);
+  const sendRef = useRef<(text: string) => Promise<void>>(async () => undefined);
+  const speakRepliesRef = useRef(false);
 
   const scopePayload = useMemo(() => {
     const idEmpresa =
@@ -153,8 +164,16 @@ export default function IntelligenceHost() {
       return;
     }
     setVoiceSupported(browserSpeechRecognitionSupported());
+    setTtsSupported(browserSpeechSynthesisSupported());
+    setSpeakReplies(readSpeakRepliesPreference());
     setReady(true);
   }, [pathname]);
+
+  useEffect(() => {
+    speakRepliesRef.current = speakReplies;
+  }, [speakReplies]);
+
+  useEffect(() => warmSpeechVoices(), []);
 
   const convStorageKey = useMemo(() => {
     const idEmpresa = scopePayload.id_empresa;
@@ -171,6 +190,9 @@ export default function IntelligenceHost() {
     }
     setMessages([]);
     restoredConvRef.current = null;
+    stopSpeaking();
+    setSpeakingIdx(null);
+    setSpeakHint(null);
   }, [convStorageKey]);
 
   useEffect(() => {
@@ -199,6 +221,11 @@ export default function IntelligenceHost() {
   }, []);
 
   const close = useCallback(() => {
+    stopSpeaking();
+    setSpeakingIdx(null);
+    stopVoiceRef.current?.();
+    stopVoiceRef.current = null;
+    setListening(false);
     setOpen(false);
   }, []);
 
@@ -295,15 +322,56 @@ export default function IntelligenceHost() {
     return () => root.removeEventListener('keydown', trap);
   }, [open, messages.length, busy]);
 
-  const send = async (text: string, options?: { speakReply?: boolean }) => {
+  const haltSpeech = useCallback(() => {
+    stopSpeaking();
+    setSpeakingIdx(null);
+  }, []);
+
+  const speakMessage = useCallback((text: string, idx: number) => {
+    if (!ttsSupported) {
+      setSpeakHint(TTS_UNSUPPORTED_MESSAGE);
+      return;
+    }
+    if (!prepareSpokenText(text)) return;
+    stopSpeaking();
+    setSpeakHint(null);
+    setSpeakingIdx(idx);
+    speak(text, {
+      onStart: () => setSpeakingIdx(idx),
+      onEnd: () => setSpeakingIdx((cur) => (cur === idx ? null : cur)),
+      onBlocked: () => {
+        setSpeakingIdx(null);
+        setSpeakHint(TTS_BLOCKED_MESSAGE);
+      },
+      onError: () => {
+        setSpeakingIdx(null);
+        setSpeakHint(TTS_UNSUPPORTED_MESSAGE);
+      },
+    });
+  }, [ttsSupported]);
+
+  const appendAssistant = (msg: ChatMessage, shouldSpeak: boolean) => {
+    setMessages((prev) => {
+      const next = [...prev, msg];
+      if (shouldSpeak && ttsSupported) {
+        const idx = next.length - 1;
+        queueMicrotask(() => speakMessage(msg.text, idx));
+      }
+      return next;
+    });
+  };
+
+  const send = async (text: string) => {
     const cleaned = text.trim();
     if (!cleaned || !enabled) return;
     const seq = ++requestSeq.current;
+    haltSpeech();
     setBusy(true);
     setError(null);
     setMessages((prev) => [...prev, { role: 'user', text: cleaned }]);
     setDraft('');
     setVoiceDraft('');
+    const autoSpeak = speakRepliesRef.current && ttsSupported;
     try {
       const id = await ensureConversation();
       const resp = await apiPost(`/ai/conversations/${id}/messages`, {
@@ -320,11 +388,9 @@ export default function IntelligenceHost() {
       const deepLink = resp?.deep_link ? String(resp.deep_link) : undefined;
       if (!answerText) {
         const fallback = 'Não consegui montar uma resposta agora. Tente reformular a pergunta.';
-        setMessages((prev) => [...prev, { role: 'assistant', text: fallback }]);
-        if (options?.speakReply && speakReplies) speak(fallback);
+        appendAssistant({ role: 'assistant', text: fallback }, autoSpeak);
       } else {
-        setMessages((prev) => [
-          ...prev,
+        appendAssistant(
           {
             role: 'assistant',
             text: answerText,
@@ -333,8 +399,8 @@ export default function IntelligenceHost() {
             suggestions: respSuggestions.length ? respSuggestions : undefined,
             deepLink,
           },
-        ]);
-        if (options?.speakReply && speakReplies) speak(answerText);
+          autoSpeak,
+        );
       }
     } catch (err: any) {
       if (seq !== requestSeq.current) return;
@@ -346,10 +412,7 @@ export default function IntelligenceHost() {
         (status === 500
           ? 'Não consegui consultar os dados agora. Tente de novo em instantes ou reformule a pergunta.'
           : 'Não foi possível enviar a mensagem.');
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', text: String(msg) },
-      ]);
+      appendAssistant({ role: 'assistant', text: String(msg) }, autoSpeak);
       setError(null);
     } finally {
       if (seq === requestSeq.current) setBusy(false);
@@ -378,8 +441,15 @@ export default function IntelligenceHost() {
 
   useEffect(() => () => {
     stopListening();
-    stopSpeaking();
-  }, [stopListening]);
+    haltSpeech();
+  }, [stopListening, haltSpeech]);
+
+  useEffect(() => {
+    if (!open || !ready) {
+      haltSpeech();
+      stopListening();
+    }
+  }, [open, ready, haltSpeech, stopListening]);
 
   const toggleVoiceInput = useCallback(() => {
     if (!voiceEnabled || !voiceSupported || busy || !enabled) return;
@@ -387,7 +457,7 @@ export default function IntelligenceHost() {
       stopListening();
       return;
     }
-    stopSpeaking();
+    haltSpeech();
     voiceDraftRef.current = '';
     setVoiceDraft('');
     setListening(true);
@@ -413,12 +483,12 @@ export default function IntelligenceHost() {
           const text = voiceDraftRef.current.trim();
           voiceDraftRef.current = '';
           setVoiceDraft('');
-          if (text) void send(text, { speakReply: true });
+          if (text) void sendRef.current(text);
         },
       },
       { silenceMs: 1500 },
     );
-  }, [voiceEnabled, voiceSupported, busy, enabled, listening, stopListening]);
+  }, [voiceEnabled, voiceSupported, busy, enabled, listening, stopListening, haltSpeech]);
 
   if (!ready) return null;
 
@@ -495,6 +565,24 @@ export default function IntelligenceHost() {
                 messages.map((m, idx) => (
                   <div key={`${m.role}-${idx}`} className={m.role === 'user' ? 'tmIntelMsgUser' : 'tmIntelMsgAsst'}>
                     {m.text}
+                    {m.role === 'assistant' && ttsSupported ? (
+                      <div className="tmIntelSpeakBar">
+                        <button
+                          type="button"
+                          className="tmIntelSpeakBtn"
+                          aria-pressed={speakingIdx === idx}
+                          onClick={() => {
+                            if (speakingIdx === idx) {
+                              haltSpeech();
+                              return;
+                            }
+                            speakMessage(m.text, idx);
+                          }}
+                        >
+                          {speakingIdx === idx ? 'Parar leitura' : 'Ouvir resposta'}
+                        </button>
+                      </div>
+                    ) : null}
                     {m.role === 'assistant' && m.clarificationOptions?.length ? (
                       <div className="tmIntelClarify">
                         {m.clarificationOptions.slice(0, 5).map((opt) => {
@@ -561,7 +649,7 @@ export default function IntelligenceHost() {
               className="tmIntelComposer"
               onSubmit={(e) => {
                 e.preventDefault();
-                void send(draft, { speakReply: false });
+                void send(draft);
               }}
             >
               {voiceEnabled && voiceSupported ? (
@@ -583,7 +671,7 @@ export default function IntelligenceHost() {
                   if (listening) return;
                   setDraft(e.target.value);
                 }}
-                placeholder={listening ? 'Ouvindo…' : 'Escreva ou use o microfone…'}
+                placeholder={listening ? 'Ouvindo…' : voiceEnabled && voiceSupported ? 'Escreva ou use o microfone…' : 'Escreva sua pergunta…'}
                 disabled={busy || !enabled || listening}
                 maxLength={2000}
               />
@@ -591,16 +679,24 @@ export default function IntelligenceHost() {
                 Enviar
               </button>
             </form>
-            {voiceEnabled && voiceSupported ? (
+            {ttsSupported ? (
               <label className="tmIntelVoiceToggle">
                 <input
                   type="checkbox"
                   checked={speakReplies}
-                  onChange={(e) => setSpeakReplies(e.target.checked)}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setSpeakReplies(next);
+                    writeSpeakRepliesPreference(next);
+                    if (!next) haltSpeech();
+                  }}
                 />
                 Responder por voz
               </label>
-            ) : null}
+            ) : (
+              <p className="tmIntelVoiceHint">{TTS_UNSUPPORTED_MESSAGE}</p>
+            )}
+            {speakHint ? <p className="tmIntelVoiceHint">{speakHint}</p> : null}
           </div>
         </div>
       ) : null}
@@ -840,6 +936,23 @@ export default function IntelligenceHost() {
           0%, 100% { opacity: 0.35; transform: scale(0.85); }
           50% { opacity: 1; transform: scale(1.1); }
         }
+        .tmIntelSpeakBar {
+          display: flex;
+          margin-top: 8px;
+        }
+        .tmIntelSpeakBtn {
+          border: 1px solid var(--chrome-border, #3a3228);
+          background: var(--surface-elevated, #1c1814);
+          color: inherit;
+          border-radius: 999px;
+          padding: 4px 10px;
+          font-size: 0.75rem;
+          cursor: pointer;
+        }
+        .tmIntelSpeakBtn[aria-pressed='true'] {
+          border-color: #b8722c;
+          background: #5a2a18;
+        }
         .tmIntelVoiceToggle {
           display: flex;
           align-items: center;
@@ -847,6 +960,12 @@ export default function IntelligenceHost() {
           font-size: 0.78rem;
           opacity: 0.85;
           margin-top: -4px;
+        }
+        .tmIntelVoiceHint {
+          margin: 0;
+          font-size: 0.75rem;
+          opacity: 0.82;
+          line-height: 1.35;
         }
         .tmIntelComposer input {
           flex: 1;
