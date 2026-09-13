@@ -4,15 +4,19 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
+import GridChrome from '../components/ui/GridChrome';
+import GridSearchInput from '../components/ui/GridSearchInput';
+import SortableTh from '../components/ui/SortableTh';
 import { apiGet, apiPost, apiPatch } from '../lib/api';
 import { formatBusinessCalendarDate } from '../lib/calendar-date.mjs';
 import { extractApiError } from '../lib/errors';
+import { compareGridRows } from '../lib/grid-sort';
 import { useScopeQuery, useEnsureScopedProductUrl } from '../lib/scope';
 import { buildProductHref, createScopeEpoch } from '../lib/product-scope.mjs';
 import { startScopeTransition } from '../lib/scope-runtime';
 import { canAccessScreenKey, readCachedSession } from '../lib/session';
-import GridSearchInput from '../components/ui/GridSearchInput';
 import { useGridSearch } from '../lib/use-grid-search';
+import { useRecordGrid } from '../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -290,7 +294,7 @@ function RegisterTab({
         </div>
       </div>
 
-      {/* Fuel Prices Table */}
+      {/* Exceção: formulário de captura (matriz de preço), não listagem de registros. */}
       {loading ? (
         <p className="muted">Carregando combustíveis...</p>
       ) : fuels.length === 0 ? (
@@ -367,6 +371,138 @@ function RegisterTab({
         {saving ? 'Salvando...' : 'Registrar Preços'}
       </button>
     </div>
+  );
+}
+
+function HistoryItemsGrid({
+  items,
+  captureId,
+  editingItem,
+  editPrice,
+  setEditPrice,
+  setEditingItem,
+  onSave,
+}: {
+  items: CaptureItem[];
+  captureId: string;
+  editingItem: string | null;
+  editPrice: string;
+  setEditPrice: (v: string) => void;
+  setEditingItem: (v: string | null) => void;
+  onSave: (itemId: string) => void;
+}) {
+  const grid = useRecordGrid<CaptureItem>({
+    rows: items,
+    resetKey: captureId,
+    getTieId: (row) => row.item_id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.product_name }, { nome: b.product_name }),
+    columns: {
+      product_name: { type: 'text' },
+      price: { type: 'number' },
+      created_by_user_name: { type: 'text' },
+      last_updated_at: { type: 'date' },
+    },
+  });
+
+  return (
+    <>
+      <table className="table compact">
+        <thead>
+          <tr>
+            <SortableTh label="Produto" sortKey="product_name" ariaSort={grid.ariaSort('product_name')} onToggle={grid.toggleSort} />
+            <SortableTh label="Preço" sortKey="price" ariaSort={grid.ariaSort('price')} onToggle={grid.toggleSort} align="right" />
+            <SortableTh label="Registrado por" sortKey="created_by_user_name" ariaSort={grid.ariaSort('created_by_user_name')} onToggle={grid.toggleSort} />
+            <SortableTh label="Última alteração" sortKey="last_updated_at" ariaSort={grid.ariaSort('last_updated_at')} onToggle={grid.toggleSort} />
+            <th style={{ textAlign: 'center', width: 100 }}>Ação</th>
+          </tr>
+        </thead>
+        <tbody>
+          {grid.slice.map((item) => (
+            <tr key={item.item_id}>
+              <td>
+                <span>{item.product_name}</span>
+                {item.previous_price && (
+                  <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                    (anterior: R$ {fmtPrice(item.previous_price)})
+                  </span>
+                )}
+              </td>
+              <td style={{ textAlign: 'right' }}>
+                {editingItem === item.item_id ? (
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={editPrice}
+                    onChange={(e) => setEditPrice(e.target.value.replace(/[^0-9.,]/g, '').replace(',', '.'))}
+                    className="inputInline"
+                    style={{ width: 90 }}
+                    autoFocus
+                  />
+                ) : (
+                  <span style={{ fontWeight: 600 }}>R$ {fmtPrice(item.price)}</span>
+                )}
+              </td>
+              <td style={{ color: 'var(--muted)', fontSize: 12 }}>
+                {item.created_by_user_name}
+              </td>
+              <td style={{ fontSize: 12 }}>
+                {item.last_updated_by_user_name ? (
+                  <span>
+                    <span style={{ fontWeight: 500 }}>{item.last_updated_by_user_name}</span>
+                    {item.last_updated_at && (
+                      <span className="muted" style={{ marginLeft: 4 }}>
+                        {new Date(item.last_updated_at).toLocaleString('pt-BR')}
+                      </span>
+                    )}
+                    {item.change_reason && (
+                      <span className="muted" style={{ display: 'block', fontSize: 11 }}>
+                        {item.change_reason}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="muted">-</span>
+                )}
+              </td>
+              <td style={{ textAlign: 'center' }}>
+                {editingItem === item.item_id ? (
+                  <span style={{ display: 'inline-flex', gap: 4 }}>
+                    <button onClick={() => onSave(item.item_id)} className="btnLink btnLinkGood">
+                      Salvar
+                    </button>
+                    <button
+                      onClick={() => { setEditingItem(null); setEditPrice(''); }}
+                      className="btnLink btnLinkMuted"
+                    >
+                      Cancelar
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => { setEditingItem(item.item_id); setEditPrice(item.price); }}
+                    className="btnLink btnLinkAccent"
+                  >
+                    Editar
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <GridChrome
+        page={grid.page}
+        totalPages={grid.totalPages}
+        total={grid.total}
+        from={grid.range.from}
+        to={grid.range.to}
+        onPrev={grid.onPrev}
+        onNext={grid.onNext}
+        onResetOrder={grid.resetOrder}
+        isDefaultOrder={grid.isDefaultOrder}
+      />
+    </>
   );
 }
 
@@ -466,93 +602,15 @@ function HistoryTab({
 
               {/* Items — Desktop */}
               <div className="pricingDesktopOnly">
-              <table className="table compact">
-                <thead>
-                  <tr>
-                    <th>Produto</th>
-                    <th style={{ textAlign: 'right' }}>Preço</th>
-                    <th>Registrado por</th>
-                    <th>Última alteração</th>
-                    <th style={{ textAlign: 'center', width: 100 }}>Ação</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cap.items.map(item => (
-                    <tr key={item.item_id}>
-                      <td>
-                        <span>{item.product_name}</span>
-                        {item.previous_price && (
-                          <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
-                            (anterior: R$ {fmtPrice(item.previous_price)})
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        {editingItem === item.item_id ? (
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={editPrice}
-                            onChange={e => setEditPrice(e.target.value.replace(/[^0-9.,]/g, '').replace(',', '.'))}
-                            className="inputInline"
-                            style={{ width: 90 }}
-                            autoFocus
-                          />
-                        ) : (
-                          <span style={{ fontWeight: 600 }}>R$ {fmtPrice(item.price)}</span>
-                        )}
-                      </td>
-                      <td style={{ color: 'var(--muted)', fontSize: 12 }}>
-                        {item.created_by_user_name}
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        {item.last_updated_by_user_name ? (
-                          <span>
-                            <span style={{ fontWeight: 500 }}>{item.last_updated_by_user_name}</span>
-                            {item.last_updated_at && (
-                              <span className="muted" style={{ marginLeft: 4 }}>
-                                {new Date(item.last_updated_at).toLocaleString('pt-BR')}
-                              </span>
-                            )}
-                            {item.change_reason && (
-                              <span className="muted" style={{ display: 'block', fontSize: 11 }}>
-                                {item.change_reason}
-                              </span>
-                            )}
-                          </span>
-                        ) : (
-                          <span className="muted">-</span>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        {editingItem === item.item_id ? (
-                          <span style={{ display: 'inline-flex', gap: 4 }}>
-                            <button
-                              onClick={() => handleEditSave(item.item_id)}
-                              className="btnLink btnLinkGood"
-                            >
-                              Salvar
-                            </button>
-                            <button
-                              onClick={() => { setEditingItem(null); setEditPrice(''); }}
-                              className="btnLink btnLinkMuted"
-                            >
-                              Cancelar
-                            </button>
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => { setEditingItem(item.item_id); setEditPrice(item.price); }}
-                            className="btnLink btnLinkAccent"
-                          >
-                            Editar
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <HistoryItemsGrid
+                items={cap.items}
+                captureId={cap.capture_id}
+                editingItem={editingItem}
+                editPrice={editPrice}
+                setEditPrice={setEditPrice}
+                setEditingItem={setEditingItem}
+                onSave={handleEditSave}
+              />
               </div>
               {/* Items — Mobile */}
               <div className="pricingMobileOnly">
@@ -631,6 +689,22 @@ function ComparisonTab({
 
   useEffect(() => { loadComparison(); }, [loadComparison]);
   const { query, setQuery, filteredRows } = useGridSearch(rows);
+  const comparisonGrid = useRecordGrid<ComparisonRow>({
+    rows: filteredRows,
+    resetKey: `${query}:${compDate}`,
+    getTieId: (row) => row.product_id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.product_name }, { nome: b.product_name }),
+    columns: {
+      product_name: { type: 'text' },
+      own_current_price: { type: 'number' },
+      competitor_min_price: { type: 'number' },
+      competitor_min_station_name: { type: 'text' },
+      competitor_avg_price: { type: 'number' },
+      diff_value: { type: 'number' },
+      status: { type: 'text' },
+    },
+  });
 
   const statusInfo = (s: string) => {
     switch (s) {
@@ -671,17 +745,17 @@ function ComparisonTab({
           <table className="table">
             <thead>
               <tr>
-                <th>Combustível</th>
-                <th style={{ textAlign: 'right' }}>Meu Preço</th>
-                <th style={{ textAlign: 'right' }}>Menor Concorrente</th>
-                <th>Posto</th>
-                <th style={{ textAlign: 'right' }}>Média</th>
-                <th style={{ textAlign: 'right' }}>Diferença</th>
-                <th style={{ textAlign: 'center' }}>Status</th>
+                <SortableTh label="Combustível" sortKey="product_name" ariaSort={comparisonGrid.ariaSort('product_name')} onToggle={comparisonGrid.toggleSort} />
+                <SortableTh label="Meu Preço" sortKey="own_current_price" ariaSort={comparisonGrid.ariaSort('own_current_price')} onToggle={comparisonGrid.toggleSort} align="right" />
+                <SortableTh label="Menor Concorrente" sortKey="competitor_min_price" ariaSort={comparisonGrid.ariaSort('competitor_min_price')} onToggle={comparisonGrid.toggleSort} align="right" />
+                <SortableTh label="Posto" sortKey="competitor_min_station_name" ariaSort={comparisonGrid.ariaSort('competitor_min_station_name')} onToggle={comparisonGrid.toggleSort} />
+                <SortableTh label="Média" sortKey="competitor_avg_price" ariaSort={comparisonGrid.ariaSort('competitor_avg_price')} onToggle={comparisonGrid.toggleSort} align="right" />
+                <SortableTh label="Diferença" sortKey="diff_value" ariaSort={comparisonGrid.ariaSort('diff_value')} onToggle={comparisonGrid.toggleSort} align="right" />
+                <SortableTh label="Status" sortKey="status" ariaSort={comparisonGrid.ariaSort('status')} onToggle={comparisonGrid.toggleSort} align="center" />
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map(row => {
+              {comparisonGrid.slice.map(row => {
                 const st = statusInfo(row.status);
                 return (
                   <tr key={row.product_id}>
@@ -722,8 +796,19 @@ function ComparisonTab({
               })}
             </tbody>
           </table>
+          <GridChrome
+            page={comparisonGrid.page}
+            totalPages={comparisonGrid.totalPages}
+            total={comparisonGrid.total}
+            from={comparisonGrid.range.from}
+            to={comparisonGrid.range.to}
+            onPrev={comparisonGrid.onPrev}
+            onNext={comparisonGrid.onNext}
+            onResetOrder={comparisonGrid.resetOrder}
+            isDefaultOrder={comparisonGrid.isDefaultOrder}
+          />
         </div>
-        {/* Mobile comparison cards */}
+        {/* Mobile: cards de comparação, não listagem tabular. */}
         <div className="pricingMobileOnly">
           {rows.map(row => {
             const st = statusInfo(row.status);

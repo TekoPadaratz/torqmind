@@ -16,7 +16,9 @@ import AppNav from "../components/AppNav";
 import SalesFloorBoard from "../components/SalesFloorBoard";
 import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import SalesVariationInvestigate from "./SalesVariationInvestigate";
 import { buildUserLabel, formatCurrency } from "../lib/format";
@@ -29,6 +31,7 @@ import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../l
 import { canViewSensitiveFinancials, isSalesFloorMode, canAccessScreenKey } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
 
 export const dynamic = "force-dynamic";
 
@@ -184,7 +187,31 @@ export default function SalesPage() {
     setSelectedGrupoIds((prev) =>
       prev.includes(idGrupo) ? prev.filter((id) => id !== idGrupo) : [...prev, idGrupo],
     );
-  const productsDisplayLimit = selectedGrupoIds.length ? 50 : 15;
+  const groupsGrid = useRecordGrid<any>({
+    rows: filteredGroups,
+    resetKey: groupsQ,
+    getTieId: (row) => row.id_grupo_produto,
+    defaultCompare: (a, b) => Number(b.faturamento || 0) - Number(a.faturamento || 0),
+    summableKeys: showSensitive ? ["faturamento", "margem"] : ["faturamento"],
+    columns: {
+      grupo_nome: { type: "text" },
+      faturamento: { type: "number" },
+      margem: { type: "number" },
+    },
+  });
+  const productsGrid = useRecordGrid<any>({
+    rows: searchedProducts,
+    resetKey: `${productsQ}:${selectedGrupoIds.join(",")}`,
+    getTieId: (row) => row.id_produto,
+    defaultCompare: (a, b) => Number(b.faturamento || 0) - Number(a.faturamento || 0),
+    summableKeys: showSensitive ? ["faturamento", "custo_total", "margem"] : ["faturamento"],
+    columns: {
+      produto_nome: { type: "text" },
+      faturamento: { type: "number" },
+      custo_total: { type: "number" },
+      margem: { type: "number" },
+    },
+  });
 
   if (!hasAnyPanel) {
     return (
@@ -498,13 +525,15 @@ export default function SalesPage() {
                   <table className="table compact" style={{ minWidth: "max-content", width: "100%" }}>
                     <thead>
                       <tr>
-                        <th style={{ whiteSpace: "nowrap" }}>Grupo</th>
-                        <th style={{ whiteSpace: "nowrap" }}>Receita</th>
-                        {showSensitive ? <th style={{ whiteSpace: "nowrap" }}>Margem</th> : null}
+                        <SortableTh label="Grupo" sortKey="grupo_nome" ariaSort={groupsGrid.ariaSort("grupo_nome")} onToggle={groupsGrid.toggleSort} />
+                        <SortableTh label="Receita" sortKey="faturamento" ariaSort={groupsGrid.ariaSort("faturamento")} onToggle={groupsGrid.toggleSort} align="right" />
+                        {showSensitive ? (
+                          <SortableTh label="Margem" sortKey="margem" ariaSort={groupsGrid.ariaSort("margem")} onToggle={groupsGrid.toggleSort} align="right" />
+                        ) : null}
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredGroups.slice(0, 10).map((g: any) => {
+                      {groupsGrid.slice.map((g: any) => {
                         const idGrupo = Number(g.id_grupo_produto);
                         const on = selectedGrupoIds.includes(idGrupo);
                         return (
@@ -514,6 +543,7 @@ export default function SalesPage() {
                             style={{ cursor: "pointer", background: on ? "var(--accent-copper-soft)" : undefined }}
                           >
                             <td
+                              title={g.grupo_nome}
                               style={{
                                 whiteSpace: "nowrap",
                                 color: on ? "var(--accent-copper)" : undefined,
@@ -532,6 +562,18 @@ export default function SalesPage() {
                     </tbody>
                   </table>
                 </div>
+                <GridChrome
+                  page={groupsGrid.page}
+                  totalPages={groupsGrid.totalPages}
+                  total={groupsGrid.total}
+                  from={groupsGrid.range.from}
+                  to={groupsGrid.range.to}
+                  onPrev={groupsGrid.onPrev}
+                  onNext={groupsGrid.onNext}
+                  onResetOrder={groupsGrid.resetOrder}
+                  isDefaultOrder={groupsGrid.isDefaultOrder}
+                  truncatedNote="Destaque do período — consulta limitada aos principais grupos."
+                />
               </div>
 
               <div className="card col-6">
@@ -549,21 +591,21 @@ export default function SalesPage() {
                   <table className="table compact" style={{ minWidth: "max-content", width: "100%" }}>
                     <thead>
                       <tr>
-                        <th style={{ whiteSpace: "nowrap" }}>Produto</th>
-                        <th style={{ whiteSpace: "nowrap" }}>Receita</th>
+                        <SortableTh label="Produto" sortKey="produto_nome" ariaSort={productsGrid.ariaSort("produto_nome")} onToggle={productsGrid.toggleSort} />
+                        <SortableTh label="Receita" sortKey="faturamento" ariaSort={productsGrid.ariaSort("faturamento")} onToggle={productsGrid.toggleSort} align="right" />
                         {showSensitive ? (
                           <>
-                            <th style={{ whiteSpace: "nowrap" }}>Custo</th>
-                            <th style={{ whiteSpace: "nowrap" }}>Margem</th>
+                            <SortableTh label="Custo" sortKey="custo_total" ariaSort={productsGrid.ariaSort("custo_total")} onToggle={productsGrid.toggleSort} align="right" />
+                            <SortableTh label="Margem" sortKey="margem" ariaSort={productsGrid.ariaSort("margem")} onToggle={productsGrid.toggleSort} align="right" />
                           </>
                         ) : null}
                       </tr>
                     </thead>
                     <tbody>
-                      {searchedProducts.slice(0, productsDisplayLimit).map((p: any) => (
+                      {productsGrid.slice.map((p: any) => (
                         <tr key={p.id_produto}>
                           <td style={{ whiteSpace: "nowrap" }}>
-                            <div>{p.produto_nome}</div>
+                            <div title={p.produto_nome}>{p.produto_nome}</div>
                             <div className="muted" style={{ marginTop: 4 }}>
                               {formatSalesQuantity(p.qtd, p)} · preço médio{" "}
                               {formatCurrency(p.valor_unitario_medio)}
@@ -581,6 +623,18 @@ export default function SalesPage() {
                     </tbody>
                   </table>
                 </div>
+                <GridChrome
+                  page={productsGrid.page}
+                  totalPages={productsGrid.totalPages}
+                  total={productsGrid.total}
+                  from={productsGrid.range.from}
+                  to={productsGrid.range.to}
+                  onPrev={productsGrid.onPrev}
+                  onNext={productsGrid.onNext}
+                  onResetOrder={productsGrid.resetOrder}
+                  isDefaultOrder={productsGrid.isDefaultOrder}
+                  truncatedNote="Destaque do período — consulta limitada aos principais produtos."
+                />
               </div>
               </>
               ) : null}

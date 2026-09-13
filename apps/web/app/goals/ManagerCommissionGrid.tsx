@@ -4,10 +4,13 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPut, isRequestCanceled } from "../lib/api";
 import { formatCurrency } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import { useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { extractApiError } from "../lib/errors";
-import { sortGridRows } from "../lib/grid-sort";
+import { compareGridRows, sortGridRows } from "../lib/grid-sort";
 import ManagerCommissionDrilldown, {
   type DrilldownPayload,
 } from "./ManagerCommissionDrilldown";
@@ -189,36 +192,45 @@ export default function ManagerCommissionGrid({
     sortedRows as unknown as Record<string, unknown>[],
     { excludeKeys: /^id_/i },
   );
-
-  const footerTotals = useMemo(() => {
-    const list = filteredRows as unknown as RowState[];
-    const acc = list.reduce(
-      (a, row) => {
-        a.venda_bruta_total += Number(row.venda_bruta_total || 0);
-        a.comissao_bruta += Number(row.comissao_bruta || 0);
-        a.perdas_estoque += Number(row.perdas_estoque || 0);
-        a.sobras_estoque += Number(row.sobras_estoque || 0);
-        a.sobras_caixa += Number(row.sobras_caixa || 0);
-        a.furos_caixa += Number(row.furos_caixa || 0);
-        a.comissao_liquida += Number(row.comissao_liquida || 0);
-        return a;
-      },
-      {
-        venda_bruta_total: 0,
-        comissao_bruta: 0,
-        perdas_estoque: 0,
-        sobras_estoque: 0,
-        sobras_caixa: 0,
-        furos_caixa: 0,
-        comissao_liquida: 0,
-      },
-    );
-    const rate_pct =
-      acc.venda_bruta_total > 0
-        ? Math.round(((acc.comissao_bruta / acc.venda_bruta_total) * 100) * 100) / 100
-        : 0;
-    return { ...acc, rate_pct };
-  }, [filteredRows]);
+  const managerGrid = useRecordGrid<RowState>({
+    rows: filteredRows as unknown as RowState[],
+    resetKey: query,
+    getTieId: (row) => row.id_filial,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label || String(a.id_filial), nome: a.filial_label },
+        { filial: b.filial_label || String(b.id_filial), nome: b.filial_label },
+      ),
+    summableKeys: [
+      "venda_bruta_total",
+      "comissao_bruta",
+      "perdas_estoque",
+      "sobras_estoque",
+      "sobras_caixa",
+      "furos_caixa",
+      "comissao_liquida",
+    ],
+    columns: {
+      filial_label: { type: "text" },
+      venda_bruta_total: { type: "number" },
+      rate_pct: { type: "number" },
+      comissao_bruta: { type: "number" },
+      perdas_estoque: { type: "number" },
+      sobras_estoque: { type: "number" },
+      sobras_caixa: { type: "number" },
+      furos_caixa: { type: "number" },
+      comissao_liquida: { type: "number" },
+    },
+  });
+  const pageRatePct =
+    Number(managerGrid.pageTotals.venda_bruta_total || 0) > 0
+      ? Math.round(
+          ((Number(managerGrid.pageTotals.comissao_bruta || 0) /
+            Number(managerGrid.pageTotals.venda_bruta_total || 0)) *
+            100) *
+            100,
+        ) / 100
+      : 0;
 
   const updateLocal = (targetFilial: number, patch: Partial<RowState>) => {
     setRows((prev) =>
@@ -390,19 +402,19 @@ export default function ManagerCommissionGrid({
             <thead>
               <tr>
                 <th style={{ width: 28 }} />
-                <th style={{ textAlign: "left" }}>Filial</th>
-                <th style={{ textAlign: "right" }}>Venda bruta</th>
-                <th style={{ textAlign: "right" }}>Taxa %</th>
-                <th style={{ textAlign: "right" }}>Comissão bruta</th>
-                <th style={{ textAlign: "right" }}>Perdas estoque</th>
-                <th style={{ textAlign: "right" }}>Sobras estoque</th>
-                <th style={{ textAlign: "right" }}>Sobras caixa</th>
-                <th style={{ textAlign: "right" }}>Furos caixa</th>
-                <th style={{ textAlign: "right" }}>Comissão líquida</th>
+                <SortableTh label="Filial" sortKey="filial_label" ariaSort={managerGrid.ariaSort("filial_label")} onToggle={managerGrid.toggleSort} />
+                <SortableTh label="Venda bruta" sortKey="venda_bruta_total" ariaSort={managerGrid.ariaSort("venda_bruta_total")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Taxa %" sortKey="rate_pct" ariaSort={managerGrid.ariaSort("rate_pct")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Comissão bruta" sortKey="comissao_bruta" ariaSort={managerGrid.ariaSort("comissao_bruta")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Perdas estoque" sortKey="perdas_estoque" ariaSort={managerGrid.ariaSort("perdas_estoque")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Sobras estoque" sortKey="sobras_estoque" ariaSort={managerGrid.ariaSort("sobras_estoque")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Sobras caixa" sortKey="sobras_caixa" ariaSort={managerGrid.ariaSort("sobras_caixa")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Furos caixa" sortKey="furos_caixa" ariaSort={managerGrid.ariaSort("furos_caixa")} onToggle={managerGrid.toggleSort} align="right" />
+                <SortableTh label="Comissão líquida" sortKey="comissao_liquida" ariaSort={managerGrid.ariaSort("comissao_liquida")} onToggle={managerGrid.toggleSort} align="right" />
               </tr>
             </thead>
             <tbody>
-              {(filteredRows as unknown as RowState[]).map((row) => {
+              {managerGrid.slice.map((row) => {
                 const expanded = expandedFilial === row.id_filial;
                 return (
                   <Fragment key={row.id_filial}>
@@ -547,27 +559,27 @@ export default function ManagerCommissionGrid({
             <tfoot className="commissionGridFoot">
               <tr>
                 <td />
-                <td style={{ textAlign: "left", fontWeight: 700 }}>Total</td>
+                <td style={{ textAlign: "left", fontWeight: 700 }}>Total da página ({managerGrid.slice.length})</td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {formatCurrency(footerTotals.venda_bruta_total)}
+                  {formatCurrency(managerGrid.pageTotals.venda_bruta_total)}
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {footerTotals.rate_pct.toFixed(2)}%
+                  {pageRatePct.toFixed(2)}%
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {formatCurrency(footerTotals.comissao_bruta)}
+                  {formatCurrency(managerGrid.pageTotals.comissao_bruta)}
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {formatCurrency(footerTotals.perdas_estoque)}
+                  {formatCurrency(managerGrid.pageTotals.perdas_estoque)}
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {formatCurrency(footerTotals.sobras_estoque)}
+                  {formatCurrency(managerGrid.pageTotals.sobras_estoque)}
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {formatCurrency(footerTotals.sobras_caixa)}
+                  {formatCurrency(managerGrid.pageTotals.sobras_caixa)}
                 </td>
                 <td style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
-                  {formatCurrency(footerTotals.furos_caixa)}
+                  {formatCurrency(managerGrid.pageTotals.furos_caixa)}
                 </td>
                 <td
                   style={{
@@ -577,11 +589,22 @@ export default function ManagerCommissionGrid({
                     color: "var(--color-positive)",
                   }}
                 >
-                  {formatCurrency(footerTotals.comissao_liquida)}
+                  {formatCurrency(managerGrid.pageTotals.comissao_liquida)}
                 </td>
               </tr>
             </tfoot>
           </table>
+          <GridChrome
+            page={managerGrid.page}
+            totalPages={managerGrid.totalPages}
+            total={managerGrid.total}
+            from={managerGrid.range.from}
+            to={managerGrid.range.to}
+            onPrev={managerGrid.onPrev}
+            onNext={managerGrid.onNext}
+            onResetOrder={managerGrid.resetOrder}
+            isDefaultOrder={managerGrid.isDefaultOrder}
+          />
         </div>
       )}
     </div>

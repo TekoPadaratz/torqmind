@@ -19,9 +19,12 @@ import {
 import AppNav from "../components/AppNav";
 import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
-import GridPager from "../components/ui/GridPager";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SortableTh from "../components/ui/SortableTh";
+import { compareGridRows } from "../lib/grid-sort";
+import { useRecordGrid } from "../lib/use-record-grid";
 import {
   buildUserLabel,
   formatCurrency,
@@ -89,17 +92,11 @@ export default function FraudPage() {
   const [trocaFormaNova, setTrocaFormaNova] = useState<"todos" | "prazo" | "cheque_pre">("todos");
   const [creditoRisco, setCreditoRisco] = useState<"suspeitas" | "normais" | "todas">("todas");
   const [creditoUsoQuery, setCreditoUsoQuery] = useState("");
-  const [creditoPage, setCreditoPage] = useState(1);
   const [creditoExpandido, setCreditoExpandido] = useState<string | null>(null);
   const [credFuncStatus, setCredFuncStatus] = useState<"todos" | "suspeitos" | "normais">("todos");
   const [credFuncMonth, setCredFuncMonth] = useState<number>(() => currentAnoMesSP());
-  const [credFuncPage, setCredFuncPage] = useState(1);
   const [credFuncExpandido, setCredFuncExpandido] = useState<number | null>(null);
   const [credFuncUsoQuery, setCredFuncUsoQuery] = useState("");
-  const [trocaPage, setTrocaPage] = useState(1);
-  const [cancelPage, setCancelPage] = useState(1);
-  const [operadorPage, setOperadorPage] = useState(1);
-  const pageSize = 30;
   const riscoFinanceiroRef = useRef<HTMLDivElement | null>(null);
   const scrollAnchorElRef = useRef<HTMLElement | null>(null);
   const scrollAnchorTopRef = useRef<number | null>(null);
@@ -121,25 +118,13 @@ export default function FraudPage() {
     setTrocaSoSuspeitas(false);
     setTrocaFormaNova("todos");
     setCreditoRisco("todas");
-    setCreditoPage(1);
-    setTrocaPage(1);
-    setCancelPage(1);
-    setOperadorPage(1);
     setCreditoExpandido(null);
     setCredFuncStatus("todos");
-    setCredFuncPage(1);
     setCredFuncExpandido(null);
   }, [scopeKey]);
   useEffect(() => {
-    setCreditoPage(1);
-  }, [creditoRisco]);
-  useEffect(() => {
-    setCredFuncPage(1);
     setCredFuncExpandido(null);
   }, [credFuncStatus, credFuncMonth]);
-  useEffect(() => {
-    setTrocaPage(1);
-  }, [trocaSoSuspeitas, trocaFormaNova]);
 
   // Core operacional (operadores/cancelamentos/gráficos) — isolado dos filtros de risco.
   const { claims, data, error, loading, pendingUnavailable } =
@@ -216,12 +201,36 @@ export default function FraudPage() {
         : [],
     [credFuncPayload?.meses_disponiveis],
   );
-  const credFuncTotalPages = Math.max(1, Math.ceil(credFuncSearch.filteredRows.length / pageSize));
-  const credFuncPageSafe = Math.min(Math.max(1, credFuncPage), credFuncTotalPages);
-  const credFuncPageRows = credFuncSearch.filteredRows.slice(
-    (credFuncPageSafe - 1) * pageSize,
-    credFuncPageSafe * pageSize,
-  );
+  const credFuncGrid = useRecordGrid<any>({
+    rows: credFuncSearch.filteredRows,
+    resetKey: `${credFuncSearch.query}:${credFuncStatus}:${credFuncMonth}`,
+    getTieId: (row) => row.id_funcionario,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.nome }, { nome: b.nome }),
+    summableKeys: [
+      "limite_prazo",
+      "limite_vale",
+      "usado_vale",
+      "usado_prazo",
+      "usado_geral",
+      "pago_mes",
+      "saldo_aberto_geral",
+      "saldo_aberto_mes",
+      "qtd_usos_mes",
+    ],
+    columns: {
+      nome: { type: "text" },
+      limite_prazo: { type: "number" },
+      limite_vale: { type: "number" },
+      usado_vale: { type: "number" },
+      usado_prazo: { type: "number" },
+      usado_geral: { type: "number" },
+      pago_mes: { type: "number" },
+      saldo_aberto_geral: { type: "number" },
+      saldo_aberto_mes: { type: "number" },
+      qtd_usos_mes: { type: "number" },
+    },
+  });
 
   // Mantém o card do filtro na mesma posição do viewport após o refresh do risco.
   useLayoutEffect(() => {
@@ -292,13 +301,24 @@ export default function FraudPage() {
   );
   const devolucaoSearch = useGridSearch(devolucaoRows);
   const devolucaoSummary = riscoData?.devolucao_entrada?.summary || {};
-  const [devolucaoPage, setDevolucaoPage] = useState(1);
-  const devolucaoTotalPages = Math.max(1, Math.ceil(devolucaoSearch.filteredRows.length / pageSize));
-  const devolucaoPageSafe = Math.min(Math.max(1, devolucaoPage), devolucaoTotalPages);
-  const devolucaoPageRows = devolucaoSearch.filteredRows.slice(
-    (devolucaoPageSafe - 1) * pageSize,
-    devolucaoPageSafe * pageSize,
-  );
+  const devolucaoGrid = useRecordGrid<any>({
+    rows: devolucaoSearch.filteredRows,
+    resetKey: devolucaoSearch.query,
+    getTieId: (row) => `${row.id_filial}-${row.id_comprovante}-${row.documento}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.dt || a.data_key, nome: a.nome_operador },
+        { filial: b.filial_label ?? b.id_filial, data: b.dt || b.data_key, nome: b.nome_operador },
+      ),
+    summableKeys: ["valor"],
+    columns: {
+      filial_label: { type: "text" },
+      dt: { type: "date" },
+      documento: { type: "text" },
+      nome_operador: { type: "text" },
+      valor: { type: "number" },
+    },
+  });
 
   const transferenciaRows = useMemo(
     () =>
@@ -316,19 +336,26 @@ export default function FraudPage() {
   );
   const transferenciaSearch = useGridSearch(transferenciaRows);
   const transferenciaSummary = riscoData?.transferencia_cr?.summary || {};
-  const [transferenciaPage, setTransferenciaPage] = useState(1);
-  const transferenciaTotalPages = Math.max(
-    1,
-    Math.ceil(transferenciaSearch.filteredRows.length / pageSize),
-  );
-  const transferenciaPageSafe = Math.min(
-    Math.max(1, transferenciaPage),
-    transferenciaTotalPages,
-  );
-  const transferenciaPageRows = transferenciaSearch.filteredRows.slice(
-    (transferenciaPageSafe - 1) * pageSize,
-    transferenciaPageSafe * pageSize,
-  );
+  const transferenciaGrid = useRecordGrid<any>({
+    rows: transferenciaSearch.filteredRows,
+    resetKey: transferenciaSearch.query,
+    getTieId: (row) =>
+      `${row.id_filial}-${row.id_contasreceber}-${row.id_entidade_de}-${row.id_entidade_para}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.dt || a.data_key, nome: a.entidade_para || a.entidade_de },
+        { filial: b.filial_label ?? b.id_filial, data: b.dt || b.data_key, nome: b.entidade_para || b.entidade_de },
+      ),
+    summableKeys: ["valor"],
+    columns: {
+      filial_label: { type: "text" },
+      dt: { type: "date" },
+      documento: { type: "text" },
+      entidade_de: { type: "text" },
+      entidade_para: { type: "text" },
+      valor: { type: "number" },
+    },
+  });
 
   const byDay = useMemo(
     () =>
@@ -369,12 +396,26 @@ export default function FraudPage() {
       nome: c.cliente,
     }));
   }, [creditosSearch.filteredRows]);
-  const creditoTotalPages = Math.max(1, Math.ceil(creditosFiltered.length / pageSize));
-  const creditoPageSafe = Math.min(Math.max(1, creditoPage), creditoTotalPages);
-  const creditosPageRows = creditosFiltered.slice(
-    (creditoPageSafe - 1) * pageSize,
-    creditoPageSafe * pageSize,
-  );
+  const creditosGrid = useRecordGrid<any>({
+    rows: creditosFiltered,
+    resetKey: `${creditosSearch.query}:${creditoRisco}`,
+    getTieId: (row, idx) => `${row.id_filial}-${row.id_cliente || idx}-${row.id_mov || idx}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.data_ts || a.data || a.data_key, nome: a.cliente },
+        { filial: b.filial_label ?? b.id_filial, data: b.data_ts || b.data || b.data_key, nome: b.cliente },
+      ),
+    summableKeys: ["injetado"],
+    columns: {
+      filial_label: { type: "text" },
+      data_ts: { type: "date" },
+      cliente: { type: "text" },
+      operador: { type: "text" },
+      injetado: { type: "number" },
+      saldo_operacao: { type: "number" },
+      saldo_atual: { type: "number" },
+    },
+  });
 
   const lastEventsOperational = useMemo(() => {
     // Mesmo universo do gráfico (fraud_daily): não descartar turno 0 / NF ausente.
@@ -389,47 +430,65 @@ export default function FraudPage() {
   }, [data?.last_events]);
   const cancelSearch = useGridSearch(lastEventsOperational);
 
-  const cancelTotalPages = Math.max(1, Math.ceil(cancelSearch.filteredRows.length / pageSize));
-  const cancelPageSafe = Math.min(Math.max(1, cancelPage), cancelTotalPages);
-  const cancelPageRows = cancelSearch.filteredRows.slice(
-    (cancelPageSafe - 1) * pageSize,
-    cancelPageSafe * pageSize,
-  );
+  const cancelGrid = useRecordGrid<any>({
+    rows: cancelSearch.filteredRows,
+    resetKey: cancelSearch.query,
+    getTieId: (row) => `${row.id_filial}-${row.id_db}-${row.id_comprovante}-${row.event_id || row.id || ""}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.filial_nome ?? a.id_filial, data: a.data || a.data_key, nome: a.usuario_label || a.operador_label },
+        { filial: b.filial_label ?? b.filial_nome ?? b.id_filial, data: b.data || b.data_key, nome: b.usuario_label || b.operador_label },
+      ),
+    summableKeys: ["valor_total"],
+    columns: {
+      filial_label: { type: "text" },
+      data: { type: "date" },
+      turno_label: { type: "text" },
+      usuario_label: { type: "text" },
+      documento_label: { type: "text" },
+      valor_total: { type: "number" },
+    },
+  });
 
   const topUsersRows = useMemo(
     () => (Array.isArray(data?.top_users) ? data.top_users : []),
     [data?.top_users],
   );
   const operadorSearch = useGridSearch(topUsersRows);
-  const operadorTotalPages = Math.max(1, Math.ceil(operadorSearch.filteredRows.length / pageSize));
-  const operadorPageSafe = Math.min(Math.max(1, operadorPage), operadorTotalPages);
-  const operadorPageRows = operadorSearch.filteredRows.slice(
-    (operadorPageSafe - 1) * pageSize,
-    operadorPageSafe * pageSize,
-  );
+  const operadorGrid = useRecordGrid<any>({
+    rows: operadorSearch.filteredRows,
+    resetKey: operadorSearch.query,
+    getTieId: (row) => `${row.id_filial}-${row.id_usuario}-${row.usuario_label}`,
+    defaultSort: { key: "cancelamentos", type: "number", dir: "desc" },
+    summableKeys: ["cancelamentos", "valor_cancelado"],
+    columns: {
+      filial_label: { type: "text" },
+      usuario_label: { type: "text" },
+      cancelamentos: { type: "number" },
+      valor_cancelado: { type: "number" },
+    },
+  });
 
-  const trocaTotalPages = Math.max(1, Math.ceil(trocaSearch.filteredRows.length / pageSize));
-  const trocaPageSafe = Math.min(Math.max(1, trocaPage), trocaTotalPages);
-  const trocaPageRows = trocaSearch.filteredRows.slice(
-    (trocaPageSafe - 1) * pageSize,
-    trocaPageSafe * pageSize,
-  );
-
-  useEffect(() => {
-    setCreditoPage(1);
-  }, [creditosSearch.query]);
-  useEffect(() => {
-    setCredFuncPage(1);
-  }, [credFuncSearch.query]);
-  useEffect(() => {
-    setTrocaPage(1);
-  }, [trocaSearch.query]);
-  useEffect(() => {
-    setCancelPage(1);
-  }, [cancelSearch.query]);
-  useEffect(() => {
-    setOperadorPage(1);
-  }, [operadorSearch.query]);
+  const trocaGrid = useRecordGrid<any>({
+    rows: trocaSearch.filteredRows,
+    resetKey: `${trocaSearch.query}:${trocaSoSuspeitas}:${trocaFormaNova}`,
+    getTieId: (row) => row.troca_id,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.filial_nome ?? a.id_filial, data: a.data_troca_ts || a.data_key, nome: a.nome_operador },
+        { filial: b.filial_label ?? b.filial_nome ?? b.id_filial, data: b.data_troca_ts || b.data_key, nome: b.nome_operador },
+      ),
+    summableKeys: ["valor"],
+    columns: {
+      filial_label: { type: "text" },
+      data_troca_ts: { type: "date" },
+      documento: { type: "text" },
+      forma_de: { type: "text" },
+      forma_para: { type: "text" },
+      nome_operador: { type: "text" },
+      valor: { type: "number" },
+    },
+  });
   const topOperationalUser = topUsersRows[0];
   const latestOperationalEvent = lastEventsOperational[0];
   const topEmployee = (data?.risk_top_employees || [])[0];
@@ -586,14 +645,14 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Filial</th>
-                        <th>Operador</th>
-                        <th>Cancelamentos</th>
-                        <th>Valor</th>
+                        <SortableTh label="Filial" sortKey="filial_label" ariaSort={operadorGrid.ariaSort("filial_label")} onToggle={operadorGrid.toggleSort} />
+                        <SortableTh label="Operador" sortKey="usuario_label" ariaSort={operadorGrid.ariaSort("usuario_label")} onToggle={operadorGrid.toggleSort} />
+                        <SortableTh label="Cancelamentos" sortKey="cancelamentos" ariaSort={operadorGrid.ariaSort("cancelamentos")} onToggle={operadorGrid.toggleSort} align="right" />
+                        <SortableTh label="Valor" sortKey="valor_cancelado" ariaSort={operadorGrid.ariaSort("valor_cancelado")} onToggle={operadorGrid.toggleSort} align="right" />
                       </tr>
                     </thead>
                     <tbody>
-                      {operadorPageRows.map((u: any) => (
+                      {operadorGrid.slice.map((u: any) => (
                         <tr key={`${u.id_filial}-${u.id_usuario}-${u.usuario_label}`}>
                           <td>{u.filial_label || formatFilialLabel(u.id_filial, u.filial_nome)}</td>
                           <td>{u.usuario_label}</td>
@@ -604,15 +663,16 @@ export default function FraudPage() {
                     </tbody>
                   </table>
                 </div>
-                <GridPager
-                  page={operadorPageSafe}
-                  totalPages={operadorTotalPages}
-                  total={operadorSearch.filteredRows.length}
-                  pageSize={pageSize}
-                  onPrev={() => setOperadorPage((p) => Math.max(1, p - 1))}
-                  onNext={() =>
-                    setOperadorPage((p) => Math.min(operadorTotalPages, p + 1))
-                  }
+                <GridChrome
+                  page={operadorGrid.page}
+                  totalPages={operadorGrid.totalPages}
+                  total={operadorGrid.total}
+                  from={operadorGrid.range.from}
+                  to={operadorGrid.range.to}
+                  onPrev={operadorGrid.onPrev}
+                  onNext={operadorGrid.onNext}
+                  onResetOrder={operadorGrid.resetOrder}
+                  isDefaultOrder={operadorGrid.isDefaultOrder}
                 />
               </div>
 
@@ -629,16 +689,16 @@ export default function FraudPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Filial</th>
-                        <th>Data</th>
-                        <th>Turno</th>
-                        <th>Operador</th>
-                        <th>Documento</th>
-                        <th>Valor</th>
+                        <SortableTh label="Filial" sortKey="filial_label" ariaSort={cancelGrid.ariaSort("filial_label")} onToggle={cancelGrid.toggleSort} />
+                        <SortableTh label="Data" sortKey="data" ariaSort={cancelGrid.ariaSort("data")} onToggle={cancelGrid.toggleSort} />
+                        <SortableTh label="Turno" sortKey="turno_label" ariaSort={cancelGrid.ariaSort("turno_label")} onToggle={cancelGrid.toggleSort} />
+                        <SortableTh label="Operador" sortKey="usuario_label" ariaSort={cancelGrid.ariaSort("usuario_label")} onToggle={cancelGrid.toggleSort} />
+                        <SortableTh label="Documento" sortKey="documento_label" ariaSort={cancelGrid.ariaSort("documento_label")} onToggle={cancelGrid.toggleSort} />
+                        <SortableTh label="Valor" sortKey="valor_total" ariaSort={cancelGrid.ariaSort("valor_total")} onToggle={cancelGrid.toggleSort} align="right" />
                       </tr>
                     </thead>
                     <tbody>
-                      {cancelPageRows.map((e: any) => (
+                      {cancelGrid.slice.map((e: any) => (
                         <tr key={`${e.id_filial}-${e.id_db}-${e.id_comprovante}-${e.event_id || e.id || ""}`}>
                           <td>
                             {e.filial_label ||
@@ -657,15 +717,16 @@ export default function FraudPage() {
                     </tbody>
                   </table>
                 </div>
-                <GridPager
-                  page={cancelPageSafe}
-                  totalPages={cancelTotalPages}
-                  total={cancelSearch.filteredRows.length}
-                  pageSize={pageSize}
-                  onPrev={() => setCancelPage((p) => Math.max(1, p - 1))}
-                  onNext={() =>
-                    setCancelPage((p) => Math.min(cancelTotalPages, p + 1))
-                  }
+                <GridChrome
+                  page={cancelGrid.page}
+                  totalPages={cancelGrid.totalPages}
+                  total={cancelGrid.total}
+                  from={cancelGrid.range.from}
+                  to={cancelGrid.range.to}
+                  onPrev={cancelGrid.onPrev}
+                  onNext={cancelGrid.onNext}
+                  onResetOrder={cancelGrid.resetOrder}
+                  isDefaultOrder={cancelGrid.isDefaultOrder}
                 />
               </div>
             </div>
@@ -761,20 +822,20 @@ export default function FraudPage() {
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Filial</th>
-                          <th>Data</th>
-                          <th>Cliente</th>
-                          <th>Operador</th>
-                          <th style={{ textAlign: "right" }}>Injetado</th>
-                          <th style={{ textAlign: "right" }}>Saldo na operação</th>
-                          <th style={{ textAlign: "right" }}>Saldo atual</th>
+                          <SortableTh label="Filial" sortKey="filial_label" ariaSort={creditosGrid.ariaSort("filial_label")} onToggle={creditosGrid.toggleSort} />
+                          <SortableTh label="Data" sortKey="data_ts" ariaSort={creditosGrid.ariaSort("data_ts")} onToggle={creditosGrid.toggleSort} />
+                          <SortableTh label="Cliente" sortKey="cliente" ariaSort={creditosGrid.ariaSort("cliente")} onToggle={creditosGrid.toggleSort} />
+                          <SortableTh label="Operador" sortKey="operador" ariaSort={creditosGrid.ariaSort("operador")} onToggle={creditosGrid.toggleSort} />
+                          <SortableTh label="Injetado" sortKey="injetado" ariaSort={creditosGrid.ariaSort("injetado")} onToggle={creditosGrid.toggleSort} align="right" />
+                          <SortableTh label="Saldo na operação" sortKey="saldo_operacao" ariaSort={creditosGrid.ariaSort("saldo_operacao")} onToggle={creditosGrid.toggleSort} align="right" />
+                          <SortableTh label="Saldo atual" sortKey="saldo_atual" ariaSort={creditosGrid.ariaSort("saldo_atual")} onToggle={creditosGrid.toggleSort} align="right" />
                           <th>Histórico</th>
                           <th>Risco</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {creditosPageRows.map((c: any, idx: number) => {
-                          const rowKey = `${c.id_filial}-${c.id_cliente || idx}-${c.id_mov || (creditoPageSafe - 1) * pageSize + idx}`;
+                        {creditosGrid.slice.map((c: any, idx: number) => {
+                          const rowKey = `${c.id_filial}-${c.id_cliente || idx}-${c.id_mov || idx}`;
                           const expanded = creditoExpandido === rowKey;
                           const consumos: any[] = Array.isArray(c.consumos) ? c.consumos : [];
                           return (
@@ -814,6 +875,7 @@ export default function FraudPage() {
                                     {consumos.length ? (
                                       <>
                                       <GridSearchInput value={creditoUsoQuery} onChange={setCreditoUsoQuery} aria-label="Pesquisar usos do crédito" />
+                                      {/* Exceção: detalhe expandido do crédito, não listagem paginada. */}
                                       <table className="table compact" style={{ margin: 0 }}>
                                         <thead>
                                           <tr>
@@ -858,15 +920,16 @@ export default function FraudPage() {
                         })}
                       </tbody>
                     </table>
-                    <GridPager
-                      page={creditoPageSafe}
-                      totalPages={creditoTotalPages}
-                      total={creditosFiltered.length}
-                      pageSize={pageSize}
-                      onPrev={() => setCreditoPage((p) => Math.max(1, p - 1))}
-                      onNext={() =>
-                        setCreditoPage((p) => Math.min(creditoTotalPages, p + 1))
-                      }
+                    <GridChrome
+                      page={creditosGrid.page}
+                      totalPages={creditosGrid.totalPages}
+                      total={creditosGrid.total}
+                      from={creditosGrid.range.from}
+                      to={creditosGrid.range.to}
+                      onPrev={creditosGrid.onPrev}
+                      onNext={creditosGrid.onNext}
+                      onResetOrder={creditosGrid.resetOrder}
+                      isDefaultOrder={creditosGrid.isDefaultOrder}
                     />
                   </div>
                 )}
@@ -974,19 +1037,19 @@ export default function FraudPage() {
                         <table className="table compact">
                           <thead>
                             <tr>
-                              <th>Filial</th>
-                              <th>Data</th>
-                              <th>Documento</th>
-                              <th>Forma anterior</th>
-                              <th>Forma nova</th>
-                              <th>Usuário</th>
-                              <th style={{ textAlign: "right" }}>Valor</th>
+                              <SortableTh label="Filial" sortKey="filial_label" ariaSort={trocaGrid.ariaSort("filial_label")} onToggle={trocaGrid.toggleSort} />
+                              <SortableTh label="Data" sortKey="data_troca_ts" ariaSort={trocaGrid.ariaSort("data_troca_ts")} onToggle={trocaGrid.toggleSort} />
+                              <SortableTh label="Documento" sortKey="documento" ariaSort={trocaGrid.ariaSort("documento")} onToggle={trocaGrid.toggleSort} />
+                              <SortableTh label="Forma anterior" sortKey="forma_de" ariaSort={trocaGrid.ariaSort("forma_de")} onToggle={trocaGrid.toggleSort} />
+                              <SortableTh label="Forma nova" sortKey="forma_para" ariaSort={trocaGrid.ariaSort("forma_para")} onToggle={trocaGrid.toggleSort} />
+                              <SortableTh label="Usuário" sortKey="nome_operador" ariaSort={trocaGrid.ariaSort("nome_operador")} onToggle={trocaGrid.toggleSort} />
+                              <SortableTh label="Valor" sortKey="valor" ariaSort={trocaGrid.ariaSort("valor")} onToggle={trocaGrid.toggleSort} align="right" />
                               <th>Venda</th>
                               <th>Risco</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {trocaPageRows.map((row: any) => (
+                            {trocaGrid.slice.map((row: any) => (
                               <tr
                                 key={`${row.troca_id}`}
                                 style={
@@ -1053,15 +1116,17 @@ export default function FraudPage() {
                             ))}
                           </tbody>
                         </table>
-                        <GridPager
-                          page={trocaPageSafe}
-                          totalPages={trocaTotalPages}
-                          total={trocaSearch.filteredRows.length}
-                          pageSize={pageSize}
-                          onPrev={() => setTrocaPage((p) => Math.max(1, p - 1))}
-                          onNext={() =>
-                            setTrocaPage((p) => Math.min(trocaTotalPages, p + 1))
-                          }
+                        <GridChrome
+                          page={trocaGrid.page}
+                          totalPages={trocaGrid.totalPages}
+                          total={trocaGrid.total}
+                          from={trocaGrid.range.from}
+                          to={trocaGrid.range.to}
+                          onPrev={trocaGrid.onPrev}
+                          onNext={trocaGrid.onNext}
+                          onResetOrder={trocaGrid.resetOrder}
+                          isDefaultOrder={trocaGrid.isDefaultOrder}
+                          truncatedNote={trocaTotalQtd > trocaRows.length ? `Exibindo as ${trocaRows.length} trocas mais recentes de ${trocaTotalQtd} no período.` : null}
                         />
                       </div>
                     )}
@@ -1090,25 +1155,22 @@ export default function FraudPage() {
                       <div style={{ marginBottom: 8 }}>
                         <GridSearchInput
                           value={devolucaoSearch.query}
-                          onChange={(v) => {
-                            devolucaoSearch.setQuery(v);
-                            setDevolucaoPage(1);
-                          }}
+                          onChange={devolucaoSearch.setQuery}
                           aria-label="Pesquisar devoluções"
                         />
                       </div>
                       <table className="table compact">
                         <thead>
                           <tr>
-                            <th>Filial</th>
-                            <th>Data</th>
-                            <th>Documento</th>
-                            <th>Operador</th>
-                            <th style={{ textAlign: "right" }}>Valor</th>
+                            <SortableTh label="Filial" sortKey="filial_label" ariaSort={devolucaoGrid.ariaSort("filial_label")} onToggle={devolucaoGrid.toggleSort} />
+                            <SortableTh label="Data" sortKey="dt" ariaSort={devolucaoGrid.ariaSort("dt")} onToggle={devolucaoGrid.toggleSort} />
+                            <SortableTh label="Documento" sortKey="documento" ariaSort={devolucaoGrid.ariaSort("documento")} onToggle={devolucaoGrid.toggleSort} />
+                            <SortableTh label="Operador" sortKey="nome_operador" ariaSort={devolucaoGrid.ariaSort("nome_operador")} onToggle={devolucaoGrid.toggleSort} />
+                            <SortableTh label="Valor" sortKey="valor" ariaSort={devolucaoGrid.ariaSort("valor")} onToggle={devolucaoGrid.toggleSort} align="right" />
                           </tr>
                         </thead>
                         <tbody>
-                          {devolucaoPageRows.map((row: any) => (
+                          {devolucaoGrid.slice.map((row: any) => (
                             <tr key={`${row.id_filial}-${row.id_comprovante}-${row.documento}`}>
                               <td>
                                 {row.filial_label ||
@@ -1122,15 +1184,16 @@ export default function FraudPage() {
                           ))}
                         </tbody>
                       </table>
-                      <GridPager
-                        page={devolucaoPageSafe}
-                        totalPages={devolucaoTotalPages}
-                        total={devolucaoSearch.filteredRows.length}
-                        pageSize={pageSize}
-                        onPrev={() => setDevolucaoPage((p) => Math.max(1, p - 1))}
-                        onNext={() =>
-                          setDevolucaoPage((p) => Math.min(devolucaoTotalPages, p + 1))
-                        }
+                      <GridChrome
+                        page={devolucaoGrid.page}
+                        totalPages={devolucaoGrid.totalPages}
+                        total={devolucaoGrid.total}
+                        from={devolucaoGrid.range.from}
+                        to={devolucaoGrid.range.to}
+                        onPrev={devolucaoGrid.onPrev}
+                        onNext={devolucaoGrid.onNext}
+                        onResetOrder={devolucaoGrid.resetOrder}
+                        isDefaultOrder={devolucaoGrid.isDefaultOrder}
                       />
                     </div>
                   )}
@@ -1166,26 +1229,23 @@ export default function FraudPage() {
                       <div style={{ marginBottom: 8 }}>
                         <GridSearchInput
                           value={transferenciaSearch.query}
-                          onChange={(v) => {
-                            transferenciaSearch.setQuery(v);
-                            setTransferenciaPage(1);
-                          }}
+                          onChange={transferenciaSearch.setQuery}
                           aria-label="Pesquisar transferências de contas a receber"
                         />
                       </div>
                       <table className="table compact">
                         <thead>
                           <tr>
-                            <th>Filial</th>
-                            <th>Data</th>
-                            <th>Título</th>
-                            <th>De</th>
-                            <th>Para</th>
-                            <th style={{ textAlign: "right" }}>Valor</th>
+                            <SortableTh label="Filial" sortKey="filial_label" ariaSort={transferenciaGrid.ariaSort("filial_label")} onToggle={transferenciaGrid.toggleSort} />
+                            <SortableTh label="Data" sortKey="dt" ariaSort={transferenciaGrid.ariaSort("dt")} onToggle={transferenciaGrid.toggleSort} />
+                            <SortableTh label="Título" sortKey="documento" ariaSort={transferenciaGrid.ariaSort("documento")} onToggle={transferenciaGrid.toggleSort} />
+                            <SortableTh label="De" sortKey="entidade_de" ariaSort={transferenciaGrid.ariaSort("entidade_de")} onToggle={transferenciaGrid.toggleSort} />
+                            <SortableTh label="Para" sortKey="entidade_para" ariaSort={transferenciaGrid.ariaSort("entidade_para")} onToggle={transferenciaGrid.toggleSort} />
+                            <SortableTh label="Valor" sortKey="valor" ariaSort={transferenciaGrid.ariaSort("valor")} onToggle={transferenciaGrid.toggleSort} align="right" />
                           </tr>
                         </thead>
                         <tbody>
-                          {transferenciaPageRows.map((row: any) => (
+                          {transferenciaGrid.slice.map((row: any) => (
                             <tr
                               key={`${row.id_filial}-${row.id_contasreceber}-${row.id_entidade_de}-${row.id_entidade_para}`}
                             >
@@ -1206,17 +1266,16 @@ export default function FraudPage() {
                           ))}
                         </tbody>
                       </table>
-                      <GridPager
-                        page={transferenciaPageSafe}
-                        totalPages={transferenciaTotalPages}
-                        total={transferenciaSearch.filteredRows.length}
-                        pageSize={pageSize}
-                        onPrev={() => setTransferenciaPage((p) => Math.max(1, p - 1))}
-                        onNext={() =>
-                          setTransferenciaPage((p) =>
-                            Math.min(transferenciaTotalPages, p + 1),
-                          )
-                        }
+                      <GridChrome
+                        page={transferenciaGrid.page}
+                        totalPages={transferenciaGrid.totalPages}
+                        total={transferenciaGrid.total}
+                        from={transferenciaGrid.range.from}
+                        to={transferenciaGrid.range.to}
+                        onPrev={transferenciaGrid.onPrev}
+                        onNext={transferenciaGrid.onNext}
+                        onResetOrder={transferenciaGrid.resetOrder}
+                        isDefaultOrder={transferenciaGrid.isDefaultOrder}
                       />
                     </div>
                   )}
@@ -1313,22 +1372,22 @@ export default function FraudPage() {
                         <thead>
                           <tr>
                             <th></th>
-                            <th>Funcionário</th>
+                            <SortableTh label="Funcionário" sortKey="nome" ariaSort={credFuncGrid.ariaSort("nome")} onToggle={credFuncGrid.toggleSort} />
                             <th>Uso no mês</th>
-                            <th style={{ textAlign: "right" }}>Limite crédito</th>
-                            <th style={{ textAlign: "right" }}>Limite vale</th>
-                            <th style={{ textAlign: "right" }}>Vale (mês)</th>
-                            <th style={{ textAlign: "right" }}>Crédito (mês)</th>
-                            <th style={{ textAlign: "right" }}>Usado geral</th>
-                            <th style={{ textAlign: "right" }}>Pago mês</th>
-                            <th style={{ textAlign: "right" }}>Saldo aberto</th>
-                            <th style={{ textAlign: "right" }}>Saldo mês</th>
-                            <th style={{ textAlign: "right" }}>Lançamentos</th>
+                            <SortableTh label="Limite crédito" sortKey="limite_prazo" ariaSort={credFuncGrid.ariaSort("limite_prazo")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Limite vale" sortKey="limite_vale" ariaSort={credFuncGrid.ariaSort("limite_vale")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Vale (mês)" sortKey="usado_vale" ariaSort={credFuncGrid.ariaSort("usado_vale")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Crédito (mês)" sortKey="usado_prazo" ariaSort={credFuncGrid.ariaSort("usado_prazo")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Usado geral" sortKey="usado_geral" ariaSort={credFuncGrid.ariaSort("usado_geral")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Pago mês" sortKey="pago_mes" ariaSort={credFuncGrid.ariaSort("pago_mes")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Saldo aberto" sortKey="saldo_aberto_geral" ariaSort={credFuncGrid.ariaSort("saldo_aberto_geral")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Saldo mês" sortKey="saldo_aberto_mes" ariaSort={credFuncGrid.ariaSort("saldo_aberto_mes")} onToggle={credFuncGrid.toggleSort} align="right" />
+                            <SortableTh label="Lançamentos" sortKey="qtd_usos_mes" ariaSort={credFuncGrid.ariaSort("qtd_usos_mes")} onToggle={credFuncGrid.toggleSort} align="right" />
                             <th>Status</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {credFuncPageRows.map((row: any) => {
+                          {credFuncGrid.slice.map((row: any) => {
                             const expanded = credFuncExpandido === Number(row.id_funcionario);
                             const suspeito = String(row.status || "") === "Suspeito";
                             const usadoVale = Number(row.usado_vale || 0);
@@ -1418,6 +1477,7 @@ export default function FraudPage() {
                                                 <div style={{ fontWeight: 650, marginBottom: 6 }}>
                                                   {title} · {formatCurrency(totalValue)}
                                                 </div>
+                                                {/* Exceção: detalhe expandido do funcionário, não listagem paginada. */}
                                                 <table className="table compact">
                                                   <thead>
                                                     <tr>
@@ -1470,15 +1530,16 @@ export default function FraudPage() {
                           })}
                         </tbody>
                       </table>
-                      <GridPager
-                        page={credFuncPageSafe}
-                        totalPages={credFuncTotalPages}
-                        total={credFuncSearch.filteredRows.length}
-                        pageSize={pageSize}
-                        onPrev={() => setCredFuncPage((p) => Math.max(1, p - 1))}
-                        onNext={() =>
-                          setCredFuncPage((p) => Math.min(credFuncTotalPages, p + 1))
-                        }
+                      <GridChrome
+                        page={credFuncGrid.page}
+                        totalPages={credFuncGrid.totalPages}
+                        total={credFuncGrid.total}
+                        from={credFuncGrid.range.from}
+                        to={credFuncGrid.range.to}
+                        onPrev={credFuncGrid.onPrev}
+                        onNext={credFuncGrid.onNext}
+                        onResetOrder={credFuncGrid.resetOrder}
+                        isDefaultOrder={credFuncGrid.isDefaultOrder}
                       />
                     </div>
                   )}

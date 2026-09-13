@@ -4,7 +4,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
+import { compareGridRows } from '../../lib/grid-sort';
+import { useRecordGrid } from '../../lib/use-record-grid';
 import { api, apiGet } from '../../lib/api';
 import { formatDateOnly } from '../../lib/format';
 import { loadSession } from '../../lib/session';
@@ -155,6 +159,20 @@ export default function PlatformUsersPage() {
   const [selectedModuleTier, setSelectedModuleTier] = useState('essencial');
   const [screenPermissionQuery, setScreenPermissionQuery] = useState('');
   const usersSearch = useGridSearch(items);
+  const usersGrid = useRecordGrid<any>({
+    rows: usersSearch.filteredRows,
+    resetKey: usersSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.nome }, { nome: b.nome }),
+    columns: {
+      nome: { type: 'text' },
+      email: { type: 'text' },
+      username: { type: 'text' },
+      role: { type: 'text' },
+      last_login_at: { type: 'date' },
+    },
+  });
 
   async function load(session: any) {
     setLoading(true);
@@ -833,19 +851,19 @@ export default function PlatformUsersPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>Nome</th>
-              <th>Email</th>
-              <th>Username</th>
-              <th>Papel</th>
+              <SortableTh label="Nome" sortKey="nome" ariaSort={usersGrid.ariaSort('nome')} onToggle={usersGrid.toggleSort} />
+              <SortableTh label="Email" sortKey="email" ariaSort={usersGrid.ariaSort('email')} onToggle={usersGrid.toggleSort} />
+              <SortableTh label="Username" sortKey="username" ariaSort={usersGrid.ariaSort('username')} onToggle={usersGrid.toggleSort} />
+              <SortableTh label="Papel" sortKey="role" ariaSort={usersGrid.ariaSort('role')} onToggle={usersGrid.toggleSort} />
               <th>Vigência</th>
-              <th>Último acesso</th>
+              <SortableTh label="Último acesso" sortKey="last_login_at" ariaSort={usersGrid.ariaSort('last_login_at')} onToggle={usersGrid.toggleSort} />
               <th>Lock</th>
               <th>Vínculos</th>
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {usersSearch.filteredRows.map((item) => (
+            {usersGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{item.nome}</td>
                 <td>{item.email}</td>
@@ -885,13 +903,24 @@ export default function PlatformUsersPage() {
                 </td>
               </tr>
             ))}
-            {!usersSearch.filteredRows.length && !loading ? (
+            {!usersGrid.total && !loading ? (
               <tr>
                 <td colSpan={9}>Nenhum usuário encontrado.</td>
               </tr>
             ) : null}
           </tbody>
         </table>
+        <GridChrome
+          page={usersGrid.page}
+          totalPages={usersGrid.totalPages}
+          total={usersGrid.total}
+          from={usersGrid.range.from}
+          to={usersGrid.range.to}
+          onPrev={usersGrid.onPrev}
+          onNext={usersGrid.onNext}
+          onResetOrder={usersGrid.resetOrder}
+          isDefaultOrder={usersGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

@@ -4,9 +4,12 @@ import { useMemo, useState } from "react";
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SortableTh from "../components/ui/SortableTh";
 import { buildUserLabel } from "../lib/format";
+import { compareGridRows } from "../lib/grid-sort";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
@@ -14,6 +17,7 @@ import {
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { rowMatchesGridSearch, useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
@@ -134,6 +138,110 @@ function sortTankItems(items: LossItem[]): LossItem[] {
   });
 }
 
+function FuelLossFilialGrid({
+  filial,
+  resetKey,
+}: {
+  filial: { id_filial: number; filial_nome: string; itens: LossItem[] };
+  resetKey: string;
+}) {
+  const grid = useRecordGrid<LossItem>({
+    rows: filial.itens,
+    resetKey,
+    getTieId: (row) => `${row.id_filial}-${row.id_tanque}-${row.dia}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { data: a.dia, nome: a.combustivel },
+        { data: b.dia, nome: b.combustivel },
+      ) || Number(a.id_tanque || 0) - Number(b.id_tanque || 0),
+    summableKeys: ["leitura_anterior_l", "leitura_atual_l", "dif_leitura_l", "movimentacao_l", "diferenca_l"],
+    columns: {
+      dia: { type: "date" },
+      combustivel: { type: "text" },
+      leitura_anterior_l: { type: "number" },
+      leitura_atual_l: { type: "number" },
+      dif_leitura_l: { type: "number", getValue: (r) => Number(r.dif_leitura_l ?? r.delta_sensor_l ?? 0) },
+      movimentacao_l: { type: "number", getValue: (r) => Number(r.movimentacao_l ?? r.vendas_l ?? 0) },
+      diferenca_l: { type: "number", getValue: (r) => Number(r.diferenca_l ?? r.perda_l ?? 0) },
+    },
+  });
+
+  return (
+    <>
+      <div className="tableScroll">
+        <table className="table compact" style={{ minWidth: 920 }}>
+          <thead>
+            <tr>
+              <SortableTh label="Dia" sortKey="dia" ariaSort={grid.ariaSort("dia")} onToggle={grid.toggleSort} />
+              <th>Tanque</th>
+              <SortableTh label="Combustível" sortKey="combustivel" ariaSort={grid.ariaSort("combustivel")} onToggle={grid.toggleSort} />
+              <SortableTh label="Abertura" sortKey="leitura_anterior_l" ariaSort={grid.ariaSort("leitura_anterior_l")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Fechamento" sortKey="leitura_atual_l" ariaSort={grid.ariaSort("leitura_atual_l")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Dif Leitura" sortKey="dif_leitura_l" ariaSort={grid.ariaSort("dif_leitura_l")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Movimentação" sortKey="movimentacao_l" ariaSort={grid.ariaSort("movimentacao_l")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Diferença" sortKey="diferenca_l" ariaSort={grid.ariaSort("diferenca_l")} onToggle={grid.toggleSort} align="right" />
+            </tr>
+          </thead>
+          <tbody>
+            {grid.slice.map((item) => {
+              const difLeitura = Number(item.dif_leitura_l ?? item.delta_sensor_l ?? 0);
+              const mov = Number(item.movimentacao_l ?? item.vendas_l ?? 0);
+              const dif = item.diferenca_l ?? item.perda_l;
+              return (
+                <tr key={`${item.id_filial}-${item.id_tanque}-${item.dia}`}>
+                  <td>{fmtDia(item.dia)}</td>
+                  <td>{item.id_tanque || "—"}</td>
+                  <td>{item.combustivel}</td>
+                  <td>{fmtL(item.leitura_anterior_l)}</td>
+                  <td>{fmtL(item.leitura_atual_l)}</td>
+                  <td>
+                    <SignedLiters value={difLeitura} />
+                  </td>
+                  <td>
+                    <SignedLiters value={mov} />
+                  </td>
+                  <td>
+                    <SignedLiters value={dif} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {grid.slice.length ? (
+            <tfoot>
+              <tr>
+                <td colSpan={3}>Total da página ({grid.slice.length})</td>
+                <td>{fmtL(grid.pageTotals.leitura_anterior_l)}</td>
+                <td>{fmtL(grid.pageTotals.leitura_atual_l)}</td>
+                <td>
+                  <SignedLiters value={grid.pageTotals.dif_leitura_l} />
+                </td>
+                <td>
+                  <SignedLiters value={grid.pageTotals.movimentacao_l} />
+                </td>
+                <td>
+                  <SignedLiters value={grid.pageTotals.diferenca_l} />
+                </td>
+              </tr>
+            </tfoot>
+          ) : null}
+        </table>
+      </div>
+      <GridChrome
+        page={grid.page}
+        totalPages={grid.totalPages}
+        total={grid.total}
+        from={grid.range.from}
+        to={grid.range.to}
+        onPrev={grid.onPrev}
+        onNext={grid.onNext}
+        onResetOrder={grid.resetOrder}
+        isDefaultOrder={grid.isDefaultOrder}
+      />
+    </>
+  );
+}
+
 export default function FuelLossPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
@@ -207,6 +315,27 @@ export default function FuelLossPage() {
     setQuery: setAfericoesQuery,
     filteredRows: afericoes,
   } = useGridSearch(afericoesOrdenadas, { excludeKeys: /^id_/ });
+  const afericoesGrid = useRecordGrid<AfericaoItem>({
+    rows: afericoes,
+    resetKey: `${afericoesQuery}:${scope.scope_key}`,
+    getTieId: (row) => `${row.id_filial}-${row.id_afericao}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_nome, data: a.dia, nome: a.produto_nome },
+        { filial: b.filial_nome, data: b.dia, nome: b.produto_nome },
+      ),
+    summableKeys: ["qtde_l"],
+    columns: {
+      filial_nome: { type: "text" },
+      dia: { type: "date" },
+      bico_label: { type: "text" },
+      produto_nome: { type: "text" },
+      turno_label: { type: "text" },
+      qtde_l: { type: "number" },
+      operador_nome: { type: "text" },
+      liberador_nome: { type: "text" },
+    },
+  });
   const afericoesKpis = afericoesData?.kpis;
   const diferencaKpi = Number(kpis?.diferenca_l ?? kpis?.perda_l ?? 0);
 
@@ -320,49 +449,7 @@ export default function FuelLossPage() {
                       </div>
                     </div>
 
-                    <div className="tableScroll">
-                      <table className="table compact" style={{ minWidth: 920 }}>
-                        <thead>
-                          <tr>
-                            <th>Dia</th>
-                            <th>Tanque</th>
-                            <th>Combustível</th>
-                            <th>Abertura</th>
-                            <th>Fechamento</th>
-                            <th>Dif Leitura</th>
-                            <th>Movimentação</th>
-                            <th>Diferença</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filial.itens.map((item) => {
-                            const difLeitura = Number(
-                              item.dif_leitura_l ?? item.delta_sensor_l ?? 0,
-                            );
-                            const mov = Number(item.movimentacao_l ?? item.vendas_l ?? 0);
-                            const dif = item.diferenca_l ?? item.perda_l;
-                            return (
-                              <tr key={`${item.id_filial}-${item.id_tanque}-${item.dia}`}>
-                                <td>{fmtDia(item.dia)}</td>
-                                <td>{item.id_tanque || "—"}</td>
-                                <td>{item.combustivel}</td>
-                                <td>{fmtL(item.leitura_anterior_l)}</td>
-                                <td>{fmtL(item.leitura_atual_l)}</td>
-                                <td>
-                                  <SignedLiters value={difLeitura} />
-                                </td>
-                                <td>
-                                  <SignedLiters value={mov} />
-                                </td>
-                                <td>
-                                  <SignedLiters value={dif} />
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                    <FuelLossFilialGrid filial={filial} resetKey={`${filial.id_filial}:${lossQuery}`} />
                   </section>
                 ))
               )}
@@ -412,22 +499,23 @@ export default function FuelLossPage() {
                 }
               />
             ) : (
+              <>
               <div className="tableScroll">
                 <table className="table compact" style={{ minWidth: 880 }}>
                   <thead>
                     <tr>
-                      <th>Filial</th>
-                      <th>Data</th>
-                      <th>Bico</th>
-                      <th>Produto</th>
-                      <th>Turno</th>
-                      <th>Litros</th>
-                      <th>Operador</th>
-                      <th>Autorizado por</th>
+                      <SortableTh label="Filial" sortKey="filial_nome" ariaSort={afericoesGrid.ariaSort("filial_nome")} onToggle={afericoesGrid.toggleSort} />
+                      <SortableTh label="Data" sortKey="dia" ariaSort={afericoesGrid.ariaSort("dia")} onToggle={afericoesGrid.toggleSort} />
+                      <SortableTh label="Bico" sortKey="bico_label" ariaSort={afericoesGrid.ariaSort("bico_label")} onToggle={afericoesGrid.toggleSort} />
+                      <SortableTh label="Produto" sortKey="produto_nome" ariaSort={afericoesGrid.ariaSort("produto_nome")} onToggle={afericoesGrid.toggleSort} />
+                      <SortableTh label="Turno" sortKey="turno_label" ariaSort={afericoesGrid.ariaSort("turno_label")} onToggle={afericoesGrid.toggleSort} />
+                      <SortableTh label="Litros" sortKey="qtde_l" ariaSort={afericoesGrid.ariaSort("qtde_l")} onToggle={afericoesGrid.toggleSort} align="right" />
+                      <SortableTh label="Operador" sortKey="operador_nome" ariaSort={afericoesGrid.ariaSort("operador_nome")} onToggle={afericoesGrid.toggleSort} />
+                      <SortableTh label="Autorizado por" sortKey="liberador_nome" ariaSort={afericoesGrid.ariaSort("liberador_nome")} onToggle={afericoesGrid.toggleSort} />
                     </tr>
                   </thead>
                   <tbody>
-                    {afericoes.map((item) => (
+                    {afericoesGrid.slice.map((item) => (
                       <tr key={`${item.id_filial}-${item.id_afericao}`}>
                         <td>{item.filial_nome}</td>
                         <td>{fmtDia(item.dia)}</td>
@@ -440,8 +528,29 @@ export default function FuelLossPage() {
                       </tr>
                     ))}
                   </tbody>
+                  {afericoesGrid.slice.length ? (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={5}>Total da página ({afericoesGrid.slice.length})</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtL(afericoesGrid.pageTotals.qtde_l)}</td>
+                        <td colSpan={2} />
+                      </tr>
+                    </tfoot>
+                  ) : null}
                 </table>
               </div>
+              <GridChrome
+                page={afericoesGrid.page}
+                totalPages={afericoesGrid.totalPages}
+                total={afericoesGrid.total}
+                from={afericoesGrid.range.from}
+                to={afericoesGrid.range.to}
+                onPrev={afericoesGrid.onPrev}
+                onNext={afericoesGrid.onNext}
+                onResetOrder={afericoesGrid.resetOrder}
+                isDefaultOrder={afericoesGrid.isDefaultOrder}
+              />
+              </>
             )}
           </section>
         </div>

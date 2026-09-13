@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import { formatCurrency, formatDateOnly } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { compareGridRows } from "../lib/grid-sort";
 import { useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
 
 type ChequeStatus = "a_compensar" | "depositado" | "devolvido" | "compensado";
 
@@ -25,12 +29,10 @@ const STATUS_COLORS: Record<ChequeStatus, string> = {
   compensado: "var(--color-positive)",
 };
 const DEFAULT_SELECTED: ChequeStatus[] = ["a_compensar", "depositado", "devolvido"];
-const PAGE_SIZE = 20;
 
 export default function FinanceChequesSection() {
   const scope = useScopeQuery();
   const [selected, setSelected] = useState<Set<ChequeStatus>>(new Set(DEFAULT_SELECTED));
-  const [page, setPage] = useState(0);
 
   const statusParam = useMemo(
     () => (selected.size ? STATUS_ORDER.filter((s) => selected.has(s)).join(",") : "todos"),
@@ -54,15 +56,26 @@ export default function FinanceChequesSection() {
     [cheques],
   );
 
-  useEffect(() => {
-    setPage(0);
-  }, [statusParam, filteredRows.length]);
-
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
-  const pageItems = useMemo(() => {
-    const safe = Math.min(page, pageCount - 1);
-    return filteredRows.slice(safe * PAGE_SIZE, safe * PAGE_SIZE + PAGE_SIZE);
-  }, [filteredRows, page, pageCount]);
+  const chequesGrid = useRecordGrid<any>({
+    rows: filteredRows,
+    resetKey: `${statusParam}:${query}:${scope.scope_key}`,
+    getTieId: (row) => `${row.id_filial}-${row.id_cheque}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.dt_vencimento, nome: a.cliente_nome },
+        { filial: b.filial_label ?? b.id_filial, data: b.dt_vencimento, nome: b.cliente_nome },
+      ),
+    summableKeys: ["valor"],
+    columns: {
+      cliente_nome: { type: "text" },
+      filial_label: { type: "text" },
+      dt_recebido: { type: "date" },
+      dt_vencimento: { type: "date" },
+      valor: { type: "number" },
+      status: { type: "text" },
+      numero: { type: "text" },
+    },
+  });
 
   const toggle = (s: ChequeStatus) =>
     setSelected((prev) => {
@@ -125,6 +138,7 @@ export default function FinanceChequesSection() {
 
       {/* Filtro multi-status */}
       <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <GridSearchInput value={query} onChange={setQuery} />
         <span className="muted" style={{ fontSize: 12 }}>Mostrar:</span>
         {STATUS_ORDER.map((s) => {
           const on = selected.has(s);
@@ -149,7 +163,6 @@ export default function FinanceChequesSection() {
             </button>
           );
         })}
-        <GridSearchInput value={query} onChange={setQuery} />
       </div>
 
       {/* Grid */}
@@ -166,29 +179,31 @@ export default function FinanceChequesSection() {
             <table className="table compact">
               <thead>
                 <tr>
-                  <th>Cliente</th>
-                  {showFilial ? <th>Filial</th> : null}
-                  <th>Recebido</th>
-                  <th>Vencimento</th>
+                  {showFilial ? (
+                    <SortableTh label="Filial" sortKey="filial_label" ariaSort={chequesGrid.ariaSort("filial_label")} onToggle={chequesGrid.toggleSort} />
+                  ) : null}
+                  <SortableTh label="Recebido" sortKey="dt_recebido" ariaSort={chequesGrid.ariaSort("dt_recebido")} onToggle={chequesGrid.toggleSort} />
+                  <SortableTh label="Vencimento" sortKey="dt_vencimento" ariaSort={chequesGrid.ariaSort("dt_vencimento")} onToggle={chequesGrid.toggleSort} />
+                  <SortableTh label="Cliente" sortKey="cliente_nome" ariaSort={chequesGrid.ariaSort("cliente_nome")} onToggle={chequesGrid.toggleSort} />
                   <th>Prazo</th>
-                  <th>Valor</th>
-                  <th>Status</th>
+                  <SortableTh label="Valor" sortKey="valor" ariaSort={chequesGrid.ariaSort("valor")} onToggle={chequesGrid.toggleSort} align="right" />
+                  <SortableTh label="Status" sortKey="status" ariaSort={chequesGrid.ariaSort("status")} onToggle={chequesGrid.toggleSort} />
                   <th>Motivo devolução</th>
-                  <th>Nº cheque</th>
+                  <SortableTh label="Nº cheque" sortKey="numero" ariaSort={chequesGrid.ariaSort("numero")} onToggle={chequesGrid.toggleSort} />
                 </tr>
               </thead>
               <tbody>
-                {pageItems.map((c: any) => (
+                {chequesGrid.slice.map((c: any) => (
                   <tr
                     key={`${c.id_filial}-${c.id_cheque}`}
                     style={c.vencido ? { background: "rgba(239,68,68,0.06)" } : undefined}
                   >
-                    <td>{c.cliente_nome || "—"}</td>
                     {showFilial ? <td>{c.filial_label || "—"}</td> : null}
                     <td>{c.dt_recebido ? formatDateOnly(c.dt_recebido) : "—"}</td>
                     <td style={c.vencido ? { color: "var(--color-negative)", fontWeight: 600 } : undefined}>
                       {c.dt_vencimento ? formatDateOnly(c.dt_vencimento) : "—"}
                     </td>
+                    <td>{c.cliente_nome || "—"}</td>
                     <td>{c.avista ? "À vista" : "A prazo"}</td>
                     <td style={{ fontWeight: 700 }}>{formatCurrency(c.valor)}</td>
                     <td>{statusPill(c.status)}</td>
@@ -197,32 +212,28 @@ export default function FinanceChequesSection() {
                   </tr>
                 ))}
               </tbody>
+              {chequesGrid.slice.length ? (
+                <tfoot>
+                  <tr>
+                    <td colSpan={showFilial ? 5 : 4}>Total da página ({chequesGrid.slice.length})</td>
+                    <td style={{ fontWeight: 700 }}>{formatCurrency(chequesGrid.pageTotals.valor)}</td>
+                    <td colSpan={3} />
+                  </tr>
+                </tfoot>
+              ) : null}
             </table>
           </div>
-
-          {pageCount > 1 ? (
-            <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center", justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                className="btn"
-                disabled={page <= 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                ← Anterior
-              </button>
-              <span className="muted" style={{ fontSize: 12 }}>
-                Página {Math.min(page, pageCount - 1) + 1} de {pageCount} · {filteredRows.length} cheque(s)
-              </span>
-              <button
-                type="button"
-                className="btn"
-                disabled={page >= pageCount - 1}
-                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-              >
-                Próxima →
-              </button>
-            </div>
-          ) : null}
+          <GridChrome
+            page={chequesGrid.page}
+            totalPages={chequesGrid.totalPages}
+            total={chequesGrid.total}
+            from={chequesGrid.range.from}
+            to={chequesGrid.range.to}
+            onPrev={chequesGrid.onPrev}
+            onNext={chequesGrid.onNext}
+            onResetOrder={chequesGrid.resetOrder}
+            isDefaultOrder={chequesGrid.isDefaultOrder}
+          />
         </>
       )}
     </div>

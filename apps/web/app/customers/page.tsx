@@ -15,9 +15,12 @@ import AppNav from "../components/AppNav";
 import CategoryRankChart from "../components/ui/CategoryRankChart";
 import ChartTooltip from "../components/ui/ChartTooltip";
 import EmptyState from "../components/ui/EmptyState";
-import GridPager from "../components/ui/GridPager";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SortableTh from "../components/ui/SortableTh";
+import { compareGridRows } from "../lib/grid-sort";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { apiGet } from "../lib/api";
 import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
 import {
@@ -69,7 +72,6 @@ function buildChurnSignal(customer: any) {
 export default function CustomersPage() {
   const scope = useScopeQuery();
   useEnsureScopedProductUrl();
-  const [delinquencyPage, setDelinquencyPage] = useState(1);
   const [delinquencySort, setDelinquencySort] = useState<"gravity" | "valor" | "atraso" | "comprando">("gravity");
   // Filtro-sobre-filtro: postos selecionados nos cards (vazio = todos os postos do escopo).
   const [selectedFiliais, setSelectedFiliais] = useState<Set<number>>(new Set());
@@ -139,6 +141,37 @@ export default function CustomersPage() {
   }, [delinquency?.customers, delinquencySort, selectedFiliais]);
   const { query: delinquencySearch, setQuery: setDelinquencySearch, filteredRows: filteredDelinquency } =
     useGridSearch(delinquencyCustomers as Record<string, unknown>[]);
+  const delinquencyGrid = useRecordGrid<any>({
+    rows: filteredDelinquency,
+    resetKey: `${delinquencySearch}:${delinquencySort}:${selectedFiliais.size}`,
+    getTieId: (row) => `${row.id_filial ?? 0}-${row.id_cliente}`,
+    defaultCompare: (a, b) => {
+      const ia = filteredDelinquency.indexOf(a);
+      const ib = filteredDelinquency.indexOf(b);
+      return ia - ib;
+    },
+    summableKeys: [
+      "valor_ate_30d",
+      "valor_acima_30d",
+      "valor_total_vencido",
+      "valor_a_vencer",
+      "valor_total_aberto",
+    ],
+    columns: {
+      cliente_nome: { type: "text" },
+      filial_label: { type: "text" },
+      titulos_ate_30d: { type: "number" },
+      valor_ate_30d: { type: "number" },
+      titulos_acima_30d: { type: "number" },
+      valor_acima_30d: { type: "number" },
+      valor_total_vencido: { type: "number", getValue: (r) => r.valor_total_vencido || ((r.valor_ate_30d || 0) + (r.valor_acima_30d || 0)) },
+      titulos_a_vencer: { type: "number" },
+      valor_a_vencer: { type: "number" },
+      valor_total_aberto: { type: "number", getValue: (r) => r.valor_total_aberto || ((r.valor_total_vencido || 0) + (r.valor_a_vencer || 0)) },
+      max_dias_atraso: { type: "number" },
+      compras_30d: { type: "number" },
+    },
+  });
   const delinquencyChart = useMemo(
     () =>
       (delinquency?.buckets || []).map((bucket: any) => ({
@@ -148,19 +181,6 @@ export default function CustomersPage() {
       })),
     [delinquency],
   );
-  const delinquencyPageSize = 30;
-  const delinquencyPageCount = Math.max(
-    1,
-    Math.ceil(filteredDelinquency.length / delinquencyPageSize),
-  );
-  const delinquencyPageItems = useMemo(() => {
-    const safePage = Math.min(Math.max(1, delinquencyPage), delinquencyPageCount);
-    const start = (safePage - 1) * delinquencyPageSize;
-    return filteredDelinquency.slice(start, start + delinquencyPageSize);
-  }, [filteredDelinquency, delinquencyPage, delinquencyPageCount]);
-  useEffect(() => {
-    setDelinquencyPage(1);
-  }, [data?.commercial_coverage?.effective_dt_fim, filteredDelinquency.length]);
   // Limpa a selecao de postos quando o escopo/janela muda (respeita o filtro global).
   useEffect(() => {
     setSelectedFiliais(new Set());
@@ -180,7 +200,7 @@ export default function CustomersPage() {
       try {
         const params = buildScopeParams(scope);
         params.set("page", String(precoFixoPage));
-        params.set("page_size", "15");
+        params.set("page_size", "30");
         const res = await apiGet(`/bi/customers/preco-fixo?${params.toString()}`);
         if (!cancelled) setPrecoFixoData(res);
       } catch {
@@ -189,7 +209,7 @@ export default function CustomersPage() {
             items: [],
             total: 0,
             page: 0,
-            page_size: 15,
+            page_size: 30,
             total_pages: 0,
             summary: { clientes: 0, desconto_total: 0 },
           });
@@ -241,7 +261,7 @@ export default function CustomersPage() {
       params.set("id_filial", String(row.id_filial));
       params.set("id_entidade", String(row.id_entidade));
       params.set("page", "0");
-      // Janela larga para subtotal por produto sem cortar o grupo no meio da página.
+      // Exceção: detalhe preço fixo page_size 200 — não cortar grupo/subtotal.
       params.set("page_size", "200");
       const res = await apiGet(`/bi/customers/preco-fixo/detail?${params.toString()}`);
       setPrecoFixoDetail(res);
@@ -256,11 +276,48 @@ export default function CustomersPage() {
   const { query: precoFixoSearch, setQuery: setPrecoFixoSearch, filteredRows: filteredPrecoFixo } =
     useGridSearch(precoFixoItems as Record<string, unknown>[]);
   const precoFixoPageCount = Math.max(1, Number(precoFixoData?.total_pages || 1));
+  const precoFixoTotal = Number(precoFixoData?.total || 0);
+  const precoFixoRangeFrom = precoFixoTotal === 0 ? 0 : precoFixoPage * 30 + 1;
+  const precoFixoRangeTo = Math.min((precoFixoPage + 1) * 30, precoFixoTotal);
+  const inativosItems = (inativosData?.items || []) as any[];
+  const inativosGrid = useRecordGrid<any>({
+    rows: inativosItems,
+    resetKey: inativosDays,
+    getTieId: (row) => `${row.id_filial}-${row.id_entidade}-${row.id_produto}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.ultima_compra, nome: a.cliente_nome },
+        { filial: b.filial_label ?? b.id_filial, data: b.ultima_compra, nome: b.cliente_nome },
+      ),
+    columns: {
+      filial_label: { type: "text" },
+      cliente_nome: { type: "text" },
+      ultima_compra: { type: "date" },
+      dias_sem: { type: "number" },
+      produto_nome: { type: "text" },
+    },
+  });
   const churnTopRows = useMemo(
     () => (Array.isArray(data?.churn_top) ? data.churn_top : []) as Record<string, unknown>[],
     [data?.churn_top],
   );
   const { query: churnQ, setQuery: setChurnQ, filteredRows: filteredChurn } = useGridSearch(churnTopRows);
+  const churnGrid = useRecordGrid<any>({
+    rows: filteredChurn,
+    resetKey: churnQ,
+    getTieId: (row) => row.id_cliente,
+    defaultCompare: (a, b) => Number(b.churn_score || 0) - Number(a.churn_score || 0),
+    summableKeys: ["compras_30d", "compras_60_30", "faturamento_30d", "faturamento_60_30"],
+    columns: {
+      cliente_nome: { type: "text" },
+      churn_score: { type: "number" },
+      last_purchase: { type: "date" },
+      compras_30d: { type: "number" },
+      compras_60_30: { type: "number" },
+      faturamento_30d: { type: "number" },
+      faturamento_60_30: { type: "number" },
+    },
+  });
   const topCustomersRows = useMemo(
     () =>
       (Array.isArray(data?.top_customers) ? data.top_customers : [])
@@ -269,6 +326,18 @@ export default function CustomersPage() {
   );
   const { query: topCustomersQ, setQuery: setTopCustomersQ, filteredRows: filteredTopCustomers } =
     useGridSearch(topCustomersRows);
+  const topCustomersGrid = useRecordGrid<any>({
+    rows: filteredTopCustomers,
+    resetKey: topCustomersQ,
+    getTieId: (row) => row.id_cliente,
+    defaultCompare: (a, b) => Number(b.compras || 0) - Number(a.compras || 0),
+    summableKeys: ["compras"],
+    columns: {
+      cliente_nome: { type: "text" },
+      compras: { type: "number" },
+      ticket_medio: { type: "number" },
+    },
+  });
   return (
     <div>
       <AppNav title="Análise de Clientes" userLabel={userLabel} />
@@ -442,7 +511,7 @@ export default function CustomersPage() {
                             color: delinquencySort === opt.key ? "var(--on-accent)" : undefined,
                             borderColor: delinquencySort === opt.key ? "var(--color-accent, #3b82f6)" : undefined,
                           }}
-                          onClick={() => { setDelinquencySort(opt.key); setDelinquencyPage(1); }}
+                          onClick={() => setDelinquencySort(opt.key)}
                         >
                           {opt.label}
                         </button>
@@ -451,10 +520,7 @@ export default function CustomersPage() {
                     <div style={{ marginTop: 8 }}>
                       <GridSearchInput
                         value={delinquencySearch}
-                        onChange={(value) => {
-                          setDelinquencySearch(value);
-                          setDelinquencyPage(1);
-                        }}
+                        onChange={setDelinquencySearch}
                       />
                     </div>
                   </div>
@@ -542,22 +608,24 @@ export default function CustomersPage() {
                   <table className="table compact">
                     <thead>
                       <tr>
-                        <th>Cliente</th>
-                        {showFilialColumn ? <th>Filial</th> : null}
-                        <th>Até 30d</th>
-                        <th>R$ até 30d</th>
-                        <th>30+ dias</th>
-                        <th>R$ 30+</th>
-                        <th>Total vencido</th>
-                        <th>A vencer</th>
-                        <th>R$ a vencer</th>
-                        <th>Total aberto</th>
-                        <th>Maior atraso</th>
-                        <th>Compras 30d</th>
+                        <SortableTh label="Cliente" sortKey="cliente_nome" ariaSort={delinquencyGrid.ariaSort("cliente_nome")} onToggle={delinquencyGrid.toggleSort} />
+                        {showFilialColumn ? (
+                          <SortableTh label="Filial" sortKey="filial_label" ariaSort={delinquencyGrid.ariaSort("filial_label")} onToggle={delinquencyGrid.toggleSort} />
+                        ) : null}
+                        <SortableTh label="Até 30d" sortKey="titulos_ate_30d" ariaSort={delinquencyGrid.ariaSort("titulos_ate_30d")} onToggle={delinquencyGrid.toggleSort} />
+                        <SortableTh label="R$ até 30d" sortKey="valor_ate_30d" ariaSort={delinquencyGrid.ariaSort("valor_ate_30d")} onToggle={delinquencyGrid.toggleSort} align="right" />
+                        <SortableTh label="30+ dias" sortKey="titulos_acima_30d" ariaSort={delinquencyGrid.ariaSort("titulos_acima_30d")} onToggle={delinquencyGrid.toggleSort} />
+                        <SortableTh label="R$ 30+" sortKey="valor_acima_30d" ariaSort={delinquencyGrid.ariaSort("valor_acima_30d")} onToggle={delinquencyGrid.toggleSort} align="right" />
+                        <SortableTh label="Total vencido" sortKey="valor_total_vencido" ariaSort={delinquencyGrid.ariaSort("valor_total_vencido")} onToggle={delinquencyGrid.toggleSort} align="right" />
+                        <SortableTh label="A vencer" sortKey="titulos_a_vencer" ariaSort={delinquencyGrid.ariaSort("titulos_a_vencer")} onToggle={delinquencyGrid.toggleSort} />
+                        <SortableTh label="R$ a vencer" sortKey="valor_a_vencer" ariaSort={delinquencyGrid.ariaSort("valor_a_vencer")} onToggle={delinquencyGrid.toggleSort} align="right" />
+                        <SortableTh label="Total aberto" sortKey="valor_total_aberto" ariaSort={delinquencyGrid.ariaSort("valor_total_aberto")} onToggle={delinquencyGrid.toggleSort} align="right" />
+                        <SortableTh label="Maior atraso" sortKey="max_dias_atraso" ariaSort={delinquencyGrid.ariaSort("max_dias_atraso")} onToggle={delinquencyGrid.toggleSort} />
+                        <SortableTh label="Compras 30d" sortKey="compras_30d" ariaSort={delinquencyGrid.ariaSort("compras_30d")} onToggle={delinquencyGrid.toggleSort} />
                       </tr>
                     </thead>
                     <tbody>
-                      {delinquencyPageItems.map((item: any) => {
+                      {delinquencyGrid.slice.map((item: any) => {
                         const totalVencido = item.valor_total_vencido || ((item.valor_ate_30d || 0) + (item.valor_acima_30d || 0));
                         const totalAberto = item.valor_total_aberto || (totalVencido + (item.valor_a_vencer || 0));
                         return (
@@ -578,15 +646,33 @@ export default function CustomersPage() {
                         );
                       })}
                     </tbody>
+                    {delinquencyGrid.slice.length ? (
+                      <tfoot>
+                        <tr>
+                          <td colSpan={showFilialColumn ? 3 : 2}>Total da página ({delinquencyGrid.slice.length})</td>
+                          <td>{formatCurrency(delinquencyGrid.pageTotals.valor_ate_30d)}</td>
+                          <td />
+                          <td>{formatCurrency(delinquencyGrid.pageTotals.valor_acima_30d)}</td>
+                          <td>{formatCurrency(delinquencyGrid.pageTotals.valor_total_vencido)}</td>
+                          <td />
+                          <td>{formatCurrency(delinquencyGrid.pageTotals.valor_a_vencer)}</td>
+                          <td>{formatCurrency(delinquencyGrid.pageTotals.valor_total_aberto)}</td>
+                          <td colSpan={2} />
+                        </tr>
+                      </tfoot>
+                    ) : null}
                   </table>
                 </div>
-                <GridPager
-                  page={Math.min(Math.max(1, delinquencyPage), delinquencyPageCount)}
-                  totalPages={delinquencyPageCount}
-                  total={filteredDelinquency.length}
-                  pageSize={delinquencyPageSize}
-                  onPrev={() => setDelinquencyPage((page) => Math.max(1, page - 1))}
-                  onNext={() => setDelinquencyPage((page) => Math.min(delinquencyPageCount, page + 1))}
+                <GridChrome
+                  page={delinquencyGrid.page}
+                  totalPages={delinquencyGrid.totalPages}
+                  total={delinquencyGrid.total}
+                  from={delinquencyGrid.range.from}
+                  to={delinquencyGrid.range.to}
+                  onPrev={delinquencyGrid.onPrev}
+                  onNext={delinquencyGrid.onNext}
+                  onResetOrder={delinquencyGrid.resetOrder}
+                  isDefaultOrder={delinquencyGrid.isDefaultOrder}
                 />
               </div>
 
@@ -620,6 +706,7 @@ export default function CustomersPage() {
                       <table className="table compact">
                         <thead>
                           <tr>
+                            {/* Paginação server-side (30); ordem da API — não reordenar só a página. */}
                             <th>Filial</th>
                             <th>Cliente</th>
                             <th>Vendas</th>
@@ -724,29 +811,17 @@ export default function CustomersPage() {
                         </tbody>
                       </table>
                     </div>
-                    {Number(precoFixoData?.total || 0) > 15 ? (
-                      <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
-                        <button
-                          className="btn"
-                          type="button"
-                          onClick={() => setPrecoFixoPage((p) => Math.max(0, p - 1))}
-                          disabled={precoFixoPage <= 0 || precoFixoLoading}
-                        >
-                          Página anterior
-                        </button>
-                        <div className="muted">
-                          Página {Math.min(precoFixoPage + 1, precoFixoPageCount)} de {precoFixoPageCount}
-                        </div>
-                        <button
-                          className="btn"
-                          type="button"
-                          onClick={() => setPrecoFixoPage((p) => Math.min(p + 1, precoFixoPageCount - 1))}
-                          disabled={precoFixoPage >= precoFixoPageCount - 1 || precoFixoLoading}
-                        >
-                          Próxima página
-                        </button>
-                      </div>
-                    ) : null}
+                    <GridChrome
+                      page={precoFixoPage + 1}
+                      totalPages={precoFixoPageCount}
+                      total={precoFixoTotal}
+                      from={precoFixoRangeFrom}
+                      to={precoFixoRangeTo}
+                      onPrev={() => setPrecoFixoPage((p) => Math.max(0, p - 1))}
+                      onNext={() => setPrecoFixoPage((p) => Math.min(p + 1, precoFixoPageCount - 1))}
+                      onResetOrder={() => setPrecoFixoPage(0)}
+                      isDefaultOrder={precoFixoPage === 0}
+                    />
                   </>
                 ) : null}
               </div>
@@ -789,15 +864,15 @@ export default function CustomersPage() {
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Filial</th>
-                          <th>Cliente</th>
-                          <th>Última compra</th>
-                          <th>Dias sem comprar</th>
-                          <th>Produto / regra</th>
+                          <SortableTh label="Filial" sortKey="filial_label" ariaSort={inativosGrid.ariaSort("filial_label")} onToggle={inativosGrid.toggleSort} />
+                          <SortableTh label="Cliente" sortKey="cliente_nome" ariaSort={inativosGrid.ariaSort("cliente_nome")} onToggle={inativosGrid.toggleSort} />
+                          <SortableTh label="Última compra" sortKey="ultima_compra" ariaSort={inativosGrid.ariaSort("ultima_compra")} onToggle={inativosGrid.toggleSort} />
+                          <SortableTh label="Dias sem comprar" sortKey="dias_sem" ariaSort={inativosGrid.ariaSort("dias_sem")} onToggle={inativosGrid.toggleSort} />
+                          <SortableTh label="Produto / regra" sortKey="produto_nome" ariaSort={inativosGrid.ariaSort("produto_nome")} onToggle={inativosGrid.toggleSort} />
                         </tr>
                       </thead>
                       <tbody>
-                        {(inativosData?.items || []).map((row: any) => (
+                        {inativosGrid.slice.map((row: any) => (
                           <tr key={`${row.id_filial}-${row.id_entidade}-${row.id_produto}`}>
                             <td>{row.filial_label || "—"}</td>
                             <td>{row.cliente_nome || "—"}</td>
@@ -813,6 +888,17 @@ export default function CustomersPage() {
                         ))}
                       </tbody>
                     </table>
+                    <GridChrome
+                      page={inativosGrid.page}
+                      totalPages={inativosGrid.totalPages}
+                      total={inativosGrid.total}
+                      from={inativosGrid.range.from}
+                      to={inativosGrid.range.to}
+                      onPrev={inativosGrid.onPrev}
+                      onNext={inativosGrid.onNext}
+                      onResetOrder={inativosGrid.resetOrder}
+                      isDefaultOrder={inativosGrid.isDefaultOrder}
+                    />
                   </div>
                 )}
               </div>
@@ -846,18 +932,18 @@ export default function CustomersPage() {
                 <table className="table compact">
                   <thead>
                     <tr>
-                      <th>Cliente</th>
-                      <th>Score</th>
-                      <th>Última compra</th>
+                      <SortableTh label="Cliente" sortKey="cliente_nome" ariaSort={churnGrid.ariaSort("cliente_nome")} onToggle={churnGrid.toggleSort} />
+                      <SortableTh label="Score" sortKey="churn_score" ariaSort={churnGrid.ariaSort("churn_score")} onToggle={churnGrid.toggleSort} />
+                      <SortableTh label="Última compra" sortKey="last_purchase" ariaSort={churnGrid.ariaSort("last_purchase")} onToggle={churnGrid.toggleSort} />
                       <th>Sinal principal</th>
-                      <th>Compras 30d</th>
-                      <th>Compras 60-30d</th>
-                      <th>Fat. 30d</th>
-                      <th>Fat. 60-30d</th>
+                      <SortableTh label="Compras 30d" sortKey="compras_30d" ariaSort={churnGrid.ariaSort("compras_30d")} onToggle={churnGrid.toggleSort} />
+                      <SortableTh label="Compras 60-30d" sortKey="compras_60_30" ariaSort={churnGrid.ariaSort("compras_60_30")} onToggle={churnGrid.toggleSort} />
+                      <SortableTh label="Fat. 30d" sortKey="faturamento_30d" ariaSort={churnGrid.ariaSort("faturamento_30d")} onToggle={churnGrid.toggleSort} align="right" />
+                      <SortableTh label="Fat. 60-30d" sortKey="faturamento_60_30" ariaSort={churnGrid.ariaSort("faturamento_60_30")} onToggle={churnGrid.toggleSort} align="right" />
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredChurn.map((c: any) => (
+                    {churnGrid.slice.map((c: any) => (
                       <tr key={c.id_cliente}>
                         <td>{c.cliente_nome}</td>
                         <td>
@@ -876,7 +962,29 @@ export default function CustomersPage() {
                       </tr>
                     ))}
                   </tbody>
+                  {churnGrid.slice.length ? (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={4}>Total da página ({churnGrid.slice.length})</td>
+                        <td>{churnGrid.pageTotals.compras_30d}</td>
+                        <td>{churnGrid.pageTotals.compras_60_30}</td>
+                        <td>{formatCurrency(churnGrid.pageTotals.faturamento_30d)}</td>
+                        <td>{formatCurrency(churnGrid.pageTotals.faturamento_60_30)}</td>
+                      </tr>
+                    </tfoot>
+                  ) : null}
                 </table>
+                <GridChrome
+                  page={churnGrid.page}
+                  totalPages={churnGrid.totalPages}
+                  total={churnGrid.total}
+                  from={churnGrid.range.from}
+                  to={churnGrid.range.to}
+                  onPrev={churnGrid.onPrev}
+                  onNext={churnGrid.onNext}
+                  onResetOrder={churnGrid.resetOrder}
+                  isDefaultOrder={churnGrid.isDefaultOrder}
+                />
               </div>
 
               <div className="card col-7 chartCard">
@@ -911,13 +1019,13 @@ export default function CustomersPage() {
                 <table className="table compact">
                   <thead>
                     <tr>
-                      <th>Cliente</th>
-                      <th>Compras</th>
-                      <th>Ticket</th>
+                      <SortableTh label="Cliente" sortKey="cliente_nome" ariaSort={topCustomersGrid.ariaSort("cliente_nome")} onToggle={topCustomersGrid.toggleSort} />
+                      <SortableTh label="Compras" sortKey="compras" ariaSort={topCustomersGrid.ariaSort("compras")} onToggle={topCustomersGrid.toggleSort} />
+                      <SortableTh label="Ticket" sortKey="ticket_medio" ariaSort={topCustomersGrid.ariaSort("ticket_medio")} onToggle={topCustomersGrid.toggleSort} align="right" />
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredTopCustomers.map((c: any) => (
+                    {topCustomersGrid.slice.map((c: any) => (
                       <tr key={c.id_cliente}>
                         <td>{c.cliente_nome}</td>
                         <td>{c.compras}</td>
@@ -925,7 +1033,27 @@ export default function CustomersPage() {
                       </tr>
                     ))}
                   </tbody>
+                  {topCustomersGrid.slice.length ? (
+                    <tfoot>
+                      <tr>
+                        <td>Total da página ({topCustomersGrid.slice.length})</td>
+                        <td>{topCustomersGrid.pageTotals.compras}</td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  ) : null}
                 </table>
+                <GridChrome
+                  page={topCustomersGrid.page}
+                  totalPages={topCustomersGrid.totalPages}
+                  total={topCustomersGrid.total}
+                  from={topCustomersGrid.range.from}
+                  to={topCustomersGrid.range.to}
+                  onPrev={topCustomersGrid.onPrev}
+                  onNext={topCustomersGrid.onNext}
+                  onResetOrder={topCustomersGrid.resetOrder}
+                  isDefaultOrder={topCustomersGrid.isDefaultOrder}
+                />
               </div>
 
             </div>

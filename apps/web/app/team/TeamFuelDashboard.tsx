@@ -261,6 +261,7 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
                 />
               </div>
 
+              {/* Exceção: mix visual (participação %), não listagem de registros — não somar %. */}
               <div className="card col-12" style={{ margin: 0 }}>
                 <h2 style={{ margin: 0, fontSize: 16 }}>Mix por combustível</h2>
                 {mix.length === 0 ? (

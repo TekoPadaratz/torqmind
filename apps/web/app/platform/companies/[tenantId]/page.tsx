@@ -5,7 +5,11 @@ import { useParams, useRouter } from 'next/navigation';
 
 import PlatformShell from '../../../components/PlatformShell';
 import BrandingEditor from '../../../components/BrandingEditor';
+import GridChrome from '../../../components/ui/GridChrome';
 import GridSearchInput from '../../../components/ui/GridSearchInput';
+import SortableTh from '../../../components/ui/SortableTh';
+import { compareGridRows } from '../../../lib/grid-sort';
+import { useRecordGrid } from '../../../lib/use-record-grid';
 import { api, apiGet } from '../../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../../lib/format';
 import { loadSession } from '../../../lib/session';
@@ -78,7 +82,55 @@ export default function PlatformCompanyDetailPage() {
   const branchesSearch = useGridSearch(data?.branches || []);
   const usersSearch = useGridSearch(data?.users || []);
   const subscriptionsSearch = useGridSearch(data?.notification_subscriptions || []);
+  const branchesGrid = useRecordGrid<any>({
+    rows: branchesSearch.filteredRows,
+    resetKey: branchesSearch.query,
+    getTieId: (row) => row.id_filial,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.nome }, { nome: b.nome }),
+    columns: {
+      id_filial: { type: 'number' },
+      nome: { type: 'text' },
+      apelido: { type: 'text' },
+    },
+  });
+  const tenantUsersGrid = useRecordGrid<any>({
+    rows: usersSearch.filteredRows,
+    resetKey: usersSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.nome }, { nome: b.nome }),
+    columns: {
+      nome: { type: 'text' },
+      email: { type: 'text' },
+      role: { type: 'text' },
+    },
+  });
+  const subscriptionsGrid = useRecordGrid<any>({
+    rows: subscriptionsSearch.filteredRows,
+    resetKey: subscriptionsSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.user_name }, { nome: b.user_name }),
+    columns: {
+      user_name: { type: 'text' },
+      event_type: { type: 'text' },
+      channel: { type: 'text' },
+      severity_min: { type: 'text' },
+    },
+  });
   const auditSearch = useGridSearch(data?.audit || []);
+  const auditGrid = useRecordGrid<any>({
+    rows: auditSearch.filteredRows,
+    resetKey: auditSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')),
+    columns: {
+      created_at: { type: 'date' },
+      action: { type: 'text' },
+      entity_type: { type: 'text' },
+    },
+  });
 
   async function loadCompany(session: any, preferredBranchId?: number | null) {
     setLoading(true);
@@ -356,9 +408,9 @@ export default function PlatformCompanyDetailPage() {
           <table className="table compact">
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Nome</th>
-                <th>Apelido</th>
+                <SortableTh label="ID" sortKey="id_filial" ariaSort={branchesGrid.ariaSort('id_filial')} onToggle={branchesGrid.toggleSort} />
+                <SortableTh label="Nome" sortKey="nome" ariaSort={branchesGrid.ariaSort('nome')} onToggle={branchesGrid.toggleSort} />
+                <SortableTh label="Apelido" sortKey="apelido" ariaSort={branchesGrid.ariaSort('apelido')} onToggle={branchesGrid.toggleSort} />
                 <th>Habilitada</th>
                 <th>Vigência</th>
                 <th>Bloqueio</th>
@@ -366,7 +418,7 @@ export default function PlatformCompanyDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {branchesSearch.filteredRows.map((branch: any) => (
+              {branchesGrid.slice.map((branch: any) => (
                 <tr key={branch.id_filial}>
                   <td>{branch.id_filial}</td>
                   <td>{branch.nome}</td>
@@ -381,13 +433,24 @@ export default function PlatformCompanyDetailPage() {
                   </td>
                 </tr>
               ))}
-              {!branchesSearch.filteredRows.length ? (
+              {!branchesGrid.total ? (
                 <tr>
                   <td colSpan={7}>Nenhuma filial sincronizada ainda para esta empresa.</td>
                 </tr>
               ) : null}
             </tbody>
           </table>
+          <GridChrome
+            page={branchesGrid.page}
+            totalPages={branchesGrid.totalPages}
+            total={branchesGrid.total}
+            from={branchesGrid.range.from}
+            to={branchesGrid.range.to}
+            onPrev={branchesGrid.onPrev}
+            onNext={branchesGrid.onNext}
+            onResetOrder={branchesGrid.resetOrder}
+            isDefaultOrder={branchesGrid.isDefaultOrder}
+          />
 
           {branchForm ? (
             <>
@@ -458,14 +521,14 @@ export default function PlatformCompanyDetailPage() {
           <table className="table compact">
             <thead>
               <tr>
-                <th>Nome</th>
-                <th>Email</th>
-                <th>Papel</th>
+                <SortableTh label="Nome" sortKey="nome" ariaSort={tenantUsersGrid.ariaSort('nome')} onToggle={tenantUsersGrid.toggleSort} />
+                <SortableTh label="Email" sortKey="email" ariaSort={tenantUsersGrid.ariaSort('email')} onToggle={tenantUsersGrid.toggleSort} />
+                <SortableTh label="Papel" sortKey="role" ariaSort={tenantUsersGrid.ariaSort('role')} onToggle={tenantUsersGrid.toggleSort} />
                 <th>Telegram</th>
               </tr>
             </thead>
             <tbody>
-              {usersSearch.filteredRows.map((user: any) => (
+              {tenantUsersGrid.slice.map((user: any) => (
                 <tr key={user.id}>
                   <td>{user.nome}</td>
                   <td>{user.email}</td>
@@ -475,6 +538,17 @@ export default function PlatformCompanyDetailPage() {
               ))}
             </tbody>
           </table>
+          <GridChrome
+            page={tenantUsersGrid.page}
+            totalPages={tenantUsersGrid.totalPages}
+            total={tenantUsersGrid.total}
+            from={tenantUsersGrid.range.from}
+            to={tenantUsersGrid.range.to}
+            onPrev={tenantUsersGrid.onPrev}
+            onNext={tenantUsersGrid.onNext}
+            onResetOrder={tenantUsersGrid.resetOrder}
+            isDefaultOrder={tenantUsersGrid.isDefaultOrder}
+          />
         </div>
 
         <div className="card">
@@ -514,14 +588,14 @@ export default function PlatformCompanyDetailPage() {
           <table className="table compact">
             <thead>
               <tr>
-                <th>Usuário</th>
-                <th>Evento</th>
-                <th>Canal</th>
-                <th>Severity</th>
+                <SortableTh label="Usuário" sortKey="user_name" ariaSort={subscriptionsGrid.ariaSort('user_name')} onToggle={subscriptionsGrid.toggleSort} />
+                <SortableTh label="Evento" sortKey="event_type" ariaSort={subscriptionsGrid.ariaSort('event_type')} onToggle={subscriptionsGrid.toggleSort} />
+                <SortableTh label="Canal" sortKey="channel" ariaSort={subscriptionsGrid.ariaSort('channel')} onToggle={subscriptionsGrid.toggleSort} />
+                <SortableTh label="Severity" sortKey="severity_min" ariaSort={subscriptionsGrid.ariaSort('severity_min')} onToggle={subscriptionsGrid.toggleSort} />
               </tr>
             </thead>
             <tbody>
-              {subscriptionsSearch.filteredRows.map((item: any) => (
+              {subscriptionsGrid.slice.map((item: any) => (
                 <tr key={item.id}>
                   <td>{item.user_name}</td>
                   <td>{item.event_type}</td>
@@ -531,6 +605,17 @@ export default function PlatformCompanyDetailPage() {
               ))}
             </tbody>
           </table>
+          <GridChrome
+            page={subscriptionsGrid.page}
+            totalPages={subscriptionsGrid.totalPages}
+            total={subscriptionsGrid.total}
+            from={subscriptionsGrid.range.from}
+            to={subscriptionsGrid.range.to}
+            onPrev={subscriptionsGrid.onPrev}
+            onNext={subscriptionsGrid.onNext}
+            onResetOrder={subscriptionsGrid.resetOrder}
+            isDefaultOrder={subscriptionsGrid.isDefaultOrder}
+          />
         </div>
 
         <div className="card">
@@ -544,13 +629,13 @@ export default function PlatformCompanyDetailPage() {
           <table className="table compact">
             <thead>
               <tr>
-                <th>Quando</th>
-                <th>Ação</th>
-                <th>Entidade</th>
+                <SortableTh label="Quando" sortKey="created_at" ariaSort={auditGrid.ariaSort('created_at')} onToggle={auditGrid.toggleSort} />
+                <SortableTh label="Ação" sortKey="action" ariaSort={auditGrid.ariaSort('action')} onToggle={auditGrid.toggleSort} />
+                <SortableTh label="Entidade" sortKey="entity_type" ariaSort={auditGrid.ariaSort('entity_type')} onToggle={auditGrid.toggleSort} />
               </tr>
             </thead>
             <tbody>
-              {auditSearch.filteredRows.map((item: any) => (
+              {auditGrid.slice.map((item: any) => (
                 <tr key={item.id}>
                   <td>{formatDateTime(item.created_at)}</td>
                   <td>{item.action}</td>
@@ -564,6 +649,17 @@ export default function PlatformCompanyDetailPage() {
               ) : null}
             </tbody>
           </table>
+          <GridChrome
+            page={auditGrid.page}
+            totalPages={auditGrid.totalPages}
+            total={auditGrid.total}
+            from={auditGrid.range.from}
+            to={auditGrid.range.to}
+            onPrev={auditGrid.onPrev}
+            onNext={auditGrid.onNext}
+            onResetOrder={auditGrid.resetOrder}
+            isDefaultOrder={auditGrid.isDefaultOrder}
+          />
         </div>
       </div>
     </PlatformShell>

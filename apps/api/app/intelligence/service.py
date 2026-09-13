@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
@@ -297,15 +298,23 @@ def process_message(
     from app.intelligence.investigation import (
         answer_followup,
         build_investigation_context,
+        classify_conversation_turn,
         detect_followup_action,
         detect_investigation_intent,
         format_deterministic_answer,
         maybe_narrate_with_jarvis,
+        resolve_finance_tipo,
         run_finance_investigation,
         run_sales_investigation,
     )
 
-    follow_action = detect_followup_action(norm.display, ctx.get("last_investigation"))
+    last_inv = ctx.get("last_investigation")
+    turn = classify_conversation_turn(norm.display, last_inv)
+    follow_action = detect_followup_action(norm.display, last_inv)
+    if turn == "switch":
+        follow_action = None
+    elif turn == "new" and detect_investigation_intent(norm.display):
+        follow_action = None
     if follow_action:
         last_inv = ctx.get("last_investigation") or {}
         follow_intent = (
@@ -330,7 +339,7 @@ def process_message(
             )
             return result.to_dict()
         inv = answer_followup(
-            follow_action, last_inv, claims, scope, evidence
+            follow_action, last_inv, claims, scope, evidence, text=norm.display
         )
         tool_meta.append(
             {
@@ -673,7 +682,54 @@ def process_message(
                 evidence,
             )
         else:
-            inv = run_finance_investigation(claims, scope, evidence)
+            tipo_mode, tipo = resolve_finance_tipo(
+                norm.display, ctx.get("last_investigation"), parsed.slots
+            )
+            if tipo_mode == "ambiguous":
+                options = [
+                    {"label": "Recebimentos", "value": "1"},
+                    {"label": "Pagamentos", "value": "0"},
+                    {"label": "Os dois", "value": "both"},
+                ]
+                answer = build_answer(
+                    status="clarification_required",
+                    intent_id=parsed.intent_id,
+                    clarification_options=options,
+                    custom_lead="Quer recebimentos, pagamentos ou os dois?",
+                    deep_link=deep_link,
+                )
+                result = EngineResult(
+                    status="clarification_required",
+                    answer_text=answer,
+                    intent_id=parsed.intent_id,
+                    confidence=parsed.confidence,
+                    clarification_options=options,
+                    clarification_kind="finance_tipo",
+                    suggestions=["Recebimentos", "Pagamentos", "Os dois"],
+                    deep_link=deep_link,
+                    request_id=request_id,
+                    answer_id=answer_id,
+                    conversation_context=update_after_turn(
+                        ctx,
+                        intent_id=parsed.intent_id,
+                        slots=parsed.slots,
+                        period=None,
+                        entities=[],
+                        pending={"kind": "finance_tipo", "intent_id": parsed.intent_id, "options": options},
+                    ),
+                )
+                return result.to_dict()
+            inv = run_finance_investigation(claims, scope, evidence, tipo=tipo)
+            if re.search(
+                r"m[eê]s passado|per[ií]odo anterior|janela anterior",
+                norm.display,
+                re.I,
+            ):
+                inv = dict(inv)
+                inv["warnings"] = [
+                    "A carteira mostra a posição atual — não há comparação entre períodos.",
+                    *(inv.get("warnings") or []),
+                ]
         tool_meta.append(
             {
                 "tool_name": parsed.intent_id,

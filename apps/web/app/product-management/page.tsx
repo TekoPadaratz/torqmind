@@ -4,9 +4,11 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
-import GridPager, { useClientPager, GRID_PAGE_SIZE } from "../components/ui/GridPager";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SortableTh from "../components/ui/SortableTh";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { apiGet } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { buildUserLabel, formatCurrency } from "../lib/format";
@@ -163,8 +165,6 @@ export default function ProductManagementPage() {
   const [purchaseCache, setPurchaseCache] = useState<Record<string, PurchaseRow[]>>({});
   const [purchaseLoading, setPurchaseLoading] = useState<string | null>(null);
   const [purchaseError, setPurchaseError] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("dias_sem_venda");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
 
   const { claims, data, error, loading, pendingUnavailable } = useBiScopeData<Payload>({
     moduleKey: `product_stock_idle:${diasSemVenda}:${setorFilter}:${reloadNonce}`,
@@ -193,21 +193,32 @@ export default function ProductManagementPage() {
     excludeKeys: /^id_/,
   });
 
-  const sortedRows = useMemo(() => {
-    const copy = [...searchedRows];
-    copy.sort((a, b) => compareProductRows(a, b, sortKey, sortDir));
-    return copy;
-  }, [searchedRows, sortKey, sortDir]);
-
-  const pager = useClientPager(sortedRows, GRID_PAGE_SIZE);
+  const productsGrid = useRecordGrid<ProductRow>({
+    rows: searchedRows,
+    resetKey: `${query}:${diasSemVenda}:${setorFilter}`,
+    getTieId: (row) => `${row.id_filial}:${row.id_produto}`,
+    defaultCompare: (a, b) => compareProductRows(a, b, "dias_sem_venda", "asc"),
+    summableKeys: ["qtd_estoque", "custo_medio_total", "receita_total"],
+    columns: {
+      nome_produto: { type: "text" },
+      setor_label: { type: "text" },
+      last_sale_date: { type: "date" },
+      dias_sem_venda: { type: "number", getValue: (r) => diasSortValue(r.dias_sem_venda) },
+      qtd_estoque: { type: "number" },
+      custo_medio: { type: "number" },
+      custo_medio_total: { type: "number" },
+      preco_venda: { type: "number" },
+      receita_total: { type: "number" },
+    },
+  });
 
   useEffect(() => {
     setExpandedKey(null);
-  }, [pager.page, query, sortKey, sortDir, diasSemVenda, setorFilter]);
+  }, [productsGrid.page, query, productsGrid.sort?.key, productsGrid.sort?.dir, diasSemVenda, setorFilter]);
 
   const filialGroups = useMemo(() => {
     const byFilial = new Map<number, { id_filial: number; label: string; products: ProductRow[] }>();
-    for (const row of pager.slice) {
+    for (const row of productsGrid.slice) {
       const id = row.id_filial;
       const cur = byFilial.get(id) || {
         id_filial: id,
@@ -220,7 +231,7 @@ export default function ProductManagementPage() {
     return Array.from(byFilial.values()).sort((a, b) =>
       a.label.localeCompare(b.label, "pt-BR", { numeric: true, sensitivity: "base" }),
     );
-  }, [pager.slice]);
+  }, [productsGrid.slice]);
 
   const setorOptions = useMemo(() => {
     const fromApi = data?.setores || [];
@@ -228,27 +239,6 @@ export default function ProductManagementPage() {
     const keys = new Set(rows.map((r) => r.setor));
     return Array.from(keys).map((k) => ({ key: k, label: k }));
   }, [data?.setores, rows]);
-
-  const onSortColumn = useCallback((key: SortKey) => {
-    if (sortKey === key) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-      return;
-    }
-    setSortKey(key);
-    setSortDir(
-      key === "dias_sem_venda" || key === "nome_produto" || key === "setor_label"
-        ? "asc"
-        : "desc",
-    );
-  }, [sortKey]);
-
-  const sortIndicator = useCallback(
-    (key: SortKey) => {
-      if (sortKey !== key) return "";
-      return sortDir === "asc" ? " ▲" : " ▼";
-    },
-    [sortDir, sortKey],
-  );
 
   const toggleExpand = useCallback(
     async (row: ProductRow) => {
@@ -280,7 +270,7 @@ export default function ProductManagementPage() {
     [expandedKey, scope, purchaseCache],
   );
 
-  const truncated = (data?.total || 0) > sortedRows.length;
+  const truncated = (data?.total || 0) > searchedRows.length;
 
   if (!allowed && session) {
     return (
@@ -309,7 +299,7 @@ export default function ProductManagementPage() {
             <div className="commissionFilialSummary">
               <span className="muted">Parados ≥</span>
               <strong>{diasSemVenda}</strong>
-              <span className="muted">dias · {data?.total ?? sortedRows.length} produto(s)</span>
+              <span className="muted">dias · {data?.total ?? searchedRows.length} produto(s)</span>
             </div>
           </div>
           <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
@@ -365,7 +355,7 @@ export default function ProductManagementPage() {
 
               {truncated ? (
                 <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                  Exibindo {sortedRows.length} de {data?.total} produtos. Refine o setor ou a filial para ver todos.
+                  Exibindo {searchedRows.length} de {data?.total} produtos. Refine o setor ou a filial para ver todos.
                 </div>
               ) : null}
 
@@ -373,7 +363,7 @@ export default function ProductManagementPage() {
                 <div className="card errorCard" style={{ marginBottom: 12 }}>{purchaseError}</div>
               ) : null}
 
-              {sortedRows.length === 0 ? (
+              {searchedRows.length === 0 ? (
                 <EmptyState
                   title="Nenhum produto parado"
                   detail={`Não há produtos com estoque e ≥ ${diasSemVenda} dias sem venda no escopo selecionado.`}
@@ -398,33 +388,15 @@ export default function ProductManagementPage() {
                       <table className="table compact" style={{ fontSize: 13 }}>
                         <thead>
                           <tr>
-                            <th style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onSortColumn("nome_produto")}>
-                              Produto{sortIndicator("nome_produto")}
-                            </th>
-                            <th style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onSortColumn("setor_label")}>
-                              Setor{sortIndicator("setor_label")}
-                            </th>
-                            <th style={{ textAlign: "left", cursor: "pointer" }} onClick={() => onSortColumn("last_sale_date")}>
-                              Última venda{sortIndicator("last_sale_date")}
-                            </th>
-                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("dias_sem_venda")}>
-                              Dias s/ venda{sortIndicator("dias_sem_venda")}
-                            </th>
-                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("qtd_estoque")}>
-                              Qtd{sortIndicator("qtd_estoque")}
-                            </th>
-                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio")}>
-                              Custo médio{sortIndicator("custo_medio")}
-                            </th>
-                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("custo_medio_total")}>
-                              Custo médio total{sortIndicator("custo_medio_total")}
-                            </th>
-                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("preco_venda")}>
-                              Vlr venda{sortIndicator("preco_venda")}
-                            </th>
-                            <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => onSortColumn("receita_total")}>
-                              Receita total{sortIndicator("receita_total")}
-                            </th>
+                            <SortableTh label="Produto" sortKey="nome_produto" ariaSort={productsGrid.ariaSort("nome_produto")} onToggle={productsGrid.toggleSort} />
+                            <SortableTh label="Setor" sortKey="setor_label" ariaSort={productsGrid.ariaSort("setor_label")} onToggle={productsGrid.toggleSort} />
+                            <SortableTh label="Última venda" sortKey="last_sale_date" ariaSort={productsGrid.ariaSort("last_sale_date")} onToggle={productsGrid.toggleSort} />
+                            <SortableTh label="Dias s/ venda" sortKey="dias_sem_venda" ariaSort={productsGrid.ariaSort("dias_sem_venda")} onToggle={productsGrid.toggleSort} align="right" />
+                            <SortableTh label="Qtd" sortKey="qtd_estoque" ariaSort={productsGrid.ariaSort("qtd_estoque")} onToggle={productsGrid.toggleSort} align="right" />
+                            <SortableTh label="Custo médio" sortKey="custo_medio" ariaSort={productsGrid.ariaSort("custo_medio")} onToggle={productsGrid.toggleSort} align="right" />
+                            <SortableTh label="Custo médio total" sortKey="custo_medio_total" ariaSort={productsGrid.ariaSort("custo_medio_total")} onToggle={productsGrid.toggleSort} align="right" />
+                            <SortableTh label="Vlr venda" sortKey="preco_venda" ariaSort={productsGrid.ariaSort("preco_venda")} onToggle={productsGrid.toggleSort} align="right" />
+                            <SortableTh label="Receita total" sortKey="receita_total" ariaSort={productsGrid.ariaSort("receita_total")} onToggle={productsGrid.toggleSort} align="right" />
                           </tr>
                         </thead>
                         <tbody>
@@ -471,6 +443,8 @@ export default function ProductManagementPage() {
                                           Sem notas de compra recentes para este produto.
                                         </div>
                                       ) : (
+                                        <>
+                                        {/* Exceção: últimas 3 notas de compra (detalhe expandido). */}
                                         <table className="table compact" style={{ fontSize: 12, marginTop: 8, width: "100%" }}>
                                           <thead>
                                             <tr>
@@ -502,6 +476,7 @@ export default function ProductManagementPage() {
                                             })}
                                           </tbody>
                                         </table>
+                                        </>
                                       )}
                                     </td>
                                   </tr>
@@ -515,13 +490,17 @@ export default function ProductManagementPage() {
                   </section>
                 ))
               )}
-              <GridPager
-                page={pager.page}
-                totalPages={pager.totalPages}
-                total={pager.total}
-                pageSize={pager.pageSize}
-                onPrev={pager.onPrev}
-                onNext={pager.onNext}
+              <GridChrome
+                page={productsGrid.page}
+                totalPages={productsGrid.totalPages}
+                total={productsGrid.total}
+                from={productsGrid.range.from}
+                to={productsGrid.range.to}
+                onPrev={productsGrid.onPrev}
+                onNext={productsGrid.onNext}
+                onResetOrder={productsGrid.resetOrder}
+                isDefaultOrder={productsGrid.isDefaultOrder}
+                truncatedNote={truncated ? `Lista limitada a ${searchedRows.length} de ${data?.total} produtos.` : null}
               />
             </>
           )}

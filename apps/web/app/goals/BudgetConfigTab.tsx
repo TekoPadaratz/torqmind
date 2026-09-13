@@ -6,6 +6,7 @@ import EmptyState from "../components/ui/EmptyState";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { useGridSearch } from "../lib/use-grid-search";
 
+/** Editor/matriz de tetos orçamentários (inputs de valor e alerta %). Não é lista operacional — contrato próprio, sem useRecordGrid. */
 interface BudgetConfigTabProps {
   idEmpresa: number | null;
   idFilial: number | null;

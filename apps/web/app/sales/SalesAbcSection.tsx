@@ -15,14 +15,16 @@ import {
 import EmptyState from "../components/ui/EmptyState";
 import PortalDropdown from "../components/ui/PortalDropdown";
 import ChartTooltip from "../components/ui/ChartTooltip";
-import GridPager, { useClientPager } from "../components/ui/GridPager";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import { ellipsizeLabel } from "../lib/chart-labels.mjs";
 import { formatCurrency, formatPercent } from "../lib/format";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
 
 const ABC_COLORS: Record<string, string> = {
   A: "var(--color-positive)",
@@ -198,7 +200,20 @@ export default function SalesAbcSection() {
   const { query, setQuery, filteredRows } = useGridSearch(
     data?.ranking as unknown as Record<string, unknown>[] | undefined,
   );
-  const rankingPager = useClientPager(filteredRows, 30);
+  const listedCount = Number(data?.ranking_returned ?? data?.ranking?.length ?? 0);
+  const rankingGrid = useRecordGrid<any>({
+    rows: filteredRows,
+    resetKey: query,
+    getTieId: (row) => row.id_produto,
+    defaultCompare: (a, b) => Number(a.posicao || 0) - Number(b.posicao || 0),
+    summableKeys: [metricKey],
+    columns: {
+      nome_produto: { type: "text" },
+      nome_grupo: { type: "text" },
+      [metricKey]: { type: "number" },
+      classe_abc: { type: "text" },
+    },
+  });
 
   const formatMetricValue = useCallback(
     (value: number) => {
@@ -554,19 +569,19 @@ export default function SalesAbcSection() {
             <thead>
               <tr>
                 <th>#</th>
-                <th>Produto</th>
-                <th>Grupo</th>
-                <th>{metricLabel}</th>
+                <SortableTh label="Produto" sortKey="nome_produto" ariaSort={rankingGrid.ariaSort("nome_produto")} onToggle={rankingGrid.toggleSort} />
+                <SortableTh label="Grupo" sortKey="nome_grupo" ariaSort={rankingGrid.ariaSort("nome_grupo")} onToggle={rankingGrid.toggleSort} />
+                <SortableTh label={metricLabel} sortKey={metricKey} ariaSort={rankingGrid.ariaSort(metricKey)} onToggle={rankingGrid.toggleSort} align="right" />
                 <th>% Part.</th>
                 <th>% Acum.</th>
-                <th>Classe</th>
+                <SortableTh label="Classe" sortKey="classe_abc" ariaSort={rankingGrid.ariaSort("classe_abc")} onToggle={rankingGrid.toggleSort} />
               </tr>
             </thead>
             <tbody>
-              {rankingPager.slice.map((item: any) => (
+              {rankingGrid.slice.map((item: any) => (
                 <tr key={item.id_produto}>
                   <td>{item.posicao}</td>
-                  <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <td title={item.nome_produto} style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {item.nome_produto}
                   </td>
                   <td>{item.nome_grupo}</td>
@@ -587,15 +602,32 @@ export default function SalesAbcSection() {
                 </tr>
               ))}
             </tbody>
+            {rankingGrid.slice.length ? (
+              <tfoot>
+                <tr>
+                  <td colSpan={3}>Total da página ({rankingGrid.slice.length})</td>
+                  <td>{formatMetricValue(Number(rankingGrid.pageTotals[metricKey] || 0))}</td>
+                  <td colSpan={3} />
+                </tr>
+              </tfoot>
+            ) : null}
           </table>
         </div>
-        <GridPager
-          page={rankingPager.page}
-          totalPages={rankingPager.totalPages}
-          total={rankingPager.total}
-          pageSize={30}
-          onPrev={rankingPager.onPrev}
-          onNext={rankingPager.onNext}
+        <GridChrome
+          page={rankingGrid.page}
+          totalPages={rankingGrid.totalPages}
+          total={rankingGrid.total}
+          from={rankingGrid.range.from}
+          to={rankingGrid.range.to}
+          onPrev={rankingGrid.onPrev}
+          onNext={rankingGrid.onNext}
+          onResetOrder={rankingGrid.resetOrder}
+          isDefaultOrder={rankingGrid.isDefaultOrder}
+          truncatedNote={
+            data.ranking_capped
+              ? `Lista limitada aos primeiros ${listedCount.toLocaleString("pt-BR")} produtos.`
+              : null
+          }
         />
       </div>
 

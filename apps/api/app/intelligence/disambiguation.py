@@ -135,4 +135,31 @@ def consume_pending_disambiguation(
                 parsed.action = "execute"
             return parsed, scope_out, True
 
+    if kind == "finance_tipo":
+        from app.intelligence.investigation import classify_finance_tipo
+
+        pick = matched
+        if not pick:
+            mode, tipo = classify_finance_tipo(norm.display)
+            if mode == "receber":
+                pick = {"value": "1"}
+            elif mode == "pagar":
+                pick = {"value": "0"}
+            elif mode == "both":
+                pick = {"value": "both"}
+        if pick:
+            raw = str(pick.get("value") or "").strip()
+            slots = dict(last_slots)
+            if raw in {"0", "1"}:
+                slots["finance_tipo"] = int(raw)
+            else:
+                slots["finance_tipo"] = "both"
+            parsed = ParseResult(
+                intent_id="finance.investigate_portfolio",
+                confidence=0.94,
+                slots=slots,
+                action="execute",
+            )
+            return parsed, scope_out, True
+
     return None, scope, False

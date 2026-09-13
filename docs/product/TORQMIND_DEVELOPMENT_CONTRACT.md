@@ -169,7 +169,9 @@ Opcional: `.table.compact` quando a tela já usa.
 | **Loading (escopo)** | `ScopeTransitionState` / `Skeleton` |
 | **Busca geral** | `GridSearchInput` + `useGridSearch`, largura 280px, **sempre à esquerda** (olho bate primeiro); KPIs/contadores podem ficar à direita. Ver `.cursor/rules/08-grids-colunas-ordenacao.mdc` §4 |
 | **Responsivo** | confiar em `.tableScroll` (overflow-x); não esmagar colunas |
-| **Sort** | botões externos (padrão customers / Curva ABC); não inventar sort por `<th>` sem precedente |
+| **Sort** | `SortableTh` + `useRecordGrid` (clique/teclado, `aria-sort`); “Ordem padrão” restaura o critério de negócio; servidor só com allowlist |
+| **Página** | 30 registros; “Exibindo X–Y de Z registros”; navegação só com 2+ páginas; `GridChrome` |
+| **Totais** | subtotal da página ≠ total do filtro; não somar %/média/preço unitário/id |
 | **ANP** | `.anpTableScroll` / `.anpTable` só no painel ANP (print/min-width) |
 | **Proibido** | `<table style={{ width:"100%", …}}>` novo fora do padrão; copiar só se mantendo dívida existente; busca ancorada à direita |
 

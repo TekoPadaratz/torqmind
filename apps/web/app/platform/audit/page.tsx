@@ -4,11 +4,15 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
 import { apiGet } from '../../lib/api';
 import { formatDateTime } from '../../lib/format';
+import { compareGridRows } from '../../lib/grid-sort';
 import { loadSession } from '../../lib/session';
 import { useGridSearch } from '../../lib/use-grid-search';
+import { useRecordGrid } from '../../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +24,20 @@ export default function PlatformAuditPage() {
   const [filters, setFilters] = useState({ entity_type: '', action: '', entity_id: '', date_from: '', date_to: '' });
   const [error, setError] = useState('');
   const auditSearch = useGridSearch(items);
+  const auditGrid = useRecordGrid<any>({
+    rows: auditSearch.filteredRows,
+    resetKey: `${auditSearch.query}:${filters.entity_type}:${filters.action}:${filters.entity_id}:${filters.date_from}:${filters.date_to}`,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ data: a.created_at }, { data: b.created_at }),
+    columns: {
+      created_at: { type: 'date' },
+      action: { type: 'text' },
+      entity_type: { type: 'text' },
+      entity_id: { type: 'text' },
+      actor_role: { type: 'text' },
+    },
+  });
 
   async function load(session: any, currentFilters = filters) {
     const query = new URLSearchParams({ limit: '200' });
@@ -116,16 +134,16 @@ export default function PlatformAuditPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>Quando</th>
-              <th>Ação</th>
-              <th>Entidade</th>
-              <th>ID</th>
-              <th>Ator</th>
+              <SortableTh label="Quando" sortKey="created_at" ariaSort={auditGrid.ariaSort('created_at')} onToggle={auditGrid.toggleSort} />
+              <SortableTh label="Ação" sortKey="action" ariaSort={auditGrid.ariaSort('action')} onToggle={auditGrid.toggleSort} />
+              <SortableTh label="Entidade" sortKey="entity_type" ariaSort={auditGrid.ariaSort('entity_type')} onToggle={auditGrid.toggleSort} />
+              <SortableTh label="ID" sortKey="entity_id" ariaSort={auditGrid.ariaSort('entity_id')} onToggle={auditGrid.toggleSort} />
+              <SortableTh label="Ator" sortKey="actor_role" ariaSort={auditGrid.ariaSort('actor_role')} onToggle={auditGrid.toggleSort} />
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {auditSearch.filteredRows.map((item) => (
+            {auditGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{formatDateTime(item.created_at)}</td>
                 <td>{item.action}</td>
@@ -139,13 +157,24 @@ export default function PlatformAuditPage() {
                 </td>
               </tr>
             ))}
-            {!auditSearch.filteredRows.length ? (
+            {!auditGrid.total ? (
               <tr>
                 <td colSpan={6}>Nenhum evento de auditoria encontrado.</td>
               </tr>
             ) : null}
           </tbody>
         </table>
+        <GridChrome
+          page={auditGrid.page}
+          totalPages={auditGrid.totalPages}
+          total={auditGrid.total}
+          from={auditGrid.range.from}
+          to={auditGrid.range.to}
+          onPrev={auditGrid.onPrev}
+          onNext={auditGrid.onNext}
+          onResetOrder={auditGrid.resetOrder}
+          isDefaultOrder={auditGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

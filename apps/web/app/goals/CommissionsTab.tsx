@@ -2,10 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { apiGet, isRequestCanceled } from "../lib/api";
-import { formatCurrency } from "../lib/format";
+import { formatCurrency, formatDateOnly } from "../lib/format";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import { useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
+import { compareGridRows } from "../lib/grid-sort";
 import { coerceDisplayMessage, extractApiError } from "../lib/errors";
 import { formatCommissionPeriodLabel } from "../lib/commission-period.mjs";
 import CommissionCentralMirrorToggle from "./CommissionCentralMirrorToggle";
@@ -102,25 +106,140 @@ function sellerTierLabel(emp: SellerRow): string {
   return String(emp?.nivel_atingido?.tier_name || TIER_STYLES[key]?.label || key);
 }
 
+function compareSellersByCommission(a: SellerRow, b: SellerRow): number {
+  const ca = Number(a.comissao_estimada || 0);
+  const cb = Number(b.comissao_estimada || 0);
+  if (cb !== ca) return cb - ca;
+  const qa = Number(a.quantidade_vendas || 0);
+  const qb = Number(b.quantidade_vendas || 0);
+  if (qb !== qa) return qb - qa;
+  const va = Number(a.venda_elegivel || 0);
+  const vb = Number(b.venda_elegivel || 0);
+  if (vb !== va) return vb - va;
+  const na = String(a.nome_vendedor || "").localeCompare(
+    String(b.nome_vendedor || ""),
+    "pt-BR",
+    { sensitivity: "base" },
+  );
+  if (na !== 0) return na;
+  return Number(a.id_funcionario || 0) - Number(b.id_funcionario || 0);
+}
+
 function sortSellersByCommission(rows: SellerRow[]): SellerRow[] {
-  return [...rows].sort((a, b) => {
-    const ca = Number(a.comissao_estimada || 0);
-    const cb = Number(b.comissao_estimada || 0);
-    if (cb !== ca) return cb - ca;
-    const qa = Number(a.quantidade_vendas || 0);
-    const qb = Number(b.quantidade_vendas || 0);
-    if (qb !== qa) return qb - qa;
-    const va = Number(a.venda_elegivel || 0);
-    const vb = Number(b.venda_elegivel || 0);
-    if (vb !== va) return vb - va;
-    const na = String(a.nome_vendedor || "").localeCompare(
-      String(b.nome_vendedor || ""),
-      "pt-BR",
-      { sensitivity: "base" },
-    );
-    if (na !== 0) return na;
-    return Number(a.id_funcionario || 0) - Number(b.id_funcionario || 0);
+  return [...rows].sort(compareSellersByCommission);
+}
+
+const NUM_CELL = { textAlign: "right" as const, fontVariantNumeric: "tabular-nums" as const };
+
+function CommissionFilialSellersGrid({
+  group,
+  resetKey,
+}: {
+  group: { id_filial: number; label: string; sellers: SellerRow[]; total: number };
+  resetKey: string;
+}) {
+  const grid = useRecordGrid<SellerRow>({
+    rows: group.sellers,
+    resetKey,
+    getTieId: (row) => `${row.id_filial || "x"}-${row.id_funcionario}`,
+    defaultCompare: compareSellersByCommission,
+    summableKeys: ["quantidade_vendas", "venda_elegivel", "comissao_estimada", "qtd_abastecimentos"],
+    columns: {
+      nome_vendedor: { type: "text" },
+      quantidade_vendas: { type: "number" },
+      venda_elegivel: { type: "number" },
+      percentual_aplicado: { type: "number" },
+      comissao_estimada: { type: "number" },
+      qtd_abastecimentos: { type: "number" },
+    },
   });
+  const { belowIds } = frentistaAbastecimentosStats(group.sellers);
+
+  return (
+    <>
+      <div className="tableScroll">
+        <table className="table compact" style={{ width: "100%", minWidth: 640 }}>
+          <thead>
+            <tr>
+              <SortableTh label="Funcionário" sortKey="nome_vendedor" ariaSort={grid.ariaSort("nome_vendedor")} onToggle={grid.toggleSort} />
+              <SortableTh label="Quantidade" sortKey="quantidade_vendas" ariaSort={grid.ariaSort("quantidade_vendas")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Venda" sortKey="venda_elegivel" ariaSort={grid.ariaSort("venda_elegivel")} onToggle={grid.toggleSort} align="right" />
+              <th style={{ textAlign: "left" }}>Nível</th>
+              <SortableTh label="%" sortKey="percentual_aplicado" ariaSort={grid.ariaSort("percentual_aplicado")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Comissão" sortKey="comissao_estimada" ariaSort={grid.ariaSort("comissao_estimada")} onToggle={grid.toggleSort} align="right" />
+              <SortableTh label="Qtd abastecimentos" sortKey="qtd_abastecimentos" ariaSort={grid.ariaSort("qtd_abastecimentos")} onToggle={grid.toggleSort} align="right" />
+            </tr>
+          </thead>
+          <tbody>
+            {grid.slice.map((emp) => {
+              const tierKey = sellerTierKey(emp);
+              const style = TIER_STYLES[tierKey] || TIER_STYLES.none;
+              const belowAvg = belowIds.has(Number(emp.id_funcionario || 0));
+              return (
+                <tr
+                  key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}
+                  style={belowAvg ? { background: "rgba(185, 74, 48, 0.14)" } : undefined}
+                  title={belowAvg ? "Frentista abaixo da média de abastecimentos da filial" : undefined}
+                >
+                  <td style={{ fontWeight: 500, textAlign: "left" }}>{emp.nome_vendedor}</td>
+                  <td style={NUM_CELL}>
+                    {Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+                  </td>
+                  <td style={NUM_CELL}>{formatCurrency(emp.venda_elegivel)}</td>
+                  <td style={{ textAlign: "left" }}>
+                    {tierKey === "none" ? (
+                      <span className="muted">Sem nível</span>
+                    ) : (
+                      <span style={{ color: style.color, fontWeight: 650 }}>{sellerTierLabel(emp)}</span>
+                    )}
+                  </td>
+                  <td style={NUM_CELL}>{Number(emp.percentual_aplicado || 0).toFixed(2)}%</td>
+                  <td style={{ ...NUM_CELL, fontWeight: 700, color: "var(--color-positive)" }}>
+                    {formatCurrency(emp.comissao_estimada || 0)}
+                  </td>
+                  <td style={NUM_CELL}>
+                    {Number(emp.qtd_abastecimentos || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          {grid.slice.length ? (
+            <tfoot className="commissionGridFoot">
+              <tr>
+                <td style={{ textAlign: "left", fontWeight: 700 }}>Total da página ({grid.slice.length})</td>
+                <td style={{ ...NUM_CELL, fontWeight: 700 }}>
+                  {Number(grid.pageTotals.quantidade_vendas || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+                </td>
+                <td style={{ ...NUM_CELL, fontWeight: 700 }}>
+                  {formatCurrency(grid.pageTotals.venda_elegivel)}
+                </td>
+                <td style={{ textAlign: "left" }} className="muted">—</td>
+                <td style={NUM_CELL} className="muted">—</td>
+                <td style={{ ...NUM_CELL, fontWeight: 780, color: "var(--color-positive)" }}>
+                  {formatCurrency(grid.pageTotals.comissao_estimada)}
+                </td>
+                <td style={{ ...NUM_CELL, fontWeight: 700 }}>
+                  {Number(grid.pageTotals.qtd_abastecimentos || 0).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
+                </td>
+              </tr>
+            </tfoot>
+          ) : null}
+        </table>
+      </div>
+      <GridChrome
+        page={grid.page}
+        totalPages={grid.totalPages}
+        total={grid.total}
+        from={grid.range.from}
+        to={grid.range.to}
+        onPrev={grid.onPrev}
+        onNext={grid.onNext}
+        onResetOrder={grid.resetOrder}
+        isDefaultOrder={grid.isDefaultOrder}
+      />
+    </>
+  );
 }
 
 interface CommissionsTabProps {
@@ -139,6 +258,7 @@ function escapeHtml(value: string | number | null | undefined): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Exceção: HTML de impressão de comissão — não converter para GridChrome. */
 function buildCommissionsReportHtml(opts: {
   empresaLabel: string;
   filiaisLabel: string;
@@ -568,6 +688,31 @@ export default function CommissionsTab({
   const discountItems = (discountData?.items || []) as Array<Record<string, unknown>>;
   const { query: discountsSearch, setQuery: setDiscountsSearch, filteredRows: filteredDiscounts } =
     useGridSearch(discountItems, { excludeKeys: /^id_/i });
+  const discountsGrid = useRecordGrid<Record<string, any>>({
+    rows: filteredDiscounts as Array<Record<string, any>>,
+    resetKey: discountsSearch,
+    getTieId: (row, idx) =>
+      `${row.tipo}-${row.id_filial}-${row.id_comprovante || row.documento}-${row.id_itemcomprovante || idx}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.dt_venda, nome: a.cliente },
+        { filial: b.filial_label ?? b.id_filial, data: b.dt_venda, nome: b.cliente },
+      ),
+    summableKeys: ["desconto_rs"],
+    columns: {
+      filial_label: { type: "text" },
+      dt_venda: { type: "date" },
+      documento: { type: "text" },
+      cliente: { type: "text" },
+      vendedor: { type: "text" },
+      produto: { type: "text" },
+      preco_referencia: { type: "number" },
+      preco_aplicado: { type: "number" },
+      desconto_rs: { type: "number" },
+      desconto_pct: { type: "number" },
+      tipo_label: { type: "text" },
+    },
+  });
 
   if (!hasScope) {
     return (
@@ -727,120 +872,10 @@ export default function CommissionsTab({
                   </div>
                 </div>
 
-                <div className="tableScroll">
-                  <table className="table compact" style={{ width: "100%", minWidth: 640 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ textAlign: "left" }}>Funcionário</th>
-                        <th style={{ textAlign: "right" }}>Quantidade</th>
-                        <th style={{ textAlign: "right" }}>Venda</th>
-                        <th style={{ textAlign: "left" }}>Nível</th>
-                        <th style={{ textAlign: "right" }}>%</th>
-                        <th style={{ textAlign: "right" }}>Comissão</th>
-                        <th style={{ textAlign: "right" }}>Qtd abastecimentos</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const { belowIds } = frentistaAbastecimentosStats(group.sellers);
-                        return group.sellers.map((emp) => {
-                        const tierKey = sellerTierKey(emp);
-                        const style = TIER_STYLES[tierKey] || TIER_STYLES.none;
-                        const belowAvg = belowIds.has(Number(emp.id_funcionario || 0));
-                        return (
-                          <tr
-                            key={`${emp.id_filial || "x"}-${emp.id_funcionario}`}
-                            style={
-                              belowAvg
-                                ? { background: "rgba(185, 74, 48, 0.14)" }
-                                : undefined
-                            }
-                            title={
-                              belowAvg
-                                ? "Frentista abaixo da média de abastecimentos da filial"
-                                : undefined
-                            }
-                          >
-                            <td style={{ fontWeight: 500, textAlign: "left" }}>
-                              {emp.nome_vendedor}
-                            </td>
-                            <td style={numCell}>
-                              {Number(emp.quantidade_vendas || 0).toLocaleString("pt-BR", {
-                                maximumFractionDigits: 0,
-                              })}
-                            </td>
-                            <td style={numCell}>{formatCurrency(emp.venda_elegivel)}</td>
-                            <td style={{ textAlign: "left" }}>
-                              {tierKey === "none" ? (
-                                <span className="muted">Sem nível</span>
-                              ) : (
-                                <span style={{ color: style.color, fontWeight: 650 }}>
-                                  {sellerTierLabel(emp)}
-                                </span>
-                              )}
-                            </td>
-                            <td style={numCell}>
-                              {Number(emp.percentual_aplicado || 0).toFixed(2)}%
-                            </td>
-                            <td
-                              style={{
-                                ...numCell,
-                                fontWeight: 700,
-                                color: "var(--color-positive)",
-                              }}
-                            >
-                              {formatCurrency(emp.comissao_estimada || 0)}
-                            </td>
-                            <td style={numCell}>
-                              {Number(emp.qtd_abastecimentos || 0).toLocaleString("pt-BR", {
-                                maximumFractionDigits: 0,
-                              })}
-                            </td>
-                          </tr>
-                        );
-                      });
-                      })()}
-                    </tbody>
-                    <tfoot className="commissionGridFoot">
-                      <tr>
-                        <td style={{ textAlign: "left", fontWeight: 700 }}>Total</td>
-                        <td style={{ ...numCell, fontWeight: 700 }}>
-                          {group.sellers
-                            .reduce((acc, emp) => acc + Number(emp.quantidade_vendas || 0), 0)
-                            .toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
-                        </td>
-                        <td style={{ ...numCell, fontWeight: 700 }}>
-                          {formatCurrency(
-                            group.sellers.reduce(
-                              (acc, emp) => acc + Number(emp.venda_elegivel || 0),
-                              0,
-                            ),
-                          )}
-                        </td>
-                        <td style={{ textAlign: "left" }} className="muted">
-                          —
-                        </td>
-                        <td style={numCell} className="muted">
-                          —
-                        </td>
-                        <td
-                          style={{
-                            ...numCell,
-                            fontWeight: 780,
-                            color: "var(--color-positive)",
-                          }}
-                        >
-                          {formatCurrency(group.total)}
-                        </td>
-                        <td style={{ ...numCell, fontWeight: 700 }}>
-                          {group.sellers
-                            .reduce((acc, emp) => acc + Number(emp.qtd_abastecimentos || 0), 0)
-                            .toLocaleString("pt-BR", { maximumFractionDigits: 0 })}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
+                <CommissionFilialSellersGrid
+                  group={group}
+                  resetKey={`${group.id_filial}:${group.label}:${sellersQ}`}
+                />
               </div>
             ))
           )}
@@ -862,29 +897,30 @@ export default function CommissionsTab({
                 detail="Não há desconto na venda nem preço fixo econômico neste período."
               />
             ) : (
+              <>
               <div className="tableScroll" style={{ marginTop: 10 }}>
                 <table className="table compact" style={{ width: "100%", minWidth: 720 }}>
                   <thead>
                     <tr>
-                      <th>Filial</th>
-                      <th>Data</th>
-                      <th>Documento</th>
-                      <th>Cliente</th>
-                      <th>Vendedor</th>
-                      <th>Produto</th>
-                      <th style={{ textAlign: "right" }}>Preço ref.</th>
-                      <th style={{ textAlign: "right" }}>Preço aplicado</th>
-                      <th style={{ textAlign: "right" }}>Desconto R$</th>
-                      <th style={{ textAlign: "right" }}>Desconto %</th>
-                      <th>Tipo</th>
+                      <SortableTh label="Filial" sortKey="filial_label" ariaSort={discountsGrid.ariaSort("filial_label")} onToggle={discountsGrid.toggleSort} />
+                      <SortableTh label="Data" sortKey="dt_venda" ariaSort={discountsGrid.ariaSort("dt_venda")} onToggle={discountsGrid.toggleSort} />
+                      <SortableTh label="Documento" sortKey="documento" ariaSort={discountsGrid.ariaSort("documento")} onToggle={discountsGrid.toggleSort} />
+                      <SortableTh label="Cliente" sortKey="cliente" ariaSort={discountsGrid.ariaSort("cliente")} onToggle={discountsGrid.toggleSort} />
+                      <SortableTh label="Vendedor" sortKey="vendedor" ariaSort={discountsGrid.ariaSort("vendedor")} onToggle={discountsGrid.toggleSort} />
+                      <SortableTh label="Produto" sortKey="produto" ariaSort={discountsGrid.ariaSort("produto")} onToggle={discountsGrid.toggleSort} />
+                      <SortableTh label="Preço ref." sortKey="preco_referencia" ariaSort={discountsGrid.ariaSort("preco_referencia")} onToggle={discountsGrid.toggleSort} align="right" />
+                      <SortableTh label="Preço aplicado" sortKey="preco_aplicado" ariaSort={discountsGrid.ariaSort("preco_aplicado")} onToggle={discountsGrid.toggleSort} align="right" />
+                      <SortableTh label="Desconto R$" sortKey="desconto_rs" ariaSort={discountsGrid.ariaSort("desconto_rs")} onToggle={discountsGrid.toggleSort} align="right" />
+                      <SortableTh label="Desconto %" sortKey="desconto_pct" ariaSort={discountsGrid.ariaSort("desconto_pct")} onToggle={discountsGrid.toggleSort} align="right" />
+                      <SortableTh label="Tipo" sortKey="tipo_label" ariaSort={discountsGrid.ariaSort("tipo_label")} onToggle={discountsGrid.toggleSort} />
                     </tr>
                   </thead>
                   <tbody>
-                    {(filteredDiscounts as Array<Record<string, any>>).map((row, idx) => (
-                      <tr key={`${row.tipo}-${row.id_filial}-${row.documento}-${idx}`}>
+                    {discountsGrid.slice.map((row, idx) => (
+                      <tr key={`${row.tipo}-${row.id_filial}-${row.id_comprovante || row.documento}-${row.id_itemcomprovante || idx}`}>
                         <td>{row.filial_label || "—"}</td>
                         <td style={{ whiteSpace: "nowrap" }}>
-                          {String(row.dt_venda || "").slice(0, 10) || "—"}
+                          {formatDateOnly(row.dt_venda) === "-" ? "—" : formatDateOnly(row.dt_venda)}
                         </td>
                         <td>{row.documento || "—"}</td>
                         <td>{row.cliente || "—"}</td>
@@ -902,8 +938,29 @@ export default function CommissionsTab({
                       </tr>
                     ))}
                   </tbody>
+                  {discountsGrid.slice.length ? (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={8}>Total da página ({discountsGrid.slice.length})</td>
+                        <td style={numCell}>{formatCurrency(discountsGrid.pageTotals.desconto_rs)}</td>
+                        <td colSpan={2} />
+                      </tr>
+                    </tfoot>
+                  ) : null}
                 </table>
               </div>
+              <GridChrome
+                page={discountsGrid.page}
+                totalPages={discountsGrid.totalPages}
+                total={discountsGrid.total}
+                from={discountsGrid.range.from}
+                to={discountsGrid.range.to}
+                onPrev={discountsGrid.onPrev}
+                onNext={discountsGrid.onNext}
+                onResetOrder={discountsGrid.resetOrder}
+                isDefaultOrder={discountsGrid.isDefaultOrder}
+              />
+              </>
             )}
           </div>
         </>

@@ -5,6 +5,19 @@ import pytest
 from app import repos_mart_realtime
 
 
+def test_finance_titles_sort_allowlist_ignores_raw_column():
+    from app.repos_mart_realtime import _finance_titles_order_sql
+
+    default = _finance_titles_order_sql(None, None, "toString(id_filial)")
+    assert "dt_vencimento ASC" in default
+    assert "id_titulo ASC" in default
+    injected = _finance_titles_order_sql("valor; DROP TABLE x", "desc", "toString(id_filial)")
+    assert injected == default
+    allowed = _finance_titles_order_sql("valor_aberto", "desc", "toString(id_filial)")
+    assert allowed.startswith("valor_aberto DESC")
+    assert "id_titulo ASC" in allowed
+
+
 def test_finance_titles_preset_sql_carteira_aberta_vs_periodo():
     """Presets = carteira aberta (today); sem preset = janela dt_ini/dt_fim."""
     default = repos_mart_realtime._finance_titles_period_or_preset_sql(None)

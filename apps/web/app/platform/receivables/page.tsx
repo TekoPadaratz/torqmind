@@ -4,11 +4,15 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
 import { api, apiGet } from '../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../lib/format';
+import { compareGridRows } from '../../lib/grid-sort';
 import { loadSession } from '../../lib/session';
 import { useGridSearch } from '../../lib/use-grid-search';
+import { useRecordGrid } from '../../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +36,27 @@ export default function PlatformReceivablesPage() {
   const [noteForm, setNoteForm] = useState({ notes: '' });
   const [error, setError] = useState('');
   const receivablesSearch = useGridSearch(items);
+  const receivablesGrid = useRecordGrid<any>({
+    rows: receivablesSearch.filteredRows,
+    resetKey: `${receivablesSearch.query}:${filters.tenant_id}:${filters.status}`,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { data: a.competence_month, nome: a.tenant_name },
+        { data: b.competence_month, nome: b.tenant_name },
+      ),
+    summableKeys: ['amount'],
+    columns: {
+      competence_month: { type: 'date' },
+      tenant_name: { type: 'text' },
+      amount: { type: 'number' },
+      due_date: { type: 'date' },
+      status: { type: 'text' },
+      emitted_at: { type: 'date' },
+      paid_at: { type: 'date' },
+      channel_name: { type: 'text' },
+    },
+  });
 
   async function load(session: any, currentFilters = filters) {
     const query = new URLSearchParams({ limit: '200' });
@@ -267,19 +292,19 @@ export default function PlatformReceivablesPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>Competência</th>
-              <th>Empresa</th>
-              <th>Valor</th>
-              <th>Vencimento</th>
-              <th>Status</th>
-              <th>Emitido</th>
-              <th>Pago</th>
-              <th>Canal</th>
+              <SortableTh label="Competência" sortKey="competence_month" ariaSort={receivablesGrid.ariaSort('competence_month')} onToggle={receivablesGrid.toggleSort} />
+              <SortableTh label="Empresa" sortKey="tenant_name" ariaSort={receivablesGrid.ariaSort('tenant_name')} onToggle={receivablesGrid.toggleSort} />
+              <SortableTh label="Valor" sortKey="amount" ariaSort={receivablesGrid.ariaSort('amount')} onToggle={receivablesGrid.toggleSort} align="right" />
+              <SortableTh label="Vencimento" sortKey="due_date" ariaSort={receivablesGrid.ariaSort('due_date')} onToggle={receivablesGrid.toggleSort} />
+              <SortableTh label="Status" sortKey="status" ariaSort={receivablesGrid.ariaSort('status')} onToggle={receivablesGrid.toggleSort} />
+              <SortableTh label="Emitido" sortKey="emitted_at" ariaSort={receivablesGrid.ariaSort('emitted_at')} onToggle={receivablesGrid.toggleSort} />
+              <SortableTh label="Pago" sortKey="paid_at" ariaSort={receivablesGrid.ariaSort('paid_at')} onToggle={receivablesGrid.toggleSort} />
+              <SortableTh label="Canal" sortKey="channel_name" ariaSort={receivablesGrid.ariaSort('channel_name')} onToggle={receivablesGrid.toggleSort} />
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {receivablesSearch.filteredRows.map((item) => (
+            {receivablesGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{formatDateOnly(item.competence_month)}</td>
                 <td>{item.tenant_name}</td>
@@ -296,13 +321,33 @@ export default function PlatformReceivablesPage() {
                 </td>
               </tr>
             ))}
-            {!receivablesSearch.filteredRows.length ? (
+            {!receivablesGrid.total ? (
               <tr>
                 <td colSpan={9}>Nenhuma conta a receber encontrada.</td>
               </tr>
             ) : null}
           </tbody>
+          {receivablesGrid.slice.length ? (
+            <tfoot>
+              <tr>
+                <td colSpan={2}>Total da página ({receivablesGrid.slice.length})</td>
+                <td>{formatCurrency(receivablesGrid.pageTotals.amount)}</td>
+                <td colSpan={6} />
+              </tr>
+            </tfoot>
+          ) : null}
         </table>
+        <GridChrome
+          page={receivablesGrid.page}
+          totalPages={receivablesGrid.totalPages}
+          total={receivablesGrid.total}
+          from={receivablesGrid.range.from}
+          to={receivablesGrid.range.to}
+          onPrev={receivablesGrid.onPrev}
+          onNext={receivablesGrid.onNext}
+          onResetOrder={receivablesGrid.resetOrder}
+          isDefaultOrder={receivablesGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

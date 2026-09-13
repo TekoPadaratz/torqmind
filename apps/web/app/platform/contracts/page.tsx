@@ -4,11 +4,15 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
 import { api, apiGet } from '../../lib/api';
 import { formatCurrency, formatDateOnly } from '../../lib/format';
+import { compareGridRows } from '../../lib/grid-sort';
 import { loadSession } from '../../lib/session';
 import { useGridSearch } from '../../lib/use-grid-search';
+import { useRecordGrid } from '../../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,6 +45,22 @@ export default function PlatformContractsPage() {
   const [form, setForm] = useState<any>(emptyForm);
   const [error, setError] = useState('');
   const contractsSearch = useGridSearch(items);
+  const contractsGrid = useRecordGrid<any>({
+    rows: contractsSearch.filteredRows,
+    resetKey: contractsSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.tenant_name }, { nome: b.tenant_name }),
+    summableKeys: ['monthly_amount'],
+    columns: {
+      tenant_name: { type: 'text' },
+      plan_name: { type: 'text' },
+      monthly_amount: { type: 'number' },
+      channel_name: { type: 'text' },
+      start_date: { type: 'date' },
+      is_enabled: { type: 'text', getValue: (row) => (row.is_enabled ? 'ativo' : 'encerrado') },
+    },
+  });
 
   async function load(session: any) {
     const [contractsRes, companiesRes, channelsRes] = await Promise.all([
@@ -201,17 +221,17 @@ export default function PlatformContractsPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>Empresa</th>
-              <th>Plano</th>
-              <th>Mensalidade</th>
-              <th>Canal</th>
-              <th>Vigência</th>
-              <th>Status</th>
+              <SortableTh label="Empresa" sortKey="tenant_name" ariaSort={contractsGrid.ariaSort('tenant_name')} onToggle={contractsGrid.toggleSort} />
+              <SortableTh label="Plano" sortKey="plan_name" ariaSort={contractsGrid.ariaSort('plan_name')} onToggle={contractsGrid.toggleSort} />
+              <SortableTh label="Mensalidade" sortKey="monthly_amount" ariaSort={contractsGrid.ariaSort('monthly_amount')} onToggle={contractsGrid.toggleSort} align="right" />
+              <SortableTh label="Canal" sortKey="channel_name" ariaSort={contractsGrid.ariaSort('channel_name')} onToggle={contractsGrid.toggleSort} />
+              <SortableTh label="Vigência" sortKey="start_date" ariaSort={contractsGrid.ariaSort('start_date')} onToggle={contractsGrid.toggleSort} />
+              <SortableTh label="Status" sortKey="is_enabled" ariaSort={contractsGrid.ariaSort('is_enabled')} onToggle={contractsGrid.toggleSort} />
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {contractsSearch.filteredRows.map((item) => (
+            {contractsGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{item.tenant_name}</td>
                 <td>{item.plan_name}</td>
@@ -228,13 +248,33 @@ export default function PlatformContractsPage() {
                 </td>
               </tr>
             ))}
-            {!contractsSearch.filteredRows.length ? (
+            {!contractsGrid.total ? (
               <tr>
                 <td colSpan={7}>Nenhum contrato cadastrado.</td>
               </tr>
             ) : null}
           </tbody>
+          {contractsGrid.slice.length ? (
+            <tfoot>
+              <tr>
+                <td colSpan={2}>Total da página ({contractsGrid.slice.length})</td>
+                <td>{formatCurrency(contractsGrid.pageTotals.monthly_amount)}</td>
+                <td colSpan={4} />
+              </tr>
+            </tfoot>
+          ) : null}
         </table>
+        <GridChrome
+          page={contractsGrid.page}
+          totalPages={contractsGrid.totalPages}
+          total={contractsGrid.total}
+          from={contractsGrid.range.from}
+          to={contractsGrid.range.to}
+          onPrev={contractsGrid.onPrev}
+          onNext={contractsGrid.onNext}
+          onResetOrder={contractsGrid.resetOrder}
+          isDefaultOrder={contractsGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

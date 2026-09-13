@@ -3,8 +3,10 @@
 import { Fragment, useEffect, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridPager from "../components/ui/GridPager";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import PresetFilterChips from "../components/ui/PresetFilterChips";
 import { formatCurrency, formatDateOnly } from "../lib/format";
 import { apiGet } from "../lib/api";
@@ -12,6 +14,7 @@ import { extractApiError } from "../lib/errors";
 import { buildScopeParams, type ScopeQuery } from "../lib/scope";
 import MonthYearSelect from "../components/ui/MonthYearSelect";
 import { currentAnoMesSP } from "../lib/month-year.mjs";
+import { useRecordGrid } from "../lib/use-record-grid";
 
 const DETAIL_PAGE_SIZE = 30;
 
@@ -135,6 +138,17 @@ export default function FinanceDespesasSection({ scope }: Props) {
   }, [expandedId, detailPage, anoMes, debouncedQ, status, scope]);
 
   const items: SummaryRow[] = summary?.items || [];
+  const contasGrid = useRecordGrid<SummaryRow>({
+    rows: items,
+    resetKey: `${anoMes}:${debouncedQ}:${status || ""}:${scope.scope_key}`,
+    getTieId: (row) => row.id_planodecontas,
+    defaultCompare: (a, b) => Number(b.valor || 0) - Number(a.valor || 0),
+    summableKeys: ["valor"],
+    columns: {
+      nome_plano: { type: "text" },
+      valor: { type: "number" },
+    },
+  });
   const totals = summary?.totals || {};
   const expandedDetail = expandedId != null ? detailCache[expandedId] : null;
   const detailItems: DetailRow[] = expandedDetail?.items || [];
@@ -158,6 +172,7 @@ export default function FinanceDespesasSection({ scope }: Props) {
       <h2 style={{ marginTop: 4 }}>Despesas</h2>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <GridSearchInput value={q} onChange={setQ} />
         <MonthYearSelect
           value={anoMes}
           onChange={setAnoMes}
@@ -170,7 +185,6 @@ export default function FinanceDespesasSection({ scope }: Props) {
           onChange={setStatus}
           clearLabel="Todos"
         />
-        <GridSearchInput value={q} onChange={setQ} />
       </div>
 
       <div
@@ -214,12 +228,12 @@ export default function FinanceDespesasSection({ scope }: Props) {
             <thead>
               <tr>
                 <th style={{ width: 28 }} />
-                <th>Despesa</th>
-                <th style={{ textAlign: "right" }}>Valor</th>
+                <SortableTh label="Despesa" sortKey="nome_plano" ariaSort={contasGrid.ariaSort("nome_plano")} onToggle={contasGrid.toggleSort} />
+                <SortableTh label="Valor" sortKey="valor" ariaSort={contasGrid.ariaSort("valor")} onToggle={contasGrid.toggleSort} align="right" />
               </tr>
             </thead>
             <tbody>
-              {items.map((row) => {
+              {contasGrid.slice.map((row) => {
                 const expanded = expandedId === row.id_planodecontas;
                 return (
                   <Fragment key={row.id_planodecontas}>
@@ -320,9 +334,36 @@ export default function FinanceDespesasSection({ scope }: Props) {
                 );
               })}
             </tbody>
+            {contasGrid.slice.length ? (
+              <tfoot>
+                <tr>
+                  <td />
+                  <td>Total da página ({contasGrid.slice.length})</td>
+                  <td style={{ textAlign: "right" }}>{formatCurrency(contasGrid.pageTotals.valor)}</td>
+                </tr>
+                <tr>
+                  <td />
+                  <td className="muted">Total do filtro ({contasGrid.total.toLocaleString("pt-BR")} contas)</td>
+                  <td style={{ textAlign: "right" }}>{formatCurrency(totals.valor)}</td>
+                </tr>
+              </tfoot>
+            ) : null}
           </table>
         )}
       </div>
+      {items.length ? (
+        <GridChrome
+          page={contasGrid.page}
+          totalPages={contasGrid.totalPages}
+          total={contasGrid.total}
+          from={contasGrid.range.from}
+          to={contasGrid.range.to}
+          onPrev={contasGrid.onPrev}
+          onNext={contasGrid.onNext}
+          onResetOrder={contasGrid.resetOrder}
+          isDefaultOrder={contasGrid.isDefaultOrder}
+        />
+      ) : null}
     </div>
   );
 }

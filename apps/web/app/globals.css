@@ -1624,6 +1624,66 @@ html[data-theme="light"] .productDateInput::-webkit-calendar-picker-indicator {
   cursor: not-allowed;
 }
 
+.gridChrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.gridChromeMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.gridChromeActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.gridChrome .gridPager {
+  margin-top: 0;
+}
+.gridOrderBtn {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.gridOrderBtn:hover:not(:disabled) {
+  border-color: var(--accent-copper);
+  background: var(--accent-copper-soft);
+}
+.gridOrderBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.sortableThBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+  text-align: inherit;
+}
+.sortableThBtn:focus-visible {
+  outline: 2px solid var(--accent-copper);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .financeTitlesFoot td {
   position: sticky;
   bottom: 0;

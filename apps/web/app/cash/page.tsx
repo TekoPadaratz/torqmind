@@ -5,7 +5,9 @@ import { useMemo } from "react";
 import AppNav from "../components/AppNav";
 import CategoryRankChart from "../components/ui/CategoryRankChart";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
+import SortableTh from "../components/ui/SortableTh";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
 import {
   buildUserLabel,
@@ -20,7 +22,8 @@ import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
-import { sortGridRows } from "../lib/grid-sort";
+import { compareGridRows, sortGridRows } from "../lib/grid-sort";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
@@ -87,9 +90,7 @@ export default function CashPage() {
     return /turno\s*[1-9]\d*/.test(label) || (Number.isFinite(Number(label)) && Number(label) >= 1);
   };
 
-  const topTurnos = (commercial?.top_turnos || [])
-    .filter(isOperationalTurno)
-    .slice(0, 15);
+  const topTurnos = (commercial?.top_turnos || []).filter(isOperationalTurno);
   const openBoxes = useMemo(
     () =>
       sortGridRows(
@@ -124,6 +125,65 @@ export default function CashPage() {
   const { query: caixasQ, setQuery: setCaixasQ, filteredRows: filteredCaixas } = useGridSearch(
     openBoxes as Record<string, unknown>[],
   );
+  const turnosGrid = useRecordGrid<any>({
+    rows: filteredTurnos,
+    resetKey: `${scope.scope_key}:${turnosQ}`,
+    getTieId: (row) => `${row.id_filial}-${row.id_turno}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.abertura_ts, nome: a.usuario_label },
+        { filial: b.filial_label ?? b.id_filial, data: b.abertura_ts, nome: b.usuario_label },
+      ),
+    summableKeys: ["qtd_vendas", "total_vendas", "total_cancelamentos", "total_pagamentos"],
+    columns: {
+      filial_label: { type: "text" },
+      turno_label: { type: "text", getValue: (r) => r.turno_label || r.turno_operacional },
+      abertura_ts: { type: "date" },
+      usuario_label: { type: "text" },
+      qtd_vendas: { type: "number" },
+      total_vendas: { type: "number" },
+      total_cancelamentos: { type: "number" },
+      total_pagamentos: { type: "number" },
+    },
+  });
+  const inutGrid = useRecordGrid<any>({
+    rows: filteredInutilizacoes,
+    resetKey: `${scope.scope_key}:${inutilizacoesQ}`,
+    getTieId: (row) => `${row.id_comprovante}-${row.id_nfe}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.data_emissao_nfe || a.dt, nome: a.usuario_label },
+        { filial: b.filial_label ?? b.id_filial, data: b.data_emissao_nfe || b.dt, nome: b.usuario_label },
+      ),
+    summableKeys: ["valor_comprovante"],
+    columns: {
+      filial_label: { type: "text" },
+      data_emissao_nfe: { type: "date", getValue: (r) => r.data_emissao_nfe || r.dt },
+      usuario_label: { type: "text" },
+      numero_nfe: { type: "text" },
+      valor_comprovante: { type: "number" },
+    },
+  });
+  const caixasGrid = useRecordGrid<any>({
+    rows: filteredCaixas,
+    resetKey: `${scope.scope_key}:${caixasQ}`,
+    getTieId: (row) => `${row.id_filial}-${row.id_turno}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label ?? a.id_filial, data: a.abertura_ts, nome: a.usuario_label },
+        { filial: b.filial_label ?? b.id_filial, data: b.abertura_ts, nome: b.usuario_label },
+      ),
+    summableKeys: ["total_vendas", "total_cancelamentos", "total_pagamentos"],
+    columns: {
+      filial_label: { type: "text" },
+      turno_label: { type: "text", getValue: (r) => r.turno_label || r.turno_operacional },
+      usuario_label: { type: "text" },
+      horas_aberto: { type: "number" },
+      total_vendas: { type: "number" },
+      total_cancelamentos: { type: "number" },
+      total_pagamentos: { type: "number" },
+    },
+  });
   function formatNfeDateTime(item: any) {
     if (item?.data_emissao_nfe) return formatDateTime(item.data_emissao_nfe);
     if (item?.dt) {
@@ -218,19 +278,19 @@ export default function CashPage() {
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Filial</th>
-                          <th>Turno</th>
-                          <th>Período do turno</th>
-                          <th>Operador</th>
-                          <th>Qtd. vendas</th>
-                          <th>Faturamento</th>
-                          <th>Cancel.</th>
-                          <th>Receb.</th>
+                          <SortableTh label="Filial" sortKey="filial_label" ariaSort={turnosGrid.ariaSort("filial_label")} onToggle={turnosGrid.toggleSort} />
+                          <SortableTh label="Turno" sortKey="turno_label" ariaSort={turnosGrid.ariaSort("turno_label")} onToggle={turnosGrid.toggleSort} />
+                          <SortableTh label="Período do turno" sortKey="abertura_ts" ariaSort={turnosGrid.ariaSort("abertura_ts")} onToggle={turnosGrid.toggleSort} />
+                          <SortableTh label="Operador" sortKey="usuario_label" ariaSort={turnosGrid.ariaSort("usuario_label")} onToggle={turnosGrid.toggleSort} />
+                          <SortableTh label="Qtd. vendas" sortKey="qtd_vendas" ariaSort={turnosGrid.ariaSort("qtd_vendas")} onToggle={turnosGrid.toggleSort} align="right" />
+                          <SortableTh label="Faturamento" sortKey="total_vendas" ariaSort={turnosGrid.ariaSort("total_vendas")} onToggle={turnosGrid.toggleSort} align="right" />
+                          <SortableTh label="Cancel." sortKey="total_cancelamentos" ariaSort={turnosGrid.ariaSort("total_cancelamentos")} onToggle={turnosGrid.toggleSort} align="right" />
+                          <SortableTh label="Receb." sortKey="total_pagamentos" ariaSort={turnosGrid.ariaSort("total_pagamentos")} onToggle={turnosGrid.toggleSort} align="right" />
                           <th>Saldo</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredTurnos.map((item: any) => (
+                        {turnosGrid.slice.map((item: any) => (
                           <tr key={`${item.id_filial}-${item.id_turno}`}>
                             <td>{item.filial_label}</td>
                             <td>
@@ -250,8 +310,33 @@ export default function CashPage() {
                           </tr>
                         ))}
                       </tbody>
+                      {turnosGrid.slice.length ? (
+                        <tfoot>
+                          <tr>
+                            <td colSpan={4}>Total da página ({turnosGrid.slice.length})</td>
+                            <td>{turnosGrid.pageTotals.qtd_vendas}</td>
+                            <td>{formatCurrency(turnosGrid.pageTotals.total_vendas)}</td>
+                            <td>{formatCurrency(turnosGrid.pageTotals.total_cancelamentos)}</td>
+                            <td>{formatCurrency(turnosGrid.pageTotals.total_pagamentos)}</td>
+                            <td />
+                          </tr>
+                        </tfoot>
+                      ) : null}
                     </table>
                   </div>
+                ) : null}
+                {topTurnos.length ? (
+                  <GridChrome
+                    page={turnosGrid.page}
+                    totalPages={turnosGrid.totalPages}
+                    total={turnosGrid.total}
+                    from={turnosGrid.range.from}
+                    to={turnosGrid.range.to}
+                    onPrev={turnosGrid.onPrev}
+                    onNext={turnosGrid.onNext}
+                    onResetOrder={turnosGrid.resetOrder}
+                    isDefaultOrder={turnosGrid.isDefaultOrder}
+                  />
                 ) : null}
               </div>
 
@@ -284,18 +369,18 @@ export default function CashPage() {
                       <table className="table compact">
                         <thead>
                           <tr>
-                            <th>Filial</th>
-                            <th>Data/hora</th>
+                            <SortableTh label="Filial" sortKey="filial_label" ariaSort={inutGrid.ariaSort("filial_label")} onToggle={inutGrid.toggleSort} />
+                            <SortableTh label="Data/hora" sortKey="data_emissao_nfe" ariaSort={inutGrid.ariaSort("data_emissao_nfe")} onToggle={inutGrid.toggleSort} />
                             <th>Turno/caixa</th>
-                            <th>Operador</th>
-                            <th>Documento</th>
-                            <th>Valor</th>
+                            <SortableTh label="Operador" sortKey="usuario_label" ariaSort={inutGrid.ariaSort("usuario_label")} onToggle={inutGrid.toggleSort} />
+                            <SortableTh label="Documento" sortKey="numero_nfe" ariaSort={inutGrid.ariaSort("numero_nfe")} onToggle={inutGrid.toggleSort} />
+                            <SortableTh label="Valor" sortKey="valor_comprovante" ariaSort={inutGrid.ariaSort("valor_comprovante")} onToggle={inutGrid.toggleSort} align="right" />
                             <th>Chave / protocolo</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredInutilizacoes.map((item: any, idx: number) => (
-                            <tr key={`inut-${item.id_comprovante}-${item.id_nfe}-${idx}`}>
+                          {inutGrid.slice.map((item: any) => (
+                            <tr key={`inut-${item.id_comprovante}-${item.id_nfe}`}>
                               <td>{item.filial_label}</td>
                               <td>{formatNfeDateTime(item)}</td>
                               <td>{formatTurnoLabel(item.turno_operacional ?? item.turno_numero, item.turno_label)}</td>
@@ -306,8 +391,30 @@ export default function CashPage() {
                             </tr>
                           ))}
                         </tbody>
+                        {inutGrid.slice.length ? (
+                          <tfoot>
+                            <tr>
+                              <td colSpan={5}>Total da página ({inutGrid.slice.length})</td>
+                              <td>{formatCurrency(inutGrid.pageTotals.valor_comprovante)}</td>
+                              <td />
+                            </tr>
+                          </tfoot>
+                        ) : null}
                       </table>
                     </div>
+                  ) : null}
+                  {inutItems.length ? (
+                    <GridChrome
+                      page={inutGrid.page}
+                      totalPages={inutGrid.totalPages}
+                      total={inutGrid.total}
+                      from={inutGrid.range.from}
+                      to={inutGrid.range.to}
+                      onPrev={inutGrid.onPrev}
+                      onNext={inutGrid.onNext}
+                      onResetOrder={inutGrid.resetOrder}
+                      isDefaultOrder={inutGrid.isDefaultOrder}
+                    />
                   ) : null}
                 </div>
               ) : null}
@@ -329,6 +436,8 @@ export default function CashPage() {
                       <div style={{ fontSize: 20, fontWeight: 800 }}>{loading ? "..." : formatCurrency(liveKpis.total_cancelamentos_abertos)}</div>
                     </div>
                   </div>
+                </div>
+                <div style={{ marginBottom: 12 }}>
                   <GridSearchInput value={caixasQ} onChange={setCaixasQ} />
                 </div>
                 {!loading && !openBoxes.length ? (
@@ -342,18 +451,18 @@ export default function CashPage() {
                     <table className="table compact">
                       <thead>
                         <tr>
-                          <th>Filial</th>
-                          <th>Turno</th>
-                          <th>Operador</th>
-                          <th>Aberto há</th>
+                          <SortableTh label="Filial" sortKey="filial_label" ariaSort={caixasGrid.ariaSort("filial_label")} onToggle={caixasGrid.toggleSort} />
+                          <SortableTh label="Turno" sortKey="turno_label" ariaSort={caixasGrid.ariaSort("turno_label")} onToggle={caixasGrid.toggleSort} />
+                          <SortableTh label="Operador" sortKey="usuario_label" ariaSort={caixasGrid.ariaSort("usuario_label")} onToggle={caixasGrid.toggleSort} />
+                          <SortableTh label="Aberto há" sortKey="horas_aberto" ariaSort={caixasGrid.ariaSort("horas_aberto")} onToggle={caixasGrid.toggleSort} />
                           <th>Sem movimento</th>
-                          <th>Vendas</th>
-                          <th>Cancel.</th>
-                          <th>Receb.</th>
+                          <SortableTh label="Vendas" sortKey="total_vendas" ariaSort={caixasGrid.ariaSort("total_vendas")} onToggle={caixasGrid.toggleSort} align="right" />
+                          <SortableTh label="Cancel." sortKey="total_cancelamentos" ariaSort={caixasGrid.ariaSort("total_cancelamentos")} onToggle={caixasGrid.toggleSort} align="right" />
+                          <SortableTh label="Receb." sortKey="total_pagamentos" ariaSort={caixasGrid.ariaSort("total_pagamentos")} onToggle={caixasGrid.toggleSort} align="right" />
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredCaixas.map((item: any) => (
+                        {caixasGrid.slice.map((item: any) => (
                           <tr key={`${item.id_filial}-${item.id_turno}`}>
                             <td>{item.filial_label}</td>
                             <td>{formatTurnoLabel(item.turno_operacional ?? item.turno_numero, item.turno_label)}</td>
@@ -366,8 +475,31 @@ export default function CashPage() {
                           </tr>
                         ))}
                       </tbody>
+                      {caixasGrid.slice.length ? (
+                        <tfoot>
+                          <tr>
+                            <td colSpan={5}>Total da página ({caixasGrid.slice.length})</td>
+                            <td>{formatCurrency(caixasGrid.pageTotals.total_vendas)}</td>
+                            <td>{formatCurrency(caixasGrid.pageTotals.total_cancelamentos)}</td>
+                            <td>{formatCurrency(caixasGrid.pageTotals.total_pagamentos)}</td>
+                          </tr>
+                        </tfoot>
+                      ) : null}
                     </table>
                   </div>
+                ) : null}
+                {openBoxes.length ? (
+                  <GridChrome
+                    page={caixasGrid.page}
+                    totalPages={caixasGrid.totalPages}
+                    total={caixasGrid.total}
+                    from={caixasGrid.range.from}
+                    to={caixasGrid.range.to}
+                    onPrev={caixasGrid.onPrev}
+                    onNext={caixasGrid.onNext}
+                    onResetOrder={caixasGrid.resetOrder}
+                    isDefaultOrder={caixasGrid.isDefaultOrder}
+                  />
                 ) : null}
               </div>
             </div>

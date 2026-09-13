@@ -92,6 +92,7 @@ _PHASE3_INTENTS: list[dict[str, Any]] = [
         "max_period_days": 90,
         "follow_ups": [
             "Quais títulos vencidos concentram o risco?",
+            "Detalhe por filial da carteira",
             "Investigar variação de vendas",
         ],
         "templates": {

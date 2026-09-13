@@ -4,11 +4,15 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
 import { api, apiGet } from '../../lib/api';
 import { formatCurrency, formatDateOnly, formatDateTime } from '../../lib/format';
+import { compareGridRows } from '../../lib/grid-sort';
 import { loadSession } from '../../lib/session';
 import { useGridSearch } from '../../lib/use-grid-search';
+import { useRecordGrid } from '../../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +33,27 @@ export default function PlatformChannelPayablesPage() {
   const [noteForm, setNoteForm] = useState({ notes: '' });
   const [error, setError] = useState('');
   const payablesSearch = useGridSearch(items);
+  const payablesGrid = useRecordGrid<any>({
+    rows: payablesSearch.filteredRows,
+    resetKey: `${payablesSearch.query}:${filters.status}`,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { data: a.competence_month, nome: a.channel_name },
+        { data: b.competence_month, nome: b.channel_name },
+      ),
+    summableKeys: ['gross_amount', 'payable_amount'],
+    columns: {
+      channel_name: { type: 'text' },
+      tenant_name: { type: 'text' },
+      competence_month: { type: 'date' },
+      gross_amount: { type: 'number' },
+      commission_pct: { type: 'number' },
+      payable_amount: { type: 'number' },
+      status: { type: 'text' },
+      paid_at: { type: 'date' },
+    },
+  });
 
   async function load(session: any, currentFilters = filters) {
     const query = new URLSearchParams({ limit: '200' });
@@ -157,19 +182,19 @@ export default function PlatformChannelPayablesPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>Canal</th>
-              <th>Empresa</th>
-              <th>Competência</th>
-              <th>Base</th>
-              <th>%</th>
-              <th>Valor a pagar</th>
-              <th>Status</th>
-              <th>Pago em</th>
+              <SortableTh label="Canal" sortKey="channel_name" ariaSort={payablesGrid.ariaSort('channel_name')} onToggle={payablesGrid.toggleSort} />
+              <SortableTh label="Empresa" sortKey="tenant_name" ariaSort={payablesGrid.ariaSort('tenant_name')} onToggle={payablesGrid.toggleSort} />
+              <SortableTh label="Competência" sortKey="competence_month" ariaSort={payablesGrid.ariaSort('competence_month')} onToggle={payablesGrid.toggleSort} />
+              <SortableTh label="Base" sortKey="gross_amount" ariaSort={payablesGrid.ariaSort('gross_amount')} onToggle={payablesGrid.toggleSort} align="right" />
+              <SortableTh label="%" sortKey="commission_pct" ariaSort={payablesGrid.ariaSort('commission_pct')} onToggle={payablesGrid.toggleSort} />
+              <SortableTh label="Valor a pagar" sortKey="payable_amount" ariaSort={payablesGrid.ariaSort('payable_amount')} onToggle={payablesGrid.toggleSort} align="right" />
+              <SortableTh label="Status" sortKey="status" ariaSort={payablesGrid.ariaSort('status')} onToggle={payablesGrid.toggleSort} />
+              <SortableTh label="Pago em" sortKey="paid_at" ariaSort={payablesGrid.ariaSort('paid_at')} onToggle={payablesGrid.toggleSort} />
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {payablesSearch.filteredRows.map((item) => (
+            {payablesGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{item.channel_name}</td>
                 <td>{item.tenant_name}</td>
@@ -186,13 +211,35 @@ export default function PlatformChannelPayablesPage() {
                 </td>
               </tr>
             ))}
-            {!payablesSearch.filteredRows.length ? (
+            {!payablesGrid.total ? (
               <tr>
                 <td colSpan={9}>Nenhuma conta a pagar encontrada.</td>
               </tr>
             ) : null}
           </tbody>
+          {payablesGrid.slice.length ? (
+            <tfoot>
+              <tr>
+                <td colSpan={3}>Total da página ({payablesGrid.slice.length})</td>
+                <td>{formatCurrency(payablesGrid.pageTotals.gross_amount)}</td>
+                <td />
+                <td>{formatCurrency(payablesGrid.pageTotals.payable_amount)}</td>
+                <td colSpan={3} />
+              </tr>
+            </tfoot>
+          ) : null}
         </table>
+        <GridChrome
+          page={payablesGrid.page}
+          totalPages={payablesGrid.totalPages}
+          total={payablesGrid.total}
+          from={payablesGrid.range.from}
+          to={payablesGrid.range.to}
+          onPrev={payablesGrid.onPrev}
+          onNext={payablesGrid.onNext}
+          onResetOrder={payablesGrid.resetOrder}
+          isDefaultOrder={payablesGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

@@ -62,7 +62,7 @@ if (error) return <ErrorState message={error.message} />
 - Server Components quando possível (Next.js 14)
 - Client Components apenas quando necessário (interatividade, hooks de estado)
 - Seguir tokens/tema TorqMind existentes (`theme.tsx`, `globals.css`) — não inventar design system paralelo
-- Grids: `.cursor/rules/08-grids-colunas-ordenacao.mdc` + `GridSearchInput` / `useGridSearch`
+- Grids: `.cursor/rules/08-grids-colunas-ordenacao.mdc` + `GridSearchInput` / `useGridSearch` + `useRecordGrid` / `GridChrome` (30/página, ordem padrão, totalizadores)
 - Documento na UI = NF-e/NFC-e — `.cursor/rules/07-documento-nota-fiscal.mdc`
 
 ## Copy na UI (cliente final)

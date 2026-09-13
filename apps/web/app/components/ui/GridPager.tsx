@@ -12,6 +12,7 @@ type Props = {
   onPrev: () => void;
   onNext: () => void;
   className?: string;
+  hideMeta?: boolean;
 };
 
 /** Paginação canônica dos grids — 30/página; botões cobre (claro/escuro). */
@@ -23,15 +24,21 @@ export default function GridPager({
   onPrev,
   onNext,
   className = '',
+  hideMeta = false,
 }: Props) {
-  if (total <= pageSize) return null;
-  const from = (page - 1) * pageSize + 1;
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, total);
+  const showNav = total > pageSize;
+  if (total <= 0) return null;
+  if (!showNav && hideMeta) return null;
   return (
     <div className={`gridPager ${className}`.trim()}>
-      <span className="gridPagerMeta muted">
-        {from}–{to} de {total}
-      </span>
+      {hideMeta ? null : (
+        <span className="gridPagerMeta muted">
+          Exibindo {from}–{to} de {total.toLocaleString('pt-BR')} registros
+        </span>
+      )}
+      {showNav ? (
       <div className="gridPagerActions">
         <button
           type="button"
@@ -55,6 +62,7 @@ export default function GridPager({
           ›
         </button>
       </div>
+      ) : null}
     </div>
   );
 }

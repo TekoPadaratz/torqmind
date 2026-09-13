@@ -2923,6 +2923,33 @@ def _finance_titles_filial_sort_expr(id_empresa: int) -> str:
     )
 
 
+_FINANCE_TITLES_SORT_COLUMNS = {
+    "filial": "filial",
+    "dt_lancamento": "dt_lancamento",
+    "dt_vencimento": "dt_vencimento",
+    "nro_documento": "nro_documento",
+    "entidade_nome": "entidade_nome",
+    "valor": "valor",
+    "valor_pago": "valor_pago",
+    "valor_aberto": "valor_aberto",
+    "status": "status",
+}
+
+
+def _finance_titles_order_sql(
+    sort_by: Optional[str],
+    sort_dir: Optional[str],
+    filial_sort: str,
+) -> str:
+    """Allowlist de colunas — nunca interpola o nome cru do cliente."""
+    direction = "DESC" if str(sort_dir or "").strip().lower() == "desc" else "ASC"
+    key = str(sort_by or "").strip()
+    if key not in _FINANCE_TITLES_SORT_COLUMNS:
+        return f"{filial_sort} ASC, dt_vencimento ASC, entidade_nome ASC, id_titulo ASC"
+    column = filial_sort if key == "filial" else _FINANCE_TITLES_SORT_COLUMNS[key]
+    return f"{column} {direction}, id_titulo ASC"
+
+
 def _finance_titles_search_variants(raw: str) -> List[str]:
     """Expande q para casar digitação BR (data dd/mm e valor 1.234,56)."""
     text = (raw or "").strip()
@@ -3061,7 +3088,9 @@ def finance_titles_overview(
     q: Optional[str] = None,
     preset: Optional[str] = None,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 30,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
     refresh: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
@@ -3112,14 +3141,15 @@ def finance_titles_overview(
     offset = (page - 1) * page_size
     # Exceção ao contrato Data DESC: CAP/CAR prioriza vencimento ASC
     # (mais urgente primeiro). Filial ASC + nome ASC mantidos.
+    order_sql = _finance_titles_order_sql(sort_by, sort_dir, filial_sort)
     rows = query_dict(f"""
         SELECT
           id_filial, tipo_titulo, id_titulo, id_db, id_entidade, entidade_nome,
           nro_documento, dt_lancamento, dt_vencimento, valor, valor_pago, valor_aberto, status
         FROM {MART_RT_DB}.mart_finance_titles_rt FINAL
         WHERE {where}
-        ORDER BY {filial_sort} ASC, dt_vencimento ASC, entidade_nome ASC, id_titulo ASC
-        LIMIT {page_size} OFFSET {offset}
+        ORDER BY {order_sql}
+        LIMIT {int(page_size)} OFFSET {int(offset)}
     """, parameters=params)
     for row in rows:
         fid = _to_int(row.get("id_filial"))

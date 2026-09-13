@@ -51,6 +51,7 @@ Desempate honesto: id técnico estável (`id_comprovante`, `id_entidade`, …).
 4. Busca geral (seção 4)
 5. Labels limpos (seção 5)
 6. Teste/smoke: primeira página já vem na ordem esperada
+7. Paginação 30, “Exibindo X–Y de Z registros”, “Ordem padrão” e totalizadores (seções 6–8)
 
 ## 4) Busca geral (obrigatória)
 
@@ -76,3 +77,42 @@ Na UI (grids **e** cards/KPIs): **título + resultado**. Proibido:
 
 Empty state curto e operacional. Regras de negócio ficam na documentação/docstring, não no card.
 Contrato: `.cursor/rules/04-frontend-nextjs.mdc` (Copy na UI) e `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10.
+
+## 6) Paginação (30 registros)
+
+Todo grid de **listagem de registros** usa:
+
+- 30 registros por página (`GRID_PAGE_SIZE` / `useRecordGrid`)
+- “Exibindo X–Y de Z registros” quando o total for conhecido
+- navegação só quando houver mais de uma página
+- sequência: autorização → filtros → ordenação do conjunto → paginação
+- desempate estável por identidade real (`id_*`), nunca pelo índice da página
+- ao mudar filtro ou ordenação, voltar à página 1; se o total de páginas cair, ajustar a atual
+- cancelar respostas antigas após trocas rápidas
+- paginação no servidor quando o conjunto for grande; local só se a API já entrega o conjunto completo e limitado
+- lista truncada pela API não pode parecer o universo — preserve e explique o limite
+
+Não converter gráficos, KPIs, DRE/matrizes com contrato próprio, TV/kiosk nem documentos de impressão em lista paginada. Lista de registros dentro de card ou HTML próprio **não** é exceção.
+
+## 7) Ordenação tipo Excel
+
+Nas colunas com significado de ordenação:
+
+- clique (e teclado) no cabeçalho alterna crescente/decrescente
+- `aria-sort` + indicador visual
+- “Ordem padrão” restaura o critério de negócio documentado no grid e volta à página 1, preservando filtros
+- números/moedas numericamente; datas por data; texto `pt-BR`; nulos por último
+- servidor: allowlist de campos e direções — nunca interpolar o nome cru no SQL
+
+Ações, seleção e colunas sem significado não precisam ser ordenáveis.
+Não substituir ordem de negócio por ordem alfabética genérica.
+
+## 8) Totalizadores
+
+Exibir quantidade da página, subtotais da página para medidas somáveis e, quando útil, total do conjunto filtrado — com rótulos distintos.
+
+Não somar identificadores, percentuais, médias, preços unitários, saldos acumulados repetidos nem unidades incompatíveis. Percentual/média consolidada reutiliza a fórmula e os denominadores corretos.
+
+Não substituir um total geral por subtotal de página mantendo o mesmo rótulo.
+
+Agrupamento por filial: paginar o conjunto ou o grupo de forma explícita; não cortar grupos nem duplicar totais de cabeçalho.

@@ -3,14 +3,18 @@
 import { useMemo, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import MonthYearSelect from "../components/ui/MonthYearSelect";
+import SortableTh from "../components/ui/SortableTh";
 import BudgetConfigTab from "../goals/BudgetConfigTab";
 import { formatCurrency } from "../lib/format";
+import { compareGridRows } from "../lib/grid-sort";
 import { currentAnoMesSP, splitAnoMes } from "../lib/month-year.mjs";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
 import { useGridSearch } from "../lib/use-grid-search";
+import { useRecordGrid } from "../lib/use-record-grid";
 
 const STATUS_STYLE: Record<string, { label: string; color: string }> = {
   ok: { label: "No orçamento", color: "var(--color-positive)" },
@@ -38,6 +42,26 @@ export default function FinanceBudgetSection() {
 
   const contas = useMemo(() => data?.contas || [], [data]);
   const { query, setQuery, filteredRows } = useGridSearch(contas as Record<string, unknown>[]);
+  const contasGrid = useRecordGrid<any>({
+    rows: filteredRows,
+    resetKey: `${query}:${anoMes}:${scope.id_empresa ?? ""}:${scope.id_filial ?? ""}:${Array.isArray(scope.id_filiais) ? scope.id_filiais.join(",") : ""}`,
+    getTieId: (row) => `${row.id_filial}-${row.id_plano_conta}`,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { filial: a.filial_label || a.id_filial, nome: a.nome_conta },
+        { filial: b.filial_label || b.id_filial, nome: b.nome_conta },
+      ),
+    summableKeys: ["orcado", "realizado", "saldo"],
+    columns: {
+      filial_label: { type: "text" },
+      nome_conta: { type: "text" },
+      orcado: { type: "number" },
+      realizado: { type: "number" },
+      saldo: { type: "number" },
+      consumo_pct: { type: "number" },
+      status: { type: "text" },
+    },
+  });
   const summary = data?.summary || {};
   const showFilial = true;
   const idEmpresa = scope.id_empresa != null ? Number(scope.id_empresa) : null;
@@ -80,6 +104,7 @@ export default function FinanceBudgetSection() {
       ) : (
         <>
           <div style={{ display: "flex", gap: 8, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
+            <GridSearchInput value={query} onChange={setQuery} />
             <MonthYearSelect
               value={anoMes}
               onChange={setAnoMes}
@@ -95,7 +120,6 @@ export default function FinanceBudgetSection() {
                 {summary.contas_em_alerta} conta(s) em alerta
               </span>
             ) : null}
-            <GridSearchInput value={query} onChange={setQuery} />
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 16 }}>
@@ -127,22 +151,24 @@ export default function FinanceBudgetSection() {
               <table className="table compact">
                 <thead>
                   <tr>
-                    <th>Conta</th>
-                    {showFilial ? <th>Filial</th> : null}
-                    <th>Orçado</th>
-                    <th>Realizado</th>
-                    <th>Saldo</th>
-                    <th>Consumo</th>
-                    <th>Situação</th>
+                    {showFilial ? (
+                      <SortableTh label="Filial" sortKey="filial_label" ariaSort={contasGrid.ariaSort("filial_label")} onToggle={contasGrid.toggleSort} />
+                    ) : null}
+                    <SortableTh label="Conta" sortKey="nome_conta" ariaSort={contasGrid.ariaSort("nome_conta")} onToggle={contasGrid.toggleSort} />
+                    <SortableTh label="Orçado" sortKey="orcado" ariaSort={contasGrid.ariaSort("orcado")} onToggle={contasGrid.toggleSort} align="right" />
+                    <SortableTh label="Realizado" sortKey="realizado" ariaSort={contasGrid.ariaSort("realizado")} onToggle={contasGrid.toggleSort} align="right" />
+                    <SortableTh label="Saldo" sortKey="saldo" ariaSort={contasGrid.ariaSort("saldo")} onToggle={contasGrid.toggleSort} align="right" />
+                    <SortableTh label="Consumo" sortKey="consumo_pct" ariaSort={contasGrid.ariaSort("consumo_pct")} onToggle={contasGrid.toggleSort} />
+                    <SortableTh label="Situação" sortKey="status" ariaSort={contasGrid.ariaSort("status")} onToggle={contasGrid.toggleSort} />
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRows.map((c: any) => {
+                  {contasGrid.slice.map((c: any) => {
                     const st = STATUS_STYLE[c.status] || STATUS_STYLE.ok;
                     return (
                       <tr key={`${c.id_filial}-${c.id_plano_conta}`}>
-                        <td>{c.nome_conta}</td>
                         {showFilial ? <td>{c.filial_label || "—"}</td> : null}
+                        <td>{c.nome_conta}</td>
                         <td>{formatCurrency(c.orcado)}</td>
                         <td style={{ fontWeight: 700 }}>{formatCurrency(c.realizado)}</td>
                         <td style={{ color: Number(c.saldo) < 0 ? "var(--color-negative)" : undefined }}>{formatCurrency(c.saldo)}</td>
@@ -152,7 +178,29 @@ export default function FinanceBudgetSection() {
                     );
                   })}
                 </tbody>
+                {contasGrid.slice.length ? (
+                  <tfoot>
+                    <tr>
+                      <td colSpan={showFilial ? 2 : 1}>Total da página ({contasGrid.slice.length})</td>
+                      <td>{formatCurrency(contasGrid.pageTotals.orcado)}</td>
+                      <td>{formatCurrency(contasGrid.pageTotals.realizado)}</td>
+                      <td>{formatCurrency(contasGrid.pageTotals.saldo)}</td>
+                      <td colSpan={2} />
+                    </tr>
+                  </tfoot>
+                ) : null}
               </table>
+              <GridChrome
+                page={contasGrid.page}
+                totalPages={contasGrid.totalPages}
+                total={contasGrid.total}
+                from={contasGrid.range.from}
+                to={contasGrid.range.to}
+                onPrev={contasGrid.onPrev}
+                onNext={contasGrid.onNext}
+                onResetOrder={contasGrid.resetOrder}
+                isDefaultOrder={contasGrid.isDefaultOrder}
+              />
             </div>
           )}
         </>

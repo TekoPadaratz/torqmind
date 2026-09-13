@@ -3,16 +3,17 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import EmptyState from '../components/ui/EmptyState';
-import GridPager from '../components/ui/GridPager';
+import GridChrome from '../components/ui/GridChrome';
 import GridSearchInput from '../components/ui/GridSearchInput';
+import SortableTh from '../components/ui/SortableTh';
 import PresetFilterChips from '../components/ui/PresetFilterChips';
 import { formatCurrency, formatDateOnly } from '../lib/format';
 import { apiGet } from '../lib/api';
 import { extractApiError } from '../lib/errors';
 import { buildScopeParams, type ScopeQuery } from '../lib/scope';
 
-/** Contas a pagar/receber: 20 por página (pedido operacional). */
-const TITLES_PAGE_SIZE = 20;
+/** CAP/CAR: 30/página. Ordem padrão = filial ASC, vencimento ASC (urgência). */
+const TITLES_PAGE_SIZE = 30;
 
 type TitleRow = {
   id_filial: number;
@@ -55,6 +56,8 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
   const [debouncedQ, setDebouncedQ] = useState('');
   const [preset, setPreset] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [sortKey, setSortKey] = useState('');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [data, setData] = useState<TitlesPayload | null>(null);
@@ -66,7 +69,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQ, preset, scope.scope_key, tipo]);
+  }, [debouncedQ, preset, scope.scope_key, tipo, sortKey, sortDir]);
 
   useEffect(() => {
     if (!scope.dt_ini || !scope.dt_fim) return;
@@ -79,6 +82,10 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
         params.set('tipo', String(tipo));
         params.set('page', String(page));
         params.set('page_size', String(TITLES_PAGE_SIZE));
+        if (sortKey) {
+          params.set('sort_by', sortKey);
+          params.set('sort_dir', sortDir);
+        }
         if (debouncedQ) params.set('q', debouncedQ);
         if (preset) params.set('preset', preset);
         const payload = await apiGet(`/bi/finance/titles?${params.toString()}`, {
@@ -95,7 +102,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
     };
     void load();
     return () => controller.abort();
-  }, [debouncedQ, page, preset, scope, tipo]);
+  }, [debouncedQ, page, preset, scope, tipo, sortKey, sortDir]);
 
   const items = data?.items || [];
   const total = Number(data?.total || 0);
@@ -104,6 +111,24 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
   const pageTotals = data?.page_totals || {};
   const grandTotals = data?.totals || {};
 
+  const ariaSort = (key: string): 'none' | 'ascending' | 'descending' => {
+    if (!sortKey || sortKey !== key) return 'none';
+    return sortDir === 'desc' ? 'descending' : 'ascending';
+  };
+  const toggleSort = (key: string) => {
+    setPage(1);
+    if (sortKey !== key) {
+      setSortKey(key);
+      setSortDir(key === 'entidade_nome' || key === 'filial' || key === 'nro_documento' || key === 'status' ? 'asc' : 'desc');
+      return;
+    }
+    setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+  };
+  const resetOrder = () => {
+    setSortKey('');
+    setSortDir('asc');
+    setPage(1);
+  };
   const statusLabel = useMemo(
     () =>
       ({
@@ -165,15 +190,15 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
             <table className="table compact">
               <thead>
                 <tr>
-                  <th>Filial</th>
-                  <th>Lançamento</th>
-                  <th>Vencimento</th>
-                  <th>Nro Documento</th>
-                  <th>{entidadeLabel}</th>
-                  <th>Valor</th>
-                  <th>Pago</th>
-                  <th>Aberto</th>
-                  <th>Status</th>
+                  <SortableTh label="Filial" sortKey="filial" ariaSort={ariaSort('filial')} onToggle={toggleSort} />
+                  <SortableTh label="Lançamento" sortKey="dt_lancamento" ariaSort={ariaSort('dt_lancamento')} onToggle={toggleSort} />
+                  <SortableTh label="Vencimento" sortKey="dt_vencimento" ariaSort={ariaSort('dt_vencimento')} onToggle={toggleSort} />
+                  <SortableTh label="Nro Documento" sortKey="nro_documento" ariaSort={ariaSort('nro_documento')} onToggle={toggleSort} />
+                  <SortableTh label={entidadeLabel} sortKey="entidade_nome" ariaSort={ariaSort('entidade_nome')} onToggle={toggleSort} />
+                  <SortableTh label="Valor" sortKey="valor" ariaSort={ariaSort('valor')} onToggle={toggleSort} align="right" />
+                  <SortableTh label="Pago" sortKey="valor_pago" ariaSort={ariaSort('valor_pago')} onToggle={toggleSort} align="right" />
+                  <SortableTh label="Aberto" sortKey="valor_aberto" ariaSort={ariaSort('valor_aberto')} onToggle={toggleSort} align="right" />
+                  <SortableTh label="Status" sortKey="status" ariaSort={ariaSort('status')} onToggle={toggleSort} />
                 </tr>
               </thead>
               <tbody>
@@ -200,7 +225,7 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
               <tfoot className="financeTitlesFoot">
                 <tr>
                   <td colSpan={5} style={{ fontWeight: 600 }}>
-                    Total da página
+                    Total da página ({items.length} registros)
                   </td>
                   <td style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                     {formatCurrency(pageTotals.valor)}
@@ -231,13 +256,15 @@ export default function FinanceTitlesSection({ tipo, scope, entidadeLabel }: Pro
               </tfoot>
             </table>
           </div>
-          <GridPager
+          <GridChrome
             page={safePage}
             totalPages={totalPages}
             total={total}
             pageSize={TITLES_PAGE_SIZE}
             onPrev={() => setPage((p) => Math.max(1, p - 1))}
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+            onResetOrder={resetOrder}
+            isDefaultOrder={!sortKey}
           />
         </>
       )}

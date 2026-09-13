@@ -4,11 +4,15 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
 import { api, apiGet } from '../../lib/api';
 import { formatDateTime } from '../../lib/format';
+import { compareGridRows } from '../../lib/grid-sort';
 import { loadSession } from '../../lib/session';
 import { useGridSearch } from '../../lib/use-grid-search';
+import { useRecordGrid } from '../../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,6 +42,24 @@ export default function PlatformNotificationsPage() {
   });
   const [error, setError] = useState('');
   const subscriptionsSearch = useGridSearch(subscriptions);
+  const subscriptionsGrid = useRecordGrid<any>({
+    rows: subscriptionsSearch.filteredRows,
+    resetKey: subscriptionsSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) =>
+      compareGridRows(
+        { data: a.created_at, nome: a.user_name },
+        { data: b.created_at, nome: b.user_name },
+      ),
+    columns: {
+      user_name: { type: 'text' },
+      tenant_name: { type: 'text' },
+      event_type: { type: 'text' },
+      channel: { type: 'text' },
+      severity_min: { type: 'text' },
+      created_at: { type: 'date' },
+    },
+  });
 
   async function load(session: any) {
     const [usersRes, companiesRes, subscriptionsRes] = await Promise.all([
@@ -271,17 +293,17 @@ export default function PlatformNotificationsPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>Usuário</th>
-              <th>Empresa</th>
-              <th>Evento</th>
-              <th>Canal</th>
-              <th>Severity</th>
-              <th>Criado em</th>
+              <SortableTh label="Usuário" sortKey="user_name" ariaSort={subscriptionsGrid.ariaSort('user_name')} onToggle={subscriptionsGrid.toggleSort} />
+              <SortableTh label="Empresa" sortKey="tenant_name" ariaSort={subscriptionsGrid.ariaSort('tenant_name')} onToggle={subscriptionsGrid.toggleSort} />
+              <SortableTh label="Evento" sortKey="event_type" ariaSort={subscriptionsGrid.ariaSort('event_type')} onToggle={subscriptionsGrid.toggleSort} />
+              <SortableTh label="Canal" sortKey="channel" ariaSort={subscriptionsGrid.ariaSort('channel')} onToggle={subscriptionsGrid.toggleSort} />
+              <SortableTh label="Severity" sortKey="severity_min" ariaSort={subscriptionsGrid.ariaSort('severity_min')} onToggle={subscriptionsGrid.toggleSort} />
+              <SortableTh label="Criado em" sortKey="created_at" ariaSort={subscriptionsGrid.ariaSort('created_at')} onToggle={subscriptionsGrid.toggleSort} />
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {subscriptionsSearch.filteredRows.map((item) => (
+            {subscriptionsGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{item.user_name}</td>
                 <td>{item.tenant_name || 'Global'}</td>
@@ -298,6 +320,17 @@ export default function PlatformNotificationsPage() {
             ))}
           </tbody>
         </table>
+        <GridChrome
+          page={subscriptionsGrid.page}
+          totalPages={subscriptionsGrid.totalPages}
+          total={subscriptionsGrid.total}
+          from={subscriptionsGrid.range.from}
+          to={subscriptionsGrid.range.to}
+          onPrev={subscriptionsGrid.onPrev}
+          onNext={subscriptionsGrid.onNext}
+          onResetOrder={subscriptionsGrid.resetOrder}
+          isDefaultOrder={subscriptionsGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

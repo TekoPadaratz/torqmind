@@ -5,8 +5,12 @@ import { useMemo, useState } from "react";
 import AppNav from "../components/AppNav";
 import CategoryRankChart from "../components/ui/CategoryRankChart";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SortableTh from "../components/ui/SortableTh";
+import { compareGridRows } from "../lib/grid-sort";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { buildUserLabel, formatCurrency } from "../lib/format";
 import {
   buildModuleLoadingCopy,
@@ -238,6 +242,47 @@ export default function ProfitManagementPage() {
   const { query: productsQ, setQuery: setProductsQ, filteredRows: searchedProducts } = useGridSearch(
     filteredProducts as Record<string, unknown>[],
   );
+  const productsGrid = useRecordGrid<any>({
+    rows: searchedProducts,
+    resetKey: `${productsQ}:${sectorFilter}:${statusFilter}`,
+    getTieId: (row, idx) => `${row.id_produto}-${row.setor}-${idx}`,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.nome_produto }, { nome: b.nome_produto }),
+    summableKeys: ["qtd_vendida", "receita", "impacto_60d"],
+    columns: {
+      nome_produto: { type: "text" },
+      setor: { type: "text" },
+      qtd_vendida: { type: "number" },
+      receita: { type: "number" },
+      preco_atual: { type: "number" },
+      custo_unitario: { type: "number" },
+      margem_bruta_pct: { type: "number" },
+      preco_ideal: { type: "number" },
+      reajuste_pct: { type: "number" },
+      impacto_60d: { type: "number" },
+      status: { type: "text" },
+    },
+  });
+  const repricingRows = useMemo(
+    () => (Array.isArray(repricing?.oportunidades) ? repricing.oportunidades : []) as any[],
+    [repricing?.oportunidades],
+  );
+  const repricingGrid = useRecordGrid<any>({
+    rows: repricingRows,
+    resetKey: String(repricingRows.length),
+    getTieId: (row, idx) => `${row.id_produto}-${idx}`,
+    defaultCompare: (a, b) => Number(b.impacto_60d || 0) - Number(a.impacto_60d || 0),
+    summableKeys: ["qtd_mes_anterior", "impacto_60d"],
+    columns: {
+      nome_produto: { type: "text" },
+      setor: { type: "text" },
+      preco_atual: { type: "number" },
+      preco_ideal: { type: "number" },
+      reajuste_pct: { type: "number" },
+      qtd_mes_anterior: { type: "number" },
+      impacto_60d: { type: "number" },
+    },
+  });
 
   const expenseChartData = useMemo(() => {
     if (!expenses?.categorias) return [];
@@ -439,7 +484,7 @@ export default function ProfitManagementPage() {
         {/* TAB: Overview */}
         {effectiveTab === "overview" && (
           <div style={{ marginTop: 16 }}>
-            {/* DRE */}
+            {/* Exceção: DRE — contrato próprio, não listagem de registros. */}
             {dre?.linhas && (
               <div className="card" style={{ marginTop: 12 }}>
                 <div className="sectionEyebrow">
@@ -540,21 +585,21 @@ export default function ProfitManagementPage() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: "2px solid var(--border)" }}>
-                    <th style={{ textAlign: "left", padding: "8px 6px" }}>Produto</th>
-                    <th style={{ textAlign: "left", padding: "8px 4px" }}>Setor</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Qtd</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Receita</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Preço</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Custo</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Margem</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>P.Ideal</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Reajuste</th>
-                    <th style={{ textAlign: "right", padding: "8px 4px" }}>Potencial 60d</th>
-                    <th style={{ textAlign: "center", padding: "8px 4px" }}>Status</th>
+                    <SortableTh label="Produto" sortKey="nome_produto" ariaSort={productsGrid.ariaSort("nome_produto")} onToggle={productsGrid.toggleSort} />
+                    <SortableTh label="Setor" sortKey="setor" ariaSort={productsGrid.ariaSort("setor")} onToggle={productsGrid.toggleSort} />
+                    <SortableTh label="Qtd" sortKey="qtd_vendida" ariaSort={productsGrid.ariaSort("qtd_vendida")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Receita" sortKey="receita" ariaSort={productsGrid.ariaSort("receita")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Preço" sortKey="preco_atual" ariaSort={productsGrid.ariaSort("preco_atual")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Custo" sortKey="custo_unitario" ariaSort={productsGrid.ariaSort("custo_unitario")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Margem" sortKey="margem_bruta_pct" ariaSort={productsGrid.ariaSort("margem_bruta_pct")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="P.Ideal" sortKey="preco_ideal" ariaSort={productsGrid.ariaSort("preco_ideal")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Reajuste" sortKey="reajuste_pct" ariaSort={productsGrid.ariaSort("reajuste_pct")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Potencial 60d" sortKey="impacto_60d" ariaSort={productsGrid.ariaSort("impacto_60d")} onToggle={productsGrid.toggleSort} align="right" />
+                    <SortableTh label="Status" sortKey="status" ariaSort={productsGrid.ariaSort("status")} onToggle={productsGrid.toggleSort} align="center" />
                   </tr>
                 </thead>
                 <tbody>
-                  {searchedProducts.map((p: any, idx: number) => (
+                  {productsGrid.slice.map((p: any, idx: number) => (
                     <tr key={`${p.id_produto}-${p.setor}-${idx}`} style={{ borderBottom: "1px solid var(--border)" }}>
                       <td style={{ padding: "6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nome_produto}</td>
                       <td style={{ padding: "6px 4px", textTransform: "capitalize" }}>{p.setor}</td>
@@ -586,7 +631,30 @@ export default function ProfitManagementPage() {
                     </tr>
                   ))}
                 </tbody>
+                {productsGrid.slice.length ? (
+                  <tfoot>
+                    <tr>
+                      <td colSpan={2} style={{ padding: "8px 6px", fontWeight: 700 }}>Total da página ({productsGrid.slice.length})</td>
+                      <td style={{ padding: "6px 4px", textAlign: "right" }}>{Number(productsGrid.pageTotals.qtd_vendida || 0).toFixed(0)}</td>
+                      <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(productsGrid.pageTotals.receita)}</td>
+                      <td colSpan={5} />
+                      <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(productsGrid.pageTotals.impacto_60d)}</td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                ) : null}
               </table>
+              <GridChrome
+                page={productsGrid.page}
+                totalPages={productsGrid.totalPages}
+                total={productsGrid.total}
+                from={productsGrid.range.from}
+                to={productsGrid.range.to}
+                onPrev={productsGrid.onPrev}
+                onNext={productsGrid.onNext}
+                onResetOrder={productsGrid.resetOrder}
+                isDefaultOrder={productsGrid.isDefaultOrder}
+              />
               {searchedProducts.length === 0 && (
                 <div className="muted" style={{ padding: 16, textAlign: "center" }}>
                   Nenhum produto encontrado com os filtros selecionados.
@@ -625,17 +693,17 @@ export default function ProfitManagementPage() {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ borderBottom: "2px solid var(--border)" }}>
-                        <th style={{ textAlign: "left", padding: "8px 6px" }}>Produto</th>
-                        <th style={{ textAlign: "left", padding: "8px 4px" }}>Setor</th>
-                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Preço Atual</th>
-                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Preço Ideal</th>
-                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Reajuste</th>
-                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Qtd/mês</th>
-                        <th style={{ textAlign: "right", padding: "8px 4px" }}>Potencial 60d</th>
+                        <SortableTh label="Produto" sortKey="nome_produto" ariaSort={repricingGrid.ariaSort("nome_produto")} onToggle={repricingGrid.toggleSort} />
+                        <SortableTh label="Setor" sortKey="setor" ariaSort={repricingGrid.ariaSort("setor")} onToggle={repricingGrid.toggleSort} />
+                        <SortableTh label="Preço Atual" sortKey="preco_atual" ariaSort={repricingGrid.ariaSort("preco_atual")} onToggle={repricingGrid.toggleSort} align="right" />
+                        <SortableTh label="Preço Ideal" sortKey="preco_ideal" ariaSort={repricingGrid.ariaSort("preco_ideal")} onToggle={repricingGrid.toggleSort} align="right" />
+                        <SortableTh label="Reajuste" sortKey="reajuste_pct" ariaSort={repricingGrid.ariaSort("reajuste_pct")} onToggle={repricingGrid.toggleSort} align="right" />
+                        <SortableTh label="Qtd/mês" sortKey="qtd_mes_anterior" ariaSort={repricingGrid.ariaSort("qtd_mes_anterior")} onToggle={repricingGrid.toggleSort} align="right" />
+                        <SortableTh label="Potencial 60d" sortKey="impacto_60d" ariaSort={repricingGrid.ariaSort("impacto_60d")} onToggle={repricingGrid.toggleSort} align="right" />
                       </tr>
                     </thead>
                     <tbody>
-                      {repricing.oportunidades.map((op: any, idx: number) => (
+                      {repricingGrid.slice.map((op: any, idx: number) => (
                         <tr key={`${op.id_produto}-${idx}`} style={{ borderBottom: "1px solid var(--border)" }}>
                           <td style={{ padding: "6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{op.nome_produto}</td>
                           <td style={{ padding: "6px 4px", textTransform: "capitalize" }}>{op.setor}</td>
@@ -647,7 +715,27 @@ export default function ProfitManagementPage() {
                         </tr>
                       ))}
                     </tbody>
+                    {repricingGrid.slice.length ? (
+                      <tfoot>
+                        <tr>
+                          <td colSpan={5} style={{ padding: "8px 6px", fontWeight: 700 }}>Total da página ({repricingGrid.slice.length})</td>
+                          <td style={{ padding: "6px 4px", textAlign: "right" }}>{Number(repricingGrid.pageTotals.qtd_mes_anterior || 0).toFixed(0)}</td>
+                          <td style={{ padding: "6px 4px", textAlign: "right" }}>{formatCurrency(repricingGrid.pageTotals.impacto_60d)}</td>
+                        </tr>
+                      </tfoot>
+                    ) : null}
                   </table>
+                  <GridChrome
+                    page={repricingGrid.page}
+                    totalPages={repricingGrid.totalPages}
+                    total={repricingGrid.total}
+                    from={repricingGrid.range.from}
+                    to={repricingGrid.range.to}
+                    onPrev={repricingGrid.onPrev}
+                    onNext={repricingGrid.onNext}
+                    onResetOrder={repricingGrid.resetOrder}
+                    isDefaultOrder={repricingGrid.isDefaultOrder}
+                  />
                 </div>
               </>
             ) : (
@@ -678,6 +766,7 @@ export default function ProfitManagementPage() {
           )
         )}
 
+        {/* Exceção: ANP — painel/print com contrato próprio. */}
         {effectiveTab === "anp" && (
           <AnpCompliancePanel
             data={anp}

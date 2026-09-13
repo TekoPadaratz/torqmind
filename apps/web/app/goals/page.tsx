@@ -5,9 +5,12 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 import AppNav from '../components/AppNav';
 import EmptyState from '../components/ui/EmptyState';
+import GridChrome from '../components/ui/GridChrome';
 import GridSearchInput from '../components/ui/GridSearchInput';
 import ScopeTransitionState from '../components/ui/ScopeTransitionState';
+import SortableTh from '../components/ui/SortableTh';
 import { buildUserLabel, formatCurrency, formatDateOnly } from '../lib/format';
+import { useRecordGrid } from '../lib/use-record-grid';
 import { buildGoalsMotivation, getSellerBadge } from '../lib/goals-motivation';
 import { buildModuleLoadingCopy, buildModuleUnavailableCopy } from '../lib/reading-state.mjs';
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from '../lib/scope';
@@ -145,6 +148,21 @@ export default function GoalsPage() {
   const detailedLeaderboard = useMemo(() => leaderboard.slice(0, 15), [leaderboard]);
   const { query: leaderboardQ, setQuery: setLeaderboardQ, filteredRows: filteredLeaderboard } =
     useGridSearch(detailedLeaderboard as Record<string, unknown>[]);
+  const leaderboardGrid = useRecordGrid<any>({
+    rows: filteredLeaderboard,
+    resetKey: leaderboardQ,
+    getTieId: (row) => row.id_funcionario,
+    defaultSort: { key: 'faturamento', type: 'number', dir: 'desc' },
+    summableKeys: ['vendas', 'faturamento', 'margem'],
+    columns: {
+      rank: { type: 'number' },
+      funcionario_nome: { type: 'text' },
+      vendas: { type: 'number' },
+      faturamento: { type: 'number' },
+      margem: { type: 'number' },
+      scoreRisco: { type: 'number' },
+    },
+  });
   const closedMonthsRows = useMemo(
     () =>
       (Array.isArray(data?.monthly_projection?.history?.last_3_months)
@@ -490,9 +508,22 @@ export default function GoalsPage() {
               <EmptyState title="Sem leaderboard detalhado." detail="A fonte de desempenho por funcionário não retornou registros no período." />
             ) : null}
             <table className="table compact">
-              <thead><tr><th>Pos.</th><th>Funcionário</th><th>Destaque</th><th>Vendas</th><th>Faturamento</th>{canSeeMargin ? <th>Margem</th> : null}<th>Leitura operacional</th><th>Status</th></tr></thead>
+              <thead>
+                <tr>
+                  <SortableTh label="Pos." sortKey="rank" ariaSort={leaderboardGrid.ariaSort('rank')} onToggle={leaderboardGrid.toggleSort} />
+                  <SortableTh label="Funcionário" sortKey="funcionario_nome" ariaSort={leaderboardGrid.ariaSort('funcionario_nome')} onToggle={leaderboardGrid.toggleSort} />
+                  <th>Destaque</th>
+                  <SortableTh label="Vendas" sortKey="vendas" ariaSort={leaderboardGrid.ariaSort('vendas')} onToggle={leaderboardGrid.toggleSort} align="right" />
+                  <SortableTh label="Faturamento" sortKey="faturamento" ariaSort={leaderboardGrid.ariaSort('faturamento')} onToggle={leaderboardGrid.toggleSort} align="right" />
+                  {canSeeMargin ? (
+                    <SortableTh label="Margem" sortKey="margem" ariaSort={leaderboardGrid.ariaSort('margem')} onToggle={leaderboardGrid.toggleSort} align="right" />
+                  ) : null}
+                  <SortableTh label="Leitura operacional" sortKey="scoreRisco" ariaSort={leaderboardGrid.ariaSort('scoreRisco')} onToggle={leaderboardGrid.toggleSort} />
+                  <th>Status</th>
+                </tr>
+              </thead>
               <tbody>
-                {filteredLeaderboard.map((r: any) => {
+                {leaderboardGrid.slice.map((r: any) => {
                   const badge = getSellerBadge(r, filteredLeaderboard as any);
                   const riskStatus = buildRiskStatus(Number(r.scoreRisco || 0));
                   return (
@@ -527,7 +558,29 @@ export default function GoalsPage() {
                   );
                 })}
               </tbody>
+              {leaderboardGrid.slice.length ? (
+                <tfoot>
+                  <tr>
+                    <td colSpan={3}>Total da página ({leaderboardGrid.slice.length})</td>
+                    <td>{leaderboardGrid.pageTotals.vendas}</td>
+                    <td>{formatCurrency(leaderboardGrid.pageTotals.faturamento)}</td>
+                    {canSeeMargin ? <td>{showMargin ? formatCurrency(leaderboardGrid.pageTotals.margem) : '—'}</td> : null}
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              ) : null}
             </table>
+            <GridChrome
+              page={leaderboardGrid.page}
+              totalPages={leaderboardGrid.totalPages}
+              total={leaderboardGrid.total}
+              from={leaderboardGrid.range.from}
+              to={leaderboardGrid.range.to}
+              onPrev={leaderboardGrid.onPrev}
+              onNext={leaderboardGrid.onNext}
+              onResetOrder={leaderboardGrid.resetOrder}
+              isDefaultOrder={leaderboardGrid.isDefaultOrder}
+            />
             {!loading && detailedLeaderboard.length < 15 ? (
               <div className="muted" style={{ marginTop: 10 }}>
                 Exibindo {detailedLeaderboard.length} vendedor(es) válidos neste período.
@@ -674,6 +727,7 @@ export default function GoalsPage() {
             </div>
           </div>
 
+          {/* Exceção: 3 meses de referência (não listagem operacional). */}
           <div className="card col-12">
             <h2>Meses fechados de referência</h2>
             <div style={{ margin: '8px 0' }}>

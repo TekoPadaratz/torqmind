@@ -3,14 +3,14 @@
 import { useEffect, useState } from "react";
 
 import EmptyState from "../components/ui/EmptyState";
-import GridPager from "../components/ui/GridPager";
+import GridChrome from "../components/ui/GridChrome";
 import GridSearchInput from "../components/ui/GridSearchInput";
 import { formatCurrency } from "../lib/format";
 import { apiGet, apiPut } from "../lib/api";
 import { extractApiError } from "../lib/errors";
 import { buildScopeParams, useScopeQuery } from "../lib/scope";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 30;
 
 function parseMoneyInput(raw: string): number {
   const cleaned = String(raw || "")
@@ -333,13 +333,15 @@ export default function TeamCostSection({ anoMes }: Props) {
             </table>
           </div>
         )}
-        <GridPager
+        <GridChrome
           page={page}
           pageSize={PAGE_SIZE}
           total={Number(data?.total || 0)}
           totalPages={totalPages}
           onPrev={() => setPage((p) => Math.max(1, p - 1))}
           onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+          onResetOrder={() => setPage(1)}
+          isDefaultOrder
         />
       </div>
     </div>

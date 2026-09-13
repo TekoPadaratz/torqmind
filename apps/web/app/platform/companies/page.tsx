@@ -5,7 +5,11 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
+import { compareGridRows } from '../../lib/grid-sort';
+import { useRecordGrid } from '../../lib/use-record-grid';
 import { apiGet, apiPost } from '../../lib/api';
 import { formatCurrency, formatDateOnly } from '../../lib/format';
 import { loadSession } from '../../lib/session';
@@ -64,6 +68,21 @@ export default function PlatformCompaniesPage() {
   const [error, setError] = useState('');
   const [createdCompany, setCreatedCompany] = useState<any>(null);
   const companiesSearch = useGridSearch(items);
+  const companiesGrid = useRecordGrid<any>({
+    rows: companiesSearch.filteredRows,
+    resetKey: `${companiesSearch.query}:${status}`,
+    getTieId: (row) => row.id_empresa,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.nome }, { nome: b.nome }),
+    summableKeys: ['monthly_amount'],
+    columns: {
+      id_empresa: { type: 'number' },
+      nome: { type: 'text' },
+      status: { type: 'text' },
+      channel_name: { type: 'text' },
+      monthly_amount: { type: 'number' },
+    },
+  });
 
   const load = async (session: any, currentSearch = search, currentStatus = status) => {
     setLoading(true);
@@ -221,16 +240,16 @@ export default function PlatformCompaniesPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Empresa</th>
-              <th>Status</th>
-              <th>Canal</th>
-              <th>Valor mensal</th>
+              <SortableTh label="ID" sortKey="id_empresa" ariaSort={companiesGrid.ariaSort('id_empresa')} onToggle={companiesGrid.toggleSort} />
+              <SortableTh label="Empresa" sortKey="nome" ariaSort={companiesGrid.ariaSort('nome')} onToggle={companiesGrid.toggleSort} />
+              <SortableTh label="Status" sortKey="status" ariaSort={companiesGrid.ariaSort('status')} onToggle={companiesGrid.toggleSort} />
+              <SortableTh label="Canal" sortKey="channel_name" ariaSort={companiesGrid.ariaSort('channel_name')} onToggle={companiesGrid.toggleSort} />
+              <SortableTh label="Valor mensal" sortKey="monthly_amount" ariaSort={companiesGrid.ariaSort('monthly_amount')} onToggle={companiesGrid.toggleSort} align="right" />
               <th>Vigência</th>
             </tr>
           </thead>
           <tbody>
-            {companiesSearch.filteredRows.map((item) => (
+            {companiesGrid.slice.map((item) => (
               <tr key={item.id_empresa}>
                 <td>{item.id_empresa}</td>
                 <td>
@@ -242,13 +261,33 @@ export default function PlatformCompaniesPage() {
                 <td>{formatDateOnly(item.valid_until || item.valid_from)}</td>
               </tr>
             ))}
-            {!companiesSearch.filteredRows.length && !loading ? (
+            {!companiesGrid.total && !loading ? (
               <tr>
                 <td colSpan={6}>Nenhuma empresa encontrada.</td>
               </tr>
             ) : null}
           </tbody>
+          {companiesGrid.slice.length ? (
+            <tfoot>
+              <tr>
+                <td colSpan={4}>Total da página ({companiesGrid.slice.length})</td>
+                <td>{formatCurrency(companiesGrid.pageTotals.monthly_amount)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          ) : null}
         </table>
+        <GridChrome
+          page={companiesGrid.page}
+          totalPages={companiesGrid.totalPages}
+          total={companiesGrid.total}
+          from={companiesGrid.range.from}
+          to={companiesGrid.range.to}
+          onPrev={companiesGrid.onPrev}
+          onNext={companiesGrid.onNext}
+          onResetOrder={companiesGrid.resetOrder}
+          isDefaultOrder={companiesGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );

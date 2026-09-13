@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.db_clickhouse import query_dict
+from app.intelligence.locale_pt import filial_display_name, format_brl, status_label
 from app.repos_mart_realtime import MART_RT_DB, _branch_clause
 
 TOP_N = 8
@@ -153,17 +154,18 @@ def investigate_finance_portfolio(
     for row in by_filial:
         val = _as_float(row.get("total_aberto"))
         share = round((val / aberto) * 100.0, 1) if aberto >= 0.01 else None
+        branch_name = filial_display_name(id_empresa, row.get("id_filial"))
         factors.append(
             {
                 "kind": "contribution",
                 "dimension": "filial",
-                "label": f"Filial {row.get('id_filial')}",
+                "label": branch_name,
                 "delta": val,
                 "share_of_total_delta_pct": share,
                 "summary": (
-                    f"Filial {row.get('id_filial')}: R$ {val:,.2f} em aberto "
+                    f"{branch_name}: {format_brl(val)} em aberto "
                     f"({int(row.get('n_titulos') or 0)} títulos; "
-                    f"vencido R$ {_as_float(row.get('vencido')):,.2f})"
+                    f"vencido {format_brl(row.get('vencido'))})"
                 ),
                 "evidence": {
                     "dimension": "filial",
@@ -181,10 +183,10 @@ def investigate_finance_portfolio(
             {
                 "kind": "contribution",
                 "dimension": "status",
-                "label": str(r.get("status") or "—"),
+                "label": status_label(r.get("status")),
                 "delta": _as_float(r.get("total_aberto")),
                 "summary": (
-                    f"{r.get('status')}: R$ {_as_float(r.get('total_aberto')):,.2f} "
+                    f"{status_label(r.get('status'))}: {format_brl(r.get('total_aberto'))} "
                     f"({int(r.get('n_titulos') or 0)} títulos)"
                 ),
                 "causality": "not_proven",
@@ -245,11 +247,25 @@ def investigate_finance_portfolio(
     else:
         freshness_ts = str(last_updated) if last_updated else None
 
-    headline = (
-        f"Carteira aberta R$ {aberto:,.2f} "
-        f"(receber R$ {receber:,.2f} / pagar R$ {pagar:,.2f}); "
-        f"vencido R$ {vencido:,.2f} em {n_abertos} títulos."
-    )
+    if tipo == 1:
+        headline = (
+            f"Recebimentos em aberto {format_brl(aberto)}; "
+            f"vencido {format_brl(vencido)} em {n_abertos} títulos."
+        )
+        tipo_follow = ["Só os pagamentos"]
+    elif tipo == 0:
+        headline = (
+            f"Pagamentos em aberto {format_brl(aberto)}; "
+            f"vencido {format_brl(vencido)} em {n_abertos} títulos."
+        )
+        tipo_follow = ["Só os recebimentos"]
+    else:
+        headline = (
+            f"Carteira aberta {format_brl(aberto)} "
+            f"(receber {format_brl(receber)} / pagar {format_brl(pagar)}); "
+            f"vencido {format_brl(vencido)} em {n_abertos} títulos."
+        )
+        tipo_follow = ["Só os recebimentos", "Só os pagamentos"]
 
     return {
         "status": "ok",
@@ -290,8 +306,9 @@ def investigate_finance_portfolio(
         ],
         "follow_ups": [
             "Quais títulos vencidos concentram o risco?",
-            "Investigar variação de vendas",
             "Detalhe por filial da carteira",
+            *tipo_follow[:1],
+            "Investigar variação de vendas",
         ],
         "warnings": [
             "Ausência de títulos aqui não significa saldo zero no sistema de origem.",

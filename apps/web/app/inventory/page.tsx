@@ -4,14 +4,18 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import AppNav from "../components/AppNav";
 import EmptyState from "../components/ui/EmptyState";
+import GridChrome from "../components/ui/GridChrome";
 import ScopeTransitionState from "../components/ui/ScopeTransitionState";
+import SortableTh from "../components/ui/SortableTh";
 import { buildUserLabel, formatCurrency, formatDateOnly } from "../lib/format";
+import { compareGridRows } from "../lib/grid-sort";
 import {
   buildModuleLoadingCopy,
   buildModuleUnavailableCopy,
 } from "../lib/reading-state.mjs";
 import { buildScopeParams, useEnsureScopedProductUrl, useScopeQuery } from "../lib/scope";
 import { useBiScopeData } from "../lib/use-bi-scope-data";
+import { useRecordGrid } from "../lib/use-record-grid";
 import { canAccessScreenKey, readCachedSession } from "../lib/session";
 
 export const dynamic = "force-dynamic";
@@ -191,6 +195,135 @@ function MediaBar({ value, max }: { value: number; max: number }) {
         {formatLiters(value, 0)}
       </span>
     </div>
+  );
+}
+
+function InventoryFilialItemsGrid({
+  filial,
+  maxMedia,
+}: {
+  filial: FilialBlock;
+  maxMedia: number;
+}) {
+  const grid = useRecordGrid<InventoryItem>({
+    rows: filial.itens,
+    resetKey: filial.id_filial,
+    getTieId: (row) => `${filial.id_filial}-${row.id_tanque || row.id_produto}`,
+    defaultCompare: (a, b) =>
+      compareGridRows({ nome: a.combustivel }, { nome: b.combustivel }),
+    summableKeys: ["capacidade_l", "estoque_l", "necessidade_l", "comprar_l"],
+    columns: {
+      combustivel: { type: "text" },
+      capacidade_l: { type: "number" },
+      estoque_l: { type: "number" },
+      media_diaria_l: { type: "number" },
+      dias_cobertura: { type: "number" },
+      necessidade_l: { type: "number" },
+      comprar_l: { type: "number" },
+    },
+  });
+
+  return (
+    <>
+      <div className="tableScroll inventoryFilialGrid">
+        <table className="table compact" style={{ minWidth: 720 }}>
+          <thead>
+            <tr>
+              <th>Tanque</th>
+              <SortableTh
+                label="Combustível"
+                sortKey="combustivel"
+                ariaSort={grid.ariaSort("combustivel")}
+                onToggle={grid.toggleSort}
+              />
+              <SortableTh
+                label="Capacidade"
+                sortKey="capacidade_l"
+                ariaSort={grid.ariaSort("capacidade_l")}
+                onToggle={grid.toggleSort}
+                align="right"
+              />
+              <SortableTh
+                label="Estoque"
+                sortKey="estoque_l"
+                ariaSort={grid.ariaSort("estoque_l")}
+                onToggle={grid.toggleSort}
+                align="right"
+              />
+              <SortableTh
+                label="Média diária"
+                sortKey="media_diaria_l"
+                ariaSort={grid.ariaSort("media_diaria_l")}
+                onToggle={grid.toggleSort}
+              />
+              <SortableTh
+                label="Dias cobert."
+                sortKey="dias_cobertura"
+                ariaSort={grid.ariaSort("dias_cobertura")}
+                onToggle={grid.toggleSort}
+              />
+              <SortableTh
+                label="Necessidade"
+                sortKey="necessidade_l"
+                ariaSort={grid.ariaSort("necessidade_l")}
+                onToggle={grid.toggleSort}
+                align="right"
+              />
+              <SortableTh
+                label="Comprar (L)"
+                sortKey="comprar_l"
+                ariaSort={grid.ariaSort("comprar_l")}
+                onToggle={grid.toggleSort}
+                align="right"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {grid.slice.map((item) => (
+              <tr key={`${filial.id_filial}-${item.id_tanque || item.id_produto}`}>
+                <td>{item.id_tanque ? item.id_tanque : "—"}</td>
+                <td>{item.combustivel}</td>
+                <td>{formatLiters(item.capacidade_l)}</td>
+                <td>{formatLiters(item.estoque_l)}</td>
+                <td>
+                  <MediaBar value={item.media_diaria_l} max={maxMedia} />
+                </td>
+                <td>{formatDays(item.dias_cobertura)}</td>
+                <td>
+                  <BadgeValue>{formatLiters(item.necessidade_l)}</BadgeValue>
+                </td>
+                <td>
+                  <BadgeValue tone="warn">{formatLiters(item.comprar_l)}</BadgeValue>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          {grid.slice.length ? (
+            <tfoot>
+              <tr>
+                <td colSpan={2}>Total da página ({grid.slice.length})</td>
+                <td>{formatLiters(grid.pageTotals.capacidade_l)}</td>
+                <td>{formatLiters(grid.pageTotals.estoque_l)}</td>
+                <td colSpan={2} />
+                <td>{formatLiters(grid.pageTotals.necessidade_l)}</td>
+                <td>{formatLiters(grid.pageTotals.comprar_l)}</td>
+              </tr>
+            </tfoot>
+          ) : null}
+        </table>
+      </div>
+      <GridChrome
+        page={grid.page}
+        totalPages={grid.totalPages}
+        total={grid.total}
+        from={grid.range.from}
+        to={grid.range.to}
+        onPrev={grid.onPrev}
+        onNext={grid.onNext}
+        onResetOrder={grid.resetOrder}
+        isDefaultOrder={grid.isDefaultOrder}
+      />
+    </>
   );
 }
 
@@ -407,6 +540,7 @@ export default function InventoryPage() {
                       </div>
 
                       <div className="inventoryFilialBody">
+                        {/* Galeria de tanques: visual, não listagem de registros. */}
                         <div className="inventoryTankGallery" aria-label={`Tanques de ${filial.filial_nome}`}>
                           {filial.itens.map((item) => (
                             <TankVisual
@@ -418,48 +552,7 @@ export default function InventoryPage() {
                           ))}
                         </div>
 
-                        <div className="tableScroll inventoryFilialGrid">
-                          <table className="table compact" style={{ minWidth: 720 }}>
-                            <thead>
-                              <tr>
-                                <th>Tanque</th>
-                                <th>Combustível</th>
-                                <th>Capacidade</th>
-                                <th>Estoque</th>
-                                <th>Média diária</th>
-                                <th>Dias cobert.</th>
-                                <th>Necessidade</th>
-                                <th>Comprar (L)</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {filial.itens.map((item) => (
-                                <tr
-                                  key={`${filial.id_filial}-${item.id_tanque || item.id_produto}`}
-                                >
-                                  <td>
-                                    {item.id_tanque ? item.id_tanque : "—"}
-                                  </td>
-                                  <td>{item.combustivel}</td>
-                                  <td>{formatLiters(item.capacidade_l)}</td>
-                                  <td>{formatLiters(item.estoque_l)}</td>
-                                  <td>
-                                    <MediaBar value={item.media_diaria_l} max={maxMedia} />
-                                  </td>
-                                  <td>{formatDays(item.dias_cobertura)}</td>
-                                  <td>
-                                    <BadgeValue>{formatLiters(item.necessidade_l)}</BadgeValue>
-                                  </td>
-                                  <td>
-                                    <BadgeValue tone="warn">
-                                      {formatLiters(item.comprar_l)}
-                                    </BadgeValue>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                        <InventoryFilialItemsGrid filial={filial} maxMedia={maxMedia} />
                       </div>
                     </section>
                   );

@@ -4,10 +4,14 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import PlatformShell from '../../components/PlatformShell';
+import GridChrome from '../../components/ui/GridChrome';
 import GridSearchInput from '../../components/ui/GridSearchInput';
+import SortableTh from '../../components/ui/SortableTh';
 import { api, apiGet } from '../../lib/api';
+import { compareGridRows } from '../../lib/grid-sort';
 import { loadSession } from '../../lib/session';
 import { useGridSearch } from '../../lib/use-grid-search';
+import { useRecordGrid } from '../../lib/use-record-grid';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +32,20 @@ export default function PlatformChannelsPage() {
   const [form, setForm] = useState<any>(emptyForm);
   const [error, setError] = useState('');
   const channelsSearch = useGridSearch(items);
+  const channelsGrid = useRecordGrid<any>({
+    rows: channelsSearch.filteredRows,
+    resetKey: channelsSearch.query,
+    getTieId: (row) => row.id,
+    defaultCompare: (a, b) => compareGridRows({ nome: a.name }, { nome: b.name }),
+    columns: {
+      id: { type: 'number' },
+      name: { type: 'text' },
+      contact_name: { type: 'text' },
+      email: { type: 'text' },
+      companies_count: { type: 'number' },
+      is_enabled: { type: 'text', getValue: (row) => (row.is_enabled ? 'ativo' : 'inativo') },
+    },
+  });
 
   async function load(session: any) {
     const res = await apiGet('/platform/channels?limit=200');
@@ -148,17 +166,17 @@ export default function PlatformChannelsPage() {
         <table className="table">
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Canal</th>
-              <th>Contato</th>
-              <th>Email</th>
-              <th>Empresas</th>
-              <th>Status</th>
+              <SortableTh label="ID" sortKey="id" ariaSort={channelsGrid.ariaSort('id')} onToggle={channelsGrid.toggleSort} />
+              <SortableTh label="Canal" sortKey="name" ariaSort={channelsGrid.ariaSort('name')} onToggle={channelsGrid.toggleSort} />
+              <SortableTh label="Contato" sortKey="contact_name" ariaSort={channelsGrid.ariaSort('contact_name')} onToggle={channelsGrid.toggleSort} />
+              <SortableTh label="Email" sortKey="email" ariaSort={channelsGrid.ariaSort('email')} onToggle={channelsGrid.toggleSort} />
+              <SortableTh label="Empresas" sortKey="companies_count" ariaSort={channelsGrid.ariaSort('companies_count')} onToggle={channelsGrid.toggleSort} />
+              <SortableTh label="Status" sortKey="is_enabled" ariaSort={channelsGrid.ariaSort('is_enabled')} onToggle={channelsGrid.toggleSort} />
               <th>Ações</th>
             </tr>
           </thead>
           <tbody>
-            {channelsSearch.filteredRows.map((item) => (
+            {channelsGrid.slice.map((item) => (
               <tr key={item.id}>
                 <td>{item.id}</td>
                 <td>{item.name}</td>
@@ -173,13 +191,24 @@ export default function PlatformChannelsPage() {
                 </td>
               </tr>
             ))}
-            {!channelsSearch.filteredRows.length ? (
+            {!channelsGrid.total ? (
               <tr>
                 <td colSpan={7}>Nenhum canal cadastrado.</td>
               </tr>
             ) : null}
           </tbody>
         </table>
+        <GridChrome
+          page={channelsGrid.page}
+          totalPages={channelsGrid.totalPages}
+          total={channelsGrid.total}
+          from={channelsGrid.range.from}
+          to={channelsGrid.range.to}
+          onPrev={channelsGrid.onPrev}
+          onNext={channelsGrid.onNext}
+          onResetOrder={channelsGrid.resetOrder}
+          isDefaultOrder={channelsGrid.isDefaultOrder}
+        />
       </div>
     </PlatformShell>
   );
