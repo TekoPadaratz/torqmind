@@ -55,7 +55,9 @@ def test_realtime_delegates_to_pg_mart():
         result = repos_mart_realtime.customers_delinquency_overview(
             "platform_master", 1, 14122, as_of, limit=10, sort_by="valor"
         )
-    mocked.assert_called_once_with("platform_master", 1, 14122, as_of, limit=10, sort_by="valor")
+    mocked.assert_called_once_with(
+        "platform_master", 1, 14122, as_of, limit=10, offset=0, sort_by="valor"
+    )
     assert result == _pg_payload()
 
 
