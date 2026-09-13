@@ -477,7 +477,7 @@ export default function IntelligenceHost() {
               <button
                 type="button"
                 className="tmIntelChip"
-                onClick={() => send('Investigar carteira a receber/pagar')}
+                onClick={() => send('Investigar carteira')}
               >
                 Investigar carteira
               </button>

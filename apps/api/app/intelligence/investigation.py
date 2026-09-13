@@ -137,12 +137,13 @@ def resolve_finance_tipo(
     mode, tipo = classify_finance_tipo(text)
     if mode in {"receber", "pagar", "both"}:
         return mode, tipo
+    if mode == "ambiguous":
+        # Pergunta nova sem tipo: esclarecer. Follow-ups usam _last_tipo, não esta função.
+        return "ambiguous", None
     last_params = ((last or {}).get("params") or {}) if last else {}
     last_tipo = last_params.get("tipo")
     if last_tipo in (0, 1) and str((last or {}).get("domain") or "") == "finance_portfolio":
         return ("receber" if int(last_tipo) == 1 else "pagar"), int(last_tipo)
-    if mode == "ambiguous":
-        return "ambiguous", None
     return "none", None
 
 
@@ -310,11 +311,18 @@ def _resolve_restrict_filial(
         if result.status == "resolved" and result.id_filial:
             hint_id = int(result.id_filial)
     if hint_id is None:
-        raw = (last.get("params") or {}).get("focus_filial")
-        try:
-            hint_id = int(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            hint_id = None
+        candidates = [
+            (last.get("params") or {}).get("focus_filial"),
+            *((last.get("summary") or {}).get("dimension_filial_keys") or [])[:1],
+            (last.get("summary") or {}).get("lead_filial"),
+        ]
+        for raw in candidates:
+            try:
+                hint_id = int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                hint_id = None
+            if hint_id is not None:
+                break
     allowed = _allowed_branch_ids(scope, claims)
     if hint_id is None:
         return None
@@ -510,10 +518,16 @@ def answer_followup(
             + (f" · venc. {format_date_br(t.get('dt_vencimento'))}" if t.get("dt_vencimento") else "")
             for t in titles[:5]
         ]
+        focus = None
+        try:
+            focus = int(titles[0].get("id_filial"))
+        except (TypeError, ValueError):
+            focus = None
         return {
             **fresh,
             "headline": "Maiores títulos vencidos: " + " | ".join(lines),
             "followup_focus": "overdue_titles",
+            "focus_filial": focus,
         }
 
     return {"status": "unsupported", "message": "Acompanhamento não disponível para este contexto."}
@@ -706,6 +720,28 @@ def build_investigation_context(result: dict[str, Any], period: dict | None) -> 
         key = (item.get("evidence") or {}).get("key")
         if key is not None:
             filial_keys.append(key)
+    if not filial_keys:
+        for item in result.get("factors") or []:
+            if item.get("dimension") != "filial":
+                continue
+            key = (item.get("evidence") or {}).get("key")
+            if key is not None:
+                filial_keys.append(key)
+    lead_filial = params.get("focus_filial")
+    if lead_filial is None:
+        titles = result.get("evidence_titles") or []
+        if titles:
+            try:
+                lead_filial = int(titles[0].get("id_filial"))
+            except (TypeError, ValueError):
+                lead_filial = None
+    if lead_filial is None and filial_keys:
+        try:
+            lead_filial = int(filial_keys[0])
+        except (TypeError, ValueError):
+            lead_filial = None
+    if lead_filial is not None:
+        params.setdefault("focus_filial", lead_filial)
     return json_ready(
         {
             "domain": result.get("domain"),
@@ -714,6 +750,7 @@ def build_investigation_context(result: dict[str, Any], period: dict | None) -> 
                 "headline": result.get("headline"),
                 "totals": result.get("totals"),
                 "dimension_filial_keys": filial_keys[:5],
+                "lead_filial": lead_filial,
             },
             "evidence_id": result.get("evidence_id"),
             "follow_ups": result.get("follow_ups") or [],

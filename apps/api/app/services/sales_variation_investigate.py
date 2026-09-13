@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.business_time import business_today
 from app.db_clickhouse import query_dict
+from app.intelligence.locale_pt import filial_display_name, format_brl, format_date_br
 from app.repos_mart_realtime import MART_RT_DB, _branch_clause, _date_range_filter
 
 MAX_PERIOD_DAYS = 90
@@ -37,8 +38,8 @@ def prior_equal_period(dt_ini: date, dt_fim: date) -> Tuple[date, date]:
 
 def _period_label(dt_ini: date, dt_fim: date) -> str:
     if dt_ini == dt_fim:
-        return dt_ini.isoformat()
-    return f"{dt_ini.isoformat()} → {dt_fim.isoformat()}"
+        return format_date_br(dt_ini)
+    return f"{format_date_br(dt_ini)} → {format_date_br(dt_fim)}"
 
 
 def _totals(
@@ -208,8 +209,8 @@ def _contribution_factors(
                 "prior": row["prior"],
                 "share_of_total_delta_pct": share,
                 "summary": (
-                    f"{row['label']}: {direction} de R$ {abs(delta):,.2f} "
-                    f"(atual R$ {row['current']:,.2f} vs base R$ {row['prior']:,.2f})"
+                    f"{row['label']}: {direction} de {format_brl(abs(delta))} "
+                    f"(atual {format_brl(row['current'])} vs base {format_brl(row['prior'])})"
                 ),
                 "evidence": {
                     "dimension": dimension,
@@ -431,7 +432,7 @@ def investigate_sales_variation(
     if delta is not None:
         fil_delta = _delta_map(fil_cur, fil_pri, key="id_filial", label_key=None)
         for row in fil_delta:
-            row["label"] = f"Filial {row['key']}"
+            row["label"] = filial_display_name(id_empresa, row["key"])
         view_fil = _contribution_factors("filial", fil_delta, total_delta=delta)
         dimension_views["filial"] = view_fil
 
@@ -523,13 +524,13 @@ def _headline(totals: Dict[str, Any], comparison: Dict[str, Any]) -> str:
         )
     if pri is None or delta is None:
         return (
-            f"Faturamento em {cur_label}: R$ {cur:,.2f}. "
+            f"Faturamento em {cur_label}: {format_brl(cur)}. "
             f"Base {pri_label} indisponível para variação."
         )
     verb = "caiu" if delta < 0 else ("subiu" if delta > 0 else "ficou estável")
     pct_txt = f" ({pct:+.1f}%)" if pct is not None else ""
     return (
-        f"Faturamento {verb} R$ {abs(delta):,.2f}{pct_txt}: "
-        f"R$ {cur:,.2f} em {cur_label} vs R$ {pri:,.2f} em {pri_label} "
+        f"Faturamento {verb} {format_brl(abs(delta))}{pct_txt}: "
+        f"{format_brl(cur)} em {cur_label} vs {format_brl(pri)} em {pri_label} "
         f"({comparison['basis_label']})."
     )

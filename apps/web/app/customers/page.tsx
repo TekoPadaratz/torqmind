@@ -819,8 +819,8 @@ export default function CustomersPage() {
                       to={precoFixoRangeTo}
                       onPrev={() => setPrecoFixoPage((p) => Math.max(0, p - 1))}
                       onNext={() => setPrecoFixoPage((p) => Math.min(p + 1, precoFixoPageCount - 1))}
-                      onResetOrder={() => setPrecoFixoPage(0)}
-                      isDefaultOrder={precoFixoPage === 0}
+                      onResetOrder={() => undefined}
+                      isDefaultOrder
                     />
                   </>
                 ) : null}

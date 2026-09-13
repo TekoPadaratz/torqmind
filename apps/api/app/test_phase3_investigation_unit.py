@@ -260,6 +260,7 @@ def test_finance_tipo_and_turn_classification():
     assert detect_followup_action("dessa filial", last_fin) == "restrict_filial"
     mode, tipo = resolve_finance_tipo("detalhe os vencidos", last_fin)
     assert mode == "receber" and tipo == 1
+    assert resolve_finance_tipo("Investigar carteira", last_fin) == ("ambiguous", None)
 
 
 def test_process_message_sales_to_finance_does_not_reuse_sales_followup():
@@ -400,6 +401,23 @@ def test_process_message_finance_drill_filial_and_tipo(monkeypatch):
         )
     assert "posição atual" in (period.get("answer_text") or "").lower()
     assert "não há comparação" in (period.get("answer_text") or "").lower()
+
+    with (
+        patch("app.intelligence.investigation.run_finance_investigation", side_effect=_run),
+        patch(
+            "app.intelligence.investigation.maybe_narrate_with_jarvis",
+            return_value={"used_llm": False, "text": None, "reason": "openai_not_configured"},
+        ),
+    ):
+        restrict = process_message(
+            claims,
+            "dessa filial",
+            conversation_context=overdue.get("conversation_context") or {"last_investigation": last},
+            scope={"id_empresa": 1, "id_filial": None},
+        )
+    assert restrict["status"] == "ok"
+    assert seen.get("scope", {}).get("id_filial") == 1
+    assert "qual filial" not in (restrict.get("answer_text") or "").lower()
 
 
 def test_unknown_capability_stays_unknown():

@@ -131,6 +131,10 @@ def test_decomposition_labels_contribution_not_cause():
     assert hypo
     assert all(f.get("causality") == "hypothesis" for f in hypo)
     assert "proven_cause" in out["legend"]
+    assert "R$ 200,00" in out["headline"]
+    assert "05/09/2026" in out["headline"]
+    assert "853,468.76" not in out["headline"]
+    assert any("300,00" in (item.get("summary") or "") for item in out["dimension_views"]["filial"]["items"])
 
 
 def test_zero_prior_denominator_omits_pct():

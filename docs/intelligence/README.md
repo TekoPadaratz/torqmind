@@ -34,7 +34,7 @@ Rodada de segurança/desempenho/gráficos/publicação financeira considerada **
 - 2º domínio: snapshot CAP/CAR em `mart_finance_titles_rt` (sem série histórica inventada).
 - Follow-ups só com ação implementada: filial/grupo/hora (vendas), filial/vencidos/tipo/restringir filial (carteira). Troca de assunto (“investigar carteira” após vendas) não reutiliza o acompanhamento anterior.
 - Carteira: receber e pagar são distintos; pergunta ambígua pede esclarecimento curto. Sem série histórica — “mês passado” explica a posição atual.
-- Linguagem: números/datas em pt-BR, apelido de filial, situação “A vencer”; avisos de dado incompleto, permissão e hipótese permanecem.
+- Linguagem: números/datas em pt-BR (vendas e carteira), apelido de filial, situação “A vencer”; avisos de dado incompleto, permissão e hipótese permanecem. “Dessa filial” usa a filial em foco do último resultado (título ou concentração).
 - Follow-ups reexecutam capacidade com **escopo vigente**; mudança de filial/permissão/período invalida contexto.
 - Jarvis opcional: narrativa via OpenAI Responses **somente** a partir do pack de evidências; números não sustentados são rejeitados. Sem chave → o usuário vê só o texto de negócio (números e avisos). Código interno (`openai_not_configured`) não vai à interface.
 - Textos gerados seguem o contrato de copy do produto (pt-BR claro; hipótese ≠ causa; sem jargão de pipeline).
