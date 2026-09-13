@@ -115,18 +115,18 @@ export default function SalesVariationInvestigate({ scope, enabled, onAskAssista
         <div>
           <h2 style={{ margin: 0 }}>Investigar variação de vendas</h2>
           <p className="muted" style={{ margin: "4px 0 0", fontSize: 13, maxWidth: 640 }}>
-            Compara o período/filiais selecionados com a janela anterior de mesma duração civil.
-            Filial, grupo e hora são visões alternativas — não some entre dimensões.
+            Compara o período e as filiais selecionados com a janela anterior de mesma duração.
+            Filial, grupo e hora mostram a mesma variação por ângulos diferentes — não some os três.
           </p>
         </div>
         <button type="button" className="btn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-          {open ? "Ocultar investigação" : "Investigar agora"}
+          {open ? "Ocultar investigação" : "Investigar vendas"}
         </button>
       </div>
 
       {open ? (
         <div style={{ marginTop: 16 }}>
-          {loading || stale ? <p className="muted">Analisando variação no escopo atual…</p> : null}
+          {loading || stale ? <p className="muted">Analisando as filiais e o período selecionados…</p> : null}
           {error && !loading ? (
             <div style={{ display: "grid", gap: 8 }}>
               <EmptyState title="Não foi possível investigar." detail={error} />
@@ -138,7 +138,7 @@ export default function SalesVariationInvestigate({ scope, enabled, onAskAssista
                   setTimeout(() => setOpen(true), 0);
                 }}
               >
-                Tentar de novo
+                Tentar novamente
               </button>
             </div>
           ) : null}
@@ -263,7 +263,7 @@ function InvestigationBody({
 
       {data.freshness?.last_updated ? (
         <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-          Última publicação na mart: {data.freshness.last_updated}
+          Atualizado em {data.freshness.last_updated}
         </p>
       ) : null}
     </div>
@@ -278,7 +278,7 @@ function DimensionTable({ view }: { view: DimensionView }) {
           <thead>
             <tr>
               <th>Fator</th>
-              <th>Delta</th>
+              <th>Variação</th>
               <th>% da variação</th>
             </tr>
           </thead>
@@ -299,8 +299,15 @@ function DimensionTable({ view }: { view: DimensionView }) {
       </div>
       {view.truncated ? (
         <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>
-          Ranking truncado: {view.shown_count} exibidos, {view.hidden_count} ocultos
-          {view.residual_delta != null ? ` · residual R$ ${Number(view.residual_delta).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : ""}.
+          Mostrando os primeiros {view.shown_count} resultados
+          {view.hidden_count ? ` (${view.hidden_count} ficaram de fora)` : ""}
+          {view.residual_delta != null
+            ? ` · variação restante ${Number(view.residual_delta).toLocaleString("pt-BR", {
+                style: "currency",
+                currency: "BRL",
+              })}`
+            : ""}
+          .
         </p>
       ) : null}
     </>

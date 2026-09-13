@@ -81,7 +81,7 @@ def _fallback_plan(insight: Dict[str, Any], error: Optional[str] = None) -> Dict
         "data_gaps": [] if impact > 0 else ["Sem impacto financeiro estimado para o insight"],
     }
     if error:
-        plan["data_gaps"].append(f"Fallback deterministico ativado: {error}")
+        plan["data_gaps"].append("Explicação adicional indisponível; plano montado com as evidências do alerta.")
     return plan
 
 

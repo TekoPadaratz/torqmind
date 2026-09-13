@@ -315,7 +315,7 @@ def investigate_sales_variation(
     if branch_clause.strip() == "AND 0":
         return {
             "status": "forbidden_scope",
-            "message": "Nenhuma filial autorizada no escopo atual.",
+            "message": "Nenhuma filial autorizada nas permissões atuais.",
             "period": {"dt_ini": dt_ini.isoformat(), "dt_fim": dt_fim.isoformat()},
         }
 
@@ -360,7 +360,7 @@ def investigate_sales_variation(
     except Exception as exc:  # noqa: BLE001 — falha de leitura ≠ zero
         return {
             "status": "unavailable",
-            "message": "Não foi possível consultar as marts de vendas agora.",
+            "message": "Não foi possível consultar as vendas agora.",
             "error": str(exc)[:200],
             "comparison": comparison,
             "totals": None,
@@ -372,7 +372,7 @@ def investigate_sales_variation(
         return {
             "status": "no_data",
             "message": (
-                "Não há faturamento publicado na mart para o período nem para a base "
+                "Não há faturamento disponível para o período nem para a base "
                 "de comparação. Isso não é variação zero."
             ),
             "comparison": comparison,
@@ -388,13 +388,13 @@ def investigate_sales_variation(
     if current["has_data"] and not prior["has_data"]:
         warnings.append(
             "A base de comparação não tem dados publicados; a variação absoluta "
-            "usa zero na base apenas como referência matemática, não como fato operacional."
+            "usa zero na base apenas como referência, não como fato operacional."
         )
         comparison["compatible"] = False
-        comparison["compatible_note"] = "Base de comparação sem dados na mart."
+        comparison["compatible_note"] = "Base de comparação sem dados publicados."
     if prior["has_data"] and not current["has_data"]:
         warnings.append(
-            "O período selecionado não tem dados publicados na mart (não confundir com R$ 0)."
+            "O período selecionado não tem vendas disponíveis (não confundir com R$ 0)."
         )
 
     warnings.append(

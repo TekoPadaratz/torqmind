@@ -79,12 +79,6 @@ export default function IntelligenceHost() {
   const [listening, setListening] = useState(false);
   const [voiceDraft, setVoiceDraft] = useState('');
   const [speakReplies, setSpeakReplies] = useState(true);
-  const [investigationMeta, setInvestigationMeta] = useState<{
-    used_llm?: boolean;
-    llm_reason?: string | null;
-    latency_ms?: number | null;
-    additive_warning?: string | null;
-  } | null>(null);
   const requestSeq = useRef(0);
   const sendRef = useRef<(text: string, options?: { speakReply?: boolean }) => Promise<void>>(async () => undefined);
 
@@ -307,7 +301,6 @@ export default function IntelligenceHost() {
     const seq = ++requestSeq.current;
     setBusy(true);
     setError(null);
-    setInvestigationMeta(null);
     setMessages((prev) => [...prev, { role: 'user', text: cleaned }]);
     setDraft('');
     setVoiceDraft('');
@@ -325,15 +318,6 @@ export default function IntelligenceHost() {
         ? resp.suggestions.map((s: unknown) => String(s)).filter(Boolean)
         : [];
       const deepLink = resp?.deep_link ? String(resp.deep_link) : undefined;
-      const inv = resp?.investigation;
-      if (inv && typeof inv === 'object') {
-        setInvestigationMeta({
-          used_llm: Boolean(inv.used_llm),
-          llm_reason: inv.llm_reason ? String(inv.llm_reason) : null,
-          latency_ms: typeof inv.latency_ms === 'number' ? inv.latency_ms : null,
-          additive_warning: inv.additive_warning ? String(inv.additive_warning) : null,
-        });
-      }
       if (!answerText) {
         const fallback = 'Não consegui montar uma resposta agora. Tente reformular a pergunta.';
         setMessages((prev) => [...prev, { role: 'assistant', text: fallback }]);
@@ -475,8 +459,8 @@ export default function IntelligenceHost() {
               </button>
             </header>
 
-            <div className="tmIntelScope" title="Escopo vigente da tela — revalidado a cada pergunta">
-              Escopo: {scopeLabel}
+            <div className="tmIntelScope" title="Filiais e período da tela — conferidos a cada pergunta">
+              Filiais e período: {scopeLabel}
             </div>
 
             <div className="tmIntelChips">
@@ -572,19 +556,6 @@ export default function IntelligenceHost() {
             ) : null}
 
             {error ? <div className="tmIntelError">{error}</div> : null}
-            {investigationMeta ? (
-              <div className="tmIntelMeta">
-                {investigationMeta.latency_ms != null
-                  ? `Consulta ${investigationMeta.latency_ms} ms`
-                  : 'Consulta concluída'}
-                {' · '}
-                {investigationMeta.used_llm
-                  ? 'explicação Jarvis ativa'
-                  : `modo determinístico${
-                      investigationMeta.llm_reason ? ` (${investigationMeta.llm_reason})` : ''
-                    }`}
-              </div>
-            ) : null}
 
             <form
               className="tmIntelComposer"

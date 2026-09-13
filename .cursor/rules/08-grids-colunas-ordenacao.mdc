@@ -40,7 +40,7 @@ Desempate honesto: id técnico estável (`id_comprovante`, `id_entidade`, …).
 
 ### Exceções permitidas (documentar no código se usar)
 
-- Rankings explícitos por métrica (“top por faturamento”, “maior desconto”, “score de churn”) podem ordenar pela métrica — desde que o título/UI deixe claro que é ranking, não lista operacional.
+- Listas explícitas por métrica (“mais vendidos”, “maior desconto”, “maior risco de saída”) podem ordenar pela métrica — desde que o título deixe claro que é destaque/classificação, não lista operacional. Na UI, evite a palavra inglesa “Ranking”.
 - Paginação server-side: a `ORDER BY` da query **deve** refletir esta regra (não só o frontend da página atual).
 
 ## 3) Checklist ao criar/alterar grid

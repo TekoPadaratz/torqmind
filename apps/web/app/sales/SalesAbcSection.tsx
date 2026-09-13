@@ -539,12 +539,11 @@ export default function SalesAbcSection() {
 
       {/* Ranking Table */}
       <div className="card col-12">
-        <h2>{data.ranking_capped ? "Ranking (top produtos)" : "Ranking completo"}</h2>
+        <h2>{data.ranking_capped ? "Mais vendidos" : "Todos os produtos"}</h2>
         {data.ranking_capped ? (
           <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
-            Totais e classes ABC usam os {summary.total_produtos.toLocaleString("pt-BR")} produtos.
-            A lista e a busca cobrem os {(data.ranking_returned ?? data.ranking.length).toLocaleString("pt-BR")} primeiros
-            {typeof data.ranking_limit === "number" ? ` (limite ${data.ranking_limit.toLocaleString("pt-BR")})` : ""}.
+            Mostrando os primeiros {(data.ranking_returned ?? data.ranking.length).toLocaleString("pt-BR")} resultados.
+            Totais e classes ABC consideram os {summary.total_produtos.toLocaleString("pt-BR")} produtos.
           </div>
         ) : null}
         <div style={{ marginTop: 12 }}>
@@ -603,7 +602,7 @@ export default function SalesAbcSection() {
       {/* Auto-insights */}
       {data.insights?.length ? (
         <div className="card col-12">
-          <h2>Insights automáticos</h2>
+          <h2>O que merece atenção</h2>
           <ul style={{ marginTop: 8, paddingLeft: 16 }}>
             {data.insights.map((insight: any, i: number) => (
               <li key={i} className="muted" style={{ marginBottom: 4 }}>

@@ -239,7 +239,7 @@ export default function TeamFuelDashboard({ anoMes }: Props) {
               </div>
 
               <div className="card col-12 chartCard" style={{ margin: 0 }}>
-                <h2 style={{ margin: 0, fontSize: 16 }}>Ranking por litros</h2>
+                <h2 style={{ margin: 0, fontSize: 16 }}>Classificação por litros</h2>
                 <div className="muted" style={{ marginTop: 6 }}>
                   Clique em um funcionário para filtrar o mix de combustíveis.
                 </div>

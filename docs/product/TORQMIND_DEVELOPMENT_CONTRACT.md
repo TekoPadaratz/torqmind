@@ -218,8 +218,10 @@ Referência correta: sales, cash, customers, finance, fraud, goals, profit-manag
 
 **Público:** dono de posto, gerente, supervisor, financeiro (e `platform_master` no backoffice — ainda assim evitar jargão de engenharia quando possível).
 
+**Língua:** português brasileiro claro, natural e profissional. Frases curtas. Palavras do posto: vendas, recebimentos, despesas, equipe, período, filiais. Evitar inglês com equivalente óbvio. Manter termos consolidados (ticket médio, margem, NFC-e). Botões nomeiam a ação. Tom sóbrio — sem jargão, debug ou infantilização.
+
 **Copy de status/frescor:** `lib/reading-copy.mjs` (“Base pronta…”, “Atualizado em…”, “Em atualização…”).  
-**Gate:** `lib/ui-copy-quality.test.mjs` — deve continuar passando.
+**Gate:** `lib/ui-copy-quality.test.mjs` — deve continuar passando. Textos do Assistente/Jarvis seguem este contrato.
 
 ### Termos proibidos na UI (lista normativa)
 
@@ -244,9 +246,29 @@ Referência correta: sales, cash, customers, finance, fraud, goals, profit-manag
 | `01/01/1970` / ano 1970 | nunca exibir |
 | Label visual `Platform` | **Plataforma** |
 | “postos” como label de filial | **Filial** (padrão antifraude) |
+| Ranking (rótulo de UI) | Classificação / Mais vendidos / Destaques — conforme o significado |
+| Insights | Análises / O que merece atenção |
+| Fallback / `openai_not_configured` / `forbidden_scope` | Mensagem útil de negócio; nunca o código |
+| Scope (rótulo de UI) | Filiais selecionadas / Período / Permissões |
+| Ranking capped / truncado | Mostrando os primeiros X resultados |
 
-Interno (código, logs, SQL, comentários de engenharia): termos técnicos OK.  
+Interno (código, logs, SQL, comentários de engenharia, contratos de API): termos técnicos OK.  
 UI e mensagens ao usuário: **nunca**.
+
+### O que deve continuar visível (em linguagem de negócio)
+
+Simplificar não esconde limitação. Devem ficar claros, no lugar certo — não como aviso permanente em todos os cards:
+
+- período e comparação utilizados
+- dados ainda em atualização
+- período incompleto
+- resultados limitados
+- ausência de dados
+- falta de permissão
+- falha de carregamento
+- diferença entre hipótese e causa comprovada
+
+Não apresentar erro como zero, sucesso ou ausência de movimentação. Não esconder comparação potencialmente enganosa. Detalhe técnico completo fica no diagnóstico; a UI pode mostrar um identificador seguro de atendimento, sem stack.
 
 ### Proibido: copy de debug / fórmula de engenharia na tela
 

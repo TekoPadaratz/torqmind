@@ -105,9 +105,9 @@ export function describeCommercialCoverage(coverage, moduleLabel = 'esta tela') 
 
   if (mode === 'shifted_latest') {
     if (effectiveStart && effectiveEnd && effectiveStart !== effectiveEnd) {
-      return `A base comercial de ${moduleLabel} ainda vai ate ${latestDate}. Mostrando o ultimo periodo comparavel entre ${effectiveStart} e ${effectiveEnd}.`;
+      return `A base comercial de ${moduleLabel} ainda vai até ${latestDate}. Mostrando o último período comparável entre ${effectiveStart} e ${effectiveEnd}.`;
     }
-    return `A base comercial de ${moduleLabel} ainda vai ate ${latestDate}. Mostrando a ultima referencia compativel ja publicada.`;
+    return `A base comercial de ${moduleLabel} ainda vai até ${latestDate}. Mostrando a última referência compatível já publicada.`;
   }
 
   if (mode === 'partial_requested') {

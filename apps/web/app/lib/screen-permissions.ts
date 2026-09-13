@@ -127,7 +127,7 @@ export const FALLBACK_SCREEN_TREE: ScreenMenu[] = [
 
 export const TV_SCREEN_OPTIONS = [
   { key: "tv_sales_hourly", label: "TV — Vendas/Hora" },
-  { key: "tv_sales_ranking", label: "TV — Ranking" },
+  { key: "tv_sales_ranking", label: "TV — Classificação de vendas" },
 ];
 
 export function allProductPermissionKeys(tree: ScreenMenu[]): string[] {

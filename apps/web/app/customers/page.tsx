@@ -818,7 +818,7 @@ export default function CustomersPage() {
               </div>
 
 <div className="card col-12">
-                <h2>Risco de churn (top 10)</h2>
+                <h2>Clientes em risco de saída</h2>
                 {!loading ? (
                   <div className="muted" style={{ marginTop: 8 }}>
                     Data-base pedida:{" "}
@@ -840,7 +840,7 @@ export default function CustomersPage() {
                 {!loading && !churnTopRows.length ? (
                   <EmptyState
                     title="Nenhum cliente em risco relevante."
-                    detail="A base identificada não trouxe sinais fortes de churn para este período."
+                    detail="A base identificada não trouxe sinais fortes de saída para este período."
                   />
                 ) : null}
                 <table className="table compact">
@@ -880,7 +880,7 @@ export default function CustomersPage() {
               </div>
 
               <div className="card col-7 chartCard">
-                <h2>Top clientes por faturamento</h2>
+                <h2>Maiores clientes por faturamento</h2>
                 {!loading && !topChart.length ? (
                   <EmptyState
                     title="Sem clientes identificados com faturamento."
@@ -898,7 +898,7 @@ export default function CustomersPage() {
               </div>
 
               <div className="card col-5">
-                <h2>Top clientes</h2>
+                <h2>Maiores clientes</h2>
                 <div style={{ margin: "8px 0" }}>
                   <GridSearchInput value={topCustomersQ} onChange={setTopCustomersQ} />
                 </div>

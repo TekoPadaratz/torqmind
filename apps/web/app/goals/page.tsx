@@ -308,10 +308,10 @@ export default function GoalsPage() {
         ) : (
           <div className="bi-grid" style={{ marginTop: 12 }}>
             <div className="card col-12" style={{ paddingBottom: 8 }}>
-              <div className="sectionEyebrow">Ranking da equipe</div>
+              <div className="sectionEyebrow">Destaques da equipe</div>
               <h2 style={{ marginTop: 4 }}>Desempenho e pódio</h2>
               <div className="muted" style={{ marginTop: 6 }}>
-                Rankings e motivação da equipe — separado da configuração de metas financeiras.
+                Classificação e motivação da equipe — separado da configuração de metas financeiras.
               </div>
             </div>
             <div
@@ -324,8 +324,8 @@ export default function GoalsPage() {
             >
               <div className="panelHead">
                 <div>
-                  <h2 style={{ marginBottom: 4 }}>Top 5 Vendedores</h2>
-                  <div className="muted">Ranking por vendas brutas, com leitura competitiva e margem protegida por padrão.</div>
+                  <h2 style={{ marginBottom: 4 }}>5 maiores vendedores</h2>
+                  <div className="muted">Classificação por vendas brutas. A margem só aparece para quem tem permissão.</div>
                 </div>
                 {canSeeMargin ? (
                   <button className="btn" onClick={() => setShowMargin((current) => !current)}>
@@ -335,7 +335,7 @@ export default function GoalsPage() {
               </div>
 
               {!loading && !podium.length ? (
-                <EmptyState title="Sem vendedores ranqueados." detail="Não houve base identificada suficiente para montar o pódio da equipe." />
+                <EmptyState title="Sem vendedores para classificar." detail="Não houve base identificada suficiente para montar o pódio da equipe." />
               ) : null}
 
               {podium.length ? (
@@ -539,11 +539,11 @@ export default function GoalsPage() {
             <div className="sectionEyebrow">Metas e projeção</div>
             <h2 style={{ marginTop: 4 }}>Acompanhamento da meta do período</h2>
             <div className="muted" style={{ marginTop: 6, marginBottom: 12 }}>
-              Definição de meta, projeção de fechamento e histórico — fora do ranking de vendedores.
+              Definição de meta, projeção de fechamento e histórico — separado da classificação de vendedores.
             </div>            <div className="panelHead">
               <div>
                 <h2>Indicadores da equipe</h2>
-                <div className="muted">Foco em metas válidas para o período atual e insights por filial.</div>
+                <div className="muted">Metas do período atual, com leitura por filial.</div>
               </div>
               <span className="badge bronze">{branchLabel}</span>
             </div>

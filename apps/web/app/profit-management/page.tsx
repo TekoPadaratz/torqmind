@@ -693,23 +693,11 @@ export default function ProfitManagementPage() {
           />
         )}
 
-        {/* Explanations */}
         <div className="card" style={{ marginTop: 24, padding: 16 }}>
-          <div className="sectionEyebrow">Entenda os cálculos</div>
-          <div className="calcFootnoteGrid">
-            <div>
-              <p><strong>Lucro Gerencial Estimado:</strong> Receita líquida − CMV − despesas operacionais rateadas. Não é lucro contábil/fiscal.</p>
-              <p><strong>CMV:</strong> Custo da mercadoria vendida — quantidade × custo unitário no momento da venda.</p>
-              <p><strong>Margem Bruta:</strong> Receita − CMV, antes das despesas operacionais.</p>
-              <p><strong>Despesas Rateadas:</strong> Distribuídas proporcionalmente à participação de vendas de cada setor/produto.</p>
-            </div>
-            <div>
-              <p><strong>Preço Mínimo:</strong> Custo unitário + despesa por unidade — abaixo disso, o produto gera prejuízo.</p>
-              <p><strong>Preço Ideal:</strong> Preço mínimo ÷ (1 − margem desejada). Padrão: 30% conveniência, 8% combustível.</p>
-              <p><strong>Potencial 60d:</strong> (Preço ideal − preço atual) × volume mensal × 2. Estima o ganho em 60 dias.</p>
-              <p><strong>Importante:</strong> Estimativa gerencial para decisão de preço. Não substitui análise contábil/fiscal.</p>
-            </div>
-          </div>
+          <p className="muted" style={{ margin: 0 }}>
+            Os valores desta tela são uma estimativa gerencial para decidir preço e mix.
+            Não são lucro contábil nem fiscal.
+          </p>
         </div>
       </div>
     </div>

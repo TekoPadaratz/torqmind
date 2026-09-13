@@ -69,7 +69,7 @@ test('commercial coverage copy explains latest compatible fallback without raw i
   );
   assert.equal(
     text,
-    'A base comercial de vendas ainda vai ate 31/03/2026. Mostrando o ultimo periodo comparavel entre 01/03/2026 e 31/03/2026.',
+    'A base comercial de vendas ainda vai até 31/03/2026. Mostrando o último período comparável entre 01/03/2026 e 31/03/2026.',
   );
 });
 

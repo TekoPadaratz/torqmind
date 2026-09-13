@@ -98,7 +98,7 @@ curl -sS -m 5 -H "X-Ingest-Key: $INGEST_KEY" http://172.30.0.10/api/ingest/healt
 - Caixa/turno `0` não entra em rankings operacionais.
 - Turno operacional exibido é `stg_turnos.payload.TURNO` (1..N; `0` = caixa geral). Nunca exibir `id_turno`/`ID_TURNOS` técnico (ex.: `34292`) como número de turno; ele serve só para join/rastreabilidade. Sem número operacional resolvido, usar fallback honesto (`Turno não resolvido`).
 - Documento operacional da venda (**regra absoluta**): **DOCUMENTO = número da NF-e/NFC-e** via `stg.nfe` / `stg_nfe_slim` (e/ou parse honesto do HISTORICO com NFC-e/NF-e). Sem NF → `—`. **Proibido** usar `NROCOMPROVANTE`, `id_comprovante`, `Turno + Filial`, prefixo "Cupom"/"Comprovante", ou `MOVPRODUTOS` como documento. Ver `.cursor/rules/07-documento-nota-fiscal.mdc`.
-- Grids BI (contrato mestre): colunas **Filial → Data → Documento**; ordenação de linhas **Filial ASC → Data DESC → Nome ASC** (campos ausentes ignorados; sem os três → 1º campo de negócio ASC). Rankings por métrica são exceção. Ver `.cursor/rules/08-grids-colunas-ordenacao.mdc` e helper FE `apps/web/app/lib/grid-sort.ts`.
+- Grids BI (contrato mestre): colunas **Filial → Data → Documento**; ordenação de linhas **Filial ASC → Data DESC → Nome ASC** (campos ausentes ignorados; sem os três → 1º campo de negócio ASC). Destaques por métrica são exceção. Ver `.cursor/rules/08-grids-colunas-ordenacao.mdc` e helper FE `apps/web/app/lib/grid-sort.ts`.
 - Em telas de risco/fraude, dado sem responsável/turno/documento deve ser investigado na fonte/mart antes de criar fallback visual; grid vazio em área nobre vira empty state compacto.
 - Contas a receber: `DATAREPL` NÃO reflete pagamento/baixa direta de `CONTASRECEBER` (DTAPGTO/VLRPAGO mudam sem mexer em DATAREPL). A janela de revisita do agent deve reler títulos abertos E recém-pagos (últimos ~120d por DTAPGTO). Nunca declarar PASS em inadimplência/contas a receber sem validar o cliente/título no Xpert (fonte→tela). Bug de inadimplência não se corrige no frontend — corrige a sincronização STG→DW→mart.
 - `ID_CONTASRECEBER` é único por `ID_DB`, NÃO global. Reconciliação não pode ser só UPSERT: títulos deletados/renumerados/pagos-antigos no Xpert precisam ser fechados (re-upsert do pago ou tombstone), senão viram fantasma aberto na mart de inadimplência.
@@ -198,10 +198,13 @@ colunas Filial→Data→Documento, ordenação canônica, **busca geral** via
 `GridSearchInput` + `useGridSearch` (largura fixa 280px; **sempre alinhada à esquerda**;
 termo varre todos os campos da linha), e labels limpos (sem disclaimer/debug/mart/SQL na UI).
 
-**Copy de produto:** nunca expor fórmula/pipeline/nota de engenharia na tela
-(“custo = …”, “não entra no rateio…”, “publicado da mart…”). Isso é para o
-time (contrato UI + docstring); o cliente vê só título, KPIs e dados.
-Detalhe: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10.
+**Copy de produto:** português brasileiro claro e profissional. Nunca expor
+fórmula, pipeline, debug, código interno (`openai_not_configured`) ou nota de
+engenharia na tela (“custo = …”, “publicado da mart…”). Inglês só quando não
+houver equivalente de negócio (ticket médio e margem podem ficar). O cliente
+vê título, KPIs, dados e avisos que mudam a decisão; o Assistente segue a
+mesma regra. Detalhe: `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10 e
+`.cursor/rules/04-frontend-nextjs.mdc`.
 
 ## Estilo de trabalho
 

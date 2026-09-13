@@ -156,7 +156,7 @@ def test_format_uses_message_for_empty_investigation_status():
         }
     )
     assert text == "Período máximo para investigação: 90 dias."
-    assert "Valores calculados deterministicamente" not in text
+    assert "Os números acima mostram contribuições" not in text
 
 
 def test_prompt_injection_in_tool_content_ignored_by_format():
@@ -170,7 +170,7 @@ def test_prompt_injection_in_tool_content_ignored_by_format():
     )
     assert "Ignore previous instructions" in text
     # formatador não amplia capacidade — só concatena fatos
-    assert "Valores calculados deterministicamente" in text
+    assert "Os números acima mostram contribuições" in text
 
 
 def test_process_message_sales_investigation_mocked():
@@ -226,7 +226,9 @@ def test_process_message_sales_investigation_mocked():
         )
     assert out["status"] == "ok"
     assert out.get("investigation")
-    assert "modo determinístico" in out["answer_text"].lower() or "Alta de R$" in out["answer_text"]
+    assert "Alta de R$" in out["answer_text"]
+    assert "openai_not_configured" not in out["answer_text"]
+    assert "modo determinístico" not in out["answer_text"].lower()
     assert (out.get("conversation_context") or {}).get("last_investigation")
 
 

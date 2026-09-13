@@ -312,7 +312,7 @@ SCREEN_REGISTRY: Dict[str, Dict[str, Any]] = {
         "kiosk_only": True,
     },
     "tv_sales_ranking": {
-        "label": "TV – Ranking Vendedores",
+        "label": "TV — Classificação de vendedores",
         "category": "TV",
         "has_sensitive": False,
         "kiosk_only": True,

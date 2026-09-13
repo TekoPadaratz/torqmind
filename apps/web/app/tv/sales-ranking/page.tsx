@@ -64,7 +64,7 @@ export default function TVSalesRankingPage() {
               decoding="async"
             />
           ) : null}
-          <h1 className="tvSalesRankingTitle">Ranking de vendas</h1>
+          <h1 className="tvSalesRankingTitle">Classificação de vendas</h1>
         </div>
         <div className="tvSalesRankingActions">
           <span className="tvSalesRankingUpdated">

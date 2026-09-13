@@ -39,6 +39,14 @@ const VISIBLE_TECHNICAL_WORD_PATTERNS = {
     /["'`][^"'`]*\bsnapshot\b[^"'`]*["'`]/gi,
     />[^<]*\bsnapshot\b[^<]*</gi,
   ],
+  ranking: [
+    /["'`][^"'`]*(?<![-_/])\branking\b(?![-_])[^"'`]*["'`]/gi,
+    />[^<]*(?<![-_/])\branking\b(?![-_])[^<]*</gi,
+  ],
+  insights: [
+    /["'`][^"'`]*\binsights\b[^"'`]*["'`]/gi,
+    />[^<]*\binsights\b[^<]*</gi,
+  ],
 };
 
 const PROHIBITED_RULES = [
@@ -112,6 +120,25 @@ const PROHIBITED_RULES = [
     detect(line) {
       return collectMatches(line, PLATFORM_VISUAL_PATTERNS);
     },
+  },
+  {
+    key: 'ranking',
+    reason: 'Use classificação, mais vendidos ou destaques — não a palavra inglesa Ranking.',
+    detect(line) {
+      return collectMatches(line, VISIBLE_TECHNICAL_WORD_PATTERNS.ranking);
+    },
+  },
+  {
+    key: 'insights',
+    reason: 'Use análises ou o que merece atenção — não Insights.',
+    detect(line) {
+      return collectMatches(line, VISIBLE_TECHNICAL_WORD_PATTERNS.insights);
+    },
+  },
+  {
+    key: 'openai_code',
+    reason: 'Não exponha códigos internos como openai_not_configured ao usuário.',
+    patterns: [/openai_not_configured/gi],
   },
 ];
 

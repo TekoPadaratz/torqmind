@@ -6,7 +6,7 @@ import { loadSession } from "../lib/session";
 import Link from "next/link";
 
 const TV_LINKS = [
-  { screen_key: "tv_sales_ranking", href: "/tv/sales-ranking", label: "🏆 Ranking de Vendas" },
+  { screen_key: "tv_sales_ranking", href: "/tv/sales-ranking", label: "🏆 Classificação de vendas" },
   { screen_key: "tv_sales_hourly", href: "/tv/sales-hourly", label: "⏱️ Vendas por Hora" },
 ];
 

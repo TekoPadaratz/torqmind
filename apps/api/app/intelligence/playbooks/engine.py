@@ -118,7 +118,7 @@ def _delinquency(ctx: dict[str, Any]) -> dict[str, Any]:
         "hypotheses": [
             "Concentração em poucos clientes.",
             "Títulos recém-vencidos ainda sem cobrança.",
-            "Divergência de baixa entre STG e mart (sincronização).",
+            "Baixa ainda não refletida na carteira (sincronização em andamento).",
         ],
         "actions": [
             _action(

@@ -67,9 +67,22 @@ if (error) return <ErrorState message={error.message} />
 
 ## Copy na UI (cliente final)
 
-- ⛔ Nunca subtítulo/nota com fórmula, pipeline, “como calculamos”, exclusões técnicas ou jargão de engenharia
+O produto fala em **português brasileiro claro, natural e profissional**, compreensível para quem opera o posto sem jargão de engenharia.
+
+- Preferir palavras familiares e frases curtas; termos de negócio: vendas, recebimentos, despesas, equipe, período, filiais
+- Evitar inglês quando houver equivalente claro (“classificação” / “mais vendidos” / “destaques” no lugar de Ranking; “análises” ou “o que merece atenção” no lugar de Insights)
+- Manter termos consolidados do negócio quando forem o nome certo: ticket médio, margem, NFC-e
+- Nomes próprios, marcas e identificadores internos de código **não** se traduzem
+- ⛔ Nunca subtítulo/nota com fórmula, pipeline, “como calculamos”, exclusões técnicas, debug ou arquitetura
+- ⛔ Nunca exibir código interno como mensagem (`openai_not_configured`, `forbidden_scope`, `fallback`)
 - Isso fica em contrato/`AGENTS.md`/docstring — não em `muted` da tela nem em `summary.nota` da API
-- Tela = título + KPIs + filtros + grid; empty state só com ação útil ao usuário
+- Tela = título + KPIs + filtros + grid; orientação só quando ajuda a entender o resultado ou decidir o próximo passo
+- Botões nomeiam a ação: “Investigar vendas”, “Ver detalhes”, “Tentar novamente”
+- Tom sóbrio: sem exagero comercial, robótico ou infantil
+- Simplificar **não** esconde período, comparação, atualização, limite, ausência, permissão, falha nem a diferença entre hipótese e causa
+- Erro nunca vira zero, sucesso ou “sem movimentação”
+- Mensagem técnica completa fica no diagnóstico; a UI pode mostrar um identificador seguro de atendimento, sem stack
+- Textos do Assistente/Jarvis seguem as mesmas regras
 - Gate: `lib/ui-copy-quality.test.mjs` + `docs/product/TORQMIND_DEVELOPMENT_CONTRACT.md` §10
 
 ## Performance

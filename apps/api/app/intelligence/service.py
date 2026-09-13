@@ -348,13 +348,11 @@ def process_message(
         )
         answer_text = det
         if narr.get("used_llm") and narr.get("text"):
-            answer_text = f"{det}\n\n—\nExplicação (Jarvis):\n{narr['text']}"
+            answer_text = f"{det}\n\n—\n{narr['text']}"
         elif narr.get("reason") and narr.get("reason") not in {None, "openai_not_configured", "skipped"}:
-            answer_text = f"{det}\n\n(Narrativa LLM indisponível: {narr.get('reason')}.)"
-        elif narr.get("reason") == "openai_not_configured":
             answer_text = (
-                f"{det}\n\n(Modo determinístico: LLM não configurada neste ambiente — "
-                "números e evidências acima permanecem válidos.)"
+                f"{det}\n\nA explicação adicional não ficou disponível. "
+                "Os números acima continuam válidos."
             )
         period_ctx = (inv.get("scope") or {})
         if not period_ctx.get("dt_ini") and ctx.get("last_period"):
@@ -697,14 +695,16 @@ def process_message(
         narr = maybe_narrate_with_jarvis(inv) if status == "ok" else {"used_llm": False, "text": None, "reason": "skipped"}
         answer_text = det
         if narr.get("used_llm") and narr.get("text"):
-            answer_text = f"{det}\n\n—\nExplicação (Jarvis):\n{narr['text']}"
-        elif status == "ok" and narr.get("reason") == "openai_not_configured":
+            answer_text = f"{det}\n\n—\n{narr['text']}"
+        elif status == "ok" and narr.get("reason") and narr.get("reason") not in {
+            None,
+            "openai_not_configured",
+            "skipped",
+        }:
             answer_text = (
-                f"{det}\n\n(Modo determinístico: LLM não configurada neste ambiente — "
-                "números e evidências acima permanecem válidos.)"
+                f"{det}\n\nA explicação adicional não ficou disponível. "
+                "Os números acima continuam válidos."
             )
-        elif status == "ok" and narr.get("reason"):
-            answer_text = f"{det}\n\n(Narrativa LLM indisponível: {narr.get('reason')}.)"
         period_payload = {
             "dt_ini": period.dt_ini.isoformat(),
             "dt_fim": period.dt_fim.isoformat(),

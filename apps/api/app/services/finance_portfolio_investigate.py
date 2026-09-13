@@ -36,7 +36,7 @@ def investigate_finance_portfolio(
         return {
             "status": "forbidden_scope",
             "domain": "finance_portfolio",
-            "message": "Nenhuma filial autorizada no escopo atual.",
+            "message": "Nenhuma filial autorizada nas permissões atuais.",
         }
 
     tipo_filter = ""
@@ -121,7 +121,7 @@ def investigate_finance_portfolio(
         return {
             "status": "unavailable",
             "domain": "finance_portfolio",
-            "message": "Não foi possível consultar a mart de títulos agora.",
+            "message": "Não foi possível consultar a carteira agora.",
             "totals": None,
             "factors": [],
         }
@@ -133,8 +133,8 @@ def investigate_finance_portfolio(
             "status": "no_data",
             "domain": "finance_portfolio",
             "message": (
-                "Não há títulos abertos publicados na mart para este escopo. "
-                "Isso não é saldo zero comprovado fora da mart."
+                "Não há títulos em aberto para as filiais selecionadas. "
+                "Isso não confirma saldo zero no sistema de origem."
             ),
             "totals": None,
             "factors": [],
@@ -176,7 +176,7 @@ def investigate_finance_portfolio(
 
     status_view = {
         "dimension": "status",
-        "note": "Composição da carteira aberta por status (snapshot atual).",
+        "note": "Composição da carteira aberta por situação.",
         "items": [
             {
                 "kind": "contribution",
@@ -258,8 +258,7 @@ def investigate_finance_portfolio(
         "comparison": {
             "basis": "current_mart_snapshot",
             "basis_label": (
-                "Snapshot atual da mart de títulos (não é comparação de períodos "
-                "históricos — a mart não publica série diária de carteira)."
+                "Posição atual da carteira (não é comparação entre períodos)."
             ),
             "compatible": True,
         },
@@ -275,7 +274,7 @@ def investigate_finance_portfolio(
         "dimension_views": {
             "filial": {
                 "dimension": "filial",
-                "note": "Concentração da carteira aberta por filial (snapshot).",
+                "note": "Concentração da carteira aberta por filial.",
                 "items": [f for f in factors if f.get("dimension") == "filial"],
                 "truncated": len(by_filial) >= TOP_N,
                 "shown_count": len(by_filial),
@@ -295,8 +294,8 @@ def investigate_finance_portfolio(
             "Detalhe por filial da carteira",
         ],
         "warnings": [
-            "Leitura exclusiva da mart publicada; ausência ≠ R$ 0 no Xpert.",
-            "Sem série histórica de carteira nesta jornada — sem variação temporal inventada.",
+            "Ausência de títulos aqui não significa saldo zero no sistema de origem.",
+            "Esta leitura é a posição atual — sem variação entre períodos.",
         ],
         "freshness": {
             "mode": "realtime",
@@ -304,10 +303,10 @@ def investigate_finance_portfolio(
             "last_updated": freshness_ts,
         },
         "legend": {
-            "contribution": "Concentração observada no snapshot (não prova causa).",
+            "contribution": "Concentração observada na posição atual (não prova causa).",
             "hypothesis": "Hipótese operacional para verificação.",
             "recommendation": "Orientação — não executa cobrança nem altera títulos.",
-            "fact": "Fato sustentado por linha da mart com chaves do título.",
+            "fact": "Fato sustentado pelo título e pelo documento.",
         },
         "scope": {"id_empresa": int(id_empresa), "id_filial": id_filial, "tipo": tipo},
     }
