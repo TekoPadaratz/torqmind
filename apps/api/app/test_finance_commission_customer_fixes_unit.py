@@ -38,7 +38,9 @@ class TestFraudCreditoUsoHistorico(unittest.TestCase):
         # Bloco expandido de usos do vale/a prazo
         idx = text.find("Vale / a prazo de colaboradores")
         self.assertGreater(idx, 0)
-        chunk = text[idx : idx + 12000]
+        uso_idx = text.find("renderUsoTable", idx)
+        self.assertGreater(uso_idx, 0)
+        chunk = text[idx : uso_idx + 3500]
         self.assertIn("<th>Histórico</th>", chunk)
         self.assertNotIn("<th>Cliente</th>", chunk)
         # Contas a Receber Xpert: OBS (Observações) com fallback HISTORICO
