@@ -826,6 +826,20 @@ export default function CommissionsTab({
             ) : null}
           </div>
 
+          {data.aviso_integridade ? (
+            <div
+              className="card"
+              role="status"
+              style={{
+                marginTop: 12,
+                borderLeft: "4px solid var(--accent-copper, #b8722c)",
+                padding: "12px 14px",
+              }}
+            >
+              {String(data.aviso_integridade)}
+            </div>
+          ) : null}
+
           {data.message && sellers.length === 0 ? (
             <div className="card" style={{ marginTop: 12 }}>
               <EmptyState
