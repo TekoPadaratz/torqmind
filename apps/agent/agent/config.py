@@ -245,9 +245,12 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         # maior. Revisitar ~1 ciclo de comissão (21d) pelo DATA do comprovante
         # cura órfãos (header no STG sem ITENSCOMPROVANTE) sem reset de watermark.
         # Incidente VR06 20/08–13/09/2026: 220 headers órfãos em 27–29/08.
+        # Cap alto: OR com watermark engolia o budget de 5k e a revisit nunca
+        # alcançava órfãos sob carga (pai→filho + heal pass no runner).
         "revisit_open_clause": (
             "CAST(TORQMIND_DT_EVENTO AS date) >= CAST(DATEADD(day,-21,GETDATE()) AS date)"
         ),
+        "revisit_max_rows": 25000,
         "query": (
             "SELECT i.*, "
             "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "

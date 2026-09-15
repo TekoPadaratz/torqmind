@@ -148,6 +148,10 @@ class TestExtractorQuery(unittest.TestCase):
             int(DEFAULT_DATASETS["itenscomprovantes"].get("watermark_overlap_seconds") or 0),
             21600,
         )
+        self.assertGreaterEqual(
+            int(DEFAULT_DATASETS["itenscomprovantes"].get("revisit_max_rows") or 0),
+            25000,
+        )
 
     def test_query_plan_can_revisit_recent_parent_window_when_watermark_stalls(self):
         cfg = self._cfg()
