@@ -9,7 +9,7 @@ assert_runtime_stack_or_exit()
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -187,6 +187,75 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ── Hom demo identity mask (JSON responses) ───────────────────
+# Catch-all for routes that omit redact_sensitive. No-op when
+# DEMO_IDENTITY_MASK is false (Prod). Presentation-layer only.
+
+
+class IdentityMaskMiddleware(BaseHTTPMiddleware):
+    _SKIP_SUFFIXES = (
+        "/health",
+        "/readyz",
+        "/ingest/health",
+        "/agent/update/download",
+    )
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        try:
+            from app.identity_mask import identity_mask_enabled, mask_identity_payload
+        except Exception:
+            return response
+        if not identity_mask_enabled():
+            return response
+        path = request.url.path.rstrip("/") or "/"
+        if any(path.endswith(sfx.rstrip("/")) or path.endswith(sfx) for sfx in self._SKIP_SUFFIXES):
+            return response
+        if path.startswith("/branding/") and path.count("/") >= 3:
+            # binary image bytes
+            return response
+        ctype = (response.headers.get("content-type") or "").lower()
+        if "json" not in ctype:
+            return response
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk if isinstance(chunk, (bytes, bytearray)) else bytes(chunk)
+        if not body:
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+        try:
+            import json as _json
+
+            data = _json.loads(body)
+        except Exception:
+            headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=headers,
+                media_type=response.media_type or "application/json",
+            )
+        try:
+            masked = mask_identity_payload(data)
+            new_body = _json.dumps(masked, ensure_ascii=False, default=str).encode("utf-8")
+        except Exception:
+            new_body = body
+        headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
+        return Response(
+            content=new_body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type="application/json",
+        )
+
+
+app.add_middleware(IdentityMaskMiddleware)
 
 
 # ── Auth rate limiting (identity + optional IP via shared buckets) ─

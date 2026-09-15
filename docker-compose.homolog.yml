@@ -36,6 +36,8 @@ services:
       TORQMIND_STACK: homolog
       TORQMIND_CONTAINER_NAME: torqmind-api-homolog
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      # LGPD/demo: mask identity in JSON responses (Prod runtime_guard refuses this).
+      DEMO_IDENTITY_MASK: ${DEMO_IDENTITY_MASK:-true}
     expose:
       - "8000"
     volumes:

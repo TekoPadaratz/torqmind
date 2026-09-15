@@ -1068,7 +1068,7 @@ def _build_session_context(
                 base_route=default_route,
             )
 
-    return {
+    session = {
         "sub": str(user["id"]),
         "email": user["email"],
         "username": user.get("username"),
@@ -1112,6 +1112,12 @@ def _build_session_context(
         "product_companies": product_companies,
         "branding": _safe_branding(selected_tenant_id),
     }
+    try:
+        from app.identity_mask import maybe_mask_identity
+
+        return maybe_mask_identity(session)
+    except Exception:
+        return session
 
 
 def verify_login(

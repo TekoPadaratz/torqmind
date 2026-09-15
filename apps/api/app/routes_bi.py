@@ -56,10 +56,13 @@ def _build_snapshot_context(
     branch_scope: Optional[int | List[int]],
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    from app.identity_mask import identity_mask_cache_version
+
     context: Dict[str, Any] = {
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
         "dt_ref": dt_ref.isoformat() if dt_ref else None,
+        "mask_v": identity_mask_cache_version(),
         **snapshot_cache.branch_fields_for_context(branch_scope),
     }
     if extra:
@@ -1146,7 +1149,9 @@ def get_filiais(
     items = repos_mart.list_filiais(role, tenant)
     if not can_list_all:
         items = [item for item in items if int(item.get("id_filial") or 0) in allowed_branch_ids]
-    return {"items": items}
+    from app.identity_mask import maybe_mask_identity
+
+    return maybe_mask_identity({"items": items})
 
 
 # ------------------------
@@ -2806,39 +2811,42 @@ def team_commissions_config(
     for g in groups_available:
         g["selected"] = g["id_grupo_produto"] in selected_ids
 
-    return {
-        "config": {
-            "id": config_id,
-            "name": config["name"],
-            "default_payment_mode": config["default_payment_mode"],
-            "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
-            "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
-            "include_central_mirror": bool(config.get("include_central_mirror")),
-            "eligible_cfops": [],
-            "excluded_cfops": list(repos_commission.COMMISSION_EXCLUDED_CFOPS),
+    return redact_sensitive(
+        {
+            "config": {
+                "id": config_id,
+                "name": config["name"],
+                "default_payment_mode": config["default_payment_mode"],
+                "manager_commission_mode": config.get("manager_commission_mode") or "use_tiers",
+                "manager_commission_percent": float(config.get("manager_commission_percent") or 0),
+                "include_central_mirror": bool(config.get("include_central_mirror")),
+                "eligible_cfops": [],
+                "excluded_cfops": list(repos_commission.COMMISSION_EXCLUDED_CFOPS),
+            },
+            "groups": groups_available,
+            "excluded_products": [
+                {
+                    "id_produto": int(p["id_produto"]),
+                    "nome": p.get("nome_produto_snapshot") or "",
+                }
+                for p in excluded_products
+            ],
+            "employees": employees,
+            "tiers": [
+                {
+                    "tier_key": t["tier_key"],
+                    "tier_name": t["tier_name"],
+                    "min_sales_amount": float(t["min_sales_amount"]),
+                    "min_qty": float(t["min_sales_amount"]),
+                    "commission_percent": float(t["commission_percent"]),
+                    "sort_order": t["sort_order"],
+                    "is_active": t["is_active"],
+                }
+                for t in tiers
+            ],
         },
-        "groups": groups_available,
-        "excluded_products": [
-            {
-                "id_produto": int(p["id_produto"]),
-                "nome": p.get("nome_produto_snapshot") or "",
-            }
-            for p in excluded_products
-        ],
-        "employees": employees,
-        "tiers": [
-            {
-                "tier_key": t["tier_key"],
-                "tier_name": t["tier_name"],
-                "min_sales_amount": float(t["min_sales_amount"]),
-                "min_qty": float(t["min_sales_amount"]),
-                "commission_percent": float(t["commission_percent"]),
-                "sort_order": t["sort_order"],
-                "is_active": t["is_active"],
-            }
-            for t in tiers
-        ],
-    }
+        claims,
+    )
 
 
 @router.put("/team/commissions/config")
@@ -3050,7 +3058,7 @@ def team_commissions_results(
         cfg.pop("manager_commission_mode", None)
         cfg.pop("manager_commission_percent", None)
         payload["config"] = cfg
-    return payload
+    return redact_sensitive(payload, claims)
 
 
 @router.get("/team/commissions/discounts")
@@ -3089,12 +3097,15 @@ def team_commissions_discounts(
         targets = [int(id_filial)]
     if not targets:
         raise HTTPException(status_code=422, detail="Informe ao menos uma filial.")
-    return commission_discounts_overview(
-        tenant,
-        period_ini,
-        period_fim,
-        id_filiais=targets,
-        limit=300,
+    return redact_sensitive(
+        commission_discounts_overview(
+            tenant,
+            period_ini,
+            period_fim,
+            id_filiais=targets,
+            limit=300,
+        ),
+        claims,
     )
 
 
@@ -3113,7 +3124,10 @@ def manager_commissions_config(
     _screen=Depends(require_screen("goals_team.config")),
 ):
     tenant, _, _ = resolve_scope_filters(claims, id_empresa_q=id_empresa, id_filial_q=id_filial)
-    return repos_manager_commission.build_config_response(tenant, id_filial)
+    return redact_sensitive(
+        repos_manager_commission.build_config_response(tenant, id_filial),
+        claims,
+    )
 
 
 @router.put("/team/manager-commissions/config")
@@ -3266,14 +3280,17 @@ def manager_commissions_calc(
         )
     # Grid contract: Filial ASC
     rows_out.sort(key=lambda r: (str(r.get("filial_label") or ""), int(r.get("id_filial") or 0)))
-    return {
-        "dt_ini": period_ini.isoformat(),
-        "dt_fim": period_fim.isoformat(),
-        "id_empresa": tenant,
-        "rows": rows_out,
-        "cash_source": "unavailable_pending_agent_dataset",
-        "refreshed": bool(refresh),
-    }
+    return redact_sensitive(
+        {
+            "dt_ini": period_ini.isoformat(),
+            "dt_fim": period_fim.isoformat(),
+            "id_empresa": tenant,
+            "rows": rows_out,
+            "cash_source": "unavailable_pending_agent_dataset",
+            "refreshed": bool(refresh),
+        },
+        claims,
+    )
 
 
 @router.get("/team/manager-commissions/drilldown")
@@ -3323,13 +3340,16 @@ def manager_commissions_drilldown(
                 filial_label = str(label_row["label"])
     except Exception:
         filial_label = None
-    return repos_manager_commission.calc_branch_drilldown(
-        tenant,
-        int(id_filial),
-        period_ini,
-        period_fim,
-        filial_label=filial_label,
-        include_central_mirror=include_central_mirror,
+    return redact_sensitive(
+        repos_manager_commission.calc_branch_drilldown(
+            tenant,
+            int(id_filial),
+            period_ini,
+            period_fim,
+            filial_label=filial_label,
+            include_central_mirror=include_central_mirror,
+        ),
+        claims,
     )
 
 

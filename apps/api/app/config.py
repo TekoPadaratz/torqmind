@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     # Default False — does not block existing admins or mutate cadastros.
     mfa_enforce_privileged: bool = False
 
+    # Hom LGPD/demo: mask identity fields (names, CPF/CNPJ, email) in JSON
+    # responses after query. Default False. Production runtime_guard refuses
+    # boot when this is True — never enable on TORQMIND_STACK=prod.
+    demo_identity_mask: bool = False
+
     # Password hashing (Argon2id preferred; bcrypt legacy verify kept).
     argon2_time_cost: int = 2
     argon2_memory_kib: int = 65536
