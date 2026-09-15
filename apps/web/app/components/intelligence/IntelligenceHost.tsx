@@ -73,10 +73,12 @@ export default function IntelligenceHost() {
   const restoredConvRef = useRef<string | null>(null);
   const stopVoiceRef = useRef<(() => void) | null>(null);
   const voiceDraftRef = useRef('');
+  const sendingRef = useRef(false);
 
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
   const [caps, setCaps] = useState<Capability[]>([]);
+  const [branches, setBranches] = useState<{ id_filial: number; nome: string }[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -132,7 +134,8 @@ export default function IntelligenceHost() {
   const scopeLabel = useMemo(() => {
     const bits: string[] = [];
     if (scopePayload.dt_ini && scopePayload.dt_fim) {
-      bits.push(`${scopePayload.dt_ini} → ${scopePayload.dt_fim}`);
+      const displayDate = (value: string) => value.split('-').reverse().join('/');
+      bits.push(`${displayDate(scopePayload.dt_ini)} a ${displayDate(scopePayload.dt_fim)}`);
     }
     if (scopePayload.branch_scope === 'all') {
       bits.push(
@@ -141,10 +144,21 @@ export default function IntelligenceHost() {
           : 'todas as filiais'
       );
     } else if (scopePayload.id_filial != null) {
-      bits.push(`filial ${scopePayload.id_filial}`);
+      const branch = branches.find((item) => Number(item.id_filial) === scopePayload.id_filial);
+      bits.push(branch?.nome || 'Filial selecionada');
     }
-    return bits.join(' · ') || 'escopo da tela';
-  }, [scopePayload]);
+    return bits.join(' · ') || 'Filiais e período selecionados';
+  }, [scopePayload, branches]);
+
+  useEffect(() => {
+    setBranches([]);
+    if (!ready || !open || !scopePayload.id_empresa) return;
+    let cancelled = false;
+    void apiGet(`/bi/filiais?id_empresa=${scopePayload.id_empresa}`).then((response) => {
+      if (!cancelled) setBranches(Array.isArray(response?.items) ? response.items : []);
+    }).catch(() => { /* O filtro continua válido sem o nome de exibição. */ });
+    return () => { cancelled = true; };
+  }, [ready, open, scopePayload.id_empresa]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (pathname === '/' || pathname.startsWith('/tv') || pathname.startsWith('/login')) {
@@ -184,6 +198,9 @@ export default function IntelligenceHost() {
 
   useEffect(() => {
     if (!convStorageKey || typeof window === 'undefined') return;
+    requestSeq.current += 1;
+    sendingRef.current = false;
+    setBusy(false);
     try {
       const saved = sessionStorage.getItem(convStorageKey);
       setConversationId(saved);
@@ -197,26 +214,25 @@ export default function IntelligenceHost() {
     setSpeakHint(null);
   }, [convStorageKey]);
 
-  useEffect(() => {
-    if (!convStorageKey || !conversationId || typeof window === 'undefined') return;
-    try {
-      sessionStorage.setItem(convStorageKey, conversationId);
-    } catch {
-      /* ignore */
+  const ensureConversation = useCallback(async (seq: number) => {
+    if (conversationId) {
+      restoredConvRef.current = conversationId;
+      return conversationId;
     }
-  }, [convStorageKey, conversationId]);
-
-  const ensureConversation = useCallback(async () => {
-    if (conversationId) return conversationId;
     const created = await apiPost('/ai/conversations', {
       title: 'Assistente',
       ...scopePayload,
     });
     const id = String(created?.id || '');
     if (!id) throw new Error('conversation_create_failed');
+    if (seq !== requestSeq.current) return null;
+    restoredConvRef.current = id;
+    if (convStorageKey) {
+      try { sessionStorage.setItem(convStorageKey, id); } catch { /* Armazenamento opcional. */ }
+    }
     setConversationId(id);
     return id;
-  }, [conversationId, scopePayload]);
+  }, [conversationId, scopePayload, convStorageKey]);
 
   const toggleOpen = useCallback(() => {
     setOpen((prev) => !prev);
@@ -260,11 +276,12 @@ export default function IntelligenceHost() {
   useEffect(() => {
     if (!ready || !open || !conversationId) return;
     if (restoredConvRef.current === conversationId) return;
+    const seq = requestSeq.current;
     let cancelled = false;
     (async () => {
       try {
         const data = await apiGet(`/ai/conversations/${conversationId}/messages`, { params: scopePayload });
-        if (cancelled) return;
+        if (cancelled || seq !== requestSeq.current) return;
         const items = Array.isArray(data?.items) ? data.items : [];
         const restored: ChatMessage[] = items
           .map((row: any) => {
@@ -365,7 +382,8 @@ export default function IntelligenceHost() {
 
   const send = async (text: string) => {
     const cleaned = text.trim();
-    if (!cleaned || !enabled) return;
+    if (!cleaned || !ready || !enabled || sendingRef.current) return;
+    sendingRef.current = true;
     const seq = ++requestSeq.current;
     haltSpeech();
     setBusy(true);
@@ -375,7 +393,8 @@ export default function IntelligenceHost() {
     setVoiceDraft('');
     const autoSpeak = speakRepliesRef.current && ttsSupported;
     try {
-      const id = await ensureConversation();
+      const id = await ensureConversation(seq);
+      if (!id || seq !== requestSeq.current) return;
       const resp = await apiPost(`/ai/conversations/${id}/messages`, {
         text: cleaned,
         ...scopePayload,
@@ -417,7 +436,10 @@ export default function IntelligenceHost() {
       appendAssistant({ role: 'assistant', text: String(msg) }, autoSpeak);
       setError(null);
     } finally {
-      if (seq === requestSeq.current) setBusy(false);
+      if (seq === requestSeq.current) {
+        sendingRef.current = false;
+        setBusy(false);
+      }
     }
   };
   sendRef.current = send;
@@ -440,6 +462,25 @@ export default function IntelligenceHost() {
     stopVoiceRef.current = null;
     setListening(false);
   }, []);
+
+  const startNewConversation = () => {
+    if (sendingRef.current) return;
+    requestSeq.current += 1;
+    stopListening();
+    haltSpeech();
+    voiceDraftRef.current = '';
+    setVoiceDraft('');
+    setDraft('');
+    setMessages([]);
+    setError(null);
+    setSpeakHint(null);
+    restoredConvRef.current = null;
+    setConversationId(null);
+    if (convStorageKey) {
+      try { sessionStorage.removeItem(convStorageKey); } catch { /* Armazenamento opcional. */ }
+    }
+    inputRef.current?.focus();
+  };
 
   useEffect(() => () => {
     stopListening();
@@ -536,12 +577,16 @@ export default function IntelligenceHost() {
             </div>
 
             <div className="tmIntelChips">
-              <button type="button" className="tmIntelChip" onClick={() => send('O que posso perguntar?')}>
+              <button type="button" className="tmIntelChip" disabled={busy || listening || (!conversationId && !messages.length)} onClick={startNewConversation}>
+                Nova conversa
+              </button>
+              <button type="button" className="tmIntelChip" disabled={busy || listening || !enabled} onClick={() => send('O que posso perguntar?')}>
                 O que posso perguntar?
               </button>
               <button
                 type="button"
                 className="tmIntelChip"
+                disabled={busy || listening || !enabled}
                 onClick={() => send('Investigar variação de vendas')}
               >
                 Investigar vendas
@@ -549,12 +594,13 @@ export default function IntelligenceHost() {
               <button
                 type="button"
                 className="tmIntelChip"
+                disabled={busy || listening || !enabled}
                 onClick={() => send('Investigar carteira')}
               >
                 Investigar carteira
               </button>
               {suggestionChips.map((chip) => (
-                <button key={chip} type="button" className="tmIntelChip" onClick={() => send(String(chip))}>
+                <button key={chip} type="button" className="tmIntelChip" disabled={busy || listening || !enabled} onClick={() => send(String(chip))}>
                   {chip}
                 </button>
               ))}
@@ -596,6 +642,7 @@ export default function IntelligenceHost() {
                               key={`${label}-${opt.value || idx}`}
                               type="button"
                               className="tmIntelChip tmIntelClarifyChip"
+                              disabled={busy || listening || !enabled}
                               onClick={() => send(sendText)}
                             >
                               {label}
@@ -606,11 +653,14 @@ export default function IntelligenceHost() {
                     ) : null}
                     {m.role === 'assistant' && m.suggestions?.length ? (
                       <div className="tmIntelClarify">
-                        {m.suggestions.slice(0, 4).map((sug) => (
+                        {m.suggestions.filter((sug) => !m.clarificationOptions?.some((opt) =>
+                          String(opt.label || opt.value || '').trim().toLocaleLowerCase('pt-BR') === sug.trim().toLocaleLowerCase('pt-BR')
+                        )).slice(0, 4).map((sug) => (
                           <button
                             key={`sug-${sug}-${idx}`}
                             type="button"
                             className="tmIntelChip tmIntelClarifyChip"
+                            disabled={busy || listening || !enabled}
                             onClick={() => send(sug)}
                           >
                             {sug}
@@ -676,6 +726,7 @@ export default function IntelligenceHost() {
                 placeholder={listening ? 'Ouvindo…' : voiceEnabled && voiceSupported ? 'Escreva ou use o microfone…' : 'Escreva sua pergunta…'}
                 disabled={busy || !enabled || listening}
                 maxLength={2000}
+                aria-label="Sua pergunta"
               />
               <button type="submit" disabled={busy || !enabled || listening || !(listening ? voiceDraft : draft).trim()}>
                 Enviar
@@ -816,6 +867,10 @@ export default function IntelligenceHost() {
           flex-wrap: wrap;
           gap: 6px;
           margin-top: 10px;
+        }
+        .tmIntelChip:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
         .tmIntelClarifyChip {
           text-align: left;
