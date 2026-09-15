@@ -7,12 +7,15 @@
  * Controlled by the build-time flag NEXT_PUBLIC_APP_ENV. In production the flag
  * is unset, so this renders nothing. Purely visual (pointer-events: none) — it
  * never intercepts clicks or shifts layout.
+ *
+ * Identity masking (LGPD/demo) is enforced by the Hom API (`DEMO_IDENTITY_MASK`);
+ * this banner is informational only — never the security boundary.
  */
 const ENV = (process.env.NEXT_PUBLIC_APP_ENV || '').toLowerCase();
 
 const LABELS: Record<string, string> = {
-  homolog: 'Homologação · ambiente de testes',
-  homologacao: 'Homologação · ambiente de testes',
+  homolog: 'Homologação · dados demonstrativos · identidade mascarada',
+  homologacao: 'Homologação · dados demonstrativos · identidade mascarada',
   staging: 'Staging · ambiente de testes',
   dev: 'Desenvolvimento',
   local: 'Local',

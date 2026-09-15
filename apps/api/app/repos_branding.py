@@ -100,7 +100,7 @@ def _row_to_public(id_empresa: int, row: Optional[dict[str, Any]]) -> dict[str, 
     logo_url = (
         f"/api/branding/{int(id_empresa)}/logo?v={logo_ver}" if logo_path and logo_ver else None
     )
-    return {
+    payload = {
         "id_empresa": int(id_empresa),
         "background_url": background_url,
         "logo_url": logo_url,
@@ -108,6 +108,12 @@ def _row_to_public(id_empresa: int, row: Optional[dict[str, Any]]) -> dict[str, 
         "logo_version": logo_ver,
         "uses_default": not (background_url or logo_url),
     }
+    try:
+        from app.identity_mask import mask_branding_public
+
+        return mask_branding_public(payload)
+    except Exception:
+        return payload
 
 
 def get_branding_public(id_empresa: Optional[int]) -> dict[str, Any]:
@@ -169,6 +175,19 @@ def _read_file_bytes(id_empresa: int, kind: str) -> tuple[bytes, str]:
 
 def serve_image(id_empresa: int, kind: str) -> tuple[bytes, str]:
     """Public serving entrypoint (no auth — branding is non-sensitive)."""
+    try:
+        from app.identity_mask import identity_mask_enabled
+
+        if identity_mask_enabled():
+            raise BrandingError(
+                404,
+                "branding_masked",
+                "Identidade visual mascarada neste ambiente.",
+            )
+    except BrandingError:
+        raise
+    except Exception:
+        pass
     return _read_file_bytes(id_empresa, kind)
 
 

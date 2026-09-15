@@ -64,6 +64,8 @@ def assert_runtime_stack_or_exit() -> None:
 
     errors: list[str] = []
 
+    demo_mask = _env("DEMO_IDENTITY_MASK").lower() in {"1", "true", "yes", "on"}
+
     if stack == "prod":
         if app_env in {"homolog", "staging"}:
             errors.append(f"APP_ENV={app_env!r} is not allowed on TORQMIND_STACK=prod")
@@ -73,6 +75,11 @@ def assert_runtime_stack_or_exit() -> None:
             )
         if "homolog" in database_url.lower():
             errors.append("DATABASE_URL contains 'homolog' on TORQMIND_STACK=prod")
+        if demo_mask:
+            errors.append(
+                "DEMO_IDENTITY_MASK=true is not allowed on TORQMIND_STACK=prod "
+                "(identity mask is Hom/demo only)"
+            )
     elif stack == "homolog":
         if db_name == "torqmind":
             errors.append(

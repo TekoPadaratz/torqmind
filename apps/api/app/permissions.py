@@ -710,12 +710,19 @@ def redact_sensitive(data: Any, claims: dict[str, Any]) -> Any:
     The sensitive-field redaction is only applied when
     ``can_view_sensitive_financials(claims)`` is False. Text hygiene
     (mojibake repair for corrupted source strings) runs for **all** roles.
+    When ``DEMO_IDENTITY_MASK`` is on (Hom only), identity fields are masked
+    after financial redaction — presentation layer only, no SQL change.
     Returns the (possibly modified) data — mutates in place for dicts/lists.
     """
     _sanitize_text(data)
-    if can_view_sensitive_financials(claims):
+    if not can_view_sensitive_financials(claims):
+        data = _redact(data)
+    try:
+        from app.identity_mask import maybe_mask_identity
+
+        return maybe_mask_identity(data)
+    except Exception:
         return data
-    return _redact(data)
 
 
 # ──────────────────────────────────────────────────────────────────────
