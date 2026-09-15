@@ -21,6 +21,19 @@ from agent import __version__ as AGENT_VERSION
 # incremental de contasreceber e congela baixas na cobrança.
 WATERMARK_FUTURE_SLACK = timedelta(days=1)
 
+# Após ingestir headers, puxa imediatamente os itens do mesmo cupom — evita
+# órfão permanente quando ITENSCOMPROVANTE atrasa vs COMPROVANTES.
+COMPROVANTES_CHILD_FOLLOWUPS = (
+    {
+        "dataset": "itenscomprovantes",
+        "key_columns": ("ID_FILIAL", "ID_DB", "ID_COMPROVANTE"),
+    },
+)
+ITENS_HEAL_WINDOW_DAYS = 21
+ITENS_HEAL_MAX_ROWS = 25000
+ITENS_HEAL_MIN_INTERVAL_SECONDS = 3600
+ITENS_HEAL_LAST_RUN_KEY = "itens_heal_last_run"
+
 
 @dataclass
 class RunMetrics:
@@ -1079,6 +1092,10 @@ class AgentRunner:
                                 len(turnos_pending),
                             )
 
+                        # Pai→filho: header sem itens no mesmo ciclo cria órfão de comissão.
+                        if dataset == "comprovantes" and not spooled and batch.rows:
+                            self._followup_comprovante_children(batch.rows)
+
                         if batch.max_watermark:
                             safe_wm = self._sanitize_temporal_watermark(
                                 batch.max_watermark,
@@ -1138,6 +1155,15 @@ class AgentRunner:
                             metric=metric,
                             ds_cfg=ds_cfg,
                         )
+
+                    # Heal: revisit 21d sem avançar watermark (budget próprio).
+                    # Incremental sozinho OR-ava revisit e estourava cap sem curar órfãos.
+                    if (
+                        dataset == "itenscomprovantes"
+                        and not ignore_watermark
+                        and not manual_window
+                    ):
+                        self._heal_itenscomprovantes_window()
 
                     watermark_after = self.state.get(dataset, scope=scope)
                     metric.watermark_after = watermark_after
@@ -1384,6 +1410,160 @@ class AgentRunner:
                 last_daily_rescan_date = current_date_str
 
             time.sleep(interval_seconds)
+
+    def _followup_comprovante_children(self, parent_rows: list[Dict[str, Any]]) -> None:
+        """Extrai e envia itens dos comprovantes acabados de ingerir (anti-órfão)."""
+        keys: list[Dict[str, Any]] = []
+        seen: set[tuple] = set()
+        for row in parent_rows or []:
+            filial = self._normalize_optional_int(row.get("ID_FILIAL"))
+            id_db = self._normalize_optional_int(row.get("ID_DB"))
+            id_comp = self._normalize_optional_int(row.get("ID_COMPROVANTE"))
+            if not filial or not id_db or not id_comp:
+                continue
+            token = (int(filial), int(id_db), int(id_comp))
+            if token in seen:
+                continue
+            seen.add(token)
+            keys.append(
+                {
+                    "ID_FILIAL": int(filial),
+                    "ID_DB": int(id_db),
+                    "ID_COMPROVANTE": int(id_comp),
+                }
+            )
+        if not keys:
+            return
+
+        budget = budget_from_runtime(self.cfg.runtime, self.cfg.datasets.get("itenscomprovantes") or {})
+        for follow in COMPROVANTES_CHILD_FOLLOWUPS:
+            child = str(follow["dataset"])
+            child_cfg = self.cfg.datasets.get(child) or {}
+            if not child_cfg.get("enabled", False):
+                continue
+            try:
+                rows = self.extractor.fetch_rows_by_keys(
+                    child,
+                    key_columns=list(follow["key_columns"]),
+                    keys=keys,
+                    fetch_size=budget.fetch_size,
+                    query_chunk_size=200,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    "dataset=%s phase=parent_child_followup_error child=%s keys=%s error=%s",
+                    "comprovantes",
+                    child,
+                    len(keys),
+                    str(exc)[:300],
+                )
+                continue
+            if not rows:
+                self.logger.info(
+                    "dataset=%s phase=parent_child_followup child=%s keys=%s rows=0",
+                    "comprovantes",
+                    child,
+                    len(keys),
+                )
+                continue
+            sent = 0
+            for chunk in self._chunked(rows, budget.batch_size):
+                validation_summary = self._validate_outgoing_batch(child, chunk, ds_cfg=child_cfg)
+                ingest_result = self.sink.send(dataset=child, rows=chunk)
+                inserted = int(ingest_result.get("inserted_or_updated", 0) or 0)
+                rejected = int(ingest_result.get("rejected", 0) or 0)
+                spooled = bool(ingest_result.get("spooled", False))
+                sent += inserted
+                self._validate_batch_delivery(
+                    dataset=child,
+                    ds_cfg=child_cfg,
+                    rows=chunk,
+                    extracted=len(chunk),
+                    inserted=inserted,
+                    rejected=rejected,
+                    spooled=spooled,
+                    ingest_result=ingest_result,
+                    validation_summary=validation_summary,
+                )
+            self.logger.info(
+                "dataset=%s phase=parent_child_followup child=%s keys=%s extracted=%s inserted_or_updated=%s",
+                "comprovantes",
+                child,
+                len(keys),
+                len(rows),
+                sent,
+            )
+
+    def _heal_itenscomprovantes_window(self) -> None:
+        """Revisita janela de comissão sem avançar watermark (cura órfãos sob carga)."""
+        dataset = "itenscomprovantes"
+        ds_cfg = self.cfg.datasets.get(dataset) or {}
+        if not ds_cfg.get("enabled", False):
+            return
+        scope = self._scope()
+        last_raw = self.state.get_scope_value(dataset, ITENS_HEAL_LAST_RUN_KEY, scope=scope)
+        last_dt = WatermarkStore.parse_watermark_dt(str(last_raw)) if last_raw else None
+        if last_dt is not None:
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            if elapsed < ITENS_HEAL_MIN_INTERVAL_SECONDS:
+                self.logger.info(
+                    "dataset=%s phase=heal_revisit_throttled elapsed_s=%.0f min_interval_s=%s",
+                    dataset,
+                    elapsed,
+                    ITENS_HEAL_MIN_INTERVAL_SECONDS,
+                )
+                return
+
+        saved_cursor = self.state.get_cursor(dataset, scope=scope)
+        now = datetime.now()
+        dt_from = now - timedelta(days=ITENS_HEAL_WINDOW_DAYS)
+        dt_to = now + timedelta(days=1)
+        patched = {
+            **dict(ds_cfg),
+            "revisit_max_rows": max(
+                ITENS_HEAL_MAX_ROWS,
+                int(ds_cfg.get("revisit_max_rows") or 0) or ITENS_HEAL_MAX_ROWS,
+            ),
+        }
+        self.cfg.datasets[dataset] = patched
+        self.logger.info(
+            "dataset=%s phase=heal_revisit_start days=%s cap=%s from=%s to=%s",
+            dataset,
+            ITENS_HEAL_WINDOW_DAYS,
+            patched["revisit_max_rows"],
+            dt_from.isoformat(timespec="seconds"),
+            dt_to.isoformat(timespec="seconds"),
+        )
+        try:
+            self.run_once(
+                only_dataset=dataset,
+                dt_from=dt_from,
+                dt_to=dt_to,
+                ignore_watermark=True,
+                continue_on_error=True,
+            )
+            self.state.set_scope_value(
+                dataset,
+                ITENS_HEAL_LAST_RUN_KEY,
+                business_datetime_iso(datetime.now(timezone.utc), timespec="seconds"),
+                scope=scope,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "dataset=%s phase=heal_revisit_error error=%s",
+                dataset,
+                str(exc)[:300],
+            )
+        finally:
+            self.cfg.datasets[dataset] = ds_cfg
+            self.state.set_cursor(dataset, saved_cursor, scope=scope)
+            self.logger.info(
+                "dataset=%s phase=heal_revisit_done watermark_restored=%s",
+                dataset,
+                saved_cursor.last_watermark,
+            )
 
     def backfill(self, dataset: str, from_date: datetime, to_date: datetime, *, to_is_date_only: bool = True) -> None:
         # Date-only windows keep the historical inclusive semantics. Datetime

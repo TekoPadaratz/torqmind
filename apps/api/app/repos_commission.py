@@ -276,10 +276,17 @@ def _query_eligible_sales_ch(
     else:
         cfop_pred = commission_sales_cfop_predicate_sql("i", "c")
         mirror_sql = f" AND {central_mirror_exclude_sql('c')}"
+    # Itens sem ID_FUNCIONARIOS no Xpert (loja no mesmo cupom do abastecimento)
+    # herdam o vendedor de outro item do mesmo comprovante — paridade com o
+    # relatório "Comissão para produtos automotivos" (ex.: VR06 cupom 3702038).
     sql = f"""
       SELECT
         i.id_filial AS id_filial,
-        i.id_funcionario AS id_funcionario,
+        if(
+          i.id_funcionario > 0,
+          i.id_funcionario,
+          coalesce(sib.id_funcionario_any, toInt32(0))
+        ) AS id_funcionario,
         coalesce(nullIf(f.nome, ''), '(Sem vendedor)') AS nome_vendedor,
         if(i.id_grupo_produto > 0, i.id_grupo_produto, coalesce(p.id_grupo_produto, 0)) AS id_grupo_produto,
         coalesce(nullIf(g.nome, ''), '(Sem grupo)') AS nome_grupo_produto,
@@ -293,10 +300,34 @@ def _query_eligible_sales_ch(
        AND c.id_filial = i.id_filial
        AND c.id_db = i.id_db
        AND c.id_comprovante = i.id_comprovante
+      LEFT JOIN (
+        SELECT
+          id_empresa,
+          id_filial,
+          id_db,
+          id_comprovante,
+          max(id_funcionario) AS id_funcionario_any
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND id_filial IN ({filial_list})
+          AND data_key >= {{dk_ini:Int32}}
+          AND data_key < {{dk_fim:Int32}}
+          AND is_deleted = 0
+          AND id_funcionario > 0
+        GROUP BY id_empresa, id_filial, id_db, id_comprovante
+      ) AS sib
+        ON sib.id_empresa = i.id_empresa
+       AND sib.id_filial = i.id_filial
+       AND sib.id_db = i.id_db
+       AND sib.id_comprovante = i.id_comprovante
       LEFT JOIN {CURRENT_DB}.dim_funcionario AS f FINAL
         ON f.id_empresa = i.id_empresa
        AND f.id_filial = i.id_filial
-       AND f.id_funcionario = i.id_funcionario
+       AND f.id_funcionario = if(
+         i.id_funcionario > 0,
+         i.id_funcionario,
+         coalesce(sib.id_funcionario_any, toInt32(0))
+       )
       LEFT JOIN {CURRENT_DB}.dim_produto AS p FINAL
         ON p.id_empresa = i.id_empresa
        AND p.id_filial = i.id_filial
@@ -315,7 +346,11 @@ def _query_eligible_sales_ch(
         AND c.situacao NOT IN ({situacao_list})
         AND coalesce(c.commercial_eligible, 1) = 1
         AND {cfop_pred}
-        AND i.id_funcionario > 0
+        AND if(
+          i.id_funcionario > 0,
+          i.id_funcionario,
+          coalesce(sib.id_funcionario_any, toInt32(0))
+        ) > 0
         {mirror_sql}
       GROUP BY
         id_filial,
