@@ -137,6 +137,18 @@ class TestExtractorQuery(unittest.TestCase):
         self.assertIn("TORQMIND_DT_EVENTO", clause)
         self.assertIn("DATEADD(day,-14,GETDATE())", clause)
 
+    def test_default_itenscomprovantes_has_parent_revisit_window(self):
+        """Sales orphans (header sem itens) must be revisited ~1 commission cycle."""
+        from agent.config import DEFAULT_DATASETS
+
+        clause = str(DEFAULT_DATASETS["itenscomprovantes"].get("revisit_open_clause") or "")
+        self.assertIn("TORQMIND_DT_EVENTO", clause)
+        self.assertIn("DATEADD(day,-21,GETDATE())", clause)
+        self.assertEqual(
+            int(DEFAULT_DATASETS["itenscomprovantes"].get("watermark_overlap_seconds") or 0),
+            21600,
+        )
+
     def test_query_plan_can_revisit_recent_parent_window_when_watermark_stalls(self):
         cfg = self._cfg()
         cfg.datasets["itensmovprodutos"] = {

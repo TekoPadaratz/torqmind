@@ -134,6 +134,114 @@ def _active_sale_sql(alias: str = "v") -> str:
     )
 
 
+def _count_orphan_comprovantes_ch(
+    id_empresa: int,
+    id_filiais: Sequence[int],
+    dt_ini: date,
+    dt_fim: date,
+) -> Dict[str, Any]:
+    """Conta comprovantes comerciais com header e zero itens no slim (órfãos).
+
+    Órfãos subcontam comissão/vendas: o Agent pode ter ingerido o header sem
+    ITENSCOMPROVANTE. Não inventa itens — só sinaliza risco operacional.
+    """
+    targets = sorted({int(f) for f in id_filiais if int(f) > 0})
+    empty = {
+        "orphan_headers": 0,
+        "orphan_valor_total": 0.0,
+        "orphan_ids_sample": [],
+    }
+    if not targets:
+        return empty
+    dk_ini, dk_fim = data_key_bounds_half_open(dt_ini, dt_fim)
+    filial_list = ", ".join(str(f) for f in targets)
+    situacao_list = _situacao_excluidas_sql()
+    sql = f"""
+      SELECT
+        toUInt32(count()) AS orphan_headers,
+        round(sum(c.valor_total), 2) AS orphan_valor_total,
+        groupArray(toUInt32(c.id_comprovante)) AS orphan_ids
+      FROM {CURRENT_DB}.stg_comprovantes_slim AS c FINAL
+      LEFT JOIN (
+        SELECT
+          id_empresa,
+          id_filial,
+          id_db,
+          id_comprovante,
+          toUInt32(count()) AS n_items
+        FROM {CURRENT_DB}.stg_itenscomprovantes_slim FINAL
+        WHERE id_empresa = {{id_empresa:Int32}}
+          AND id_filial IN ({filial_list})
+          AND is_deleted = 0
+          AND data_key >= {{dk_ini:Int32}}
+          AND data_key < {{dk_fim:Int32}}
+        GROUP BY id_empresa, id_filial, id_db, id_comprovante
+      ) AS it
+        ON it.id_empresa = c.id_empresa
+       AND it.id_filial = c.id_filial
+       AND it.id_db = c.id_db
+       AND it.id_comprovante = c.id_comprovante
+      WHERE c.id_empresa = {{id_empresa:Int32}}
+        AND c.id_filial IN ({filial_list})
+        AND c.data_key >= {{dk_ini:Int32}}
+        AND c.data_key < {{dk_fim:Int32}}
+        AND c.is_deleted = 0
+        AND c.cancelado = 0
+        AND c.situacao NOT IN ({situacao_list})
+        AND coalesce(c.commercial_eligible, 1) = 1
+        AND (it.n_items = 0 OR isNull(it.n_items))
+        AND c.valor_total < 5000
+    """
+    try:
+        rows = query_dict(
+            sql,
+            parameters={
+                "id_empresa": int(id_empresa),
+                "dk_ini": int(dk_ini),
+                "dk_fim": int(dk_fim),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "commission orphan check failed empresa=%s filiais=%s: %s",
+            id_empresa,
+            targets,
+            str(exc)[:160],
+        )
+        return {
+            **empty,
+            "check_failed": True,
+            "check_error": str(exc)[:200],
+        }
+    row = (rows or [{}])[0] or {}
+    ids_raw = row.get("orphan_ids") or []
+    ids: List[int] = []
+    for x in ids_raw:
+        try:
+            i = int(x)
+        except (TypeError, ValueError):
+            continue
+        if i > 0:
+            ids.append(i)
+    ids = sorted(set(ids))
+    n = int(row.get("orphan_headers") or 0)
+    valor = float(row.get("orphan_valor_total") or 0)
+    out: Dict[str, Any] = {
+        "orphan_headers": n,
+        "orphan_valor_total": round(valor, 2),
+        "orphan_ids_sample": ids[:40],
+    }
+    if n > 0:
+        valor_txt = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        out["aviso"] = (
+            f"Há {n} venda(s) sem itens sincronizados no período "
+            f"(cerca de R$ {valor_txt} em valor de cupom). "
+            "Os totais de comissão podem estar incompletos até o Agent "
+            "reenviar os itens desses comprovantes."
+        )
+    return out
+
+
 def _query_eligible_sales_ch(
     id_empresa: int,
     id_filiais: Sequence[int],
@@ -1039,6 +1147,37 @@ def calculate_commission_results_multi(
 
     single = len(targets) == 1
     primary = branch_results[0] if branch_results else {}
+    orphan_headers = 0
+    orphan_valor = 0.0
+    orphan_ids: List[int] = []
+    orphan_check_failed = False
+    for b in branch_results:
+        integ = b.get("integridade_dados") or {}
+        orphan_headers += int(integ.get("orphan_headers") or 0)
+        orphan_valor += float(integ.get("orphan_valor_total") or 0)
+        for oid in integ.get("orphan_ids_sample") or []:
+            try:
+                orphan_ids.append(int(oid))
+            except (TypeError, ValueError):
+                pass
+        if integ.get("check_failed"):
+            orphan_check_failed = True
+    orphan_ids = sorted(set(orphan_ids))[:40]
+    integridade: Dict[str, Any] = {
+        "orphan_headers": orphan_headers,
+        "orphan_valor_total": round(orphan_valor, 2),
+        "orphan_ids_sample": orphan_ids,
+    }
+    if orphan_check_failed:
+        integridade["check_failed"] = True
+    if orphan_headers > 0:
+        valor_txt = f"{orphan_valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        integridade["aviso"] = (
+            f"Há {orphan_headers} venda(s) sem itens sincronizados no período "
+            f"(cerca de R$ {valor_txt} em valor de cupom). "
+            "Os totais de comissão podem estar incompletos até o Agent "
+            "reenviar os itens desses comprovantes."
+        )
     return {
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
@@ -1057,6 +1196,8 @@ def calculate_commission_results_multi(
         "grupos_configurados": all_groups,
         "produtos_excluidos": primary.get("produtos_excluidos") if single else [],
         "tier_progress": primary.get("tier_progress") if single else [],
+        "integridade_dados": integridade,
+        "aviso_integridade": integridade.get("aviso"),
         "gerente": primary.get("gerente") if single else None,
         "config": primary.get("config") if single else None,
         "branches": [
@@ -1067,6 +1208,7 @@ def calculate_commission_results_multi(
                 "comissao_total": b.get("comissao_total"),
                 "payment_mode": b.get("payment_mode"),
                 "message": b.get("message"),
+                "integridade_dados": b.get("integridade_dados"),
             }
             for b in branch_results
         ],
@@ -1306,6 +1448,10 @@ def calculate_commission_results(
         g["id_filial"] = id_filial
         g["filial_label"] = filial_label
 
+    integridade = _count_orphan_comprovantes_ch(
+        id_empresa, [id_filial], dt_ini, dt_fim
+    )
+
     return {
         "dt_ini": dt_ini.isoformat(),
         "dt_fim": dt_fim.isoformat(),
@@ -1329,6 +1475,8 @@ def calculate_commission_results(
             for p in excludes
         ],
         "tier_progress": [],
+        "integridade_dados": integridade,
+        "aviso_integridade": integridade.get("aviso"),
         "gerente": {
             "venda_total_sem_combustiveis": round(manager_sales, 2),
             "nivel_atingido": _tier_public(manager_tier),

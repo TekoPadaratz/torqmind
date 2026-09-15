@@ -241,6 +241,13 @@ DEFAULT_DATASETS: Dict[str, Dict[str, Any]] = {
         "retention_days": COMMERCIAL_WINDOW_DAYS,
         "bootstrap_days": COMMERCIAL_WINDOW_DAYS,
         "watermark_overlap_seconds": PARENT_CHILD_WATERMARK_OVERLAP_SECONDS,
+        # Header pode chegar antes dos itens; overlap 6h não cobre falha/lag
+        # maior. Revisitar ~1 ciclo de comissão (21d) pelo DATA do comprovante
+        # cura órfãos (header no STG sem ITENSCOMPROVANTE) sem reset de watermark.
+        # Incidente VR06 20/08–13/09/2026: 220 headers órfãos em 27–29/08.
+        "revisit_open_clause": (
+            "CAST(TORQMIND_DT_EVENTO AS date) >= CAST(DATEADD(day,-21,GETDATE()) AS date)"
+        ),
         "query": (
             "SELECT i.*, "
             "CAST(c.DATA AS datetime2) AS TORQMIND_DT_EVENTO, "
